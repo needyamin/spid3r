@@ -25,11 +25,13 @@ Hello, Spid3r!
 - [Features](#features)
 - [Getting started](#getting-started)
 - [Language tour](#language-tour)
+- [Quick reference: data structures & stdlib](#quick-reference-data-structures--stdlib)
 - [Execution model](#execution-model)
 - [Command-line reference](#command-line-reference)
 - [Projects and dependencies](#projects-and-dependencies)
 - [Backends](#backends)
-- [Testing](#testing)
+- [Developer workflow & testing](#developer-workflow--testing)
+- [Repository layout](#repository-layout)
 - [Documentation](#documentation)
 - [Known limitations](#known-limitations)
 - [License](#license)
@@ -37,16 +39,15 @@ Hello, Spid3r!
 ## Features
 
 - **Readable syntax**: `fn`, `let`, `const`, `if`/`elif`/`else`, `while`, `for … in`, C-style `for`.
-- **First-class functions and closures** that capture their surrounding variables.
+- **First-class functions and closures** that capture their surrounding variables (both top-level and local `fn` declarations).
 - **Classes and interfaces**: single inheritance (`extends`), `implements`, and
   `public`/`private` members (private by default, enforced at check time).
-- **Structured errors**: `throw`, `try`/`catch`/`finally`, plus `option` (`some`/`none`)
+- **Structured errors**: `throw`, `try`/`catch`/`finally` (running `finally` deterministically on normal exit, throw, `return`, `break`, and `continue`), plus `option` (`some`/`none`)
   and `result` (`ok`/`err`) values for expected failures.
 - **Gradual typing**: optional annotations (`a: int`, `-> string`), checked before the program runs.
-- **20+ built-in data structures**: `list`, `map`, `set`, `stack`, `queue`, `deque`,
-  `heap`, `priority_queue`, `bst`, `trie`, `graph`, `matrix`, linked lists, and more.
+- **20+ built-in data structures**: `list`, `vec`, `tuple`, `map`, `set`, `bag`, `hash_table`, `stack`, `queue`, `deque`, `ring_buffer`, `heap`, `priority_queue`, `binary_tree`, `bst`, `trie`, `graph`, `matrix`, linked lists, and more — all covered by automatic cycle garbage collection.
 - **Concurrency**: `spawn` tasks on a threaded scheduler, `async`/`await`, `channel`, `mutex`, `ref`.
-- **Modules** with explicit `public` exports, and a package manager with lockfiles.
+- **Modules** with explicit `public` exports, and a package manager with lockfiles and POSIX `ustar` archiving.
 - **Tooling**: formatter, REPL, line debugger, benchmark runner, and differential tester.
 - **Backends**: a desktop webview GUI and an LLVM ahead-of-time compiler for native executables (both built by default).
 
@@ -70,33 +71,39 @@ sh install.sh --dir ~/.local/bin
 sh install.sh --source          # build from source via cargo (no release needed)
 ```
 
-**Windows** — run the NSIS installer `Spid3r-Setup-<version>.exe` from the repository root
-(or a release), or build from source as shown below.
+**Windows** — run the NSIS installer `Spid3r-Setup-<version>.exe` from a release, or build
+from source as shown below.
 
 ### Build from source
 
-You need a recent stable Rust toolchain (edition 2021) and, for the default build, LLVM 18.1+
-(see [Backends](#backends) to build without it).
+You can build the core language toolchain with **zero external dependencies** using `--no-default-features`, or build with the default GUI and LLVM native backends (requires LLVM 18.1+ for `native`):
 
 ```sh
-cargo build --release        # binary at target/release/spid3r (spid3r.exe on Windows)
-cargo test                   # run the full test suite
+# Zero-dependency core toolchain (fastest build, no LLVM required)
+cargo build --release --no-default-features
+
+# Core + desktop webview GUI (no LLVM required)
+cargo build --release --no-default-features --features gui
+
+# Full default build: Core + GUI + LLVM AOT native backend
+cargo build --release
 ```
 
 On Windows, `cargo build --release` also writes the installer `Spid3r-Setup-<version>.exe` to
-the repository root, using NSIS from `packaging/nsis/nsis/nsis-3.10/` or `PATH` (the step is
-skipped with a warning when NSIS is missing). Set `SPID3R_NO_INSTALLER=1` to skip it.
+the repository root when NSIS is available in `packaging/nsis/nsis/nsis-3.10/` or `PATH` (skipped
+with a warning when NSIS is missing). Set `SPID3R_NO_INSTALLER=1` to skip installer generation.
 
 ### Run your first program
 
 ```sh
 spid3r run examples/hello.matrix              # tree-walking interpreter (default)
 spid3r run --engine vm examples/hello.matrix  # bytecode VM
+spid3r check examples/hello.matrix            # static type, arity, and privacy check
 spid3r repl                                   # interactive prompt
 ```
 
-Every program needs a `fn main()`. If `main` returns an integer, that integer becomes the
-process exit code.
+Every executable program defines `fn main()`. If `main` returns an integer, that integer
+becomes the process exit code. Files without `main` are library modules that can be imported.
 
 ## Language tour
 
@@ -194,7 +201,7 @@ fn main() {
     } catch (e) {
         println("caught: " + e);                  // caught: division by zero
     } finally {
-        println("cleanup");                       // always runs
+        println("cleanup");                       // always runs (even on return/break/continue)
     }
 
     let r = parse_age("-1");
@@ -264,6 +271,30 @@ Imports are resolved next to the importing file first, then on `SPID3R_PATH`, th
 
 For the complete grammar, see [`docs/GRAMMAR.md`](docs/GRAMMAR.md).
 
+## Quick reference: data structures & stdlib
+
+### Built-in data structures
+
+| Category | Constructors | Key methods |
+|---|---|---|
+| **Sequences** | `[a, b]` / `list(…)`, `vec(…)`, `tuple(…)`, `deque()`, `ring_buffer(cap)`, `linked_list()`, `singly_linked_list()`, `doubly_linked_list()` | `push`, `pop`, `peek`, `get`, `set`, `insert`, `remove`, `slice`, `sort`, `reverse`, `map`, `filter`, `reduce`, `for_each`, `all`, `any` |
+| **Stacks, queues & heaps** | `stack(…)`, `queue()`, `heap("min"\|"max")`, `priority_queue(["min"\|"max"])` | `push`, `pop`, `peek`, `len`, `is_empty`, `to_list` |
+| **Associative** | `map(k, v, …)`, `set(…)`, `bag()`, `hash_table()` | `m[k]`, `m[k] = v`, `get`, `set`, `remove`, `has`, `keys`, `values`, `items`, `union`, `intersection`, `difference`, `count_of` |
+| **Trees, graphs & grids** | `binary_tree()`, `bst()`, `trie()`, `graph("directed"\|"undirected")`, `matrix(rows, cols[, fill])` | `insert`, `contains`, `inorder`, `bfs`, `dfs`, `add_node`, `add_edge`, `find_path`, `row`, `col`, `add`, `mul` |
+| **Concurrency & refs** | `channel()`, `mutex(v)`, `ref(v)`, `weak(v)` | `send`, `recv`, `try_recv`, `lock`, `unlock`, `get`, `set`, `deref(w)` |
+
+### Global standard library functions
+
+| Category | Functions |
+|---|---|
+| **Console & I/O** | `print(…)`, `println(…)`, `eprint(…)`, `read_line()` |
+| **Files, env & OS** | `read_file(path)`, `write_file(path, text)`, `file_exists(path)`, `env(name)`, `args()`, `spawn_process(cmd, args)` |
+| **Math & random** | `abs(x)`, `sqrt(x)`, `pow(b, e)`, `min(a, b, …)`, `max(a, b, …)`, `random_int(lo, hi)` |
+| **Types & conversion** | `int(x)`, `float(x)`, `string(x)`, `bool(x)`, `type_of(x)`, `len(x)` |
+| **Option & result** | `some(v)`, `none`, `ok(v)`, `err(e)` |
+| **JSON & testing** | `json_parse(s)`, `json_write(v)`, `assert(cond[, msg])`, `assert_eq(a, b[, msg])` |
+| **Time, tasks & GC** | `now()`, `sleep_ms(n)`, `yield()`, `task_count()`, `gc_collect()`, `gc_live_cells()` |
+
 ## Execution model
 
 ```mermaid
@@ -289,10 +320,13 @@ flowchart LR
    before execution: malformed input becomes a clean error, never a crash.
 
 **Memory.** Values are reference-counted and thread-safe, so they can cross `spawn`
-boundaries. A cycle collector runs automatically and reclaims reference cycles through
-lists, vecs, sets, maps, and class instances. Set `SPID3R_GC=0` to turn it off, or call
-`gc_collect()` to force a collection. For back-references in other containers, use
-`weak(v)` and `deref(w)`. See [`docs/GC.md`](docs/GC.md).
+boundaries. A trial-deletion cycle collector runs automatically at statement boundaries and
+reclaims reference cycles across **all 20+ built-in containers and class instances**
+(`list`, `vec`, `stack`, `queue`, `deque`, `linked_list`, `set`, `map`, `hash_table`, `bag`,
+`ring_buffer`, `binary_tree`, `bst`, `heap`, `priority_queue`, `graph`, `trie`, `matrix`,
+`ref`, `option`/`result` wrappers, and instances). Set `SPID3R_GC=0` to disable automatic
+collection, call `gc_collect()` / `gc_live_cells()` to control or inspect the collector, or
+use `weak(v)` and `deref(w)` for explicit non-owning references. See [`docs/GC.md`](docs/GC.md).
 
 ## Command-line reference
 
@@ -302,7 +336,7 @@ lists, vecs, sets, maps, and class instances. Set `SPID3R_GC=0` to turn it off, 
 | `spid3r check <file>` | Lex, parse, and semantic-check without running |
 | `spid3r compile <file> [-o out] [--dump] [--no-opt]` | Write bytecode (`.matrixc`); `--dump` prints the disassembly |
 | `spid3r exec <file.matrixc>` | Run compiled bytecode on the VM |
-| `spid3r repl` | Interactive prompt (`:help`, `:quit`) |
+| `spid3r repl` | Interactive prompt (`:help`, `:reset`, `:quit`) |
 | `spid3r fmt [--check] [files…]` | Format files in place; `--check` exits `1` if any file would change |
 | `spid3r debug <file> [--break L,…] [--commands FILE]` | Line debugger: breakpoints, step/next/finish, backtrace, locals |
 | `spid3r test` | Run every `examples/*.matrix` on the tree interpreter, the VM, and compile + exec, and compare their output |
@@ -310,7 +344,7 @@ lists, vecs, sets, maps, and class instances. Set `SPID3R_GC=0` to turn it off, 
 | `spid3r init [dir]` | Create `spider.toml` and `src/main.matrix` |
 | `spid3r install` | Vendor dependencies into `vendor/` and write `spider.lock` |
 | `spid3r dist [-o out] [--no-opt]` | Compile the project entry to `target/<package>.matrixc` |
-| `spid3r pack [-o out.tar]` / `spid3r unpack <archive> [dir]` | Archive a project into a tarball, or extract one |
+| `spid3r pack [-o out.tar]` / `spid3r unpack <archive> [dir]` | Archive a project into a POSIX `ustar` tarball (with long-filename & checksum support), or extract one |
 | `spid3r build <file> [-o out] [--target triple] [--release]` | Build a native executable (`native` feature) |
 | `spid3r gui <file> [--html page.html] [--dry-run]` | Run a program in a webview window (`gui` feature) |
 | `spid3r version` / `spid3r help` | Print version or usage |
@@ -341,6 +375,9 @@ serde   = { version = "^1.0" }                               # offline registry 
 - `spid3r install` copies dependency sources into `vendor/` and writes a deterministic
   `spider.lock`, with a SHA-256 hash for each dependency.
 - `[workspace] members = [...]` lets several packages share one `vendor/` and one lockfile.
+- `spid3r pack` and `spid3r unpack` produce and verify deterministic POSIX `ustar` tarballs
+  (supporting long paths via the 155-byte `ustar` prefix and GNU `@LongLink` headers, with
+  header checksum validation and path-traversal protection).
 - Inside a project, `spid3r test` runs `tests/*.matrix` on both engines. Write tests with
   `assert` and `assert_eq`.
 
@@ -367,22 +404,54 @@ cargo build --release --no-default-features                  # core toolchain on
   `--dry-run`, the bridge runs without a window. See [`docs/GUI.md`](docs/GUI.md) and
   `examples/gui/counter.matrix`.
 
-## Testing
+## Developer workflow & testing
 
-Correctness in Spid3r means *the engines agree*, so testing is differential:
+Correctness in Spid3r means *the engines agree*. All **282 Rust tests** (**272** core tests + **10** headless GUI bridge tests) and **23/23 differential example programs** can be run locally without LLVM:
 
-- `cargo test` runs the unit, integration, parity-regression (`tests/audit_regressions.rs`),
-  fuzzing (`tests/fuzz_tests.rs`), and differential tests.
-- `spid3r test` runs every example three ways (tree interpreter, VM, and compile + exec)
-  and requires identical output.
-- `spid3r bench --compare` also asserts that the tree interpreter and the VM print the same output.
+```sh
+# 1. Run all 272 core unit, integration, regression, and fuzz tests
+cargo test --no-default-features
+
+# 2. Run the 10 headless GUI bridge tests
+cargo test --no-default-features --features gui --test gui_tests
+
+# 3. Run 3-way differential testing across all examples (tree vs VM vs .matrixc)
+cargo run --no-default-features -- test
+
+# 4. Verify canonical formatting and zero Clippy warnings (matches CI)
+cargo run --no-default-features -- fmt --check
+cargo clippy --no-default-features --all-targets -- -D warnings
+```
+
+- `tests/audit_regressions.rs` pins engine parity across closures, loop bindings, `finally`
+  on early exits, cycle-safe containers, task errors, and stdlib edge cases.
+- `tests/fuzz_tests.rs` and `fuzz/` test lexer, parser, semantic checker, formatter, and
+  bytecode verifier resilience against arbitrary and mutated inputs.
+- `spid3r bench --compare` benchmarks `benchmarks/*.matrix` while asserting identical output
+  between the tree interpreter and the VM.
 - Audit findings and verification notes are documented in [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md).
+
+## Repository layout
+
+| Path | Description |
+|---|---|
+| `src/lexer`, `src/parser`, `src/ast` | Tokenizer, Pratt parser (with recursion cap), and AST definitions |
+| `src/semantic` | Name resolution, arity, privacy, `main` validation, and gradual type checker |
+| `src/interpreter`, `src/environment` | Reference tree-walking interpreter and lexical scopes |
+| `src/vm` | Bytecode compiler, peephole/constant-folding optimizer, `.matrixc` serializer, validator, stack VM, and line debugger |
+| `src/value` | Shared value representation, 20+ built-in collections (`src/value/collections/`), and full-container trial-deletion cycle GC (`src/value/gc.rs`) |
+| `src/sched`, `src/stdlib`, `src/modules` | Threaded task scheduler, channels/mutexes, global builtins, and module loader |
+| `src/pkg`, `src/fmt.rs`, `src/repl`, `src/cli.rs` | Package manager (`spider.toml`, `ustar` archiver), canonical formatter, REPL, and CLI |
+| `src/native`, `src/gui` | Optional LLVM 18.1+ AOT backend (`native`) and desktop webview bridge (`gui`) |
+| `examples/`, `benchmarks/`, `stdlib/` | 23 runnable example programs/libraries, 8 benchmarks, and standard library modules |
+| `tests/`, `fuzz/`, `tools/` | Integration, differential, cycle-GC, packaging, audit-regression, and fuzz suites, plus `tools/difftest.sh` |
+| `docs/`, `doc.html` | Deep-dive technical documentation and self-contained interactive developer guide |
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [Developer guide](https://needyamin.github.io/spid3r/doc.html) | Full developer guide, online (source: `doc.html`) |
+| [Interactive developer guide (`doc.html`)](https://needyamin.github.io/spid3r/doc.html) | Self-contained single-page reference with search, dark mode, cheat sheet, and examples |
 | [`docs/GRAMMAR.md`](docs/GRAMMAR.md) | EBNF grammar and precedence rules |
 | [`docs/KEYWORDS.md`](docs/KEYWORDS.md) | Reserved words |
 | [`docs/STANDARD_LIBRARY.md`](docs/STANDARD_LIBRARY.md) | Global functions |

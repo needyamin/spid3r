@@ -174,6 +174,7 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:v
     <li><a href="#overview">Overview</a></li>
     <li><a href="#install">Installation</a></li>
     <li><a href="#quickstart">Quick start</a></li>
+    <li><a href="#cheatsheet">Quick cheat sheet</a></li>
     <li><a href="#structure">Program structure</a></li>
   </ol>
   <div class="group">Language</div>
@@ -201,6 +202,7 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:v
     <li><a href="#cli">CLI reference</a></li>
     <li><a href="#projects">Projects &amp; dependencies</a></li>
     <li><a href="#tooling">Developer tools</a></li>
+    <li><a href="#workflow">Developer workflow</a></li>
     <li><a href="#env">Environment &amp; exit codes</a></li>
   </ol>
   <div class="group">Internals</div>
@@ -235,10 +237,11 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:v
     <span class="badge">gradual typing</span>
     <span class="badge">task-based concurrency</span>
     <span class="badge">zero-dependency core</span>
-    <span class="badge">277 tests · 23/23 examples agree</span>
+    <span class="badge">282 tests · 23/23 examples agree</span>
   </div>
   <div class="cta">
     <a class="btn" href="#quickstart">Get started</a>
+    <a class="btn ghost" href="#cheatsheet">Cheat sheet</a>
     <a class="btn ghost" href="#cli">CLI reference</a>
     <a class="btn ghost" href="#stdlib">Standard library</a>
   </div>
@@ -340,6 +343,60 @@ fn main() {
 <div class="callout good"><b>Tip</b>Use <code>spid3r repl</code> to try snippets interactively, and
 <code>spid3r check file.matrix</code> to type- and visibility-check without running.</div>
 
+<h2 id="cheatsheet">Quick cheat sheet</h2>
+<p>Everything you need at a glance when writing or reading <code>.matrix</code> code:</p>
+<div class="grid2">
+  <div class="card"><span class="t">Variables &amp; types</span>
+    <code>let x: int = 10;</code> (mutable)<br>
+    <code>const LIMIT = 100;</code> (immutable)<br>
+    Types: <code>int</code>, <code>float</code>, <code>bool</code>, <code>string</code>, <code>null</code>, <code>any</code>.<br>
+    Introspection: <code>type_of(v)</code>, <code>len(v)</code>, <code>string(v)</code>.
+  </div>
+  <div class="card"><span class="t">Functions &amp; closures</span>
+    <code>fn add(a: int, b: int) -&gt; int { return a + b; }</code><br>
+    <code>let dbl = fn(x) { return x * 2; };</code><br>
+    <code>async fn wait_for(t) { return await t; }</code><br>
+    Named <code>fn</code> works at top level and inside blocks.
+  </div>
+  <div class="card"><span class="t">Control flow</span>
+    <code>if c { … } elif d { … } else { … }</code><br>
+    <code>for x in [1, 2, 3] { … }</code><br>
+    <code>for let i = 0; i &lt; n; i += 1 { … }</code><br>
+    <code>while cond { … }</code> · <code>break;</code> · <code>continue;</code>
+  </div>
+  <div class="card"><span class="t">Classes &amp; interfaces</span>
+    <code>interface Named { fn name(self) -&gt; string; }</code><br>
+    <code>class Dog extends Animal implements Named {</code><br>
+    <code>&nbsp;&nbsp;public let tag: string;</code><br>
+    <code>&nbsp;&nbsp;fn new(t) { self.tag = t; }</code><br>
+    <code>}</code> · Instantiate with <code>new Dog("Rex")</code>.
+  </div>
+  <div class="card"><span class="t">Error handling</span>
+    <code>try { … } catch (e) { … } finally { … }</code><br>
+    <code>throw "reason";</code><br>
+    <code>some(v)</code> / <code>none</code> · <code>ok(v)</code> / <code>err(e)</code><br>
+    <code>.is_ok()</code>, <code>.unwrap()</code>, <code>.unwrap_or(default)</code>
+  </div>
+  <div class="card"><span class="t">Collections (20+ built-in)</span>
+    <code>[1, 2]</code> / <code>list()</code>, <code>vec()</code>, <code>tuple(1, 2)</code><br>
+    <code>map("k", v)</code>, <code>set(1, 2)</code>, <code>hash_table()</code>, <code>bag()</code><br>
+    <code>stack()</code>, <code>queue()</code>, <code>deque()</code>, <code>ring_buffer(n)</code><br>
+    <code>heap("min")</code>, <code>priority_queue()</code>, <code>bst()</code>, <code>trie()</code>, <code>graph("directed")</code>, <code>matrix(r, c, 0.0)</code>
+  </div>
+  <div class="card"><span class="t">Concurrency</span>
+    <code>let t = spawn fn() { return 42; };</code><br>
+    <code>t.join()</code> · <code>await t</code> · <code>t.status()</code><br>
+    <code>let ch = channel(); ch.send(v); ch.recv();</code><br>
+    <code>let m = mutex(v); m.lock(); m.unlock();</code>
+  </div>
+  <div class="card"><span class="t">Essential CLI commands</span>
+    <code>spid3r run app.matrix</code> (or <code>--engine vm</code>)<br>
+    <code>spid3r check app.matrix</code> · <code>spid3r fmt</code><br>
+    <code>spid3r compile app.matrix</code> → <code>spid3r exec app.matrixc</code><br>
+    <code>spid3r test</code> · <code>spid3r debug app.matrix</code> · <code>spid3r repl</code>
+  </div>
+</div>
+
 <h2 id="structure">Program structure</h2>
 <ul>
   <li>A source file has the extension <code>.matrix</code>. It starts with any <code>import</code>
@@ -375,15 +432,14 @@ fn main() {
       assigning to it is a semantic error (<code>cannot assign to const 'LIMIT'</code>).</li>
   <li><strong>Statements end in <code>;</code></strong>, except block forms
       (<code>if</code>/<code>elif</code>/<code>else</code>, <code>while</code>, <code>for</code>,
-      <code>try</code>, bare blocks) and top-level <code>fn</code> / <code>class</code> /
+      <code>try</code>, bare blocks) and <code>fn</code> / <code>class</code> /
       <code>interface</code> declarations. <code>import "name";</code> ends in <code>;</code>.</li>
   <li><strong>String escapes:</strong> <code>\n</code> <code>\t</code> <code>\\</code>
       <code>\"</code>. Any other escape is a lexer error.</li>
 </ul>
-<div class="callout note"><b>Known quirk: local <code>fn</code> declarations</b>A named
-<code>fn</code> declared <em>inside a block</em> parses as an expression statement and needs a
-trailing <code>;</code>. Prefer <code>let f = fn(x) { … };</code> for local functions. Top-level
-<code>fn</code> declarations never need a semicolon.</div>
+<div class="callout good"><b>Local functions</b>Named <code>fn helper(x) { … }</code> declarations
+work both at the top level and inside any block without needing a trailing semicolon, and support
+local recursion. You can also bind anonymous function literals with <code>let f = fn(x) { … };</code>.</div>
 <h3>Reserved keywords</h3>
 <p>Keywords are lowercase and case-sensitive:</p>
 <pre data-lang="text"><code>fn let const if elif else while for in break continue return
@@ -627,13 +683,10 @@ fn main() {
 <code>write_file</code>, <code>spawn_process</code>) return <code>result</code> values instead of
 throwing, so branch with <code>is_ok</code>/<code>is_err</code>. Argument and type errors (e.g.
 <code>write_file(1, "x")</code>) still throw.</div>
-<div class="callout note"><b>Engine difference: <code>finally</code> on early exit</b>On the tree
-interpreter, <code>finally</code> always runs: on normal completion, on a thrown error, and on
-<code>return</code> or <code>break</code> out of the <code>try</code>/<code>catch</code>. The bytecode
-VM currently runs <code>finally</code> on normal completion and on thrown errors, but
-<strong>skips it</strong> on <code>return</code> or <code>break</code>. Until this is fixed, avoid
-relying on <code>finally</code> for cleanup after an early exit if you target the VM,
-<code>.matrixc</code>, or <code>dist</code>.</div>
+<div class="callout good"><b>Engine parity: <code>finally</code> always runs</b>On both the
+tree-walk interpreter and the bytecode VM, <code>finally</code> blocks execute deterministically on
+normal completion, on thrown errors, and on early exits (<code>return</code>, <code>break</code>,
+and <code>continue</code>) out of a <code>try</code> or <code>catch</code> block.</div>
 
 <h2 id="strings">Strings</h2>
 <p>Strings are immutable UTF-8. Lengths and indexes count characters, not bytes. Indexing
@@ -937,14 +990,19 @@ feature; see <a href="#tooling">Developer tools</a>.</p>
 <p>Values are reference-counted with <code>Arc</code>/<code>Mutex</code>. Both engines share this
 representation, which is what lets values cross <code>spawn</code> boundaries. Acyclic garbage is
 freed as soon as the last reference drops.</p>
-<div class="callout info"><b>Cycle collection</b>A reference cycle (a list containing itself, an
-object pointing at itself, two maps referencing each other) never reaches a zero refcount. Spid3r's
-cycle collector reclaims cycles through <code>list</code>/<code>vec</code>, <code>set</code>,
-<code>map</code>, and class instances. It runs <strong>automatically at statement
-boundaries</strong> (on by default; set <code>SPID3R_GC=0</code> to disable). <code>gc_collect()</code>
-forces a pass and <code>gc_live_cells()</code> inspects the tracked heap. Cycles through other
-containers (trees, graphs, heaps, matrices, …) are not traced yet, so use <code>weak</code> /
-<code>deref</code> for those back-edges. Design notes: <a href="docs/GC.md">docs/GC.md</a>.</div>
+<div class="callout info"><b>Full-container cycle collection</b>A reference cycle (a list containing
+itself, an object pointing at itself, a graph or tree storing a parent container, or two maps
+referencing each other) never reaches a zero refcount on its own. Spid3r's trial-deletion cycle
+collector automatically tracks and reclaims cycles across <strong>all 20+ built-in containers and
+class instances</strong> (<code>list</code>, <code>vec</code>, <code>stack</code>, <code>queue</code>,
+<code>deque</code>, <code>linked_list</code>, <code>set</code>, <code>map</code>,
+<code>hash_table</code>, <code>bag</code>, <code>ring_buffer</code>, <code>binary_tree</code>,
+<code>bst</code>, <code>heap</code>, <code>priority_queue</code>, <code>graph</code>,
+<code>trie</code>, <code>matrix</code>, <code>ref</code>, <code>option</code>/<code>result</code>
+wrappers, and class instances). It runs <strong>automatically at statement boundaries</strong> (on
+by default; set <code>SPID3R_GC=0</code> to disable). <code>gc_collect()</code> forces a pass,
+<code>gc_live_cells()</code> inspects the tracked heap, and <code>weak(v)</code> / <code>deref(w)</code>
+provide explicit non-owning references when desired. Design notes: <a href="docs/GC.md">docs/GC.md</a>.</div>
 <pre data-lang="spid3r"><code>fn main() {
     let before = gc_live_cells();
     {
@@ -986,8 +1044,8 @@ are optional.</p>
   <tr><td><code>init [dir]</code></td><td>Scaffold <code>spider.toml</code>, <code>src/main.matrix</code>, and <code>.gitignore</code>. The package is named after the directory, and existing files are never overwritten.</td></tr>
   <tr><td><code>install</code></td><td>Vendor dependencies into <code>vendor/</code> and write <code>spider.lock</code> (git commits pinned, SHA-256 per dependency); verifies a registry package's <code>dist/sha256.txt</code> when present.</td></tr>
   <tr><td><code>dist [-o out] [--no-opt]</code></td><td>Compile the manifest entry into <code>target/&lt;package&gt;.matrixc</code>. Fails early if dependencies are declared but not installed.</td></tr>
-  <tr><td><code>pack [-o out.tar]</code></td><td>Archive <code>spider.toml</code> + <code>src/</code> into <code>dist/&lt;name&gt;-&lt;version&gt;.tar</code> and print the archive hash and <code>sha256(tree)</code>. At a workspace root, every member is packed.</td></tr>
-  <tr><td><code>unpack &lt;archive&gt; [dir]</code></td><td>Extract a packed project (path-traversal guarded). The default directory is the archive's file stem.</td></tr>
+  <tr><td><code>pack [-o out.tar]</code></td><td>Archive <code>spider.toml</code> + <code>src/</code> into a deterministic POSIX <code>ustar</code> tarball (<code>dist/&lt;name&gt;-&lt;version&gt;.tar</code>, with long-filename support) and print the archive hash and <code>sha256(tree)</code>. At a workspace root, every member is packed.</td></tr>
+  <tr><td><code>unpack &lt;archive&gt; [dir]</code></td><td>Extract a packed project (verifies header checksums, supports <code>ustar</code> prefix and GNU <code>@LongLink</code> names, and guards against path traversal). The default directory is the archive's file stem.</td></tr>
   <tr><td><code>version</code> · <code>help</code></td><td>Print version (<code>--version</code>, <code>-V</code>) or usage (<code>--help</code>, <code>-h</code>).</td></tr>
 </table>
 
@@ -1018,7 +1076,9 @@ serde   = { version = "^1.0" }                               # local registry ($
       <code>vendor/</code> and lockfile, with name-conflict detection.</li>
   <li><strong>Distribution:</strong> <code>dist</code> builds a self-contained
       <code>target/&lt;package&gt;.matrixc</code>; <code>pack</code>/<code>unpack</code> move source
-      projects as deterministic tarballs.</li>
+      projects as deterministic POSIX <code>ustar</code> tarballs (supporting long paths via the
+      155-byte <code>ustar</code> prefix and GNU <code>@LongLink</code> headers, with header checksum
+      verification).</li>
   <li><strong>Tests:</strong> inside a project, <code>spid3r test</code> differentially runs
       <code>tests/*.matrix</code> per member. Use <code>assert</code>/<code>assert_eq</code> so
       failures explain themselves.</li>
@@ -1028,7 +1088,7 @@ resolved transitively, so declare everything you use. See <a href="docs/REGISTRY
 
 <h2 id="tooling">Developer tools</h2>
 <div class="grid2">
-<div class="card"><span class="t">spid3r fmt</span>Canonical formatting in place. Its invariants are machine-checked: the output re-lexes to the identical token stream and formatting is idempotent. Comments and literals are preserved, and long lines wrap. Use <code>--check</code> in CI.</div>
+<div class="card"><span class="t">spid3r fmt</span>Canonical formatting in place. Its invariants are machine-checked: the output re-lexes to the identical token stream and formatting is idempotent (across both LF and CRLF checkouts). Comments and literals are preserved, and long lines wrap. Use <code>--check</code> in CI.</div>
 <div class="card"><span class="t">spid3r bench</span>Runs each benchmark in a fresh process, keeps the best of N runs, and verifies the output is stable across runs. <code>--compare</code> makes benchmarks double as differential tests.</div>
 <div class="card"><span class="t">spid3r repl</span>Interactive prompt with persistent globals. Statements need their <code>;</code>. Commands: <code>:help</code> (<code>:h</code>), <code>:reset</code>, <code>:quit</code> (<code>:q</code>).</div>
 <div class="card"><span class="t">spid3r debug</span>Line debugger over the VM. Set breakpoints with <code>--break 3,7</code>; script a session with <code>--commands FILE</code> (one command per line, <code>#</code> comments). When commands run out, the program runs to completion.</div>
@@ -1065,6 +1125,47 @@ what the test suite drives). See <a href="docs/GUI.md">docs/GUI.md</a> and
 Runtime operations go through trampolines that reuse the VM's value code, so native output matches
 the interpreters. A class declared inside a function is rejected with a clear diagnostic. See
 <a href="docs/NATIVE.md">docs/NATIVE.md</a> and <a href="docs/BUILDING.md">docs/BUILDING.md</a>.</p>
+
+<h2 id="workflow">Developer workflow</h2>
+<p>Whether you are building an application in Spid3r or contributing to the Spid3r compiler and runtime, these workflows cover the day-to-day loop.</p>
+<div class="grid2">
+  <div>
+    <h3>1. Building a Spid3r project</h3>
+    <pre data-lang="sh"><code># 1. Scaffold a project
+spid3r init myapp
+cd myapp
+
+# 2. Fast static check (types, arity, privacy)
+spid3r check src/main.matrix
+
+# 3. Run on tree-walk or bytecode VM
+spid3r run
+spid3r run --engine vm src/main.matrix
+
+# 4. Format and run project tests
+spid3r fmt src/main.matrix
+spid3r test
+
+# 5. Package as self-contained bytecode (.matrixc)
+spid3r dist</code></pre>
+  </div>
+  <div>
+    <h3>2. Contributing to the Spid3r toolchain</h3>
+    <pre data-lang="sh"><code># Build &amp; test zero-dependency core (no LLVM needed)
+cargo build --no-default-features
+cargo test --no-default-features
+
+# Test the headless GUI bridge
+cargo test --no-default-features --features gui --test gui_tests
+
+# Run the 3-way differential example suite
+cargo run --no-default-features -- test
+
+# Check formatting &amp; Clippy lints (matches CI)
+cargo run --no-default-features -- fmt --check
+cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
+  </div>
+</div>
 
 <h2 id="env">Environment &amp; exit codes</h2>
 <h3>Runtime variables</h3>
@@ -1161,7 +1262,7 @@ becomes a runtime error, never a panic.</div>
 
 <h2 id="testing">Testing &amp; QA</h2>
 <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-As of this revision, <code>cargo test</code> passes <strong>274 tests</strong> (<strong>264</strong> with
+As of this revision, <code>cargo test</code> passes <strong>282 tests</strong> (<strong>272</strong> with
 <code>--no-default-features</code> plus <strong>10</strong> GUI tests) and
 <code>spid3r test</code> reports <strong>23 ok, 0 failed</strong>.</p>
 <ul>
@@ -1170,22 +1271,26 @@ As of this revision, <code>cargo test</code> passes <strong>274 tests</strong> (
       Programs run on the tree interpreter, the VM, and compile + exec, and all three stdout streams
       must match. Libraries are semantic-checked.</li>
   <li><strong><code>cargo test</code></strong> runs unit tests per subsystem, integration tests, the
-      differential harness (<code>tests/difftest.rs</code>), and dedicated engine-parity regressions
+      differential harness (<code>tests/difftest.rs</code>), property/mutation fuzz suites
+      (<code>tests/fuzz_tests.rs</code>), and dedicated engine-parity regressions
       (<code>tests/audit_regressions.rs</code>). The regressions cover closure capture,
       per-iteration loop bindings, scope-exit slot release, nested upvalue descriptors, local named
       <code>fn</code> declarations, <code>finally</code> on <code>return</code>/<code>break</code>/<code>continue</code>,
-      cycle-safe container display/equality/cloning, self-argument collection operations, map index
-      assignment, file-op results, the task API, JSON round-trips, and RNG bounds.</li>
-  <li><strong><code>difftest.sh</code></strong> is a standalone shell version of the three-way comparison.</li>
-  <li><strong>Bytecode safety</strong> is unit-tested: invalid opcodes, truncation, huge count headers,
-      out-of-range pool references, negative jumps, and off-boundary jumps are all rejected cleanly.</li>
+      cycle-safe container display/equality/cloning, full-container cycle collection, self-argument
+      collection operations, map index assignment, file-op results, the task API, JSON round-trips,
+      <code>ustar</code> long-path archiving, and RNG bounds.</li>
+  <li><strong><code>tools/difftest.sh</code></strong> is a standalone shell version of the three-way comparison.</li>
+  <li><strong>Bytecode safety &amp; fuzzing</strong> are tested automatically: invalid opcodes, truncation,
+      huge count headers, out-of-range pool references, negative jumps, and off-boundary jumps are
+      all rejected cleanly, backed by deterministic mutation tests (<code>tests/fuzz_tests.rs</code>)
+      and <code>cargo-fuzz</code> targets (<code>fuzz/</code>).</li>
   <li><strong>GUI</strong> is tested headlessly: IPC decoding, JSON escaping and round-trips, event
       ordering, unknown-event dropping, payload fidelity, and queued JS (bridge unit tests plus the
       <code>spid3r gui --dry-run</code> replay). The native window itself is exercised manually.</li>
-  <li><strong>2026-10 audit.</strong> A full-repository audit probed edge semantics across all engines
+  <li><strong>2026-10 audit &amp; CI.</strong> A full-repository audit probed edge semantics across all engines
       and hardened the lexer, parser, semantic checker, bytecode format, VM closure/finally semantics,
-      collections, cycle GC, and packaging security, each with regression and fuzz tests. See
-      <a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a>.</li>
+      collections, cycle GC, and packaging security, enforced in cross-platform GitHub Actions CI
+      (<code>.github/workflows/ci.yml</code>). See <a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a>.</li>
 </ul>
 
 <!-- ============================================================ REFERENCE -->
