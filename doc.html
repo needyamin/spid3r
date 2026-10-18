@@ -270,6 +270,21 @@ default build, LLVM 18.1+. From the repository root:</p>
 <pre data-lang="sh"><code>cargo build                 # debug binary     -> target/debug/spid3r(.exe)
 cargo build --release       # optimized binary -> target/release/spid3r(.exe)
 cargo test                  # unit, integration, and differential tests</code></pre>
+<h3>Linux / macOS installer</h3>
+<p>On Linux and macOS you can skip the build entirely and use the one-line installer
+(plain POSIX <code>sh</code>; <code>curl</code> or <code>wget</code> is the only requirement):</p>
+<pre data-lang="sh"><code>curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | sh</code></pre>
+<p>The script detects your architecture (<code>x86_64</code> / <code>aarch64</code>), downloads the
+matching release tarball from GitHub, installs <code>spid3r</code> into
+<code>~/.spid3r/bin</code>, and adds that directory to your <code>PATH</code> in
+<code>~/.bashrc</code>, <code>~/.zshrc</code>, and <code>~/.profile</code> (it never writes a
+line that is already there). Supported options:</p>
+<pre data-lang="sh"><code>sh install.sh --version 0.1.0   # pin a release instead of latest
+sh install.sh --dir ~/.local/bin
+sh install.sh --source          # build from source via cargo (no release needed)</code></pre>
+<p><code>--dir</code> and the <code>SPID3R_INSTALL_DIR</code> environment variable override the
+install location. If no release asset exists for your platform yet, <code>--source</code>
+builds the toolchain from the Git repository with <code>cargo install --git</code>.</p>
 <h3>Backends</h3>
 <p>Both backends, the webview GUI (<code>gui</code>) and the LLVM compiler (<code>native</code>), are
 default Cargo features:</p>
