@@ -1,0 +1,24 @@
+// examples/channel.matrix - messages between tasks.
+fn main() {
+    let ch = channel();
+
+    // sender task: no spin, parks on the condvar when there is nothing to read
+    spawn fn() {
+        ch.send("done");
+    };
+
+    // recv waits and yields; it does not spin the worker
+    println(ch.recv());
+
+    // many messages, in order
+    let log = channel();
+    spawn fn() {
+        log.send("a");
+        log.send("b");
+        log.send("c");
+    };
+    println(log.recv());
+    println(log.recv());
+    println(log.recv());
+    return 0;
+}

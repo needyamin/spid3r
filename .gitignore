@@ -1,0 +1,61 @@
+# --- Rust build output -------------------------------------------------------
+# Full build tree (debug + release, ~5 GB with the optional features).
+/target/
+
+# NOTE: Cargo.lock is intentionally NOT ignored — this is a binary
+# application (the `spid3r` CLI), so the lockfile is committed for
+# reproducible builds.
+
+# --- Spid3r compile/link artifacts -------------------------------------------
+# Bytecode produced by `spid3r compile` (regenerable from the .matrix source).
+*.matrixc
+# Native AOT link intermediates and debug info next to built programs.
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+# The wry/tao and LLVM-C DLLs that build.rs copies next to binaries live under
+# target/ (already covered), but guard the root just in case.
+/LLVM-C.dll
+
+# --- Test/verification scratch ----------------------------------------------
+# tools/native_diff.sh writes built programs and logs here.
+target/isolated/
+
+# --- Audit workspace (2026-10 QA) --------------------------------------------
+# Probe transcripts and compiled probe bytecode are regenerable scratch;
+# probes, repros, and findings (*.matrix, *.md) are kept.
+audit/tmp/
+**/probe_out.txt
+
+# --- Spid3r project artifacts (created by init/install/dist/pack) ------------
+# Vendored dependencies are re-created by `spid3r install` from spider.lock.
+vendor/
+# Git checkouts for git dependencies.
+.spid3r/
+# dist/ holds packed tarballs and sha256 files (regenerable via pack).
+dist/
+
+# --- Local assistant workspace metadata --------------------------------------
+.zwork/
+.workbuddy-ai/
+
+# --- Editor / IDE ------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+.workbuddy-ai/
+.zwork/
+
+# --- OS cruft (Windows + OneDrive setup) -------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+# Office/OneDrive lock files and temp copies
+~$*
+.~lock.*#
+*.tmp

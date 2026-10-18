@@ -1,0 +1,5 @@
+// probe 13b: integer literal beyond i64 (isolated - may crash)
+fn main() {
+    println(99999999999999999999);
+    return 0;
+}

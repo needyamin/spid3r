@@ -1,0 +1,20 @@
+fn main() {
+    let m = map("a", 1, "b", 2);
+    m["c"] = 3;
+    println(m.len());
+    println(m.get("c"));
+    let w = write_file("probe_wf.txt", "hello");
+    println(w.is_ok());
+    let r = read_file("probe_wf.txt");
+    println(r.unwrap());
+    let bad = read_file("no_such_file_zz.txt");
+    println(bad.is_err());
+    let t = spawn fn() { return 41; };
+    println(t.status());
+    sleep_ms(50);
+    println(t.status());
+    println(t.join());
+    println(t.join());
+    try { let tf = spawn fn() { throw "boom"; }; sleep_ms(50); println(tf.status()); tf.join(); } catch (e) { println("caught " + e); }
+    return 0;
+}

@@ -1,0 +1,20 @@
+// examples/list.matrix - the indexed list.
+fn main() {
+    let numbers = list(10, 20, 30);
+    println(numbers.len());
+
+    numbers.push(40);
+    numbers.remove_at(1);
+    println(numbers);
+
+    println(numbers.contains(30));
+    println(numbers.get(0));
+
+    numbers.reverse();
+    numbers.sort();
+    println(numbers);
+
+    numbers.clear();
+    println(numbers.is_empty());
+    return 0;
+}

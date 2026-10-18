@@ -1,0 +1,28 @@
+// examples/functions.matrix - fn, return, recursion, closures, first-class fns.
+fn add(a, b) {
+    return a + b;
+}
+
+fn fact(n) {
+    if n <= 1 {
+        return 1;
+    }
+    return n * fact(n - 1);
+}
+
+fn main() {
+    println(add(10, 20));
+    println(fact(5));
+
+    // closures capture their defining scope
+    let base = 100;
+    let adder = fn(x) {
+        return x + base;
+    };
+    println(adder(5));
+
+    // first-class functions
+    let f = add;
+    println(f(1, 2));
+    return 0;
+}

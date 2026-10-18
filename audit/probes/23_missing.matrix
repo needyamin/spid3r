@@ -1,0 +1,6 @@
+// probe 23: missing import target (expected clean error)
+import "does_not_exist";
+
+fn main() {
+    return 0;
+}

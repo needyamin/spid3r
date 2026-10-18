@@ -1,0 +1,7 @@
+import "lib/util";
+import "./lib/util";
+
+fn main() {
+    println(twice(21));
+    return 0;
+}

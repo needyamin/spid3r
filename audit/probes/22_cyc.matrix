@@ -1,0 +1,6 @@
+import "cyc_a";
+
+fn main() {
+    println(aa());
+    return 0;
+}

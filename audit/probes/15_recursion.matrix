@@ -1,0 +1,12 @@
+// probe 15: deep recursion (isolated - may abort process)
+fn deep(n) {
+    if n == 0 {
+        return 0;
+    }
+    return 1 + deep(n - 1);
+}
+
+fn main() {
+    println(deep(10000));
+    return 0;
+}

@@ -1,0 +1,29 @@
+// examples/conditions.matrix - if / elif / else and truthiness.
+fn main() {
+    let score = 72;
+    if score >= 90 {
+        println("A");
+    } elif score >= 80 {
+        println("B");
+    } elif score >= 70 {
+        println("C");
+    } else {
+        println("F");
+    }
+
+    // truthiness: false, null, none, "", and 0 are false
+    if 0 {
+        println("never");
+    } else {
+        println("zero is false");
+    }
+    if "" {
+        println("never");
+    } else {
+        println("empty string is false");
+    }
+    if "x" {
+        println("non-empty string is true");
+    }
+    return 0;
+}

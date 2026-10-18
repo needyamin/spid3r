@@ -1,0 +1,63 @@
+// probe 08: higher-order list methods, snapshot semantics, composition
+fn main() {
+    let xs = list();
+    println(xs.reduce(0, fn(acc, x) {
+        return acc + x;
+    }));
+    println(xs.map(fn(x) {
+        return x;
+    }));
+    println(xs.filter(fn(x) {
+        return true;
+    }));
+    println(xs.all(fn(x) {
+        return false;
+    }));
+    println(xs.any(fn(x) {
+        return true;
+    }));
+
+    let ys = list(1, 2, 3);
+    let seen = list();
+    ys.for_each(fn(x) {
+        seen.push(x);
+    });
+    println(seen);
+
+    let src = list(1, 2, 3);
+    let snapshot_check = src.map(fn(x) {
+        src.push(x * 10);
+        return x;
+    });
+    println(src.len());
+    println(snapshot_check);
+
+    let n = list(-2, -1, 0, 1, 2);
+    println(n.filter(fn(x) {
+        return x > 0;
+    }));
+    println(n.reduce(100, fn(a, x) {
+        return a - x;
+    }));
+
+    let words = list("apple", "fig", "banana");
+    println(words.sorted());
+    println(words.map(fn(w) {
+        return w.len();
+    }));
+
+    fn compose(f, g) {
+        return fn(x) {
+            return f(g(x));
+        };
+    }
+    let inc = fn(x) {
+        return x + 1;
+    };
+    let dbl = fn(x) {
+        return x * 2;
+    };
+    println(compose(inc, dbl)(5));
+    println(compose(dbl, inc)(5));
+    return 0;
+}

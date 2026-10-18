@@ -1,0 +1,32 @@
+// probe 02: string semantics incl. unicode
+fn main() {
+    let s = "héllo";
+    println(len(s));
+    println(s.len());
+    println(s.slice(1, 3));
+    println(s.index_of("l"));
+    println(s.index_of("zz"));
+    println("abc".upper());
+    println("ABC".lower());
+    println("  x ".trim());
+    println("a,b,c".split(",")[1]);
+    println(list("a", "b").join("-"));
+    println("ab".repeat(3));
+    println("abc".reverse());
+    println("a={} b={}".format(1, "two"));
+    println("{{lit}}");
+    println("x" + 1 + 1.5 + true + null);
+    println("tab\tnl\\q");
+    println("a" < "b");
+    println("".is_empty());
+    println("abc".starts_with("ab"));
+    println("abc".ends_with("c"));
+    println("a-b-c".replace("-", "+"));
+    println("hi".pad_left(5, "."));
+    println("hi".pad_right(5, ".-"));
+    println(s.chars()[1]);
+    println(string(null));
+    println(string(true));
+    println("".len());
+    return 0;
+}

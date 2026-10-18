@@ -1,0 +1,23 @@
+// examples/loops.matrix - while, for-in, C-style for, break, continue.
+fn main() {
+    let i = 0;
+    while i < 3 {
+        println(i);
+        i = i + 1;
+    }
+
+    for x in[10, 20, 30] {
+        println(x);
+    }
+
+    for let k = 0; k < 5; k = k + 1 {
+        if k == 1 {
+            continue;
+        }
+        if k == 3 {
+            break;
+        }
+        println(k);
+    }
+    return 0;
+}

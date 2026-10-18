@@ -1,0 +1,1044 @@
+//! Recursive-descent parser with Pratt-style expression precedence.
+
+use crate::ast::*;
+use crate::diagnostics::{err_at, Phase, Span, SpidResult};
+use crate::lexer::token::{Keyword, Token, TokenKind};
+use std::sync::Arc;
+
+pub struct Parser {
+    toks: Vec<Token>,
+    pos: usize,
+}
+
+pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
+    let mut p = Parser { toks, pos: 0 };
+    p.parse_program()
+}
+
+impl Parser {
+    // ---- token helpers -------------------------------------------------
+
+    fn kind(&self) -> &TokenKind {
+        &self.toks[self.pos].kind
+    }
+
+    fn peek_kind(&self, n: usize) -> &TokenKind {
+        let i = (self.pos + n).min(self.toks.len() - 1);
+        &self.toks[i].kind
+    }
+
+    fn span(&self) -> Span {
+        self.toks[self.pos].span.clone()
+    }
+
+    fn prev_span(&self) -> Span {
+        self.toks[self.pos.saturating_sub(1)].span.clone()
+    }
+
+    fn at_kw(&self, kw: Keyword) -> bool {
+        matches!(self.kind(), TokenKind::Kw(k) if *k == kw)
+    }
+
+    fn eat_kw(&mut self, kw: Keyword) -> bool {
+        if self.at_kw(kw) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn at(&self, k: &TokenKind) -> bool {
+        self.kind() == k
+    }
+
+    fn eat(&mut self, k: &TokenKind) -> bool {
+        if self.at(k) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn expect(&mut self, k: &TokenKind, what: &str) -> SpidResult<()> {
+        if self.eat(k) {
+            Ok(())
+        } else {
+            Err(err_at(
+                Phase::Parser,
+                self.span(),
+                format!("expected {}, found {}", what, describe(self.kind())),
+            ))
+        }
+    }
+
+    fn expect_ident(&mut self) -> SpidResult<(String, Span)> {
+        match self.kind().clone() {
+            TokenKind::Ident(s) => {
+                let sp = self.span();
+                self.pos += 1;
+                Ok((s, sp))
+            }
+            TokenKind::Kw(Keyword::SelfKw) => {
+                let sp = self.span();
+                self.pos += 1;
+                Ok(("self".to_string(), sp))
+            }
+            _ => Err(err_at(
+                Phase::Parser,
+                self.span(),
+                format!("expected an identifier, found {}", describe(self.kind())),
+            )),
+        }
+    }
+
+    fn expect_kw(&mut self, kw: Keyword) -> SpidResult<Span> {
+        if self.at_kw(kw) {
+            let sp = self.span();
+            self.pos += 1;
+            Ok(sp)
+        } else {
+            Err(err_at(
+                Phase::Parser,
+                self.span(),
+                format!(
+                    "expected '{}', found {}",
+                    kw.as_str(),
+                    describe(self.kind())
+                ),
+            ))
+        }
+    }
+
+    fn err_here(&self, msg: impl Into<String>) -> crate::diagnostics::Diagnostic {
+        err_at(Phase::Parser, self.span(), msg)
+    }
+
+    // ---- program -------------------------------------------------------
+
+    fn parse_program(&mut self) -> SpidResult<Program> {
+        let mut stmts = Vec::new();
+        let mut seen_non_import = false;
+        while !self.at(&TokenKind::Eof) {
+            if self.at_kw(Keyword::Import) {
+                if seen_non_import {
+                    return Err(self.err_here("import must appear before other declarations"));
+                }
+                stmts.push(self.parse_import()?);
+            } else {
+                seen_non_import = true;
+                stmts.push(self.parse_declaration()?);
+            }
+        }
+        Ok(Program { stmts })
+    }
+
+    fn parse_import(&mut self) -> SpidResult<Stmt> {
+        let sp = self.expect_kw(Keyword::Import)?;
+        let path = match self.kind().clone() {
+            TokenKind::Str(s) => {
+                self.pos += 1;
+                s
+            }
+            _ => {
+                return Err(self
+                    .err_here("import expects a quoted module path, e.g. import \"math_util\";"))
+            }
+        };
+        self.expect(&TokenKind::Semi, "';' after import")?;
+        Ok(Stmt::Import { path, span: sp })
+    }
+
+    fn parse_declaration(&mut self) -> SpidResult<Stmt> {
+        // A module-level `public` / `private` may precede any declaration:
+        // fn, class, interface, const, or let. `private` is the default.
+        let mut vis = Vis::Private;
+        let mut had_vis = false;
+        if self.eat_kw(Keyword::Public) {
+            vis = Vis::Public;
+            had_vis = true;
+        } else if self.eat_kw(Keyword::Private) {
+            had_vis = true;
+        }
+        match self.kind() {
+            TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => {
+                Ok(Stmt::Fn(self.parse_fn(false, if had_vis { Some(vis) } else { None })?))
+            }
+            TokenKind::Kw(Keyword::Class) => Ok(Stmt::Class(self.parse_class(vis)?)),
+            TokenKind::Kw(Keyword::Interface) => Ok(Stmt::Interface(self.parse_interface(vis)?)),
+            TokenKind::Kw(Keyword::Let) | TokenKind::Kw(Keyword::Const) => {
+                let s = self.parse_statement()?;
+                // attach the visibility the declaration carried
+                Ok(match s {
+                    Stmt::Let {
+                        name,
+                        ty,
+                        value,
+                        span,
+                        ..
+                    } => Stmt::Let {
+                        vis,
+                        name,
+                        ty,
+                        value,
+                        span,
+                    },
+                    Stmt::Const {
+                        name,
+                        ty,
+                        value,
+                        span,
+                        ..
+                    } => Stmt::Const {
+                        vis,
+                        name,
+                        ty,
+                        value,
+                        span,
+                    },
+                    other => {
+                        if had_vis {
+                            return Err(self.err_here(
+                                "public/private must precede a fn, class, interface, const, or let",
+                            ));
+                        }
+                        other
+                    }
+                })
+            }
+            _ => {
+                if had_vis {
+                    return Err(self.err_here(
+                        "public/private must precede a fn, class, interface, const, or let",
+                    ));
+                }
+                self.parse_statement()
+            }
+        }
+    }
+
+    // ---- functions -----------------------------------------------------
+
+    /// `allow_anon` permits the nameless `fn(...) {...}` literal form.
+    /// `pre_vis` is the visibility already read by a caller (module-level
+    /// declarations); when None the keyword is read here (class bodies).
+    fn parse_fn(&mut self, allow_anon: bool, pre_vis: Option<Vis>) -> SpidResult<FnProto> {
+        let start = self.span();
+        let mut vis = pre_vis.unwrap_or(Vis::Private);
+        if pre_vis.is_none() {
+            if self.eat_kw(Keyword::Public) {
+                vis = Vis::Public;
+            } else if self.eat_kw(Keyword::Private) {
+                vis = Vis::Private;
+            }
+        }
+        let is_async = self.eat_kw(Keyword::Async);
+        self.expect_kw(Keyword::Fn)?;
+        let name = match self.kind().clone() {
+            TokenKind::Ident(s) => {
+                self.pos += 1;
+                Some(s)
+            }
+            TokenKind::Kw(Keyword::New) => {
+                // inside classes the constructor is `fn new(...)`
+                self.pos += 1;
+                Some("new".to_string())
+            }
+            _ if allow_anon && matches!(self.kind(), TokenKind::LParen) => None,
+            _ => {
+                return Err(self.err_here(format!(
+                    "expected a function name, found {}",
+                    describe(self.kind())
+                )))
+            }
+        };
+        if name.is_none() && !allow_anon {
+            return Err(self.err_here("a function declaration needs a name"));
+        }
+        let params = self.parse_params()?;
+        let ret = if self.eat(&TokenKind::Arrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let body = self.parse_block()?;
+        let span = join(start, body.span.clone());
+        Ok(FnProto {
+            vis,
+            is_async,
+            name,
+            params,
+            ret,
+            body,
+            span,
+        })
+    }
+
+    fn parse_params(&mut self) -> SpidResult<Vec<Param>> {
+        self.expect(&TokenKind::LParen, "'('")?;
+        let mut params = Vec::new();
+        if !self.at(&TokenKind::RParen) {
+            loop {
+                let sp = self.span();
+                let (name, _) = self.expect_ident()?;
+                let ty = if self.eat(&TokenKind::Colon) {
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+                params.push(Param { name, ty, span: sp });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RParen, "')'")?;
+        Ok(params)
+    }
+
+    fn parse_type(&mut self) -> SpidResult<TypeExpr> {
+        let (name, span) = self.expect_ident()?;
+        let arg = if self.eat(&TokenKind::Lt) {
+            let t = self.parse_type()?;
+            self.expect(&TokenKind::Gt, "'>'")?;
+            Some(Box::new(t))
+        } else {
+            None
+        };
+        Ok(TypeExpr { name, arg, span })
+    }
+
+    // ---- classes and interfaces ----------------------------------------
+
+    fn parse_class(&mut self, vis: Vis) -> SpidResult<ClassDecl> {
+        let start = self.expect_kw(Keyword::Class)?;
+        let (name, _) = self.expect_ident()?;
+        let parent = if self.eat_kw(Keyword::Extends) {
+            Some(self.expect_ident()?.0)
+        } else {
+            None
+        };
+        let mut interfaces = Vec::new();
+        if self.eat_kw(Keyword::Implements) {
+            interfaces.push(self.expect_ident()?.0);
+            while self.eat(&TokenKind::Comma) {
+                interfaces.push(self.expect_ident()?.0);
+            }
+        }
+        self.expect(&TokenKind::LBrace, "'{' to open the class body")?;
+        let mut fields = Vec::new();
+        let mut methods = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            if self.at(&TokenKind::Eof) {
+                return Err(self.err_here("unterminated class body"));
+            }
+            let vis = if self.eat_kw(Keyword::Public) {
+                Vis::Public
+            } else {
+                // `private` is the default; the keyword is optional and consumed
+                self.eat_kw(Keyword::Private);
+                Vis::Private
+            };
+            if self.eat_kw(Keyword::Let) {
+                let (fname, fspan) = self.expect_ident()?;
+                let ty = if self.eat(&TokenKind::Colon) {
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+                self.expect(&TokenKind::Semi, "';' after field declaration")?;
+                fields.push(FieldDecl {
+                    name: fname,
+                    vis,
+                    ty,
+                    span: fspan,
+                });
+            } else if self.at_kw(Keyword::Fn) || self.at_kw(Keyword::Async) {
+                let mut m = self.parse_fn(false, None)?;
+                // parse_fn consumed its own (absent) modifier; the class-level
+                // visibility wins.
+                m.vis = vis;
+                methods.push(m);
+            } else if self.at_kw(Keyword::New) {
+                // constructor shorthand: `new(params) { ... }`
+                let sp = self.expect_kw(Keyword::New)?;
+                let params = self.parse_params()?;
+                let body = self.parse_block()?;
+                let body_span = body.span.clone();
+                methods.push(FnProto {
+                    vis,
+                    is_async: false,
+                    name: Some("new".to_string()),
+                    params,
+                    ret: None,
+                    body,
+                    span: join(sp, body_span),
+                });
+            } else {
+                return Err(self.err_here(format!(
+                    "expected a field or method in class body, found {}",
+                    describe(self.kind())
+                )));
+            }
+        }
+        let end = self.expect_kw_rbrace()?;
+        Ok(ClassDecl {
+            vis,
+            name,
+            parent,
+            interfaces,
+            fields,
+            methods,
+            span: join(start, end),
+        })
+    }
+
+    fn expect_kw_rbrace(&mut self) -> SpidResult<Span> {
+        if self.eat(&TokenKind::RBrace) {
+            Ok(self.prev_span())
+        } else {
+            Err(self.err_here("expected '}'"))
+        }
+    }
+
+    fn parse_interface(&mut self, vis: Vis) -> SpidResult<InterfaceDecl> {
+        let start = self.expect_kw(Keyword::Interface)?;
+        let (name, _) = self.expect_ident()?;
+        self.expect(&TokenKind::LBrace, "'{' to open the interface body")?;
+        let mut methods = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            if self.at(&TokenKind::Eof) {
+                return Err(self.err_here("unterminated interface body"));
+            }
+            self.expect_kw(Keyword::Fn)?;
+            let (mname, mspan) = self.expect_ident()?;
+            let params = self.parse_params()?;
+            let ret = if self.eat(&TokenKind::Arrow) {
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            self.expect(&TokenKind::Semi, "';' after interface method")?;
+            methods.push((mname, params, ret, mspan));
+        }
+        let end = self.expect_kw_rbrace()?;
+        Ok(InterfaceDecl {
+            vis,
+            name,
+            methods,
+            span: join(start, end),
+        })
+    }
+
+    // ---- statements ----------------------------------------------------
+
+    fn parse_block(&mut self) -> SpidResult<Block> {
+        let start = self
+            .expect(&TokenKind::LBrace, "'{'")
+            .map(|()| self.prev_span())?;
+        let mut stmts = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            if self.at(&TokenKind::Eof) {
+                return Err(err_at(
+                    Phase::Parser,
+                    start,
+                    "unterminated block; expected '}'",
+                ));
+            }
+            stmts.push(self.parse_statement()?);
+        }
+        let end = self.expect_kw_rbrace()?;
+        Ok(Block {
+            stmts,
+            span: join(start, end),
+        })
+    }
+
+    fn parse_statement(&mut self) -> SpidResult<Stmt> {
+        match self.kind() {
+            TokenKind::Kw(Keyword::Let) => self.parse_let(true),
+            TokenKind::Kw(Keyword::Const) => self.parse_const(),
+            TokenKind::Kw(Keyword::If) => self.parse_if(),
+            TokenKind::Kw(Keyword::While) => self.parse_while(),
+            TokenKind::Kw(Keyword::For) => self.parse_for(),
+            TokenKind::Kw(Keyword::Return) => {
+                let sp = self.span();
+                self.pos += 1;
+                let value = if self.at(&TokenKind::Semi) {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
+                self.expect(&TokenKind::Semi, "';' after return")?;
+                Ok(Stmt::Return { value, span: sp })
+            }
+            TokenKind::Kw(Keyword::Break) => {
+                let sp = self.span();
+                self.pos += 1;
+                self.expect(&TokenKind::Semi, "';' after break")?;
+                Ok(Stmt::Break { span: sp })
+            }
+            TokenKind::Kw(Keyword::Continue) => {
+                let sp = self.span();
+                self.pos += 1;
+                self.expect(&TokenKind::Semi, "';' after continue")?;
+                Ok(Stmt::Continue { span: sp })
+            }
+            TokenKind::Kw(Keyword::Try) => self.parse_try(),
+            TokenKind::Kw(Keyword::Throw) => {
+                let sp = self.span();
+                self.pos += 1;
+                let value = self.parse_expr()?;
+                self.expect(&TokenKind::Semi, "';' after throw")?;
+                Ok(Stmt::Throw { value, span: sp })
+            }
+            TokenKind::Kw(Keyword::Spawn) => {
+                let sp = self.span();
+                self.pos += 1;
+                let callable = self.parse_expr()?;
+                self.expect(&TokenKind::Semi, "';' after spawn")?;
+                if matches!(callable, Expr::Fn(_)) {
+                    Ok(Stmt::Spawn { callable, span: sp })
+                } else {
+                    Err(self.err_here("spawn expects a function: spawn fn() { ... };"))
+                }
+            }
+            #[allow(unreachable_patterns)]
+            _ if false => unreachable!(),
+            TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
+            _ => {
+                let e = self.parse_expr()?;
+                self.expect(&TokenKind::Semi, "';' after expression")?;
+                Ok(Stmt::Expr(e))
+            }
+        }
+    }
+
+    fn parse_let(&mut self, with_semi: bool) -> SpidResult<Stmt> {
+        self.parse_let_inner(with_semi, true)
+    }
+
+    fn parse_let_inner(&mut self, with_semi: bool, eat_let: bool) -> SpidResult<Stmt> {
+        let sp = if eat_let {
+            self.expect_kw(Keyword::Let)?
+        } else {
+            self.prev_span()
+        };
+        let (name, _) = self.expect_ident()?;
+        let ty = if self.eat(&TokenKind::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let value = if self.eat(&TokenKind::Assign) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        if with_semi {
+            self.expect(&TokenKind::Semi, "';' after let")?;
+        }
+        Ok(Stmt::Let {
+            vis: Vis::Private,
+            name,
+            ty,
+            value,
+            span: sp,
+        })
+    }
+
+    fn parse_const(&mut self) -> SpidResult<Stmt> {
+        let sp = self.expect_kw(Keyword::Const)?;
+        let (name, _) = self.expect_ident()?;
+        let ty = if self.eat(&TokenKind::Colon) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Assign, "'=' in const declaration")?;
+        let value = self.parse_expr()?;
+        self.expect(&TokenKind::Semi, "';' after const")?;
+        Ok(Stmt::Const {
+            vis: Vis::Private,
+            name,
+            ty,
+            value,
+            span: sp,
+        })
+    }
+
+    fn parse_if(&mut self) -> SpidResult<Stmt> {
+        let sp = self.expect_kw(Keyword::If)?;
+        let cond = self.parse_expr()?;
+        let then = self.parse_block()?;
+        let mut elifs = Vec::new();
+        let mut els = None;
+        loop {
+            if self.eat_kw(Keyword::Elif) {
+                let c = self.parse_expr()?;
+                let b = self.parse_block()?;
+                elifs.push((c, b));
+            } else if self.eat_kw(Keyword::Else) {
+                els = Some(self.parse_block()?);
+                break;
+            } else {
+                break;
+            }
+        }
+        let span = join(sp, els.as_ref().unwrap_or(&then).span.clone());
+        Ok(Stmt::If {
+            cond,
+            then,
+            elifs,
+            els,
+            span,
+        })
+    }
+
+    fn parse_while(&mut self) -> SpidResult<Stmt> {
+        let sp = self.expect_kw(Keyword::While)?;
+        let cond = self.parse_expr()?;
+        let body = self.parse_block()?;
+        let span = join(sp, body.span.clone());
+        Ok(Stmt::While { cond, body, span })
+    }
+
+    fn parse_for(&mut self) -> SpidResult<Stmt> {
+        let sp = self.expect_kw(Keyword::For)?;
+        if matches!(self.peek_kind(1), TokenKind::Kw(Keyword::In)) {
+            let (var, _) = self.expect_ident()?;
+            self.expect_kw(Keyword::In)?;
+            let iter = self.parse_expr()?;
+            let body = self.parse_block()?;
+            let span = join(sp, body.span.clone());
+            return Ok(Stmt::ForIn {
+                var,
+                iter,
+                body,
+                span,
+            });
+        }
+        self.expect_kw(Keyword::Let)?;
+        let init = self.parse_let_inner(false, false)?;
+        self.expect(&TokenKind::Semi, "';' after for-init")?;
+        let cond = self.parse_expr()?;
+        self.expect(&TokenKind::Semi, "';' after for-condition")?;
+        let post = self.parse_expr()?;
+        let body = self.parse_block()?;
+        let span = join(sp, body.span.clone());
+        Ok(Stmt::ForC {
+            init: Box::new(init),
+            cond,
+            post,
+            body,
+            span,
+        })
+    }
+
+    fn parse_try(&mut self) -> SpidResult<Stmt> {
+        let sp = self.expect_kw(Keyword::Try)?;
+        let body = self.parse_block()?;
+        let catch = if self.eat_kw(Keyword::Catch) {
+            self.expect(&TokenKind::LParen, "'('")?;
+            let (name, _) = self.expect_ident()?;
+            self.expect(&TokenKind::RParen, "')'")?;
+            let cbody = self.parse_block()?;
+            Some(CatchClause {
+                name,
+                body: cbody,
+                span: sp.clone(),
+            })
+        } else {
+            None
+        };
+        let finally = if self.eat_kw(Keyword::Finally) {
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
+        if catch.is_none() && finally.is_none() {
+            return Err(err_at(
+                Phase::Parser,
+                sp,
+                "try needs a catch or a finally block",
+            ));
+        }
+        let end_span = finally
+            .as_ref()
+            .map(|f| f.span.clone())
+            .unwrap_or_else(|| body.span.clone());
+        let span = join(sp, end_span);
+        Ok(Stmt::Try {
+            body,
+            catch,
+            finally,
+            span,
+        })
+    }
+
+    // ---- expressions ---------------------------------------------------
+
+    pub fn parse_expr(&mut self) -> SpidResult<Expr> {
+        self.parse_assign()
+    }
+
+    fn parse_assign(&mut self) -> SpidResult<Expr> {
+        let left = self.parse_or()?;
+        let op = match self.kind() {
+            TokenKind::Assign => Some(AssignOp::Assign),
+            TokenKind::PlusEq => Some(AssignOp::AddAssign),
+            TokenKind::MinusEq => Some(AssignOp::SubAssign),
+            TokenKind::StarEq => Some(AssignOp::MulAssign),
+            TokenKind::SlashEq => Some(AssignOp::DivAssign),
+            TokenKind::PercentEq => Some(AssignOp::ModAssign),
+            _ => None,
+        };
+        if let Some(op) = op {
+            let sp = left.span().clone();
+            let target_is_ok = matches!(
+                &left,
+                Expr::Ident(_, _) | Expr::Index { .. } | Expr::Field { .. }
+            );
+            if !target_is_ok {
+                return Err(err_at(
+                    Phase::Parser,
+                    sp,
+                    "invalid assignment target; expected a variable or an index",
+                ));
+            }
+            self.pos += 1;
+            let value = self.parse_assign()?;
+            let span = join(sp, value.span().clone());
+            return Ok(Expr::Assign {
+                target: Box::new(left),
+                op,
+                value: Box::new(value),
+                span,
+            });
+        }
+        Ok(left)
+    }
+
+    fn parse_or(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_and()?;
+        while self.at_kw(Keyword::Or) {
+            self.pos += 1;
+            let right = self.parse_and()?;
+            let span = join(left.span().clone(), right.span().clone());
+            left = Expr::Logical {
+                op: LogOp::Or,
+                l: Box::new(left),
+                r: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_and(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_cmp()?;
+        while self.at_kw(Keyword::And) {
+            self.pos += 1;
+            let right = self.parse_cmp()?;
+            let span = join(left.span().clone(), right.span().clone());
+            left = Expr::Logical {
+                op: LogOp::And,
+                l: Box::new(left),
+                r: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_cmp(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_add()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::EqEq => BinOp::Eq,
+                TokenKind::BangEq => BinOp::Ne,
+                TokenKind::Lt => BinOp::Lt,
+                TokenKind::Le => BinOp::Le,
+                TokenKind::Gt => BinOp::Gt,
+                TokenKind::Ge => BinOp::Ge,
+                _ => break,
+            };
+            self.pos += 1;
+            let right = self.parse_add()?;
+            let span = join(left.span().clone(), right.span().clone());
+            left = Expr::Binary {
+                op,
+                l: Box::new(left),
+                r: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_add(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_mul()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::Plus => BinOp::Add,
+                TokenKind::Minus => BinOp::Sub,
+                _ => break,
+            };
+            self.pos += 1;
+            let right = self.parse_mul()?;
+            let span = join(left.span().clone(), right.span().clone());
+            left = Expr::Binary {
+                op,
+                l: Box::new(left),
+                r: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_mul(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_unary()?;
+        loop {
+            let op = match self.kind() {
+                TokenKind::Star => BinOp::Mul,
+                TokenKind::Slash => BinOp::Div,
+                TokenKind::Percent => BinOp::Mod,
+                _ => break,
+            };
+            self.pos += 1;
+            let right = self.parse_unary()?;
+            let span = join(left.span().clone(), right.span().clone());
+            left = Expr::Binary {
+                op,
+                l: Box::new(left),
+                r: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_unary(&mut self) -> SpidResult<Expr> {
+        let sp = self.span();
+        if self.at_kw(Keyword::Await) {
+            self.pos += 1;
+            let e = self.parse_unary()?;
+            let span = join(sp, e.span().clone());
+            return Ok(Expr::Await(Box::new(e), span));
+        }
+        if self.at_kw(Keyword::Spawn) {
+            self.pos += 1;
+            let callable = self.parse_unary()?;
+            let span = join(sp, callable.span().clone());
+            if !matches!(callable, Expr::Fn(_)) {
+                return Err(err_at(Phase::Parser, span, "spawn expects a function"));
+            }
+            return Ok(Expr::Spawn {
+                callable: Box::new(callable),
+                span,
+            });
+        }
+        if self.at_kw(Keyword::Not) {
+            self.pos += 1;
+            let e = self.parse_unary()?;
+            let span = join(sp, e.span().clone());
+            return Ok(Expr::Unary {
+                op: UnOp::Not,
+                expr: Box::new(e),
+                span,
+            });
+        }
+        if self.at(&TokenKind::Minus) {
+            self.pos += 1;
+            let e = self.parse_unary()?;
+            let span = join(sp, e.span().clone());
+            return Ok(Expr::Unary {
+                op: UnOp::Neg,
+                expr: Box::new(e),
+                span,
+            });
+        }
+        self.parse_postfix()
+    }
+
+    fn parse_postfix(&mut self) -> SpidResult<Expr> {
+        let mut e = self.parse_primary()?;
+        loop {
+            match self.kind() {
+                TokenKind::LParen => {
+                    let args = self.parse_args()?;
+                    let span = join(e.span().clone(), self.prev_span());
+                    e = Expr::Call {
+                        callee: Box::new(e),
+                        args,
+                        span,
+                    };
+                }
+                TokenKind::LBracket => {
+                    self.pos += 1;
+                    let idx = self.parse_expr()?;
+                    let end = self
+                        .expect(&TokenKind::RBracket, "']'")
+                        .map(|()| self.prev_span())?;
+                    let span = join(e.span().clone(), end);
+                    e = Expr::Index {
+                        object: Box::new(e),
+                        index: Box::new(idx),
+                        span,
+                    };
+                }
+                TokenKind::Dot => {
+                    self.pos += 1;
+                    let (name, nspan) = self.expect_ident()?;
+                    if self.at(&TokenKind::LParen) {
+                        let args = self.parse_args()?;
+                        let span = join(e.span().clone(), self.prev_span());
+                        e = Expr::Method {
+                            object: Box::new(e),
+                            name,
+                            args,
+                            span,
+                        };
+                    } else {
+                        let span = join(e.span().clone(), nspan);
+                        e = Expr::Field {
+                            object: Box::new(e),
+                            name,
+                            span,
+                        };
+                    }
+                }
+                _ => return Ok(e),
+            }
+        }
+    }
+
+    fn parse_args(&mut self) -> SpidResult<Vec<Expr>> {
+        self.expect(&TokenKind::LParen, "'('")?;
+        let mut args = Vec::new();
+        if !self.at(&TokenKind::RParen) {
+            loop {
+                args.push(self.parse_expr()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RParen, "')'")?;
+        Ok(args)
+    }
+
+    fn parse_primary(&mut self) -> SpidResult<Expr> {
+        let sp = self.span();
+        let kind = self.kind().clone();
+        match kind {
+            TokenKind::Int(v) => {
+                self.pos += 1;
+                Ok(Expr::Int(v, sp))
+            }
+            TokenKind::Float(v) => {
+                self.pos += 1;
+                Ok(Expr::Float(v, sp))
+            }
+            TokenKind::Str(s) => {
+                self.pos += 1;
+                Ok(Expr::Str(s, sp))
+            }
+            TokenKind::Kw(Keyword::True) => {
+                self.pos += 1;
+                Ok(Expr::Bool(true, sp))
+            }
+            TokenKind::Kw(Keyword::False) => {
+                self.pos += 1;
+                Ok(Expr::Bool(false, sp))
+            }
+            TokenKind::Kw(Keyword::Null) => {
+                self.pos += 1;
+                Ok(Expr::Null(sp))
+            }
+            TokenKind::Kw(Keyword::SelfKw) => {
+                self.pos += 1;
+                Ok(Expr::Ident("self".to_string(), sp))
+            }
+            TokenKind::Ident(name) => {
+                self.pos += 1;
+                Ok(Expr::Ident(name, sp))
+            }
+            TokenKind::Kw(Keyword::New) => {
+                self.pos += 1;
+                let (class, _) = self.expect_ident()?;
+                let args = self.parse_args()?;
+                let span = join(sp, self.prev_span());
+                Ok(Expr::New { class, args, span })
+            }
+            TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => {
+                let proto = self.parse_fn(true, None)?;
+                Ok(Expr::Fn(Box::new(proto)))
+            }
+            TokenKind::LBracket => {
+                self.pos += 1;
+                let mut items = Vec::new();
+                if !self.at(&TokenKind::RBracket) {
+                    loop {
+                        items.push(self.parse_expr()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                }
+                let end = self
+                    .expect(&TokenKind::RBracket, "']'")
+                    .map(|()| self.prev_span())?;
+                let span = join(sp, end);
+                Ok(Expr::List(items, span))
+            }
+            TokenKind::LParen => {
+                self.pos += 1;
+                let e = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "')'")?;
+                Ok(e)
+            }
+            _ => Err(self.err_here(format!("unexpected {}", describe(&kind)))),
+        }
+    }
+}
+
+fn describe(k: &TokenKind) -> String {
+    match k {
+        TokenKind::Eof => "end of file".to_string(),
+        TokenKind::Kw(kw) => format!("keyword '{}'", kw.as_str()),
+        TokenKind::Ident(s) => format!("'{}'", s),
+        TokenKind::Int(v) => format!("integer {}", v),
+        TokenKind::Float(v) => format!("number {}", v),
+        TokenKind::Str(s) => format!("string \"{}\"", s),
+        TokenKind::Assign => "'='".to_string(),
+        TokenKind::Semi => "';'".to_string(),
+        TokenKind::RParen => "')'".to_string(),
+        TokenKind::RBrace => "'}'".to_string(),
+        TokenKind::RBracket => "']'".to_string(),
+        TokenKind::LParen => "'('".to_string(),
+        TokenKind::LBrace => "'{'".to_string(),
+        other => format!("{:?}", other),
+    }
+}
+
+fn join(a: Span, b: Span) -> Span {
+    // Span a composite node from a's start to b's end. b's length is its own
+    // token width, so b's end column is `b.col + b.len`; the composite length is
+    // the distance from a's start to that end. For multi-line spans only the
+    // start position is meaningful, so we keep a's own length.
+    if b.line >= a.line {
+        let end_col = b.col.saturating_add(b.len);
+        let len = end_col.saturating_sub(a.col).max(1);
+        Span::new(a.file, a.line, a.col, len)
+    } else {
+        Span::new(a.file, a.line, a.col, a.len.max(1))
+    }
+}
+
+pub fn parse_file(src: &str, file: Arc<str>) -> SpidResult<Program> {
+    let toks = crate::lexer::Lexer::new(src, file).tokenize()?;
+    parse(toks)
+}

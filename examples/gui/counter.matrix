@@ -1,0 +1,40 @@
+// examples/gui/counter.matrix — a counter GUI: the page emits "click", the
+// handler bumps the count and pushes the new label back into the page.
+//
+//   spid3r gui examples/gui/counter.matrix             open the window
+//   spid3r gui examples/gui/counter.matrix --dry-run   replay without a window
+//
+// GUI programs live in examples/gui/ on purpose: they need the `gui` feature
+// and a window, so `spid3r test` and the differential suite (which run every
+// flat examples/*.matrix on all three engines) do not pick them up.
+
+let clicks = 0;
+
+fn set_count() {
+    let label = "clicks: " + string(clicks);
+    gui_eval("document.getElementById('count').textContent = " + json_write(label) + ";");
+}
+
+fn on_ready(event, payload) {
+    // The page is up: build the UI. The button emits "click" back into the
+    // program through window.spid3r.emit.
+    gui_set_html("<button id=\"go\" onclick=\"window.spid3r.emit('click','go')\">click me</button> <span id=\"count\"></span>");
+    set_count();
+    return null;
+}
+
+fn on_click(event, payload) {
+    clicks = clicks + 1;
+    set_count();
+    return null;
+}
+
+fn main() {
+    gui_title("spid3r gui - counter");
+    gui_on("ready", on_ready);
+    gui_on("click", on_click);
+    // Two synthetic clicks so the dry-run output is deterministic.
+    gui_emit("click", "go");
+    gui_emit("click", "go");
+    return 0;
+}

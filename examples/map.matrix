@@ -1,0 +1,25 @@
+// examples/map.matrix - insertion-ordered map with typed keys.
+fn main() {
+    let blame = map();
+    blame.set("prod", "Rahim");
+    blame.set("staging", "Karim");
+    println(blame.get("prod"));
+    println(blame.contains("staging"));
+    println(blame.len());
+
+    println(blame.keys());
+    println(blame.values());
+
+    blame.remove("prod");
+    // a missing key is an error, not a silent null
+    try {
+        println(blame.get("prod"));
+    } catch(e) {
+        println("caught: " + e);
+    }
+
+    // int and bool keys work; floats are rejected
+    let ports = map(80, "http", 443, "https");
+    println(ports.get(443));
+    return 0;
+}

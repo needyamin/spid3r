@@ -1,0 +1,101 @@
+# Dependency registry
+
+A **registry dependency** lets a project pull a package by *name + version
+constraint* instead of a path or git URL. It reuses the same vendoring and
+`spider.lock` machinery as path/git dependencies — only the *resolution* step is
+new.
+
+```toml
+# spider.toml
+[dependencies]
+strlib = { version = "^1.2" }              # from the default registry
+internal = { version = "1.0", registry = "internal" }  # from a named sub-registry
+```
+
+`spid3r install` resolves each registry dependency, vendors its `src/` tree into
+`vendor/<name>/`, and pins `source = "registry+<resolved-version>"` plus the
+content SHA-256 in `spider.lock`. Re-running `install` is idempotent.
+
+## The registry is a local directory (no network)
+
+A registry is a directory named by the **`SPID3R_REGISTRY`** environment
+variable. This keeps the default build zero-dependency and offline-safe: the
+registry is just files on disk (a committed index, a shared drive, or a `file://`
+tree you keep locally). There is no built-in HTTP client and no default remote
+registry — if `SPID3R_REGISTRY` is unset, a registry dependency fails with a
+clear message telling you to set it.
+
+### Layout
+
+```
+$SPID3R_REGISTRY/
+  mathlib/
+    1.0.0/
+      spider.toml          # [package] name/version/entry
+      src/lib.matrix
+      sha256.txt           # optional: expected hash of this package's src/ tree
+    1.2.0/
+      spider.toml
+      src/lib.matrix
+      sha256.txt
+  strlib/
+    2.0.0/
+      ...
+```
+
+- Each package is a directory `<name>/`, with one subdirectory per version.
+- Version directory names must be `major.minor.patch` (or `major.minor`); the
+  highest version satisfying the constraint is chosen.
+- A package directory is exactly a normal Spid3r package: a `spider.toml` plus a
+  `src/` tree (the same thing `spid3r pack` produces).
+- **`sha256.txt`** (optional) is an integrity guard: if present, `install`
+  compares it against the SHA-256 of the vendored `src/` tree and fails on
+  mismatch. `spid3r pack` prints the hash you can paste here.
+
+### Named sub-registries
+
+`registry = "internal"` looks under `$SPID3R_REGISTRY/internal/<name>/…`,
+letting one `SPID3R_REGISTRY` host several registries. Omit it for the default
+(`$SPID3R_REGISTRY/<name>/…`).
+
+## Version constraints
+
+Same grammar as path/git dependencies (`src/pkg`):
+
+| Form | Meaning |
+| --- | --- |
+| `^1.2` / `^1.2.3` | same major, at least the given minor/patch |
+| `>=1.2.3` | at least this version |
+| `=1.2.3` or bare `1.2.3` | exactly this version |
+
+The chosen directory's `spider.toml` version must also satisfy the constraint
+(checked after resolution, exactly like a path dependency).
+
+## What it does not do (v1)
+
+- **No network fetch.** Point `SPID3R_REGISTRY` at a local/checked-out tree. A
+  remote index + download is a deliberate future step (it needs an HTTP client,
+  which the zero-dependency default avoids).
+- **No transitive resolution.** Like path/git deps, only the *declared*
+  dependencies are vendored; a registry package's own `[dependencies]` are not
+  recursively installed. Declare what you use in your own manifest.
+- **No semver pre-releases / build metadata** — plain `major.minor.patch`.
+
+## Example
+
+```bash
+export SPID3R_REGISTRY=/srv/spid3r-registry     # a directory laid out as above
+spid3r install                                  # resolves { version = "^1.2" }
+spid3r run src/main.matrix
+```
+
+`spider.lock` then records, e.g.:
+
+```
+[[package]]
+name = "mathlib"
+version = "1.2.0"
+source = "registry+1.2.0"
+files = 1
+sha256 = "…"
+```

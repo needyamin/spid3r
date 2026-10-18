@@ -1,0 +1,46 @@
+// probe 01: arithmetic semantics
+fn main() {
+    println(1 + 2 * 3);
+    println((1 + 2) * 3);
+    println(10 / 3);
+    println(-10 / 3);
+    println(10 % 3);
+    println(-10 % 3);
+    println(10 % -3);
+    println(10.0 / 4);
+    println(1 == 1.0);
+    println(1 < 1.5);
+    println(0.1 + 0.2);
+    println(3 - -2);
+    println(-3 * -3);
+    try {
+        println(10 / 0);
+    } catch (e) {
+        println("div0: " + string(e));
+    }
+    try {
+        println(10.0 / 0.0);
+    } catch (e) {
+        println("fdiv0: " + string(e));
+    }
+    try {
+        println(10 % 0);
+    } catch (e) {
+        println("mod0: " + string(e));
+    }
+    println(min(2, 2.0));
+    println(max(-1.5, -1));
+    println(abs(-5));
+    println(abs(-5.5));
+    println(sqrt(16));
+    println(pow(2, 10));
+    println(pow(2.0, 0.5));
+    println(pow(2, -1));
+    println(int(3.99));
+    println(int(-3.99));
+    println(float(3));
+    println(bool(0));
+    println(bool(""));
+    println(bool(0.0));
+    return 0;
+}

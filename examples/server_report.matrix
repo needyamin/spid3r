@@ -1,0 +1,46 @@
+// examples/server_report.matrix - a server-side CLI: read log lines from
+// stdin, aggregate per level, emit a summary. With SPID3R_REPORT set it also
+// writes the summary to that path (file I/O), which keeps the example
+// hermetic for the differential test suite.
+fn main() {
+    let counts = map();
+    counts.set("info", 0);
+    counts.set("warn", 0);
+    counts.set("error", 0);
+    let total = 0;
+
+    // stream stdin until EOF (read_line returns null at end of input)
+    while true {
+        let line = read_line();
+        if line == null {
+            break;
+        }
+        if line == "" {
+            continue;
+        }
+        total = total + 1;
+        if line.contains("ERROR") {
+            counts.set("error", counts.get("error") + 1);
+        } elif line.contains("WARN") {
+            counts.set("warn", counts.get("warn") + 1);
+        } else {
+            counts.set("info", counts.get("info") + 1);
+        }
+    }
+
+    println("lines: " + string(total));
+    println("info: " + string(counts.get("info")));
+    println("warn: " + string(counts.get("warn")));
+    println("error: " + string(counts.get("error")));
+
+    // optional report file (server deployments redirect output)
+    let out = env("SPID3R_REPORT");
+    if out.is_some() {
+        let path = out.unwrap();
+        let body = "lines=" + string(total) + " info=" + string(counts.get("info"))
+        + " warn=" + string(counts.get("warn")) + " error=" + string(counts.get("error"));
+        write_file(path, body);
+        println("report written");
+    }
+    return 0;
+}

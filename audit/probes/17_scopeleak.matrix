@@ -1,0 +1,7 @@
+// probe 17: does a for-in loop variable leak into the enclosing scope?
+fn main() {
+    for i in[1, 2, 3] {
+    }
+    println(i);
+    return 0;
+}

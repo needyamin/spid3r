@@ -1,0 +1,21 @@
+// examples/heap.matrix - min-heap, plus a stable priority queue.
+fn main() {
+    let h = heap("min");
+    h.push(5);
+    h.push(1);
+    h.push(3);
+    println(h.peek());
+    println(h.pop());
+    println(h.pop());
+    println(h.pop());
+
+    // priority_queue breaks ties by arrival order; heap does not promise that
+    let pq = priority_queue();
+    pq.push("first", 1);
+    pq.push("second", 1);
+    pq.push("urgent", 0);
+    println(pq.pop());
+    println(pq.pop());
+    println(pq.pop());
+    return 0;
+}

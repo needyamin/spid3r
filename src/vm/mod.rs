@@ -1,0 +1,1930 @@
+//! The Spid3r bytecode virtual machine.
+//!
+//! A register-free stack machine: each `CallFrame` owns a `slots` vector that
+//! doubles as its operand stack and its locals (clox style). Calls push a new
+//! frame and `continue` the main loop; `OpReturn` pops the frame. Closures are
+//! `Arc<VmFunc>` carrying `UpvalueCell`s so they remain `Send` and correct
+//! across spawned tasks. All value operations (construct, method dispatch,
+//! indexing, length, iteration, equality, display) are delegated to the shared
+//! `value::collections` layer, keeping the VM semantically identical to the
+//! tree-walk interpreter.
+
+pub(crate) mod bytecode;
+mod compiler;
+mod debug;
+mod opt;
+
+pub use debug::{DebugState, StepMode, DEBUG_QUIT};
+pub use opt::{optimize_script, OptStats};
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use crate::ast::{BinOp, Program, UnOp};
+use crate::diagnostics::{Diagnostic, Phase, Span};
+use crate::modules::ModuleCache;
+use crate::parser;
+use crate::sched::Scheduler;
+use crate::semantic;
+use crate::value::collections;
+use crate::value::{
+    new_ref, truthy, type_name, values_equal, NativeCtx, NativeFn, UpvalueCell,
+    Value, VmClass, VmFunc, VmInstanceData,
+};
+use crate::vm::bytecode::*;
+pub use crate::vm::compiler::{compile_program, compile_program_unoptimized};
+
+/// Modules embedded by the compiler (keyed by import literal) so `exec` can run a
+/// `.matrixc` without re-reading source: the compiled script function plus the
+/// list of its exported public names.
+type EmbeddedModules = Arc<Mutex<HashMap<String, (Arc<VmFunc>, Vec<String>)>>>;
+
+/// Maximum Spid3r call depth before the VM reports a stack overflow.
+pub const MAX_CALL_DEPTH: usize = 1_000;
+
+/// A runtime error. `thrown` carries the user value for `throw`; `trace` is
+/// the runtime call stack captured when the error surfaces (see
+/// `capture_trace`).
+#[derive(Clone, Debug)]
+struct VmError {
+    thrown: Option<Value>,
+    message: String,
+    span: Span,
+    trace: Vec<crate::diagnostics::TraceFrame>,
+}
+
+impl VmError {
+    fn to_diag(&self) -> Diagnostic {
+        Diagnostic {
+            phase: Phase::Vm,
+            message: self.message.clone(),
+            span: Some(self.span.clone()),
+            thrown: self.thrown.clone(),
+            trace: self.trace.clone(),
+        }
+    }
+
+    /// The string a spawned task's error carries across the task boundary:
+    /// the user-thrown value when there is one (so `join`/`await` rethrow
+    /// surfaces `boom`, not a generic "uncaught throw"), else the message.
+    fn task_error_string(&self) -> String {
+        match &self.thrown {
+            Some(v) => crate::value::display_value(v),
+            None => self.message.clone(),
+        }
+    }
+}
+
+/// Where a `try` handler currently is in its lifecycle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HandlerPhase {
+    Try,
+    Catch,
+    Finally,
+}
+
+struct Handler {
+    has_catch: bool,
+    catch_slot: u8,
+    catch_target: usize,
+    finally_target: usize,
+    stack_len: usize,
+    frame_depth: usize,
+    phase: HandlerPhase,
+}
+
+/// One function activation.
+struct CallFrame {
+    func: Arc<VmFunc>,
+    ip: usize,
+    slots: Vec<Value>,
+    /// Captured locals: slot index -> shared cell. Created lazily on first
+    /// capture so reads/writes of that local stay in sync after the frame
+    /// returns and across tasks.
+    captured: HashMap<usize, UpvalueCell>,
+    /// Per-activation cells for this function's OWN captured locals (indices
+    /// `[0..func.own_upvalues]`). Fresh on every call so two activations of
+    /// the same closure never share captured state (recursion, repeated
+    /// calls); the enclosing-captured cells live on the `VmFunc` instance in
+    /// `func.upvalues[own..]` and are shared intentionally.
+    own_cells: Vec<UpvalueCell>,
+    /// Mutexes locked in this frame (released on return, like `finally`).
+    guards: Vec<Arc<Mutex<crate::sched::MutexData>>>,
+    /// When `Some`, `OpReturn` from this frame pushes this value instead of
+    /// the function's own return (used by class constructors).
+    ctor_result: Option<Value>,
+}
+
+/// The virtual machine.
+pub struct Vm {
+    globals: Arc<Mutex<HashMap<String, Value>>>,
+    sched: Arc<Scheduler>,
+    modules: Arc<Mutex<ModuleCache>>,
+    file: Arc<str>,
+    module_dirs: Vec<PathBuf>,
+    /// Modules embedded by the compiler, keyed by the import literal, so that
+    /// `exec` can run a `.matrixc` without re-reading any `.matrix` source.
+    embedded: EmbeddedModules,
+    frames: Vec<CallFrame>,
+    handlers: Vec<Handler>,
+    error: Option<VmError>,
+    reraise: Option<VmError>,
+    depth: usize,
+    /// When non-zero, `run` returns as soon as the frame stack shrinks back to
+    /// this depth (used by synchronous callback calls: `list.map(f)` pushes a
+    /// frame for `f`, runs to this depth, and takes its return value).
+    stop: usize,
+    /// Active debugger session (`spid3r debug`); `None` in normal runs.
+    debug: Option<DebugState>,
+    /// Monomorphic inline cache for `Invoke` on instances: keyed by
+    /// (chunk address, instruction offset) → (class identity, resolved
+    /// method). The class check makes it safe when a site sees several
+    /// classes; `clear()` keeps the table bounded.
+    invoke_cache: HashMap<(usize, usize), InvokeCache>,
+}
+
+/// One inline-cache entry: the class the method was resolved on (by `Arc`
+/// identity, so redefining a class invalidates the entry) and the method.
+///
+/// `_chunk` is a lifetime pin: it keeps the cached site's chunk alive for as
+/// long as the entry exists, so the `(chunk address, ip)` key can never be
+/// confused by a freed chunk whose address was reused by a different one.
+struct InvokeCache {
+    _chunk: Arc<Chunk>,
+    class: usize,
+    func: Arc<VmFunc>,
+}
+
+impl Vm {
+    /// Create a VM with its own globals (natives + `Object`) and module cache.
+    pub fn new(file: Arc<str>, module_dirs: Vec<PathBuf>) -> Self {
+        let mut vm = Vm {
+            globals: Arc::new(Mutex::new(HashMap::new())),
+            sched: Scheduler::shared(),
+            modules: Arc::new(Mutex::new(ModuleCache::new())),
+            file,
+            module_dirs,
+            embedded: Arc::new(Mutex::new(HashMap::new())),
+            frames: Vec::new(),
+            handlers: Vec::new(),
+            error: None,
+            reraise: None,
+            depth: 0,
+            stop: 0,
+            debug: None,
+            invoke_cache: HashMap::new(),
+        };
+        vm.install_stdlib();
+        vm
+    }
+
+    /// A VM that shares globals/scheduler/module cache with another (used for
+    /// spawned tasks and imported modules).
+    fn with_shared(
+        globals: Arc<Mutex<HashMap<String, Value>>>,
+        sched: Arc<Scheduler>,
+        modules: Arc<Mutex<ModuleCache>>,
+        embedded: EmbeddedModules,
+        file: Arc<str>,
+        module_dirs: Vec<PathBuf>,
+    ) -> Self {
+        Vm {
+            globals,
+            sched,
+            modules,
+            embedded,
+            file,
+            module_dirs,
+            frames: Vec::new(),
+            handlers: Vec::new(),
+            error: None,
+            reraise: None,
+            depth: 0,
+            stop: 0,
+            debug: None,
+            invoke_cache: HashMap::new(),
+        }
+    }
+
+    fn install_stdlib(&mut self) {
+        for (name, func) in crate::stdlib::native_defs() {
+            let native = NativeFn { name, func };
+            self.globals
+                .lock()
+                .unwrap()
+                .insert(name.to_string(), Value::Native(Arc::new(native)));
+        }
+        let object = Arc::new(VmClass {
+            name: "Object".to_string(),
+            parent: None,
+            fields: Vec::new(),
+            methods: HashMap::new(),
+            ctor: None,
+        });
+        self.globals
+            .lock()
+            .unwrap()
+            .insert("Object".to_string(), Value::VClass(object));
+    }
+
+    // --------------------------------------------------------- top-level run
+
+    /// Run a program file: top-level statements, then `main`. Returns the
+    /// process exit code.
+    pub fn run_program(&mut self, program: &Program) -> Result<i32, Diagnostic> {
+        let (script, _public) =
+            compile_program(program, self.file.as_ref(), &self.module_dirs)?;
+        self.run_compiled(Arc::new(script))
+    }
+
+    /// Run a script function that has already been compiled (e.g. loaded from a
+    /// `.matrixc` file by `exec`). Mirrors the tail of `run_program`.
+    pub fn run_compiled(&mut self, script: Arc<VmFunc>) -> Result<i32, Diagnostic> {
+        // Populate the embedded-module table so `import` inside the program can
+        // resolve from the self-contained `.matrixc` without re-reading source.
+        {
+            let mut emb = self.embedded.lock().unwrap();
+            for m in &script.chunk.modules {
+                emb.insert(m.key.clone(), (m.func.clone(), m.public.clone()));
+            }
+        }
+        validate_chunk(&script.chunk)?;
+        self.call_vfunc_frame(script, Vec::new())
+            .map_err(|e| e.to_diag())?;
+        let _ = self.run().map_err(|e| e.to_diag())?;
+        let main = self.globals.lock().unwrap().get("main").cloned();
+        match main {
+            Some(Value::VFunc(f)) => {
+                self.call_vfunc_frame(f, Vec::new()).map_err(|e| e.to_diag())?;
+                let ret = self.run().map_err(|e| e.to_diag())?;
+                match ret {
+                    Value::Int(i) => Ok(i as i32),
+                    _ => Ok(0),
+                }
+            }
+            Some(_) => Err(Diagnostic::new(
+                Phase::Semantic,
+                "main must be a function: fn main() { ... }",
+            )),
+            None => Err(Diagnostic::new(
+                Phase::Semantic,
+                "this program has no fn main; add one to run it as a program",
+            )),
+        }
+    }
+
+    /// Run a module: top-level statements only, then collect its public names.
+    fn run_module(&mut self, program: &Program) -> Result<Vec<(String, Value, bool)>, Diagnostic> {
+        let (script, public) =
+            compile_program(program, self.file.as_ref(), &self.module_dirs)?;
+        // Mirror `run_compiled`: expose any embedded modules to the import path.
+        {
+            let mut emb = self.embedded.lock().unwrap();
+            for m in &script.chunk.modules {
+                emb.insert(m.key.clone(), (m.func.clone(), m.public.clone()));
+            }
+        }
+        validate_chunk(&script.chunk)?;
+        self.call_vfunc_frame(Arc::new(script), Vec::new())
+            .map_err(|e| e.to_diag())?;
+        let _ = self.run().map_err(|e| e.to_diag())?;
+        // Const-ness of public bindings, from the module AST (mirrors the
+        // tree runner's export flags).
+        let consts: HashSet<String> = program
+            .stmts
+            .iter()
+            .filter_map(|s| match s {
+                crate::ast::Stmt::Const { name, vis, .. }
+                    if *vis == crate::ast::Vis::Public =>
+                {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let g = self.globals.lock().unwrap();
+        let mut exports = Vec::new();
+        for name in public {
+            if let Some(v) = g.get(&name) {
+                let c = consts.contains(&name);
+                exports.push((name, v.clone(), c));
+            }
+        }
+        Ok(exports)
+    }
+
+    /// Run a single function to completion (used by spawned tasks).
+    fn run_function(&mut self, fd: Arc<VmFunc>, args: Vec<Value>) -> Result<Value, VmError> {
+        self.call_vfunc_frame(fd, args)?;
+        self.run()
+    }
+
+    /// Call a Spid3r function value synchronously and return its result. Used
+    /// by higher-order collection methods (`list.map(f)` and friends): the
+    /// callback runs as a frame in THIS vm (sharing globals, scheduler and
+    /// upvalue cells) and `run` returns as soon as the frame stack shrinks
+    /// back to the current depth. Handler/depth state is deliberately NOT
+    /// reset, so a `try` around the call still catches a callback's `throw`.
+    fn call_value_sync(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmError> {
+        match f {
+            Value::VFunc(fd) => {
+                let saved = self.stop;
+                self.stop = self.frames.len();
+                let r = self
+                    .call_vfunc_frame(fd.clone(), args)
+                    .and_then(|_| self.run_loop());
+                self.stop = saved;
+                r
+            }
+            Value::Native(n) => {
+                let ctx = crate::value::NativeCtx {
+                    sched: self.sched.clone(),
+                };
+                (n.func)(&ctx, args).map_err(|m| VmError {
+                    thrown: None,
+                    message: m,
+                    span: self.cur_span(),
+                    trace: Vec::new(),
+                })
+            }
+            other => Err(VmError {
+                thrown: None,
+                message: format!("{} is not callable", type_name(other)),
+                span: self.cur_span(),
+                trace: Vec::new(),
+            }),
+        }
+    }
+
+    // ----------------------------------------------------------- the loop
+
+    /// Start a fresh top-level run: clear error state and execute until the
+    /// frame stack is empty (or until `stop` is reached, for nested sync calls).
+    fn run(&mut self) -> Result<Value, VmError> {
+        if self.stop == 0 {
+            self.handlers.clear();
+            self.error = None;
+            self.reraise = None;
+            self.depth = 0;
+        }
+        self.run_loop()
+    }
+
+    fn run_loop(&mut self) -> Result<Value, VmError> {
+        loop {
+            if let Some(mut err) = self.error.take() {
+                // Capture the runtime call stack while the frames are still
+                // alive: this is the single funnel every VM error passes
+                // through, so attaching the trace here covers all of them.
+                if err.trace.is_empty() {
+                    err.trace = self.capture_trace();
+                }
+                self.unwind(err)?;
+                if self.error.is_some() {
+                    continue;
+                }
+            }
+            let nf = self.frames.len() - 1;
+            // Debugger: may pause here (breakpoints, stepping). It runs before
+            // the instruction so the paused location is what is about to run.
+            if self.debug.is_some() {
+                self.debug_hook()?;
+            }
+            let ip = self.frames[nf].ip;
+            let b = self.frames[nf].func.chunk.code[ip];
+            let op: OpCode = match OpCode::from_u8(b) {
+                Some(o) => o,
+                None => {
+                    self.fail(format!("invalid opcode 0x{:02x} at offset {}", b, ip));
+                    continue;
+                }
+            };
+            match op {
+                OpCode::Constant => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    let v = self.const_at(nf, idx);
+                    self.frames[nf].ip = ip + 3;
+                    self.frames[nf].slots.push(v);
+                }
+                OpCode::Null => {
+                    self.frames[nf].ip = ip + 1;
+                    self.frames[nf].slots.push(Value::Null);
+                }
+                OpCode::True => {
+                    self.frames[nf].ip = ip + 1;
+                    self.frames[nf].slots.push(Value::Bool(true));
+                }
+                OpCode::False => {
+                    self.frames[nf].ip = ip + 1;
+                    self.frames[nf].slots.push(Value::Bool(false));
+                }
+                OpCode::None => {
+                    self.frames[nf].ip = ip + 1;
+                    self.frames[nf].slots.push(Value::Option(None));
+                }
+                OpCode::Pop => {
+                    self.frames[nf].ip = ip + 1;
+                    let _ = self.pop_top();
+                }
+                OpCode::GetLocal => {
+                    let slot = self.code_u8(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 2;
+                    let v = {
+                        let f = &self.frames[nf];
+                        if let Some(c) = f.captured.get(&slot) {
+                            c.lock().unwrap().clone()
+                        } else {
+                            f.slots.get(slot).cloned().unwrap_or(Value::Null)
+                        }
+                    };
+                    self.frames[nf].slots.push(v);
+                }
+                OpCode::SetLocal => {
+                    let slot = self.code_u8(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 2;
+                    // Peek (do not pop) the assigned value: in the clox shared
+                    // stack model an assignment leaves its value on top so the
+                    // enclosing expression/statement balances it with `OpPop`.
+                    let v = self.frames[nf].slots.last().cloned().unwrap_or(Value::Null);
+                    {
+                        let f = &mut self.frames[nf];
+                        if let Some(c) = f.captured.get(&slot) {
+                            *c.lock().unwrap() = v.clone();
+                        }
+                        if slot < f.slots.len() {
+                            f.slots[slot] = v;
+                        } else {
+                            f.slots.resize(slot + 1, Value::Null);
+                            f.slots[slot] = v;
+                        }
+                    }
+                }
+                OpCode::GetGlobal => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let name = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("global name is not a string");
+                            continue;
+                        }
+                    };
+                    let v = self.globals.lock().unwrap().get(name.as_ref()).cloned().unwrap_or(Value::Null);
+                    self.frames[nf].slots.push(v);
+                }
+                OpCode::SetGlobal => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let name = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("global name is not a string");
+                            continue;
+                        }
+                    };
+                    // Peek (do not pop) the assigned value, matching
+                    // `SetLocal`/`SetUpvalue`: an assignment leaves its value
+                    // on top of the shared stack so the enclosing
+                    // expression/statement balances it with `OpPop`. (This was
+                    // a double-pop: every `g = x` statement popped the value
+                    // here *and* in its statement-level Pop.)
+                    let v = self.frames[nf].slots.last().cloned().unwrap_or(Value::Null);
+                    // Assign in place when the global exists (no allocation);
+                    // only a brand-new global needs an owned key.
+                    let mut g = self.globals.lock().unwrap();
+                    match g.get_mut(name.as_ref()) {
+                        Some(slot) => *slot = v,
+                        None => {
+                            g.insert(name.to_string(), v);
+                        }
+                    }
+                }
+                OpCode::DefineGlobal => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let name = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("global name is not a string");
+                            continue;
+                        }
+                    };
+                    let v = self.pop_top();
+                    self.globals.lock().unwrap().insert(name.to_string(), v);
+                }
+                OpCode::GetUpvalue => {
+                    let slot = self.code_u8(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 2;
+                    let v = {
+                        let f = &self.frames[nf];
+                        // Indices below `own_upvalues` address this frame's
+                        // per-activation cells (the function's own captured
+                        // locals); higher indices address the cells captured
+                        // from the enclosing frame, stored on the `VmFunc`.
+                        let cell = if slot < f.func.own_upvalues as usize {
+                            f.own_cells.get(slot).cloned()
+                        } else {
+                            f.func.upvalues.get(slot).cloned()
+                        };
+                        match cell {
+                            Some(c) => c.lock().unwrap().clone(),
+                            None => Value::Null,
+                        }
+                    };
+                    self.frames[nf].slots.push(v);
+                }
+                OpCode::SetUpvalue => {
+                    let slot = self.code_u8(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 2;
+                    // Peek (do not pop), matching `SetLocal`.
+                    let v = self.frames[nf].slots.last().cloned().unwrap_or(Value::Null);
+                    let f = &mut self.frames[nf];
+                    let cell = if slot < f.func.own_upvalues as usize {
+                        f.own_cells.get(slot).cloned()
+                    } else {
+                        f.func.upvalues.get(slot).cloned()
+                    };
+                    if let Some(c) = cell {
+                        *c.lock().unwrap() = v;
+                    }
+                }
+                OpCode::Closure => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let fproto = self.func_proto_at(nf, idx);
+                    let closure = self.make_closure(fproto, nf);
+                    self.frames[nf].slots.push(Value::VFunc(closure));
+                }
+                OpCode::Class => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let cproto = self.class_proto_at(nf, idx);
+                    match self.build_class(cproto, nf) {
+                        Ok(vclass) => self.frames[nf].slots.push(Value::VClass(vclass)),
+                        Err(e) => {
+                            self.error = Some(e);
+                            continue;
+                        }
+                    }
+                }
+                OpCode::Add => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Add, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Sub => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Sub, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Mul => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Mul, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Div => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Div, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Mod => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Mod, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Neg => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    match vm_eval_unary(UnOp::Neg, v) {
+                        Ok(x) => self.frames[nf].slots.push(x),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Not => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    match vm_eval_unary(UnOp::Not, v) {
+                        Ok(x) => self.frames[nf].slots.push(x),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Equal => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    self.frames[nf]
+                        .slots
+                        .push(Value::Bool(values_equal(&l, &r)));
+                }
+                OpCode::NotEqual => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    self.frames[nf]
+                        .slots
+                        .push(Value::Bool(!values_equal(&l, &r)));
+                }
+                OpCode::Less => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Lt, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::LessEq => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Le, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Greater => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Gt, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::GreaterEq => {
+                    self.frames[nf].ip = ip + 1;
+                    let r = self.pop_top();
+                    let l = self.pop_top();
+                    match vm_eval_binary(BinOp::Ge, l, r) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(m) => self.fail(m),
+                    }
+                }
+                OpCode::Jump => {
+                    let off = self.code_i16(nf, ip + 1);
+                    let target = (ip as i64 + 3 + off as i64) as usize;
+                    if target >= self.frames[nf].func.chunk.code.len() {
+                        self.fail("invalid jump target");
+                        continue;
+                    }
+                    self.frames[nf].ip = target;
+                }
+                OpCode::JumpIfFalse => {
+                    let off = self.code_i16(nf, ip + 1);
+                    let v = self.pop_top();
+                    if !truthy(&v) {
+                        let target = (ip as i64 + 3 + off as i64) as usize;
+                        if target >= self.frames[nf].func.chunk.code.len() {
+                            self.fail("invalid jump target");
+                            continue;
+                        }
+                        self.frames[nf].ip = target;
+                    } else {
+                        self.frames[nf].ip = ip + 3;
+                    }
+                }
+                OpCode::JumpIfTrue => {
+                    let off = self.code_i16(nf, ip + 1);
+                    let v = self.pop_top();
+                    if truthy(&v) {
+                        let target = (ip as i64 + 3 + off as i64) as usize;
+                        if target >= self.frames[nf].func.chunk.code.len() {
+                            self.fail("invalid jump target");
+                            continue;
+                        }
+                        self.frames[nf].ip = target;
+                    } else {
+                        self.frames[nf].ip = ip + 3;
+                    }
+                }
+                OpCode::Loop => {
+                    let off = self.code_i16(nf, ip + 1);
+                    let target = (ip as i64 + 3 + off as i64) as usize;
+                    if target >= self.frames[nf].func.chunk.code.len() {
+                        self.fail("invalid jump target");
+                        continue;
+                    }
+                    self.frames[nf].ip = target;
+                }
+                OpCode::Call => {
+                    let argc = self.code_u8(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 2;
+                    let args = self.pop_n(argc);
+                    let callee = self.pop_top();
+                    match callee {
+                        Value::VFunc(fd) => {
+                            if let Err(e) = self.call_vfunc_frame(fd, args) {
+                                self.error = Some(e);
+                                continue;
+                            }
+                        }
+                        Value::Native(n) => {
+                            let ctx = NativeCtx {
+                                sched: self.sched.clone(),
+                            };
+                            match (n.func)(&ctx, args) {
+                                Ok(v) => self.frames[nf].slots.push(v),
+                                Err(msg) => self.fail(msg),
+                            }
+                        }
+                        Value::VClass(c) => {
+                            if let Err(e) = self.new_instance_vm(c, args) {
+                                self.error = Some(e);
+                                continue;
+                            }
+                        }
+                        Value::Class(cd) => {
+                            let vc = tree_class_to_vclass(&cd);
+                            if let Err(e) = self.new_instance_vm(vc, args) {
+                                self.error = Some(e);
+                                continue;
+                            }
+                        }
+                        other => self.fail(format!("{} is not callable", type_name(&other))),
+                    }
+                }
+                OpCode::Invoke => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    let argc = self.code_u8(nf, ip + 3) as usize;
+                    self.frames[nf].ip = ip + 4;
+                    let name = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("method name is not a string");
+                            continue;
+                        }
+                    };
+                    let args = self.pop_n(argc);
+                    let obj = self.pop_top();
+                    match obj {
+                        Value::VInstance(inst) => {
+                            let class = inst.lock().unwrap().class.clone();
+                            // Inline cache: a monomorphic site (the common
+                            // case) skips the class-chain walk and the string
+                            // hash lookup entirely.
+                            let chunk = self.frames[nf].func.chunk.clone();
+                            let key = (Arc::as_ptr(&chunk) as usize, ip);
+                            let class_id = Arc::as_ptr(&class) as usize;
+                            let hit = match self.invoke_cache.get(&key) {
+                                Some(c) if c.class == class_id => Some(c.func.clone()),
+                                _ => None,
+                            };
+                            let resolved = match hit {
+                                Some(fd) => Some(fd),
+                                None => match find_method_vclass(&class, &name) {
+                                    Some(fd) => {
+                                        if self.invoke_cache.len() > 4096 {
+                                            self.invoke_cache.clear();
+                                        }
+                                        self.invoke_cache.insert(
+                                            key,
+                                            InvokeCache {
+                                                _chunk: chunk,
+                                                class: class_id,
+                                                func: fd.clone(),
+                                            },
+                                        );
+                                        Some(fd)
+                                    }
+                                    None => None,
+                                },
+                            };
+                            match resolved {
+                                Some(fd) => {
+                                    if fd.arity != args.len() + 1 {
+                                        self.fail(format!(
+                                            "method {} expects {} argument(s), got {}",
+                                            name,
+                                            fd.arity - 1,
+                                            args.len()
+                                        ));
+                                        continue;
+                                    }
+                                    // Reuse the argument Vec: slot 0 is the
+                                    // receiver (capacity was reserved for it).
+                                    let mut call_args = args;
+                                    call_args.insert(0, Value::VInstance(inst));
+                                    if let Err(e) = self.call_vfunc_frame(fd, call_args) {
+                                        self.error = Some(e);
+                                        continue;
+                                    }
+                                }
+                                None => self.fail(format!(
+                                    "class {} has no method '{}'",
+                                    class.name, name
+                                )),
+                            }
+                        }
+                other => {
+                    // Higher-order list methods run their callback through
+                    // this vm so results match the tree interpreter exactly.
+                    if collections::is_callback_method(&name) {
+                        match &other {
+                            Value::List(d) | Value::VecDyn(d) => {
+                                let items = d.lock().unwrap().items.clone();
+                                match self.list_callback_vm(&items, &name, args) {
+                                    Ok(v) => self.frames[nf].slots.push(v),
+                                    Err(e) => self.error = Some(e),
+                                }
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                    match collections::call_method(&other, &name, args) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(msg) => self.fail(msg),
+                    }
+                }
+                    }
+                }
+                OpCode::IndexGet => {
+                    self.frames[nf].ip = ip + 1;
+                    let idx = self.pop_top();
+                    let obj = self.pop_top();
+                    match collections::index_get(&obj, &idx) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(msg) => self.fail(msg),
+                    }
+                }
+                OpCode::IndexSet => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    let idx = self.pop_top();
+                    let obj = self.pop_top();
+                    match collections::index_set(&obj, &idx, v.clone()) {
+                        // Leave the assigned value on the stack, matching
+                        // `SetLocal`/`SetGlobal` (see the FieldSet note).
+                        Ok(()) => self.frames[nf].slots.push(v),
+                        Err(msg) => self.fail(msg),
+                    }
+                }
+                OpCode::FieldGet => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let name = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("field name is not a string");
+                            continue;
+                        }
+                    };
+                    let obj = self.pop_top();
+                    match obj {
+                        Value::VInstance(inst) => {
+                            let ib = inst.lock().unwrap();
+                            match ib.fields.get(name.as_ref()) {
+                                Some(v) => self.frames[nf].slots.push(v.clone()),
+                                None => self.fail(format!(
+                                    "instance of {} has no field '{}'",
+                                    ib.class.name, name
+                                )),
+                            }
+                        }
+                        other => self.fail(format!("{} has no fields", type_name(&other))),
+                    }
+                }
+                OpCode::FieldSet => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let name = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("field name is not a string");
+                            continue;
+                        }
+                    };
+                    let v = self.pop_top();
+                    let obj = self.pop_top();
+                    match obj {
+                        Value::VInstance(inst) => {
+                            let mut ib = inst.lock().unwrap();
+                            if !ib.fields.contains_key(name.as_ref()) {
+                                self.fail(format!(
+                                    "instance of {} has no field '{}'",
+                                    ib.class.name, name
+                                ));
+                                continue;
+                            }
+                            match ib.fields.get_mut(name.as_ref()) {
+                                Some(slot) => *slot = v.clone(),
+                                None => {
+                                    ib.fields.insert(name.to_string(), v.clone());
+                                }
+                            }
+                            // Leave the assigned value on the stack, matching
+                            // `SetLocal`/`SetGlobal`: the enclosing statement's
+                            // Pop consumes it. (Previously FieldSet pushed
+                            // nothing, so the statement Pop ate the value
+                            // *below* the assignment - usually `self` itself.)
+                            self.frames[nf].slots.push(v);
+                        }
+                        other => self.fail(format!("{} has no fields", type_name(&other))),
+                    }
+                }
+                OpCode::Construct => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    let argc = self.code_u8(nf, ip + 3) as usize;
+                    self.frames[nf].ip = ip + 4;
+                    let name = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("constructor name is not a string");
+                            continue;
+                        }
+                    };
+                    let args = self.pop_n(argc);
+                    match collections::construct(&name, args) {
+                        Ok(v) => self.frames[nf].slots.push(v),
+                        Err(msg) => self.fail(msg),
+                    }
+                }
+                OpCode::Return => {
+                    let ret = self.pop_top();
+                    let nf = self.frames.len() - 1;
+                    let ctor = self.frames[nf].ctor_result.take();
+                    let ret_or_ctor = ctor.unwrap_or(ret);
+                    let guards = std::mem::take(&mut self.frames[nf].guards);
+                    for g in &guards {
+                        g.lock().unwrap().unlock();
+                    }
+                    self.frames.pop();
+                    self.depth = self.depth.saturating_sub(1);
+                    if self.frames.len() == self.stop {
+                        return Ok(ret_or_ctor);
+                    }
+                    self.frames.last_mut().unwrap().slots.push(ret_or_ctor);
+                }
+                OpCode::Try => {
+                    let has_catch = self.code_u8(nf, ip + 1) != 0;
+                    let catch_slot = self.code_u8(nf, ip + 2);
+                    let catch_off = self.code_i16(nf, ip + 3);
+                    let finally_off = self.code_i16(nf, ip + 5);
+                    let operand_end = ip + 7;
+                    self.frames[nf].ip = operand_end;
+                    let catch_target = (operand_end as i64 + catch_off as i64) as usize;
+                    let finally_target = (operand_end as i64 + finally_off as i64) as usize;
+                    self.handlers.push(Handler {
+                        has_catch,
+                        catch_slot,
+                        catch_target,
+                        finally_target,
+                        stack_len: self.frames[nf].slots.len(),
+                        frame_depth: self.frames.len(),
+                        phase: HandlerPhase::Try,
+                    });
+                }
+                OpCode::EnterFinally => {
+                    self.frames[nf].ip = ip + 1;
+                    if let Some(h) = self.handlers.last_mut() {
+                        h.phase = HandlerPhase::Finally;
+                    }
+                }
+                OpCode::Dup => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    self.frames[nf].slots.push(v.clone());
+                    self.frames[nf].slots.push(v);
+                }
+                OpCode::Dup2 => {
+                    self.frames[nf].ip = ip + 1;
+                    let b = self.pop_top();
+                    let a = self.pop_top();
+                    self.frames[nf].slots.push(a.clone());
+                    self.frames[nf].slots.push(b.clone());
+                    self.frames[nf].slots.push(a);
+                    self.frames[nf].slots.push(b);
+                }
+                OpCode::CaptureSync => {
+                    let slot = self.code_u8(nf, ip + 1) as usize;
+                    let idx = self.code_u8(nf, ip + 2) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    // Idempotent within an activation: once a slot routes
+                    // through a cell, that cell is the live storage (the raw
+                    // slot below it is stale) and must not be re-bound from
+                    // the stale value. Loops re-capture because `Uncapture`
+                    // clears the routing when the previous binding's scope
+                    // ends or the iteration rebinds the loop variable.
+                    if self.frames[nf].captured.contains_key(&slot) {
+                        continue;
+                    }
+                    // The cell is per-activation (`frame.own_cells`), so two
+                    // calls of the same closure never share captured state.
+                    let cell = new_ref(
+                        self.frames[nf]
+                            .slots
+                            .get(slot)
+                            .cloned()
+                            .unwrap_or(Value::Null),
+                    );
+                    if idx < self.frames[nf].own_cells.len() {
+                        self.frames[nf].own_cells[idx] = cell.clone();
+                    }
+                    self.frames[nf].captured.insert(slot, cell);
+                }
+                OpCode::Uncapture => {
+                    let slot = self.code_u8(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 2;
+                    self.frames[nf].captured.remove(&slot);
+                }
+                OpCode::EndTry => {
+                    self.frames[nf].ip = ip + 1;
+                    let _ = self.handlers.pop();
+                    if let Some(re) = self.reraise.take() {
+                        self.error = Some(re);
+                    }
+                }
+                OpCode::Throw => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    self.error = Some(VmError {
+                        thrown: Some(v),
+                        message: "uncaught throw".into(),
+                        span: self.cur_span(),
+                        trace: Vec::new(),
+                    });
+                }
+                OpCode::Await => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    match v {
+                        Value::Task(t) => match t.join() {
+                            Ok(val) => self.frames[nf].slots.push(val),
+                            Err(msg) => self.fail(format!("task failed: {}", msg)),
+                        },
+                        Value::Channel(c) => {
+                            let val = c.recv();
+                            self.frames[nf].slots.push(val);
+                        }
+                        other => self.fail(format!(
+                            "await expects a task or a channel, found {}",
+                            type_name(&other)
+                        )),
+                    }
+                }
+                OpCode::Spawn => {
+                    self.frames[nf].ip = ip + 1;
+                    let callable = self.pop_top();
+                    let fd = match callable {
+                        Value::VFunc(f) => f,
+                        other => {
+                            self.fail(format!(
+                                "spawn expects a function, found {}",
+                                type_name(&other)
+                            ));
+                            continue;
+                        }
+                    };
+                    let globals = self.globals.clone();
+                    let sched = self.sched.clone();
+                    let modules = self.modules.clone();
+                    let embedded = self.embedded.clone();
+                    let file = self.file.clone();
+                    let module_dirs = self.module_dirs.clone();
+                    let handle = self.sched.spawn_job(Box::new(move || {
+                        let mut vm =
+                            Vm::with_shared(globals, sched, modules, embedded, file, module_dirs);
+                        vm.run_function(fd, Vec::new()).map_err(|e| e.task_error_string())
+                    }));
+                    self.frames[nf].slots.push(Value::Task(handle));
+                }
+                OpCode::Import => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let path = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("import path is not a string");
+                            continue;
+                        }
+                    };
+                    match self.import_module(&path) {
+                        Ok(exports) => {
+                            let mut g = self.globals.lock().unwrap();
+                            for (n, v, _is_const) in exports {
+                                g.insert(n, v);
+                            }
+                            self.frames[nf].slots.push(Value::Null);
+                        }
+                        Err(e) => {
+                            self.error = Some(e);
+                            continue;
+                        }
+                    }
+                }
+                OpCode::Truthy => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    self.frames[nf].slots.push(Value::Bool(truthy(&v)));
+                }
+                OpCode::ForEachInit => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    match collections::iter_values(&v) {
+                        Ok(items) => self.frames[nf].slots.push(Value::Tuple(new_ref(items))),
+                        Err(msg) => self.fail(msg),
+                    }
+                }
+                OpCode::Len => {
+                    self.frames[nf].ip = ip + 1;
+                    let v = self.pop_top();
+                    match collections::len_of(&v) {
+                        Ok(n) => self.frames[nf].slots.push(Value::Int(n as i64)),
+                        Err(msg) => self.fail(msg),
+                    }
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------------- frame helpers
+
+    /// Snapshot the call stack for an error trace, most recent frame first.
+    /// Each frame contributes its function name and the span of the
+    /// instruction it is currently at.
+    fn capture_trace(&self) -> Vec<crate::diagnostics::TraceFrame> {
+        let mut out = Vec::with_capacity(self.frames.len());
+        for f in self.frames.iter().rev() {
+            // `span_at` maps a byte offset to the span of the instruction that
+            // contains it (inst_spans is indexed by instruction, not by byte).
+            let span = f.func.chunk.span_at(f.ip);
+            if let Some(last) = out.last() {
+                let last: &crate::diagnostics::TraceFrame = last;
+                if last.span.line == span.line && last.span.file == span.file {
+                    continue;
+                }
+            }
+            out.push(crate::diagnostics::TraceFrame {
+                func: f.func.name.clone(),
+                span,
+            });
+        }
+        out
+    }
+
+    fn pop_top(&mut self) -> Value {        let nf = self.frames.len() - 1;
+        match self.frames[nf].slots.pop() {
+            Some(v) => v,
+            None => {
+                self.fail("stack underflow: not enough operands on the stack");
+                Value::Null
+            }
+        }
+    }
+
+    fn pop_n(&mut self, n: usize) -> Vec<Value> {
+        let nf = self.frames.len() - 1;
+        let len = self.frames[nf].slots.len();
+        if len < n {
+            self.fail("stack underflow: not enough operands on the stack");
+            return vec![Value::Null; n];
+        }
+        // One spare slot: `Invoke` prepends the receiver in place instead of
+        // building a second Vec (this is the per-method-call allocation).
+        let mut v = Vec::with_capacity(n + 1);
+        for _ in 0..n {
+            v.push(self.frames[nf].slots.pop().unwrap());
+        }
+        v.reverse();
+        v
+    }
+
+    fn call_vfunc_frame(&mut self, fd: Arc<VmFunc>, args: Vec<Value>) -> Result<(), VmError> {
+        if fd.arity != args.len() {
+            return Err(VmError {
+                thrown: None,
+                message: format!(
+                    "{} expects {} argument(s), got {}",
+                    fd.name.as_deref().unwrap_or("fn"),
+                    fd.arity,
+                    args.len()
+                ),
+                span: self.cur_span(),
+                trace: Vec::new(),
+            });
+        }
+        if self.depth >= MAX_CALL_DEPTH {
+            return Err(VmError {
+                thrown: None,
+                message: "stack overflow: call depth limit reached".into(),
+                span: self.cur_span(),
+                trace: Vec::new(),
+            });
+        }
+        self.depth += 1;
+        self.frames.push(CallFrame {
+            func: fd.clone(),
+            ip: 0,
+            slots: args,
+            captured: HashMap::new(),
+            own_cells: (0..fd.own_upvalues as usize)
+                .map(|_| new_ref(Value::Null))
+                .collect(),
+            guards: Vec::new(),
+            ctor_result: None,
+        });
+        Ok(())
+    }
+
+    /// Build a runtime `VmFunc` (with upvalue cells) from a prototype. Each of
+    /// the prototype's upvalue slots is an *index into the enclosing frame's own
+    /// upvalue list* (clox style): the cell lives in `parent.func.upvalues`, so a
+    /// nested closure shares the exact cell the defining frame uses. This keeps
+    /// closures correct across arbitrary nesting and after the defining frame
+    /// has returned (the `Arc` keeps the cell alive).
+    fn make_closure(&mut self, fproto: std::sync::Arc<VmFuncProto>, nf: usize) -> Arc<VmFunc> {
+        let mut upvalues: Vec<UpvalueCell> = Vec::with_capacity(fproto.own_upvalues as usize + fproto.upvalues.len());
+        // Slots [0..own_upvalues] are this function's OWN captured locals; they
+        // start empty and are populated by `SetUpvalue` (via emit_pending_syncs).
+        for _ in 0..fproto.own_upvalues {
+            upvalues.push(new_ref(Value::Null));
+        }
+        // The remaining slots are cells captured from the enclosing frame.
+        // An index below the parent's `own_upvalues` addresses the parent
+        // frame's per-activation cell for its own captured local; higher
+        // indices address the parent's own enclosing-captured cells.
+        let parent_own = self.frames[nf].func.own_upvalues as usize;
+        for &eslot in &fproto.upvalues {
+            let slot = eslot as usize;
+            let cell = if slot < parent_own {
+                match self.frames[nf].own_cells.get(slot) {
+                    Some(c) => c.clone(),
+                    None => {
+                        // Defensive fallback: a well-formed program should not
+                        // reach here, but bind a fresh cell rather than panic.
+                        let val = self
+                            .frames
+                            .get(nf)
+                            .and_then(|f| f.slots.get(slot).cloned())
+                            .unwrap_or(Value::Null);
+                        new_ref(val)
+                    }
+                }
+            } else {
+                match self.frames[nf].func.upvalues.get(slot) {
+                    Some(c) => c.clone(),
+                    None => {
+                        // Defensive fallback: a well-formed program should not
+                        // reach here, but synthesize a fresh cell rather than
+                        // panic.
+                        let val = self
+                            .frames
+                            .get(nf)
+                            .and_then(|f| f.slots.get(slot).cloned())
+                            .unwrap_or(Value::Null);
+                        new_ref(val)
+                    }
+                }
+            };
+            upvalues.push(cell);
+        }
+        Arc::new(VmFunc {
+            name: fproto.name.clone(),
+            arity: fproto.arity,
+            is_async: fproto.is_async,
+            // Cheap Arc clone: every closure from the same prototype shares
+            // one immutable bytecode chunk.
+            chunk: fproto.chunk.clone(),
+            upvalues,
+            own_upvalues: fproto.own_upvalues,
+        })
+    }
+
+    /// Build a `VmClass` from its prototype, resolving the parent by name from
+    /// globals and lifting method prototypes into `VmFunc` values.
+    fn build_class(&mut self, cproto: VmClassProto, nf: usize) -> Result<Arc<VmClass>, VmError> {
+        let parent = match &cproto.parent {
+            Some(p) => {
+                let g = self.globals.lock().unwrap();
+                match g.get(p) {
+                    Some(Value::VClass(c)) => Some(c.clone()),
+                    Some(Value::Class(cd)) => Some(tree_class_to_vclass(cd)),
+                    _ => {
+                        return Err(VmError {
+                            thrown: None,
+                            message: format!("unknown class '{}'", p),
+                            span: self.cur_span(),
+                            trace: Vec::new(),
+                        })
+                    }
+                }
+            }
+            None => None,
+        };
+        let mut methods: HashMap<String, (crate::ast::Vis, Arc<VmFunc>)> = HashMap::new();
+        let mut ctor = None;
+        for (name, vis, fidx, is_ctor) in &cproto.methods {
+            let fproto = self.func_proto_at(nf, *fidx as usize);
+            let fd = self.make_closure(fproto, nf);
+            methods.insert(name.clone(), (*vis, fd.clone()));
+            if *is_ctor {
+                ctor = Some(fd);
+            }
+        }
+        Ok(Arc::new(VmClass {
+            name: cproto.name,
+            parent,
+            fields: cproto.fields,
+            methods,
+            ctor,
+        }))
+    }
+
+    /// Create an instance and run its constructor (if any). The constructed
+    /// instance is placed on the caller's stack by `OpReturn` of the ctor
+    /// frame.
+    fn new_instance_vm(&mut self, class: Arc<VmClass>, args: Vec<Value>) -> Result<(), VmError> {
+        let mut fields: HashMap<String, Value> = HashMap::new();
+        let mut cur = Some(class.clone());
+        let mut chain: Vec<Arc<VmClass>> = Vec::new();
+        while let Some(c) = cur {
+            cur = c.parent.clone();
+            chain.push(c);
+        }
+        for c in chain.iter().rev() {
+            for (fname, _) in &c.fields {
+                fields.insert(fname.clone(), Value::Null);
+            }
+        }
+        let instance = VmInstanceData {
+            class: class.clone(),
+            fields,
+        };
+        let obj = Value::VInstance(crate::value::gc::track(new_ref(instance)));
+        let ctor = {
+            let mut cur = Some(class.clone());
+            let mut found = None;
+            while let Some(c) = cur {
+                if let Some(ct) = &c.ctor {
+                    found = Some(ct.clone());
+                    break;
+                }
+                cur = c.parent.clone();
+            }
+            found
+        };
+        match ctor {
+            Some(ctor) => {
+                if ctor.arity != args.len() + 1 {
+                    return Err(VmError {
+                        thrown: None,
+                        message: format!(
+                            "new {} expects {} argument(s), got {}",
+                            class.name,
+                            ctor.arity - 1,
+                            args.len()
+                        ),
+                        span: self.cur_span(),
+                        trace: Vec::new(),
+                    });
+                }
+                let mut call_args = Vec::with_capacity(args.len() + 1);
+                call_args.push(obj.clone());
+                call_args.extend(args);
+                self.call_vfunc_frame(ctor, call_args)?;
+                let nf = self.frames.len() - 1;
+                self.frames[nf].ctor_result = Some(obj);
+            }
+            None => {
+                let nf = self.frames.len() - 1;
+                self.frames[nf].slots.push(obj);
+            }
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------- exception unwind
+
+    fn unwind(&mut self, err: VmError) -> Result<(), VmError> {
+        while let Some(mut h) = self.handlers.pop() {
+            while self.frames.len() > h.frame_depth {
+                let nf = self.frames.len() - 1;
+                let guards = std::mem::take(&mut self.frames[nf].guards);
+                for g in &guards {
+                    g.lock().unwrap().unlock();
+                }
+                self.frames.pop();
+                self.depth = self.depth.saturating_sub(1);
+            }
+            {
+                let top = self.frames.last_mut().unwrap();
+                top.slots.truncate(h.stack_len);
+            }
+            let thrown = err
+                .thrown
+                .clone()
+                .unwrap_or_else(|| Value::Str(err.message.clone().into()));
+            match h.phase {
+                HandlerPhase::Try => {
+                    if h.has_catch {
+                        let catch_slot = h.catch_slot;
+                        let catch_target = h.catch_target;
+                        h.phase = HandlerPhase::Catch;
+                        self.handlers.push(h);
+                        let top = self.frames.last_mut().unwrap();
+                        if (catch_slot as usize) >= top.slots.len() {
+                            top.slots.resize(catch_slot as usize + 1, Value::Null);
+                        }
+                        top.slots[catch_slot as usize] = thrown;
+                        top.ip = catch_target;
+                        return Ok(());
+                    } else {
+                        let finally_target = h.finally_target;
+                        h.phase = HandlerPhase::Finally;
+                        self.handlers.push(h);
+                        let top = self.frames.last_mut().unwrap();
+                        top.ip = finally_target;
+                        self.reraise = Some(VmError {
+                            thrown: err.thrown.clone(),
+                            message: err.message.clone(),
+                            span: err.span.clone(),
+                            trace: Vec::new(),
+                        });
+                        return Ok(());
+                    }
+                }
+                HandlerPhase::Catch => {
+                    let finally_target = h.finally_target;
+                    h.phase = HandlerPhase::Finally;
+                    self.handlers.push(h);
+                    let top = self.frames.last_mut().unwrap();
+                    top.ip = finally_target;
+                    self.reraise = Some(VmError {
+                        thrown: err.thrown.clone(),
+                        message: err.message.clone(),
+                        span: err.span.clone(),
+                        trace: Vec::new(),
+                    });
+                    return Ok(());
+                }
+                HandlerPhase::Finally => {
+                    self.reraise = Some(VmError {
+                        thrown: err.thrown.clone(),
+                        message: err.message.clone(),
+                        span: err.span.clone(),
+                        trace: Vec::new(),
+                    });
+                    continue;
+                }
+            }
+        }
+        self.error = Some(err.clone());
+        Err(err)
+    }
+
+    // ------------------------------------------------------------- modules
+
+    fn resolve_module_path(&self, path: &str) -> Result<PathBuf, VmError> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        let base = PathBuf::from(self.file.as_ref());
+        if let Some(dir) = base.parent() {
+            candidates.push(dir.join(path));
+            candidates.push(dir.join(format!("{}.matrix", path)));
+        }
+        for d in &self.module_dirs {
+            candidates.push(d.join(path));
+            candidates.push(d.join(format!("{}.matrix", path)));
+        }
+        for c in candidates {
+            if c.is_file() {
+                // Canonicalize (matching the tree interpreter's module cache)
+                // so the same file imported under different spellings is one
+                // module instance, not two. Strip Windows' `\\?\` device
+                // prefix for local drives so diagnostics stay readable.
+                let canon = std::fs::canonicalize(&c).unwrap_or(c);
+                let s = canon.to_string_lossy().to_string();
+                if let Some(rest) = s.strip_prefix(r"\\?\") {
+                    if rest.len() >= 2 && rest.as_bytes()[1] == b':' {
+                        return Ok(PathBuf::from(rest));
+                    }
+                }
+                return Ok(canon);
+            }
+        }
+        Err(VmError {
+            thrown: None,
+            message: format!("module '{}' not found", path),
+            span: self.cur_span(),
+            trace: Vec::new(),
+        })
+    }
+
+    fn import_module(&mut self, path: &str) -> Result<Vec<(String, Value, bool)>, VmError> {
+        // 1. Self-contained path: the module was embedded into the `.matrixc`
+        //    at compile time. Run its script in a child VM that shares our
+        //    globals and the (flat, transitive) embedded table, so even nested
+        //    imports resolve without any `.matrix` source on disk.
+        {
+            let emb = self.embedded.lock().unwrap();
+            if let Some((func, public)) = emb.get(path) {
+                let func = func.clone();
+                let public = public.clone();
+                drop(emb);
+                // The embedded table is keyed by the resolved (canonical)
+                // module path — the `Import` op now carries that same string —
+                // so one module has exactly one entry and one execution. The
+                // module cache consult/record below mirrors the source path.
+                // When no source exists on disk (pure `.matrixc` exec), fall
+                // back to a key derived from the import operand itself, which
+                // is already spelling-independent.
+                let resolved = self.resolve_module_path(path).ok().unwrap_or_else(|| {
+                    PathBuf::from(format!("<embedded:{}>", path))
+                });
+                {
+                    let cache = self.modules.lock().unwrap();
+                    if let Some(exports) = cache.loaded.get(&resolved) {
+                        return Ok(exports
+                            .iter()
+                            .map(|(n, v, c)| (n.clone(), v.clone(), *c))
+                            .collect());
+                    }
+                    if cache.in_progress.contains(&resolved) {
+                        return Err(VmError {
+                            thrown: None,
+                            message: format!("circular import of '{}'", path),
+                            span: self.cur_span(),
+                            trace: Vec::new(),
+                        });
+                    }
+                }
+                self.modules
+                    .lock()
+                    .unwrap()
+                    .in_progress
+                    .push(resolved.clone());
+                let globals = self.globals.clone();
+                let sched = self.sched.clone();
+                let modules = self.modules.clone();
+                let embedded = self.embedded.clone();
+                let file = self.file.clone();
+                let module_dirs = self.module_dirs.clone();
+                let out =
+                    Vm::with_shared(globals, sched, modules, embedded, file, module_dirs)
+                        .run_module_from_func(func, public);
+                self.modules.lock().unwrap().in_progress.pop();
+                if let Ok(exports) = &out {
+                    self.modules
+                        .lock()
+                        .unwrap()
+                        .loaded
+                        .insert(resolved, exports.clone());
+                }
+                return out;
+            }
+        }
+        // 2. Fallback: resolve from source on disk (REPL, an older `.matrixc`
+        //    that did not embed this import, or a transitive import that was not
+        //    embedded for some reason).
+        let resolved = self.resolve_module_path(path)?;
+        {
+            let cache = self.modules.lock().unwrap();
+            if let Some(exports) = cache.loaded.get(&resolved) {
+                return Ok(exports
+                    .iter()
+                    .map(|(n, v, c)| (n.clone(), v.clone(), *c))
+                    .collect());
+            }
+            if cache.in_progress.contains(&resolved) {
+                return Err(VmError {
+                    thrown: None,
+                    message: format!("circular import of '{}'", path),
+                    span: self.cur_span(),
+                    trace: Vec::new(),
+                });
+            }
+        }
+        let src = std::fs::read_to_string(&resolved).map_err(|e| VmError {
+            thrown: None,
+            message: format!("cannot import '{}': {}", path, e),
+            span: self.cur_span(),
+            trace: Vec::new(),
+        })?;
+        let file: Arc<str> = Arc::from(resolved.to_string_lossy().to_string());
+        let program = parser::parse_file(&src, file.clone()).map_err(|d| VmError {
+            thrown: None,
+            message: d.message,
+            span: d.span.unwrap_or_else(|| self.cur_span()),
+            trace: Vec::new(),
+        })?;
+        semantic::check_file(&program, false, &resolved.to_string_lossy()).map_err(|d| VmError {
+            thrown: None,
+            message: d.message,
+            span: d.span.unwrap_or_else(|| self.cur_span()),
+            trace: Vec::new(),
+        })?;
+        self.modules.lock().unwrap().in_progress.push(resolved.clone());
+        let mut module_dirs = self.module_dirs.clone();
+        if let Some(dir) = resolved.parent() {
+            module_dirs.push(dir.to_path_buf());
+        }
+        let mut mvm = Vm::with_shared(
+            self.globals.clone(),
+            self.sched.clone(),
+            self.modules.clone(),
+            self.embedded.clone(),
+            file,
+            module_dirs,
+        );
+        let exports = mvm.run_module(&program).map_err(|d| VmError {
+            thrown: d.thrown,
+            message: d.message,
+            span: d.span.unwrap_or_else(|| self.cur_span()),
+            trace: Vec::new(),
+        });
+        self.modules.lock().unwrap().in_progress.pop();
+        if let Ok(ref ex) = exports {
+            self.modules.lock().unwrap().loaded.insert(resolved, ex.clone());
+        }
+        exports
+    }
+
+    /// Run an already-compiled module script function and collect its exported
+    /// public names. Shares this VM's globals, so the caller sees the imported
+    /// definitions. Used for embedded modules (self-contained `.matrixc`).
+    /// Const-ness is unknowable here (no AST in bytecode); the semantic pass
+    /// rejected any assignment to an imported const at compile time.
+    fn run_module_from_func(
+        &mut self,
+        func: Arc<VmFunc>,
+        public: Vec<String>,
+    ) -> Result<Vec<(String, Value, bool)>, VmError> {
+        if let Err(e) = validate_chunk(&func.chunk) {
+            return Err(VmError {
+                thrown: None,
+                message: e.message,
+                span: self.cur_span(),
+                trace: Vec::new(),
+            });
+        }
+        self.call_vfunc_frame(func, Vec::new())?;
+        let _ = self.run()?;
+        let g = self.globals.lock().unwrap();
+        let mut exports = Vec::new();
+        for name in &public {
+            if let Some(v) = g.get(name) {
+                exports.push((name.clone(), v.clone(), false));
+            }
+        }
+        Ok(exports)
+    }
+
+    /// Higher-order list methods for the VM: iterate the snapshot and call the
+    /// callback synchronously via `call_value_sync`. The iteration logic itself
+    /// lives in `collections` (shared with the tree interpreter); this wrapper
+    /// supplies the engine side of the `CallbackHost` trait.
+    fn list_callback_vm(
+        &mut self,
+        items: &[Value],
+        name: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, VmError> {
+        struct VmHost<'a> {
+            vm: &'a mut Vm,
+        }
+        impl crate::value::collections::CallbackHost for VmHost<'_> {
+            fn call_callback(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, String> {
+                self.vm.call_value_sync(f, args).map_err(|e| e.message)
+            }
+        }
+        let mut host = VmHost { vm: self };
+        crate::value::collections::list_callback_method(&mut host, items, name, &args)
+            .map_err(|msg| VmError {
+                thrown: None,
+                message: msg,
+                span: self.cur_span(),
+                trace: Vec::new(),
+            })
+    }
+
+    // ------------------------------------------------------------- code read
+
+    fn code_u8(&self, nf: usize, p: usize) -> u8 {
+        *self.frames[nf].func.chunk.code.get(p).unwrap_or(&0)
+    }
+
+    fn code_u16(&self, nf: usize, p: usize) -> u16 {
+        let c = &self.frames[nf].func.chunk.code;
+        let mut a = [0u8; 2];
+        if p + 1 < c.len() {
+            a[0] = c[p];
+            a[1] = c[p + 1];
+        }
+        u16::from_le_bytes(a)
+    }
+
+    fn code_i16(&self, nf: usize, p: usize) -> i16 {
+        self.code_u16(nf, p) as i16
+    }
+
+    fn const_at(&self, nf: usize, idx: usize) -> Value {
+        self.frames[nf]
+            .func
+            .chunk
+            .constants
+            .get(idx)
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    fn func_proto_at(&self, nf: usize, idx: usize) -> std::sync::Arc<VmFuncProto> {
+        self.frames[nf]
+            .func
+            .chunk
+            .functions
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| std::sync::Arc::new(VmFuncProto {
+                name: None,
+                arity: 0,
+                is_async: false,
+                upvalues: Vec::new(),
+                own_upvalues: 0,
+                chunk: std::sync::Arc::new(Chunk::new()),
+            }))
+    }
+
+    fn class_proto_at(&self, nf: usize, idx: usize) -> VmClassProto {
+        self.frames[nf]
+            .func
+            .chunk
+            .classes
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| VmClassProto {
+                name: String::new(),
+                parent: None,
+                fields: Vec::new(),
+                methods: Vec::new(),
+            })
+    }
+
+    fn cur_span(&self) -> Span {
+        let nf = self.frames.len() - 1;
+        let ip = self.frames[nf].ip;
+        self.frames[nf].func.chunk.span_at(ip)
+    }
+
+    fn fail(&mut self, msg: impl Into<String>) {
+        self.error = Some(VmError {
+            thrown: None,
+            message: msg.into(),
+            span: self.cur_span(),
+            trace: Vec::new(),
+        });
+    }
+}
+
+// --------------------------------------------------------- free functions
+
+fn find_method_vclass(class: &Arc<VmClass>, name: &str) -> Option<Arc<VmFunc>> {
+    let mut cur = Some(class.clone());
+    while let Some(c) = cur {
+        if let Some((_, fd)) = c.methods.get(name) {
+            return Some(fd.clone());
+        }
+        cur = c.parent.clone();
+    }
+    None
+}
+
+/// Convert a tree-walk `ClassData` to a `VmClass`. Used only for `Object`
+/// (which has no methods), so method/ctor shells are intentionally empty.
+fn tree_class_to_vclass(cd: &crate::value::ClassData) -> Arc<VmClass> {
+    Arc::new(VmClass {
+        name: cd.name.clone(),
+        parent: cd.parent.as_ref().map(|p| tree_class_to_vclass(p)),
+        fields: cd.fields.clone(),
+        methods: HashMap::new(),
+        ctor: None,
+    })
+}
+
+/// Binary operator semantics, identical to the tree-walk interpreter.
+/// (Also used by the native backend's `spid3r_binop` trampoline.)
+pub(crate) fn vm_eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, String> {
+    use Value::*;
+    match op {
+        BinOp::Add => match (&l, &r) {
+            (Int(a), Int(b)) => Ok(Int(a.wrapping_add(*b))),
+            (Int(a), Float(b)) => Ok(Float(*a as f64 + b)),
+            (Float(a), Int(b)) => Ok(Float(a + *b as f64)),
+            (Float(a), Float(b)) => Ok(Float(a + b)),
+            (Str(a), Str(b)) => Ok(Str(format!("{}{}", a, b).into())),
+            _ => Err(format!(
+                "cannot add {} and {}",
+                type_name(&l),
+                type_name(&r)
+            )),
+        },
+        BinOp::Sub => match (&l, &r) {
+            (Int(a), Int(b)) => Ok(Int(a.wrapping_sub(*b))),
+            (Int(a), Float(b)) => Ok(Float(*a as f64 - b)),
+            (Float(a), Int(b)) => Ok(Float(a - *b as f64)),
+            (Float(a), Float(b)) => Ok(Float(a - b)),
+            _ => Err(format!(
+                "cannot subtract {} from {}",
+                type_name(&r),
+                type_name(&l)
+            )),
+        },
+        BinOp::Mul => match (&l, &r) {
+            (Int(a), Int(b)) => Ok(Int(a.wrapping_mul(*b))),
+            (Int(a), Float(b)) => Ok(Float(*a as f64 * b)),
+            (Float(a), Int(b)) => Ok(Float(a * *b as f64)),
+            (Float(a), Float(b)) => Ok(Float(a * b)),
+            _ => Err(format!(
+                "cannot multiply {} and {}",
+                type_name(&l),
+                type_name(&r)
+            )),
+        },
+        BinOp::Div => match (&l, &r) {
+            (Int(_), Int(b)) if *b == 0 => Err("division by zero".into()),
+            (Int(a), Int(b)) => Ok(Int(a.wrapping_div(*b))),
+            (Int(a), Float(b)) => Ok(Float(*a as f64 / b)),
+            (Float(a), Int(b)) => Ok(Float(a / *b as f64)),
+            (Float(a), Float(b)) if *b == 0.0 => Err("division by zero".into()),
+            (Float(a), Float(b)) => Ok(Float(a / b)),
+            _ => Err(format!(
+                "cannot divide {} by {}",
+                type_name(&l),
+                type_name(&r)
+            )),
+        },
+        BinOp::Mod => match (&l, &r) {
+            (Int(_), Int(b)) if *b == 0 => Err("modulo by zero".into()),
+            (Int(a), Int(b)) => Ok(Int(a.wrapping_rem(*b))),
+            (Int(a), Float(b)) => Ok(Float(*a as f64 % b)),
+            (Float(a), Int(b)) => Ok(Float(a % *b as f64)),
+            (Float(a), Float(b)) if *b == 0.0 => Err("modulo by zero".into()),
+            (Float(a), Float(b)) => Ok(Float(a % b)),
+            _ => Err(format!(
+                "cannot take {} mod {}",
+                type_name(&l),
+                type_name(&r)
+            )),
+        },
+        BinOp::Eq => Ok(Bool(values_equal(&l, &r))),
+        BinOp::Ne => Ok(Bool(!values_equal(&l, &r))),
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            let ord = match (&l, &r) {
+                (Int(a), Int(b)) => Some(a.cmp(b)),
+                (Int(a), Float(b)) => (*a as f64).partial_cmp(b),
+                (Float(a), Int(b)) => a.partial_cmp(&(*b as f64)),
+                (Float(a), Float(b)) => a.partial_cmp(b),
+                (Str(a), Str(b)) => Some(a.cmp(b)),
+                _ => None,
+            };
+            match ord {
+                Some(o) => {
+                    let res = match op {
+                        BinOp::Lt => o.is_lt(),
+                        BinOp::Le => o.is_le(),
+                        BinOp::Gt => o.is_gt(),
+                        _ => o.is_ge(),
+                    };
+                    Ok(Bool(res))
+                }
+                None => Err(format!(
+                    "cannot compare {} and {}",
+                    type_name(&l),
+                    type_name(&r)
+                )),
+            }
+        }
+    }
+}
+
+/// Unary operator semantics, identical to the tree-walk interpreter.
+/// (Also used by the native backend's `spid3r_unop` trampoline.)
+pub(crate) fn vm_eval_unary(op: UnOp, v: Value) -> Result<Value, String> {
+    match op {
+        UnOp::Not => Ok(Value::Bool(!truthy(&v))),
+        UnOp::Neg => match v {
+            Value::Int(i) => Ok(Value::Int(i.wrapping_neg())),
+            Value::Float(f) => Ok(Value::Float(-f)),
+            other => Err(format!("cannot negate {}", type_name(&other))),
+        },
+    }
+}

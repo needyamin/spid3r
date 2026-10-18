@@ -1,0 +1,21 @@
+// examples/stack.matrix - strict LIFO.
+fn main() {
+    let orders = stack();
+    orders.push("deploy");
+    orders.push("review");
+    orders.push("merge");
+
+    println(orders.peek());
+    println(orders.pop());
+    println(orders.pop());
+    println(orders.len());
+
+    // an empty pop throws
+    let empty = stack();
+    try {
+        empty.pop();
+    } catch(e) {
+        println("caught: " + e);
+    }
+    return 0;
+}

@@ -1,0 +1,10 @@
+fn main() {
+    let m = map("a", 1, "b", 2);
+    m["c"] = 3;
+    println(m.len());
+    println(m.get("c"));
+    m["a"] = 10;
+    println(m.get("a"));
+    println(m.keys());
+    return 0;
+}

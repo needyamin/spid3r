@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spid3r — Developer Documentation</title>
+<meta name="description" content="Spid3r: a dynamically typed language with a tree-walk interpreter and a bytecode VM, written in dependency-free Rust. Full language reference, standard library, toolchain, and internals.">
+<style>
+:root{
+  --bg:#ffffff; --fg:#1b1f24; --muted:#5b6470; --line:#e7e3ee;
+  --code:#f7f5fc; --kbd:#efeaf7; --accent:#7a3ea8; --accent2:#5b2b86;
+  --th:#f4f0fb; --ok:#0a7d33; --warn-bg:#fff8e6; --warn-bd:#f0d98c; --warn-bar:#e3b341;
+  --card:#fcfaff; --shadow:0 1px 3px rgba(20,10,40,.06);
+  --mono:"SF Mono",ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+}
+html[data-theme="dark"]{
+  --bg:#0f1116; --fg:#e7e8ec; --muted:#a3abbb; --line:#2a2f3a;
+  --code:#161a22; --kbd:#20242e; --accent:#c7a4f0; --accent2:#dcc6ff;
+  --th:#1b1f2a; --ok:#57cf84; --warn-bg:#241f0d; --warn-bd:#6b5a1e; --warn-bar:#e3b341;
+  --card:#141922; --shadow:0 1px 3px rgba(0,0,0,.45);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+a{color:var(--accent2);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:var(--mono);background:var(--kbd);padding:1px 6px;border-radius:5px;font-size:.88em}
+pre{margin:0}
+pre code{display:block;background:var(--code);padding:14px 16px;border-radius:10px;
+  font-family:var(--mono);font-size:13.5px;line-height:1.55;overflow:auto;
+  border:1px solid var(--line)}
+.codewrap{position:relative;margin:14px 0}
+.copy{position:absolute;top:8px;right:8px;border:1px solid var(--line);background:var(--bg);
+  color:var(--muted);border-radius:6px;font-size:12px;padding:3px 8px;cursor:pointer;opacity:.75}
+.copy:hover{opacity:1;color:var(--fg)}
+
+/* layout */
+.shell{display:flex;max-width:1180px;margin:0 auto}
+nav.side{width:250px;flex:0 0 250px;position:sticky;top:0;align-self:flex-start;
+  height:100vh;overflow:auto;padding:24px 14px;border-right:1px solid var(--line)}
+nav.side .brand{font-weight:700;color:var(--fg);font-size:18px;margin-bottom:2px}
+nav.side .brand span{color:var(--accent)}
+nav.side ol{list-style:none;margin:10px 0 0;padding:0;font-size:14px}
+nav.side a{display:block;color:var(--muted);padding:5px 10px;border-radius:6px}
+nav.side a:hover{background:var(--kbd);color:var(--fg);text-decoration:none}
+nav.side a.active{background:var(--th);color:var(--accent2);font-weight:600}
+main{flex:1 1 auto;min-width:0;padding:28px 34px 90px}
+
+/* hero */
+header.hero{background:linear-gradient(135deg,#3b2358,#7a3ea8);color:#fff;
+  border-radius:14px;padding:34px 28px;margin-bottom:26px}
+header.hero h1{margin:0 0 8px;font-size:32px;letter-spacing:.3px}
+header.hero p{margin:4px 0;opacity:.94;max-width:60ch}
+.badges{margin-top:14px}
+.badge{display:inline-block;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.34);
+  padding:3px 11px;border-radius:999px;font-size:12.5px;margin:6px 8px 0 0}
+.cta{margin-top:18px}
+.btn{display:inline-block;background:#fff;color:#4b1f70;font-weight:600;border-radius:8px;
+  padding:9px 16px;margin-right:10px;font-size:14px}
+.btn.ghost{background:rgba(255,255,255,.14);color:#fff;border:1px solid rgba(255,255,255,.4)}
+
+h2{scroll-margin-top:16px;margin:44px 0 10px;font-size:24px;padding-bottom:7px;border-bottom:2px solid var(--line)}
+h3{scroll-margin-top:16px;margin:26px 0 6px;font-size:17.5px;color:var(--accent2)}
+h4{margin:18px 0 4px;font-size:15.5px;color:var(--fg)}
+p.lead{color:var(--muted);margin-top:4px}
+ul,ol{margin:8px 0;padding-left:22px}
+li{margin:4px 0}
+table{border-collapse:collapse;width:100%;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+th{background:var(--th);font-weight:600}
+code b{color:var(--fg)}
+.tag{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.note{background:var(--warn-bg);border:1px solid var(--warn-bd);border-left:4px solid var(--warn-bar);
+  border-radius:8px;padding:12px 16px;margin:16px 0}
+.note b{color:#8a6d1f}
+.good{background:rgba(10,125,51,.07);border:1px solid rgba(10,125,51,.25);border-left:4px solid var(--ok);
+  border-radius:8px;padding:12px 16px;margin:16px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px 26px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;box-shadow:var(--shadow)}
+.card .t{font-weight:700;color:var(--accent2)}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0;font-family:var(--mono);font-size:13px}
+.flow .box{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.flow .box.hi{border-color:var(--accent);color:var(--accent2);font-weight:600}
+.flow .arr{color:var(--muted)}
+footer{margin-top:52px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+.toggle{position:fixed;top:16px;right:18px;z-index:5;border:1px solid var(--line);background:var(--bg);
+  color:var(--fg);border-radius:999px;padding:6px 12px;cursor:pointer;font-size:13px;box-shadow:var(--shadow)}
+@media(max-width:900px){
+  .shell{display:block}
+  nav.side{position:static;width:auto;height:auto;border-right:0;border-bottom:1px solid var(--line)}
+  main{padding:22px 18px 70px}
+  .grid2,.grid3{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<button class="toggle" id="themeBtn">dark</button>
+<div class="shell">
+<nav class="side">
+  <div class="brand">Spid<span>3r</span></div>
+  <div class="tag">language &amp; toolchain docs</div>
+  <ol>
+    <li><a href="#what">What is Spid3r</a></li>
+    <li><a href="#arch">Architecture</a></li>
+    <li><a href="#start">Build &amp; quick start</a></li>
+    <li><a href="#cli">CLI reference</a></li>
+    <li><a href="#syntax">Syntax basics</a></li>
+    <li><a href="#values">Values &amp; truthiness</a></li>
+    <li><a href="#ops">Operators &amp; precedence</a></li>
+    <li><a href="#control">Control flow</a></li>
+    <li><a href="#functions">Functions &amp; closures</a></li>
+    <li><a href="#classes">Classes &amp; interfaces</a></li>
+    <li><a href="#errors">Error handling</a></li>
+    <li><a href="#strings">Strings</a></li>
+    <li><a href="#ds">Data structures</a></li>
+    <li><a href="#modules">Modules</a></li>
+    <li><a href="#concurrency">Concurrency</a></li>
+    <li><a href="#stdlib">Standard library</a></li>
+    <li><a href="#typing">Gradual typing</a></li>
+    <li><a href="#vm">Bytecode VM &amp; .matrixc</a></li>
+    <li><a href="#projects">Projects &amp; dependencies</a></li>
+    <li><a href="#tooling">fmt · bench · debug · gui</a></li>
+    <li><a href="#gc">Memory model &amp; GC</a></li>
+    <li><a href="#env">Environment &amp; exit codes</a></li>
+    <li><a href="#testing">Testing &amp; QA</a></li>
+    <li><a href="#examples">Examples</a></li>
+    <li><a href="#roadmap">Roadmap &amp; limitations</a></li>
+  </ol>
+</nav>
+<main>
+<header class="hero">
+  <h1>Spid3r</h1>
+  <p>A small, dynamically typed language that runs on a Rust host — with a
+     tree-walking reference interpreter <em>and</em> a bytecode compiler + stack VM
+     that are verified to agree. Plain English keywords, real semantics: closures,
+     classes, modules, tasks, 20+ builtin data structures.</p>
+  <div class="badges">
+    <span class="badge">two engines: tree-walk &amp; VM</span>
+    <span class="badge">bytecode compile → exec</span>
+    <span class="badge">task-based concurrency</span>
+    <span class="badge">zero runtime dependencies</span>
+    <span class="badge">250 tests · 23/23 differential</span>
+    <span class="badge">language v1.0</span>
+  </div>
+  <div class="cta">
+    <a class="btn" href="#start">Get started</a>
+    <a class="btn ghost" href="#cli">CLI reference</a>
+  </div>
+</header>
+
+<h2 id="what">1. What is Spid3r</h2>
+<p class="lead">Spid3r uses plain lowercase keywords (<code>fn</code>, <code>let</code>,
+<code>class</code>, <code>spawn</code>, <code>import</code>) but has real semantics:
+dynamic types, closures with upvalues, single-inheritance classes with interfaces,
+structured error handling, modules with visibility, task-based concurrency, a
+standard library, and a full suite of data structures. The whole tree —
+<code>src/</code> — is pure Rust with <strong>no third-party dependencies</strong>.</p>
+<div class="grid3">
+  <div class="card"><div class="t">Two engines, one front end</div>Walks the tree or runs bytecode; the lexer, parser and type/visibility checker are shared, and differential tests pin the engines to identical behavior.</div>
+  <div class="card"><div class="t">Self-contained bytecode</div><code>compile</code> embeds imported modules (keyed by resolved path) so <code>exec</code> runs with no source on disk.</div>
+  <div class="card"><div class="t">Differentially tested</div>Every example runs three ways — tree, VM, and compile+exec — with identical stdout; a 27-program audit probe suite covers edge semantics.</div>
+  <div class="card"><div class="t">Task concurrency</div><code>spawn</code>/<code>await</code>, <code>channel</code>, <code>mutex</code>, <code>ref</code> on a threaded scheduler; tasks report <code>status()</code> and join repeatedly.</div>
+  <div class="card"><div class="t">Data-structure suite</div>Lists, maps, sets, stacks, queues, heaps, tries, trees, graphs, matrices, ring buffers, bags — with higher-order list methods.</div>
+  <div class="card"><div class="t">Validated bytecode</div>Chunks are validated before execution; bad opcodes or truncated code fail cleanly, never panic.</div>
+</div>
+
+<h2 id="arch">2. Architecture</h2>
+<p>Both engines share a single front end and a single value layer, which is what keeps
+them behaviorally identical.</p>
+<div class="flow">
+  <span class="box">.matrix source</span><span class="arr">→</span>
+  <span class="box">lexer</span><span class="arr">→</span>
+  <span class="box">parser → AST</span><span class="arr">→</span>
+  <span class="box">semantic checker</span><span class="arr">→</span>
+  <span class="box hi">tree-walk interpreter</span>
+  <span class="arr">&nbsp;or&nbsp;</span>
+  <span class="box hi">compiler → bytecode VM</span>
+</div>
+<ul>
+  <li><code>value::collections</code> implements every value operation (construct, method
+      dispatch, indexing, iteration, equality, display) once; both engines call it.</li>
+  <li>The compiler emits a clox-style <code>Chunk</code>; the VM is a register-free stack
+      machine where each call frame's <code>slots</code> is both operand stack and locals.
+      Captured locals live in per-activation heap cells, so closures are correct across
+      recursion, repeated calls, loop iterations, and spawned tasks.</li>
+  <li>Differential testing (<a href="#testing">§22</a>) proves the outputs match; the
+      2026-10 audit (see <a href="#testing">§22</a>) closed the last known engine
+      divergences around closures.</li>
+</ul>
+
+<h2 id="start">3. Build &amp; quick start</h2>
+<p>Requires a Rust toolchain (edition 2021). From the crate root:</p>
+<div class="codewrap"><pre><code>cargo build                 # debug binary   → target/debug/spid3r(.exe)
+cargo build --release       # optimized      → target/release/spid3r(.exe)
+cargo test                  # unit + integration + differential tests</code></pre></div>
+<h3>30-second tour</h3>
+<div class="codewrap"><pre><code>// hello.matrix — the smallest Spid3r program.
+fn main() {
+    println("hello");
+    return 0;
+}</code></pre></div>
+<div class="codewrap"><pre><code>$ spid3r run hello.matrix
+hello
+$ spid3r run --engine vm hello.matrix     # same output on the bytecode VM
+hello
+$ spid3r compile hello.matrix             # writes hello.matrixc
+$ spid3r exec hello.matrixc               # runs the bytecode, no source needed
+hello</code></pre></div>
+<p>A taste of the language — closures, collections, classes, and error handling:</p>
+<div class="codewrap"><pre><code>class Animal {
+    public let name;
+    private let noise;
+    fn new(name, noise) { self.name = name; self.noise = noise; }
+    public fn speak(self) -&gt; string { return self.name + " says " + self.noise; }
+}
+
+fn main() {
+    let adder = fn(x) { return x + 100; };
+    println(adder(5));                        // 105
+
+    let orders = stack();
+    orders.push("review"); orders.push("merge");
+    println(orders.pop());                    // merge
+
+    println(new Animal("Rex", "woof").speak());  // Rex says woof
+
+    try { print(10 / 0); } catch (e) { println("caught: " + e); }
+    return 0;
+}</code></pre></div>
+
+<h2 id="cli">4. CLI reference</h2>
+<p>Exit codes: <code>0</code> success · <code>1</code> user-program error ·
+<code>2</code> usage error (<code>spid3r help</code> prints this table).</p>
+<table>
+  <tr><th>Command</th><th>What it does</th></tr>
+  <tr><td><code>run [--engine tree|vm] &lt;file.matrix&gt; [args…]</code></td><td>Compile + run. <code>tree</code> (default) is the interpreter; <code>vm</code> compiles to bytecode. <code>--no-opt</code> disables the bytecode optimizer. Positional arguments after the file become the program's <code>args()</code>.</td></tr>
+  <tr><td><code>check &lt;file.matrix&gt;</code></td><td>Lex + parse + semantic check only (also validates gradual type annotations). No run.</td></tr>
+  <tr><td><code>compile &lt;file.matrix&gt; [-o out] [--dump]</code></td><td>Write bytecode (<code>.matrixc</code>); <code>--dump</code> prints the disassembly. Imports are embedded — the file is self-contained.</td></tr>
+  <tr><td><code>exec &lt;file.matrixc&gt;</code></td><td>Run bytecode on the VM; needs no <code>.matrix</code> source.</td></tr>
+  <tr><td><code>build &lt;file.matrix&gt; [-o out] [--target triple] [--release]</code></td><td>Native AOT backend (<code>native</code> feature, LLVM 18.1+): compile to a standalone machine-code executable.</td></tr>
+  <tr><td><code>gui &lt;file.matrix&gt; [--html page.html] [--dry-run]</code></td><td>Run in a desktop webview window (<code>gui</code> feature). <code>--dry-run</code> replays the whole bridge headlessly.</td></tr>
+  <tr><td><code>debug &lt;file.matrix&gt; [--break L[,L…]] [--commands FILE]</code></td><td>Line debugger on the VM: breakpoints, <code>step</code>/<code>next</code>/<code>finish</code>, <code>backtrace</code>, <code>locals</code>, source listing. Scriptable via <code>--commands</code>.</td></tr>
+  <tr><td><code>test</code></td><td>Run every <code>examples/*.matrix</code> in all three engines and compare (inside a project: <code>tests/*.matrix</code> per workspace member).</td></tr>
+  <tr><td><code>bench [--engine tree|vm] [--runs N] [--compare] [files…]</code></td><td>Time <code>benchmarks/*.matrix</code>, best of N; <code>--compare</code> also asserts tree == vm output.</td></tr>
+  <tr><td><code>fmt [--check] [files…]</code></td><td>Canonical formatting, in place; provably preserves the token stream. <code>--check</code> exits 1 when a file differs.</td></tr>
+  <tr><td><code>init [dir]</code></td><td>Scaffold <code>spider.toml</code> + <code>src/main.matrix</code> (+ <code>.gitignore</code>).</td></tr>
+  <tr><td><code>install</code></td><td>Vendor path/git dependencies into <code>vendor/</code>, write <code>spider.lock</code> (commit-pinned, SHA-256 per dependency); verifies registry <code>sha256.txt</code> when present.</td></tr>
+  <tr><td><code>dist [-o out] [--no-opt]</code></td><td>Compile the project entry (from <code>spider.toml</code>) into <code>target/&lt;package&gt;.matrixc</code>.</td></tr>
+  <tr><td><code>pack [-o out.tar]</code></td><td>Archive <code>spider.toml</code> + <code>src/</code> into <code>dist/&lt;name&gt;-&lt;version&gt;.tar</code>; prints the archive hash and <code>sha256(tree)</code> for the registry.</td></tr>
+  <tr><td><code>unpack &lt;archive&gt; [dir]</code></td><td>Extract a packed project (path-traversal-guarded).</td></tr>
+  <tr><td><code>repl</code></td><td>Interactive read-eval-print loop.</td></tr>
+  <tr><td><code>version</code> / <code>help</code></td><td>Version information / this help.</td></tr>
+</table>
+
+<h2 id="syntax">5. Syntax basics</h2>
+<ul>
+  <li><strong>Comments:</strong> <code>// line comment</code> and <code>/* block comment */</code> (block comments do not nest). A UTF-8 BOM at the start of a file is tolerated.</li>
+  <li><strong>Identifiers</strong> are ASCII: start with a letter or <code>_</code>, continue with letters/digits/<code>_</code>; case-sensitive.</li>
+  <li><strong>Keywords</strong> are reserved, lowercase, case-sensitive (a keyword inside a string is just text):
+    <code>fn let const if elif else while for in break continue return true false null and or not import try catch finally throw class interface new self public private spawn async await extends implements</code>.
+    Type/constructor names (<code>list</code>, <code>map</code>, <code>heap</code>, …) are <em>not</em> keywords — they are ordinary globals and can be shadowed.</li>
+  <li><strong>String escapes:</strong> <code>\n</code> <code>\t</code> <code>\\</code> <code>\"</code>. Any other escape is a lex error.</li>
+  <li><strong>Statements end in <code>;</code></strong> — except block-bearing forms
+      (<code>if/elif/else</code>, <code>while</code>, <code>for</code>, <code>try</code>,
+      blocks) and top-level declarations (<code>fn</code>, <code>class</code>,
+      <code>interface</code>; <code>import</code> ends in <code>;</code>).
+      <span class="tag">known quirk</span> a <code>fn</code> declaration <em>inside a
+      block</em> currently parses as an expression statement and needs a trailing
+      <code>;</code>; prefer <code>let f = fn(x) { … };</code> for local functions.</li>
+  <li><strong>Dynamic typing</strong> with optional gradual annotations (<a href="#typing">§17</a>).</li>
+</ul>
+
+<h2 id="values">6. Values, types &amp; truthiness</h2>
+<p>Primitives: <code>int</code> (64-bit signed), <code>float</code> (64-bit IEEE),
+<code>bool</code>, <code>string</code> (immutable, UTF-8), <code>null</code>. Everything
+else is a builtin object (collections, options/results, classes/instances, tasks,
+channels, …). Use <code>type_of(x)</code> for a value's type name and
+<code>string(x)</code> to stringify.</p>
+<h3>Truthiness (used by <code>if</code>, <code>while</code>, <code>and</code>/<code>or</code>/<code>not</code>, <code>bool()</code>)</h3>
+<table>
+  <tr><th>Value</th><th>Truthy when</th></tr>
+  <tr><td><code>bool</code></td><td>its own value</td></tr>
+  <tr><td><code>null</code></td><td>never</td></tr>
+  <tr><td><code>int</code> / <code>float</code></td><td>non-zero (<code>0</code>, <code>0.0</code> are false)</td></tr>
+  <tr><td><code>string</code></td><td>non-empty</td></tr>
+  <tr><td><code>option</code></td><td><code>some(…)</code> (none is false)</td></tr>
+  <tr><td>everything else — containers, <code>result</code>, tasks, instances</td><td>always true</td></tr>
+</table>
+<div class="note"><b>Numeric details.</b> <code>int + float</code> promotes to
+<code>float</code>, but <code>int / int</code> truncates toward zero (<code>7 / 2</code>
+is <code>3</code>; <code>-7 / 2</code> is <code>-3</code>). Division or modulo by zero
+throws. Integer arithmetic <strong>wraps</strong> on overflow (i64 semantics) —
+<code>9223372036854775807 + 1</code> is <code>-9223372036854775808</code>. An integer
+literal outside i64 range is a clean lex error. <code>1 == 1.0</code> is true.</div>
+
+<h2 id="ops">7. Operators &amp; precedence</h2>
+<div class="grid2">
+<div>
+<p class="tag">Arithmetic</p><p><code>+  -  *  /  %</code></p>
+<p class="tag">Comparison</p><p><code>==  !=  &lt;  &lt;=  &gt;  &gt;=</code></p>
+<p class="tag">Logical</p><p><code>and  or  not</code> (short-circuit <code>and</code>/<code>or</code>)</p>
+<p class="tag">Unary</p><p><code>-x</code> · <code>not x</code> · <code>await x</code> · <code>spawn fn(){…}</code></p>
+</div>
+<div>
+<p class="tag">Assignment (right-associative)</p><p><code>=  +=  -=  *=  /=  %=</code></p>
+<p class="tag">Members &amp; indexing</p><p><code>obj.field</code> · <code>obj.method()</code> · <code>xs[i]</code> · <code>m[k] = v</code> · <code>mx[i][j] = v</code></p>
+<p class="tag">Construction</p><p><code>new Class(...)</code> · <code>[a, b]</code> · <code>list(...)</code> · <code>fn(x){…}</code></p>
+<p class="tag">Note</p><p>There is no <code>!</code>, no <code>++</code>, no <code>**</code>/<code>^</code> — use <code>not</code>, <code>x += 1</code>, and <code>pow(b, e)</code>.</p>
+</div>
+</div>
+<p><strong>Precedence</strong> (tightest first): postfix (call · index · field · method)
+→ unary <code>not</code>/<code>-</code>/<code>await</code>/<code>spawn</code> →
+<code>* / %</code> → <code>+ -</code> → comparisons → <code>and</code> → <code>or</code> →
+assignment (right-associative). Comparison chains are left-associative
+(<code>a &lt; b &lt; c</code> parses as <code>(a &lt; b) &lt; c</code>) — prefer
+<code>a &lt; b and b &lt; c</code>.</p>
+<div class="codewrap"><pre><code>fn main() {
+    println(10 + 0.5);        // 10.5   int + float -&gt; float
+    println(7 / 2);           // 3      int / int truncates
+    println(7.0 / 2);         // 3.5    a float operand -&gt; float
+    println(7 % 3);           // 1
+    println(2 * (3 + 4));     // 14
+    println(true and false);  // false
+    println(not true);        // false
+    println(1 &lt; 2 or 9 &lt; 3);  // true
+    let a = 5; a += 3;
+    println(a);               // 8
+    return 0;
+}</code></pre></div>
+
+<h2 id="control">8. Control flow</h2>
+<p><code>if / elif / else</code>, <code>while</code>, two forms of <code>for</code>
+(iterate a collection, or a C-style header), and <code>break</code> /
+<code>continue</code>. <code>else</code> always binds to the nearest unfinished
+<code>if</code>.</p>
+<div class="codewrap"><pre><code>fn main() {
+    for x in [1, 2, 3] { println(x); }                // 1 2 3
+    for let k = 0; k &lt; 3; k = k + 1 { println(k); }   // 0 1 2
+
+    let i = 0;
+    while i &lt; 2 { println(i); i += 1; }               // 0 1
+
+    let n = 2;
+    if n == 2 { println("two"); }
+    elif n == 1 { println("one"); }
+    else { println("other"); }                        // two
+    return 0;
+}</code></pre></div>
+<p><strong>What <code>for</code> iterates:</strong> lists, vecs, tuples, deques, ring
+buffers, stacks (top first), queues, sets, bag members, map <em>values</em> (insertion
+order), matrix cells (row-major), graph nodes, and string <em>characters</em>.
+<code>break</code>/<code>continue</code> work in all three loop forms.</p>
+
+<h2 id="functions">9. Functions &amp; closures</h2>
+<p>Functions are first-class values and may be anonymous <code>fn(x){…}</code> expressions.
+Recursion, nesting, and capturing are all supported. <code>async fn</code> marks a
+function that <code>await</code>s — a non-async function that uses <code>await</code> is a
+semantic error.</p>
+<div class="codewrap"><pre><code>fn make_adder(base) {
+    return fn(x) { return x + base; };   // captures `base`
+}
+fn fact(n) {
+    if n &lt;= 1 { return 1; }
+    return n * fact(n - 1);              // recursion
+}
+fn main() {
+    let add100 = make_adder(100);
+    println(add100(5));   // 105  (closure kept its captured value)
+    println(fact(5));     // 120
+    let g = fact;         // functions are values
+    println(g(4));        // 24
+    return 0;
+}</code></pre></div>
+<h3>Capture rules (identical on both engines)</h3>
+<ul>
+  <li><strong>Mutation is visible.</strong> Closures capture the <em>binding</em>: a
+      closure that writes a captured variable, and later reads through another closure
+      over the same binding, see each other's writes.</li>
+  <li><strong><code>for x in …</code> rebinds per iteration.</strong> Closures created in
+      iteration N capture that iteration's value: pushing three closures over
+      <code>[0, 1, 2]</code> yields <code>0, 1, 2</code>.</li>
+  <li><strong><code>while</code> and C-style <code>for</code> share one binding.</strong>
+      Closures created there all observe the final value of the loop variable — bind a
+      fresh <code>let</code> inside the body when you need per-iteration snapshots.</li>
+  <li>Every activation of a closure gets its own captured state: recursive functions and
+      factories like <code>make_adder</code> never leak state between calls.</li>
+</ul>
+<div class="note"><b>Local functions.</b> A <code>fn</code> declaration inside a block
+currently parses as an expression statement and needs a trailing <code>;</code> — bind
+local functions with <code>let f = fn(x) { … };</code> instead. Top-level
+<code>fn</code> declarations never need a semicolon.</div>
+
+<h2 id="classes">10. Classes &amp; interfaces</h2>
+<p>Classes support single inheritance (<code>extends</code>) and interfaces
+(<code>implements</code>). Fields and methods are <code>public</code> (reachable from
+outside) or <code>private</code> (<strong>the default</strong>) — the semantic checker
+rejects out-of-class access to private members. <code>self</code> is the explicit
+receiver parameter of every method; the constructor is the method named <code>new</code>,
+invoked with <code>new Class(...)</code> (a shorthand <code>new(params) { … }</code>
+member is also accepted). Methods resolve through the parent chain, so overrides
+dispatch polymorphically.</p>
+<div class="codewrap"><pre><code>class Animal {
+    public let name;
+    private let noise;
+    fn new(name, noise) { self.name = name; self.noise = noise; }
+    public fn speak(self) -&gt; string { return self.name + " says " + self.noise; }
+}
+class Dog extends Animal {
+    fn new(name) { self.name = name; self.noise = "woof"; }
+    public fn fetch(self) -&gt; string { return self.name + " fetches"; }
+}
+fn main() {
+    let d = new Dog("Rex");
+    println(d.speak());    // dog overrides Animal::speak
+    println(d.fetch());    // Rex fetches
+    // println(d.noise);   // semantic error: private member
+    return 0;
+}</code></pre></div>
+<p>Interfaces declare method signatures (each ends with <code>;</code>); classes opt in
+with <code>implements</code>. Dispatch is by method name, so a variable may hold any
+implementation.</p>
+<div class="codewrap"><pre><code>interface Named {
+    fn name(self) -&gt; string;
+}
+class Team implements Named {
+    public let label;
+    fn new(label) { self.label = label; }
+    public fn name(self) -&gt; string { return "team-" + self.label; }
+}
+fn main() {
+    let t = new Team("core");
+    println(t.name());   // team-core
+    return 0;
+}</code></pre></div>
+
+<h2 id="errors">11. Error handling</h2>
+<p>Errors are values. <code>throw</code> raises any value; <code>try</code> /
+<code>catch (e)</code> / <code>finally</code> catch it (<code>finally</code> always runs,
+even on <code>return</code> from inside <code>try</code> or <code>catch</code>; at least
+one of catch/finally is required). Uncaught errors print a message with source position
+and a call-stack trace, and exit with code 1.</p>
+<p>Two sum types model expected failure without throwing:</p>
+<table>
+  <tr><th>Type</th><th>Constructors</th><th>Methods</th></tr>
+  <tr><td><code>option</code></td><td><code>some(v)</code>, <code>none</code></td><td><code>is_some</code>, <code>is_none</code>, <code>unwrap</code> (throws on none), <code>unwrap_or(d)</code></td></tr>
+  <tr><td><code>result</code></td><td><code>ok(v)</code>, <code>err(e)</code></td><td><code>is_ok</code>, <code>is_err</code>, <code>unwrap</code> (throws on err), <code>unwrap_or(d)</code>, <code>unwrap_err</code></td></tr>
+</table>
+<div class="codewrap"><pre><code>fn parse_age(s) {
+    let n = int(s);
+    if n &lt; 0 { return err("age cannot be negative"); }
+    return ok(n);
+}
+fn main() {
+    try { print(10 / 0); }                    // dividing by zero throws
+    catch (error) { eprint("caught: " + error); }
+    finally { println("done"); }              // done
+
+    let r = parse_age("42");
+    if r.is_ok() { println("ok: " + string(r.unwrap())); }   // ok: 42
+
+    let bad = parse_age("-1");
+    println(bad.is_err());                    // true
+
+    let none_val = none;
+    try { none_val.unwrap(); }                // unwrap on none throws
+    catch (e) { println("caught: " + e); }    // caught: unwrap on none
+    return 0;
+}</code></pre></div>
+<div class="good"><b>Convention.</b> File and process builtins (<code>read_file</code>,
+<code>write_file</code>, <code>spawn_process</code>) return <code>result</code> values —
+branch with <code>is_ok</code>/<code>is_err</code> instead of <code>try</code>. Argument
+and type errors (e.g. <code>write_file(1, "x")</code>) still throw.</div>
+
+<h2 id="strings">12. Strings</h2>
+<p>Strings are immutable UTF-8 values with a dot-method suite. Indexes and lengths are in
+characters, not bytes.</p>
+<table>
+  <tr><th>Group</th><th>Methods</th></tr>
+  <tr><td>Size</td><td><code>len</code>, <code>is_empty</code></td></tr>
+  <tr><td>Slicing</td><td><code>slice(a[, b])</code> (bounds-checked, char-indexed), <code>chars</code> (list of 1-char strings), <code>reverse</code></td></tr>
+  <tr><td>Case &amp; trim</td><td><code>upper</code>, <code>lower</code>, <code>trim</code>, <code>ltrim</code>, <code>rtrim</code></td></tr>
+  <tr><td>Search</td><td><code>contains</code>, <code>starts_with</code>, <code>ends_with</code>, <code>index_of(sub)</code> (−1 when absent)</td></tr>
+  <tr><td>Build</td><td><code>split(sep)</code> (list of strings), <code>replace(from, to)</code>, <code>repeat(n)</code>, <code>join</code> (on lists), <code>pad_left(w, pad)</code>, <code>pad_right(w, pad)</code></td></tr>
+  <tr><td>Format</td><td><code>format(args…)</code> — <code>{}</code> placeholders filled left to right, <code>{{</code>/<code>}}</code> escape braces</td></tr>
+</table>
+<div class="codewrap"><pre><code>fn main() {
+    println("a={} b={}".format(1, "two"));   // a=1 b=two
+    println("  pad  ".trim().pad_left(8, ".")); // ...pad
+    println("k=v".split("=").join("|"));     // k|v
+    println("héllo".len());                  // 5 (characters)
+    println("abc".reverse());                // cba
+    return 0;
+}</code></pre></div>
+<p class="lead">String concatenation is <code>+</code> between two strings only — convert
+with <code>string(x)</code> or use <code>format</code>. String indexing
+<code>s[i]</code> is not supported; use <code>s.slice(i, i+1)</code> or
+<code>s.chars()</code>.</p>
+
+<h2 id="ds">13. Data structures</h2>
+<p>Every container is a value created by calling a global constructor. They share a common
+verb set — <code>len</code>, <code>is_empty</code>, <code>clear</code>, and where it makes
+sense <code>push</code> / <code>pop</code> / <code>peek</code> / <code>get</code> /
+<code>contains</code>. Misuse (e.g. <code>pop</code> on an empty <code>stack</code>, an
+out-of-range <code>get</code>, a duplicate in a <code>bst</code>) throws a descriptive,
+catchable error.</p>
+<div class="grid2">
+<div>
+<p class="tag">Sequences</p>
+<table>
+<tr><th>Type</th><th>Notes</th></tr>
+<tr><td><code>list(a,…)</code></td><td>Ordered; <code>xs[i]</code> and <code>xs[i] = v</code>, <code>get/set</code>, <code>push/pop</code>, <code>remove/remove_at</code>, <code>sort/sorted</code>, <code>reverse/reversed</code>, <code>contains</code>, <code>index_of</code>, <code>slice</code>, <code>join(sep)</code>, <code>append(other)</code>.</td></tr>
+<tr><td><code>vec()</code></td><td>Resizable array; <code>push_back/push_front</code>, <code>pop_back/pop_front</code>, <code>get/set</code>, <code>v[i] = x</code>, <code>contains</code>.</td></tr>
+<tr><td><code>deque()</code></td><td>Double-ended; <code>push_front/back</code>, <code>pop_front/back</code>, <code>peek_front</code>.</td></tr>
+<tr><td><code>tuple(a,…)</code></td><td>Fixed-length grouping; indexable <code>t[i]</code> (immutable).</td></tr>
+<tr><td><code>ring_buffer(n)</code></td><td>Fixed capacity; overwrites the oldest when full.</td></tr>
+</table>
+<p class="tag">Stacks &amp; queues</p>
+<table>
+<tr><td><code>stack()</code></td><td>LIFO: <code>push/pop/peek</code>.</td></tr>
+<tr><td><code>queue()</code></td><td>FIFO: <code>push</code> (enqueue), <code>pop</code> (dequeue), <code>peek_front</code>.</td></tr>
+<tr><td><code>priority_queue("min"|"max")</code></td><td>Heap-backed: <code>push/pop/peek</code>.</td></tr>
+</table>
+</div>
+<div>
+<p class="tag">Associative</p>
+<table>
+<tr><td><code>map(k,v,…)</code></td><td>Insertion-order map; <code>get/set/remove/delete</code>, index read <code>m[k]</code> <em>and</em> index assign <code>m[k] = v</code>, <code>has/contains</code>, <code>keys/values/items</code>.</td></tr>
+<tr><td><code>set(a,…)</code></td><td>Unique members; <code>add/remove</code>, <code>union/intersection/difference</code>, <code>is_subset/is_superset</code>, <code>contains</code>.</td></tr>
+<tr><td><code>bag()</code></td><td>Multiset; <code>add</code>, <code>count</code>, <code>remove</code>.</td></tr>
+<tr><td><code>hash_table(n)</code></td><td>Open addressing; <code>get/set/remove/contains/exists</code>, index read/assign.</td></tr>
+</table>
+<p class="tag">Linked, trees, graphs, grid</p>
+<table>
+<tr><td><code>linked_list()</code> · <code>singly_linked_list()</code> · <code>doubly_linked_list()</code></td><td>Node lists; <code>push_front/back</code>, <code>pop_front/back</code>, <code>insert_after</code>, <code>set_at/remove_at</code>, <code>peek</code>, <code>reverse</code>.</td></tr>
+<tr><td><code>binary_tree(a,…)</code></td><td>Level-order built; <code>insert/remove/find/min/max/traverse/depth/n_nodes/n_leaves/height</code>.</td></tr>
+<tr><td><code>bst()</code></td><td>Binary search tree (duplicate keys throw); <code>insert/remove/get/min/max/find_closest/get_ith/traverse("inorder"|"preorder"|"postorder")/depth/n_nodes/n_leaves/height</code>.</td></tr>
+<tr><td><code>trie()</code></td><td>Prefix tree of strings; <code>add/exists/remove/collect(prefix)/n_words/is_empty</code>.</td></tr>
+<tr><td><code>heap("min"|"max")</code></td><td><code>push/pop/peek/change_priority/merge</code>.</td></tr>
+<tr><td><code>matrix(r,c,fill)</code></td><td>2-D grid; element <code>m[i][j]</code> read and assign.</td></tr>
+<tr><td><code>graph("directed"|"undirected")</code></td><td><code>add_node/remove_node/add_edge/remove_edge/neighbors/n_nodes/n_edges/bfs/dfs/path_exists/find_path/is_connected/cycle/replace/clear</code>.</td></tr>
+</table>
+</div>
+</div>
+<h3>Higher-order list methods</h3>
+<p>Lists take Spid3r functions as callbacks. The list is <strong>snapshotted</strong> first,
+so a callback cannot corrupt the iteration by mutating the list mid-flight.</p>
+<table>
+  <tr><th>Method</th><th>Meaning</th><th>Empty list</th></tr>
+  <tr><td><code>xs.map(f)</code></td><td>new list of <code>f(x)</code> for each x</td><td>empty list</td></tr>
+  <tr><td><code>xs.filter(f)</code></td><td>new list of x where <code>f(x)</code> is truthy</td><td>empty list</td></tr>
+  <tr><td><code>xs.reduce(init, f)</code></td><td>fold left: <code>f(acc, x)</code></td><td><code>init</code></td></tr>
+  <tr><td><code>xs.for_each(f)</code></td><td>run <code>f(x)</code> for side effects</td><td>no-op</td></tr>
+  <tr><td><code>xs.all(f)</code> / <code>xs.any(f)</code></td><td>every / any truthy</td><td><code>true</code> / <code>false</code></td></tr>
+</table>
+<div class="codewrap"><pre><code>let xs = list(10, 20, 30);
+println(xs.len());       // 3
+xs.push(40);
+xs.remove_at(1);
+println(xs);             // [10, 30, 40]
+println(xs.map(fn(x) { return x * 2; }));   // [20, 60, 80]
+println(xs.reduce(0, fn(acc, x) { return acc + x; }));  // 80
+
+let m = map("a", 1, "b", 2);
+m["c"] = 3;              // index assignment on maps
+println(m.items());      // [(a, 1), (b, 2), (c, 3)]</code></pre></div>
+
+<h2 id="modules">14. Modules</h2>
+<p><code>import "name";</code> loads another file; only members marked <code>public</code>
+are exported (privacy is enforced by the semantic checker). Imports must appear before
+other declarations. Names resolve next to the importing file first, then along
+<code>SPID3R_PATH</code>, vendored <code>vendor/</code> dependencies, and
+<code>./stdlib</code>.</p>
+<div class="codewrap"><pre><code>// math_util.matrix  — a library module (no fn main)
+public fn square(x) { return x * x; }
+public const LIMIT = 3;
+fn secret()         { return 42; }     // private: not exported
+
+// modules.matrix  — the program
+import "math_util";
+fn main() {
+    println(square(5));   // 25
+    println(LIMIT);       // 3 (public const is immutable in the importer)
+    return 0;             // calling secret() here is a semantic error
+}</code></pre></div>
+<ul>
+  <li><strong>One instance per file.</strong> A module is identified by its resolved path
+      (canonicalized), so <code>import "lib/util"</code> and <code>import "./lib/util"</code>
+      share one instance; its top-level code runs exactly once.</li>
+  <li><strong>Cycles are detected</strong> with a clear diagnostic that prints the full
+      chain (<code>circular import of 'a' (chain: main → a → b → a)</code>) — never a hang.</li>
+  <li>Compile-time resolution errors (module not found) are semantic errors with source
+      positions.</li>
+</ul>
+<div class="note"><b>Self-contained bytecode.</b> When you <code>compile</code> the program,
+every imported module (and its transitive imports) is resolved, checked, and embedded into
+the <code>.matrixc</code> file, keyed by resolved path. Running <code>exec</code> therefore
+needs no <code>.matrix</code> source on disk.</div>
+
+<h2 id="concurrency">15. Concurrency</h2>
+<p><code>spawn fn(){…};</code> runs a function as a task on a threaded scheduler and returns
+a <code>task</code>. <code>await</code> either joins a task or receives one message from a
+channel — and is only legal inside an <code>async fn</code>. Shared state uses
+<code>channel()</code> (unbuffered), <code>mutex(v)</code> (a RAII guard via
+<code>lock()</code>), and <code>ref(v)</code> (a simple cell: <code>get()</code> /
+<code>set()</code>).</p>
+<h3>The <code>task</code> API</h3>
+<table>
+  <tr><th>Member</th><th>Behavior</th></tr>
+  <tr><td><code>await t</code> (in <code>async fn</code>)</td><td>Join the task: returns its value; a failed task re-raises its error to the awaiter.</td></tr>
+  <tr><td><code>t.status()</code></td><td><code>"running"</code> · <code>"done"</code> · <code>"failed"</code> — never blocks.</td></tr>
+  <tr><td><code>t.join()</code></td><td>Block until finished, return the value (or raise the task's error). Repeatable: joining twice returns the same value.</td></tr>
+  <tr><td><code>t.is_done()</code></td><td>Non-blocking finished check.</td></tr>
+</table>
+<p class="lead">A task that throws does not crash the program: the error is stored, shown
+by <code>status() == "failed"</code>, and re-raised when you <code>join</code>/<code>await</code>
+— so you can <code>try</code>/<code>catch</code> it on the joining side.</p>
+<div class="codewrap"><pre><code>async fn settle(t) { return await t; }
+
+fn main() {
+    let ch = channel();
+    spawn fn() { ch.send(1); ch.send(2); };
+    println(ch.recv());                   // 1
+    println(ch.recv());                   // 2
+
+    let t = spawn fn() { return 7; };
+    println(settle(t));                   // 7
+
+    let bad = spawn fn() { throw "task-error"; };
+    sleep_ms(30);
+    println(bad.status());                // failed
+    try { bad.join(); } catch (e) { println("caught " + e); }  // caught task-error
+    return 0;
+}</code></pre></div>
+<p class="lead">Channel methods: <code>send(v)</code>, <code>recv()</code> (blocks),
+<code>try_recv()</code>, <code>state()</code>, <code>len()</code>. Also available:
+<code>task_count()</code>, <code>sleep_ms(n)</code>, <code>yield()</code>, and
+<code>spawn_process(cmd, args)</code> (synchronous, returns <code>ok(exit_code)</code> /
+<code>err(msg)</code>, passes argv directly — no shell).</p>
+
+<h2 id="stdlib">16. Standard library reference</h2>
+<p>Global functions available in every program. They are ordinary globals (not keywords),
+so a user declaration of the same name shadows the builtin.</p>
+<table>
+  <tr><th>Function</th><th>Returns</th><th>Notes</th></tr>
+  <tr><td><code>print(x)</code> · <code>println(x)</code></td><td>null</td><td>Display form, no / with trailing newline.</td></tr>
+  <tr><td><code>eprint(x)</code></td><td>null</td><td>stderr, no trailing newline. Rust's stderr is unbuffered.</td></tr>
+  <tr><td><code>read_line()</code></td><td>string / null</td><td>One line from stdin (<code>null</code> at EOF); strips line endings.</td></tr>
+  <tr><td><code>read_file(path)</code></td><td><code>result</code></td><td><code>ok(text)</code> / <code>err(msg)</code>.</td></tr>
+  <tr><td><code>write_file(path, text)</code></td><td><code>result</code></td><td><code>ok(null)</code> / <code>err(msg)</code>.</td></tr>
+  <tr><td><code>file_exists(path)</code></td><td>bool</td><td>True if the path exists — files <em>and</em> directories.</td></tr>
+  <tr><td><code>env(name)</code></td><td><code>option</code></td><td><code>some(value)</code> / <code>none</code>.</td></tr>
+  <tr><td><code>args()</code></td><td>list of strings</td><td>The arguments after the script path on the <code>spid3r run</code> command line.</td></tr>
+  <tr><td><code>sleep_ms(n)</code></td><td>null</td><td>Sleep; yields the task.</td></tr>
+  <tr><td><code>now()</code></td><td>int</td><td>Monotonic milliseconds from the process's first <code>now()</code> call (timing, not wall-clock).</td></tr>
+  <tr><td><code>spawn_process(cmd, args)</code></td><td><code>result</code></td><td>Run to completion; <code>ok(exit_code)</code> / <code>err(msg)</code>. No shell, no injection surface.</td></tr>
+  <tr><td><code>yield()</code> · <code>task_count()</code></td><td>null · int</td><td>Cooperative yield; live scheduler tasks.</td></tr>
+  <tr><td><code>abs(x)</code> · <code>sqrt(x)</code> · <code>pow(b, e)</code></td><td>number</td><td><code>pow</code> returns float; <code>sqrt</code> of a negative is NaN.</td></tr>
+  <tr><td><code>min(a,b)</code> · <code>max(a,b)</code></td><td>number</td><td>Mixed int/float compares numerically; ties keep the first argument.</td></tr>
+  <tr><td><code>random_int(lo, hi)</code></td><td>int</td><td>Inclusive range, seeded per thread from real entropy (differs across runs). Full i64 range is safe.</td></tr>
+  <tr><td><code>int(x)</code> · <code>float(x)</code> · <code>string(x)</code> · <code>bool(x)</code></td><td>converted</td><td><code>int</code>: strings are trimmed and parsed (error on garbage), floats truncate toward zero; <code>bool</code> uses the truthiness table (§6).</td></tr>
+  <tr><td><code>json_parse(text)</code></td><td>value</td><td>Objects → <code>map</code>, arrays → <code>list</code>. Supports <code>\uXXXX</code> escapes and surrogate pairs. Nesting capped at 512 levels (clean error, no stack overflow).</td></tr>
+  <tr><td><code>json_write(v)</code></td><td>string</td><td>Round-trips through <code>json_parse</code>. Non-finite floats are an error; keys and control characters are escaped; depth capped at 512 (a self-referential container errors instead of hanging).</td></tr>
+  <tr><td><code>len(x)</code></td><td>int</td><td>Collections and strings; throws for numbers/null.</td></tr>
+  <tr><td><code>type_of(x)</code></td><td>string</td><td><code>int</code>, <code>float</code>, <code>bool</code>, <code>string</code>, <code>null</code>, <code>list</code>, <code>map</code>, <code>option</code>, <code>result</code>, <code>task</code>, …</td></tr>
+  <tr><td><code>assert(cond[, msg])</code> · <code>assert_eq(a, b[, msg])</code></td><td>null</td><td>Throw with a descriptive message on failure (used by <code>tests/*.matrix</code>).</td></tr>
+  <tr><td><code>gc_collect()</code> · <code>gc_live_cells()</code></td><td>int</td><td>Force a cycle-collection pass; inspect live tracked cells (§21).</td></tr>
+  <tr><td><code>weak(v)</code> · <code>deref(w)</code></td><td>weak / value</td><td>Non-owning reference for back-edges the collector does not trace (§21).</td></tr>
+</table>
+<p class="lead"><code>println</code> renders values in their display form (e.g.
+<code>[10, 30, 40]</code>, <code>map{a: 1}</code>, <code>some(5)</code>,
+<code>ok(1)</code>).</p>
+
+<h2 id="typing">17. Gradual typing</h2>
+<p>Annotations are optional everywhere — unannotated code stays fully dynamic — but when
+present they are <strong>enforced by <code>spid3r check</code> and before every run</strong>:</p>
+<div class="codewrap"><pre><code>fn add(a: int, b: int) -&gt; int {
+    return a + b;
+}
+let count: int = 0;
+let name: string = "spid3r";
+
+class Point {
+    public let x: float;
+    public let y: float;
+    fn new(x: float, y: float) { self.x = x; self.y = y; }
+}</code></pre></div>
+<ul>
+  <li>Checked positions: <code>let</code>/<code>const</code> bindings, parameters, return
+      types, and class fields.</li>
+  <li><code>int</code> widens to <code>float</code>; <code>any</code> opts out for a
+      binding.</li>
+  <li>Mismatched assignment, call arguments, returns, and field writes are rejected at
+      compile time with positions — before any code runs.</li>
+</ul>
+
+<h2 id="vm">18. Bytecode VM &amp; the <code>.matrixc</code> format</h2>
+<p>The compiler lowers the checked AST into a compact, clox-style <code>Chunk</code> — code
+bytes plus constant, function, and class pools, with per-instruction spans for error
+messages. The VM is a register-free stack machine: each call frame's <code>slots</code> is
+both its operand stack and its locals. Closures carry heap <em>upvalue cells</em>: captured
+locals of a frame route reads/writes through a shared cell, the cell is created fresh per
+activation, loop iterations re-capture per-iteration bindings, and scope exits release the
+routing — together these keep closures correct across recursion, loops, and
+<code>spawn</code>ed tasks, with semantics identical to the tree engine. Every value
+operation (construct, method dispatch, indexing, iteration, equality, display) is delegated
+to the shared <code>value::collections</code> layer.</p>
+<p><code>compile</code> writes a <code>.matrixc</code> — a serialized script function,
+little-endian, beginning with a magic header so corrupt files are rejected with a clean
+diagnostic instead of a crash:</p>
+<div class="codewrap"><pre><code>.matrixc      ::= b"SPID3R"  version:u16  VmFunc
+
+VmFunc         ::= name:str?  arity:u64  is_async:u8
+                   upvalue_slots:u8[]  own_upvalues:u8  Chunk
+Chunk          ::= code:bytes
+                   constants:value[]          # scalars only: 0=int 1=float 2=string
+                   functions:VmFuncProto[]
+                   classes:VmClassProto[]
+                   inst_offsets:u64[]   inst_spans:Span[]
+                   modules: embedded[]        # imports, keyed by resolved path
+EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre></div>
+<p><strong>Safety.</strong> Before a chunk runs, it is validated: opcodes are decoded through
+a safe lookup (no <code>mem::transmute</code>), and the validator rejects invalid opcodes,
+truncated instructions, out-of-range constant/function/class references, and jump targets
+that don't land on an instruction boundary. Pool reads and jumps are bounds-checked at run
+time too, so stack underflow and bad jumps become runtime errors — never panics.</p>
+<p><strong>Optimizer.</strong> On by default (<code>--no-opt</code> to disable): constant
+folding reuses the interpreter's own arithmetic so folded results and errors match exactly
+(<code>1/0</code> is never folded), peephole cleanup (<code>Jump +0</code>,
+push-then-pop), static branch folding, and dead-code elimination (skipped inside
+<code>try</code> chunks).</p>
+<p class="lead">Full reference: <a href="docs/BYTECODE.md">docs/BYTECODE.md</a>.</p>
+
+<h2 id="projects">19. Projects &amp; dependencies</h2>
+<p><code>spid3r init myproj</code> scaffolds a project: a <code>spider.toml</code> manifest
+(named from the directory), <code>src/main.matrix</code>, and a <code>.gitignore</code>.</p>
+<div class="codewrap"><pre><code># spider.toml
+[package]
+name = "myproj"
+version = "0.1.0"
+entry = "src/main.matrix"      # what `spid3r dist` / `run` (no file) builds
+
+[dependencies]
+mathlib  = { path = "../mathlib" }             # path dependency
+extras   = { git = "https://example/extras", rev = "main" }   # git dependency
+serde    = { version = "^1.0" }                # local registry ($SPID3R_REGISTRY)
+</code></pre></div>
+<ul>
+  <li><code>spid3r install</code> vendors every dependency's <code>src/</code> into
+      <code>vendor/&lt;name&gt;/</code> and writes a deterministic <code>spider.lock</code>
+      (git deps are pinned to the resolved commit; every vendored file is covered by a
+      SHA-256 tree hash). Re-running is idempotent; a tampered or stale <code>vendor/</code>
+      tree is re-synced.</li>
+  <li><strong>Version constraints:</strong> <code>^1.0</code> (same major),
+      <code>&gt;=1.2</code>, <code>=1.2.3</code>, or exact — checked against the
+      dependency's own manifest.</li>
+  <li><strong>Local registry:</strong> <code>{ version = "…" }</code> dependencies resolve
+      from <code>$SPID3R_REGISTRY</code>, an offline directory of
+      <code>&lt;name&gt;/&lt;version&gt;/</code> packages. A package may ship
+      <code>dist/sha256.txt</code>; <code>install</code> verifies the vendored tree against
+      it, and <code>spid3r pack</code> prints the matching <code>sha256(tree)</code> line to
+      paste there.</li>
+  <li><strong>Workspaces:</strong> <code>[workspace] members = […]</code> share one
+      <code>vendor/</code> and lockfile, with name-conflict detection.</li>
+  <li><strong>Distribution:</strong> <code>spid3r dist</code> compiles the manifest entry
+      into a self-contained <code>target/&lt;package&gt;.matrixc</code>;
+      <code>pack</code>/<code>unpack</code> move source projects as deterministic,
+      path-traversal-guarded tarballs.</li>
+  <li><strong>Project-aware commands:</strong> <code>run</code> (no file) runs the manifest
+      entry; <code>test</code> differentially runs <code>tests/*.matrix</code> per member —
+      use the <code>assert</code>/<code>assert_eq</code> builtins so failures are
+      self-explanatory.</li>
+</ul>
+<p class="lead">There is no remote/HTTP registry and registry packages' own dependencies are
+not resolved transitively — declare what you use. See <a href="docs/REGISTRY.md">docs/REGISTRY.md</a>.</p>
+
+<h2 id="tooling">20. fmt · bench · debug · gui · native</h2>
+<div class="grid2">
+<div class="card"><div class="t">spid3r fmt</div>Canonical formatting in place; machine-checked invariants (re-lexes to the identical token stream, idempotent), comment and literal preservation, line wrapping. <code>--check</code> exits 1 when a file differs — wire it into CI.</div>
+<div class="card"><div class="t">spid3r bench</div>Times <code>benchmarks/*.matrix</code>, best-of-N (<code>--runs</code>), per engine (<code>--engine tree|vm</code>); <code>--compare</code> also asserts tree == vm output, so benchmarks double as differential tests.</div>
+<div class="card"><div class="t">spid3r debug</div>Line debugger over the VM: <code>--break 3,7</code> breakpoints, <code>step/next/finish</code>, <code>backtrace</code>, <code>locals</code>, source listing. Fully scriptable via <code>--commands FILE</code> for repeatable sessions.</div>
+<div class="card"><div class="t">spid3r gui <span class="tag">gui feature</span></div>Desktop webview window (wry + tao). The program builds UI with <code>gui_set_html(html)</code>, <code>gui_eval(js)</code>, registers handlers with <code>gui_on(event, fn)</code>, can push events with <code>gui_emit(event, payload)</code>; the page calls back via <code>window.spid3r.emit(event, payload)</code>. <code>--dry-run</code> replays the whole bridge headlessly (what the test suite drives).</div>
+<div class="card"><div class="t">spid3r build <span class="tag">native feature</span></div>LLVM AOT backend: control flow becomes machine code, runtime operations go through trampolines that reuse the exact VM/value code, so native output matches the interpreter (22/23 examples; a class declared inside a function is rejected with a clear diagnostic). Needs LLVM 18.1+ — see docs/BUILDING.md.</div>
+<div class="card"><div class="t">spid3r repl</div>Interactive prompt with persistent globals; handy for trying snippets. <code>:quit</code>/<code>:help</code> supported.</div>
+</div>
+
+<h2 id="gc">21. Memory model &amp; GC</h2>
+<p>Dynamic values are reference-counted — <code>Arc</code>/<code>Mutex</code> (both engines
+share this representation, so values cross <code>spawn</code> boundaries). Acyclic garbage
+is reclaimed eagerly when the last reference drops.</p>
+<div class="note"><b>Reference cycles (v1.1 collection).</b> A <em>cycle</em> (a list that
+contains itself, an object pointing at itself, two maps referencing each other…) never
+reaches zero refcount and would leak. <code>list</code>/<code>vec</code>, <code>set</code>,
+<code>map</code>, and instance cycles are collected automatically at statement boundaries
+(disable with <code>SPID3R_GC=0</code>); call <code>gc_collect()</code> to force a pass and
+<code>gc_live_cells()</code> to inspect. Cycles through <em>other</em> container types
+(trees, graphs, …) still leak until collection is widened — use <code>weak</code> /
+<code>deref</code> for those back-edges. See <a href="docs/GC.md">docs/GC.md</a>.</div>
+<div class="codewrap"><pre><code>fn main() {
+    let before = gc_live_cells();
+    {
+        let l = list(1, 2, 3);
+        l.push(l);            // cycle
+    }
+    gc_collect();
+    println(gc_live_cells() &lt;= before);   // true — the cycle was reclaimed
+    return 0;
+}</code></pre></div>
+
+<h2 id="env">22. Environment variables &amp; exit codes</h2>
+<table>
+  <tr><th>Variable</th><th>Effect</th></tr>
+  <tr><td><code>SPID3R_PATH</code></td><td>Extra module search directories (platform path list), consulted after the importing file's directory, before <code>./stdlib</code>.</td></tr>
+  <tr><td><code>SPID3R_REGISTRY</code></td><td>Offline package registry directory for <code>{ version = "…" }</code> dependencies.</td></tr>
+  <tr><td><code>SPID3R_GC</code></td><td><code>0</code> disables statement-boundary automatic cycle collection (manual <code>gc_collect()</code> still works).</td></tr>
+</table>
+<p>Exit codes for every command: <code>0</code> success · <code>1</code> user-program
+error (thrown errors print a message with position and a call-stack trace) ·
+<code>2</code> usage error.</p>
+
+<h2 id="testing">23. Testing &amp; QA</h2>
+<p>Because correctness is "the two engines agree", Spid3r is verified
+<em>differentially</em>: every example is run three ways and their stdout compared.</p>
+<ul>
+  <li><code>spid3r test</code> — classifies each <code>examples/*.matrix</code> from its
+      <strong>parsed AST</strong> (a file with <code>fn main</code> is a program; otherwise a
+      library). Programs run under the tree interpreter, the VM, and <code>compile</code>+<code>exec</code>,
+      and the three stdout streams must match; libraries are semantic-checked. Result: <strong>23 ok, 0 failed</strong>.</li>
+  <li><code>cargo test</code> — unit tests, integration tests, and a differential harness
+      (<code>tests/difftest.rs</code>) that drives every example in all three engines.
+      Current total: <strong>250 tests, 0 failed</strong>, including 14 dedicated engine-parity
+      regressions (<code>tests/audit_regressions.rs</code>) for closure capture, per-iteration
+      loop bindings, scope-exit slot release, upvalue index offsets, map index assignment,
+      file-op results, the task API, JSON round-trips, and RNG bounds.</li>
+  <li><code>difftest.sh</code> — the standalone shell harness (same three-way comparison).</li>
+  <li><strong>2026-10 audit.</strong> An independent full-repo audit probed edge semantics
+      with 27 three-engine programs (<code>audit/</code>), found and fixed the last VM
+      closure divergences, several documented-contract violations in the stdlib, and two
+      packaging security issues (path traversal, archive write escape) — everything in this
+      document reflects the post-audit behavior, and every fix carries a regression test.</li>
+  <li>Bytecode safety is unit-tested too: invalid opcodes, truncation, out-of-range pool
+      references, and off-boundary jumps are all rejected with a clean diagnostic.</li>
+  <li>The GUI is tested headlessly beneath the window: the IPC decode
+      (<code>JSON.stringify</code> body → <code>json_field</code> → dispatch), JSON
+      escaping/round-trips, event ordering, unknown-event dropping, payload fidelity, and
+      <code>gui_set_html</code>/handler-queued JS (bridge unit tests + the
+      <code>spid3r gui --dry-run</code> replay). The native window itself is exercised
+      manually — headless webview automation isn't feasible here.</li>
+</ul>
+
+<h2 id="examples">24. Examples</h2>
+<p>All runnable from the project root with <code>spid3r run examples/&lt;name&gt;.matrix</code>
+(add <code>--engine vm</code> to compare engines).</p>
+<div class="grid3">
+  <div class="card"><span class="t">hello</span> · smallest program</div>
+  <div class="card"><span class="t">variables</span> · types &amp; promotion</div>
+  <div class="card"><span class="t">conditions</span> · if / elif / else &amp; truthiness</div>
+  <div class="card"><span class="t">loops</span> · while, for-in, C-for</div>
+  <div class="card"><span class="t">functions</span> · recursion &amp; closures</div>
+  <div class="card"><span class="t">higher_order</span> · map/filter/reduce + string helpers</div>
+  <div class="card"><span class="t">list · map · set</span> · sequences &amp; associative</div>
+  <div class="card"><span class="t">stack · queue · heap</span> · ordered collections</div>
+  <div class="card"><span class="t">graph · bst · linked_list</span> · structures</div>
+  <div class="card"><span class="t">class · interface</span> · OOP &amp; polymorphism</div>
+  <div class="card"><span class="t">error_handling</span> · try/catch, option/result</div>
+  <div class="card"><span class="t">channel · tasks</span> · concurrency</div>
+  <div class="card"><span class="t">modules</span> · imports + <span class="t">math_util</span></div>
+  <div class="card"><span class="t">server_report</span> · a larger program tying it together</div>
+  <div class="card"><span class="t">gui/counter</span> · webview UI (<code>gui</code> feature)</div>
+</div>
+
+<h2 id="roadmap">25. Roadmap &amp; limitations</h2>
+<table>
+  <tr><th>Area</th><th>Status</th></tr>
+  <tr><td>Lexer · parser · semantic checker · gradual typing</td><td>Done</td></tr>
+  <tr><td>Tree-walk interpreter (reference engine)</td><td>Done</td></tr>
+  <tr><td>Bytecode compiler + stack VM + optimizer + validation</td><td>Done</td></tr>
+  <tr><td><code>.matrixc</code> format, self-contained imports (resolved-path keyed)</td><td>Done</td></tr>
+  <tr><td>Concurrency (<code>spawn</code>/<code>await</code>, channels, mutexes, task API)</td><td>Done</td></tr>
+  <tr><td><code>spid3r fmt</code> · <code>spid3r debug</code> · <code>bench</code></td><td>Done</td></tr>
+  <tr><td>Package manager (init / install / pack / unpack / workspaces / local registry)</td><td>Done</td></tr>
+  <tr><td>Cycle GC (list/vec/set/map/instance; statement-boundary, default on)</td><td>Done (other containers: use <code>weak</code>)</td></tr>
+  <tr><td>Native/AOT backend (<code>native</code> feature)</td><td>Done (no class-in-fn; 22/23 examples match)</td></tr>
+  <tr><td>GUI layer (<code>gui</code> feature, headless-tested bridge)</td><td>Done (window exercised manually)</td></tr>
+  <tr><td>Parser: local <code>fn</code> declarations; recursion depth cap</td><td>Planned</td></tr>
+  <tr><td>Cycle GC for trees/graphs/heaps/matrices</td><td>Planned</td></tr>
+  <tr><td>Remote/HTTP registry · ustar long-name support · GUI window auto-tests</td><td>Optional (beyond v1.0)</td></tr>
+</table>
+<p class="lead">Per-phase detail and guarantees: <a href="docs/ROADMAP.md">docs/ROADMAP.md</a>.
+Language spec/navigation also in <a href="README.md">README.md</a>,
+<a href="docs/GRAMMAR.md">grammar</a>, <a href="docs/KEYWORDS.md">keywords</a>,
+<a href="docs/DATA_STRUCTURES.md">data structures</a>,
+<a href="docs/STANDARD_LIBRARY.md">standard library</a>, and
+<a href="docs/GC.md">GC design</a>.</p>
+
+<footer>
+  <strong>Spid3r</strong> — language v1.0. Pure Rust, no runtime dependencies.
+  Source in <code>src/</code>; built binary at <code>target/debug/spid3r</code> (or
+  <code>target/release/spid3r</code>). This page is self-contained — no external scripts,
+  styles, or fonts. Last updated: 2026-10 audit.
+</footer>
+</main>
+</div>
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById('themeBtn');
+  function setIcon(){ btn.textContent = root.getAttribute('data-theme')==='dark' ? 'light' : 'dark'; }
+  var saved=null; try{ saved=localStorage.getItem('spid3r-theme'); }catch(e){}
+  if(saved){ root.setAttribute('data-theme', saved); }
+  setIcon();
+  btn.addEventListener('click', function(){
+    var next = root.getAttribute('data-theme')==='dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try{ localStorage.setItem('spid3r-theme', next); }catch(e){}
+    setIcon();
+  });
+  document.querySelectorAll('.codewrap').forEach(function(w){
+    var b=document.createElement('button'); b.className='copy'; b.textContent='copy';
+    b.addEventListener('click', function(){
+      var code=w.querySelector('code'); if(!code) return;
+      var t=code.textContent;
+      function done(){ b.textContent='copied'; setTimeout(function(){b.textContent='copy';},1400); }
+      function fallback(){ var ta=document.createElement('textarea'); ta.value=t;
+        document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');}catch(e){}
+        document.body.removeChild(ta); done(); }
+      if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(done, fallback); }
+      else { fallback(); }
+    });
+    w.appendChild(b);
+  });
+  var links=Array.prototype.slice.call(document.querySelectorAll('nav.side a'));
+  var map={};
+  links.forEach(function(a){ var id=a.getAttribute('href').slice(1); var el=document.getElementById(id); if(el) map[id]=a; });
+  var obs=new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if(en.isIntersecting){
+        links.forEach(function(a){ a.classList.remove('active'); });
+        var a=map[en.target.id]; if(a) a.classList.add('active');
+      }
+    });
+  }, {rootMargin:'-15% 0px -70% 0px'});
+  Object.keys(map).forEach(function(id){ obs.observe(document.getElementById(id)); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+// examples/set.matrix - unique membership and set algebra.
+fn main() {
+    let a = set(1, 2, 3);
+    let b = set(3, 4);
+    a.push(2);  // duplicate: no effect
+    println(a.len());
+
+    println(a.union(b));
+    println(a.intersection(b));
+    println(a.difference(b));
+    println(a.contains(2));
+
+    a.remove(1);
+    println(a);
+    return 0;
+}

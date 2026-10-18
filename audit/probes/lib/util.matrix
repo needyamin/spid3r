@@ -1,0 +1,2 @@
+println("util init");
+public fn twice(x) { return x * 2; }

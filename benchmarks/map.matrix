@@ -1,0 +1,19 @@
+// benchmarks/map.matrix - map insert / lookup / remove churn.
+// Prints one checksum line.
+fn main() {
+    let n = 20000;
+    let m = map();
+    let i = 0;
+    while i < n {
+        m.set("k" + string(i), i);
+        i = i + 1;
+    }
+    let total = 0;
+    i = 0;
+    while i < n {
+        total = total + m.get("k" + string(i));
+        i = i + 1;
+    }
+    println(total);
+    return 0;
+}

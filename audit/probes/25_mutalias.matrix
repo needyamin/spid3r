@@ -1,0 +1,17 @@
+// probe 25: aliasing and nested mutation
+fn main() {
+    let a = list(1, 2, 3);
+    let b = a;
+    b.push(4);
+    println(a);
+    println(a == b);
+    let m1 = map("k", list(1));
+    let m2 = m1;
+    m2["k"].push(99);
+    println(m1.get("k"));
+    let sl = a.slice(0, 2);
+    sl.set(0, 77);
+    println(a);
+    println(sl);
+    return 0;
+}

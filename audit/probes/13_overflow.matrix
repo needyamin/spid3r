@@ -1,0 +1,5 @@
+// probe 13: i64 overflow at runtime (isolated - may crash)
+fn main() {
+    println(9223372036854775807 + 1);
+    return 0;
+}

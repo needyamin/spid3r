@@ -1,0 +1,7 @@
+// probe 18: is re-declaring the same name in one scope allowed?
+fn main() {
+    let s = "first";
+    let s = "second";
+    println(s);
+    return 0;
+}

@@ -1,0 +1,44 @@
+[package]
+name = "spid3r"
+version = "0.1.0"
+edition = "2021"
+description = "Spid3r - a professional programming language. The compiler and VM are written in Rust."
+license = "MIT"
+
+[lib]
+name = "spid3r"
+path = "src/lib.rs"
+crate-type = ["rlib", "staticlib"]
+
+[[bin]]
+name = "spid3r"
+path = "src/main.rs"
+
+[features]
+# The core language toolchain stays zero-dependency; optional backends add
+# their own dependencies only when enabled:
+#   native - LLVM AOT backend (machine code) via inkwell, like rustc.
+#   gui    - embedded webview GUI via wry + tao.
+default = []
+native = ["dep:inkwell"]
+gui = ["dep:wry", "dep:tao"]
+
+[dependencies]
+# inkwell is a BUILD-TIME dependency of the native backend only. It requires
+# LLVM 18.1+ installed on the machine (see docs/BUILDING.md). The
+# `no-llvm-linking` feature is required because llvm-sys neither supports
+# dynamic linking on Windows nor ships a built-in llvm-config for the stock
+# installer; build.rs links the LLVM C API library itself.
+inkwell = { version = "0.10.0", features = ["llvm18-1-no-llvm-linking"], optional = true }
+# GUI backend (Phase 2): embedded webview via wry on tao.
+wry = { version = "0.53", optional = true }
+tao = { version = "0.34", optional = true }
+
+[profile.release]
+opt-level = 3
+
+[profile.dev]
+# Incremental compilation corrupts its cache on OneDrive-synced trees
+# (the documented "error deleting lock file (os error 5)" quirk can escalate
+# into a rustc ICE in the metadata encoder). Reliability over rebuild speed.
+incremental = false

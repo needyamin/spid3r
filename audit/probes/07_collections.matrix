@@ -1,0 +1,76 @@
+// probe 07: core collections - list/map/set/stack/queue
+fn main() {
+    let m = map("a", 1, "b", 2);
+    m["c"] = 3;
+    println(m.len());
+    println(m.get("a"));
+    println(m.has("zz"));
+    println(m.keys());
+    println(m.values());
+    println(m.items());
+    m.remove("a");
+    println(m);
+    try {
+        m.get("nope");
+    } catch (e) {
+        println("mget: " + e);
+    }
+
+    let s1 = set(1, 2, 3);
+    let s2 = set(2, 3, 4);
+    println(s1.union(s2));
+    println(s1.intersection(s2));
+    println(s1.difference(s2));
+    println(s1.is_subset(set(1, 2, 3, 4)));
+
+    let st = stack();
+    st.push(1);
+    st.push(2);
+    println(st.pop());
+    println(st.peek());
+    try {
+        let e = stack();
+        e.pop();
+    } catch (err) {
+        println("stack: " + err);
+    }
+
+    let q = queue();
+    q.push(1);
+    q.push(2);
+    println(q.pop());
+    println(q.peek_front());
+
+    let l = list(1, 2, 3, 4);
+    let sl = l.slice(1, 3);
+    sl.set(0, 99);
+    println(l);
+    println(sl);
+    println(l.index_of(3));
+    try {
+        l.get(10);
+    } catch (e) {
+        println("lget: " + e);
+    }
+    try {
+        l.get(-1);
+    } catch (e) {
+        println("lneg: " + e);
+    }
+
+    let mixed = list(3, 1, 2);
+    println(mixed.sort());
+    println(mixed);
+
+    let tup = tuple(1, "a");
+    println(tup[0]);
+    println(tup[1]);
+
+    let rb = ring_buffer(2);
+    rb.push(1);
+    rb.push(2);
+    rb.push(3);
+    println(rb.len());
+    println(rb.get(0));
+    return 0;
+}

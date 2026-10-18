@@ -1,0 +1,5 @@
+// examples/hello.matrix - the smallest Spid3r program.
+fn main() {
+    print("hello");
+    return 0;
+}
