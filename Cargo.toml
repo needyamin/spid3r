@@ -2,7 +2,7 @@
 name = "spid3r"
 version = "0.1.0"
 edition = "2021"
-description = "Spid3r - a professional programming language. The compiler and VM are written in Rust."
+description = "Spid3r - A professional programming language. The compiler and VM are written in Rust."
 license = "MIT"
 
 [lib]
@@ -15,11 +15,13 @@ name = "spid3r"
 path = "src/main.rs"
 
 [features]
-# The core language toolchain stays zero-dependency; optional backends add
-# their own dependencies only when enabled:
-#   native - LLVM AOT backend (machine code) via inkwell, like rustc.
+# The core language toolchain is zero-dependency; the backends add their own
+# dependencies and are both on by default (build the core alone with
+# --no-default-features, or pick one with --no-default-features --features gui):
 #   gui    - embedded webview GUI via wry + tao.
-default = []
+#   native - LLVM AOT backend (machine code) via inkwell, like rustc; needs
+#            LLVM 18.1+ installed to build (see docs/BUILDING.md).
+default = ["gui", "native"]
 native = ["dep:inkwell"]
 gui = ["dep:wry", "dep:tao"]
 

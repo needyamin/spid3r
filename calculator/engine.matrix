@@ -1,0 +1,482 @@
+// calculator/engine.matrix - the calculator's state machine and number
+// formatting. No GUI calls here, so it runs (and is tested) on every engine.
+//
+// Drive it with press(key). Keys:
+//   "0".."9"  "."                       digits and decimal point
+//   "+" "-" "*" "/"                     binary operators
+//   "="                                 evaluate (repeat "=" to repeat the last step)
+//   "%" "neg" "inv" "sqr" "sqrt"        percent, sign, 1/x, x squared, square root
+//   "back" "CE" "C"                     backspace, clear entry, clear all
+
+const MAX_DIGITS = 16;
+const HISTORY_SIZE = 8;
+
+let entry = "0";  // text of the number on the display
+let exact = null;  // full-precision value behind `entry` when it is a result
+let acc = null;  // left operand waiting for the pending operator
+let op = null;  // pending operator: "+", "-", "*", "/"
+let fresh = true;  // the next digit replaces the display
+let has_operand = false;  // a right operand was entered after the operator
+let expr = "";  // the small expression line above the display
+let last_op = null;  // operator and operand that a repeated "=" reuses
+let last_operand = null;
+let error = false;
+let history = list();
+
+// ------------------------------------------------------------ public API
+
+public fn press(key) {
+    if key.len() == 1 and "0123456789".contains(key) {
+        input_digit(key);
+    } elif key == "." {
+        input_dot();
+    } elif key == "+" or key == "-" or key == "*" or key == "/" {
+        input_operator(key);
+    } elif key == "=" {
+        input_equals();
+    } elif key == "%" or key == "neg" or key == "inv" or key == "sqr" or key == "sqrt" {
+        input_unary(key);
+    } elif key == "back" {
+        input_back();
+    } elif key == "CE" {
+        clear_entry();
+    } elif key == "C" {
+        clear_all();
+    }
+    return null;
+}
+
+/// The display text, with thousands separators.
+public fn display() {
+    if error {
+        return entry;
+    }
+    return pretty(entry);
+}
+
+public fn expression() {
+    return expr;
+}
+
+/// The operator to highlight: pending and still waiting for its operand.
+public fn active_operator() {
+    if op != null and not has_operand {
+        return op;
+    }
+    return null;
+}
+
+public fn has_error() {
+    return error;
+}
+
+/// Most recent first: each item is map("expr", …, "result", …).
+public fn history_items() {
+    let out = list();
+    for item in history {
+        out.push(map("expr", item["expr"], "result", pretty(item["result"])));
+    }
+    return out;
+}
+
+/// Put history item `i` back on the display as the current operand.
+public fn recall(i) {
+    if i < 0 or i >= history.len() {
+        return null;
+    }
+    let item = history[i];
+    if error {
+        clear_all();
+    }
+    entry = item["result"];
+    exact = item["value"];
+    fresh = true;
+    has_operand = true;
+    if op == null {
+        expr = "";
+    }
+    return null;
+}
+
+public fn clear_history() {
+    history.clear();
+    return null;
+}
+
+public fn reset() {
+    clear_all();
+    history.clear();
+    return null;
+}
+
+public fn format_number(x) {
+    if not is_finite(x) {
+        return "Overflow";
+    }
+    let a = abs(float(x));
+    if a == 0.0 {
+        return "0";
+    }
+    let sign = "";
+    if x < 0 {
+        sign = "-";
+    }
+    if a >= 1000000000000000.0 or a < 0.000000001 {
+        return sign + scientific(a);
+    }
+    // Keep at most 10 decimals and about 15 significant digits, which is
+    // what a 64-bit float can represent exactly.
+    let d = 10;
+    while d > 0 and a * float(pow10(d)) >= 1000000000000000.0 {
+        d -= 1;
+    }
+    let p = pow10(d);
+    let n = int(a * float(p) + 0.5);
+    let text = string(n / p);
+    let frac = n % p;
+    if frac != 0 {
+        let digits = string(frac).pad_left(d, "0");
+        while digits.ends_with("0") {
+            digits = digits.slice(0, digits.len() - 1);
+        }
+        text = text + "." + digits;
+    }
+    if text == "0" {
+        return "0";
+    }
+    return sign + text;
+}
+
+// ------------------------------------------------------------ input
+
+fn input_digit(k) {
+    if error {
+        clear_all();
+    }
+    start_entry();
+    if count_digits(entry) >= MAX_DIGITS {
+        return null;
+    }
+    if entry == "0" {
+        entry = k;
+    } elif entry == "-0" {
+        entry = "-" + k;
+    } else {
+        entry = entry + k;
+    }
+    return null;
+}
+
+fn input_dot() {
+    if error {
+        clear_all();
+    }
+    start_entry();
+    if not entry.contains(".") {
+        entry = entry + ".";
+    }
+    return null;
+}
+
+/// Begin typing a new number if the display holds a result or an operand.
+fn start_entry() {
+    if fresh {
+        entry = "0";
+        fresh = false;
+        if op == null {
+            expr = "";
+        }
+    }
+    exact = null;
+    has_operand = true;
+    return null;
+}
+
+fn input_operator(o) {
+    if error {
+        return null;
+    }
+    if op != null and has_operand {
+        // "2 + 3 *": settle "2 + 3" first, then chain.
+        if not show_result(compute(acc, op, current())) {
+            return null;
+        }
+    }
+    acc = current();
+    op = o;
+    fresh = true;
+    has_operand = false;
+    expr = format_number(acc) + " " + op_symbol(o);
+    return null;
+}
+
+fn input_equals() {
+    if error {
+        return null;
+    }
+    let a = null;
+    let o = null;
+    let b = null;
+    if op != null {
+        a = acc;
+        o = op;
+        b = current();
+        if not has_operand {
+            b = acc;  // "5 + =" means 5 + 5
+        }
+    } elif last_op != null {
+        a = current();  // repeated "=": apply the last step again
+        o = last_op;
+        b = last_operand;
+    } else {
+        return null;
+    }
+    let line = format_number(a) + " " + op_symbol(o) + " " + format_number(b) + " =";
+    last_op = o;
+    last_operand = b;
+    acc = null;
+    op = null;
+    if show_result(compute(a, o, b)) {
+        expr = line;
+        add_history(line);
+    }
+    has_operand = false;
+    return null;
+}
+
+fn input_unary(kind) {
+    if error {
+        return null;
+    }
+    let v = current();
+    let label = "";
+    let r = null;
+    if kind == "neg" {
+        if exact == null {
+            // Typing: flip the sign of the text so "-0." keeps editing.
+            if entry.starts_with("-") {
+                entry = entry.slice(1);
+            } elif entry != "0" {
+                entry = "-" + entry;
+            }
+            return null;
+        }
+        r =-v;
+        label = "negate";
+    } elif kind == "%" {
+        if op == "+" or op == "-" {
+            r = acc * v / 100.0;  // "200 + 10 %" means 200 + 20
+        } else {
+            r = v / 100.0;
+        }
+        label = "percent";
+    } elif kind == "inv" {
+        if v == 0.0 {
+            return fail("Cannot divide by zero");
+        }
+        r = 1.0 / v;
+        label = "1/";
+    } elif kind == "sqr" {
+        r = v * v;
+        label = "sqr";
+    } else {
+        if v < 0.0 {
+            return fail("Invalid input");
+        }
+        r = sqrt(v);
+        label = "√";
+    }
+    if op == null {
+        expr = label + "(" + format_number(v) + ")";
+    }
+    show_result(r);
+    has_operand = true;
+    return null;
+}
+
+fn input_back() {
+    if error {
+        return clear_all();
+    }
+    if fresh {
+        // A result cannot be edited; backspace just clears the expression.
+        if op == null {
+            expr = "";
+        }
+        return null;
+    }
+    entry = entry.slice(0, entry.len() - 1);
+    if entry == "" or entry == "-" {
+        entry = "0";
+    }
+    return null;
+}
+
+fn clear_entry() {
+    if error {
+        return clear_all();
+    }
+    entry = "0";
+    exact = null;
+    fresh = true;
+    has_operand = op != null;  // "5 + CE =" means 5 + 0
+    return null;
+}
+
+fn clear_all() {
+    entry = "0";
+    exact = null;
+    acc = null;
+    op = null;
+    fresh = true;
+    has_operand = false;
+    expr = "";
+    last_op = null;
+    last_operand = null;
+    error = false;
+    return null;
+}
+
+// ------------------------------------------------------------ helpers
+
+fn current() {
+    if exact != null {
+        return exact;
+    }
+    return float(entry);
+}
+
+fn compute(a, o, b) {
+    if o == "+" {
+        return a + b;
+    } elif o == "-" {
+        return a - b;
+    } elif o == "*" {
+        return a * b;
+    }
+    if b == 0.0 {
+        return null;
+    }
+    return a / b;
+}
+
+/// Show `r` as the new display value; false (and error state) when invalid.
+fn show_result(r) {
+    if r == null {
+        fail("Cannot divide by zero");
+        return false;
+    }
+    if not is_finite(r) {
+        fail("Overflow");
+        return false;
+    }
+    entry = format_number(r);
+    exact = r;
+    fresh = true;
+    return true;
+}
+
+fn fail(message) {
+    clear_all();
+    entry = message;
+    error = true;
+    return null;
+}
+
+fn add_history(line) {
+    let items = list(map("expr", line, "result", entry, "value", exact));
+    for item in history {
+        if items.len() < HISTORY_SIZE {
+            items.push(item);
+        }
+    }
+    history = items;
+    return null;
+}
+
+fn op_symbol(o) {
+    if o == "+" {
+        return "+";
+    } elif o == "-" {
+        return "−";
+    } elif o == "*" {
+        return "×";
+    }
+    return "÷";
+}
+
+fn is_finite(x) {
+    return x - x == 0.0;
+}
+
+fn pow10(d) {
+    let p = 1;
+    for let i = 0; i < d; i = i + 1 {
+        p = p * 10;
+    }
+    return p;
+}
+
+fn scientific(a) {
+    let e = 0;
+    let m = a;
+    while m >= 10.0 {
+        m = m / 10.0;
+        e += 1;
+    }
+    while m < 1.0 {
+        m = m * 10.0;
+        e -= 1;
+    }
+    let mantissa = format_number(m);
+    if mantissa == "10" {
+        mantissa = "1";
+        e += 1;
+    }
+    let sign = "+";
+    if e < 0 {
+        sign = "";
+    }
+    return mantissa + "e" + sign + string(e);
+}
+
+fn count_digits(text) {
+    let n = 0;
+    for c in text {
+        if "0123456789".contains(c) {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// "-1234567.5" -> "-1,234,567.5"; scientific and error text pass through.
+fn pretty(text) {
+    if text.contains("e") {
+        return text;
+    }
+    let neg = text.starts_with("-");
+    let body = text;
+    if neg {
+        body = text.slice(1);
+    }
+    let head = body;
+    let tail = "";
+    let dot = body.index_of(".");
+    if dot >= 0 {
+        head = body.slice(0, dot);
+        tail = body.slice(dot);
+    }
+    let out = "";
+    let n = head.len();
+    for let i = 0; i < n; i = i + 1 {
+        if i > 0 and(n - i) % 3 == 0 {
+            out = out + ",";
+        }
+        out = out + head.slice(i, i + 1);
+    }
+    if neg {
+        return "-" + out + tail;
+    }
+    return out + tail;
+}

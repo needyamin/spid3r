@@ -1,14 +1,16 @@
 # Building Spid3r from source
 
-Spid3r is a single Rust crate with **no third-party dependencies in its
-default configuration**. Two optional features add heavyweight dependencies
-only when you ask for them:
+Spid3r is a single Rust crate whose **core has no third-party
+dependencies**. Two features add heavyweight dependencies, and both are on by
+default:
 
 | Feature | Adds | Requires |
 | --- | --- | --- |
-| *(default)* | — | Rust toolchain only |
-| `native` | LLVM AOT backend (`spid3r build`) via inkwell 0.10 | LLVM 18.1+ |
-| `gui` | embedded webview GUI (`spid3r gui`) via tao + wry | system webview runtime (see below) |
+| *(core, `--no-default-features`)* | — | Rust toolchain only |
+| `gui` *(default)* | embedded webview GUI (`spid3r gui`) via tao + wry | system webview runtime (see below) |
+| `native` *(default)* | LLVM AOT backend (`spid3r build`) via inkwell 0.10 | LLVM 18.1+ |
+
+Without LLVM installed, build with `--no-default-features --features gui`.
 
 Everything below assumes the repository root as the working directory.
 
@@ -49,17 +51,15 @@ usage error pointing at this document — the rest of the toolchain
 ## Build
 
 ```
-# zero-dependency core toolchain (tree interpreter + bytecode VM)
+# default: core toolchain + embedded webview GUI + LLVM native backend
+# (on Windows this also writes Spid3r-Setup-<version>.exe; see "Windows installer")
 cargo build --release
 
-# with the LLVM native backend
-cargo build --release --features native
+# without LLVM: core toolchain + GUI
+cargo build --release --no-default-features --features gui
 
-# with the embedded webview GUI
-cargo build --release --features gui
-
-# both optional features
-cargo build --release --features "native gui"
+# zero-dependency core toolchain only (tree interpreter + bytecode VM)
+cargo build --release --no-default-features
 
 # run without installing
 cargo run --release -- build examples/hello.matrix -o hello
@@ -68,9 +68,28 @@ cargo run --release -- build examples/hello.matrix -o hello
 
 The `spid3r` binary is at `target/release/spid3r` (`.exe` on Windows).
 
-The `gui` feature pulls in `tao` (window) and `wry` (webview), so first-time
-compilation of that configuration takes noticeably longer than the core
-toolchain — those crates are only compiled when you pass the feature.
+The default `gui` feature pulls in `tao` (window) and `wry` (webview), so
+first-time compilation takes noticeably longer than the core toolchain; use
+`--no-default-features` to skip those crates.
+
+### Windows installer
+
+On Windows, `cargo build --release` also writes `Spid3r-Setup-<version>.exe`
+(version from `Cargo.toml`) to the repository root. A build script runs before
+its own crate is compiled, so `build.rs` first builds a release `spid3r.exe`
+with the same features into `target/installer/`, then runs NSIS on
+`packaging/nsis/spid3r.nsi`. Release builds therefore compile `spid3r` twice
+when sources change.
+
+- NSIS 3.x is found in `packaging/nsis/nsis/nsis-3.10/` (the portable zip) or
+  on `PATH`; when it is missing, the step is skipped with a `cargo:warning`.
+- The installer packs the binary plus `README.md`, `docs/`, `examples/`, and
+  (with `gui`) the `calculator/` demo, straight from the repository.
+- With `native`, it also ships `LLVM-C.dll` (loaded by `spid3r.exe`),
+  `LLVM-C.lib`, and the `spid3r.lib` runtime staticlib, which `spid3r build`
+  links into every program. Users still need MSVC Build Tools with the
+  Windows SDK to link; the programs they build have no LLVM dependency.
+- Set `SPID3R_NO_INSTALLER=1` to skip the installer step.
 
 GUI programs can be run headlessly with `spid3r gui --dry-run <file>`, which
 replays the whole native↔JS bridge (script flushes and event dispatch) without
@@ -81,8 +100,9 @@ opening a window — useful for CI and for verifying handler wiring. See
 
 | Variable | Meaning |
 | --- | --- |
+| `SPID3R_NO_INSTALLER` | Any value skips the Windows installer step of `cargo build --release`. |
 | `SPID3R_LLVM_LIB_DIR` | Directory containing `LLVM-C.lib` (Windows) or `libLLVM-18.so` / `libLLVM.dylib` (Unix). Checked first by both `build.rs` and the linker stage. |
-| `SPID3R_LLVM_BIN_DIR` | Windows: directory containing `LLVM-C.dll`. `build.rs` copies it next to the built binaries so `cargo run` / `cargo test` work without modifying PATH. |
+| `SPID3R_LLVM_BIN_DIR` | Windows: directory containing `LLVM-C.dll` (default: `C:\Program Files\LLVM\bin`). `build.rs` copies it next to the built binaries (and into `deps/` for test executables) so `cargo run` / `cargo test` work without modifying PATH. |
 | `LLVM_SYS_181_PREFIX` | The llvm-sys convention prefix; `<prefix>/lib` is searched as a fallback when the variables above are unset. |
 
 Set them when LLVM lives somewhere non-standard, e.g.:
@@ -117,9 +137,8 @@ an isolated directory).
 ## Tests and verification
 
 ```
-cargo test                       # full suite on the core engines
-cargo test --features native     # + runtime unit tests + native differential tests
-cargo test --features gui        # + bridge unit tests + GUI dry-run replay tests
+cargo test                       # full suite: core, GUI bridge + dry-run, native runtime + differential
+cargo test --no-default-features # core engines only
 cargo run -- test                # tree == vm == exec over every examples/*.matrix
 bash tools/native_diff.sh examples/*.matrix   # tree vs native differential
 ```
@@ -148,6 +167,6 @@ configuration plus a release build.
 | `cannot find the Spid3r runtime library` | Build the toolchain first: `cargo build --features native` produces the staticlib that program links use. |
 | `linking failed` with `LNK2019` on `LLVM*` symbols | The final link needs `LLVM-C.lib` on the libpath; a non-default LLVM location needs `SPID3R_LLVM_LIB_DIR` set for the linker stage too. |
 | `error deleting lock file ... (os error 5)` during builds | A OneDrive-over-Windows incremental-build quirk, not a code issue; vanishes after `cargo clean`. |
-| `spid3r build` says the backend is not enabled | The binary was built without `--features native`; rebuild the toolchain with it. |
-| `spid3r gui` says the GUI is not enabled | The binary was built without `--features gui`; rebuild the toolchain with it. |
+| `spid3r build` says the backend is not enabled | The binary was built with `--no-default-features` (and without `native`); rebuild with the defaults. |
+| `spid3r gui` says the GUI is not enabled | The binary was built with `--no-default-features`; rebuild without it (or add `--features gui`). |
 | `spid3r gui` builds but no window appears / a create-error is printed | The system webview runtime is missing or too old: WebView2 on Windows, WebKit2GTK on Linux (`libwebkit2gtk-4.1-dev`). `--dry-run` still works without it. |

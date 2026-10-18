@@ -143,12 +143,20 @@ pub fn default_triple() -> String {
 }
 
 /// Locate the directory holding the LLVM-C import library / shared library,
-/// mirroring `build.rs`'s search order.
+/// mirroring `build.rs`'s search order. The installer ships `LLVM-C.lib` next
+/// to `spid3r.exe`, so that directory is tried right after the overrides.
 fn find_llvm_lib_dir() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("SPID3R_LLVM_LIB_DIR") {
         let p = PathBuf::from(p);
         if p.is_dir() {
             return Some(p);
+        }
+    }
+    if cfg!(windows) {
+        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            if dir.join("LLVM-C.lib").is_file() {
+                return Some(dir);
+            }
         }
     }
     if let Ok(p) = std::env::var("LLVM_SYS_181_PREFIX") {

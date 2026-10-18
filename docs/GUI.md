@@ -1,12 +1,13 @@
 # Spid3r GUI layer
 
 `spid3r gui` runs a Spid3r program inside a desktop window with an embedded
-webview — the program is the "app", the page is the UI. It is gated behind the
-optional `gui` Cargo feature (`wry` + `tao`); the core toolchain stays
-zero-dependency. See [BUILDING.md](BUILDING.md) for building with the feature.
+webview — the program is the "app", the page is the UI. It lives behind the
+`gui` Cargo feature (`wry` + `tao`), which is **on by default**; build with
+`--no-default-features` for the zero-dependency core. See
+[BUILDING.md](BUILDING.md).
 
 ```
-cargo run --features gui -- gui examples/gui/counter.matrix
+cargo run -- gui examples/gui/counter.matrix
 ```
 
 ## The model

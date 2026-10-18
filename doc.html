@@ -227,15 +227,15 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:v
 <header class="hero">
   <h1>Spid3r</h1>
   <p>A small, dynamically typed programming language with optional static types, written in
-     dependency-free Rust. Programs run on a tree-walking reference interpreter <em>or</em> a
+     Rust. Programs run on a tree-walking reference interpreter <em>or</em> a
      bytecode compiler + stack VM, and both engines are differentially tested to agree.</p>
   <div class="badges">
     <span class="badge">two engines: tree-walk &amp; VM</span>
     <span class="badge">self-contained bytecode</span>
     <span class="badge">gradual typing</span>
     <span class="badge">task-based concurrency</span>
-    <span class="badge">zero core dependencies</span>
-    <span class="badge">250 tests · 23/23 examples agree</span>
+    <span class="badge">zero-dependency core</span>
+    <span class="badge">277 tests · 23/23 examples agree</span>
   </div>
   <div class="cta">
     <a class="btn" href="#quickstart">Get started</a>
@@ -253,34 +253,41 @@ footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:v
 <code>class</code>, <code>spawn</code>, <code>import</code>) on top of real semantics: dynamic
 types, closures with upvalues, single-inheritance classes with interfaces, structured error
 handling, modules with visibility, task-based concurrency, a standard library, and a suite of
-20+ built-in data structures. The core crate (<code>src/</code>) has <strong>no third-party
-dependencies</strong>; optional backends are feature-gated.</p>
+20+ built-in data structures. The language core has <strong>no third-party
+dependencies</strong>; the webview GUI and the LLVM backend are Cargo features, both on by default.</p>
 <div class="grid3">
   <div class="card"><span class="t">Two engines, one front end</span>The lexer, parser, and semantic checker are shared. Run on the tree-walk interpreter or compile to bytecode for the VM.</div>
   <div class="card"><span class="t">Self-contained bytecode</span><code>compile</code> embeds every imported module, so <code>exec</code> runs a <code>.matrixc</code> with no source on disk.</div>
   <div class="card"><span class="t">Differentially tested</span>Every example runs three ways (tree, VM, compile + exec) and must print identical output.</div>
   <div class="card"><span class="t">Gradual typing</span>Optional annotations on variables, parameters, returns, and fields, checked before the program runs.</div>
   <div class="card"><span class="t">Task concurrency</span><code>spawn</code> / <code>async</code> / <code>await</code>, channels, mutexes, and shared cells on a threaded scheduler.</div>
-  <div class="card"><span class="t">Batteries included</span>Formatter, REPL, line debugger, benchmark runner, package manager, plus optional LLVM AOT and webview GUI backends.</div>
+  <div class="card"><span class="t">Batteries included</span>Formatter, REPL, line debugger, benchmark runner, package manager, a webview GUI backend, and an LLVM AOT compiler for native executables.</div>
 </div>
 
 <h2 id="install">Installation</h2>
-<p>Spid3r builds from source with a recent stable Rust toolchain (edition 2021). From the
-repository root:</p>
+<p>Spid3r builds from source with a recent stable Rust toolchain (edition 2021) and, for the
+default build, LLVM 18.1+. From the repository root:</p>
 <pre data-lang="sh"><code>cargo build                 # debug binary     -> target/debug/spid3r(.exe)
 cargo build --release       # optimized binary -> target/release/spid3r(.exe)
 cargo test                  # unit, integration, and differential tests</code></pre>
-<h3>Optional backends</h3>
-<p>The default build is dependency-free. Two backends are opt-in Cargo features:</p>
-<pre data-lang="sh"><code>cargo build --release --features native   # LLVM AOT compiler: spid3r build (requires LLVM 18.1+)
-cargo build --release --features gui      # desktop webview: spid3r gui (wry + tao)</code></pre>
+<h3>Backends</h3>
+<p>Both backends, the webview GUI (<code>gui</code>) and the LLVM compiler (<code>native</code>), are
+default Cargo features:</p>
+<pre data-lang="sh"><code>cargo build --release                                        # core + spid3r gui + spid3r build (needs LLVM 18.1+)
+cargo build --release --no-default-features --features gui   # core + GUI, no LLVM needed
+cargo build --release --no-default-features                  # zero-dependency core only</code></pre>
 <p>Without the feature, <code>spid3r build</code> / <code>spid3r gui</code> exit with a usage
 error explaining how to enable it. LLVM discovery is described in
 <a href="docs/BUILDING.md">docs/BUILDING.md</a> and under <a href="#env">Environment &amp; exit codes</a>.</p>
 <h3>Windows installer</h3>
-<p><code>packaging/nsis/build.ps1</code> builds a release binary and packages it, together with
-<code>README.md</code> and this page, into an NSIS installer. See the script header for its
-requirements (Rust, Python with Pillow, portable NSIS 3.10).</p>
+<p>On Windows, <code>cargo build --release</code> also writes <code>Spid3r-Setup-&lt;version&gt;.exe</code>
+to the repository root. <code>build.rs</code> builds a release binary with the same features into
+<code>target/installer/</code> and runs NSIS on <code>packaging/nsis/spid3r.nsi</code>, packing the
+binary with <code>README.md</code>, <code>docs/</code>, <code>examples/</code>, and the calculator demo.
+With the native backend it also ships <code>LLVM-C.dll</code>, <code>LLVM-C.lib</code>, and the
+<code>spid3r.lib</code> runtime library that <code>spid3r build</code> links into programs; users need MSVC
+Build Tools with the Windows SDK to link. NSIS 3.x is taken from <code>packaging/nsis/nsis/nsis-3.10/</code> or <code>PATH</code>; without it the
+step is skipped with a warning. Set <code>SPID3R_NO_INSTALLER=1</code> to skip it.</p>
 
 <h2 id="quickstart">Quick start</h2>
 <p>Create <code>hello.matrix</code>:</p>
@@ -1092,7 +1099,7 @@ the interpreters. A class declared inside a function is rejected with a clear di
   <tr><td><code>src/value</code></td><td>Value representation, collections, cycle collector</td></tr>
   <tr><td><code>src/sched</code> · <code>src/stdlib</code> · <code>src/modules</code></td><td>Task scheduler and channels, builtins, import resolution</td></tr>
   <tr><td><code>src/pkg</code> · <code>src/fmt.rs</code> · <code>src/repl</code> · <code>src/cli.rs</code></td><td>Package manager, formatter, REPL, command line</td></tr>
-  <tr><td><code>src/native</code> · <code>src/gui</code></td><td>LLVM AOT backend and webview GUI (feature-gated)</td></tr>
+  <tr><td><code>src/native</code> · <code>src/gui</code></td><td>LLVM AOT backend (<code>native</code> feature) and webview GUI (<code>gui</code> feature, default)</td></tr>
 </table></div>
 <ul>
   <li><code>value::collections</code> implements every value operation (construction, method
@@ -1139,7 +1146,8 @@ becomes a runtime error, never a panic.</div>
 
 <h2 id="testing">Testing &amp; QA</h2>
 <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-As of this revision, <code>cargo test</code> passes <strong>250 tests</strong> and
+As of this revision, <code>cargo test</code> (default features, including the GUI bridge and
+native backend tests) passes <strong>277 tests</strong> and
 <code>spid3r test</code> reports <strong>23 ok, 0 failed</strong>.</p>
 <ul>
   <li><strong><code>spid3r test</code></strong> classifies each <code>examples/*.matrix</code> by its

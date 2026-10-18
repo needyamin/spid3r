@@ -42,12 +42,13 @@ dist/
 .workbuddy-ai/
 
 # --- Installer build workspace -----------------------------------------------
-# The portable NSIS toolchain and staged payload are reproducible
-# (packaging/nsis/build.ps1); the .nsi, LICENSE.txt and generated
-# assets/*.ico|*.bmp are tracked.
+# The portable NSIS toolchain and the downloaded WebView2 bootstrapper are
+# reproducible (build.rs fetches the bootstrapper); the .nsi, LICENSE.txt and
+# generated assets/*.ico|*.bmp are tracked.
 packaging/nsis/nsis/
 packaging/nsis/nsis.zip
 packaging/nsis/payload/
+packaging/nsis/redist/
 Spid3r-Setup-*.exe
 
 # --- Editor / IDE ------------------------------------------------------------

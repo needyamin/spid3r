@@ -28,7 +28,7 @@ Hello, Spid3r!
 - [Execution model](#execution-model)
 - [Command-line reference](#command-line-reference)
 - [Projects and dependencies](#projects-and-dependencies)
-- [Optional backends](#optional-backends)
+- [Backends](#backends)
 - [Testing](#testing)
 - [Documentation](#documentation)
 - [Known limitations](#known-limitations)
@@ -48,20 +48,23 @@ Hello, Spid3r!
 - **Concurrency**: `spawn` tasks on a threaded scheduler, `async`/`await`, `channel`, `mutex`, `ref`.
 - **Modules** with explicit `public` exports, and a package manager with lockfiles.
 - **Tooling**: formatter, REPL, line debugger, benchmark runner, and differential tester.
-- **Optional backends**: LLVM ahead-of-time native executables and a desktop webview GUI.
+- **Backends**: a desktop webview GUI and an LLVM ahead-of-time compiler for native executables (both built by default).
 
 ## Getting started
 
 ### Build from source
 
-You need a recent stable Rust toolchain (edition 2021).
+You need a recent stable Rust toolchain (edition 2021) and, for the default build, LLVM 18.1+
+(see [Backends](#backends) to build without it).
 
 ```sh
 cargo build --release        # binary at target/release/spid3r (spid3r.exe on Windows)
 cargo test                   # run the full test suite
 ```
 
-On Windows, `packaging/nsis/build.ps1` builds an NSIS installer from the release binary.
+On Windows, `cargo build --release` also writes the installer `Spid3r-Setup-<version>.exe` to
+the repository root, using NSIS from `packaging/nsis/nsis/nsis-3.10/` or `PATH` (the step is
+skipped with a warning when NSIS is missing). Set `SPID3R_NO_INSTALLER=1` to skip it.
 
 ### Run your first program
 
@@ -323,17 +326,20 @@ serde   = { version = "^1.0" }                               # offline registry 
 There is no remote package registry. Dependencies of registry packages are not resolved
 transitively. See [`docs/REGISTRY.md`](docs/REGISTRY.md).
 
-## Optional backends
+## Backends
 
-Both backends are off by default, so the default build stays dependency-free.
+Both backends are on by default, and the Windows installer ships both.
 
 ```sh
-cargo build --release --features native   # LLVM AOT compiler (requires LLVM 18.1+)
-cargo build --release --features gui      # desktop webview GUI (wry + tao)
+cargo build --release                                        # core + GUI + LLVM compiler (needs LLVM 18.1+)
+cargo build --release --no-default-features --features gui   # core + GUI, no LLVM needed
+cargo build --release --no-default-features                  # core toolchain only, zero dependencies
 ```
 
-- **Native (`spid3r build`).** Compiles a program to machine code. Runtime operations
-  reuse the VM's value code, so the output matches the interpreters. See
+- **Native (`spid3r build`).** Compiles a program to a standalone machine-code executable.
+  Runtime operations reuse the VM's value code, so the output matches the interpreters.
+  `spid3r.exe` loads `LLVM-C.dll`, and linking a program needs MSVC Build Tools with the
+  Windows SDK; the built executables have no LLVM dependency. See
   [`docs/NATIVE.md`](docs/NATIVE.md) and [`docs/BUILDING.md`](docs/BUILDING.md).
 - **GUI (`spid3r gui`).** Programs call `gui_set_html`, `gui_eval`, `gui_on`, `gui_emit`,
   and `gui_title`, and the page calls `window.spid3r.emit(event, payload)`. With
@@ -355,7 +361,7 @@ Correctness in Spid3r means *the engines agree*, so testing is differential:
 
 | Document | Contents |
 |---|---|
-| [`doc.html`](doc.html) | Full developer guide (single self-contained page) |
+| [Developer guide](https://needyamin.github.io/spid3r/doc.html) | Full developer guide, online (source: `doc.html`) |
 | [`docs/GRAMMAR.md`](docs/GRAMMAR.md) | EBNF grammar and precedence rules |
 | [`docs/KEYWORDS.md`](docs/KEYWORDS.md) | Reserved words |
 | [`docs/STANDARD_LIBRARY.md`](docs/STANDARD_LIBRARY.md) | Global functions |
