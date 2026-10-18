@@ -473,8 +473,19 @@ impl MapData {
         MapData { entries, index }
     }
 
+    #[inline]
     pub fn find(&self, k: &super::MapKey) -> Option<usize> {
         self.index.get(k).copied()
+    }
+    #[inline]
+    pub fn set_key(&mut self, k: super::MapKey, val: Value) {
+        match self.find(&k) {
+            Some(i) => self.entries[i].1 = val,
+            None => {
+                self.index.insert(k.clone(), self.entries.len());
+                self.entries.push((k, val));
+            }
+        }
     }
     /// Rebuild the side index after `entries` shifted (remove/clear paths).
     fn reindex(&mut self) {
@@ -502,13 +513,7 @@ impl MapData {
             "set" => {
                 want(name, args, 2)?;
                 let k = as_key(&args[0])?;
-                match self.find(&k) {
-                    Some(i) => self.entries[i].1 = args[1].clone(),
-                    None => {
-                        self.index.insert(k.clone(), self.entries.len());
-                        self.entries.push((k, args[1].clone()));
-                    }
-                }
+                self.set_key(k, args[1].clone());
                 Ok(Value::Null)
             }
             "get" => {

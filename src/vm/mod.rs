@@ -106,7 +106,7 @@ struct CallFrame {
     /// Captured locals: slot index -> shared cell. Created lazily on first
     /// capture so reads/writes of that local stay in sync after the frame
     /// returns and across tasks.
-    captured: HashMap<usize, UpvalueCell>,
+    captured: Vec<Option<UpvalueCell>>,
     /// Per-activation cells for this function's OWN captured locals (indices
     /// `[0..func.own_upvalues]`). Fresh on every call so two activations of
     /// the same closure never share captured state (recursion, repeated
@@ -146,6 +146,11 @@ pub struct Vm {
     /// method). The class check makes it safe when a site sees several
     /// classes; `clear()` keeps the table bounded.
     invoke_cache: HashMap<(usize, usize), InvokeCache>,
+    /// Recycled `CallFrame::slots` buffers to avoid malloc/free on every call.
+    slot_pool: Vec<Vec<Value>>,
+    /// Lazily-flushed growable string buffer for consecutive `s = s + rhs`
+    /// local appends: `(frame_index, slot_index, owned_buffer)`.
+    pending_str: Option<(usize, usize, String)>,
 }
 
 /// One inline-cache entry: the class the method was resolved on (by `Arc`
@@ -170,7 +175,7 @@ impl Vm {
             file,
             module_dirs,
             embedded: Arc::new(Mutex::new(HashMap::new())),
-            frames: Vec::new(),
+            frames: Vec::with_capacity(16),
             handlers: Vec::new(),
             error: None,
             reraise: None,
@@ -178,6 +183,8 @@ impl Vm {
             stop: 0,
             debug: None,
             invoke_cache: HashMap::new(),
+            slot_pool: Vec::with_capacity(16),
+            pending_str: None,
         };
         vm.install_stdlib();
         vm
@@ -200,7 +207,7 @@ impl Vm {
             embedded,
             file,
             module_dirs,
-            frames: Vec::new(),
+            frames: Vec::with_capacity(8),
             handlers: Vec::new(),
             error: None,
             reraise: None,
@@ -208,6 +215,8 @@ impl Vm {
             stop: 0,
             debug: None,
             invoke_cache: HashMap::new(),
+            slot_pool: Vec::with_capacity(8),
+            pending_str: None,
         }
     }
 
@@ -378,6 +387,7 @@ impl Vm {
     fn run_loop(&mut self) -> Result<Value, VmError> {
         loop {
             if let Some(mut err) = self.error.take() {
+                self.flush_pending_str();
                 // Capture the runtime call stack while the frames are still
                 // alive: this is the single funnel every VM error passes
                 // through, so attaching the trace here covers all of them.
@@ -390,10 +400,12 @@ impl Vm {
                 }
             }
             let nf = self.frames.len() - 1;
-            self.frames[nf].inst_ip = self.frames[nf].ip;
+            let ip = self.frames[nf].ip;
+            self.frames[nf].inst_ip = ip;
             // Debugger: may pause here (breakpoints, stepping). It runs before
             // the instruction so the paused location is what is about to run.
             if self.debug.is_some() {
+                self.flush_pending_str();
                 self.debug_hook()?;
             }
             let ip = self.frames[nf].ip;
@@ -435,10 +447,129 @@ impl Vm {
                 }
                 OpCode::GetLocal => {
                     let slot = self.code_u8(nf, ip + 1) as usize;
+                    if self.debug.is_none() && self.frames[nf].captured.is_empty() {
+                        let code = &self.frames[nf].func.chunk.code;
+                        if let Some(&next_op) = code.get(ip + 2) {
+                            if next_op == OpCode::GetLocal as u8 {
+                                let slot_b = code[ip + 3] as usize;
+                                if let Some(&op2) = code.get(ip + 4) {
+                                    if op2 == OpCode::Less as u8
+                                        && code.get(ip + 5) == Some(&(OpCode::JumpIfFalse as u8))
+                                    {
+                                        if let (Some(&Value::Int(a)), Some(&Value::Int(b))) = (
+                                            self.frames[nf].slots.get(slot),
+                                            self.frames[nf].slots.get(slot_b),
+                                        ) {
+                                            if a < b {
+                                                self.frames[nf].ip = ip + 8;
+                                            } else {
+                                                let off = i16::from_le_bytes([
+                                                    code[ip + 6],
+                                                    code[ip + 7],
+                                                ]);
+                                                self.frames[nf].ip =
+                                                    ((ip + 8) as i64 + off as i64) as usize;
+                                            }
+                                            continue;
+                                        }
+                                    } else if op2 == OpCode::Add as u8
+                                        && code.get(ip + 5) == Some(&(OpCode::SetLocal as u8))
+                                        && code.get(ip + 7) == Some(&(OpCode::Pop as u8))
+                                    {
+                                        let dst = code[ip + 6] as usize;
+                                        if let (Some(&Value::Int(a)), Some(&Value::Int(b))) = (
+                                            self.frames[nf].slots.get(slot),
+                                            self.frames[nf].slots.get(slot_b),
+                                        ) {
+                                            if dst < self.frames[nf].slots.len() {
+                                                self.frames[nf].slots[dst] =
+                                                    Value::Int(a.wrapping_add(b));
+                                                self.frames[nf].ip = ip + 8;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if next_op == OpCode::Constant as u8 && ip + 5 < code.len() {
+                                let cidx = u16::from_le_bytes([code[ip + 3], code[ip + 4]]) as usize;
+                                let op2 = code[ip + 5];
+                                if op2 == OpCode::Add as u8
+                                    && code.get(ip + 6) == Some(&(OpCode::SetLocal as u8))
+                                    && code.get(ip + 8) == Some(&(OpCode::Pop as u8))
+                                {
+                                    let dst = code[ip + 7] as usize;
+                                    if let (Some(&Value::Int(a)), Some(&Value::Int(b))) = (
+                                        self.frames[nf].slots.get(slot),
+                                        self.frames[nf].func.chunk.constants.get(cidx),
+                                    ) {
+                                        if dst < self.frames[nf].slots.len() {
+                                            self.frames[nf].slots[dst] =
+                                                Value::Int(a.wrapping_add(b));
+                                            self.frames[nf].ip = ip + 9;
+                                            continue;
+                                        }
+                                    } else if dst == slot {
+                                        if let Some(Value::Str(rhs)) =
+                                            self.frames[nf].func.chunk.constants.get(cidx).cloned()
+                                        {
+                                            if let Some((pf, ps, ref mut buf)) = self.pending_str {
+                                                if pf == nf && ps == slot {
+                                                    buf.push_str(&rhs);
+                                                    self.frames[nf].ip = ip + 9;
+                                                    continue;
+                                                }
+                                            }
+                                            self.flush_pending_str();
+                                            if let Some(Value::Str(lhs)) =
+                                                self.frames[nf].slots.get(slot)
+                                            {
+                                                let mut buf = String::with_capacity(
+                                                    (lhs.len() + rhs.len() + 64).max(128),
+                                                );
+                                                buf.push_str(lhs);
+                                                buf.push_str(&rhs);
+                                                self.pending_str = Some((nf, slot, buf));
+                                                self.frames[nf].ip = ip + 9;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                } else if let (Some(&Value::Int(a)), Some(&Value::Int(b))) = (
+                                    self.frames[nf].slots.get(slot),
+                                    self.frames[nf].func.chunk.constants.get(cidx),
+                                ) {
+                                    if op2 == OpCode::Mul as u8 {
+                                        self.frames[nf].ip = ip + 6;
+                                        self.frames[nf].slots.push(Value::Int(a.wrapping_mul(b)));
+                                        continue;
+                                    } else if op2 == OpCode::Div as u8 && b != 0 {
+                                        self.frames[nf].ip = ip + 6;
+                                        self.frames[nf].slots.push(Value::Int(a.wrapping_div(b)));
+                                        continue;
+                                    } else if op2 == OpCode::Mod as u8 && b != 0 {
+                                        self.frames[nf].ip = ip + 6;
+                                        self.frames[nf].slots.push(Value::Int(a.wrapping_rem(b)));
+                                        continue;
+                                    } else if op2 == OpCode::Sub as u8 {
+                                        self.frames[nf].ip = ip + 6;
+                                        self.frames[nf].slots.push(Value::Int(a.wrapping_sub(b)));
+                                        continue;
+                                    } else if op2 == OpCode::Add as u8 {
+                                        self.frames[nf].ip = ip + 6;
+                                        self.frames[nf].slots.push(Value::Int(a.wrapping_add(b)));
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if self.pending_str.is_some() {
+                        self.flush_pending_str();
+                    }
                     self.frames[nf].ip = ip + 2;
                     let v = {
                         let f = &self.frames[nf];
-                        if let Some(c) = f.captured.get(&slot) {
+                        if let Some(Some(c)) = f.captured.get(slot) {
                             c.lock().unwrap().clone()
                         } else {
                             f.slots.get(slot).cloned().unwrap_or(Value::Null)
@@ -448,6 +579,13 @@ impl Vm {
                 }
                 OpCode::SetLocal => {
                     let slot = self.code_u8(nf, ip + 1) as usize;
+                    if self
+                        .pending_str
+                        .as_ref()
+                        .is_some_and(|&(pf, ps, _)| pf == nf && ps == slot)
+                    {
+                        self.pending_str = None;
+                    }
                     self.frames[nf].ip = ip + 2;
                     // Peek (do not pop) the assigned value: in the clox shared
                     // stack model an assignment leaves its value on top so the
@@ -455,7 +593,7 @@ impl Vm {
                     let v = self.frames[nf].slots.last().cloned().unwrap_or(Value::Null);
                     {
                         let f = &mut self.frames[nf];
-                        if let Some(c) = f.captured.get(&slot) {
+                        if let Some(Some(c)) = f.captured.get(slot) {
                             *c.lock().unwrap() = v.clone();
                         }
                         if slot < f.slots.len() {
@@ -469,14 +607,19 @@ impl Vm {
                 OpCode::GetGlobal => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
-                    let name = match self.const_at(nf, idx) {
-                        Value::Str(s) => s,
+                    let v = match self.frames[nf].func.chunk.constants.get(idx) {
+                        Some(Value::Str(name)) => self
+                            .globals
+                            .lock()
+                            .unwrap()
+                            .get(name.as_ref())
+                            .cloned()
+                            .unwrap_or(Value::Null),
                         _ => {
                             self.fail("global name is not a string");
                             continue;
                         }
                     };
-                    let v = self.globals.lock().unwrap().get(name.as_ref()).cloned().unwrap_or(Value::Null);
                     self.frames[nf].slots.push(v);
                 }
                 OpCode::SetGlobal => {
@@ -489,15 +632,7 @@ impl Vm {
                             continue;
                         }
                     };
-                    // Peek (do not pop) the assigned value, matching
-                    // `SetLocal`/`SetUpvalue`: an assignment leaves its value
-                    // on top of the shared stack so the enclosing
-                    // expression/statement balances it with `OpPop`. (This was
-                    // a double-pop: every `g = x` statement popped the value
-                    // here *and* in its statement-level Pop.)
                     let v = self.frames[nf].slots.last().cloned().unwrap_or(Value::Null);
-                    // Assign in place when the global exists (no allocation);
-                    // only a brand-new global needs an owned key.
                     let mut g = self.globals.lock().unwrap();
                     match g.get_mut(name.as_ref()) {
                         Some(slot) => *slot = v,
@@ -542,6 +677,7 @@ impl Vm {
                     }
                 }
                 OpCode::Closure => {
+                    self.flush_pending_str();
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
                     let fproto = self.func_proto_at(nf, idx);
@@ -549,6 +685,7 @@ impl Vm {
                     self.frames[nf].slots.push(Value::VFunc(closure));
                 }
                 OpCode::Class => {
+                    self.flush_pending_str();
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
                     let cproto = self.class_proto_at(nf, idx);
@@ -561,17 +698,45 @@ impl Vm {
                     }
                 }
                 OpCode::Add => {
-                    self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
                     let l = self.pop_top();
-                    match vm_eval_binary(BinOp::Add, l, r) {
-                        Ok(v) => self.frames[nf].slots.push(v),
-                        Err(m) => self.fail(m),
+                    let res = match (&l, &r) {
+                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_add(*b))),
+                        _ => vm_eval_binary(BinOp::Add, l, r),
+                    };
+                    match res {
+                        Ok(v) => {
+                            if self.debug.is_none() && self.frames[nf].captured.is_empty() {
+                                let code = &self.frames[nf].func.chunk.code;
+                                if code.get(ip + 1) == Some(&(OpCode::SetLocal as u8))
+                                    && code.get(ip + 3) == Some(&(OpCode::Pop as u8))
+                                {
+                                    let dst = code[ip + 2] as usize;
+                                    if dst < self.frames[nf].slots.len() {
+                                        self.frames[nf].slots[dst] = v;
+                                        self.frames[nf].ip = ip + 4;
+                                        continue;
+                                    }
+                                }
+                            }
+                            self.frames[nf].ip = ip + 1;
+                            self.frames[nf].slots.push(v);
+                        }
+                        Err(m) => {
+                            self.frames[nf].ip = ip + 1;
+                            self.fail(m);
+                        }
                     }
                 }
                 OpCode::Sub => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) =
+                        (self.frames[nf].slots.last_mut(), &r)
+                    {
+                        *a = a.wrapping_sub(*b);
+                        continue;
+                    }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Sub, l, r) {
                         Ok(v) => self.frames[nf].slots.push(v),
@@ -581,6 +746,12 @@ impl Vm {
                 OpCode::Mul => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) =
+                        (self.frames[nf].slots.last_mut(), &r)
+                    {
+                        *a = a.wrapping_mul(*b);
+                        continue;
+                    }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Mul, l, r) {
                         Ok(v) => self.frames[nf].slots.push(v),
@@ -590,6 +761,14 @@ impl Vm {
                 OpCode::Div => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) =
+                        (self.frames[nf].slots.last_mut(), &r)
+                    {
+                        if *b != 0 {
+                            *a = a.wrapping_div(*b);
+                            continue;
+                        }
+                    }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Div, l, r) {
                         Ok(v) => self.frames[nf].slots.push(v),
@@ -599,6 +778,14 @@ impl Vm {
                 OpCode::Mod => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) =
+                        (self.frames[nf].slots.last_mut(), &r)
+                    {
+                        if *b != 0 {
+                            *a = a.wrapping_rem(*b);
+                            continue;
+                        }
+                    }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Mod, l, r) {
                         Ok(v) => self.frames[nf].slots.push(v),
@@ -640,6 +827,13 @@ impl Vm {
                 OpCode::Less => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) =
+                        (self.frames[nf].slots.last(), &r)
+                    {
+                        let res = *a < *b;
+                        *self.frames[nf].slots.last_mut().unwrap() = Value::Bool(res);
+                        continue;
+                    }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Lt, l, r) {
                         Ok(v) => self.frames[nf].slots.push(v),
@@ -722,6 +916,30 @@ impl Vm {
                 OpCode::Call => {
                     let argc = self.code_u8(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 2;
+                    let slen = self.frames[nf].slots.len();
+                    if argc == 1 && slen >= 2 {
+                        if let Value::Native(n) = &self.frames[nf].slots[slen - 2] {
+                            if n.name == "string" {
+                                let arg = self.frames[nf].slots.pop().unwrap();
+                                self.frames[nf].slots.pop();
+                                let s: Arc<str> = match arg {
+                                    Value::Int(i) => i.to_string().into(),
+                                    Value::Str(s) => s,
+                                    other => crate::value::display_value(&other).into(),
+                                };
+                                self.frames[nf].slots.push(Value::Str(s));
+                                continue;
+                            } else if n.name == "len" {
+                                let arg = self.frames[nf].slots.pop().unwrap();
+                                self.frames[nf].slots.pop();
+                                match collections::len_of(&arg) {
+                                    Ok(len) => self.frames[nf].slots.push(Value::Int(len as i64)),
+                                    Err(msg) => self.fail(msg),
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     let args = self.pop_n(argc);
                     let callee = self.pop_top();
                     match callee {
@@ -767,72 +985,156 @@ impl Vm {
                             continue;
                         }
                     };
-                    let args = self.pop_n(argc);
-                    let obj = self.pop_top();
-                    match obj {
-                        Value::VInstance(inst) => {
-                            let class = inst.lock().unwrap().class.clone();
-                            // Inline cache: a monomorphic site (the common
-                            // case) skips the class-chain walk and the string
-                            // hash lookup entirely.
-                            let chunk = self.frames[nf].func.chunk.clone();
-                            let key = (Arc::as_ptr(&chunk) as usize, ip);
-                            let class_id = Arc::as_ptr(&class) as usize;
-                            let hit = match self.invoke_cache.get(&key) {
-                                Some(c) if c.class == class_id => Some(c.func.clone()),
-                                _ => None,
-                            };
-                            let resolved = match hit {
-                                Some(fd) => Some(fd),
-                                None => match find_method_vclass(&class, &name) {
-                                    Some(fd) => {
-                                        if self.invoke_cache.len() > 4096 {
-                                            self.invoke_cache.clear();
+                    let slen = self.frames[nf].slots.len();
+                    if slen >= argc + 1 {
+                        let recv_idx = slen - 1 - argc;
+                        match &self.frames[nf].slots[recv_idx] {
+                            Value::List(d) | Value::VecDyn(d) => {
+                                let mname = name.as_ref();
+                                if mname == "push" && argc == 1 {
+                                    let val = self.frames[nf].slots.pop().unwrap();
+                                    let d = match self.frames[nf].slots.pop().unwrap() {
+                                        Value::List(d) | Value::VecDyn(d) => d,
+                                        _ => unreachable!(),
+                                    };
+                                    d.lock().unwrap().items.push(val);
+                                    self.frames[nf].slots.push(Value::Null);
+                                    continue;
+                                } else if mname == "pop" && argc == 0 {
+                                    let popped = d.lock().unwrap().items.pop();
+                                    if let Some(v) = popped {
+                                        self.frames[nf].slots[recv_idx] = v;
+                                        continue;
+                                    }
+                                } else if mname == "len" && argc == 0 {
+                                    let n = d.lock().unwrap().items.len() as i64;
+                                    self.frames[nf].slots[recv_idx] = Value::Int(n);
+                                    continue;
+                                }
+                            }
+                            Value::Map(m) => {
+                                let mname = name.as_ref();
+                                if mname == "set" && argc == 2 {
+                                    let val = self.frames[nf].slots.pop().unwrap();
+                                    let key = self.frames[nf].slots.pop().unwrap();
+                                    if let Ok(mk) = crate::value::as_map_key(&key) {
+                                        if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
+                                            m.lock().unwrap().set_key(mk, val);
                                         }
-                                        self.invoke_cache.insert(
-                                            key,
-                                            InvokeCache {
-                                                _chunk: chunk,
-                                                class: class_id,
-                                                func: fd.clone(),
-                                            },
-                                        );
-                                        Some(fd)
-                                    }
-                                    None => None,
-                                },
-                            };
-                            match resolved {
-                                Some(fd) => {
-                                    if fd.arity != args.len() + 1 {
-                                        self.fail(format!(
-                                            "method {} expects {} argument(s), got {}",
-                                            name,
-                                            fd.arity - 1,
-                                            args.len()
-                                        ));
+                                        self.frames[nf].slots[recv_idx] = Value::Null;
                                         continue;
+                                    } else {
+                                        self.frames[nf].slots.push(key);
+                                        self.frames[nf].slots.push(val);
                                     }
-                                    // Reuse the argument Vec: slot 0 is the
-                                    // receiver (capacity was reserved for it).
-                                    let mut call_args = args;
-                                    call_args.insert(0, Value::VInstance(inst));
-                                    if let Err(e) = self.call_vfunc_frame(fd, call_args) {
-                                        self.error = Some(e);
+                                } else if mname == "get" && argc == 1 {
+                                    let key = self.frames[nf].slots.pop().unwrap();
+                                    if let Ok(mk) = crate::value::as_map_key(&key) {
+                                        let found = if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
+                                            let guard = m.lock().unwrap();
+                                            guard.find(&mk).map(|i| guard.entries[i].1.clone())
+                                        } else {
+                                            None
+                                        };
+                                        if let Some(v) = found {
+                                            self.frames[nf].slots[recv_idx] = v;
+                                            continue;
+                                        } else {
+                                            self.frames[nf].slots.push(key);
+                                        }
+                                    } else {
+                                        self.frames[nf].slots.push(key);
+                                    }
+                                } else if mname == "len" && argc == 0 {
+                                    let n = m.lock().unwrap().entries.len() as i64;
+                                    self.frames[nf].slots[recv_idx] = Value::Int(n);
+                                    continue;
+                                } else if mname == "has" && argc == 1 {
+                                    let key = self.frames[nf].slots.pop().unwrap();
+                                    if let Ok(mk) = crate::value::as_map_key(&key) {
+                                        let b = if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
+                                            m.lock().unwrap().find(&mk).is_some()
+                                        } else {
+                                            false
+                                        };
+                                        self.frames[nf].slots[recv_idx] = Value::Bool(b);
                                         continue;
+                                    } else {
+                                        self.frames[nf].slots.push(key);
                                     }
                                 }
-                                None => self.fail(format!(
-                                    "class {} has no method '{}'",
-                                    class.name, name
-                                )),
                             }
+                            Value::Str(s) if name.as_ref() == "len" && argc == 0 => {
+                                let n = s.chars().count() as i64;
+                                self.frames[nf].slots[recv_idx] = Value::Int(n);
+                                continue;
+                            }
+                            Value::VInstance(inst) => {
+                                let class = inst.lock().unwrap().class.clone();
+                                let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
+                                let key = (chunk_ptr, ip);
+                                let class_id = Arc::as_ptr(&class) as usize;
+                                let hit = match self.invoke_cache.get(&key) {
+                                    Some(c) if c.class == class_id => Some(c.func.clone()),
+                                    _ => None,
+                                };
+                                let resolved = match hit {
+                                    Some(fd) => Some(fd),
+                                    None => match find_method_vclass(&class, &name) {
+                                        Some(fd) => {
+                                            if self.invoke_cache.len() > 4096 {
+                                                self.invoke_cache.clear();
+                                            }
+                                            let chunk = self.frames[nf].func.chunk.clone();
+                                            self.invoke_cache.insert(
+                                                key,
+                                                InvokeCache {
+                                                    _chunk: chunk,
+                                                    class: class_id,
+                                                    func: fd.clone(),
+                                                },
+                                            );
+                                            Some(fd)
+                                        }
+                                        None => None,
+                                    },
+                                };
+                                match resolved {
+                                    Some(fd) => {
+                                        if fd.arity != argc + 1 {
+                                            self.frames[nf].slots.truncate(recv_idx);
+                                            self.fail(format!(
+                                                "method {} expects {} argument(s), got {}",
+                                                name,
+                                                fd.arity - 1,
+                                                argc
+                                            ));
+                                            continue;
+                                        }
+                                        let mut call_args = self.alloc_slots(argc + 1);
+                                        call_args.extend(self.frames[nf].slots.drain(recv_idx..));
+                                        if let Err(e) = self.call_vfunc_frame(fd, call_args) {
+                                            self.error = Some(e);
+                                            continue;
+                                        }
+                                    }
+                                    None => {
+                                        self.frames[nf].slots.truncate(recv_idx);
+                                        self.fail(format!(
+                                            "class {} has no method '{}'",
+                                            class.name, name
+                                        ));
+                                    }
+                                }
+                                continue;
+                            }
+                            _ => {}
                         }
-                other => {
-                    // Higher-order list methods run their callback through
-                    // this vm so results match the tree interpreter exactly.
+                    }
+                    let args = self.pop_n(argc);
+                    let obj = self.pop_top();
                     if collections::is_callback_method(&name) {
-                        match &other {
+                        match &obj {
                             Value::List(d) | Value::VecDyn(d) => {
                                 let items = d.lock().unwrap().items.clone();
                                 match self.list_callback_vm(&items, &name, args) {
@@ -844,11 +1146,9 @@ impl Vm {
                             _ => {}
                         }
                     }
-                    match collections::call_method(&other, &name, args) {
+                    match collections::call_method(&obj, &name, args) {
                         Ok(v) => self.frames[nf].slots.push(v),
                         Err(msg) => self.fail(msg),
-                    }
-                }
                     }
                 }
                 OpCode::IndexGet => {
@@ -875,23 +1175,31 @@ impl Vm {
                 OpCode::FieldGet => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
-                    let name = match self.const_at(nf, idx) {
-                        Value::Str(s) => s,
-                        _ => {
-                            self.fail("field name is not a string");
-                            continue;
-                        }
-                    };
                     let obj = self.pop_top();
                     match obj {
                         Value::VInstance(inst) => {
+                            let name = match self.frames[nf].func.chunk.constants.get(idx) {
+                                Some(Value::Str(s)) => s,
+                                _ => {
+                                    self.fail("field name is not a string");
+                                    continue;
+                                }
+                            };
                             let ib = inst.lock().unwrap();
                             match ib.fields.get(name.as_ref()) {
-                                Some(v) => self.frames[nf].slots.push(v.clone()),
-                                None => self.fail(format!(
-                                    "instance of {} has no field '{}'",
-                                    ib.class.name, name
-                                )),
+                                Some(v) => {
+                                    let val = v.clone();
+                                    drop(ib);
+                                    self.frames[nf].slots.push(val);
+                                }
+                                None => {
+                                    let err = format!(
+                                        "instance of {} has no field '{}'",
+                                        ib.class.name, name
+                                    );
+                                    drop(ib);
+                                    self.fail(err);
+                                }
                             }
                         }
                         other => self.fail(format!("{} has no fields", type_name(&other))),
@@ -900,37 +1208,33 @@ impl Vm {
                 OpCode::FieldSet => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
-                    let name = match self.const_at(nf, idx) {
-                        Value::Str(s) => s,
-                        _ => {
-                            self.fail("field name is not a string");
-                            continue;
-                        }
-                    };
                     let v = self.pop_top();
                     let obj = self.pop_top();
                     match obj {
                         Value::VInstance(inst) => {
+                            let name = match self.frames[nf].func.chunk.constants.get(idx) {
+                                Some(Value::Str(s)) => s,
+                                _ => {
+                                    self.fail("field name is not a string");
+                                    continue;
+                                }
+                            };
                             let mut ib = inst.lock().unwrap();
-                            if !ib.fields.contains_key(name.as_ref()) {
-                                self.fail(format!(
-                                    "instance of {} has no field '{}'",
-                                    ib.class.name, name
-                                ));
-                                continue;
-                            }
                             match ib.fields.get_mut(name.as_ref()) {
-                                Some(slot) => *slot = v.clone(),
+                                Some(slot) => {
+                                    *slot = v.clone();
+                                    drop(ib);
+                                    self.frames[nf].slots.push(v);
+                                }
                                 None => {
-                                    ib.fields.insert(name.to_string(), v.clone());
+                                    let err = format!(
+                                        "instance of {} has no field '{}'",
+                                        ib.class.name, name
+                                    );
+                                    drop(ib);
+                                    self.fail(err);
                                 }
                             }
-                            // Leave the assigned value on the stack, matching
-                            // `SetLocal`/`SetGlobal`: the enclosing statement's
-                            // Pop consumes it. (Previously FieldSet pushed
-                            // nothing, so the statement Pop ate the value
-                            // *below* the assignment - usually `self` itself.)
-                            self.frames[nf].slots.push(v);
                         }
                         other => self.fail(format!("{} has no fields", type_name(&other))),
                     }
@@ -955,6 +1259,13 @@ impl Vm {
                 OpCode::Return => {
                     let ret = self.pop_top();
                     let nf = self.frames.len() - 1;
+                    if self
+                        .pending_str
+                        .as_ref()
+                        .is_some_and(|&(pf, _, _)| pf == nf)
+                    {
+                        self.pending_str = None;
+                    }
                     // If returning from inside a `finally` block, pop that handler
                     // and cancel any pending re-raise from its `try`/`catch`.
                     while self
@@ -982,11 +1293,15 @@ impl Vm {
                     }
                     let ctor = self.frames[nf].ctor_result.take();
                     let ret_or_ctor = ctor.unwrap_or(ret);
-                    let guards = std::mem::take(&mut self.frames[nf].guards);
-                    for g in &guards {
-                        g.lock().unwrap().unlock();
+                    if !self.frames[nf].guards.is_empty() {
+                        let guards = std::mem::take(&mut self.frames[nf].guards);
+                        for g in &guards {
+                            g.lock().unwrap().unlock();
+                        }
                     }
-                    self.frames.pop();
+                    if let Some(popped_frame) = self.frames.pop() {
+                        self.free_slots(popped_frame.slots);
+                    }
                     self.depth = self.depth.saturating_sub(1);
                     if self.frames.len() == self.stop {
                         return Ok(ret_or_ctor);
@@ -1035,20 +1350,18 @@ impl Vm {
                     self.frames[nf].slots.push(b);
                 }
                 OpCode::CaptureSync => {
+                    self.flush_pending_str();
                     let slot = self.code_u8(nf, ip + 1) as usize;
                     let idx = self.code_u8(nf, ip + 2) as usize;
                     self.frames[nf].ip = ip + 3;
-                    // Idempotent within an activation: once a slot routes
-                    // through a cell, that cell is the live storage (the raw
-                    // slot below it is stale) and must not be re-bound from
-                    // the stale value. Loops re-capture because `Uncapture`
-                    // clears the routing when the previous binding's scope
-                    // ends or the iteration rebinds the loop variable.
-                    if self.frames[nf].captured.contains_key(&slot) {
+                    if self.frames[nf]
+                        .captured
+                        .get(slot)
+                        .and_then(|c| c.as_ref())
+                        .is_some()
+                    {
                         continue;
                     }
-                    // The cell is per-activation (`frame.own_cells`), so two
-                    // calls of the same closure never share captured state.
                     let cell = crate::value::new_untracked_ref(
                         self.frames[nf]
                             .slots
@@ -1059,12 +1372,18 @@ impl Vm {
                     if idx < self.frames[nf].own_cells.len() {
                         self.frames[nf].own_cells[idx] = cell.clone();
                     }
-                    self.frames[nf].captured.insert(slot, cell);
+                    let cap = &mut self.frames[nf].captured;
+                    if slot >= cap.len() {
+                        cap.resize(slot + 1, None);
+                    }
+                    cap[slot] = Some(cell);
                 }
                 OpCode::Uncapture => {
                     let slot = self.code_u8(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 2;
-                    self.frames[nf].captured.remove(&slot);
+                    if let Some(entry) = self.frames[nf].captured.get_mut(slot) {
+                        *entry = None;
+                    }
                 }
                 OpCode::EndTry => {
                     self.frames[nf].ip = ip + 1;
@@ -1087,11 +1406,15 @@ impl Vm {
                         }
                         let ctor = self.frames[nf].ctor_result.take();
                         let ret_or_ctor = ctor.unwrap_or(ret);
-                        let guards = std::mem::take(&mut self.frames[nf].guards);
-                        for g in &guards {
-                            g.lock().unwrap().unlock();
+                        if !self.frames[nf].guards.is_empty() {
+                            let guards = std::mem::take(&mut self.frames[nf].guards);
+                            for g in &guards {
+                                g.lock().unwrap().unlock();
+                            }
                         }
-                        self.frames.pop();
+                        if let Some(popped_frame) = self.frames.pop() {
+                            self.free_slots(popped_frame.slots);
+                        }
                         self.depth = self.depth.saturating_sub(1);
                         if self.frames.len() == self.stop {
                             return Ok(ret_or_ctor);
@@ -1230,6 +1553,41 @@ impl Vm {
         out
     }
 
+    #[inline]
+    fn alloc_slots(&mut self, cap: usize) -> Vec<Value> {
+        match self.slot_pool.pop() {
+            Some(mut v) => {
+                v.clear();
+                v.reserve(cap);
+                v
+            }
+            None => Vec::with_capacity(cap.max(8)),
+        }
+    }
+
+    #[inline]
+    fn free_slots(&mut self, mut v: Vec<Value>) {
+        if self.slot_pool.len() < 64 && v.capacity() <= 256 {
+            v.clear();
+            self.slot_pool.push(v);
+        }
+    }
+
+    #[inline]
+    fn flush_pending_str(&mut self) {
+        if let Some((fidx, slot, buf)) = self.pending_str.take() {
+            if let Some(f) = self.frames.get_mut(fidx) {
+                let val = Value::Str(buf.into());
+                if let Some(Some(c)) = f.captured.get(slot) {
+                    *c.lock().unwrap() = val.clone();
+                }
+                if slot < f.slots.len() {
+                    f.slots[slot] = val;
+                }
+            }
+        }
+    }
+
     fn pop_top(&mut self) -> Value {
         let nf = self.frames.len() - 1;
         match self.frames[nf].slots.pop() {
@@ -1248,13 +1606,8 @@ impl Vm {
             self.fail("stack underflow: not enough operands on the stack");
             return vec![Value::Null; n];
         }
-        // One spare slot: `Invoke` prepends the receiver in place instead of
-        // building a second Vec (this is the per-method-call allocation).
-        let mut v = Vec::with_capacity(n + 1);
-        for _ in 0..n {
-            v.push(self.frames[nf].slots.pop().unwrap());
-        }
-        v.reverse();
+        let mut v = self.alloc_slots(n + 1);
+        v.extend(self.frames[nf].slots.drain((len - n)..));
         v
     }
 
@@ -1281,15 +1634,20 @@ impl Vm {
             });
         }
         self.depth += 1;
+        let own_cells = if fd.own_upvalues == 0 {
+            Vec::new()
+        } else {
+            (0..fd.own_upvalues as usize)
+                .map(|_| crate::value::new_untracked_ref(Value::Null))
+                .collect()
+        };
         self.frames.push(CallFrame {
-            func: fd.clone(),
+            func: fd,
             ip: 0,
             inst_ip: 0,
             slots: args,
-            captured: HashMap::new(),
-            own_cells: (0..fd.own_upvalues as usize)
-                .map(|_| crate::value::new_untracked_ref(Value::Null))
-                .collect(),
+            captured: Vec::new(),
+            own_cells,
             guards: Vec::new(),
             ctor_result: None,
         });
@@ -1438,7 +1796,7 @@ impl Vm {
                         trace: Vec::new(),
                     });
                 }
-                let mut call_args = Vec::with_capacity(args.len() + 1);
+                let mut call_args = self.alloc_slots(args.len() + 1);
                 call_args.push(obj.clone());
                 call_args.extend(args);
                 self.call_vfunc_frame(ctor, call_args)?;
@@ -1468,14 +1826,19 @@ impl Vm {
     // ------------------------------------------------------- exception unwind
 
     fn unwind(&mut self, err: VmError) -> Result<(), VmError> {
+        self.flush_pending_str();
         while let Some(mut h) = self.handlers.pop() {
             while self.frames.len() > h.frame_depth {
                 let nf = self.frames.len() - 1;
-                let guards = std::mem::take(&mut self.frames[nf].guards);
-                for g in &guards {
-                    g.lock().unwrap().unlock();
+                if !self.frames[nf].guards.is_empty() {
+                    let guards = std::mem::take(&mut self.frames[nf].guards);
+                    for g in &guards {
+                        g.lock().unwrap().unlock();
+                    }
                 }
-                self.frames.pop();
+                if let Some(popped_frame) = self.frames.pop() {
+                    self.free_slots(popped_frame.slots);
+                }
                 self.depth = self.depth.saturating_sub(1);
             }
             {
@@ -1882,7 +2245,12 @@ pub(crate) fn vm_eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, Str
             (Int(a), Float(b)) => Ok(Float(*a as f64 + b)),
             (Float(a), Int(b)) => Ok(Float(a + *b as f64)),
             (Float(a), Float(b)) => Ok(Float(a + b)),
-            (Str(a), Str(b)) => Ok(Str(format!("{}{}", a, b).into())),
+            (Str(a), Str(b)) => {
+                let mut s = String::with_capacity(a.len() + b.len());
+                s.push_str(a);
+                s.push_str(b);
+                Ok(Str(s.into()))
+            }
             _ => Err(format!(
                 "cannot add {} and {}",
                 type_name(&l),

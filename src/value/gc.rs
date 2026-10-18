@@ -379,6 +379,7 @@ pub fn track<T: GcTrace + Send + 'static>(cell: Arc<Mutex<T>>) -> Arc<Mutex<T>> 
         reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
     }
     drop(reg);
+    ALLOCS.fetch_add(1, Ordering::Relaxed);
     cell
 }
 
@@ -427,6 +428,7 @@ pub fn live_cells() -> usize {
 /// Run one collection pass; returns the number of cells swept. Safe to call at
 /// any single-threaded point.
 pub fn collect() -> usize {
+    ALLOCS.store(0, Ordering::Relaxed);
     // Snapshot live entries (weak handles only — never upgrade during counting).
     let snapshot: Vec<(usize, Weak<dyn Any + Send + Sync>, TraceFn, ClearFn)> = {
         let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
@@ -507,7 +509,7 @@ pub fn collect() -> usize {
     freed
 }
 
-static TICKS: AtomicUsize = AtomicUsize::new(0);
+static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
 /// Is automatic collection enabled? **On by default**; `SPID3R_GC=0` disables it.
 fn auto_enabled() -> bool {
@@ -515,14 +517,14 @@ fn auto_enabled() -> bool {
     *E.get_or_init(|| std::env::var("SPID3R_GC").map(|v| v != "0").unwrap_or(true))
 }
 
-/// Called at interpreter statement boundaries. Collects every 4096 statements,
-/// and only while the scheduler has no live tasks (a worker could clone a cell
-/// concurrently, racing the strong counts).
+/// Called at interpreter statement boundaries. Collects once at least 1024
+/// tracked cells have been allocated since the last collection, and only while
+/// the scheduler has no live tasks (a worker could clone a cell concurrently,
+/// racing the strong counts).
+#[inline]
 pub fn maybe_collect() {
-    if !auto_enabled() {
-        return;
-    }
-    if TICKS.fetch_add(1, Ordering::Relaxed).is_multiple_of(4096)
+    if ALLOCS.load(Ordering::Relaxed) >= 1024
+        && auto_enabled()
         && crate::sched::Scheduler::shared().live_tasks() == 0
     {
         collect();

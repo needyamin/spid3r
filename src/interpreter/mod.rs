@@ -36,6 +36,27 @@ pub enum Flow {
     Error(Diagnostic),
 }
 
+#[derive(Clone)]
+enum TraceCallee {
+    Func(Option<String>),
+    Method(Arc<crate::value::ClassData>, Arc<FunctionData>),
+    Ctor(Arc<crate::value::ClassData>),
+}
+
+impl TraceCallee {
+    fn to_name(&self) -> Option<String> {
+        match self {
+            TraceCallee::Func(n) => n.clone(),
+            TraceCallee::Method(c, fd) => Some(format!(
+                "{}::{}",
+                c.name,
+                fd.proto.name.as_deref().unwrap_or("")
+            )),
+            TraceCallee::Ctor(c) => Some(format!("{}::new", c.name)),
+        }
+    }
+}
+
 pub struct Interp {
     pub globals: Env,
     pub sched: Arc<Scheduler>,
@@ -44,10 +65,11 @@ pub struct Interp {
     pub module_dirs: Vec<PathBuf>,
     /// Mutex guards held by the current scope; released at block exit.
     pub guards: Mutex<Vec<crate::value::Ref<crate::sched::MutexData>>>,
+    guards_len: AtomicUsize,
     pub is_module: bool,
     pub public_names: Mutex<HashSet<String>>,
-    /// Active call frames for error traces: (callee name, call site).
-    call_stack: Mutex<Vec<(Option<String>, Span)>>,
+    /// Active call frames for error traces: (callee, call site).
+    call_stack: Mutex<Vec<(TraceCallee, Span)>>,
     depth: AtomicUsize,
 }
 
@@ -91,6 +113,7 @@ impl Interp {
             file,
             module_dirs,
             guards: Mutex::new(Vec::new()),
+            guards_len: AtomicUsize::new(0),
             is_module: false,
             public_names: Mutex::new(HashSet::new()),
             call_stack: Mutex::new(Vec::new()),
@@ -117,6 +140,7 @@ impl Interp {
             file,
             module_dirs,
             guards: Mutex::new(Vec::new()),
+            guards_len: AtomicUsize::new(0),
             is_module: true,
             public_names: Mutex::new(HashSet::new()),
             call_stack: Mutex::new(Vec::new()),
@@ -142,6 +166,7 @@ impl Interp {
             file,
             module_dirs,
             guards: Mutex::new(Vec::new()),
+            guards_len: AtomicUsize::new(0),
             is_module: false,
             public_names: Mutex::new(HashSet::new()),
             call_stack: Mutex::new(Vec::new()),
@@ -247,17 +272,37 @@ impl Interp {
 
     // ------------------------------------------------------------ statements
 
+    #[inline]
     fn guard_mark(&self) -> usize {
-        self.guards.lock().unwrap().len()
+        self.guards_len.load(Ordering::Relaxed)
     }
 
+    #[inline]
     fn release_guards(&self, mark: usize) {
+        if self.guards_len.load(Ordering::Relaxed) <= mark {
+            return;
+        }
         let mut guards = self.guards.lock().unwrap();
         while guards.len() > mark {
             if let Some(m) = guards.pop() {
                 m.lock().unwrap().unlock();
             }
         }
+        self.guards_len.store(guards.len(), Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn block_needs_env(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|s| {
+            matches!(
+                s,
+                Stmt::Let { .. }
+                    | Stmt::Const { .. }
+                    | Stmt::Fn(_)
+                    | Stmt::Class(_)
+                    | Stmt::Import { .. }
+            )
+        })
     }
 
     pub fn exec_block(&self, stmts: &[Stmt], env: &Env) -> Flow {
@@ -351,9 +396,13 @@ impl Interp {
                     Err(f) => return f,
                 };
                 if crate::value::truthy(&c) {
-                    let benv = environment::child(env);
                     let mark = self.guard_mark();
-                    let r = self.exec_block(&then.stmts, &benv);
+                    let r = if Self::block_needs_env(&then.stmts) {
+                        let benv = environment::child(env);
+                        self.exec_block(&then.stmts, &benv)
+                    } else {
+                        self.exec_block(&then.stmts, env)
+                    };
                     self.release_guards(mark);
                     return r;
                 }
@@ -363,49 +412,65 @@ impl Interp {
                         Err(f) => return f,
                     };
                     if crate::value::truthy(&c) {
-                        let benv = environment::child(env);
                         let mark = self.guard_mark();
-                        let r = self.exec_block(&eb.stmts, &benv);
+                        let r = if Self::block_needs_env(&eb.stmts) {
+                            let benv = environment::child(env);
+                            self.exec_block(&eb.stmts, &benv)
+                        } else {
+                            self.exec_block(&eb.stmts, env)
+                        };
                         self.release_guards(mark);
                         return r;
                     }
                 }
                 if let Some(eb) = els {
-                    let benv = environment::child(env);
                     let mark = self.guard_mark();
-                    let r = self.exec_block(&eb.stmts, &benv);
+                    let r = if Self::block_needs_env(&eb.stmts) {
+                        let benv = environment::child(env);
+                        self.exec_block(&eb.stmts, &benv)
+                    } else {
+                        self.exec_block(&eb.stmts, env)
+                    };
                     self.release_guards(mark);
                     return r;
                 }
                 Flow::Value(Value::Null)
             }
-            Stmt::While { cond, body, .. } => loop {
-                let c = match self.eval(cond, env) {
-                    Ok(v) => v,
-                    Err(f) => return f,
-                };
-                if !crate::value::truthy(&c) {
-                    return Flow::Value(Value::Null);
-                }
-                let benv = environment::child(env);
-                let mark = self.guard_mark();
-                match self.exec_block(&body.stmts, &benv) {
-                    Flow::Value(_) => {
-                        self.release_guards(mark);
-                    }
-                    Flow::Break => {
-                        self.release_guards(mark);
+            Stmt::While { cond, body, .. } => {
+                let needs_env = Self::block_needs_env(&body.stmts);
+                loop {
+                    let c = match self.eval(cond, env) {
+                        Ok(v) => v,
+                        Err(f) => return f,
+                    };
+                    if !crate::value::truthy(&c) {
                         return Flow::Value(Value::Null);
                     }
-                    Flow::Continue => {
-                        self.release_guards(mark);
-                    }
-                    other => {
-                        self.release_guards(mark);
-                        return other;
+                    let mark = self.guard_mark();
+                    let res = if needs_env {
+                        let benv = environment::child(env);
+                        self.exec_block(&body.stmts, &benv)
+                    } else {
+                        self.exec_block(&body.stmts, env)
+                    };
+                    match res {
+                        Flow::Value(_) => {
+                            self.release_guards(mark);
+                        }
+                        Flow::Break => {
+                            self.release_guards(mark);
+                            return Flow::Value(Value::Null);
+                        }
+                        Flow::Continue => {
+                            self.release_guards(mark);
+                        }
+                        other => {
+                            self.release_guards(mark);
+                            return other;
+                        }
                     }
                 }
-            },
+            }
             Stmt::ForIn {
                 var, iter, body, ..
             } => {
@@ -451,6 +516,7 @@ impl Interp {
                     Flow::Value(_) => {}
                     other => return other,
                 }
+                let needs_env = Self::block_needs_env(&body.stmts);
                 loop {
                     let c = match self.eval(cond, &lenv) {
                         Ok(v) => v,
@@ -459,9 +525,13 @@ impl Interp {
                     if !crate::value::truthy(&c) {
                         return Flow::Value(Value::Null);
                     }
-                    let benv = environment::child(&lenv);
                     let mark = self.guard_mark();
-                    let body_flow = self.exec_block(&body.stmts, &benv);
+                    let body_flow = if needs_env {
+                        let benv = environment::child(&lenv);
+                        self.exec_block(&body.stmts, &benv)
+                    } else {
+                        self.exec_block(&body.stmts, &lenv)
+                    };
                     self.release_guards(mark);
                     match body_flow {
                         Flow::Value(_) => {}
@@ -488,9 +558,13 @@ impl Interp {
             Stmt::Break { .. } => Flow::Break,
             Stmt::Continue { .. } => Flow::Continue,
             Stmt::Block(b) => {
-                let benv = environment::child(env);
                 let mark = self.guard_mark();
-                let r = self.exec_block(&b.stmts, &benv);
+                let r = if Self::block_needs_env(&b.stmts) {
+                    let benv = environment::child(env);
+                    self.exec_block(&b.stmts, &benv)
+                } else {
+                    self.exec_block(&b.stmts, env)
+                };
                 self.release_guards(mark);
                 r
             }
@@ -749,7 +823,9 @@ impl Interp {
                             return Err(self.rt(span, "lock takes no arguments"));
                         }
                         let v = m.lock().unwrap().lock();
-                        self.guards.lock().unwrap().push(m.clone());
+                        let mut guards = self.guards.lock().unwrap();
+                        guards.push(m.clone());
+                        self.guards_len.store(guards.len(), Ordering::Relaxed);
                         return Ok(v);
                     }
                 }
@@ -869,7 +945,12 @@ impl Interp {
                 (Int(a), Float(b)) => Ok(Float(*a as f64 + b)),
                 (Float(a), Int(b)) => Ok(Float(a + *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a + b)),
-                (Str(a), Str(b)) => Ok(Str(format!("{}{}", a, b).into())),
+                (Str(a), Str(b)) => {
+                    let mut s = String::with_capacity(a.len() + b.len());
+                    s.push_str(a);
+                    s.push_str(b);
+                    Ok(Str(s.into()))
+                }
                 _ => Err(self.rt(
                     span,
                     format!(
@@ -1004,14 +1085,16 @@ impl Interp {
         match obj {
             Value::Instance(inst) => {
                 let mut ib = inst.lock().unwrap();
-                if !ib.fields.contains_key(name) {
-                    return Err(self.rt(
+                match ib.fields.get_mut(name) {
+                    Some(slot) => {
+                        *slot = v;
+                        Ok(())
+                    }
+                    None => Err(self.rt(
                         span,
                         format!("instance of {} has no field '{}'", ib.class.name, name),
-                    ));
+                    )),
                 }
-                ib.fields.insert(name.to_string(), v);
-                Ok(())
             }
             other => Err(self.rt(
                 span,
@@ -1045,19 +1128,19 @@ impl Interp {
         args: Vec<Value>,
         span: &Span,
     ) -> Result<Value, Flow> {
-        let depth = self.depth.fetch_add(1, Ordering::SeqCst);
+        let depth = self.depth.fetch_add(1, Ordering::Relaxed);
         if depth >= MAX_CALL_DEPTH {
-            self.depth.fetch_sub(1, Ordering::SeqCst);
+            self.depth.fetch_sub(1, Ordering::Relaxed);
             return Err(self.rt(span, "stack overflow: call depth limit reached"));
         }
-        // Track the frame for error traces: (callee name, call site).
+        // Track the frame for error traces: (callee, call site).
         self.call_stack
             .lock()
             .unwrap()
-            .push((fd.proto.name.clone(), span.clone()));
+            .push((TraceCallee::Func(fd.proto.name.clone()), span.clone()));
         let result = self.call_function_inner(fd, args, span);
         self.call_stack.lock().unwrap().pop();
-        self.depth.fetch_sub(1, Ordering::SeqCst);
+        self.depth.fetch_sub(1, Ordering::Relaxed);
         result
     }
 
@@ -1067,9 +1150,9 @@ impl Interp {
     fn trace_frames(&self, err_span: &Span) -> Vec<crate::diagnostics::TraceFrame> {
         let stack = self.call_stack.lock().unwrap();
         let mut out: Vec<crate::diagnostics::TraceFrame> = Vec::new();
-        if let Some((name, _)) = stack.last() {
+        if let Some((callee, _)) = stack.last() {
             out.push(crate::diagnostics::TraceFrame {
-                func: name.clone(),
+                func: callee.to_name(),
                 span: err_span.clone(),
             });
         }
@@ -1077,7 +1160,7 @@ impl Interp {
             // The frame below sits at the call site of the frame above.
             if let Some((_, call_site)) = stack.get(k + 1) {
                 out.push(crate::diagnostics::TraceFrame {
-                    func: stack[k].0.clone(),
+                    func: stack[k].0.to_name(),
                     span: call_site.clone(),
                 });
             }
@@ -1102,10 +1185,11 @@ impl Interp {
                 ),
             ));
         }
-        let fenv = environment::child(&fd.env);
+        let mut vars = HashMap::with_capacity(fd.proto.params.len());
         for (p, v) in fd.proto.params.iter().zip(args) {
-            environment::define(&fenv, &p.name, v);
+            vars.insert(p.name.clone(), v);
         }
+        let fenv = environment::child_with_vars(&fd.env, vars);
         let mark = self.guard_mark();
         let flow = self.exec_block(&fd.proto.body.stmts, &fenv);
         self.release_guards(mark);
@@ -1211,25 +1295,26 @@ impl Interp {
                     ),
                 ));
             }
-            let depth = self.depth.fetch_add(1, Ordering::SeqCst);
+            let depth = self.depth.fetch_add(1, Ordering::Relaxed);
             if depth >= MAX_CALL_DEPTH {
-                self.depth.fetch_sub(1, Ordering::SeqCst);
+                self.depth.fetch_sub(1, Ordering::Relaxed);
                 return Err(self.rt(span, "stack overflow: call depth limit reached"));
             }
             self.call_stack
                 .lock()
                 .unwrap()
-                .push((Some(format!("{}::new", class.name)), span.clone()));
-            let fenv = environment::child(&ctor.env);
-            environment::define(&fenv, "self", obj.clone());
+                .push((TraceCallee::Ctor(class.clone()), span.clone()));
+            let mut vars = HashMap::with_capacity(ctor.proto.params.len() + 1);
+            vars.insert("self".to_string(), obj.clone());
             for (p, v) in ctor.proto.params.iter().zip(args) {
-                environment::define(&fenv, &p.name, v);
+                vars.insert(p.name.clone(), v);
             }
+            let fenv = environment::child_with_vars(&ctor.env, vars);
             let mark = self.guard_mark();
             let flow = self.exec_block(&ctor.proto.body.stmts, &fenv);
             self.release_guards(mark);
             self.call_stack.lock().unwrap().pop();
-            self.depth.fetch_sub(1, Ordering::SeqCst);
+            self.depth.fetch_sub(1, Ordering::Relaxed);
             match flow {
                 Flow::Value(_) | Flow::Return(_) => {}
                 Flow::Break => return Err(self.rt(span, "break outside a loop")),
@@ -1273,26 +1358,27 @@ impl Interp {
                 ),
             ));
         }
-        let depth = self.depth.fetch_add(1, Ordering::SeqCst);
+        let depth = self.depth.fetch_add(1, Ordering::Relaxed);
         if depth >= MAX_CALL_DEPTH {
-            self.depth.fetch_sub(1, Ordering::SeqCst);
+            self.depth.fetch_sub(1, Ordering::Relaxed);
             return Err(self.rt(span, "stack overflow: call depth limit reached"));
         }
         self.call_stack
             .lock()
             .unwrap()
-            .push((Some(format!("{}::{}", class.name, name)), span.clone()));
+            .push((TraceCallee::Method(class, fd.clone()), span.clone()));
         let obj = Value::Instance(inst.clone());
-        let fenv = environment::child(&fd.env);
-        environment::define(&fenv, "self", obj);
+        let mut vars = HashMap::with_capacity(fd.proto.params.len());
+        vars.insert("self".to_string(), obj);
         for (p, v) in fd.proto.params.iter().skip(1).zip(args) {
-            environment::define(&fenv, &p.name, v);
+            vars.insert(p.name.clone(), v);
         }
+        let fenv = environment::child_with_vars(&fd.env, vars);
         let mark = self.guard_mark();
         let flow = self.exec_block(&fd.proto.body.stmts, &fenv);
         self.release_guards(mark);
         self.call_stack.lock().unwrap().pop();
-        self.depth.fetch_sub(1, Ordering::SeqCst);
+        self.depth.fetch_sub(1, Ordering::Relaxed);
         match flow {
             Flow::Value(v) | Flow::Return(v) => Ok(v),
             Flow::Break => Err(self.rt(span, "break outside a loop")),

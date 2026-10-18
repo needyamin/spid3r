@@ -822,7 +822,7 @@ impl JsonParser {
             }
             self.pos += 1;
             let value = self.parse_value()?;
-            let mk = crate::value::MapKey::Str(key);
+            let mk = crate::value::MapKey::Str(key.into());
             if let Some(pos) = entries.iter().position(|(k, _)| k == &mk) {
                 entries[pos].1 = value;
             } else {

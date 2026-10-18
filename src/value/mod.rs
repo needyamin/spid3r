@@ -66,7 +66,7 @@ pub enum MapKey {
     Null,
     Bool(bool),
     Int(i64),
-    Str(String),
+    Str(Arc<str>),
 }
 
 impl MapKey {
@@ -75,17 +75,18 @@ impl MapKey {
             MapKey::Null => "null".to_string(),
             MapKey::Bool(b) => b.to_string(),
             MapKey::Int(i) => i.to_string(),
-            MapKey::Str(s) => s.clone(),
+            MapKey::Str(s) => s.to_string(),
         }
     }
 }
 
+#[inline]
 pub fn as_map_key(v: &Value) -> Result<MapKey, String> {
     match v {
         Value::Null => Ok(MapKey::Null),
         Value::Bool(b) => Ok(MapKey::Bool(*b)),
         Value::Int(i) => Ok(MapKey::Int(*i)),
-        Value::Str(s) => Ok(MapKey::Str(s.to_string())),
+        Value::Str(s) => Ok(MapKey::Str(s.clone())),
         other => Err(format!(
             "{} is not a valid key; keys must be null, bool, int, or string",
             type_name(other)
@@ -93,12 +94,13 @@ pub fn as_map_key(v: &Value) -> Result<MapKey, String> {
     }
 }
 
+#[inline]
 pub fn key_to_value(k: &MapKey) -> Value {
     match k {
         MapKey::Null => Value::Null,
         MapKey::Bool(b) => Value::Bool(*b),
         MapKey::Int(i) => Value::Int(*i),
-        MapKey::Str(s) => Value::Str(s.as_str().into()),
+        MapKey::Str(s) => Value::Str(s.clone()),
     }
 }
 

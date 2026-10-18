@@ -35,6 +35,15 @@ pub fn child(parent: &Env) -> Env {
     }))
 }
 
+pub fn child_with_vars(parent: &Env, vars: HashMap<String, Value>) -> Env {
+    Arc::new(Mutex::new(EnvironmentData {
+        vars,
+        consts: HashSet::new(),
+        parent: Some(parent.clone()),
+    }))
+}
+
+
 impl EnvironmentData {
     /// Read a variable, walking the parent chain. Clones the value out, so no
     /// lock is held while user code runs.
@@ -49,11 +58,11 @@ impl EnvironmentData {
     /// `Err(AssignError::Const)` is a `const` violation; `Err(AssignError::Unbound)`
     /// means the name is not bound anywhere.
     pub fn assign(&mut self, name: &str, value: Value) -> Result<(), AssignError> {
-        if self.vars.contains_key(name) {
-            if self.consts.contains(name) {
+        if let Some(slot) = self.vars.get_mut(name) {
+            if !self.consts.is_empty() && self.consts.contains(name) {
                 return Err(AssignError::Const(name.to_string()));
             }
-            self.vars.insert(name.to_string(), value);
+            *slot = value;
             return Ok(());
         }
         match &self.parent {
