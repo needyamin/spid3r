@@ -24,8 +24,9 @@ pub fn flatten_imports(program: &Program, importer_file: &str) -> Result<Program
     let mut out: Vec<Stmt> = Vec::new();
     let mut done: HashSet<PathBuf> = HashSet::new();
     let mut in_progress: HashSet<PathBuf> = HashSet::new();
-    if let Ok(c) = std::fs::canonicalize(importer_file) {
-        in_progress.insert(c);
+    let importer_path = PathBuf::from(importer_file);
+    if importer_path.is_file() {
+        in_progress.insert(crate::modules::canonical_key(&importer_path));
     }
     flatten_stmts(&program.stmts, importer_file, &mut out, &mut done, &mut in_progress)?;
     Ok(Program { stmts: out })
@@ -41,7 +42,7 @@ fn flatten_stmts(
     for s in stmts {
         if let Stmt::Import { path, .. } = s {
             let resolved = resolve_module(importer_file, path)?;
-            let canon = std::fs::canonicalize(&resolved).unwrap_or_else(|_| resolved.clone());
+            let canon = crate::modules::canonical_key(&resolved);
             if done.contains(&canon) {
                 continue; // already inlined by another importer
             }
@@ -54,9 +55,10 @@ fn flatten_stmts(
             let src = std::fs::read_to_string(&resolved).map_err(|e| {
                 Diagnostic::new(Phase::Semantic, format!("cannot import '{}': {}", path, e))
             })?;
-            let file_id: Arc<str> = Arc::from(resolved.to_string_lossy().as_ref());
-            let module: Program = crate::parser::parse_file(&src, file_id)?;
             let resolved_str = resolved.to_string_lossy().to_string();
+            let file_id: Arc<str> = Arc::from(resolved_str.as_str());
+            let module: Program = crate::parser::parse_file(&src, file_id)?;
+            crate::semantic::check_file(&module, false, &resolved_str)?;
             in_progress.insert(canon.clone());
             flatten_stmts(&module.stmts, &resolved_str, out, done, in_progress)?;
             in_progress.remove(&canon);
@@ -69,8 +71,9 @@ fn flatten_stmts(
 }
 
 /// Resolve an import path relative to the importing file's directory first,
-/// then `SPID3R_PATH` — mirroring [`crate::vm::compiler`]'s resolver so both
-/// the bytecode and AOT paths agree on module lookup.
+/// then [`crate::modules::default_module_dirs`] (`SPID3R_PATH`, `stdlib/`,
+/// `vendor/`) — mirroring [`crate::vm::compiler`]'s resolver so both the
+/// bytecode and AOT paths agree on module lookup.
 fn resolve_module(importer_file: &str, path: &str) -> Result<PathBuf, Diagnostic> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let base = PathBuf::from(importer_file);
@@ -78,11 +81,9 @@ fn resolve_module(importer_file: &str, path: &str) -> Result<PathBuf, Diagnostic
         candidates.push(dir.join(path));
         candidates.push(dir.join(format!("{}.matrix", path)));
     }
-    if let Some(paths) = std::env::var_os("SPID3R_PATH") {
-        for d in std::env::split_paths(&paths) {
-            candidates.push(d.join(path));
-            candidates.push(d.join(format!("{}.matrix", path)));
-        }
+    for d in crate::modules::default_module_dirs() {
+        candidates.push(d.join(path));
+        candidates.push(d.join(format!("{}.matrix", path)));
     }
     for c in candidates {
         if c.is_file() {

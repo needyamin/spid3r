@@ -274,6 +274,15 @@ pub fn call_method_host(
                 let items = d.lock().unwrap().items.clone();
                 return list_callback_method(host, &items, name, &args);
             }
+            if name == "append" && args.len() == 1 {
+                if let Value::List(o) | Value::VecDyn(o) = &args[0] {
+                    if std::sync::Arc::ptr_eq(d, o) {
+                        let extra = d.lock().unwrap().items.clone();
+                        d.lock().unwrap().items.extend(extra);
+                        return Ok(Value::Null);
+                    }
+                }
+            }
             d.lock().unwrap().method(name, &args)
         }
         Value::Stack(d) => d.lock().unwrap().method(name, &args),
@@ -283,7 +292,21 @@ pub fn call_method_host(
         Value::SinglyList(d) => d.lock().unwrap().method(name, &args),
         Value::DoublyList(d) => d.lock().unwrap().method(name, &args),
         Value::Map(d) => d.lock().unwrap().method(name, &args),
-        Value::Set(d) => d.lock().unwrap().method(name, &args),
+        Value::Set(d) => {
+            if matches!(name, "union" | "intersection" | "intersect" | "difference")
+                && args.len() == 1
+            {
+                if let Value::Set(o) = &args[0] {
+                    if std::sync::Arc::ptr_eq(d, o) {
+                        let snapshot = Value::Set(new_ref(SetData {
+                            items: d.lock().unwrap().items.clone(),
+                        }));
+                        return d.lock().unwrap().method(name, &[snapshot]);
+                    }
+                }
+            }
+            d.lock().unwrap().method(name, &args)
+        }
         Value::BinTree(d) => d.lock().unwrap().method(name, &args),
         Value::Bst(d) => d.lock().unwrap().method(name, &args),
         Value::Heap(d) => d.lock().unwrap().method(name, &args),
@@ -291,7 +314,27 @@ pub fn call_method_host(
         Value::Graph(d) => d.lock().unwrap().method(name, &args),
         Value::HashTable(d) => d.lock().unwrap().method(name, &args),
         Value::Trie(d) => d.lock().unwrap().method(name, &args),
-        Value::Matrix(d) => d.lock().unwrap().method(name, &args),
+        Value::Matrix(d) => {
+            if matches!(name, "add" | "mul") && args.len() == 1 {
+                if let Value::Matrix(o) = &args[0] {
+                    if std::sync::Arc::ptr_eq(d, o) {
+                        let snap = {
+                            let m = d.lock().unwrap();
+                            MatrixData {
+                                rows: m.rows,
+                                cols: m.cols,
+                                data: m.data.clone(),
+                            }
+                        };
+                        return d
+                            .lock()
+                            .unwrap()
+                            .method(name, &[Value::Matrix(new_ref(snap))]);
+                    }
+                }
+            }
+            d.lock().unwrap().method(name, &args)
+        }
         Value::Ring(d) => d.lock().unwrap().method(name, &args),
         Value::Bag(d) => d.lock().unwrap().method(name, &args),
         Value::RefBox(d) => d.lock().unwrap().method(name, &args),
@@ -504,7 +547,12 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
             if n < 0 {
                 return Err("repeat count must be non-negative".to_string());
             }
-            Ok(Value::Str(s.repeat(n as usize).into()))
+            const MAX_STR_BYTES: usize = 64 * 1024 * 1024;
+            let count = usize::try_from(n).map_err(|_| "repeat count is too large".to_string())?;
+            if s.len().checked_mul(count).is_none_or(|b| b > MAX_STR_BYTES) {
+                return Err("repeat result exceeds maximum string size".to_string());
+            }
+            Ok(Value::Str(s.repeat(count).into()))
         }
         "ltrim" => {
             want(name, args, 0)?;
@@ -530,7 +578,15 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
                     args.len()
                 ));
             }
-            let width = want_int(&args[0], &format!("string.{}", name))? as usize;
+            let width_i64 = want_int(&args[0], &format!("string.{}", name))?;
+            if width_i64 < 0 {
+                return Err(format!("{} width must be non-negative", name));
+            }
+            const MAX_PAD_CHARS: usize = 16 * 1024 * 1024;
+            let width = usize::try_from(width_i64)
+                .ok()
+                .filter(|&w| w <= MAX_PAD_CHARS)
+                .ok_or_else(|| format!("{} width exceeds maximum string size", name))?;
             let pad = want_str(&args[1], &format!("string.{}", name))?;
             if pad.is_empty() {
                 return Err(format!("{}.pad string must not be empty", name));

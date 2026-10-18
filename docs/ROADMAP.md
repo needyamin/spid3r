@@ -172,12 +172,12 @@ gradual typing are done.
 
 ## Known limitations
 
-- **Reference cycles leak.** Values use `Rc`/`Arc` reference counting with no
-  cycle collector. A mutually-referential structure (e.g. a doubly linked list
-  whose nodes point at each other) is not reclaimed until the program exits. The
-  `weak`/`deref` builtins are the documented escape hatch: back-edges that would
-  close a cycle should hold a `weak` (a type-erased `Weak<dyn Any>`) instead of a
-  strong reference. See [`BYTECODE.md`](BYTECODE.md) for the memory strategy.
+- **Reference cycles in untraced containers.** `list`/`vec`, `set`, `map`, and
+  class `instance` cycles are automatically reclaimed by the mark-and-sweep
+  cycle collector (`src/value/gc.rs`; `gc_collect()` / `gc_live_cells()`).
+  Other containers (trees, graphs, heaps, matrices) are not traced by the cycle
+  collector; use `weak`/`deref` for back-edges in those structures. See
+  [`GC.md`](GC.md) and [`BYTECODE.md`](BYTECODE.md).
 - Higher-order methods (`list.map(f)` etc.) are not available in the native AOT
   backend yet — programs using them there get a clear runtime diagnostic (run
   with `--engine vm` instead).

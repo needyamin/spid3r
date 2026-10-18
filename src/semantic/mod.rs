@@ -222,8 +222,8 @@ fn gui_builtins() -> &'static [&'static str] {
 /// precise static type. Anything not listed returns `Any`.
 fn builtin_return_type(name: &str) -> Option<Ty> {
     Some(match name {
-        "int" | "len" | "abs" | "random_int" => Ty::Int,
-        "float" | "sqrt" | "pow" | "now" => Ty::Float,
+        "int" | "len" | "abs" | "random_int" | "now" => Ty::Int,
+        "float" | "sqrt" | "pow" => Ty::Float,
         "string" => Ty::Str,
         "bool" => Ty::Bool,
         "type_of" => Ty::Str,
@@ -539,6 +539,22 @@ impl Checker {
                 Ok(())
             }
             Stmt::Fn(f) => {
+                if f.params.iter().any(|p| p.name == "self") {
+                    return Err(self.err(&f.span, "self is only allowed in methods"));
+                }
+                if self.scopes.len() > 1 {
+                    if let Some(name) = &f.name {
+                        self.declare(
+                            name,
+                            &f.span,
+                            VarInfo {
+                                is_const: false,
+                                class: None,
+                                ty: Some(Ty::Fn),
+                            },
+                        )?;
+                    }
+                }
                 self.fn_depth += 1;
                 let was_async = self.in_async;
                 self.in_async = f.is_async;
@@ -1485,8 +1501,8 @@ impl Checker {
                 if !known {
                     return Err(self.err(span, format!("unknown class '{}'", class)));
                 }
-                if let Some(info) = self.classes.get(class) {
-                    if let Some(mi) = info.methods.get("new") {
+                if self.classes.contains_key(class) {
+                    if let Some(mi) = self.method_sig(class, "new") {
                         if args.len() != mi.arity() {
                             return Err(self.err(
                                 span,
@@ -1498,6 +1514,11 @@ impl Checker {
                                 ),
                             ));
                         }
+                    } else if !args.is_empty() {
+                        return Err(self.err(
+                            span,
+                            format!("new {} expects 0 argument(s), got {}", class, args.len()),
+                        ));
                     }
                 }
                 for a in args {

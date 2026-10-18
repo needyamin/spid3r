@@ -237,6 +237,12 @@ impl OpCode {
     }
 }
 
+impl Default for Chunk {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Chunk {
     pub fn new() -> Self {
         Chunk {
@@ -740,16 +746,35 @@ impl<'a> Reader<'a> {
         }
     }
 
+    fn count(&mut self, min_bytes_per_item: usize) -> SpidResult<usize> {
+        let n = self.usize()?;
+        let rem = self.b.len().saturating_sub(self.p);
+        let needed = n.saturating_mul(min_bytes_per_item.max(1));
+        if needed > rem {
+            return Err(err(
+                Phase::Vm,
+                "invalid file format: item count exceeds remaining file length",
+            ));
+        }
+        Ok(n)
+    }
+
     fn value(&mut self) -> SpidResult<Value> {
         let tag = self.u8()?;
         let mut a = [0u8; 8];
         match tag {
             0 => {
+                if self.p + 8 > self.b.len() {
+                    return Err(err(Phase::Vm, "invalid file format: unexpected end of file"));
+                }
                 a.copy_from_slice(&self.b[self.p..self.p + 8]);
                 self.p += 8;
                 Ok(Value::Int(u64::from_le_bytes(a) as i64))
             }
             1 => {
+                if self.p + 8 > self.b.len() {
+                    return Err(err(Phase::Vm, "invalid file format: unexpected end of file"));
+                }
                 a.copy_from_slice(&self.b[self.p..self.p + 8]);
                 self.p += 8;
                 Ok(Value::Float(f64::from_bits(u64::from_le_bytes(a))))
@@ -784,39 +809,39 @@ impl<'a> Reader<'a> {
 
 fn get_chunk(r: &mut Reader) -> SpidResult<Chunk> {
     let code_len = r.usize()?;
-    if r.p + code_len > r.b.len() {
+    if code_len > r.b.len().saturating_sub(r.p) {
         return Err(err(Phase::Vm, "invalid file format: code length exceeds file"));
     }
     let mut code = vec![0u8; code_len];
     code.copy_from_slice(&r.b[r.p..r.p + code_len]);
     r.p += code_len;
-    let n = r.usize()?;
+    let n = r.count(9)?;
     let mut constants = Vec::with_capacity(n);
     for _ in 0..n {
         constants.push(r.value()?);
     }
-    let n = r.usize()?;
+    let n = r.count(1)?;
     let mut functions = Vec::with_capacity(n);
     for _ in 0..n {
         functions.push(std::sync::Arc::new(get_func_proto(r)?));
     }
-    let n = r.usize()?;
+    let n = r.count(1)?;
     let mut classes = Vec::with_capacity(n);
     for _ in 0..n {
         classes.push(get_class_proto(r)?);
     }
-    let n = r.usize()?;
+    let n = r.count(8)?;
     let mut inst_offsets = Vec::with_capacity(n);
     for _ in 0..n {
         inst_offsets.push(r.usize()?);
     }
-    let n = r.usize()?;
+    let n = r.count(32)?;
     let mut inst_spans = Vec::with_capacity(n);
     for _ in 0..n {
         inst_spans.push(r.span()?);
     }
     let pending_span = r.span()?;
-    let n = r.usize()?;
+    let n = r.count(1)?;
     let mut modules = Vec::with_capacity(n);
     for _ in 0..n {
         modules.push(get_embedded(r)?);
@@ -837,7 +862,7 @@ fn get_func_proto(r: &mut Reader) -> SpidResult<VmFuncProto> {
     let name = r.opt_str()?;
     let arity = r.usize()?;
     let is_async = r.bool()?;
-    let n = r.usize()?;
+    let n = r.count(1)?;
     let mut upvalues = Vec::with_capacity(n);
     for _ in 0..n {
         upvalues.push(r.u8()?);
@@ -857,14 +882,14 @@ fn get_func_proto(r: &mut Reader) -> SpidResult<VmFuncProto> {
 fn get_class_proto(r: &mut Reader) -> SpidResult<VmClassProto> {
     let name = r.str()?;
     let parent = r.opt_str()?;
-    let n = r.usize()?;
+    let n = r.count(9)?;
     let mut fields = Vec::with_capacity(n);
     for _ in 0..n {
         let fn_ = r.str()?;
         let vis = r.vis()?;
         fields.push((fn_, vis));
     }
-    let n = r.usize()?;
+    let n = r.count(12)?;
     let mut methods = Vec::with_capacity(n);
     for _ in 0..n {
         let mn = r.str()?;
@@ -883,7 +908,7 @@ fn get_class_proto(r: &mut Reader) -> SpidResult<VmClassProto> {
 
 fn get_embedded(r: &mut Reader) -> SpidResult<EmbeddedModule> {
     let key = r.str()?;
-    let n = r.usize()?;
+    let n = r.count(8)?;
     let mut public = Vec::with_capacity(n);
     for _ in 0..n {
         public.push(r.str()?);
@@ -900,7 +925,7 @@ fn get_vmfunc(r: &mut Reader) -> SpidResult<VmFunc> {
     let name = r.opt_str()?;
     let arity = r.usize()?;
     let is_async = r.bool()?;
-    let n = r.usize()?;
+    let n = r.count(9)?;
     let mut upvalues = Vec::with_capacity(n);
     for _ in 0..n {
         let v = r.value()?;
@@ -969,7 +994,7 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
     // Offsets at which a real instruction begins; jump targets must land here.
     let mut starts: Vec<usize> = Vec::new();
     // (jump_source_offset, target_offset) pairs to verify after the full scan.
-    let mut jumps: Vec<(usize, usize)> = Vec::new();
+    let mut jumps: Vec<(usize, i64)> = Vec::new();
 
     while ip < len {
         starts.push(ip);
@@ -1030,15 +1055,15 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
             }
             OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue | OpCode::Loop => {
                 let off = i16::from_le_bytes([code[ip + 1], code[ip + 2]]);
-                let target = (ip as i64 + 3 + off as i64) as usize;
+                let target = ip as i64 + 3 + off as i64;
                 jumps.push((ip, target));
             }
             OpCode::Try => {
                 let catch_off = i16::from_le_bytes([code[ip + 3], code[ip + 4]]);
                 let finally_off = i16::from_le_bytes([code[ip + 5], code[ip + 6]]);
-                let operand_end = ip + 7;
-                jumps.push((ip, (operand_end as i64 + catch_off as i64) as usize));
-                jumps.push((ip, (operand_end as i64 + finally_off as i64) as usize));
+                let operand_end = (ip + 7) as i64;
+                jumps.push((ip, operand_end + catch_off as i64));
+                jumps.push((ip, operand_end + finally_off as i64));
             }
             _ => {}
         }
@@ -1046,7 +1071,7 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
     }
 
     for (src, target) in jumps {
-        if target >= len || !starts.contains(&target) {
+        if target < 0 || (target as usize) >= len || !starts.contains(&(target as usize)) {
             return Err(err(
                 Phase::Vm,
                 format!("invalid jump target {} from offset {} in {}", target, src, where_),
@@ -1086,6 +1111,9 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
             }
             validate_chunk_inner(&chunk.functions[idx].chunk, "<method>")?;
         }
+    }
+    for m in &chunk.modules {
+        validate_chunk_inner(&m.func.chunk, &m.key)?;
     }
     Ok(())
 }

@@ -327,3 +327,358 @@ fn wide_random_range_does_not_overflow() {
         "true\n",
     );
 }
+
+#[test]
+fn closure_upvalue_order_and_nested_captures() {
+    // Regression for upvalue index collision when an enclosing function
+    // captures an outer variable `a` before declaring its own captured local `b`,
+    // plus branch-skipped first closure (`if false`) and 3-level nested closures.
+    assert_both_engines(
+        "upvalue_order_nested",
+        r#"fn make_outer(a) {
+    return fn(x) {
+        let seen_a = a;
+        let b = x + 10;
+        if false {
+            let dead = fn() { return b; };
+        }
+        let inner = fn(y) {
+            b = b + y;
+            return a + b + seen_a;
+        };
+        return inner(5) + b;
+    };
+}
+fn main() {
+    let f = make_outer(100);
+    println(f(3));
+    return 0;
+}
+"#,
+        "236\n",
+    );
+}
+
+#[test]
+fn local_named_function_declarations_and_recursion() {
+    assert_both_engines(
+        "local_named_fn",
+        r#"fn main() {
+    fn fact(n) {
+        if n <= 1 { return 1; }
+        return n * fact(n - 1);
+    }
+    println(fact(5));
+    return 0;
+}
+"#,
+        "120\n",
+    );
+}
+
+#[test]
+fn cyclic_containers_display_equal_and_clone_without_deadlock() {
+    assert_both_engines(
+        "cyclic_containers",
+        r#"fn main() {
+    let a = [];
+    a.push(a);
+    println(a);
+    println(a == a);
+    let b = a.clone();
+    println(b);
+    return 0;
+}
+"#,
+        "[[...]]\ntrue\n[[[...]]]\n",
+    );
+}
+
+#[test]
+fn self_argument_collection_methods_do_not_deadlock() {
+    assert_both_engines(
+        "self_collection_ops",
+        r#"fn main() {
+    let xs = [1, 2];
+    xs.append(xs);
+    println(xs);
+
+    let s = set(1, 2);
+    println(s.union(s).len());
+    println(s.intersection(s).len());
+    println(s.difference(s).len());
+
+    let m = matrix(2, 2, 0);
+    m.set(0, 0, 1);
+    m.set(0, 1, 2);
+    m.set(1, 0, 3);
+    m.set(1, 1, 4);
+    println(m.add(m).get(0, 1));
+    println(m.mul(m).get(0, 0));
+    return 0;
+}
+"#,
+        "[1, 2, 1, 2]\n2\n2\n0\n4.0\n7.0\n",
+    );
+}
+
+#[test]
+fn linked_list_pop_back_preserves_tail() {
+    assert_both_engines(
+        "linked_list_tail",
+        r#"fn main() {
+    let l = linked_list(10, 20, 30);
+    println(l.pop_back());
+    println(l.peek_back());
+    l.push_back(40);
+    println(l.to_list());
+    return 0;
+}
+"#,
+        "30\n20\n[10, 20, 40]\n",
+    );
+}
+
+#[test]
+fn bst_and_heap_validate_comparability_when_empty() {
+    assert_both_engines(
+        "bst_heap_comp",
+        r#"fn main() {
+    let t = bst();
+    try {
+        t.insert(map("a", 1));
+        println("bst accepted map");
+    } catch (e) {
+        println("bst rejected map");
+    }
+    println(t.len());
+
+    let h = heap("min");
+    try {
+        h.push(map("a", 1));
+        println("heap accepted map");
+    } catch (e) {
+        println("heap rejected map");
+    }
+    println(h.len());
+    return 0;
+}
+"#,
+        "bst rejected map\n0\nheap rejected map\n0\n",
+    );
+}
+
+#[test]
+fn string_pad_negative_width_throws_error() {
+    assert_both_engines(
+        "pad_neg_width",
+        r#"fn main() {
+    try {
+        println("abc".pad_left(-1, " "));
+    } catch (e) {
+        println("caught left");
+    }
+    try {
+        println("abc".pad_right(-5, " "));
+    } catch (e) {
+        println("caught right");
+    }
+    return 0;
+}
+"#,
+        "caught left\ncaught right\n",
+    );
+}
+
+#[test]
+fn instance_clone_deep_copies_fields_on_both_engines() {
+    assert_both_engines(
+        "instance_deep_clone",
+        r#"class Bag {
+    public let items;
+    public fn new(items) {
+        self.items = items;
+    }
+}
+fn main() {
+    let xs = [new Bag([1, 2])];
+    let ys = xs.clone();
+    ys[0].items.push(3);
+    println(xs[0].items);
+    println(ys[0].items);
+    return 0;
+}
+"#,
+        "[1, 2]\n[1, 2, 3]\n",
+    );
+}
+
+#[test]
+fn json_parse_deduplicates_keys_and_rejects_malformed_numbers() {
+    assert_both_engines(
+        "json_hardening",
+        r#"fn main() {
+    let m = json_parse("{\"a\": 1, \"a\": 2}");
+    println(m.len());
+    println(m["a"]);
+    for bad in ["1e999", "1.", "1e", "1e+"] {
+        try {
+            json_parse(bad);
+            println("accepted " + bad);
+        } catch (e) {
+            println("rejected " + bad);
+        }
+    }
+    return 0;
+}
+"#,
+        "1\n2\nrejected 1e999\nrejected 1.\nrejected 1e\nrejected 1e+\n",
+    );
+}
+
+#[test]
+fn constructor_arity_checked_when_no_new_or_inherited_new() {
+    let bad_empty = r#"class Empty {}
+fn main() {
+    let e = new Empty(1);
+    return 0;
+}
+"#;
+    assert!(run_src("tree", "bad_empty_ctor", bad_empty).is_err());
+    assert!(run_src("vm", "bad_empty_ctor", bad_empty).is_err());
+
+    let bad_inh = r#"class Base {
+    public let x;
+    public fn new(x) { self.x = x; }
+}
+class Sub : Base {}
+fn main() {
+    let s = new Sub(1, 2);
+    return 0;
+}
+"#;
+    assert!(run_src("tree", "bad_inh_ctor", bad_inh).is_err());
+    assert!(run_src("vm", "bad_inh_ctor", bad_inh).is_err());
+}
+
+#[test]
+fn lexer_bom_crlf_comments_float_overflow_and_multiline_escape_span() {
+    // UTF-8 BOM + CRLF comments work on both engines.
+    let src = "\u{FEFF}// header comment\r\nfn main() {\r\n    println(\"ok\");\r\n    return 0;\r\n}\r\n";
+    assert_both_engines("bom_crlf", src, "ok\n");
+
+    // Overflowing float literal is rejected at lex time.
+    let overflow_float = format!("fn main() {{ let x = {}.0; return 0; }}", "9".repeat(310));
+    assert!(spid3r::lexer::Lexer::new(&overflow_float, std::sync::Arc::from("<test>")).tokenize().is_err());
+
+    // Backslash followed by newline in string literal does not underflow column.
+    let bs_newline = "fn main() { let s = \"\\\n\"; return 0; }";
+    assert!(spid3r::lexer::Lexer::new(bs_newline, std::sync::Arc::from("<test>")).tokenize().is_err());
+
+    // Unexpected multi-byte UTF-8 character reports the full character.
+    let err = spid3r::lexer::Lexer::new("€", std::sync::Arc::from("<test>")).tokenize().unwrap_err();
+    assert!(err.message.contains("'€'"), "got: {}", err.message);
+}
+
+#[test]
+fn parser_deep_nesting_returns_diagnostic_instead_of_stack_overflow() {
+    let deep_parens = format!("fn main() {{ let x = {}1{}; return 0; }}", "(".repeat(300), ")".repeat(300));
+    let err = spid3r::parser::parse_file(&deep_parens, std::sync::Arc::from("<test>")).unwrap_err();
+    assert!(
+        err.message.contains("nesting deeper than"),
+        "unexpected error: {}",
+        err.message
+    );
+}
+
+#[test]
+fn bytecode_deserializer_rejects_truncated_constants_huge_counts_and_negative_jumps() {
+    use spid3r::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc, validate_chunk, Chunk, OpCode};
+    use spid3r::value::{Value, VmFunc};
+    use std::sync::Arc;
+
+    // 1. Huge constant count in header must fail immediately without OOM.
+    let mut huge = Vec::new();
+    huge.extend_from_slice(b"SPDR");
+    huge.extend_from_slice(&3u32.to_le_bytes()); // version
+    huge.push(0); // name = None
+    huge.extend_from_slice(&0usize.to_le_bytes()); // arity = 0
+    huge.push(0); // is_async = false
+    huge.push(0); // own_upvalues = 0
+    huge.extend_from_slice(&0usize.to_le_bytes()); // code_len = 0
+    huge.extend_from_slice(&(u32::MAX as usize).to_le_bytes()); // huge constants count
+    assert!(deserialize_vmfunc(&huge).is_err());
+
+    // 2. Truncated Int/Float constant payload must return Err, not panic.
+    let mut chunk = Chunk::new();
+    let ci = chunk.emit_const(Value::Int(42));
+    let cf = chunk.emit_const(Value::Float(3.5));
+    chunk.emit_u16(OpCode::Constant, ci);
+    chunk.emit(OpCode::Pop);
+    chunk.emit_u16(OpCode::Constant, cf);
+    chunk.emit(OpCode::Return);
+    let func = VmFunc {
+        name: None,
+        arity: 0,
+        is_async: false,
+        chunk: Arc::new(chunk),
+        upvalues: Vec::new(),
+        own_upvalues: 0,
+    };
+    let valid_bytes = serialize_vmfunc(&func);
+    for cut in 0..valid_bytes.len() {
+        assert!(deserialize_vmfunc(&valid_bytes[..cut]).is_err());
+    }
+
+    // 3. Negative jump target before IP 0 must be rejected by validate_chunk.
+    let mut bad_jump = Chunk::new();
+    bad_jump.emit_i16(OpCode::Jump, -10);
+    bad_jump.emit(OpCode::Return);
+    assert!(validate_chunk(&bad_jump).is_err());
+}
+
+#[test]
+fn finally_runs_on_return_break_and_continue_and_now_is_typed_int() {
+    assert_both_engines(
+        "finally_early_exit",
+        r#"fn test_ret() -> int {
+    try {
+        try {
+            let local_in_try = 42;
+            return local_in_try;
+        } finally {
+            println("inner finally");
+        }
+    } finally {
+        println("outer finally");
+    }
+    return 0;
+}
+
+fn main() {
+    let t: int = now();
+    println(t >= 0);
+    println(test_ret());
+
+    for x in [1, 2, 3] {
+        try {
+            let tmp = x * 10;
+            if x == 2 {
+                continue;
+            }
+            if x == 3 {
+                break;
+            }
+            println(tmp);
+        } finally {
+            println("loop finally " + string(x));
+        }
+    }
+    return 0;
+}
+"#,
+        "true\ninner finally\nouter finally\n42\n10\nloop finally 1\nloop finally 2\nloop finally 3\n",
+    );
+}
+
+

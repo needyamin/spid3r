@@ -61,7 +61,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 250 tests, must stay green
+  cargo test                  FULL suite, 274 tests (264 with --no-default-features + 10 gui), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -83,22 +83,19 @@ GaliLang/
 [4] SOURCE MAP (src/) — what lives where
 --------------------------------------------------------------------------------
   main.rs              3 lines: calls cli::run(std::env::args)
-  lib.rs               module tree; `pub mod` for every subsystem; vm::bytecode
-                       is pub(crate)
+  lib.rs               module tree; `pub mod` for every subsystem
   cli.rs               ALL subcommand dispatch + HELP text + exit codes.
                        cmd_run accepts positional args after the file -> they
                        become args() (set_script_args). cmd_exec/cmd_test set
                        empty args. ~1100 lines.
-  lexer/mod.rs         hand-written byte lexer. tokenize_with_comments() skips
-                       a leading UTF-8 BOM. Known gaps (see [12]): no exponent
-                       float literals, backslash-newline escape panics in debug
-                       builds (col underflow at ~line 336).
+  lexer/mod.rs         hand-written byte lexer. Skips leading UTF-8 BOM, trims
+                       CRLF comments, rejects overflowing float literals, and
+                       decodes full UTF-8 code points on unexpected characters.
   lexer/token.rs       Token, TokenKind, Keyword enum (35 keywords)
   parser/mod.rs        recursive-descent Pratt parser; parse_program ->
                        parse_declaration (top level, visibility prefixes) vs
-                       parse_statement (blocks). KNOWN QUIRK: a `fn` decl inside
-                       a block parses as an expression statement -> needs `;`
-                       (prefer `let f = fn(){...};`). No recursion depth cap.
+                       parse_statement (blocks, including local named `fn` /
+                       `async fn` declarations). Enforces MAX_PARSE_DEPTH = 96.
   ast/mod.rs           Stmt/Expr/Block/Proto/ClassDecl/... node definitions
   semantic/mod.rs      name resolution, privacy, const enforcement, import
                        checks (via modules::public_names_of), gradual typing
@@ -187,10 +184,12 @@ GaliLang/
   6. Closures: cells are per-activation (CallFrame.own_cells); for-in rebinds
      the loop var per iteration (Uncapture opcode, byte 53); while/C-style for
      share one binding; scope exits and break/continue emit Uncapture for
-     captured locals; GetUpvalue indices below own_upvalues address
-     frame.own_cells, higher indices address func.upvalues.
+     captured locals; current-frame locals always use GetLocal/SetLocal
+     (routed through frame.captured); VmFuncProto.upvalues encodes direct parent
+     local captures with bit 7 = 0 (parent.own_cells[u & 0x7f]) and parent
+     enclosing upvalue captures with bit 7 = 1 (parent.func.upvalues[u & 0x7f]).
   7. Modules are keyed by canonicalized path everywhere (interpreter, VM cache,
-     and the Import opcodes carry the resolved path string).
+     AOT flattener, and the Import opcodes carry the resolved path string).
   8. Host-shell note: the automation shell has a minimal environment; scripts
      must use absolute paths, not $env:USERPROFILE etc.
 
@@ -200,15 +199,16 @@ GaliLang/
   read_line (null at EOF), read_file -> ok(text)/err(msg),
   write_file -> ok(null)/err(msg), file_exists (files AND dirs),
   env(name) -> option, args() -> list of post-script-path argv,
-  sleep_ms, now() -> monotonic ms since first call, spawn_process(cmd,args-list)
-  -> ok(exit_code)/err(msg) (synchronous, no shell), yield, task_count,
-  abs/sqrt/pow/min/max, random_int(lo,hi) inclusive (entropy-seeded, full i64
-  range safe), int/float/string/bool conversions (int truncates toward zero,
-  errors on garbage strings), bool() = truthiness table,
-  json_parse (objects->map, arrays->list, \uXXXX + surrogate pairs, depth cap
-  512), json_write (round-trips; non-finite float = error; keys escaped; depth
-  cap 512; self-referential container = clean error), len, type_of,
-  assert/assert_eq, gc_collect, gc_live_cells, weak/deref.
+  sleep_ms, now() -> monotonic ms since first call (typed int),
+  spawn_process(cmd,args-list) -> ok(exit_code)/err(msg) (synchronous, no shell),
+  yield, task_count, abs/sqrt/pow/min/max, random_int(lo,hi) inclusive
+  (entropy-seeded, full i64 range safe), int/float/string/bool conversions (int
+  truncates toward zero, errors on garbage strings), bool() = truthiness table,
+  json_parse (objects->map deduplicating keys, arrays->list, \uXXXX + surrogate
+  pairs, strict number grammar, depth cap 512), json_write (round-trips;
+  non-finite float = error; keys escaped; depth cap 512; self-referential
+  container = clean error), len, type_of, assert/assert_eq, gc_collect,
+  gc_live_cells, weak/deref.
   Constructors (value::collections::construct): list vec deque tuple ring_buffer
   stack queue priority_queue map set bag hash_table linked_list
   singly_linked_list doubly_linked_list binary_tree bst trie heap matrix graph
@@ -216,11 +216,15 @@ GaliLang/
 
 [7] TESTS (tests/) — one suite per area, all must pass
 --------------------------------------------------------------------------------
-  audit_regressions.rs   14 engine-parity + contract regressions from the 2026-10
-                         audit (closures, map index assign, file results, task
-                         API, JSON, RNG). PATTERN TO COPY: run_src(engine, name,
-                         src) drives the spid3r binary via CARGO_BIN_EXE_spid3r;
-                         assert_both_engines compares tree vs vm stdout.
+  audit_regressions.rs   28 engine-parity + contract regressions from the 2026-10
+                         audits (closures, nested upvalues, local named fn,
+                         finally on return/break/continue, cycle-safe containers,
+                         self-argument collection methods, linked_list pop_back,
+                         bst/heap comparability, string pad negative width,
+                         instance deep clone, constructor arity, lexer BOM/CRLF/
+                         float-overflow/escape-span, parser depth limit, bytecode
+                         validation/deserialization, map index assign, file
+                         results, task API, JSON, RNG).
   difftest.rs            every examples/*.matrix through tree, vm, compile+exec
   lexer_tests.rs         token/spans; parser_tests.rs; semantic/gradual_typing
   interpreter_tests.rs, integration_tests.rs, error_tests.rs
@@ -229,8 +233,7 @@ GaliLang/
                          spawn_process result contract), vm_dispatch_tests.rs,
                          opt_tests.rs, debug_tests.rs (scripted debugger),
                          fmt_tests.rs, pkg_tests.rs (38: manifest/install/tar/
-                         sha256/registry), gui_tests.rs + native_tests.rs
-                         (compile-only, features off by default)
+                         sha256/registry), gui_tests.rs (10) + native_tests.rs
 
 [8] EXAMPLES (examples/) — all must pass the 3-engine differential
 --------------------------------------------------------------------------------
@@ -307,14 +310,8 @@ GaliLang/
 
 [12] KNOWN QUIRKS / OPEN ISSUES (do not "fix" blindly; see AUDIT_REPORT.md §8)
 --------------------------------------------------------------------------------
-  - Local `fn` declarations inside blocks parse as expression statements and
-    need a trailing `;` (parser lacks the Stmt::Fn arm). Ready patch is in
-    AUDIT_REPORT.md; blocked because the workspace scanner rejects writes
-    containing the word "token" and lexer/parser files require it.
-  - Lexer: `self.col - 2` underflow (debug panic) on `\`+newline inside a
-    string (~line 336); no exponent float literals (1.5e3 mis-lexes);
-    -9223372036854775808 literal unrepresentable; float overflow literal -> inf.
-  - Parser has no recursion depth cap (deep nesting aborts the process).
+  - Lexer: no scientific-notation float literals (1.5e3 is not a float token);
+    -9223372036854775808 literal is unrepresentable before unary negation.
   - GC traces list/vec/set/map/instance only; tree/graph/heap/matrix cycles
     leak (use weak/deref). VM has no statement-boundary auto-collection.
   - tar: no ustar prefix/long-name support, no header checksum verification,
@@ -334,7 +331,7 @@ GaliLang/
     but paths in code use PathBuf (never string concat with \ ).
   - OneDrive caveat: profile.dev incremental is already false — do not re-enable.
   - When editing docs (README/doc.html/docs/*), keep them consistent with the
-    ACTUAL behavior; doc.html §23 cites the test counts (250 / 23 ok) — update
+    ACTUAL behavior; doc.html §23 cites the test counts (274 / 23 ok) — update
     together with test-count changes.
 ================================================================================
 END OF SITEMAP — for questions the authoritative sources are: the code (src/),

@@ -196,7 +196,7 @@ impl ListData {
                     } else {
                         // n is the last node
                         cur.lock().unwrap().next = None;
-                        self.tail = None; // singly: tail was not maintained
+                        self.tail = if self.keep_tail { Some(cur) } else { None };
                         self.len -= 1;
                         let v = std::mem::replace(&mut n.lock().unwrap().value, Value::Null);
                         return Ok(v);
@@ -434,6 +434,7 @@ impl BstData {
     }
 
     pub fn insert(&mut self, v: Value) -> Result<Value, String> {
+        Self::cmp(&v, &v)?;
         let node: BstRef = Arc::new(Mutex::new(BstNode {
             value: v,
             left: None,

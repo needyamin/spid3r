@@ -51,16 +51,17 @@ error on truncation instead of indexing out of bounds.
 
 ### `VmFuncProto` / `VmClassProto`
 
-A `VmFuncProto` is a nested function: name, arity, async flag, the enclosing
-frame's upvalue-slot indices, the count of own captured locals, and its own
-`Chunk`. A `VmClassProto` records the name, optional parent, declared fields
-(with visibility), and methods (name, visibility, function-pool index,
-is-constructor flag).
+A `VmFuncProto` is a nested function prototype: name, arity, async flag,
+upvalue descriptor bytes (`u & 0x80 == 0` captures `parent.own_cells[u & 0x7f]`;
+`u & 0x80 != 0` captures `parent.func.upvalues[u & 0x7f]`), the count of own
+captured locals (`own_upvalues`), and its own `Chunk`. A `VmClassProto` records
+the name, optional parent, declared fields (with visibility), and methods
+(name, visibility, function-pool index, is-constructor flag).
 
 ### `EmbeddedModule` (self-contained imports)
 
 ```
-key:     string         — the import literal, e.g. "math_util"
+key:     string         — canonicalized resolved module path
 public:  u64 count + count × string   — exported top-level names
 func:    VmFunc         — the module's compiled script function
 ```
@@ -69,7 +70,7 @@ When the compiler sees `import "x"`, it resolves `"x"` to a source file,
 parses and semantically checks it, then **recursively compiles and embeds it** —
 and all of *its* transitive imports — into the script `Chunk`'s `modules` table.
 The table is flattened, so every reachable module is a direct entry keyed by its
-import literal. The result is a `.matrixc` that runs under `exec` with **no
+canonicalized path. The result is a `.matrixc` that runs under `exec` with **no
 `.matrix` source on disk**: when the VM hits `OpImport`, it resolves the module
 from this embedded table and runs it in a child VM that shares the globals and
 the (flat, transitive) embedded table, so nested imports resolve too.
@@ -84,9 +85,11 @@ the (flat, transitive) embedded table, so nested imports resolve too.
 - A function call pushes a new frame and `continue`s the main loop; `OpReturn`
   pops the frame and pushes the return value onto the caller's stack.
 - Functions and closures are `Arc<VmFunc>` carrying **upvalue cells** — shared
-  `Arc<...>` slots holding `Value`. This makes closures correct across arbitrary
-  nesting and after the defining frame has returned, and keeps them `Send` so
-  they can be captured by a `spawn`ed task.
+  `Arc<Mutex<Value>>` slots. Current-frame captured locals are routed through
+  `frame.captured` (`GetLocal`/`SetLocal`), while enclosing captures live in
+  `func.upvalues` (`GetUpvalue`/`SetUpvalue`). This makes closures correct across
+  arbitrary nesting, loops, and after the defining frame has returned, and keeps
+  them `Send` so they can be captured by a `spawn`ed task.
 - All value operations (construct, method dispatch, indexing, length, iteration,
   equality, display) are delegated to the shared `value::collections` layer, so
   the VM stays semantically identical to the tree-walk interpreter.
@@ -96,18 +99,20 @@ the (flat, transitive) embedded table, so nested imports resolve too.
 
 ### Bytecode validation (safety net)
 
-Before any chunk is executed, `validate_chunk` walks it recursively and rejects:
+Before any chunk is executed, `validate_chunk` walks it (and all nested function
+prototypes and embedded module chunks) recursively and rejects:
 
 - invalid opcodes,
 - truncated instructions (operand bytes running past the end of `code`),
 - constant/function/class pool references out of range,
-- jump targets that do not land on an instruction boundary.
+- negative or out-of-bounds jump targets and targets that do not land on an
+  instruction boundary.
 
-This is the spec-required guard against malformed or hand-edited `.matrixc`
-files; it reports a clean `Diagnostic` rather than panicking or invoking
-undefined behaviour. The opcode decoder itself is a safe `OpCode::from_u8`
-table (no `mem::transmute`), and every pool read / jump target is bounds-checked
-at run time as well.
+Additionally, `deserialize_vmfunc` validates every serialized item count against
+the remaining byte slice before allocating vectors, preventing out-of-memory
+allocation aborts on crafted `.matrixc` headers. The opcode decoder itself is a
+safe `OpCode::from_u8` table (no `mem::transmute`), and every pool read / jump
+target is bounds-checked at run time as well.
 
 ## Concurrency model
 
@@ -125,22 +130,19 @@ interpreter and the VM:
 Because upvalue cells are `Arc` and the VM shares state through `Arc<Mutex<…>>`,
 closures and globals remain correct across threads.
 
-## Memory strategy and limitations
+## Memory strategy
 
-Dynamic values use reference counting:
+Dynamic values use thread-safe reference counting (`Arc<Mutex<…>>`) across both
+the tree-walk interpreter and the bytecode VM so values and closures can safely
+cross `spawn` task boundaries:
 
-- The tree-walk interpreter uses `Rc<RefCell<…>>` for shared mutable state
-  (e.g. collection nodes, closures).
-- The VM uses `Arc` (and `Arc<Mutex<…>>` for cross-thread values) so values and
-  closures can cross `spawn` boundaries.
+- **Cycle collector (`src/value/gc.rs`):** Container values capable of forming
+  reference cycles (`list`, `vec`, `map`, `set`, and class instances) are
+  registered with a mark-and-sweep cycle collector (`gc_collect()`,
+  `gc_live_cells()`, and automatic threshold collection).
+- **Weak references (`weak`):** Non-owning weak references (`weak(x)`, `.get()`,
+  `.alive()`) allow caches and parent pointers without extending target lifetimes.
+- **Cycle-safe operations:** `display_value`, `values_equal`, `deep_clone`, and
+  `json_write` track visited container pointers and drop lock guards before
+  recursing, preventing deadlocks and stack overflows on self-referential graphs.
 
-**Known limitation — reference cycles leak.** There is no cycle collector. A
-data structure with a reference cycle (for example, a doubly linked list whose
-nodes point at one another, or an object that references its parent which
-references it back) will not be reclaimed until the whole program exits. This is
-a documented, accepted trade-off for the zero-dependency `Rc`/`Arc` design; avoid
-long-lived cycles in programs that must run for a long time.
-
-Other current limitations are listed in [`ROADMAP.md`](ROADMAP.md) (no bytecode
-optimizer, no `fmt`/debugger, no native/AOT backend, no package manager, and
-inert type annotations).

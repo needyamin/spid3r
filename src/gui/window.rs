@@ -116,11 +116,21 @@ pub fn open(interp: &Arc<Interp>, html: Option<&str>) -> Result<(), String> {
 /// Dispatch every queued event to its handler, then flush the JavaScript the
 /// handlers queued (handlers may queue more UI updates).
 fn dispatch(interp: &Interp) {
-    for (event, payload, handler) in bridge::take_events() {
-        let span = Span::new(Arc::from("<gui>"), 0, 0, 0);
-        match interp.call_value(handler, vec![Value::Str(event.into()), Value::Str(payload.into())], &span) {
-            Ok(_) => {}
-            Err(flow) => report_flow(flow),
+    for _ in 0..256 {
+        let events = bridge::take_events();
+        if events.is_empty() {
+            break;
+        }
+        for (event, payload, handler) in events {
+            let span = Span::new(Arc::from("<gui>"), 0, 0, 0);
+            match interp.call_value(
+                handler,
+                vec![Value::Str(event.into()), Value::Str(payload.into())],
+                &span,
+            ) {
+                Ok(_) => {}
+                Err(flow) => report_flow(flow),
+            }
         }
     }
 }
@@ -163,6 +173,9 @@ fn file_url(path: &str) -> Result<String, String> {
     let text = abs.to_string_lossy().replace('\\', "/");
     // Minimal percent-encoding for the characters that break URLs.
     let mut encoded = String::with_capacity(text.len() + 8);
+    if !text.starts_with('/') {
+        encoded.push('/');
+    }
     for c in text.chars() {
         match c {
             ' ' => encoded.push_str("%20"),

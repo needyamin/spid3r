@@ -5,13 +5,20 @@ use crate::diagnostics::{err_at, Phase, Span, SpidResult};
 use crate::lexer::token::{Keyword, Token, TokenKind};
 use std::sync::Arc;
 
+const MAX_PARSE_DEPTH: usize = 96;
+
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    depth: usize,
 }
 
 pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
-    let mut p = Parser { toks, pos: 0 };
+    let mut p = Parser {
+        toks,
+        pos: 0,
+        depth: 0,
+    };
     p.parse_program()
 }
 
@@ -298,15 +305,27 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> SpidResult<TypeExpr> {
-        let (name, span) = self.expect_ident()?;
-        let arg = if self.eat(&TokenKind::Lt) {
-            let t = self.parse_type()?;
-            self.expect(&TokenKind::Gt, "'>'")?;
-            Some(Box::new(t))
-        } else {
-            None
-        };
-        Ok(TypeExpr { name, arg, span })
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(err_at(
+                Phase::Parser,
+                self.span(),
+                format!("nesting deeper than {} levels", MAX_PARSE_DEPTH),
+            ));
+        }
+        self.depth += 1;
+        let res = (|| {
+            let (name, span) = self.expect_ident()?;
+            let arg = if self.eat(&TokenKind::Lt) {
+                let t = self.parse_type()?;
+                self.expect(&TokenKind::Gt, "'>'")?;
+                Some(Box::new(t))
+            } else {
+                None
+            };
+            Ok(TypeExpr { name, arg, span })
+        })();
+        self.depth -= 1;
+        res
     }
 
     // ---- classes and interfaces ----------------------------------------
@@ -434,31 +453,52 @@ impl Parser {
     // ---- statements ----------------------------------------------------
 
     fn parse_block(&mut self) -> SpidResult<Block> {
-        let start = self
-            .expect(&TokenKind::LBrace, "'{'")
-            .map(|()| self.prev_span())?;
-        let mut stmts = Vec::new();
-        while !self.at(&TokenKind::RBrace) {
-            if self.at(&TokenKind::Eof) {
-                return Err(err_at(
-                    Phase::Parser,
-                    start,
-                    "unterminated block; expected '}'",
-                ));
-            }
-            stmts.push(self.parse_statement()?);
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(err_at(
+                Phase::Parser,
+                self.span(),
+                format!("nesting deeper than {} levels", MAX_PARSE_DEPTH),
+            ));
         }
-        let end = self.expect_kw_rbrace()?;
-        Ok(Block {
-            stmts,
-            span: join(start, end),
-        })
+        self.depth += 1;
+        let res = (|| {
+            let start = self
+                .expect(&TokenKind::LBrace, "'{'")
+                .map(|()| self.prev_span())?;
+            let mut stmts = Vec::new();
+            while !self.at(&TokenKind::RBrace) {
+                if self.at(&TokenKind::Eof) {
+                    return Err(err_at(
+                        Phase::Parser,
+                        start,
+                        "unterminated block; expected '}'",
+                    ));
+                }
+                stmts.push(self.parse_statement()?);
+            }
+            let end = self.expect_kw_rbrace()?;
+            Ok(Block {
+                stmts,
+                span: join(start, end),
+            })
+        })();
+        self.depth -= 1;
+        res
     }
 
     fn parse_statement(&mut self) -> SpidResult<Stmt> {
         match self.kind() {
             TokenKind::Kw(Keyword::Let) => self.parse_let(true),
             TokenKind::Kw(Keyword::Const) => self.parse_const(),
+            TokenKind::Kw(Keyword::Fn) if matches!(self.peek_kind(1), TokenKind::Ident(_)) => {
+                Ok(Stmt::Fn(self.parse_fn(false, Some(Vis::Private))?))
+            }
+            TokenKind::Kw(Keyword::Async)
+                if matches!(self.peek_kind(1), TokenKind::Kw(Keyword::Fn))
+                    && matches!(self.peek_kind(2), TokenKind::Ident(_)) =>
+            {
+                Ok(Stmt::Fn(self.parse_fn(false, Some(Vis::Private))?))
+            }
             TokenKind::Kw(Keyword::If) => self.parse_if(),
             TokenKind::Kw(Keyword::While) => self.parse_while(),
             TokenKind::Kw(Keyword::For) => self.parse_for(),
@@ -586,7 +626,12 @@ impl Parser {
                 break;
             }
         }
-        let span = join(sp, els.as_ref().unwrap_or(&then).span.clone());
+        let end_span = els
+            .as_ref()
+            .map(|b| b.span.clone())
+            .or_else(|| elifs.last().map(|(_, b)| b.span.clone()))
+            .unwrap_or_else(|| then.span.clone());
+        let span = join(sp, end_span);
         Ok(Stmt::If {
             cond,
             then,
@@ -640,14 +685,16 @@ impl Parser {
         let sp = self.expect_kw(Keyword::Try)?;
         let body = self.parse_block()?;
         let catch = if self.eat_kw(Keyword::Catch) {
+            let catch_sp = self.prev_span();
             self.expect(&TokenKind::LParen, "'('")?;
             let (name, _) = self.expect_ident()?;
             self.expect(&TokenKind::RParen, "')'")?;
             let cbody = self.parse_block()?;
+            let cspan = join(catch_sp, cbody.span.clone());
             Some(CatchClause {
                 name,
                 body: cbody,
-                span: sp.clone(),
+                span: cspan,
             })
         } else {
             None
@@ -667,6 +714,7 @@ impl Parser {
         let end_span = finally
             .as_ref()
             .map(|f| f.span.clone())
+            .or_else(|| catch.as_ref().map(|c| c.span.clone()))
             .unwrap_or_else(|| body.span.clone());
         let span = join(sp, end_span);
         Ok(Stmt::Try {
@@ -680,7 +728,17 @@ impl Parser {
     // ---- expressions ---------------------------------------------------
 
     pub fn parse_expr(&mut self) -> SpidResult<Expr> {
-        self.parse_assign()
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(err_at(
+                Phase::Parser,
+                self.span(),
+                format!("nesting deeper than {} levels", MAX_PARSE_DEPTH),
+            ));
+        }
+        self.depth += 1;
+        let res = self.parse_assign();
+        self.depth -= 1;
+        res
     }
 
     fn parse_assign(&mut self) -> SpidResult<Expr> {
@@ -704,11 +762,21 @@ impl Parser {
                 return Err(err_at(
                     Phase::Parser,
                     sp,
-                    "invalid assignment target; expected a variable or an index",
+                    "invalid assignment target; expected a variable, field, or index",
                 ));
             }
             self.pos += 1;
-            let value = self.parse_assign()?;
+            if self.depth >= MAX_PARSE_DEPTH {
+                return Err(err_at(
+                    Phase::Parser,
+                    self.span(),
+                    format!("nesting deeper than {} levels", MAX_PARSE_DEPTH),
+                ));
+            }
+            self.depth += 1;
+            let value_res = self.parse_assign();
+            self.depth -= 1;
+            let value = value_res?;
             let span = join(sp, value.span().clone());
             return Ok(Expr::Assign {
                 target: Box::new(left),
@@ -821,46 +889,58 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> SpidResult<Expr> {
-        let sp = self.span();
-        if self.at_kw(Keyword::Await) {
-            self.pos += 1;
-            let e = self.parse_unary()?;
-            let span = join(sp, e.span().clone());
-            return Ok(Expr::Await(Box::new(e), span));
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(err_at(
+                Phase::Parser,
+                self.span(),
+                format!("nesting deeper than {} levels", MAX_PARSE_DEPTH),
+            ));
         }
-        if self.at_kw(Keyword::Spawn) {
-            self.pos += 1;
-            let callable = self.parse_unary()?;
-            let span = join(sp, callable.span().clone());
-            if !matches!(callable, Expr::Fn(_)) {
-                return Err(err_at(Phase::Parser, span, "spawn expects a function"));
+        self.depth += 1;
+        let res = (|| {
+            let sp = self.span();
+            if self.at_kw(Keyword::Await) {
+                self.pos += 1;
+                let e = self.parse_unary()?;
+                let span = join(sp, e.span().clone());
+                return Ok(Expr::Await(Box::new(e), span));
             }
-            return Ok(Expr::Spawn {
-                callable: Box::new(callable),
-                span,
-            });
-        }
-        if self.at_kw(Keyword::Not) {
-            self.pos += 1;
-            let e = self.parse_unary()?;
-            let span = join(sp, e.span().clone());
-            return Ok(Expr::Unary {
-                op: UnOp::Not,
-                expr: Box::new(e),
-                span,
-            });
-        }
-        if self.at(&TokenKind::Minus) {
-            self.pos += 1;
-            let e = self.parse_unary()?;
-            let span = join(sp, e.span().clone());
-            return Ok(Expr::Unary {
-                op: UnOp::Neg,
-                expr: Box::new(e),
-                span,
-            });
-        }
-        self.parse_postfix()
+            if self.at_kw(Keyword::Spawn) {
+                self.pos += 1;
+                let callable = self.parse_unary()?;
+                let span = join(sp, callable.span().clone());
+                if !matches!(callable, Expr::Fn(_)) {
+                    return Err(err_at(Phase::Parser, span, "spawn expects a function"));
+                }
+                return Ok(Expr::Spawn {
+                    callable: Box::new(callable),
+                    span,
+                });
+            }
+            if self.at_kw(Keyword::Not) {
+                self.pos += 1;
+                let e = self.parse_unary()?;
+                let span = join(sp, e.span().clone());
+                return Ok(Expr::Unary {
+                    op: UnOp::Not,
+                    expr: Box::new(e),
+                    span,
+                });
+            }
+            if self.at(&TokenKind::Minus) {
+                self.pos += 1;
+                let e = self.parse_unary()?;
+                let span = join(sp, e.span().clone());
+                return Ok(Expr::Unary {
+                    op: UnOp::Neg,
+                    expr: Box::new(e),
+                    span,
+                });
+            }
+            self.parse_postfix()
+        })();
+        self.depth -= 1;
+        res
     }
 
     fn parse_postfix(&mut self) -> SpidResult<Expr> {

@@ -1161,8 +1161,8 @@ becomes a runtime error, never a panic.</div>
 
 <h2 id="testing">Testing &amp; QA</h2>
 <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-As of this revision, <code>cargo test</code> (default features, including the GUI bridge and
-native backend tests) passes <strong>277 tests</strong> and
+As of this revision, <code>cargo test</code> passes <strong>274 tests</strong> (<strong>264</strong> with
+<code>--no-default-features</code> plus <strong>10</strong> GUI tests) and
 <code>spid3r test</code> reports <strong>23 ok, 0 failed</strong>.</p>
 <ul>
   <li><strong><code>spid3r test</code></strong> classifies each <code>examples/*.matrix</code> by its
@@ -1172,19 +1172,20 @@ native backend tests) passes <strong>277 tests</strong> and
   <li><strong><code>cargo test</code></strong> runs unit tests per subsystem, integration tests, the
       differential harness (<code>tests/difftest.rs</code>), and dedicated engine-parity regressions
       (<code>tests/audit_regressions.rs</code>). The regressions cover closure capture,
-      per-iteration loop bindings, scope-exit slot release, upvalue index offsets, map index
+      per-iteration loop bindings, scope-exit slot release, nested upvalue descriptors, local named
+      <code>fn</code> declarations, <code>finally</code> on <code>return</code>/<code>break</code>/<code>continue</code>,
+      cycle-safe container display/equality/cloning, self-argument collection operations, map index
       assignment, file-op results, the task API, JSON round-trips, and RNG bounds.</li>
   <li><strong><code>difftest.sh</code></strong> is a standalone shell version of the three-way comparison.</li>
-  <li><strong>Bytecode safety</strong> is unit-tested: invalid opcodes, truncation, out-of-range pool
-      references, and off-boundary jumps are all rejected cleanly.</li>
+  <li><strong>Bytecode safety</strong> is unit-tested: invalid opcodes, truncation, huge count headers,
+      out-of-range pool references, negative jumps, and off-boundary jumps are all rejected cleanly.</li>
   <li><strong>GUI</strong> is tested headlessly: IPC decoding, JSON escaping and round-trips, event
       ordering, unknown-event dropping, payload fidelity, and queued JS (bridge unit tests plus the
       <code>spid3r gui --dry-run</code> replay). The native window itself is exercised manually.</li>
   <li><strong>2026-10 audit.</strong> A full-repository audit probed edge semantics with 27
-      three-engine programs (<code>audit/probes/</code>). It fixed the last known VM closure
-      divergences, several standard-library contract violations, and two packaging security issues
-      (path traversal and archive write escape), each with a regression test. See
-      <a href="AUDIT_REPORT.md">AUDIT_REPORT.md</a>.</li>
+      three-engine programs (<code>audit/probes/</code>) and hardened the lexer, parser, semantic
+      checker, bytecode format, VM closure/finally semantics, collections, and packaging security,
+      each with regression tests. See <a href="AUDIT_REPORT.md">AUDIT_REPORT.md</a>.</li>
 </ul>
 
 <!-- ============================================================ REFERENCE -->
@@ -1213,22 +1214,15 @@ native backend tests) passes <strong>277 tests</strong> and
 <h2 id="limits">Limitations &amp; roadmap</h2>
 <h3>Known limitations</h3>
 <ul>
-  <li><strong>VM <code>finally</code> on early exit:</strong> the VM skips <code>finally</code> on
-      <code>return</code>/<code>break</code> out of <code>try</code>/<code>catch</code> (the tree
-      interpreter runs it). See <a href="#errors">Error handling</a>.</li>
-  <li><strong>Parser:</strong> local <code>fn</code> declarations need a trailing <code>;</code>,
-      and there is no recursion-depth cap, so pathologically nested input aborts the process
-      instead of producing a diagnostic.</li>
-  <li><strong>Lexer:</strong> no exponent float literals (<code>1.5e3</code> fails to parse),
-      <code>-9223372036854775808</code> cannot be written as a literal, overflowing float literals
-      become <code>inf</code>, and a <code>\</code> at end-of-line inside a string reports a
-      malformed diagnostic.</li>
-  <li><strong>Typing:</strong> the checker types <code>now()</code> as <code>float</code>, although
-      it returns an <code>int</code>, so <code>let t: int = now();</code> is rejected. Annotate it as
-      <code>float</code> or <code>any</code>, or leave it unannotated.</li>
-  <li><strong>Cycle GC coverage:</strong> trees, graphs, heaps, and matrices are not traced yet; use
-      <code>weak</code>/<code>deref</code>.</li>
-  <li><strong>Native backend:</strong> a class declared inside a function is rejected.</li>
+  <li><strong>Lexer:</strong> float literals use decimal syntax (<code>1.5</code>, not scientific
+      notation <code>1.5e3</code>), and <code>-9223372036854775808</code> cannot be written as a
+      positive integer literal before unary negation.</li>
+  <li><strong>Cycle GC coverage:</strong> <code>list</code>, <code>vec</code>, <code>set</code>,
+      <code>map</code>, and class instances are traced; trees, graphs, heaps, and matrices are not
+      traced yet (use <code>weak</code>/<code>deref</code>).</li>
+  <li><strong>Native backend:</strong> a class declared inside a function is rejected, and higher-order
+      collection methods (<code>list.map(f)</code> etc.) require <code>--engine vm</code> or
+      <code>--engine tree</code>.</li>
   <li><strong>Dependencies:</strong> local only (path, git, or offline registry); no transitive
       resolution of registry packages.</li>
   <li><strong>Tar archives:</strong> no ustar long-name/prefix support and no header-checksum
@@ -1240,7 +1234,7 @@ native backend tests) passes <strong>277 tests</strong> and
 <h3>Status</h3>
 <table>
   <tr><th>Area</th><th>Status</th></tr>
-  <tr><td>Lexer · parser · semantic checker · gradual typing</td><td><span class="pill ok">done</span></td></tr>
+  <tr><td>Lexer · parser (with recursion-depth cap &amp; local <code>fn</code>) · semantic checker · gradual typing</td><td><span class="pill ok">done</span></td></tr>
   <tr><td>Tree-walk interpreter (reference engine)</td><td><span class="pill ok">done</span></td></tr>
   <tr><td>Bytecode compiler, stack VM, optimizer, validation</td><td><span class="pill ok">done</span></td></tr>
   <tr><td><code>.matrixc</code> format with embedded imports</td><td><span class="pill ok">done</span></td></tr>
@@ -1250,8 +1244,7 @@ native backend tests) passes <strong>277 tests</strong> and
   <tr><td>Cycle GC for list/vec/set/map/instances (statement boundaries, on by default)</td><td><span class="pill ok">done</span> other containers: use <code>weak</code></td></tr>
   <tr><td>Native AOT backend (<code>native</code> feature)</td><td><span class="pill ok">done</span> no class-in-function</td></tr>
   <tr><td>GUI layer (<code>gui</code> feature, headless-tested bridge)</td><td><span class="pill ok">done</span> window tested manually</td></tr>
-  <tr><td>VM: run <code>finally</code> on <code>return</code>/<code>break</code></td><td><span class="pill warn">open bug</span></td></tr>
-  <tr><td>Parser: local <code>fn</code> declarations, recursion-depth cap</td><td><span class="pill">planned</span></td></tr>
+  <tr><td>VM: run <code>finally</code> on <code>return</code>/<code>break</code>/<code>continue</code></td><td><span class="pill ok">done</span></td></tr>
   <tr><td>Cycle GC for trees, graphs, heaps, matrices</td><td><span class="pill">planned</span></td></tr>
   <tr><td>Remote/HTTP registry · ustar long names · GUI window automation</td><td><span class="pill">beyond v1.0</span></td></tr>
 </table>

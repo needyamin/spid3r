@@ -571,8 +571,8 @@ impl Interp {
                     let fmark = self.guard_mark();
                     let fr = self.exec_block(&fb.stmts, &fenv);
                     self.release_guards(fmark);
-                    if let Flow::Error(d) = fr {
-                        result = Flow::Error(d);
+                    if !matches!(fr, Flow::Value(_)) {
+                        result = fr;
                     }
                 }
                 result
@@ -1211,6 +1211,15 @@ impl Interp {
                     ),
                 ));
             }
+            let depth = self.depth.fetch_add(1, Ordering::SeqCst);
+            if depth >= MAX_CALL_DEPTH {
+                self.depth.fetch_sub(1, Ordering::SeqCst);
+                return Err(self.rt(span, "stack overflow: call depth limit reached"));
+            }
+            self.call_stack
+                .lock()
+                .unwrap()
+                .push((Some(format!("{}::new", class.name)), span.clone()));
             let fenv = environment::child(&ctor.env);
             environment::define(&fenv, "self", obj.clone());
             for (p, v) in ctor.proto.params.iter().zip(args) {
@@ -1219,12 +1228,19 @@ impl Interp {
             let mark = self.guard_mark();
             let flow = self.exec_block(&ctor.proto.body.stmts, &fenv);
             self.release_guards(mark);
+            self.call_stack.lock().unwrap().pop();
+            self.depth.fetch_sub(1, Ordering::SeqCst);
             match flow {
                 Flow::Value(_) | Flow::Return(_) => {}
                 Flow::Break => return Err(self.rt(span, "break outside a loop")),
                 Flow::Continue => return Err(self.rt(span, "continue outside a loop")),
                 Flow::Error(d) => return Err(Flow::Error(d)),
             }
+        } else if !args.is_empty() {
+            return Err(self.rt(
+                span,
+                format!("new {} expects 0 argument(s), got {}", class.name, args.len()),
+            ));
         }
         Ok(obj)
     }
@@ -1262,6 +1278,10 @@ impl Interp {
             self.depth.fetch_sub(1, Ordering::SeqCst);
             return Err(self.rt(span, "stack overflow: call depth limit reached"));
         }
+        self.call_stack
+            .lock()
+            .unwrap()
+            .push((Some(format!("{}::{}", class.name, name)), span.clone()));
         let obj = Value::Instance(inst.clone());
         let fenv = environment::child(&fd.env);
         environment::define(&fenv, "self", obj);
@@ -1271,6 +1291,7 @@ impl Interp {
         let mark = self.guard_mark();
         let flow = self.exec_block(&fd.proto.body.stmts, &fenv);
         self.release_guards(mark);
+        self.call_stack.lock().unwrap().pop();
         self.depth.fetch_sub(1, Ordering::SeqCst);
         match flow {
             Flow::Value(v) | Flow::Return(v) => Ok(v),

@@ -9,7 +9,7 @@
 //! `value::collections` layer, keeping the VM semantically identical to the
 //! tree-walk interpreter.
 
-pub(crate) mod bytecode;
+pub mod bytecode;
 mod compiler;
 mod debug;
 mod opt;
@@ -92,6 +92,7 @@ struct Handler {
     stack_len: usize,
     frame_depth: usize,
     phase: HandlerPhase,
+    pending_return: Option<Value>,
 }
 
 /// One function activation.
@@ -518,16 +519,7 @@ impl Vm {
                     self.frames[nf].ip = ip + 2;
                     let v = {
                         let f = &self.frames[nf];
-                        // Indices below `own_upvalues` address this frame's
-                        // per-activation cells (the function's own captured
-                        // locals); higher indices address the cells captured
-                        // from the enclosing frame, stored on the `VmFunc`.
-                        let cell = if slot < f.func.own_upvalues as usize {
-                            f.own_cells.get(slot).cloned()
-                        } else {
-                            f.func.upvalues.get(slot).cloned()
-                        };
-                        match cell {
+                        match f.func.upvalues.get(slot).cloned() {
                             Some(c) => c.lock().unwrap().clone(),
                             None => Value::Null,
                         }
@@ -540,12 +532,7 @@ impl Vm {
                     // Peek (do not pop), matching `SetLocal`.
                     let v = self.frames[nf].slots.last().cloned().unwrap_or(Value::Null);
                     let f = &mut self.frames[nf];
-                    let cell = if slot < f.func.own_upvalues as usize {
-                        f.own_cells.get(slot).cloned()
-                    } else {
-                        f.func.upvalues.get(slot).cloned()
-                    };
-                    if let Some(c) = cell {
+                    if let Some(c) = f.func.upvalues.get(slot).cloned() {
                         *c.lock().unwrap() = v;
                     }
                 }
@@ -963,6 +950,31 @@ impl Vm {
                 OpCode::Return => {
                     let ret = self.pop_top();
                     let nf = self.frames.len() - 1;
+                    // If returning from inside a `finally` block, pop that handler
+                    // and cancel any pending re-raise from its `try`/`catch`.
+                    while self
+                        .handlers
+                        .last()
+                        .is_some_and(|h| h.frame_depth == self.frames.len() && h.phase == HandlerPhase::Finally)
+                    {
+                        self.handlers.pop();
+                        self.reraise = None;
+                    }
+                    // If still inside a `try` or `catch` in this frame, run its
+                    // `finally` block first and defer the return until `EndTry`.
+                    if let Some(h) = self
+                        .handlers
+                        .last_mut()
+                        .filter(|h| h.frame_depth == self.frames.len())
+                    {
+                        h.phase = HandlerPhase::Finally;
+                        h.pending_return = Some(ret);
+                        let stack_len = h.stack_len;
+                        let finally_target = h.finally_target;
+                        self.frames[nf].slots.truncate(stack_len);
+                        self.frames[nf].ip = finally_target;
+                        continue;
+                    }
                     let ctor = self.frames[nf].ctor_result.take();
                     let ret_or_ctor = ctor.unwrap_or(ret);
                     let guards = std::mem::take(&mut self.frames[nf].guards);
@@ -993,6 +1005,7 @@ impl Vm {
                         stack_len: self.frames[nf].slots.len(),
                         frame_depth: self.frames.len(),
                         phase: HandlerPhase::Try,
+                        pending_return: None,
                     });
                 }
                 OpCode::EnterFinally => {
@@ -1050,9 +1063,35 @@ impl Vm {
                 }
                 OpCode::EndTry => {
                     self.frames[nf].ip = ip + 1;
-                    let _ = self.handlers.pop();
+                    let popped = self.handlers.pop();
                     if let Some(re) = self.reraise.take() {
                         self.error = Some(re);
+                    } else if let Some(ret) = popped.and_then(|h| h.pending_return) {
+                        if let Some(outer) = self
+                            .handlers
+                            .last_mut()
+                            .filter(|h| h.frame_depth == self.frames.len())
+                        {
+                            outer.phase = HandlerPhase::Finally;
+                            outer.pending_return = Some(ret);
+                            let stack_len = outer.stack_len;
+                            let finally_target = outer.finally_target;
+                            self.frames[nf].slots.truncate(stack_len);
+                            self.frames[nf].ip = finally_target;
+                            continue;
+                        }
+                        let ctor = self.frames[nf].ctor_result.take();
+                        let ret_or_ctor = ctor.unwrap_or(ret);
+                        let guards = std::mem::take(&mut self.frames[nf].guards);
+                        for g in &guards {
+                            g.lock().unwrap().unlock();
+                        }
+                        self.frames.pop();
+                        self.depth = self.depth.saturating_sub(1);
+                        if self.frames.len() == self.stop {
+                            return Ok(ret_or_ctor);
+                        }
+                        self.frames.last_mut().unwrap().slots.push(ret_or_ctor);
                     }
                 }
                 OpCode::Throw => {
@@ -1254,25 +1293,18 @@ impl Vm {
     /// closures correct across arbitrary nesting and after the defining frame
     /// has returned (the `Arc` keeps the cell alive).
     fn make_closure(&mut self, fproto: std::sync::Arc<VmFuncProto>, nf: usize) -> Arc<VmFunc> {
-        let mut upvalues: Vec<UpvalueCell> = Vec::with_capacity(fproto.own_upvalues as usize + fproto.upvalues.len());
-        // Slots [0..own_upvalues] are this function's OWN captured locals; they
-        // start empty and are populated by `SetUpvalue` (via emit_pending_syncs).
-        for _ in 0..fproto.own_upvalues {
-            upvalues.push(new_ref(Value::Null));
-        }
-        // The remaining slots are cells captured from the enclosing frame.
-        // An index below the parent's `own_upvalues` addresses the parent
-        // frame's per-activation cell for its own captured local; higher
-        // indices address the parent's own enclosing-captured cells.
-        let parent_own = self.frames[nf].func.own_upvalues as usize;
+        let mut upvalues: Vec<UpvalueCell> = Vec::with_capacity(fproto.upvalues.len());
+        // Bit 7 == 0 (`0x00..=0x7f`) addresses the parent frame's per-activation
+        // cell for its own captured local (`own_cells[slot]`); bit 7 == 1
+        // (`0x80..=0xff`) addresses the parent function's enclosing upvalues
+        // (`func.upvalues[slot]`).
         for &eslot in &fproto.upvalues {
-            let slot = eslot as usize;
-            let cell = if slot < parent_own {
+            let is_enclosing = (eslot & 0x80) != 0;
+            let slot = (eslot & 0x7f) as usize;
+            let cell = if !is_enclosing {
                 match self.frames[nf].own_cells.get(slot) {
                     Some(c) => c.clone(),
                     None => {
-                        // Defensive fallback: a well-formed program should not
-                        // reach here, but bind a fresh cell rather than panic.
                         let val = self
                             .frames
                             .get(nf)
@@ -1285,9 +1317,6 @@ impl Vm {
                 match self.frames[nf].func.upvalues.get(slot) {
                     Some(c) => c.clone(),
                     None => {
-                        // Defensive fallback: a well-formed program should not
-                        // reach here, but synthesize a fresh cell rather than
-                        // panic.
                         let val = self
                             .frames
                             .get(nf)
@@ -1407,6 +1436,18 @@ impl Vm {
                 self.frames[nf].ctor_result = Some(obj);
             }
             None => {
+                if !args.is_empty() {
+                    return Err(VmError {
+                        thrown: None,
+                        message: format!(
+                            "new {} expects 0 argument(s), got {}",
+                            class.name,
+                            args.len()
+                        ),
+                        span: self.cur_span(),
+                        trace: Vec::new(),
+                    });
+                }
                 let nf = self.frames.len() - 1;
                 self.frames[nf].slots.push(obj);
             }

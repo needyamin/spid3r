@@ -71,6 +71,10 @@ impl HeapData {
     }
 
     pub fn push(&mut self, v: Value) -> Result<Value, String> {
+        self.less(&v, &v)?;
+        if let Some(first) = self.items.first() {
+            self.less(&v, first)?;
+        }
         self.items.push(v);
         let n = self.items.len();
         self.sift_up(n - 1)?;

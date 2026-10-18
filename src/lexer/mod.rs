@@ -39,15 +39,21 @@ pub struct Lexed {
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str, file: std::sync::Arc<str>) -> Self {
+        let bytes = src.as_bytes();
+        let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            3
+        } else {
+            0
+        };
         Lexer {
-            src: src.as_bytes(),
+            src: bytes,
             file,
-            pos: 0,
+            pos: start,
             line: 1,
             col: 1,
             comments: Vec::new(),
             ranges: Vec::new(),
-            last_tok_start: 0,
+            last_tok_start: start,
         }
     }
 
@@ -109,7 +115,8 @@ impl<'a> Lexer<'a> {
                         }
                         self.bump();
                     }
-                    let text = String::from_utf8_lossy(&self.src[begin..self.pos]).into_owned();
+                    let raw = String::from_utf8_lossy(&self.src[begin..self.pos]);
+                    let text = raw.trim_end_matches('\r').to_string();
                     self.comments.push(Comment { line, col, text });
                 }
                 Some(b'/') if self.peek_at(1) == Some(b'*') => {
@@ -225,7 +232,17 @@ impl<'a> Lexer<'a> {
             b':' => TokenKind::Colon,
             b';' => TokenKind::Semi,
             b'.' => TokenKind::Dot,
-            _ => return Err(lex_err(format!("unexpected character '{}'", c as char))),
+            _ => {
+                if let Ok(rest) = std::str::from_utf8(&self.src[start_pos..]) {
+                    if let Some(ch) = rest.chars().next() {
+                        for _ in 1..ch.len_utf8() {
+                            self.bump();
+                        }
+                        return Err(lex_err(format!("unexpected character '{}'", ch)));
+                    }
+                }
+                return Err(lex_err(format!("unexpected byte 0x{:02X}", c)));
+            }
         };
         let len = (self.pos - start_pos) as u32;
         Ok(Token {
@@ -266,6 +283,13 @@ impl<'a> Lexer<'a> {
                     format!("bad float '{}'", text),
                 )
             })?;
+            if !v.is_finite() {
+                return Err(err_at(
+                    crate::diagnostics::Phase::Lexer,
+                    span,
+                    format!("float '{}' is out of f64 range", text),
+                ));
+            }
             TokenKind::Float(v)
         } else {
             match text.parse::<i64>() {
@@ -304,6 +328,7 @@ impl<'a> Lexer<'a> {
                     ))
                 }
             };
+            let (bs_line, bs_col) = (self.line, self.col);
             self.bump();
             match c {
                 b'"' => {
@@ -333,7 +358,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             return Err(err_at(
                                 crate::diagnostics::Phase::Lexer,
-                                Span::new(self.file.clone(), self.line, self.col - 2, 2),
+                                Span::new(self.file.clone(), bs_line, bs_col, 2),
                                 format!("unknown escape '\\{}'", e as char),
                             ))
                         }

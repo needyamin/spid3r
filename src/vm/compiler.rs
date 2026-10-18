@@ -37,6 +37,7 @@ enum Resolved {
     Global,
 }
 
+#[derive(Clone)]
 struct Local {
     name: String,
     depth: usize,
@@ -53,6 +54,14 @@ struct LoopInfo {
     locals_base: usize,
 }
 
+#[derive(Clone)]
+struct TryInfo {
+    loop_depth: usize,
+    locals_base: usize,
+    scope_depth: usize,
+    finally: Option<Block>,
+}
+
 struct Compiler {
     chunk: Chunk,
     locals: Vec<Local>,
@@ -65,6 +74,7 @@ struct Compiler {
     /// Public top-level names (only meaningful on the script compiler).
     public: HashSet<String>,
     loops: Vec<LoopInfo>,
+    tries: Vec<TryInfo>,
     /// Locals newly marked captured since the last `Closure` was emitted:
     /// `(stack_slot, own_upvalue_index)` pairs whose value must be copied from
     /// the operand stack into their cell before the capturing closure exists.
@@ -86,6 +96,7 @@ impl Compiler {
             own_upvalues: 0,
             public: HashSet::new(),
             loops: Vec::new(),
+            tries: Vec::new(),
             pending_syncs: Vec::new(),
             import_keys: HashMap::new(),
         }
@@ -101,6 +112,7 @@ impl Compiler {
             own_upvalues: 0,
             public: HashSet::new(),
             loops: Vec::new(),
+            tries: Vec::new(),
             pending_syncs: Vec::new(),
             import_keys: HashMap::new(),
         }
@@ -380,15 +392,28 @@ fn compile_stmt(
             define_variable(compilers, ci, name, *vis);
         }
         Stmt::Fn(proto) => {
-            let f = compile_function(compilers, ci, proto)?;
-            let idx = compilers[ci].chunk.add_function(f);
-            emit_pending_syncs(compilers, ci);
-            compilers[ci].chunk.emit_u16(OpCode::Closure, idx);
-            let vis = proto.vis;
-            define_variable(compilers, ci, proto.name.as_deref().unwrap_or(""), vis);
+            if compilers[ci].is_global && compilers[ci].scope_depth == 0 {
+                let f = compile_function(compilers, ci, proto)?;
+                emit_closure_syncs(compilers, ci, &f);
+                let idx = compilers[ci].chunk.add_function(f);
+                compilers[ci].chunk.emit_u16(OpCode::Closure, idx);
+                let vis = proto.vis;
+                define_variable(compilers, ci, proto.name.as_deref().unwrap_or(""), vis);
+            } else {
+                let fn_name = proto.name.as_deref().unwrap_or("");
+                compilers[ci].chunk.emit(OpCode::Null);
+                let slot = compilers[ci].add_local(fn_name);
+                let f = compile_function(compilers, ci, proto)?;
+                emit_closure_syncs(compilers, ci, &f);
+                let idx = compilers[ci].chunk.add_function(f);
+                compilers[ci].chunk.emit_u16(OpCode::Closure, idx);
+                compilers[ci].chunk.emit_u8(OpCode::SetLocal, slot);
+                compilers[ci].chunk.emit(OpCode::Pop);
+            }
         }
         Stmt::Class(decl) => {
             let c = compile_class(compilers, ci, decl)?;
+            emit_pending_syncs(compilers, ci);
             let idx = compilers[ci].chunk.add_class(c);
             compilers[ci].chunk.emit_u16(OpCode::Class, idx);
             define_variable(compilers, ci, &decl.name, decl.vis);
@@ -410,7 +435,7 @@ fn compile_stmt(
             compilers[ci].chunk.emit(OpCode::Return);
         }
         Stmt::Break { .. } => {
-            compilers[ci].emit_loop_body_pops();
+            emit_loop_exit(compilers, ci)?;
             let pos = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
             compilers[ci]
                 .loops
@@ -420,7 +445,7 @@ fn compile_stmt(
                 .push(pos);
         }
         Stmt::Continue { .. } => {
-            compilers[ci].emit_loop_body_pops();
+            emit_loop_exit(compilers, ci)?;
             let pos = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
             compilers[ci]
                 .loops
@@ -669,6 +694,60 @@ fn compile_for_in(
     Ok(())
 }
 
+/// Unwind any enclosing `try` blocks inside the current loop (running their
+/// `finally` blocks and popping their handlers via `EndTry`), then pop the
+/// remaining loop-body locals before a `break` or `continue` jump.
+fn emit_loop_exit(compilers: &mut Vec<Compiler>, ci: usize) -> Result<(), Diagnostic> {
+    let loop_depth = compilers[ci].loops.len();
+    if loop_depth == 0 {
+        return Ok(());
+    }
+    let has_loop_try = compilers[ci]
+        .tries
+        .last()
+        .is_some_and(|t| t.loop_depth == loop_depth);
+    if !has_loop_try {
+        compilers[ci].emit_loop_body_pops();
+        return Ok(());
+    }
+    let saved_locals = compilers[ci].locals.clone();
+    let saved_scope_depth = compilers[ci].scope_depth;
+    let saved_tries = compilers[ci].tries.clone();
+
+    while compilers[ci]
+        .tries
+        .last()
+        .is_some_and(|t| t.loop_depth == loop_depth)
+    {
+        let t = compilers[ci].tries.pop().unwrap();
+        let extra = compilers[ci].locals.len().saturating_sub(t.locals_base);
+        for i in (t.locals_base..compilers[ci].locals.len()).rev() {
+            if compilers[ci].locals[i].is_captured {
+                compilers[ci].chunk.emit_u8(OpCode::Uncapture, i as u8);
+            }
+        }
+        for _ in 0..extra {
+            compilers[ci].chunk.emit(OpCode::Pop);
+        }
+        compilers[ci].locals.truncate(t.locals_base);
+        compilers[ci].scope_depth = t.scope_depth;
+        compilers[ci].chunk.emit(OpCode::EnterFinally);
+        if let Some(fb) = &t.finally {
+            compilers[ci].begin_scope();
+            compile_block(compilers, ci, &fb.stmts)?;
+            compilers[ci].end_scope();
+        }
+        compilers[ci].chunk.emit(OpCode::EndTry);
+    }
+
+    compilers[ci].emit_loop_body_pops();
+
+    compilers[ci].locals = saved_locals;
+    compilers[ci].scope_depth = saved_scope_depth;
+    compilers[ci].tries = saved_tries;
+    Ok(())
+}
+
 fn compile_try(
     compilers: &mut Vec<Compiler>,
     ci: usize,
@@ -680,6 +759,14 @@ fn compile_try(
     let has_catch = catch.is_some();
     compilers[ci].chunk.emit_try(has_catch, 0, 0, 0);
     let operand_end = try_pos + 7; // opcode + has_catch + slot + 2 + 2
+
+    let try_info = TryInfo {
+        loop_depth: compilers[ci].loops.len(),
+        locals_base: compilers[ci].locals.len(),
+        scope_depth: compilers[ci].scope_depth,
+        finally: finally.clone(),
+    };
+    compilers[ci].tries.push(try_info);
 
     compilers[ci].begin_scope();
     compile_block(compilers, ci, &body.stmts)?;
@@ -693,6 +780,7 @@ fn compile_try(
         catch_slot_assigned = compilers[ci].add_local(&cc.name);
         compile_block(compilers, ci, &cc.body.stmts)?;
         compilers[ci].end_scope();
+        compilers[ci].tries.pop();
         let catch_jump = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
         let finally_target = compilers[ci].chunk.here();
         // patch the catch slot back into OpTry
@@ -715,6 +803,7 @@ fn compile_try(
         patch_jump(&mut compilers[ci].chunk, success_jump, finally_target);
         patch_jump(&mut compilers[ci].chunk, catch_jump, finally_target);
     } else {
+        compilers[ci].tries.pop();
         let finally_target = compilers[ci].chunk.here();
         compilers[ci].chunk.emit(OpCode::EnterFinally);
         if let Some(fb) = finally {
@@ -851,8 +940,8 @@ fn compile_expr(
         }
         Expr::Fn(proto) => {
             let f = compile_function(compilers, ci, proto)?;
+            emit_closure_syncs(compilers, ci, &f);
             let idx = compilers[ci].chunk.add_function(f);
-            emit_pending_syncs(compilers, ci);
             compilers[ci].chunk.emit_u16(OpCode::Closure, idx);
         }
         Expr::Unary { op, expr, .. } => {
@@ -1064,7 +1153,7 @@ fn capture_local(c: &mut Compiler, slot: usize) -> u8 {
         return idx;
     }
     let idx = c.own_upvalues;
-    c.own_upvalues += 1;
+    c.own_upvalues = c.own_upvalues.saturating_add(1);
     c.locals[slot].is_captured = true;
     c.locals[slot].upvalue_index = Some(idx);
     // The local's current value lives on the operand stack at `slot`; it must be
@@ -1076,6 +1165,12 @@ fn capture_local(c: &mut Compiler, slot: usize) -> u8 {
 /// Resolve a name in the enclosing scope of `ci`, returning the upvalue-slot
 /// index in `ci` to capture (or `None` if it is a global). Captures the local
 /// in the enclosing frame so the cell is shared.
+///
+/// Upvalue descriptor byte encoding in `VmFuncProto.upvalues`:
+/// * Bit 7 == 0 (`0x00..=0x7f`): captures the parent frame's own captured local
+///   cell at `own_cells[idx]`.
+/// * Bit 7 == 1 (`0x80..=0xff`): captures the parent function's enclosing
+///   upvalue cell at `parent.func.upvalues[idx]`, where `idx = byte & 0x7f`.
 fn resolve_upvalue(compilers: &mut Vec<Compiler>, ci: usize, name: &str) -> Option<u8> {
     if ci == 0 {
         return None;
@@ -1084,29 +1179,34 @@ fn resolve_upvalue(compilers: &mut Vec<Compiler>, ci: usize, name: &str) -> Opti
     let slot = find_local_slot(&compilers[parent], name);
     if let Some(slot) = slot {
         let up = capture_local(&mut compilers[parent], slot);
-        // The runtime `GetUpvalue` index space is the parent function's full
-        // upvalue list: its own captured-local cells come first, then the
-        // cells it captured from *its* enclosing frame. Without the
-        // `own_upvalues` offset, a function that both captures an enclosing
-        // variable and has a local captured by a nested function would give
-        // both the same index and silently alias two different variables.
-        let my = compilers[ci].own_upvalues + compilers[ci].upvalues.len() as u8;
-        compilers[ci].upvalues.push(up);
+        let entry = up & 0x7f;
+        if let Some(pos) = compilers[ci].upvalues.iter().position(|&u| u == entry) {
+            return Some(pos as u8);
+        }
+        let my = compilers[ci].upvalues.len() as u8;
+        compilers[ci].upvalues.push(entry);
         return Some(my);
     }
     if let Some(grand) = resolve_upvalue(compilers, parent, name) {
-        let my = compilers[ci].own_upvalues + compilers[ci].upvalues.len() as u8;
-        compilers[ci].upvalues.push(grand);
+        let entry = 0x80 | (grand & 0x7f);
+        if let Some(pos) = compilers[ci].upvalues.iter().position(|&u| u == entry) {
+            return Some(pos as u8);
+        }
+        let my = compilers[ci].upvalues.len() as u8;
+        compilers[ci].upvalues.push(entry);
         return Some(my);
     }
     None
 }
 
 fn resolve_variable(compilers: &mut Vec<Compiler>, ci: usize, name: &str) -> Resolved {
-    if let Some((slot, captured, upidx)) = find_local_full(&compilers[ci], name) {
-        if captured {
-            return Resolved::Upvalue(upidx.unwrap());
-        }
+    if let Some((slot, _captured, _upidx)) = find_local_full(&compilers[ci], name) {
+        // Always address this frame's own locals via `GetLocal`/`SetLocal`:
+        // once a local is captured, `CaptureSync` registers its cell in
+        // `frame.captured[slot]` so `GetLocal`/`SetLocal` automatically route
+        // through the shared cell while keeping `GetUpvalue`/`SetUpvalue`
+        // exclusively for enclosing upvalues (preventing index-space collisions
+        // when `own_upvalues` grows after an enclosing upvalue was resolved).
         return Resolved::Local(slot);
     }
     if let Some(up) = resolve_upvalue(compilers, ci, name) {
@@ -1149,14 +1249,38 @@ fn define_variable(compilers: &mut [Compiler], ci: usize, name: &str, vis: Vis) 
     }
 }
 
-/// Emit code that binds each newly captured local to its own-upvalue cell
-/// (`CaptureSync slot idx`). Must run just before a `Closure` opcode: the
-/// binding copies the local's current stack value into the cell (so the
-/// capturing closure sees it) and registers the slot in the frame's runtime
-/// `captured` map, so all later `GetLocal`/`SetLocal` of that slot go through
-/// the same cell the closure shares. Without the map, pre-capture emissions
-/// (a loop condition, say) read the stale slot forever while the body writes
-/// the cell.
+/// Emit `CaptureSync` for any newly captured locals in `ci`, plus any direct
+/// local captures referenced by `f.upvalues` (so that even if an earlier closure
+/// in an untaken `if` branch drained `pending_syncs`, this closure still ensures
+/// its captured local cells are initialized before `OpCode::Closure`).
+fn emit_closure_syncs(compilers: &mut [Compiler], ci: usize, f: &VmFuncProto) {
+    let mut emitted = std::collections::HashSet::new();
+    let syncs = std::mem::take(&mut compilers[ci].pending_syncs);
+    for (slot, idx) in syncs {
+        emitted.insert((slot as u8, idx));
+        compilers[ci]
+            .chunk
+            .emit_u8_u8(OpCode::CaptureSync, slot as u8, idx);
+    }
+    for &u in &f.upvalues {
+        if (u & 0x80) == 0 {
+            let idx = u & 0x7f;
+            if let Some(slot) = compilers[ci]
+                .locals
+                .iter()
+                .rposition(|l| l.upvalue_index == Some(idx))
+            {
+                let pair = (slot as u8, idx);
+                if emitted.insert(pair) {
+                    compilers[ci]
+                        .chunk
+                        .emit_u8_u8(OpCode::CaptureSync, slot as u8, idx);
+                }
+            }
+        }
+    }
+}
+
 fn emit_pending_syncs(compilers: &mut [Compiler], ci: usize) {
     let syncs = std::mem::take(&mut compilers[ci].pending_syncs);
     for (slot, idx) in syncs {

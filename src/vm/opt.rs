@@ -60,10 +60,14 @@ pub fn optimize_script(script: &mut VmFunc) -> OptStats {
 
 fn optimize_chunk(chunk: &mut Chunk, stats: &mut OptStats) {
     stats.chunks += 1;
-    // Depth-first into nested prototypes and class methods first.
+    // Depth-first into nested prototypes, class methods, and embedded modules first.
     for f in chunk.functions.iter_mut() {
         let proto = Arc::make_mut(f);
         optimize_chunk(Arc::make_mut(&mut proto.chunk), stats);
+    }
+    for m in chunk.modules.iter_mut() {
+        let func = Arc::make_mut(&mut m.func);
+        optimize_chunk(Arc::make_mut(&mut func.chunk), stats);
     }
     optimize_body(chunk, stats);
 }

@@ -645,26 +645,36 @@ impl JsonParser {
             self.pos += 1;
         }
         let mut is_float = false;
+        let mut has_exp = false;
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.pos += 1;
-            } else if c == '.' && !is_float {
+            } else if c == '.' && !is_float && !has_exp {
                 is_float = true;
                 self.pos += 1;
-            } else if (c == 'e' || c == 'E') && self.pos > start {
+                if !matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
+                    return Err("json_parse: bad number".to_string());
+                }
+            } else if (c == 'e' || c == 'E') && !has_exp && self.pos > start {
+                has_exp = true;
                 self.pos += 1;
                 if matches!(self.peek(), Some('+') | Some('-')) {
                     self.pos += 1;
+                }
+                if !matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
+                    return Err("json_parse: bad number".to_string());
                 }
             } else {
                 break;
             }
         }
         let text: String = self.chars[start..self.pos].iter().collect();
-        if is_float || text.contains('e') || text.contains('E') {
+        if is_float || has_exp {
             text.parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite())
                 .map(Value::Float)
-                .map_err(|_| "json_parse: bad number".to_string())
+                .ok_or_else(|| "json_parse: bad number".to_string())
         } else {
             match text.parse::<i64>() {
                 Ok(i) => Ok(Value::Int(i)),
@@ -673,8 +683,10 @@ impl JsonParser {
                 // f64 so `json_parse(json_write(v))` round-trips.
                 Err(_) => text
                     .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
                     .map(Value::Float)
-                    .map_err(|_| "json_parse: bad number".to_string()),
+                    .ok_or_else(|| "json_parse: bad number".to_string()),
             }
         }
     }
@@ -793,13 +805,13 @@ impl JsonParser {
     }
     fn parse_object(&mut self) -> Result<Value, String> {
         self.pos += 1;
-        let mut entries = Vec::new();
+        let mut entries: Vec<(crate::value::MapKey, Value)> = Vec::new();
         self.skip_ws();
         if self.peek() == Some('}') {
             self.pos += 1;
-            return Ok(Value::Map(crate::value::new_ref(
+            return Ok(Value::Map(crate::value::gc::track(crate::value::new_ref(
                 crate::value::collections::seq::MapData::from_entries(entries),
-            )));
+            ))));
         }
         loop {
             self.skip_ws();
@@ -810,15 +822,20 @@ impl JsonParser {
             }
             self.pos += 1;
             let value = self.parse_value()?;
-            entries.push((crate::value::MapKey::Str(key), value));
+            let mk = crate::value::MapKey::Str(key);
+            if let Some(pos) = entries.iter().position(|(k, _)| k == &mk) {
+                entries[pos].1 = value;
+            } else {
+                entries.push((mk, value));
+            }
             self.skip_ws();
             match self.peek() {
                 Some(',') => self.pos += 1,
                 Some('}') => {
                     self.pos += 1;
-                    return Ok(Value::Map(crate::value::new_ref(
+                    return Ok(Value::Map(crate::value::gc::track(crate::value::new_ref(
                         crate::value::collections::seq::MapData::from_entries(entries),
-                    )));
+                    ))));
                 }
                 other => return Err(format!("json_parse: unexpected {:?} in object", other)),
             }

@@ -191,10 +191,13 @@ pub fn load(
 pub fn default_module_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(path) = std::env::var("SPID3R_PATH") {
-        for part in path.split(';').chain(path.split(':')) {
-            let p = part.trim();
-            if !p.is_empty() {
-                dirs.push(PathBuf::from(p));
+        for part in path.split(';') {
+            for d in std::env::split_paths(part.trim()) {
+                let s = d.to_string_lossy();
+                let trimmed = s.trim();
+                if !trimmed.is_empty() {
+                    dirs.push(PathBuf::from(trimmed));
+                }
             }
         }
     }

@@ -29,6 +29,7 @@ pub type UpvalueCell = Arc<Mutex<Value>>;
 /// is how many upvalue cells this function must allocate for its *own* captured
 /// locals when it is called. The chunk is shared by `Arc`: every closure
 /// created from the same prototype reuses the same bytecode.
+#[derive(Clone)]
 pub struct VmFunc {
     pub name: Option<String>,
     pub arity: usize,
@@ -551,11 +552,24 @@ pub fn hash_value(v: &Value) -> u64 {
 /// (functions, instances, tasks, channels, mutexes, classes) compares by
 /// pointer.
 pub fn values_equal(a: &Value, b: &Value) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    values_equal_inner(a, b, &mut seen)
+}
+
+fn values_equal_inner(
+    a: &Value,
+    b: &Value,
+    seen: &mut std::collections::HashSet<(u64, u64)>,
+) -> bool {
     use Value::*;
     // Identity fast path: a reference value is equal to itself. Without this,
     // `xs == xs` locked the same non-reentrant Mutex twice and deadlocked.
     if let (Some(x), Some(y)) = (ref_id(a), ref_id(b)) {
         if x == y {
+            return true;
+        }
+        let pair = if x <= y { (x, y) } else { (y, x) };
+        if !seen.insert(pair) {
             return true;
         }
     }
@@ -568,80 +582,83 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         (Float(x), Int(y)) => *x == (*y as f64),
         (Str(x), Str(y)) => x == y,
         (Option(x), Option(y)) => match (x, y) {
-            (Some(x), Some(y)) => values_equal(x, y),
+            (Some(x), Some(y)) => values_equal_inner(x, y, seen),
             (None, None) => true,
             _ => false,
         },
         (Result(x), Result(y)) => match (x, y) {
-            (Ok(x), Ok(y)) => values_equal(x, y),
-            (Err(x), Err(y)) => values_equal(x, y),
+            (Ok(x), Ok(y)) => values_equal_inner(x, y, seen),
+            (Err(x), Err(y)) => values_equal_inner(x, y, seen),
             _ => false,
         },
         (List(x), List(y))
         | (VecDyn(x), VecDyn(y))
         | (List(x), VecDyn(y))
         | (VecDyn(x), List(y)) => {
-            let x = x.lock().unwrap();
-            let y = y.lock().unwrap();
-            x.items.len() == y.items.len()
-                && x.items
+            let xi = x.lock().unwrap().items.clone();
+            let yi = y.lock().unwrap().items.clone();
+            xi.len() == yi.len()
+                && xi
                     .iter()
-                    .zip(y.items.iter())
-                    .all(|(a, b)| values_equal(a, b))
+                    .zip(yi.iter())
+                    .all(|(a, b)| values_equal_inner(a, b, seen))
         }
         (Stack(x), Stack(y)) => {
-            let x = x.lock().unwrap();
-            let y = y.lock().unwrap();
-            x.items.len() == y.items.len()
-                && x.items
+            let xi = x.lock().unwrap().items.clone();
+            let yi = y.lock().unwrap().items.clone();
+            xi.len() == yi.len()
+                && xi
                     .iter()
-                    .zip(y.items.iter())
-                    .all(|(a, b)| values_equal(a, b))
+                    .zip(yi.iter())
+                    .all(|(a, b)| values_equal_inner(a, b, seen))
         }
         (Queue(x), Queue(y)) => {
-            let x = x.lock().unwrap();
-            let y = y.lock().unwrap();
-            x.items.len() == y.items.len()
-                && x.items
+            let xi = x.lock().unwrap().items.clone();
+            let yi = y.lock().unwrap().items.clone();
+            xi.len() == yi.len()
+                && xi
                     .iter()
-                    .zip(y.items.iter())
-                    .all(|(a, b)| values_equal(a, b))
+                    .zip(yi.iter())
+                    .all(|(a, b)| values_equal_inner(a, b, seen))
         }
         (Deque(x), Deque(y)) => {
-            let x = x.lock().unwrap();
-            let y = y.lock().unwrap();
-            x.items.len() == y.items.len()
-                && x.items
+            let xi = x.lock().unwrap().items.clone();
+            let yi = y.lock().unwrap().items.clone();
+            xi.len() == yi.len()
+                && xi
                     .iter()
-                    .zip(y.items.iter())
-                    .all(|(a, b)| values_equal(a, b))
+                    .zip(yi.iter())
+                    .all(|(a, b)| values_equal_inner(a, b, seen))
         }
         (Tuple(x), Tuple(y)) => {
-            let x = x.lock().unwrap();
-            let y = y.lock().unwrap();
-            x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| values_equal(a, b))
+            let xi = x.lock().unwrap().clone();
+            let yi = y.lock().unwrap().clone();
+            xi.len() == yi.len()
+                && xi
+                    .iter()
+                    .zip(yi.iter())
+                    .all(|(a, b)| values_equal_inner(a, b, seen))
         }
         (Map(x), Map(y)) => {
-            let x = x.lock().unwrap();
-            let y = y.lock().unwrap();
-            if x.entries.len() != y.entries.len() {
+            let xe = x.lock().unwrap().entries.clone();
+            let ye = y.lock().unwrap().entries.clone();
+            if xe.len() != ye.len() {
                 return false;
             }
-            x.entries.iter().all(|(k, v)| {
-                y.entries
-                    .iter()
+            xe.iter().all(|(k, v)| {
+                ye.iter()
                     .find(|(k2, _)| k2 == k)
-                    .map(|(_, v2)| values_equal(v, v2))
+                    .map(|(_, v2)| values_equal_inner(v, v2, seen))
                     .unwrap_or(false)
             })
         }
         (Set(x), Set(y)) => {
-            let x = x.lock().unwrap();
-            let y = y.lock().unwrap();
-            x.items.len() == y.items.len()
-                && x.items
+            let xi = x.lock().unwrap().items.clone();
+            let yi = y.lock().unwrap().items.clone();
+            xi.len() == yi.len()
+                && xi
                     .iter()
-                    .all(|v| y.items.iter().any(|w| values_equal(v, w)))
+                    .all(|v| yi.iter().any(|w| values_equal_inner(v, w, seen)))
         }
         (Instance(x), Instance(y)) => ptr_id(x) == ptr_id(y),
         (VInstance(x), VInstance(y)) => ptr_id(x) == ptr_id(y),
@@ -723,7 +740,23 @@ pub fn type_name(v: &Value) -> &'static str {
 
 /// Debug display used by `print`, error messages, and `string()`.
 pub fn display_value(v: &Value) -> String {
-    match v {
+    let mut seen = std::collections::HashSet::new();
+    display_value_inner(v, &mut seen)
+}
+
+fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> String {
+    if let Some(id) = ref_id(v) {
+        if !seen.insert(id) {
+            return match v {
+                Value::List(_) | Value::VecDyn(_) => "[...]".to_string(),
+                Value::Map(_) => "map{...}".to_string(),
+                Value::Set(_) => "set{...}".to_string(),
+                Value::Tuple(_) => "(...)".to_string(),
+                _ => "...".to_string(),
+            };
+        }
+    }
+    let out = match v {
         Value::Int(i) => i.to_string(),
         Value::Float(f) => {
             if f.is_finite() && f.fract() == 0.0 && f.abs() < 1e15 {
@@ -737,53 +770,62 @@ pub fn display_value(v: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::Weak(_) => "weak".to_string(),
         Value::List(d) | Value::VecDyn(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().items.clone();
             format!(
                 "[{}]",
-                d.items
+                items
                     .iter()
-                    .map(display_value)
+                    .map(|it| display_value_inner(it, seen))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         }
         Value::Stack(d) => {
-            let d = d.lock().unwrap();
-            let mut items: Vec<String> = d.items.iter().map(display_value).collect();
+            let raw = d.lock().unwrap().items.clone();
+            let mut items: Vec<String> = raw
+                .iter()
+                .map(|it| display_value_inner(it, seen))
+                .collect();
             items.reverse(); // top first
             format!("stack({})", items.join(", "))
         }
         Value::Queue(d) => {
-            let d = d.lock().unwrap();
+            let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
             format!(
                 "queue({})",
-                d.items
+                items
                     .iter()
-                    .map(display_value)
+                    .map(|it| display_value_inner(it, seen))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         }
         Value::Deque(d) => {
-            let d = d.lock().unwrap();
+            let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
             format!(
                 "deque({})",
-                d.items
+                items
                     .iter()
-                    .map(display_value)
+                    .map(|it| display_value_inner(it, seen))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         }
         Value::LinkedList(d) | Value::SinglyList(d) | Value::DoublyList(d) => {
-            let d = d.lock().unwrap();
-            let mut out = Vec::new();
-            let mut cur = d.head.clone();
+            let mut vals = Vec::new();
+            let mut cur = d.lock().unwrap().head.clone();
             while let Some(n) = cur {
-                let node = n.lock().unwrap();
-                out.push(display_value(&node.value));
-                cur = node.next.clone();
+                let (val, next) = {
+                    let node = n.lock().unwrap();
+                    (node.value.clone(), node.next.clone())
+                };
+                vals.push(val);
+                cur = next;
             }
+            let out: Vec<String> = vals
+                .iter()
+                .map(|it| display_value_inner(it, seen))
+                .collect();
             let kind = match v {
                 Value::LinkedList(_) => "linked_list",
                 Value::SinglyList(_) => "singly_linked_list",
@@ -792,69 +834,78 @@ pub fn display_value(v: &Value) -> String {
             format!("{}[{}]", kind, out.join(", "))
         }
         Value::Map(d) => {
-            let d = d.lock().unwrap();
-            let body = d
-                .entries
+            let entries = d.lock().unwrap().entries.clone();
+            let body = entries
                 .iter()
-                .map(|(k, v)| format!("{}: {}", k.display(), display_value(v)))
+                .map(|(k, v)| format!("{}: {}", k.display(), display_value_inner(v, seen)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("map{{{}}}", body)
         }
         Value::Set(d) => {
-            let d = d.lock().unwrap();
-            let body = d
-                .items
+            let items = d.lock().unwrap().items.clone();
+            let body = items
                 .iter()
-                .map(display_value)
+                .map(|it| display_value_inner(it, seen))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("set{{{}}}", body)
         }
         Value::Tuple(t) => {
-            let t = t.lock().unwrap();
-            let body = t.iter().map(display_value).collect::<Vec<_>>().join(", ");
+            let items = t.lock().unwrap().clone();
+            let body = items
+                .iter()
+                .map(|it| display_value_inner(it, seen))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("({})", body)
         }
         Value::BinTree(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().inorder();
             format!(
                 "binary_tree[{}]",
-                d.inorder()
+                items
                     .iter()
-                    .map(display_value)
+                    .map(|it| display_value_inner(it, seen))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         }
         Value::Bst(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().inorder();
             format!(
                 "bst[{}]",
-                d.inorder()
+                items
                     .iter()
-                    .map(display_value)
+                    .map(|it| display_value_inner(it, seen))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         }
         Value::Heap(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().items.clone();
             format!(
                 "heap[{}]",
-                d.items
+                items
                     .iter()
-                    .map(display_value)
+                    .map(|it| display_value_inner(it, seen))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         }
         Value::PrioQueue(d) => {
-            let d = d.lock().unwrap();
-            let body = d
+            let pairs: Vec<(Value, f64)> = d
+                .lock()
+                .unwrap()
                 .items
                 .iter()
-                .map(|it| format!("{}@{}", display_value(&it.value), display_prio(it.prio)))
+                .map(|it| (it.value.clone(), it.prio))
+                .collect();
+            let body = pairs
+                .iter()
+                .map(|(val, prio)| {
+                    format!("{}@{}", display_value_inner(val, seen), display_prio(*prio))
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("priority_queue({})", body)
@@ -881,11 +932,14 @@ pub fn display_value(v: &Value) -> String {
             format!("trie({} words)", d.count)
         }
         Value::Matrix(d) => {
-            let d = d.lock().unwrap();
-            let rows = (0..d.rows)
+            let (rows_n, cols_n, data) = {
+                let d = d.lock().unwrap();
+                (d.rows, d.cols, d.data.clone())
+            };
+            let rows = (0..rows_n)
                 .map(|r| {
-                    let row: Vec<String> = (0..d.cols)
-                        .map(|c| display_value(&Value::Float(d.data[r * d.cols + c])))
+                    let row: Vec<String> = (0..cols_n)
+                        .map(|c| display_value_inner(&Value::Float(data[r * cols_n + c]), seen))
                         .collect();
                     format!("[{}]", row.join(", "))
                 })
@@ -894,37 +948,36 @@ pub fn display_value(v: &Value) -> String {
             format!("matrix[{}]", rows)
         }
         Value::Ring(d) => {
-            let d = d.lock().unwrap();
+            let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
             format!(
                 "ring_buffer[{}]",
-                d.items
+                items
                     .iter()
-                    .map(display_value)
+                    .map(|it| display_value_inner(it, seen))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         }
         Value::Bag(d) => {
-            let d = d.lock().unwrap();
-            let body = d
-                .counts
+            let counts = d.lock().unwrap().counts.clone();
+            let body = counts
                 .iter()
-                .map(|(v, n)| format!("{}: {}", display_value(v), n))
+                .map(|(v, n)| format!("{}: {}", display_value_inner(v, seen), n))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("bag{{{}}}", body)
         }
         Value::RefBox(d) => {
-            let d = d.lock().unwrap();
-            format!("ref({})", display_value(&d.value))
+            let inner = d.lock().unwrap().value.clone();
+            format!("ref({})", display_value_inner(&inner, seen))
         }
         Value::Option(o) => match o {
-            Some(v) => format!("some({})", display_value(v)),
+            Some(v) => format!("some({})", display_value_inner(v, seen)),
             None => "none".to_string(),
         },
         Value::Result(r) => match r {
-            Ok(v) => format!("ok({})", display_value(v)),
-            Err(v) => format!("err({})", display_value(v)),
+            Ok(v) => format!("ok({})", display_value_inner(v, seen)),
+            Err(v) => format!("err({})", display_value_inner(v, seen)),
         },
         Value::Function(f) => match &f.proto.name {
             Some(n) => format!("<fn {}>", n),
@@ -938,31 +991,35 @@ pub fn display_value(v: &Value) -> String {
         Value::Class(c) => format!("<class {}>", c.name),
         Value::VClass(c) => format!("<vclass {}>", c.name),
         Value::Instance(i) => {
-            let i = i.lock().unwrap();
-            if i.fields.is_empty() {
-                format!("{} {{}}", i.class.name)
+            let (cname, fields) = {
+                let i = i.lock().unwrap();
+                (i.class.name.clone(), i.fields.clone())
+            };
+            if fields.is_empty() {
+                format!("{} {{}}", cname)
             } else {
-                let body = i
-                    .fields
+                let body = fields
                     .iter()
-                    .map(|(k, v)| format!("{}: {}", k, display_value(v)))
+                    .map(|(k, v)| format!("{}: {}", k, display_value_inner(v, seen)))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{} {{{}}}", i.class.name, body)
+                format!("{} {{{}}}", cname, body)
             }
         }
         Value::VInstance(i) => {
-            let i = i.lock().unwrap();
-            if i.fields.is_empty() {
-                format!("{} {{}}", i.class.name)
+            let (cname, fields) = {
+                let i = i.lock().unwrap();
+                (i.class.name.clone(), i.fields.clone())
+            };
+            if fields.is_empty() {
+                format!("{} {{}}", cname)
             } else {
-                let body = i
-                    .fields
+                let body = fields
                     .iter()
-                    .map(|(k, v)| format!("{}: {}", k, display_value(v)))
+                    .map(|(k, v)| format!("{}: {}", k, display_value_inner(v, seen)))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{} {{{}}}", i.class.name, body)
+                format!("{} {{{}}}", cname, body)
             }
         }
         Value::Task(t) => format!("<task {}>", t.id),
@@ -974,20 +1031,26 @@ pub fn display_value(v: &Value) -> String {
         },
         Value::CClass(c) => format!("<class {}>", c.name),
         Value::CInstance(i) => {
-            let i = i.lock().unwrap();
-            if i.fields.is_empty() {
-                format!("{} {{}}", i.class.name)
+            let (cname, fields) = {
+                let i = i.lock().unwrap();
+                (i.class.name.clone(), i.fields.clone())
+            };
+            if fields.is_empty() {
+                format!("{} {{}}", cname)
             } else {
-                let body = i
-                    .fields
+                let body = fields
                     .iter()
-                    .map(|(k, v)| format!("{}: {}", k, display_value(v)))
+                    .map(|(k, v)| format!("{}: {}", k, display_value_inner(v, seen)))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{} {{{}}}", i.class.name, body)
+                format!("{} {{{}}}", cname, body)
             }
         }
+    };
+    if let Some(id) = ref_id(v) {
+        seen.remove(&id);
     }
+    out
 }
 
 fn display_prio(p: f64) -> String {
@@ -1001,62 +1064,74 @@ fn display_prio(p: f64) -> String {
 /// Deep copy. Primitives copy; reference types are rebuilt so mutating the
 /// clone never touches the original.
 pub fn deep_clone(v: &Value) -> Value {
+    let mut seen = std::collections::HashSet::new();
+    deep_clone_inner(v, &mut seen)
+}
+
+fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Value {
     use crate::value::collections as c;
-    match v {
+    if let Some(id) = ref_id(v) {
+        if !seen.insert(id) {
+            return v.clone();
+        }
+    }
+    let out = match v {
         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Null => v.clone(),
         Value::Weak(_) => v.clone(),
         Value::List(d) => {
-            let d = d.lock().unwrap();
-            Value::List(new_ref(c::VecData {
-                items: d.items.iter().map(deep_clone).collect(),
-            }))
+            let items = d.lock().unwrap().items.clone();
+            Value::List(crate::value::gc::track(new_ref(c::VecData {
+                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
+            })))
         }
         Value::VecDyn(d) => {
-            let d = d.lock().unwrap();
-            Value::VecDyn(new_ref(c::VecData {
-                items: d.items.iter().map(deep_clone).collect(),
-            }))
+            let items = d.lock().unwrap().items.clone();
+            Value::VecDyn(crate::value::gc::track(new_ref(c::VecData {
+                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
+            })))
         }
         Value::Stack(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().items.clone();
             Value::Stack(new_ref(c::StackData {
-                items: d.items.iter().map(deep_clone).collect(),
+                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
             }))
         }
         Value::Queue(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().items.clone();
             Value::Queue(new_ref(c::QueueData {
-                items: d.items.iter().map(deep_clone).collect(),
+                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
             }))
         }
         Value::Deque(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().items.clone();
             Value::Deque(new_ref(c::DequeData {
-                items: d.items.iter().map(deep_clone).collect(),
+                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
             }))
         }
         Value::LinkedList(_) | Value::SinglyList(_) | Value::DoublyList(_) => {
-            let (d, kind) = match v {
-                Value::LinkedList(d) => (d.lock().unwrap(), 0),
-                Value::SinglyList(d) => (d.lock().unwrap(), 1),
-                Value::DoublyList(d) => (d.lock().unwrap(), 2),
+            let (head, kind) = match v {
+                Value::LinkedList(d) => (d.lock().unwrap().head.clone(), 0),
+                Value::SinglyList(d) => (d.lock().unwrap().head.clone(), 1),
+                Value::DoublyList(d) => (d.lock().unwrap().head.clone(), 2),
                 _ => unreachable!(),
             };
-            let mut items = Vec::new();
-            let mut cur = d.head.clone();
+            let mut raw = Vec::new();
+            let mut cur = head;
             while let Some(n) = cur {
-                let node = n.lock().unwrap();
-                items.push(deep_clone(&node.value));
-                cur = node.next.clone();
+                let (val, next) = {
+                    let node = n.lock().unwrap();
+                    (node.value.clone(), node.next.clone())
+                };
+                raw.push(val);
+                cur = next;
             }
-            drop(d);
             let mut nd = match kind {
                 0 => c::ListData::linked(),
                 1 => c::ListData::singly(),
                 _ => c::ListData::doubly(),
             };
-            for it in items {
-                nd.push_back(it);
+            for it in raw {
+                nd.push_back(deep_clone_inner(&it, seen));
             }
             match kind {
                 0 => Value::LinkedList(new_ref(nd)),
@@ -1065,68 +1140,88 @@ pub fn deep_clone(v: &Value) -> Value {
             }
         }
         Value::Map(d) => {
-            let d = d.lock().unwrap();
-            Value::Map(new_ref(c::MapData::from_entries(
-                d.entries
+            let entries = d.lock().unwrap().entries.clone();
+            Value::Map(crate::value::gc::track(new_ref(c::MapData::from_entries(
+                entries
                     .iter()
-                    .map(|(k, v)| (k.clone(), deep_clone(v)))
+                    .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
                     .collect(),
-            )))
+            ))))
         }
         Value::Set(d) => {
-            let d = d.lock().unwrap();
-            Value::Set(new_ref(c::SetData {
-                items: d.items.iter().map(deep_clone).collect(),
-            }))
+            let items = d.lock().unwrap().items.clone();
+            Value::Set(crate::value::gc::track(new_ref(c::SetData {
+                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
+            })))
         }
         Value::Tuple(t) => {
-            let t = t.lock().unwrap();
-            Value::Tuple(new_ref(t.iter().map(deep_clone).collect()))
+            let items = t.lock().unwrap().clone();
+            Value::Tuple(new_ref(
+                items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
+            ))
         }
         Value::Bst(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().inorder();
             let mut nd = c::BstData::new();
-            for it in d.inorder() {
+            for it in items {
                 let _ = nd.insert(it);
             }
             Value::Bst(new_ref(nd))
         }
         Value::BinTree(d) => {
-            let d = d.lock().unwrap();
+            let items = d.lock().unwrap().level_order();
             let mut nd = c::BinTreeData::new();
-            for it in d.level_order() {
+            for it in items {
                 let _ = nd.insert(it);
             }
             Value::BinTree(new_ref(nd))
         }
         Value::Heap(d) => {
-            let d = d.lock().unwrap();
+            let (items, min) = {
+                let d = d.lock().unwrap();
+                (d.items.clone(), d.min)
+            };
             Value::Heap(new_ref(c::HeapData {
-                items: d.items.iter().map(deep_clone).collect(),
-                min: d.min,
+                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
+                min,
             }))
         }
         Value::PrioQueue(d) => {
-            let d = d.lock().unwrap();
-            let mut nd = c::PrioQueueData::new(d.min);
-            for it in &d.items {
-                let _ = nd.push(it.value.clone(), it.prio);
+            let (items, min) = {
+                let d = d.lock().unwrap();
+                (
+                    d.items
+                        .iter()
+                        .map(|it| (it.value.clone(), it.prio))
+                        .collect::<Vec<_>>(),
+                    d.min,
+                )
+            };
+            let mut nd = c::PrioQueueData::new(min);
+            for (val, prio) in items {
+                let _ = nd.push(deep_clone_inner(&val, seen), prio);
             }
             Value::PrioQueue(new_ref(nd))
         }
         Value::Graph(d) => {
-            let d = d.lock().unwrap();
-            Value::Graph(new_ref(d.deep_clone()))
+            let g = d.lock().unwrap().deep_clone();
+            Value::Graph(new_ref(g))
         }
         Value::HashTable(d) => {
-            let d = d.lock().unwrap();
+            let (buckets, size) = {
+                let d = d.lock().unwrap();
+                (d.buckets.clone(), d.size)
+            };
             Value::HashTable(new_ref(c::HashTableData {
-                buckets: d
-                    .buckets
+                buckets: buckets
                     .iter()
-                    .map(|b| b.iter().map(|(k, v)| (k.clone(), deep_clone(v))).collect())
+                    .map(|b| {
+                        b.iter()
+                            .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
+                            .collect()
+                    })
                     .collect(),
-                size: d.size,
+                size,
             }))
         }
         Value::Trie(d) => {
@@ -1146,32 +1241,66 @@ pub fn deep_clone(v: &Value) -> Value {
             }))
         }
         Value::Ring(d) => {
-            let d = d.lock().unwrap();
+            let (cap, items) = {
+                let d = d.lock().unwrap();
+                (d.cap, d.items.clone())
+            };
             Value::Ring(new_ref(c::RingData {
-                cap: d.cap,
-                items: d.items.iter().map(deep_clone).collect(),
+                cap,
+                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
             }))
         }
         Value::Bag(d) => {
-            let d = d.lock().unwrap();
+            let counts = d.lock().unwrap().counts.clone();
             Value::Bag(new_ref(c::BagData {
-                counts: d.counts.iter().map(|(v, n)| (deep_clone(v), *n)).collect(),
+                counts: counts
+                    .iter()
+                    .map(|(v, n)| (deep_clone_inner(v, seen), *n))
+                    .collect(),
             }))
         }
         Value::RefBox(d) => {
-            let d = d.lock().unwrap();
+            let inner = d.lock().unwrap().value.clone();
             Value::RefBox(new_ref(c::RefBoxData {
-                value: deep_clone(&d.value),
+                value: deep_clone_inner(&inner, seen),
             }))
         }
         Value::Instance(i) => {
-            let i = i.lock().unwrap();
-            Value::Instance(new_ref(InstanceData {
-                class: i.class.clone(),
-                fields: i
-                    .fields
+            let (class, fields) = {
+                let i = i.lock().unwrap();
+                (i.class.clone(), i.fields.clone())
+            };
+            Value::Instance(crate::value::gc::track(new_ref(InstanceData {
+                class,
+                fields: fields
                     .iter()
-                    .map(|(k, v)| (k.clone(), deep_clone(v)))
+                    .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
+                    .collect(),
+            })))
+        }
+        Value::VInstance(i) => {
+            let (class, fields) = {
+                let i = i.lock().unwrap();
+                (i.class.clone(), i.fields.clone())
+            };
+            Value::VInstance(crate::value::gc::track(new_ref(VmInstanceData {
+                class,
+                fields: fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
+                    .collect(),
+            })))
+        }
+        Value::CInstance(i) => {
+            let (class, fields) = {
+                let i = i.lock().unwrap();
+                (i.class.clone(), i.fields.clone())
+            };
+            Value::CInstance(new_ref(CompiledInstanceData {
+                class,
+                fields: fields
+                    .iter()
+                    .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
                     .collect(),
             }))
         }
@@ -1181,17 +1310,19 @@ pub fn deep_clone(v: &Value) -> Value {
         | Value::VFunc(_)
         | Value::Class(_)
         | Value::VClass(_)
-        | Value::VInstance(_)
-        | Value::CInstance(_)
         | Value::Cfn(_)
         | Value::CClass(_)
         | Value::Task(_)
         | Value::Channel(_)
         | Value::MutexVal(_) => v.clone(),
-        Value::Option(o) => Value::Option(o.as_ref().map(|v| Box::new(deep_clone(v)))),
+        Value::Option(o) => Value::Option(o.as_ref().map(|v| Box::new(deep_clone_inner(v, seen)))),
         Value::Result(r) => Value::Result(match r {
-            Ok(v) => Ok(Box::new(deep_clone(v))),
-            Err(v) => Err(Box::new(deep_clone(v))),
+            Ok(v) => Ok(Box::new(deep_clone_inner(v, seen))),
+            Err(v) => Err(Box::new(deep_clone_inner(v, seen))),
         }),
+    };
+    if let Some(id) = ref_id(v) {
+        seen.remove(&id);
     }
+    out
 }
