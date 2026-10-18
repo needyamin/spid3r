@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  SPID3R_NO_INSTALLER: "1"
+
+jobs:
+  core:
+    name: Core Toolchain & Differential (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Clippy (core, zero warnings)
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
+
+      - name: Run unit, integration, and fuzz/regression test suites
+        run: cargo test --no-default-features
+
+      - name: Run 3-engine differential example suite (tree == vm == exec)
+        run: cargo run --no-default-features -- test
+
+      - name: Verify Spid3r source formatting
+        run: cargo run --no-default-features -- fmt --check
+
+  gui:
+    name: GUI Feature (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            xvfb
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy (GUI feature, zero warnings)
+        run: cargo clippy --no-default-features --features gui --all-targets -- -D warnings
+
+      - name: Run GUI test suite (Linux Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test --no-default-features --features gui --test gui_tests
+
+      - name: Run GUI test suite (Windows / macOS)
+        if: runner.os != 'Linux'
+        run: cargo test --no-default-features --features gui --test gui_tests

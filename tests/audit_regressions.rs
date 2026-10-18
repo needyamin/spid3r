@@ -681,4 +681,96 @@ fn main() {
     );
 }
 
+#[test]
+fn vm_stack_trace_preserves_exact_line_numbers_across_calls_and_throws() {
+    use spid3r::parser;
+    use spid3r::semantic;
+    use spid3r::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc};
+    use spid3r::vm::{compile_program, Vm};
+    use std::sync::Arc;
+
+    // Line 1: fn leaf(a, b) {
+    // Line 2:     throw "leaf_err";
+    // Line 3: }
+    // Line 4: fn middle(x) {
+    // Line 5:     return leaf(
+    // Line 6:         x,
+    // Line 7:         x + 1
+    // Line 8:     );
+    // Line 9: }
+    // Line 10: fn main() {
+    // Line 11:     middle(10);
+    // Line 12:     return 0;
+    // Line 13: }
+    let src = "fn leaf(a, b) {\n    throw \"leaf_err\";\n}\nfn middle(x) {\n    return leaf(\n        x,\n        x + 1\n    );\n}\nfn main() {\n    middle(10);\n    return 0;\n}\n";
+
+    let tree_err = run_src("tree", "trace_lines", src).unwrap_err();
+    let vm_err = run_src("vm", "trace_lines", src).unwrap_err();
+
+    for (engine, err) in [("tree", &tree_err), ("vm", &vm_err)] {
+        assert!(
+            err.contains(":2:"),
+            "{} error should point to line 2 (throw statement):\n{}",
+            engine,
+            err
+        );
+        assert!(
+            err.contains("at leaf (") && err.contains("at middle (") && err.contains("at main ("),
+            "{} error should include leaf, middle, and main frames:\n{}",
+            engine,
+            err
+        );
+    }
+
+    // Also verify after .matrixc round-trip serialization + deserialization.
+    let prog = parser::parse_file(src, Arc::from("trace_lines.matrix")).expect("parse");
+    semantic::check_file(&prog, true, "trace_lines.matrix").expect("check");
+    let (func, _) = compile_program(&prog, "trace_lines.matrix", &[]).expect("compile");
+    let bytes = serialize_vmfunc(&func);
+    let roundtrip = deserialize_vmfunc(&bytes).expect("deserialize");
+    let mut vm = Vm::new(Arc::from("trace_lines.matrix"), Vec::new());
+    let diag = vm.run_compiled(Arc::new(roundtrip)).unwrap_err();
+    assert_eq!(diag.span.as_ref().map(|s| s.line), Some(2));
+    let frame_lines: Vec<(&str, u32)> = diag
+        .trace
+        .iter()
+        .map(|f| (f.func.as_deref().unwrap_or("<script>"), f.span.line))
+        .collect();
+    assert_eq!(
+        frame_lines,
+        vec![("leaf", 2), ("middle", 5), ("main", 11)],
+        "unexpected VM trace frame lines: {:?}",
+        frame_lines
+    );
+}
+
+#[test]
+fn native_staticlib_discovery_supports_env_overrides_and_sysroot_layouts() {
+    use spid3r::native::{runtime_lib_name, staticlib_candidates};
+    use std::path::Path;
+
+    let name = runtime_lib_name();
+    let rt_file = Path::new("/opt/spid3r/custom_rt.a");
+    let lib_dir = Path::new("/opt/spid3r/lib");
+    let matrix_dir = Path::new("/opt/matrix/rlib");
+    let exe_path = Path::new("/usr/local/bin/spid3r");
+    let cwd_path = Path::new("/workspace/project");
+
+    let cands = staticlib_candidates(
+        Some(rt_file),
+        Some(lib_dir),
+        Some(matrix_dir),
+        Some(exe_path),
+        Some(cwd_path),
+    );
+
+    assert_eq!(cands[0], rt_file);
+    assert!(cands.contains(&lib_dir.join(name)));
+    assert!(cands.contains(&matrix_dir.join(name)));
+    assert!(cands.contains(&Path::new("/usr/local/lib").join(name)));
+    assert!(cands.contains(&Path::new("/usr/local/lib/spid3r").join(name)));
+    assert!(cands.contains(&cwd_path.join("target").join("release").join(name)));
+    assert!(cands.contains(&cwd_path.join("target").join("debug").join(name)));
+}
+
 

@@ -118,25 +118,29 @@ embedded table. (`src/modules/mod.rs`, `src/vm/mod.rs`, `src/vm/compiler.rs`)
 | G4 | Value & Collections [HIGH] | Self-referential containers deadlocked/overflowed in `display_value`, `values_equal`, and `deep_clone`; `xs.append(xs)`, `s.union(s)`/`intersection(s)`/`difference(s)`, and `m.add(m)`/`mul(m)` deadlocked by locking receiver and argument simultaneously; `linked_list.pop_back()` set `tail = None` on length >= 2; `bst.insert` / `heap.push` accepted non-comparable values when empty; `string.pad_left`/`pad_right` wrapped negative widths to `usize::MAX`; `deep_clone` did not deep-copy `VInstance` or register clones with `gc::track` | Cycle-safe visited tracking and lock-before-recurse in `src/value/mod.rs`; self-lock avoidance in `src/value/collections/{mod,nodes,misc}.rs`; fixed `ListData::pop_back` tail pointer; upfront comparability check in `BstData::insert` and `HeapData::push`; negative width validation and allocation caps on `repeat`/`pad_left`/`pad_right` |
 | G5 | Parser & Semantic [HIGH] | Deeply nested expressions/blocks overflowed the host stack; local named `fn name() {}` statements inside blocks failed to parse/check/compile for recursion; `new ClassWithNoCtor(1)` and inherited `new` arity were not checked; `now()` was typed `float` instead of `int` | Added `MAX_PARSE_DEPTH = 96` in `src/parser/mod.rs`; supported local named `Stmt::Fn` across parser, semantic checker, and VM compiler; validated inherited/default constructor arity in semantic checker, tree interpreter, and VM; typed `now()` as `Ty::Int` (`src/parser/mod.rs`, `src/semantic/mod.rs`, `src/interpreter/mod.rs`, `src/vm/mod.rs`) |
 | G6 | Lexer, JSON, Modules, GUI [MEDIUM] | Lexer `self.col - 2` underflowed on `\` + `\n` in strings, overflowing float literals became `inf`, CRLF comments kept `\r`, non-ASCII unexpected bytes printed as Latin-1; `json_parse` accepted malformed numbers (`1.`, `1e`, `1e999`) and duplicated keys in `MapData`; `SPID3R_PATH` split on `:` corrupted Windows `C:\` paths; GUI `dispatch` dropped cascading events and `file_url` omitted leading `/` on Windows | Fixed in `src/lexer/mod.rs`, `src/stdlib/mod.rs`, `src/modules/mod.rs`, `src/native/modules.rs`, and `src/gui/window.rs` |
+| G7 | VM Stack-Trace Line Attribution [MEDIUM] | `Vm::run_loop` advanced `frame.ip` past the current instruction before executing it, so `cur_span()` and `capture_trace()` resolved `span_at(f.ip)` to the *next* instruction (e.g. reporting line 1 on a `throw` at the end of a function or the statement after a multi-line call), and `cur_span()` underflowed if `frames` was empty | Added `inst_ip` to `CallFrame` (`src/vm/mod.rs`), restored parent AST spans before emitting opcodes in `src/vm/compiler.rs`, and guarded `cur_span()` when `frames` is empty |
+| G8 | Standalone Native Runtime Discovery [MEDIUM] | `find_staticlib` (`src/native/link.rs`) only searched `<exe_dir>` and `<cwd>/target`, failing when invoked outside the Cargo workspace or from `deps/` | Added `spid3r::native::{find_staticlib, staticlib_candidates}` (`src/native/mod.rs`, `src/native/link.rs`) supporting `SPID3R_RUNTIME_LIB`, `SPID3R_LIB_DIR`, `MATRIX_RLIB_DIR`, `<exe_dir>/../lib`, and `<exe_dir>/../lib/spid3r` |
+| G9 | Continuous Integration & Fuzzing [QUALITY] | No GitHub Actions CI matrix or fuzzing harness existed for lexer, parser, and `.matrixc` deserializer | Added `.github/workflows/ci.yml` (Windows/Linux/macOS core + GUI jobs), `fuzz/` (`cargo-fuzz` targets `fuzz_lexer`, `fuzz_parser`, `fuzz_bytecode`), and deterministic mutation fuzz suite `tests/fuzz_tests.rs` |
 
 ## 3. Files changed
 
 `src/lexer/mod.rs`, `src/parser/mod.rs`, `src/semantic/mod.rs`,
 `src/interpreter/mod.rs`, `src/vm/{mod,compiler,bytecode,opt}.rs`,
 `src/value/mod.rs`, `src/value/collections/{mod,nodes,misc}.rs`,
-`src/stdlib/mod.rs`, `src/modules/mod.rs`, `src/native/modules.rs`,
+`src/stdlib/mod.rs`, `src/modules/mod.rs`, `src/native/{mod,link,modules}.rs`,
 `src/gui/window.rs`, `src/pkg/mod.rs`, `src/cli.rs`, `src/sched/mod.rs`,
+`.github/workflows/ci.yml`, `fuzz/Cargo.toml`, `fuzz/fuzz_targets/fuzz_{lexer,parser,bytecode}.rs`,
 `docs/{STANDARD_LIBRARY,GRAMMAR,BYTECODE,ROADMAP}.md`, `doc.html`, `sitemap.txt`,
-and `tests/audit_regressions.rs` (28 regression tests).
+`tests/audit_regressions.rs` (30 regression tests), and `tests/fuzz_tests.rs` (3 fuzz suites).
 
 ## 4. Test results
 
 | Check | Result |
 |---|---|
 | Baseline before any change | 236 Rust tests passed, 0 failed; examples differential 23/23 |
-| Final `cargo test --no-default-features` | **264 passed, 0 failed** (including 28 audit regression tests) |
-| Final `cargo test` (with `gui` feature) | **274 passed, 0 failed** (264 core + 10 `gui_tests`) |
-| Final `cargo clippy --all-targets -- -D warnings` | **0 warnings, 0 errors** (both `--no-default-features` and default features) |
+| Final `cargo test --no-default-features` | **269 passed, 0 failed** (including 30 audit regression tests + 3 fuzz suites) |
+| Final `cargo test` (with `gui` feature) | **279 passed, 0 failed** (269 core + 10 `gui_tests`) |
+| Final `cargo clippy --all-targets -- -D warnings` | **0 warnings, 0 errors** (both `--no-default-features` and `--features gui`) |
 | Examples differential (`spid3r test`, tree == vm == exec) | **23 ok, 0 failed** |
 
 ## 5. Security findings
@@ -159,5 +163,5 @@ and `tests/audit_regressions.rs` (28 regression tests).
 
 ## 7. Overall QA status
 
-**Production-ready within documented scope.** All confirmed critical, high, and medium bugs across the lexer, parser, semantic analyzer, tree-walk interpreter, bytecode compiler/deserializer/validator/optimizer/VM, value & collection layer, standard library, module loader, and package manager have been resolved at their root causes and pinned by 28 regression tests in `tests/audit_regressions.rs`. All 274 Rust tests and all 23 three-engine differential tests pass with zero clippy warnings.
+**Production-ready within documented scope.** All confirmed critical, high, and medium bugs across the lexer, parser, semantic analyzer, tree-walk interpreter, bytecode compiler/deserializer/validator/optimizer/VM, value & collection layer, standard library, module loader, and package manager have been resolved at their root causes and pinned by 30 regression tests in `tests/audit_regressions.rs` and 3 deterministic fuzz suites in `tests/fuzz_tests.rs`. All 279 Rust tests and all 23 three-engine differential tests pass with zero clippy warnings.
 

@@ -1,0 +1,36 @@
+[package]
+name = "spid3r-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.spid3r]
+path = ".."
+default-features = false
+
+[[bin]]
+name = "fuzz_lexer"
+path = "fuzz_targets/fuzz_lexer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_parser"
+path = "fuzz_targets/fuzz_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_bytecode"
+path = "fuzz_targets/fuzz_bytecode.rs"
+test = false
+doc = false
+bench = false

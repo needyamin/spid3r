@@ -426,12 +426,13 @@ fn compile_stmt(
                 compilers[0].public.insert(decl.name.clone());
             }
         }
-        Stmt::Return { value, .. } => {
+        Stmt::Return { value, span } => {
             if let Some(v) = value {
                 compile_expr(compilers, ci, v)?;
             } else {
                 compilers[ci].chunk.emit(OpCode::Null);
             }
+            compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit(OpCode::Return);
         }
         Stmt::Break { .. } => {
@@ -508,15 +509,17 @@ fn compile_stmt(
             finally,
             ..
         } => compile_try(compilers, ci, body, catch, finally)?,
-        Stmt::Throw { value, .. } => {
+        Stmt::Throw { value, span } => {
             compile_expr(compilers, ci, value)?;
+            compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit(OpCode::Throw);
         }
-        Stmt::Spawn { callable, .. } => {
+        Stmt::Spawn { callable, span } => {
             // `Spawn` pushes the task handle; a bare `spawn ...;` statement
             // discards it, so pop it to keep the operand stack aligned with the
             // local-declaration slots (the clox invariant).
             compile_expr(compilers, ci, callable)?;
+            compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit(OpCode::Spawn);
             compilers[ci].chunk.emit(OpCode::Pop);
         }
@@ -929,10 +932,11 @@ fn compile_expr(
                 emit_get(compilers, ci, name);
             }
         }
-        Expr::List(items, _) => {
+        Expr::List(items, span) => {
             for it in items {
                 compile_expr(compilers, ci, it)?;
             }
+            compilers[ci].chunk.set_span(span.clone());
             let idx = compilers[ci].chunk.emit_str_const("list");
             compilers[ci]
                 .chunk
@@ -940,20 +944,23 @@ fn compile_expr(
         }
         Expr::Fn(proto) => {
             let f = compile_function(compilers, ci, proto)?;
+            compilers[ci].chunk.set_span(proto.span.clone());
             emit_closure_syncs(compilers, ci, &f);
             let idx = compilers[ci].chunk.add_function(f);
             compilers[ci].chunk.emit_u16(OpCode::Closure, idx);
         }
-        Expr::Unary { op, expr, .. } => {
+        Expr::Unary { op, expr, span } => {
             compile_expr(compilers, ci, expr)?;
+            compilers[ci].chunk.set_span(span.clone());
             match op {
                 UnOp::Neg => compilers[ci].chunk.emit(OpCode::Neg),
                 UnOp::Not => compilers[ci].chunk.emit(OpCode::Not),
             }
         }
-        Expr::Binary { op, l, r, .. } => {
+        Expr::Binary { op, l, r, span } => {
             compile_expr(compilers, ci, l)?;
             compile_expr(compilers, ci, r)?;
+            compilers[ci].chunk.set_span(span.clone());
             let oc = match op {
                 BinOp::Add => OpCode::Add,
                 BinOp::Sub => OpCode::Sub,
@@ -1004,12 +1011,13 @@ fn compile_expr(
             value,
             ..
         } => compile_assign(compilers, ci, target, *op, value)?,
-        Expr::Call { callee, args, .. } => {
+        Expr::Call { callee, args, span } => {
             if let Expr::Ident(name, _) = &**callee {
                 if is_constructor(name) {
                     for a in args {
                         compile_expr(compilers, ci, a)?;
                     }
+                    compilers[ci].chunk.set_span(span.clone());
                     let idx = compilers[ci].chunk.emit_str_const(name);
                     compilers[ci]
                         .chunk
@@ -1021,43 +1029,59 @@ fn compile_expr(
             for a in args {
                 compile_expr(compilers, ci, a)?;
             }
+            compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit_u8(OpCode::Call, args.len() as u8);
         }
-        Expr::Method { object, name, args, .. } => {
+        Expr::Method {
+            object,
+            name,
+            args,
+            span,
+        } => {
             compile_expr(compilers, ci, object)?;
             for a in args {
                 compile_expr(compilers, ci, a)?;
             }
+            compilers[ci].chunk.set_span(span.clone());
             let idx = compilers[ci].chunk.emit_str_const(name);
             compilers[ci]
                 .chunk
                 .emit_u16_u8(OpCode::Invoke, idx, args.len() as u8);
         }
-        Expr::Index { object, index, .. } => {
+        Expr::Index {
+            object,
+            index,
+            span,
+        } => {
             compile_expr(compilers, ci, object)?;
             compile_expr(compilers, ci, index)?;
+            compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit(OpCode::IndexGet);
         }
-        Expr::Field { object, name, .. } => {
+        Expr::Field { object, name, span } => {
             compile_expr(compilers, ci, object)?;
+            compilers[ci].chunk.set_span(span.clone());
             let idx = compilers[ci].chunk.emit_str_const(name);
             compilers[ci].chunk.emit_u16(OpCode::FieldGet, idx);
         }
-        Expr::New { class, args, .. } => {
+        Expr::New { class, args, span } => {
             // `Call` pops the argument(s) first, then the callee, so the class
             // (the callee) must be pushed *before* its arguments.
             emit_get(compilers, ci, class);
             for a in args {
                 compile_expr(compilers, ci, a)?;
             }
+            compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit_u8(OpCode::Call, args.len() as u8);
         }
-        Expr::Await(inner, _) => {
+        Expr::Await(inner, span) => {
             compile_expr(compilers, ci, inner)?;
+            compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit(OpCode::Await);
         }
-        Expr::Spawn { callable, .. } => {
+        Expr::Spawn { callable, span } => {
             compile_expr(compilers, ci, callable)?;
+            compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit(OpCode::Spawn);
         }
     }

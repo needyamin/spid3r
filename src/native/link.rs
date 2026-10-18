@@ -181,35 +181,10 @@ fn find_llvm_lib_dir() -> Option<PathBuf> {
     candidates.iter().map(Path::new).find(|p| p.is_dir()).map(|p| p.to_path_buf())
 }
 
-/// Find `libspid3r.a` (the staticlib produced by `cargo build`) next to the
-/// current executable or in the target directory.
+/// Find `libspid3r.a` / `spid3r.lib` via environment overrides, sysroot layout,
+/// or Cargo target directories (see [`super::find_staticlib`]).
 fn find_staticlib() -> Result<PathBuf, Diagnostic> {
-    let name = if cfg!(windows) { "spid3r.lib" } else { "libspid3r.a" };
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        // target/<profile>/spid3r[.exe] -> target/<profile>/<name>
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(name));
-            // target/<profile>/deps/<name>
-            candidates.push(dir.join("deps").join(name));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        for profile in ["release", "debug"] {
-            candidates.push(cwd.join("target").join(profile).join(name));
-            candidates.push(cwd.join("target").join(profile).join("deps").join(name));
-        }
-    }
-    for c in candidates {
-        if c.is_file() {
-            return Ok(c);
-        }
-    }
-    Err(err(format!(
-        "cannot find the Spid3r runtime library '{}'; build the toolchain first \
-         (cargo build --features native)",
-        name
-    )))
+    super::find_staticlib()
 }
 
 /// Link the emitted object + runtime staticlib into the final executable.

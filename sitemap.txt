@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 250 Rust tests green (236 original + 14 engine-parity regressions),
+State: 279 Rust tests green (269 core + 10 GUI),
 23/23 examples pass the three-engine differential. Language version 1.0,
 crate version 0.1.0.
 
@@ -36,6 +36,7 @@ GaliLang/
                       (REQUIRED: OneDrive corrupts cargo's incremental cache)
   Cargo.lock          committed (binary application)
   build.rs            links LLVM C API only when feature "native" is on
+  .github/workflows/ci.yml  GitHub Actions CI matrix (Windows/Linux/macOS, core + GUI)
   README.md           human-facing overview (rewritten 2026-10)
   doc.html            self-contained developer documentation, 25 sections
                       (rewritten 2026-10; mirrors current behavior)
@@ -46,7 +47,8 @@ GaliLang/
                       packaging/nsis/{nsis,nsis.zip,payload}, Spid3r-Setup-*.exe,
                       .zwork/, .workbuddy-ai/, editor/OS cruft
   src/                the compiler, interpreters, VM, stdlib, tooling (see [4])
-  tests/              integration + differential tests (see [7])
+  tests/              integration + differential + fuzz tests (see [7])
+  fuzz/               cargo-fuzz targets (fuzz_lexer, fuzz_parser, fuzz_bytecode)
   examples/           23 .matrix programs + gui/counter (see [8])
   benchmarks/         .matrix benchmarks for `spid3r bench`
   docs/               deep-dive .md documents (see [9])
@@ -61,7 +63,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 274 tests (264 with --no-default-features + 10 gui), must stay green
+  cargo test                  FULL suite, 279 tests (269 with --no-default-features + 10 gui), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>

@@ -99,6 +99,9 @@ struct Handler {
 struct CallFrame {
     func: Arc<VmFunc>,
     ip: usize,
+    /// Byte offset of the instruction currently executing (or waiting on a
+    /// call) in this frame, recorded before `ip` advances past its operands.
+    inst_ip: usize,
     slots: Vec<Value>,
     /// Captured locals: slot index -> shared cell. Created lazily on first
     /// capture so reads/writes of that local stay in sync after the frame
@@ -387,12 +390,14 @@ impl Vm {
                 }
             }
             let nf = self.frames.len() - 1;
+            self.frames[nf].inst_ip = self.frames[nf].ip;
             // Debugger: may pause here (breakpoints, stepping). It runs before
             // the instruction so the paused location is what is about to run.
             if self.debug.is_some() {
                 self.debug_hook()?;
             }
             let ip = self.frames[nf].ip;
+            self.frames[nf].inst_ip = ip;
             let b = self.frames[nf].func.chunk.code[ip];
             let op: OpCode = match OpCode::from_u8(b) {
                 Some(o) => o,
@@ -1201,16 +1206,19 @@ impl Vm {
 
     /// Snapshot the call stack for an error trace, most recent frame first.
     /// Each frame contributes its function name and the span of the
-    /// instruction it is currently at.
+    /// instruction it is currently at (`inst_ip`).
     fn capture_trace(&self) -> Vec<crate::diagnostics::TraceFrame> {
         let mut out = Vec::with_capacity(self.frames.len());
         for f in self.frames.iter().rev() {
             // `span_at` maps a byte offset to the span of the instruction that
             // contains it (inst_spans is indexed by instruction, not by byte).
-            let span = f.func.chunk.span_at(f.ip);
+            let span = f.func.chunk.span_at(f.inst_ip);
             if let Some(last) = out.last() {
                 let last: &crate::diagnostics::TraceFrame = last;
-                if last.span.line == span.line && last.span.file == span.file {
+                if last.func == f.func.name
+                    && last.span.line == span.line
+                    && last.span.file == span.file
+                {
                     continue;
                 }
             }
@@ -1222,7 +1230,8 @@ impl Vm {
         out
     }
 
-    fn pop_top(&mut self) -> Value {        let nf = self.frames.len() - 1;
+    fn pop_top(&mut self) -> Value {
+        let nf = self.frames.len() - 1;
         match self.frames[nf].slots.pop() {
             Some(v) => v,
             None => {
@@ -1275,6 +1284,7 @@ impl Vm {
         self.frames.push(CallFrame {
             func: fd.clone(),
             ip: 0,
+            inst_ip: 0,
             slots: args,
             captured: HashMap::new(),
             own_cells: (0..fd.own_upvalues as usize)
@@ -1821,9 +1831,10 @@ impl Vm {
     }
 
     fn cur_span(&self) -> Span {
-        let nf = self.frames.len() - 1;
-        let ip = self.frames[nf].ip;
-        self.frames[nf].func.chunk.span_at(ip)
+        match self.frames.last() {
+            Some(frame) => frame.func.chunk.span_at(frame.inst_ip),
+            None => Span::new(self.file.clone(), 0, 0, 0),
+        }
     }
 
     fn fail(&mut self, msg: impl Into<String>) {
