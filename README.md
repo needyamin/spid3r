@@ -52,6 +52,27 @@ Hello, Spid3r!
 
 ## Getting started
 
+### Install
+
+**Linux / macOS** — one-line installer (curl or wget, POSIX `sh`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | sh
+```
+
+The script detects your architecture, downloads the matching release tarball from GitHub,
+installs `spid3r` into `~/.spid3r/bin`, and adds that directory to your `PATH` in
+`~/.bashrc`, `~/.zshrc`, and `~/.profile`. Options:
+
+```sh
+sh install.sh --version 0.1.0   # pin a release instead of latest
+sh install.sh --dir ~/.local/bin
+sh install.sh --source          # build from source via cargo (no release needed)
+```
+
+**Windows** — run the NSIS installer `Spid3r-Setup-<version>.exe` from the repository root
+(or a release), or build from source as shown below.
+
 ### Build from source
 
 You need a recent stable Rust toolchain (edition 2021) and, for the default build, LLVM 18.1+
