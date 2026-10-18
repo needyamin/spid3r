@@ -155,3 +155,73 @@ fn gc_never_frees_live_data() {
     assert_eq!(code, 0, "run failed: {}{}", out, err);
     assert_eq!(out, "123\n3\n", "live data must survive collection: {}", out);
 }
+
+#[test]
+fn gc_reclaims_cycles_across_all_container_types() {
+    let src = r#"
+        fn main() {
+            let i = 0;
+            while i < 200 {
+                let bt = binary_tree();
+                bt.insert(bt);
+
+                let g = graph("directed");
+                let r = ref(g);
+                g.add_node(r);
+
+                let ll = linked_list();
+                ll.push_back(ll);
+
+                let dll = doubly_linked_list();
+                dll.push_back(dll);
+
+                let st = stack();
+                st.push(st);
+
+                let q = queue();
+                q.push(q);
+
+                let dq = deque();
+                dq.push_back(dq);
+
+                let rb = ring_buffer(2);
+                rb.push(rb);
+
+                let bg = bag();
+                bg.add(bg);
+
+                let pq = priority_queue("min");
+                pq.push(pq, 1);
+
+                let ht = hash_table();
+                ht.set("self", ht);
+
+                let box_a = ref(null);
+                box_a.set(some(tuple(ok(box_a))));
+
+                i = i + 1;
+            }
+            let before = gc_live_cells();
+            gc_collect();
+            let after = gc_live_cells();
+            println(string(before) + "/" + string(after));
+            return 0;
+        }
+    "#;
+    let path = write_case("all_containers", src);
+    let (code, out, err) = run(&path, Some("0"));
+    assert_eq!(code, 0, "run failed: {}{}", out, err);
+    let parts: Vec<i64> = out.trim().split('/').map(|s| s.parse().unwrap()).collect();
+    let (before, after) = (parts[0], parts[1]);
+    assert!(
+        before >= 2000,
+        "expected >= 2000 leaked container cells before gc_collect(), got {}",
+        before
+    );
+    assert_eq!(
+        after, 0,
+        "gc_collect() must reclaim 100% of container cycles (before {}, after {})",
+        before, after
+    );
+}
+

@@ -1180,10 +1180,10 @@ impl Interp {
                 fields.insert(fname.clone(), Value::Null);
             }
         }
-        let instance = crate::value::gc::track(crate::value::new_ref(InstanceData {
+        let instance = crate::value::new_ref(InstanceData {
             class: class.clone(),
             fields,
-        }));
+        });
         let obj = Value::Instance(instance.clone());
         // run the constructor (child first, then up the chain)
         let ctor = {

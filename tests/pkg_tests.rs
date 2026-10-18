@@ -1159,3 +1159,32 @@ fn registry_errors_are_clear() {
     assert_ne!(code, 0, "install must fail when no version matches");
     assert!(err.contains("no version"), "error: {}", err);
 }
+
+#[test]
+fn tar_supports_ustar_prefix_and_longlink_and_verifies_checksum() {
+    // 1. Path between 101 and 255 bytes with a `/` split (uses POSIX ustar prefix).
+    let ustar_path = format!("src/{}/module_{}.matrix", "deep_subdir_".repeat(8), "a".repeat(30));
+    assert!(ustar_path.len() > 100 && ustar_path.len() <= 255);
+
+    // 2. Path > 255 bytes (uses GNU @LongLink 'L' block).
+    let longlink_path = format!("src/{}/very_long_{}.matrix", "nested_dir_".repeat(20), "b".repeat(80));
+    assert!(longlink_path.len() > 255);
+
+    let entries = vec![
+        (ustar_path.clone(), b"public fn a() { return 1; }\n".to_vec()),
+        (longlink_path.clone(), b"public fn b() { return 2; }\n".to_vec()),
+    ];
+    let mut archive = spid3r::pkg::write_tar(&entries);
+    let decoded = spid3r::pkg::read_tar(&archive).expect("read_tar with long names");
+    assert_eq!(decoded, entries, "long paths must round-trip without truncation");
+
+    // 3. Corrupt a byte in the first header and verify checksum rejection.
+    archive[0] ^= 0xff;
+    let err = spid3r::pkg::read_tar(&archive).expect_err("corrupted header must fail checksum");
+    assert!(
+        err.contains("checksum mismatch"),
+        "expected checksum mismatch error, got: {}",
+        err
+    );
+}
+

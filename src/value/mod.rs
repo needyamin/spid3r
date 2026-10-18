@@ -15,7 +15,11 @@ pub mod gc;
 
 pub type Ref<T> = Arc<Mutex<T>>;
 
-pub fn new_ref<T>(v: T) -> Ref<T> {
+pub fn new_ref<T: gc::GcTrace + Send + 'static>(v: T) -> Ref<T> {
+    gc::track(Arc::new(Mutex::new(v)))
+}
+
+pub fn new_untracked_ref<T>(v: T) -> Ref<T> {
     Arc::new(Mutex::new(v))
 }
 
@@ -335,7 +339,7 @@ pub fn make_weak(v: &Value) -> Result<Value, String> {
             ))
         }
     };
-    Ok(Value::Weak(new_ref(WeakCell { w, kind })))
+    Ok(Value::Weak(new_untracked_ref(WeakCell { w, kind })))
 }
 
 /// `deref(w)` — the strong value the weak points at, or `None` when the
@@ -1080,15 +1084,15 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
         Value::Weak(_) => v.clone(),
         Value::List(d) => {
             let items = d.lock().unwrap().items.clone();
-            Value::List(crate::value::gc::track(new_ref(c::VecData {
+            Value::List(new_ref(c::VecData {
                 items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            })))
+            }))
         }
         Value::VecDyn(d) => {
             let items = d.lock().unwrap().items.clone();
-            Value::VecDyn(crate::value::gc::track(new_ref(c::VecData {
+            Value::VecDyn(new_ref(c::VecData {
                 items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            })))
+            }))
         }
         Value::Stack(d) => {
             let items = d.lock().unwrap().items.clone();
@@ -1141,18 +1145,18 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
         }
         Value::Map(d) => {
             let entries = d.lock().unwrap().entries.clone();
-            Value::Map(crate::value::gc::track(new_ref(c::MapData::from_entries(
+            Value::Map(new_ref(c::MapData::from_entries(
                 entries
                     .iter()
                     .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
                     .collect(),
-            ))))
+            )))
         }
         Value::Set(d) => {
             let items = d.lock().unwrap().items.clone();
-            Value::Set(crate::value::gc::track(new_ref(c::SetData {
+            Value::Set(new_ref(c::SetData {
                 items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            })))
+            }))
         }
         Value::Tuple(t) => {
             let items = t.lock().unwrap().clone();
@@ -1270,26 +1274,26 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
                 let i = i.lock().unwrap();
                 (i.class.clone(), i.fields.clone())
             };
-            Value::Instance(crate::value::gc::track(new_ref(InstanceData {
+            Value::Instance(new_ref(InstanceData {
                 class,
                 fields: fields
                     .iter()
                     .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
                     .collect(),
-            })))
+            }))
         }
         Value::VInstance(i) => {
             let (class, fields) = {
                 let i = i.lock().unwrap();
                 (i.class.clone(), i.fields.clone())
             };
-            Value::VInstance(crate::value::gc::track(new_ref(VmInstanceData {
+            Value::VInstance(new_ref(VmInstanceData {
                 class,
                 fields: fields
                     .iter()
                     .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
                     .collect(),
-            })))
+            }))
         }
         Value::CInstance(i) => {
             let (class, fields) = {

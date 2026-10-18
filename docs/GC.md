@@ -1,11 +1,13 @@
 # Reference-cycle collection — design
 
-> Status: **v1.1 implemented** — `list`/`vec`, `set`, `map`, and `instance`
-> cycles are collected. `gc_collect()` / `gc_live_cells()` are builtins on both
+> Status: **v1.2 implemented** — **all container and instance types**
+> (`list`/`vec`, `stack`, `queue`, `deque`, `linked_list`/`singly_linked_list`/`doubly_linked_list`,
+> `set`, `map`, `tuple`, `binary_tree`, `bst`, `heap`, `priority_queue`, `graph`,
+> `hash_table`, `trie`, `matrix`, `ring_buffer`, `bag`, `ref`, `option`/`result`,
+> and class instances) are tracked and cycle-collected automatically through
+> `value::new_ref`. `gc_collect()` / `gc_live_cells()` are builtins on both
 > engines; automatic collection at statement boundaries is **on by default**
-> (`SPID3R_GC=0` disables it). Trees/graph/heap/etc. are still untracked (they
-> leak as before — safe). The rest of this document is the design; "Current
-> status" at the end says what remains.
+> (`SPID3R_GC=0` disables it).
 
 ## The problem
 
@@ -117,24 +119,18 @@ documented, safe restriction — the leak persists while tasks run).
 
 ## Current status
 
-## Current status
-
-**v1.1 implemented** (`src/value/gc.rs`): the external-reference mark-sweep with
-`GcTrace` for **list/vec, set, map, instance, and vm-instance** (the common cycle
-formers), hooked at their construction sites. Builtins `gc_collect()` /
+**v1.2 implemented** (`src/value/gc.rs`): external-reference mark-sweep with
+`GcTrace` implemented for **all 20+ container and instance types** (hooked
+automatically inside `value::new_ref`, plus `Option`/`Result` inline box
+peeling and `ListData` drop-time node-cycle breaking). Builtins `gc_collect()` /
 `gc_live_cells()` work on both engines. Auto-collection at interpreter statement
 boundaries is **on by default** (`SPID3R_GC=0` disables it), throttled every 4096
 statements and skipped while the scheduler has live tasks. A safety valve prunes
-dead handles so the registry stays bounded even where collection never runs (the
-native runtime).
+dead and duplicate handles so the registry stays bounded even where collection
+never runs (the native runtime).
 
 Verified: all 23 examples produce byte-identical output with the collector on vs
-off (it never frees live data); `tests/cycle_tests.rs` proves list **and**
-instance/map self-cycles are reclaimed while a live self-cycle survives.
+off (it never frees live data); `tests/cycle_tests.rs` proves cycles across all
+container and instance types are reclaimed while live cycles survive.
 
-Remaining (optional polish):
-- widen `GcTrace` further (trees/graph/heap/matrix/trie/…) — those cycles still
-  leak (safe; `weak`/`deref` hatch);
-- add a VM opcode-boundary auto-trigger (deferred: per-instruction checks would
-  regress the VM's measured throughput; `gc_collect()` already works on the VM).
 

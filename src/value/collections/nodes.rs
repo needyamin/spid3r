@@ -316,9 +316,7 @@ impl ListData {
             }
             "clear" => {
                 want(name, args, 0)?;
-                self.head = None;
-                self.tail = None;
-                self.len = 0;
+                self.clear_nodes();
                 Ok(Value::Null)
             }
             "push_back" => {
@@ -377,21 +375,40 @@ impl ListData {
                 for it in items {
                     nd.push_back(it);
                 }
-                Ok(new_list_value(&nd, self.doubly, self.keep_tail))
+                Ok(new_list_value(nd, self.doubly, self.keep_tail))
             }
             _ => Err(unknown(name, self.kind_name())),
         }
     }
+
+    /// Break all internal `prev`/`next` node links and clear node values so
+    /// doubly-linked lists never leak their `LLNode` allocations on drop or GC.
+    pub fn clear_nodes(&mut self) {
+        let mut cur = self.head.take();
+        self.tail = None;
+        self.len = 0;
+        while let Some(node) = cur {
+            if let Ok(mut b) = node.lock() {
+                b.prev = None;
+                b.value = Value::Null;
+                cur = b.next.take();
+            } else {
+                break;
+            }
+        }
+    }
 }
 
-pub fn new_list_value(nd: &ListData, doubly: bool, keep_tail: bool) -> Value {
-    let d = new_ref(ListData {
-        head: nd.head.clone(),
-        tail: nd.tail.clone(),
-        len: nd.len,
-        doubly,
-        keep_tail,
-    });
+impl Drop for ListData {
+    fn drop(&mut self) {
+        self.clear_nodes();
+    }
+}
+
+pub fn new_list_value(mut nd: ListData, doubly: bool, keep_tail: bool) -> Value {
+    nd.doubly = doubly;
+    nd.keep_tail = keep_tail;
+    let d = new_ref(nd);
     if doubly {
         Value::DoublyList(d)
     } else if keep_tail {

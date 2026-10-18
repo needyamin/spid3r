@@ -402,36 +402,75 @@ fn parse_inline_table(v: &str) -> Option<BTreeMap<String, String>> {
 
 // ---------------------------------------------------------------- tar (ustar)
 
-/// Write a minimal uncompressed **ustar** archive: one entry per (path,
-/// contents), plus the two zero blocks that end a tar stream. No compression —
-/// the format is deliberately simple so the reader below (and any standard
-/// `tar`) can consume it with no dependencies.
+/// Find a `/` split `(prefix, name)` where `prefix.len() <= 155` and `name.len() <= 100`
+/// per POSIX.1-1988 ustar.
+fn split_ustar_path(path: &str) -> Option<(&str, &str)> {
+    let bytes = path.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'/' {
+            let prefix = &path[..i];
+            let name = &path[i + 1..];
+            if !prefix.is_empty()
+                && prefix.len() <= 155
+                && !name.is_empty()
+                && name.len() <= 100
+            {
+                return Some((prefix, name));
+            }
+        }
+    }
+    None
+}
+
+fn write_tar_block(out: &mut Vec<u8>, name: &[u8], prefix: &[u8], typeflag: u8, data: &[u8]) {
+    let mut header = [0u8; 512];
+    let name_len = name.len().min(100);
+    header[..name_len].copy_from_slice(&name[..name_len]);
+    if !prefix.is_empty() {
+        let p_len = prefix.len().min(155);
+        header[345..345 + p_len].copy_from_slice(&prefix[..p_len]);
+    }
+    put_octal(&mut header[100..], 0o644, 8); // mode
+    put_octal(&mut header[108..], 0, 8); // uid
+    put_octal(&mut header[116..], 0, 8); // gid
+    put_octal(&mut header[124..], data.len() as u64, 12); // size
+    put_octal(&mut header[136..], 0, 12); // mtime (deterministic archives)
+    header[156] = typeflag;
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    // Checksum: sum of all header bytes with the checksum field as spaces.
+    for b in &mut header[148..156] {
+        *b = b' ';
+    }
+    let sum: u64 = header.iter().map(|b| *b as u64).sum();
+    put_octal(&mut header[148..], sum, 8);
+    header[155] = b' '; // checksum is space-terminated
+    out.extend_from_slice(&header);
+    out.extend_from_slice(data);
+    let pad = (512 - data.len() % 512) % 512;
+    out.extend(std::iter::repeat_n(0u8, pad));
+}
+
+/// Write an uncompressed **ustar** archive: one entry per `(path, contents)`,
+/// plus the two zero blocks that end a tar stream. Paths up to 100 bytes fit in
+/// `name`; paths up to 255 bytes with a directory separator use the POSIX ustar
+/// `prefix` field (`header[345..500]`); even longer paths emit a GNU tar
+/// `././@LongLink` (`typeflag = 'L'`) metadata block so names are never truncated.
 pub fn write_tar(entries: &[(String, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::new();
     for (path, data) in entries {
-        let mut header = [0u8; 512];
         let name_bytes = path.as_bytes();
-        let name_len = name_bytes.len().min(100);
-        header[..name_len].copy_from_slice(&name_bytes[..name_len]);
-        put_octal(&mut header[100..], 0o644, 8); // mode
-        put_octal(&mut header[108..], 0, 8); // uid
-        put_octal(&mut header[116..], 0, 8); // gid
-        put_octal(&mut header[124..], data.len() as u64, 12); // size
-        put_octal(&mut header[136..], 0, 12); // mtime (deterministic archives)
-        header[156] = b'0'; // regular file
-        header[257..263].copy_from_slice(b"ustar\0");
-        header[263..265].copy_from_slice(b"00");
-        // Checksum: sum of all header bytes with the checksum field as spaces.
-        for b in &mut header[148..156] {
-            *b = b' ';
+        if name_bytes.len() <= 100 {
+            write_tar_block(&mut out, name_bytes, &[], b'0', data);
+        } else if let Some((prefix, name)) = split_ustar_path(path) {
+            write_tar_block(&mut out, name.as_bytes(), prefix.as_bytes(), b'0', data);
+        } else {
+            let mut long_name = Vec::with_capacity(name_bytes.len() + 1);
+            long_name.extend_from_slice(name_bytes);
+            long_name.push(0);
+            write_tar_block(&mut out, b"././@LongLink", &[], b'L', &long_name);
+            write_tar_block(&mut out, &name_bytes[..100], &[], b'0', data);
         }
-        let sum: u64 = header.iter().map(|b| *b as u64).sum();
-        put_octal(&mut header[148..], sum, 8);
-        header[155] = b' '; // checksum is space-terminated
-        out.extend_from_slice(&header);
-        out.extend_from_slice(data);
-        let pad = (512 - data.len() % 512) % 512;
-        out.extend(std::iter::repeat_n(0u8, pad));
     }
     out.extend(std::iter::repeat_n(0u8, 1024)); // end-of-archive marker
     out
@@ -445,26 +484,67 @@ fn put_octal(field: &mut [u8], value: u64, width: usize) {
     field[n] = 0;
 }
 
-/// Parse a tar written by [`write_tar`].
+/// Parse a tar written by [`write_tar`] (verifies header checksums and supports
+/// both POSIX ustar `prefix` and GNU `@LongLink` long filenames).
 pub fn read_tar(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut out = Vec::new();
     let mut pos = 0usize;
+    let mut pending_long_name: Option<String> = None;
     while pos + 512 <= data.len() {
         let header = &data[pos..pos + 512];
         if header.iter().all(|b| *b == 0) {
             break; // end-of-archive
         }
-        let name_end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
-        let name = String::from_utf8_lossy(&header[..name_end]).to_string();
-        let size = parse_octal(&header[124..136])
-            .ok_or_else(|| format!("tar: malformed size field for '{}'", name))?;
-        pos += 512;
-        let end = pos + size as usize;
-        if end > data.len() {
-            return Err(format!("tar: entry '{}' is truncated", name));
+        // Verify ustar header checksum (bytes 148..156 treated as ASCII spaces).
+        let expected_cksum = parse_octal(&header[148..156])
+            .ok_or_else(|| "tar: malformed header checksum".to_string())?;
+        let actual_cksum: u64 = header
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| if (148..156).contains(&i) { b' ' as u64 } else { b as u64 })
+            .sum();
+        if expected_cksum != actual_cksum {
+            return Err(format!(
+                "tar: header checksum mismatch (expected {:o}, got {:o})",
+                expected_cksum, actual_cksum
+            ));
         }
-        out.push((name, data[pos..end].to_vec()));
+
+        let name_end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
+        let raw_name = String::from_utf8_lossy(&header[..name_end]).to_string();
+        let prefix_end = header[345..500]
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(155);
+        let prefix = String::from_utf8_lossy(&header[345..345 + prefix_end]).to_string();
+
+        let size = parse_octal(&header[124..136])
+            .ok_or_else(|| format!("tar: malformed size field for '{}'", raw_name))?;
+        let typeflag = header[156];
+        pos += 512;
+        let end = pos
+            .checked_add(size as usize)
+            .ok_or_else(|| format!("tar: entry '{}' size overflow", raw_name))?;
+        if end > data.len() {
+            return Err(format!("tar: entry '{}' is truncated", raw_name));
+        }
+        let payload = &data[pos..end];
         pos = end + (512 - size as usize % 512) % 512;
+
+        if typeflag == b'L' {
+            let len = payload.iter().position(|&b| b == 0).unwrap_or(payload.len());
+            pending_long_name = Some(String::from_utf8_lossy(&payload[..len]).to_string());
+            continue;
+        }
+
+        let full_name = if let Some(long) = pending_long_name.take() {
+            long
+        } else if !prefix.is_empty() {
+            format!("{}/{}", prefix, raw_name)
+        } else {
+            raw_name
+        };
+        out.push((full_name, payload.to_vec()));
     }
     Ok(out)
 }

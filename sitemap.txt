@@ -313,10 +313,9 @@ GaliLang/
 --------------------------------------------------------------------------------
   - Lexer: no scientific-notation float literals (1.5e3 is not a float token);
     -9223372036854775808 literal is unrepresentable before unary negation.
-  - GC traces list/vec/set/map/instance only; tree/graph/heap/matrix cycles
-    leak (use weak/deref). VM has no statement-boundary auto-collection.
-  - tar: no ustar prefix/long-name support, no header checksum verification,
-    100-byte name truncation.
+  - GC traces all 20+ container and instance types automatically via value::new_ref.
+  - tar supports POSIX ustar prefix (<= 255 bytes), GNU @LongLink (> 255 bytes),
+    and header checksum verification.
   - int overflow wraps silently; int/int truncates toward zero; err(...) is
     truthy; comparison chains left-associative; assignments legal in conditions.
   - native backend rejects class-declared-inside-function (clean diagnostic).

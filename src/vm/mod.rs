@@ -1049,7 +1049,7 @@ impl Vm {
                     }
                     // The cell is per-activation (`frame.own_cells`), so two
                     // calls of the same closure never share captured state.
-                    let cell = new_ref(
+                    let cell = crate::value::new_untracked_ref(
                         self.frames[nf]
                             .slots
                             .get(slot)
@@ -1288,7 +1288,7 @@ impl Vm {
             slots: args,
             captured: HashMap::new(),
             own_cells: (0..fd.own_upvalues as usize)
-                .map(|_| new_ref(Value::Null))
+                .map(|_| crate::value::new_untracked_ref(Value::Null))
                 .collect(),
             guards: Vec::new(),
             ctor_result: None,
@@ -1320,7 +1320,7 @@ impl Vm {
                             .get(nf)
                             .and_then(|f| f.slots.get(slot).cloned())
                             .unwrap_or(Value::Null);
-                        new_ref(val)
+                        crate::value::new_untracked_ref(val)
                     }
                 }
             } else {
@@ -1332,7 +1332,7 @@ impl Vm {
                             .get(nf)
                             .and_then(|f| f.slots.get(slot).cloned())
                             .unwrap_or(Value::Null);
-                        new_ref(val)
+                        crate::value::new_untracked_ref(val)
                     }
                 }
             };
@@ -1410,7 +1410,7 @@ impl Vm {
             class: class.clone(),
             fields,
         };
-        let obj = Value::VInstance(crate::value::gc::track(new_ref(instance)));
+        let obj = Value::VInstance(new_ref(instance));
         let ctor = {
             let mut cur = Some(class.clone());
             let mut found = None;

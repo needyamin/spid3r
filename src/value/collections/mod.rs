@@ -64,7 +64,7 @@ pub fn is_constructor(name: &str) -> bool {
 pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
     match name {
         "list" | "vec" => {
-            let d = crate::value::gc::track(new_ref(seq::VecData { items: args }));
+            let d = new_ref(seq::VecData { items: args });
             Ok(if name == "list" {
                 Value::List(d)
             } else {
@@ -83,21 +83,21 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             for a in args {
                 d.push_back(a);
             }
-            Ok(nodes::new_list_value(&d, false, true))
+            Ok(nodes::new_list_value(d, false, true))
         }
         "singly_linked_list" => {
             let mut d = nodes::ListData::singly();
             for a in args {
                 d.push_back(a);
             }
-            Ok(nodes::new_list_value(&d, false, false))
+            Ok(nodes::new_list_value(d, false, false))
         }
         "doubly_linked_list" => {
             let mut d = nodes::ListData::doubly();
             for a in args {
                 d.push_back(a);
             }
-            Ok(nodes::new_list_value(&d, true, true))
+            Ok(nodes::new_list_value(d, true, true))
         }
         "map" => {
             if !args.len().is_multiple_of(2) {
@@ -119,7 +119,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                     entries.push((key, v));
                 }
             }
-            Ok(Value::Map(crate::value::gc::track(new_ref(seq::MapData::from_entries(entries)))))
+            Ok(Value::Map(new_ref(seq::MapData::from_entries(entries))))
         }
         "set" => {
             let mut items: Vec<Value> = Vec::new();
@@ -128,7 +128,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                     items.push(a);
                 }
             }
-            Ok(Value::Set(crate::value::gc::track(new_ref(seq::SetData { items }))))
+            Ok(Value::Set(new_ref(seq::SetData { items })))
         }
         "tuple" => Ok(Value::Tuple(new_ref(args))),
         "binary_tree" => Ok(Value::BinTree(new_ref(nodes::BinTreeData::new()))),
@@ -200,7 +200,9 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             value: one(name, &args)?,
         }))),
         "channel" => Ok(Value::Channel(Arc::new(ChannelData::new()))),
-        "mutex" => Ok(Value::MutexVal(new_ref(MutexData::new(one(name, &args)?)))),
+        "mutex" => Ok(Value::MutexVal(Arc::new(std::sync::Mutex::new(MutexData::new(
+            one(name, &args)?,
+        ))))),
         "some" => Ok(Value::Option(Some(Box::new(one(name, &args)?)))),
         "none" => {
             if !args.is_empty() {

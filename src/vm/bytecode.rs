@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::ast::Vis;
 use crate::diagnostics::{err, Phase, Span, SpidResult};
-use crate::value::{new_ref, Value, VmFunc};
+use crate::value::{Value, VmFunc};
 
 /// One compiled function or script body.
 #[derive(Clone, Debug)]
@@ -929,7 +929,7 @@ fn get_vmfunc(r: &mut Reader) -> SpidResult<VmFunc> {
     let mut upvalues = Vec::with_capacity(n);
     for _ in 0..n {
         let v = r.value()?;
-        upvalues.push(new_ref(v));
+        upvalues.push(crate::value::new_untracked_ref(v));
     }
     let own_upvalues = r.u8()?;
     let chunk = std::sync::Arc::new(get_chunk(r)?);

@@ -402,11 +402,8 @@ Runnable examples live in [`examples/`](examples/). Run any of them with
 
 - Exponent float literals such as `1.5e3` are not supported, and
   `-9223372036854775808` cannot be written as a literal.
-- The cycle collector does not yet trace trees, graphs, heaps, or matrices. Use
-  `weak`/`deref` for back-references in those containers.
 - The native backend rejects classes declared inside a function.
 - Dependencies are local only: path, git, or an offline registry directory.
-- `pack` archives do not support long file names (entries over 100 bytes are truncated).
 
 ## License
 

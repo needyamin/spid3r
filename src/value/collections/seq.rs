@@ -799,5 +799,5 @@ pub fn vec_items(v: &Value) -> Result<Vec<Value>, String> {
 }
 
 pub fn make_list(items: Vec<Value>) -> Value {
-    Value::List(crate::value::gc::track(new_ref(VecData { items })))
+    Value::List(new_ref(VecData { items }))
 }

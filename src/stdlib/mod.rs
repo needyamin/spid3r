@@ -809,9 +809,9 @@ impl JsonParser {
         self.skip_ws();
         if self.peek() == Some('}') {
             self.pos += 1;
-            return Ok(Value::Map(crate::value::gc::track(crate::value::new_ref(
+            return Ok(Value::Map(crate::value::new_ref(
                 crate::value::collections::seq::MapData::from_entries(entries),
-            ))));
+            )));
         }
         loop {
             self.skip_ws();
@@ -833,9 +833,9 @@ impl JsonParser {
                 Some(',') => self.pos += 1,
                 Some('}') => {
                     self.pos += 1;
-                    return Ok(Value::Map(crate::value::gc::track(crate::value::new_ref(
+                    return Ok(Value::Map(crate::value::new_ref(
                         crate::value::collections::seq::MapData::from_entries(entries),
-                    ))));
+                    )));
                 }
                 other => return Err(format!("json_parse: unexpected {:?} in object", other)),
             }

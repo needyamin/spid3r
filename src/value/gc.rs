@@ -25,12 +25,16 @@
 //! container types are simply untracked (safe: they just leak as before).
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::value::collections::{MapData, SetData, VecData};
-use crate::value::{InstanceData, Value, VmInstanceData};
+use crate::value::collections::{
+    BagData, BinTreeData, BstData, DequeData, GraphData, HashTableData, HeapData, ListData,
+    MapData, MatrixData, PrioQueueData, QueueData, RefBoxData, RingData, SetData, StackData,
+    TrieData, VecData,
+};
+use crate::value::{CompiledInstanceData, InstanceData, Value, VmInstanceData};
 
 type TraceFn = fn(&Arc<dyn Any + Send + Sync>, &mut dyn FnMut(&Value));
 type ClearFn = fn(&Arc<dyn Any + Send + Sync>);
@@ -46,8 +50,7 @@ struct Entry {
 static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
 /// A container cell whose children can be enumerated (for marking) and cleared
-/// (for sweeping). Implemented only for tracked types; anything else is left
-/// untracked and simply leaks as before.
+/// (for sweeping). Implemented for all container and instance types.
 pub trait GcTrace {
     /// Call `f` once per strong `Value` child. Must NEVER over-count (a missed
     /// child only leaks; a spurious one could free live memory).
@@ -64,6 +67,56 @@ impl GcTrace for VecData {
     }
     fn gc_clear(&mut self) {
         self.items.clear();
+    }
+}
+
+impl GcTrace for StackData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in &self.items {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.items.clear();
+    }
+}
+
+impl GcTrace for QueueData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in &self.items {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.items.clear();
+    }
+}
+
+impl GcTrace for DequeData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in &self.items {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.items.clear();
+    }
+}
+
+impl GcTrace for ListData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        let mut cur = self.head.clone();
+        while let Some(node) = cur {
+            if let Ok(b) = node.lock() {
+                f(&b.value);
+                cur = b.next.clone();
+            } else {
+                break;
+            }
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.clear_nodes();
     }
 }
 
@@ -91,6 +144,167 @@ impl GcTrace for MapData {
     }
 }
 
+impl GcTrace for Vec<Value> {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in self {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.clear();
+    }
+}
+
+impl GcTrace for BinTreeData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        let mut queue = VecDeque::new();
+        if let Some(r) = &self.root {
+            queue.push_back(r.clone());
+        }
+        while let Some(node) = queue.pop_front() {
+            if let Ok(b) = node.lock() {
+                f(&b.value);
+                if let Some(l) = &b.left {
+                    queue.push_back(l.clone());
+                }
+                if let Some(r) = &b.right {
+                    queue.push_back(r.clone());
+                }
+            }
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.root = None;
+        self.open.clear();
+        self.len = 0;
+    }
+}
+
+impl GcTrace for BstData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        let mut stack = Vec::new();
+        if let Some(r) = &self.root {
+            stack.push(r.clone());
+        }
+        while let Some(node) = stack.pop() {
+            if let Ok(b) = node.lock() {
+                f(&b.value);
+                if let Some(l) = &b.left {
+                    stack.push(l.clone());
+                }
+                if let Some(r) = &b.right {
+                    stack.push(r.clone());
+                }
+            }
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.root = None;
+        self.len = 0;
+    }
+}
+
+impl GcTrace for HeapData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in &self.items {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.items.clear();
+    }
+}
+
+impl GcTrace for PrioQueueData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for it in &self.items {
+            f(&it.value);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.items.clear();
+    }
+}
+
+impl GcTrace for GraphData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in &self.nodes {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.nodes.clear();
+        self.adj.clear();
+    }
+}
+
+impl GcTrace for HashTableData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for b in &self.buckets {
+            for (_, v) in b {
+                f(v);
+            }
+        }
+    }
+    fn gc_clear(&mut self) {
+        for b in &mut self.buckets {
+            b.clear();
+        }
+        self.size = 0;
+    }
+}
+
+impl GcTrace for TrieData {
+    fn gc_trace(&self, _f: &mut dyn FnMut(&Value)) {}
+    fn gc_clear(&mut self) {
+        if let Ok(mut b) = self.root.lock() {
+            b.children.clear();
+            b.end = false;
+        }
+        self.count = 0;
+    }
+}
+
+impl GcTrace for MatrixData {
+    fn gc_trace(&self, _f: &mut dyn FnMut(&Value)) {}
+    fn gc_clear(&mut self) {
+        self.data.clear();
+        self.rows = 0;
+        self.cols = 0;
+    }
+}
+
+impl GcTrace for RingData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in &self.items {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.items.clear();
+    }
+}
+
+impl GcTrace for BagData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for (v, _) in &self.counts {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.counts.clear();
+    }
+}
+
+impl GcTrace for RefBoxData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        f(&self.value);
+    }
+    fn gc_clear(&mut self) {
+        self.value = Value::Null;
+    }
+}
+
 impl GcTrace for InstanceData {
     fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
         for v in self.fields.values() {
@@ -103,6 +317,17 @@ impl GcTrace for InstanceData {
 }
 
 impl GcTrace for VmInstanceData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in self.fields.values() {
+            f(v);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.fields.clear();
+    }
+}
+
+impl GcTrace for CompiledInstanceData {
     fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
         for v in self.fields.values() {
             f(v);
@@ -150,29 +375,52 @@ pub fn track<T: GcTrace + Send + 'static>(cell: Arc<Mutex<T>>) -> Arc<Mutex<T>> 
     // has no auto-trigger) still keep the registry bounded — prune dead handles
     // once it grows, so it tracks live cells rather than all-time allocations.
     if reg.len() > 8192 {
-        reg.retain(|e| e.weak.strong_count() > 0);
+        let mut seen = HashSet::new();
+        reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
     }
     drop(reg);
     cell
 }
 
-/// The identity of a tracked cell held by `v`, if `v` is a tracked container.
-fn value_cell_id(v: &Value) -> Option<usize> {
+/// Visit the cell identity of `v` (peeling inline `Option`/`Result` boxes).
+fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
     match v {
-        Value::List(a) | Value::VecDyn(a) => Some(Arc::as_ptr(a) as *const () as usize),
-        Value::Map(a) => Some(Arc::as_ptr(a) as *const () as usize),
-        Value::Set(a) => Some(Arc::as_ptr(a) as *const () as usize),
-        Value::Instance(a) => Some(Arc::as_ptr(a) as *const () as usize),
-        Value::VInstance(a) => Some(Arc::as_ptr(a) as *const () as usize),
-        _ => None,
+        Value::List(a) | Value::VecDyn(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Stack(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Queue(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Deque(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::LinkedList(a) | Value::SinglyList(a) | Value::DoublyList(a) => {
+            f(Arc::as_ptr(a) as *const () as usize)
+        }
+        Value::Map(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Set(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Tuple(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::BinTree(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Bst(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Heap(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::PrioQueue(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Graph(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::HashTable(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Trie(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Matrix(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Ring(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Bag(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::RefBox(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Instance(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::VInstance(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::CInstance(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Option(Some(inner)) => for_each_cell_id(inner, f),
+        Value::Result(Ok(inner) | Err(inner)) => for_each_cell_id(inner, f),
+        _ => {}
     }
 }
 
-/// Number of currently-live tracked cells (dead entries pruned first). Used by
-/// the `gc_live_cells()` diagnostic and tests.
+/// Number of currently-live tracked cells (dead and duplicate entries pruned first).
+/// Used by the `gc_live_cells()` diagnostic and tests.
 pub fn live_cells() -> usize {
     let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    reg.retain(|e| e.weak.strong_count() > 0);
+    let mut seen = HashSet::new();
+    reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
     reg.len()
 }
 
@@ -182,7 +430,8 @@ pub fn collect() -> usize {
     // Snapshot live entries (weak handles only — never upgrade during counting).
     let snapshot: Vec<(usize, Weak<dyn Any + Send + Sync>, TraceFn, ClearFn)> = {
         let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-        reg.retain(|e| e.weak.strong_count() > 0);
+        let mut seen = HashSet::new();
+        reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
         reg.iter()
             .map(|e| (e.id, e.weak.clone(), e.trace, e.clear))
             .collect()
@@ -208,12 +457,12 @@ pub fn collect() -> usize {
         if let Some(arc) = snapshot[i].1.upgrade() {
             let mut kids: Vec<usize> = Vec::new();
             (snapshot[i].2)(&arc, &mut |v: &Value| {
-                if let Some(cid) = value_cell_id(v) {
+                for_each_cell_id(v, &mut |cid| {
                     if let Some(&j) = index.get(&cid) {
                         internal[j] += 1;
                         kids.push(j);
                     }
-                }
+                });
             });
             edges[i] = kids;
         }
@@ -253,7 +502,8 @@ pub fn collect() -> usize {
 
     // Prune the cells that just died.
     let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    reg.retain(|e| e.weak.strong_count() > 0);
+    let mut seen = HashSet::new();
+    reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
     freed
 }
 

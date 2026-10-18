@@ -1182,10 +1182,10 @@ As of this revision, <code>cargo test</code> passes <strong>274 tests</strong> (
   <li><strong>GUI</strong> is tested headlessly: IPC decoding, JSON escaping and round-trips, event
       ordering, unknown-event dropping, payload fidelity, and queued JS (bridge unit tests plus the
       <code>spid3r gui --dry-run</code> replay). The native window itself is exercised manually.</li>
-  <li><strong>2026-10 audit.</strong> A full-repository audit probed edge semantics with 27
-      three-engine programs (<code>audit/probes/</code>) and hardened the lexer, parser, semantic
-      checker, bytecode format, VM closure/finally semantics, collections, and packaging security,
-      each with regression tests. See <a href="AUDIT_REPORT.md">AUDIT_REPORT.md</a>.</li>
+  <li><strong>2026-10 audit.</strong> A full-repository audit probed edge semantics across all engines
+      and hardened the lexer, parser, semantic checker, bytecode format, VM closure/finally semantics,
+      collections, cycle GC, and packaging security, each with regression and fuzz tests. See
+      <a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a>.</li>
 </ul>
 
 <!-- ============================================================ REFERENCE -->
@@ -1217,16 +1217,11 @@ As of this revision, <code>cargo test</code> passes <strong>274 tests</strong> (
   <li><strong>Lexer:</strong> float literals use decimal syntax (<code>1.5</code>, not scientific
       notation <code>1.5e3</code>), and <code>-9223372036854775808</code> cannot be written as a
       positive integer literal before unary negation.</li>
-  <li><strong>Cycle GC coverage:</strong> <code>list</code>, <code>vec</code>, <code>set</code>,
-      <code>map</code>, and class instances are traced; trees, graphs, heaps, and matrices are not
-      traced yet (use <code>weak</code>/<code>deref</code>).</li>
   <li><strong>Native backend:</strong> a class declared inside a function is rejected, and higher-order
       collection methods (<code>list.map(f)</code> etc.) require <code>--engine vm</code> or
       <code>--engine tree</code>.</li>
   <li><strong>Dependencies:</strong> local only (path, git, or offline registry); no transitive
       resolution of registry packages.</li>
-  <li><strong>Tar archives:</strong> no ustar long-name/prefix support and no header-checksum
-      verification; entry names over 100 bytes are truncated.</li>
   <li><strong>Documented design choices:</strong> integer overflow wraps silently, <code>int / int</code>
       truncates, <code>err(…)</code> is truthy, comparison chains are left-associative, and
       assignments are legal in <code>if</code>/<code>while</code> conditions.</li>
@@ -1240,13 +1235,13 @@ As of this revision, <code>cargo test</code> passes <strong>274 tests</strong> (
   <tr><td><code>.matrixc</code> format with embedded imports</td><td><span class="pill ok">done</span></td></tr>
   <tr><td>Concurrency: <code>spawn</code>/<code>await</code>, channels, mutexes, task API</td><td><span class="pill ok">done</span></td></tr>
   <tr><td><code>fmt</code> · <code>debug</code> · <code>bench</code> · <code>repl</code></td><td><span class="pill ok">done</span></td></tr>
-  <tr><td>Package manager: init, install, dist, pack, unpack, workspaces, local registry</td><td><span class="pill ok">done</span></td></tr>
-  <tr><td>Cycle GC for list/vec/set/map/instances (statement boundaries, on by default)</td><td><span class="pill ok">done</span> other containers: use <code>weak</code></td></tr>
+  <tr><td>Package manager: init, install, dist, pack/unpack (with ustar long names &amp; checksums), workspaces, local registry</td><td><span class="pill ok">done</span></td></tr>
+  <tr><td>Cycle GC across all container &amp; instance types (statement boundaries, on by default)</td><td><span class="pill ok">done</span></td></tr>
   <tr><td>Native AOT backend (<code>native</code> feature)</td><td><span class="pill ok">done</span> no class-in-function</td></tr>
   <tr><td>GUI layer (<code>gui</code> feature, headless-tested bridge)</td><td><span class="pill ok">done</span> window tested manually</td></tr>
   <tr><td>VM: run <code>finally</code> on <code>return</code>/<code>break</code>/<code>continue</code></td><td><span class="pill ok">done</span></td></tr>
-  <tr><td>Cycle GC for trees, graphs, heaps, matrices</td><td><span class="pill">planned</span></td></tr>
-  <tr><td>Remote/HTTP registry · ustar long names · GUI window automation</td><td><span class="pill">beyond v1.0</span></td></tr>
+  <tr><td>Cycle GC for trees, graphs, heaps, matrices, linked lists, queues, deques, hash tables, refs</td><td><span class="pill ok">done</span></td></tr>
+  <tr><td>Remote/HTTP registry · GUI window automation</td><td><span class="pill">beyond v1.0</span></td></tr>
 </table>
 <p class="lead">Per-phase detail: <a href="docs/ROADMAP.md">docs/ROADMAP.md</a>.</p>
 
@@ -1264,7 +1259,7 @@ As of this revision, <code>cargo test</code> passes <strong>274 tests</strong> (
   <tr><td><a href="docs/GUI.md">docs/GUI.md</a></td><td>Webview GUI layer</td></tr>
   <tr><td><a href="docs/REGISTRY.md">docs/REGISTRY.md</a></td><td>Local dependency registry</td></tr>
   <tr><td><a href="docs/ROADMAP.md">docs/ROADMAP.md</a></td><td>Phases, guarantees, limitations</td></tr>
-  <tr><td><a href="AUDIT_REPORT.md">AUDIT_REPORT.md</a></td><td>2026-10 audit findings and fixes</td></tr>
+  <tr><td><a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a></td><td>2026-10 audit findings and fixes</td></tr>
 </table>
 
 </div>

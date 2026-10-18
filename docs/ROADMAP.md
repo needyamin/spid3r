@@ -85,13 +85,14 @@ suite (unit, integration, and the tree == vm == exec differential run).
   checks (see [`REGISTRY.md`](REGISTRY.md)). A hosted/remote index needs an HTTP
   client, which the zero-dependency default avoids. Registry packages' own
   dependencies are not resolved transitively (declare what you use).
-- Cycle collection (v1.1): `list`/`vec`, `set`, `map`, and `instance` cycles are
-  collected (`gc_collect()` / `gc_live_cells()` builtins; statement-boundary
+- Cycle collection (v1.2): **all container and instance types** (`list`/`vec`,
+  `stack`, `queue`, `deque`, `linked_list`/`singly_linked_list`/`doubly_linked_list`,
+  `set`, `map`, `tuple`, `binary_tree`, `bst`, `heap`, `priority_queue`, `graph`,
+  `hash_table`, `trie`, `matrix`, `ring_buffer`, `bag`, `ref`, `option`/`result`,
+  and class `instance`s) are tracked automatically via `value::new_ref` and
+  cycle-collected (`gc_collect()` / `gc_live_cells()` builtins; statement-boundary
   auto-collection **on by default**, `SPID3R_GC=0` disables it) — see
-  [`GC.md`](GC.md). Remaining polish: widen `GcTrace` to trees/graph/heap/matrix
-  etc. (those cycles still leak; `weak`/`deref` hatch) and add a VM auto-trigger
-  (deferred — per-instruction checks would regress VM throughput; `gc_collect()`
-  works on the VM).
+  [`GC.md`](GC.md).
 
 ### Shipped (audited 2026-10-18 — no longer "not built")
 
@@ -103,7 +104,8 @@ suite (unit, integration, and the tree == vm == exec differential run).
   and **`spid3r debug`** — a line debugger over the VM (breakpoints, step/next/
   finish, backtrace, locals; scriptable via `--commands FILE`).
 - **Package manager**: `init`/`install` (path + git deps, version constraints,
-  deterministic `spider.lock` with SHA-256), `pack`/`unpack`, and workspaces.
+  deterministic `spider.lock` with SHA-256), `pack`/`unpack` (with POSIX ustar
+  `prefix`, GNU `@LongLink`, and header checksum verification), and workspaces.
 - **Gradual typing (PH-4).** Optional `: Type` annotations on `let`/`const`
   bindings, function parameters, return types (`fn f() -> int`), and class fields
   are enforced by `spid3r check` at compile time. The checker computes a
@@ -166,18 +168,12 @@ level would require a redesign — a register VM, threaded dispatch, or raw
 pointer stacks — which is high-effort and high-risk while the interpreter
 delivers 8M+ simple iterations per second.
 
-Next up per plan.txt: only optional items remain (registry
-dependencies, cycle collector, native AOT gaps). `spid3r pack`/unpack and
-gradual typing are done.
+Next up per plan.txt: all v1.0/v1.2 items (gradual typing, `spid3r pack`/unpack
+with long names & checksums, local registry, and full-container cycle collection)
+are done.
 
 ## Known limitations
 
-- **Reference cycles in untraced containers.** `list`/`vec`, `set`, `map`, and
-  class `instance` cycles are automatically reclaimed by the mark-and-sweep
-  cycle collector (`src/value/gc.rs`; `gc_collect()` / `gc_live_cells()`).
-  Other containers (trees, graphs, heaps, matrices) are not traced by the cycle
-  collector; use `weak`/`deref` for back-edges in those structures. See
-  [`GC.md`](GC.md) and [`BYTECODE.md`](BYTECODE.md).
 - Higher-order methods (`list.map(f)` etc.) are not available in the native AOT
   backend yet — programs using them there get a clear runtime diagnostic (run
   with `--engine vm` instead).
