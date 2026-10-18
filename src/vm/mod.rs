@@ -986,7 +986,7 @@ impl Vm {
                         }
                     };
                     let slen = self.frames[nf].slots.len();
-                    if slen >= argc + 1 {
+                    if slen > argc {
                         let recv_idx = slen - 1 - argc;
                         match &self.frames[nf].slots[recv_idx] {
                             Value::List(d) | Value::VecDyn(d) => {
