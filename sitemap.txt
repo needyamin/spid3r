@@ -1,9 +1,9 @@
 ================================================================================
  SPID3R — PROJECT SITEMAP FOR AI AGENTS
  Repo: C:\Users\needyamin\OneDrive\Desktop\GaliLang   (Windows, OneDrive-synced)
- Generated: 2026-10-18, after the 2026-10 full audit (see AUDIT_REPORT.md)
- Read this file top to bottom once; it is sufficient to work on any part of the
- project without re-scanning. Verify line numbers only when editing precisely.
+  Generated: 2026-10-18, after the 2026-10 full audit (see docs/AUDIT_REPORT.md)
+  Read this file top to bottom once; it is sufficient to work on any part of the
+  project without re-scanning. Verify line numbers only when editing precisely.
 ================================================================================
 
 [1] WHAT THIS PROJECT IS
@@ -35,28 +35,25 @@ GaliLang/
                       gui (wry+tao); profile.dev has incremental=false
                       (REQUIRED: OneDrive corrupts cargo's incremental cache)
   Cargo.lock          committed (binary application)
-  build.rs            links LLVM C API only when feature "native" is on
+  build.rs            links LLVM C API only when feature "native" is on; stages
+                      and builds Windows installer in release mode
   .github/workflows/ci.yml  GitHub Actions CI matrix (Windows/Linux/macOS, core + GUI)
-  README.md           human-facing overview (rewritten 2026-10)
+  README.md           human-facing overview
   doc.html            self-contained developer documentation, 25 sections
-                      (rewritten 2026-10; mirrors current behavior)
-  AUDIT_REPORT.md     2026-10 independent audit: bugs, fixes, QA evidence
-  FINAL_REPORT.md     OLDER author-written report (historical; superseded in
-                      part by AUDIT_REPORT.md — do not treat as current spec)
-  .gitignore          target/, *.matrixc, vendor/, .spid3r/, dist/, audit/tmp/,
-                      packaging/nsis/{nsis,nsis.zip,payload}, Spid3r-Setup-*.exe,
-                      .zwork/, .workbuddy-ai/, editor/OS cruft
+  install.sh          POSIX one-line installer script
+  .gitignore          target/, *.matrixc, vendor/, .spid3r/, dist/, fuzz/{target,corpus,artifacts}/,
+                      packaging/nsis/{nsis,nsis.zip,payload,redist}, Spid3r-Setup-*.exe,
+                      editor/OS cruft
   src/                the compiler, interpreters, VM, stdlib, tooling (see [4])
   tests/              integration + differential + fuzz tests (see [7])
   fuzz/               cargo-fuzz targets (fuzz_lexer, fuzz_parser, fuzz_bytecode)
   examples/           23 .matrix programs + gui/counter (see [8])
+  calculator/         flagship desktop GUI calculator app (shipped in Windows installer)
   benchmarks/         .matrix benchmarks for `spid3r bench`
-  docs/               deep-dive .md documents (see [9])
-  tools/              gate.sh (full CI gate), native_diff.sh (AOT vs interpreter)
-  difftest.sh         standalone three-engine differential shell harness
+  docs/               deep-dive .md documents + AUDIT_REPORT.md (see [9])
+  tools/              gate.sh (full CI gate), difftest.sh (3-engine diff),
+                      native_diff.sh (AOT vs interpreter)
   packaging/nsis/     Windows installer (see [10])
-  audit/              2026-10 QA workspace: probes/, repro/, findings/, tmp/
-                      (tmp/ is git-ignored scratch), run_probes.ps1
   target/             cargo build output (git-ignored)
 
 [3] COMMANDS (run from repo root; shell = PowerShell 5.1)
@@ -218,7 +215,7 @@ GaliLang/
 
 [7] TESTS (tests/) — one suite per area, all must pass
 --------------------------------------------------------------------------------
-  audit_regressions.rs   28 engine-parity + contract regressions from the 2026-10
+  audit_regressions.rs   30 engine-parity + contract regressions from the 2026-10
                          audits (closures, nested upvalues, local named fn,
                          finally on return/break/continue, cycle-safe containers,
                          self-argument collection methods, linked_list pop_back,
@@ -226,7 +223,10 @@ GaliLang/
                          instance deep clone, constructor arity, lexer BOM/CRLF/
                          float-overflow/escape-span, parser depth limit, bytecode
                          validation/deserialization, map index assign, file
-                         results, task API, JSON, RNG).
+                         results, task API, JSON, RNG, VM exact trace spans,
+                         standalone staticlib discovery).
+  fuzz_tests.rs          deterministic mutation/fuzzing suite for lexer, parser,
+                         and bytecode deserializer/validator.
   difftest.rs            every examples/*.matrix through tree, vm, compile+exec
   lexer_tests.rs         token/spans; parser_tests.rs; semantic/gradual_typing
   interpreter_tests.rs, integration_tests.rs, error_tests.rs
@@ -252,9 +252,8 @@ GaliLang/
   DATA_STRUCTURES.md methods  | STANDARD_LIBRARY.md contracts
   BYTECODE.md .matrixc format | GC.md cycle collector | NATIVE.md AOT subset
   GUI.md webview bridge | REGISTRY.md local registry | BUILDING.md LLVM setup
-  ROADMAP.md phases + honest limitations
-  Root: README.md (human overview), doc.html (full dev reference),
-  AUDIT_REPORT.md (audit evidence), FINAL_REPORT.md (older, historical).
+  ROADMAP.md phases + honest limitations | AUDIT_REPORT.md audit evidence
+  Root: README.md (human overview), doc.html (full dev reference).
 
 [10] PACKAGING (packaging/nsis/)
 --------------------------------------------------------------------------------
@@ -310,7 +309,7 @@ GaliLang/
     packaging/nsis/nsis/nsis-3.10/makensis.exe). Bump APPVERSION
     with Cargo.toml version.
 
-[12] KNOWN QUIRKS / OPEN ISSUES (do not "fix" blindly; see AUDIT_REPORT.md §8)
+[12] KNOWN QUIRKS / OPEN ISSUES (do not "fix" blindly; see docs/AUDIT_REPORT.md §8)
 --------------------------------------------------------------------------------
   - Lexer: no scientific-notation float literals (1.5e3 is not a float token);
     -9223372036854775808 literal is unrepresentable before unary negation.
@@ -321,7 +320,6 @@ GaliLang/
   - int overflow wraps silently; int/int truncates toward zero; err(...) is
     truthy; comparison chains left-associative; assignments legal in conditions.
   - native backend rejects class-declared-inside-function (clean diagnostic).
-  - FINAL_REPORT.md predates the audit; prefer AUDIT_REPORT.md + this file.
 
 [13] STYLE / CONVENTIONS
 --------------------------------------------------------------------------------
@@ -333,9 +331,9 @@ GaliLang/
     but paths in code use PathBuf (never string concat with \ ).
   - OneDrive caveat: profile.dev incremental is already false — do not re-enable.
   - When editing docs (README/doc.html/docs/*), keep them consistent with the
-    ACTUAL behavior; doc.html §23 cites the test counts (274 / 23 ok) — update
+    ACTUAL behavior; doc.html §23 cites the test counts (279 / 23 ok) — update
     together with test-count changes.
 ================================================================================
 END OF SITEMAP — for questions the authoritative sources are: the code (src/),
-AUDIT_REPORT.md (what changed recently), and doc.html (intended behavior).
+docs/AUDIT_REPORT.md (what changed recently), and doc.html (intended behavior).
 ================================================================================

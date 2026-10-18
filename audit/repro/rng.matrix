@@ -1,4 +1,0 @@
-fn main() {
-    println(random_int(0, 100));
-    return 0;
-}

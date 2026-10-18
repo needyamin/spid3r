@@ -1,7 +1,0 @@
-fn main() {
-    let r = spawn_process("nonexistent-spid3r-binary-xyz", list());
-    println(r.is_err());
-    let msg = r.unwrap_err();
-    println(msg.contains("nonexistent-spid3r-binary-xyz"));
-    return 0;
-}

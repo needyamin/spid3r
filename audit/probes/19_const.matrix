@@ -1,9 +1,0 @@
-// probe 19: const enforcement
-const K = 10;
-
-fn main() {
-    println(K);
-    K = 11;
-    println(K);
-    return 0;
-}

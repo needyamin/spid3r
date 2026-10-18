@@ -2,7 +2,7 @@
 # Differential test: run every examples/*.matrix on the tree-walk interpreter
 # and the bytecode VM, plus a compile->exec round-trip, and diff the output.
 set -u
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 BIN=target/debug/spid3r.exe
 TMO=40            # per-invocation timeout (seconds) so a hang can't stall CI
 OUT=/tmp/difftest

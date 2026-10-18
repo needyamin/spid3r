@@ -1,8 +1,0 @@
-// probe 20: module import, public surface
-import "probelib";
-
-fn main() {
-    println(hello());
-    println(LIMIT);
-    return 0;
-}

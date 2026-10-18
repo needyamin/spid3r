@@ -23,11 +23,10 @@
 # tools/native_diff.sh writes built programs and logs here.
 target/isolated/
 
-# --- Audit workspace (2026-10 QA) --------------------------------------------
-# Probe transcripts and compiled probe bytecode are regenerable scratch;
-# probes, repros, and findings (*.matrix, *.md) are kept.
-audit/tmp/
-**/probe_out.txt
+# --- Fuzzing artifacts -------------------------------------------------------
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
 
 # --- Spid3r project artifacts (created by init/install/dist/pack) ------------
 # Vendored dependencies are re-created by `spid3r install` from spider.lock.
@@ -36,10 +35,6 @@ vendor/
 .spid3r/
 # dist/ holds packed tarballs and sha256 files (regenerable via pack).
 dist/
-
-# --- Local assistant workspace metadata --------------------------------------
-.zwork/
-.workbuddy-ai/
 
 # --- Installer build workspace -----------------------------------------------
 # The portable NSIS toolchain and the downloaded WebView2 bootstrapper are

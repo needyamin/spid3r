@@ -1,9 +1,0 @@
-fn main() {
-    let x = 0;
-    let inc = fn() { x = x + 1; return x; };
-    let get = fn() { return x; };
-    inc();
-    println(get());
-    println(x);
-    return 0;
-}

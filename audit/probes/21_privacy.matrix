@@ -1,7 +1,0 @@
-// probe 21: private member access across module boundary (expected compile error)
-import "probelib";
-
-fn main() {
-    println(private_fn());
-    return 0;
-}

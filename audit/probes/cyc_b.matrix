@@ -1,6 +1,0 @@
-// probe 22 helper B
-import "cyc_a";
-
-public fn bb() {
-    return "b" + aa();
-}

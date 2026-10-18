@@ -1,8 +1,0 @@
-fn main() {
-    let n = 100;
-    let outer = fn() {
-        return fn() { return n; };
-    };
-    println(outer()());
-    return 0;
-}

@@ -371,12 +371,12 @@ cargo build --release --no-default-features                  # core toolchain on
 
 Correctness in Spid3r means *the engines agree*, so testing is differential:
 
-- `cargo test` runs the unit, integration, parity-regression, and differential tests.
+- `cargo test` runs the unit, integration, parity-regression (`tests/audit_regressions.rs`),
+  fuzzing (`tests/fuzz_tests.rs`), and differential tests.
 - `spid3r test` runs every example three ways (tree interpreter, VM, and compile + exec)
   and requires identical output.
 - `spid3r bench --compare` also asserts that the tree interpreter and the VM print the same output.
-- `audit/probes/` contains edge-case programs from the 2026-10 audit. The findings are in
-  [`AUDIT_REPORT.md`](AUDIT_REPORT.md).
+- Audit findings and verification notes are documented in [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md).
 
 ## Documentation
 
@@ -393,14 +393,13 @@ Correctness in Spid3r means *the engines agree*, so testing is differential:
 | [`docs/GUI.md`](docs/GUI.md) | Webview GUI layer |
 | [`docs/REGISTRY.md`](docs/REGISTRY.md) | Local dependency registry |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Roadmap and limitations |
+| [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) | Codebase audit report and regression summary |
 
 Runnable examples live in [`examples/`](examples/). Run any of them with
 `spid3r run examples/<name>.matrix`.
 
 ## Known limitations
 
-- A named `fn` declared *inside a block* needs a trailing `;`. Prefer
-  `let f = fn(x) { … };` for local functions.
 - Exponent float literals such as `1.5e3` are not supported, and
   `-9223372036854775808` cannot be written as a literal.
 - The cycle collector does not yet trace trees, graphs, heaps, or matrices. Use

@@ -1,4 +1,0 @@
-fn main() {
-    try { let s = "[".repeat(100000) + "]".repeat(100000); println(json_parse(s).is_ok()); } catch (e) { println("caught: " + e); }
-    return 0;
-}

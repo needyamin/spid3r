@@ -1,7 +1,0 @@
-import "d_b";
-import "d_c";
-
-fn main() {
-    println(db() + dc());
-    return 0;
-}
