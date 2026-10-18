@@ -1,0 +1,342 @@
+================================================================================
+ SPID3R — PROJECT SITEMAP FOR AI AGENTS
+ Repo: C:\Users\needyamin\OneDrive\Desktop\GaliLang   (Windows, OneDrive-synced)
+ Generated: 2026-10-18, after the 2026-10 full audit (see AUDIT_REPORT.md)
+ Read this file top to bottom once; it is sufficient to work on any part of the
+ project without re-scanning. Verify line numbers only when editing precisely.
+================================================================================
+
+[1] WHAT THIS PROJECT IS
+--------------------------------------------------------------------------------
+Spid3r ("GaliLang" is the folder name; the language is Spid3r): a dynamically
+typed programming language implemented in pure Rust, zero third-party
+dependencies (crate `spid3r`, edition 2021, license MIT).
+
+One front end, two execution engines that MUST stay semantically identical:
+    lexer -> parser -> semantic checker --+--> tree-walk interpreter ("tree",
+                                          |    the reference engine)
+                                          +--> bytecode compiler -> stack VM
+                                               ("vm", with optimizer)
+
+Also included: module system (import/privacy), task concurrency (spawn/await,
+channels, mutexes), 20+ builtin collections, cycle-collecting GC, a project /
+dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
+REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
+webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
+
+State: 250 Rust tests green (236 original + 14 engine-parity regressions),
+23/23 examples pass the three-engine differential. Language version 1.0,
+crate version 0.1.0.
+
+[2] TOP-LEVEL LAYOUT
+--------------------------------------------------------------------------------
+GaliLang/
+  Cargo.toml          crate config; features: native (inkwell/LLVM 18.1+),
+                      gui (wry+tao); profile.dev has incremental=false
+                      (REQUIRED: OneDrive corrupts cargo's incremental cache)
+  Cargo.lock          committed (binary application)
+  build.rs            links LLVM C API only when feature "native" is on
+  README.md           human-facing overview (rewritten 2026-10)
+  doc.html            self-contained developer documentation, 25 sections
+                      (rewritten 2026-10; mirrors current behavior)
+  AUDIT_REPORT.md     2026-10 independent audit: bugs, fixes, QA evidence
+  FINAL_REPORT.md     OLDER author-written report (historical; superseded in
+                      part by AUDIT_REPORT.md — do not treat as current spec)
+  .gitignore          target/, *.matrixc, vendor/, .spid3r/, dist/, audit/tmp/,
+                      packaging/nsis/{nsis,nsis.zip,payload}, Spid3r-Setup-*.exe,
+                      .zwork/, .workbuddy-ai/, editor/OS cruft
+  src/                the compiler, interpreters, VM, stdlib, tooling (see [4])
+  tests/              integration + differential tests (see [7])
+  examples/           23 .matrix programs + gui/counter (see [8])
+  benchmarks/         .matrix benchmarks for `spid3r bench`
+  docs/               deep-dive .md documents (see [9])
+  tools/              gate.sh (full CI gate), native_diff.sh (AOT vs interpreter)
+  difftest.sh         standalone three-engine differential shell harness
+  packaging/nsis/     Windows installer (see [10])
+  audit/              2026-10 QA workspace: probes/, repro/, findings/, tmp/
+                      (tmp/ is git-ignored scratch), run_probes.ps1
+  target/             cargo build output (git-ignored)
+
+[3] COMMANDS (run from repo root; shell = PowerShell 5.1)
+--------------------------------------------------------------------------------
+  cargo build                 debug build  -> target\debug\spid3r.exe
+  cargo build --release       optimized    -> target\release\spid3r.exe
+  cargo test                  FULL suite, 250 tests, must stay green
+  cargo test --test audit_regressions    engine-parity regressions only
+  cargo test --test sched_tests          example: single suite
+  .\target\debug\spid3r.exe run --engine tree <file.matrix>
+  .\target\debug\spid3r.exe run --engine vm   <file.matrix>
+  .\target\debug\spid3r.exe check <file.matrix>        # lex+parse+semantic
+  .\target\debug\spid3r.exe compile <f> [-o out] [--dump]
+  .\target\debug\spid3r.exe exec <f.matrixc>
+  .\target\debug\spid3r.exe test                       # 3-engine differential
+  .\target\debug\spid3r.exe fmt [--check] [files...]
+  .\target\debug\spid3r.exe bench [--engine tree|vm] [--runs N] [--compare]
+  .\target\debug\spid3r.exe debug <f> [--break L[,L..]] [--commands FILE]
+  .\target\debug\spid3r.exe init [dir] | install | dist | pack | unpack
+  .\target\debug\spid3r.exe repl | version | help
+  Exit codes: 0 ok, 1 user-program error, 2 usage error.
+  NOTE: the exec-tool shell has a MINIMAL environment (e.g. $env:LOCALAPPDATA
+  is EMPTY). Never rely on user env vars in test scripts; use absolute paths.
+  NOTE: python (3.13, with Pillow) is available for asset generation.
+
+[4] SOURCE MAP (src/) — what lives where
+--------------------------------------------------------------------------------
+  main.rs              3 lines: calls cli::run(std::env::args)
+  lib.rs               module tree; `pub mod` for every subsystem; vm::bytecode
+                       is pub(crate)
+  cli.rs               ALL subcommand dispatch + HELP text + exit codes.
+                       cmd_run accepts positional args after the file -> they
+                       become args() (set_script_args). cmd_exec/cmd_test set
+                       empty args. ~1100 lines.
+  lexer/mod.rs         hand-written byte lexer. tokenize_with_comments() skips
+                       a leading UTF-8 BOM. Known gaps (see [12]): no exponent
+                       float literals, backslash-newline escape panics in debug
+                       builds (col underflow at ~line 336).
+  lexer/token.rs       Token, TokenKind, Keyword enum (35 keywords)
+  parser/mod.rs        recursive-descent Pratt parser; parse_program ->
+                       parse_declaration (top level, visibility prefixes) vs
+                       parse_statement (blocks). KNOWN QUIRK: a `fn` decl inside
+                       a block parses as an expression statement -> needs `;`
+                       (prefer `let f = fn(){...};`). No recursion depth cap.
+  ast/mod.rs           Stmt/Expr/Block/Proto/ClassDecl/... node definitions
+  semantic/mod.rs      name resolution, privacy, const enforcement, import
+                       checks (via modules::public_names_of), gradual typing
+  semantic/ty.rs       Type representation for annotations
+  interpreter/mod.rs   TREE ENGINE (reference). eval/exec_block; Flow enum
+                       (Value/Break/Continue/Error); call-depth guard; spawn
+                       via sched; recursion limit error is a clean Spid3r error
+  vm/mod.rs            VM (stack machine). CallFrame{func,ip,slots,captured,
+                       own_cells,guards}. import_module() (embedded table +
+                       source fallback, canonical-path cache). ~1900 lines.
+  vm/compiler.rs       AST -> Chunk. Compiler stack per function; locals/pending
+                       capture syncs; imports pre-resolved -> Import ops carry
+                       the RESOLVED canonical path; only the top-level compile
+                       claims the embedded module table (top:bool param).
+  vm/bytecode.rs       Chunk, OpCode (u8, from_u8 safe decode; Uncapture=53),
+                       serialize/deserialize (.matrixc), validate_chunk,
+                       disassembler. Value serialization tags: 0=int 1=float
+                       2=string (panic on other constant kinds).
+  vm/opt.rs            optimizer: constant folding through interpreter helpers
+                       (1/0 never folded), peephole, branch folding, DCE
+                       (skipped in try chunks).
+  vm/debug.rs          line debugger over the VM (--break/--commands)
+  value/mod.rs         Value enum (Int,Float,Bool,Str(Arc<str>),Null,List,Map,
+                       Set,Stack,Queue,...,Option,Result,Task,Channel,MutexVal,
+                       RefBox,Weak,...), truthy(), values_equal() (identity
+                       fast-path to avoid mutex deadlock on self-compare),
+                       display_value(), type_name(), MapKey
+  value/collections/mod.rs   dispatch: construct() (all constructors incl.
+                       ok/err/some/none), call_method_host(), index_get/
+                       index_set (list/vec/matrix/hash_table/map), iter_values,
+                       len_of, CallbackHost trait for higher-order methods
+  value/collections/seq.rs   list/vec/deque/tuple/ring_buffer/stack/queue/
+                       MapData (insertion-order map with side index; method()
+                       incl. "set"/"get"/"remove")
+  value/collections/nodes.rs linked lists, binary_tree, bst, trie, heap
+  value/collections/misc.rs  priority_queue, graph, hash_table, bag, matrix,
+                       ref/weak helpers, option_method, result_method
+  stdlib/mod.rs        global natives (see [6]); includes the JSON parser and
+                       writer, xorshift RNG (per-thread entropy seed), SCRIPT_ARGS
+                       static (RwLock<Vec<String>>) + pub set_script_args()
+  modules/mod.rs       module resolution/caching shared by interpreter; resolve()
+                       canonicalizes (modules::canonical_key strips Windows \\?\
+                       prefix); load() with loaded/in_progress caches (cycle
+                       detection prints the chain); public_names_of() for the
+                       semantic pass; default_module_dirs(): importer dir,
+                       SPID3R_PATH, vendor/ walk-up, ./stdlib
+  sched/mod.rs         Scheduler (OS thread pool, OnceLock singleton), TaskHandle
+                       {is_done, status()->"running"/"done"/"failed", join()
+                       (repeatable, clone not take)}, channel data
+  environment/mod.rs   lexical envs: Arc<Mutex<EnvironmentData>>; consts set for
+                       const enforcement; assign walks parent chain
+  diagnostics/mod.rs   Span{file,line,col,len}, Phase (Lexer/Parser/Semantic/
+                       Runtime/Vm/Usage), Diagnostic{phase,message,span,thrown,
+                       trace}, TraceFrame; Spid3r errors NEVER panic the host
+  fmt.rs               formatter; invariants: re-lex equality + idempotence
+  repl/mod.rs          REPL (:help/:reset/:quit)
+  pkg/mod.rs           manifest (spider.toml), install/vendor (valid_pkg_name
+                       allowlist + containment assert before remove_dir_all),
+                       fetch_git (url/rev validated, `--` separator), local
+                       registry ($SPID3R_REGISTRY), spider.lock, SHA-256 impl
+                       (FIPS 180-4, tested), tar write/read (no ustar prefix),
+                       pack (prints archive hash AND sha256(tree)), unpack
+                       (rejects `..` and `:`, starts_with(dest) check)
+  gui/{mod,bridge,window}.rs   webview GUI (feature "gui"); natives gui_set_html,
+                       gui_eval, gui_on, gui_emit; page -> window.spid3r.emit;
+                       --dry-run headless replay
+  native/{ir,llvm,link,rt,modules}.rs   LLVM AOT backend (feature "native");
+                       rejects class-in-fn with a clear diagnostic
+
+[5] ARCHITECTURE INVARIANTS — DO NOT BREAK
+--------------------------------------------------------------------------------
+  1. The tree interpreter and the VM must behave IDENTICALLY. Any semantic
+     change must be made in both, and covered by a differential test
+     (tests/audit_regressions.rs pattern or tests/difftest.rs).
+  2. All value semantics live in value::collections; engines delegate. Do not
+     add engine-specific semantics.
+  3. User code must never panic the Rust host: return Diagnostic / VmError /
+     Err(String). `.lock().unwrap()` is used pervasively — avoid holding a
+     collection's Mutex while recursing into values that may re-lock it
+     (self-referential containers deadlock; see json_write fix pattern:
+     clone-out under lock, recurse without).
+  4. Zero third-party dependencies for the default feature set.
+  5. `cargo test` must stay green; never delete/disable failing tests to pass —
+     fix the cause or (documented contract changes only) update the test with a
+     comment citing the doc.
+  6. Closures: cells are per-activation (CallFrame.own_cells); for-in rebinds
+     the loop var per iteration (Uncapture opcode, byte 53); while/C-style for
+     share one binding; scope exits and break/continue emit Uncapture for
+     captured locals; GetUpvalue indices below own_upvalues address
+     frame.own_cells, higher indices address func.upvalues.
+  7. Modules are keyed by canonicalized path everywhere (interpreter, VM cache,
+     and the Import opcodes carry the resolved path string).
+  8. Host-shell note: the automation shell has a minimal environment; scripts
+     must use absolute paths, not $env:USERPROFILE etc.
+
+[6] STANDARD LIBRARY (src/stdlib/mod.rs) — current contract
+--------------------------------------------------------------------------------
+  print/println (display form, no/with newline), eprint (stderr, NO newline),
+  read_line (null at EOF), read_file -> ok(text)/err(msg),
+  write_file -> ok(null)/err(msg), file_exists (files AND dirs),
+  env(name) -> option, args() -> list of post-script-path argv,
+  sleep_ms, now() -> monotonic ms since first call, spawn_process(cmd,args-list)
+  -> ok(exit_code)/err(msg) (synchronous, no shell), yield, task_count,
+  abs/sqrt/pow/min/max, random_int(lo,hi) inclusive (entropy-seeded, full i64
+  range safe), int/float/string/bool conversions (int truncates toward zero,
+  errors on garbage strings), bool() = truthiness table,
+  json_parse (objects->map, arrays->list, \uXXXX + surrogate pairs, depth cap
+  512), json_write (round-trips; non-finite float = error; keys escaped; depth
+  cap 512; self-referential container = clean error), len, type_of,
+  assert/assert_eq, gc_collect, gc_live_cells, weak/deref.
+  Constructors (value::collections::construct): list vec deque tuple ring_buffer
+  stack queue priority_queue map set bag hash_table linked_list
+  singly_linked_list doubly_linked_list binary_tree bst trie heap matrix graph
+  ref mutex channel some none ok err.
+
+[7] TESTS (tests/) — one suite per area, all must pass
+--------------------------------------------------------------------------------
+  audit_regressions.rs   14 engine-parity + contract regressions from the 2026-10
+                         audit (closures, map index assign, file results, task
+                         API, JSON, RNG). PATTERN TO COPY: run_src(engine, name,
+                         src) drives the spid3r binary via CARGO_BIN_EXE_spid3r;
+                         assert_both_engines compares tree vs vm stdout.
+  difftest.rs            every examples/*.matrix through tree, vm, compile+exec
+  lexer_tests.rs         token/spans; parser_tests.rs; semantic/gradual_typing
+  interpreter_tests.rs, integration_tests.rs, error_tests.rs
+  data_structure_tests.rs (23), oop_tests.rs, const_module_tests.rs
+  cycle_tests.rs (GC), weak_tests.rs, sched_tests.rs (tasks/channels; includes
+                         spawn_process result contract), vm_dispatch_tests.rs,
+                         opt_tests.rs, debug_tests.rs (scripted debugger),
+                         fmt_tests.rs, pkg_tests.rs (38: manifest/install/tar/
+                         sha256/registry), gui_tests.rs + native_tests.rs
+                         (compile-only, features off by default)
+
+[8] EXAMPLES (examples/) — all must pass the 3-engine differential
+--------------------------------------------------------------------------------
+  hello variables conditions loops functions higher_order list map set stack
+  queue heap bst graph linked_list binary_tree? class interface error_handling
+  channel tasks modules math_util (library, no main) server_report
+  gui/counter.matrix (gui feature)
+  math_util.matrix demonstrates module exports; error_handling shows try/catch
+  and option/result idioms.
+
+[9] DOCS (docs/)
+--------------------------------------------------------------------------------
+  GRAMMAR.md EBNF+precedence | KEYWORDS.md 35 reserved words + constructors
+  DATA_STRUCTURES.md methods  | STANDARD_LIBRARY.md contracts
+  BYTECODE.md .matrixc format | GC.md cycle collector | NATIVE.md AOT subset
+  GUI.md webview bridge | REGISTRY.md local registry | BUILDING.md LLVM setup
+  ROADMAP.md phases + honest limitations
+  Root: README.md (human overview), doc.html (full dev reference),
+  AUDIT_REPORT.md (audit evidence), FINAL_REPORT.md (older, historical).
+
+[10] PACKAGING (packaging/nsis/)
+--------------------------------------------------------------------------------
+  spid3r.nsi     NSIS 3.x script: PER-USER install to $LOCALAPPDATA\Programs\
+                 Spid3r (no UAC); adds install dir to HKCU Environment Path
+                 (WordAdd dedupe + WM_SETTINGCHANGE broadcast); Apps & features
+                 entry; optional examples/docs section; optional .matrix file
+                 association (HKCU\Software\Classes\Spid3r.Matrix, open =
+                 "spid3r.exe" run "%1"); uninstaller removes PATH entry, keys,
+                 files.
+  build.ps1      one-shot: cargo build --release -> icons/bmps from
+                 src\assets\spid3r.png (Pillow) -> stage payload -> makensis
+  assets/        spid3r.ico (from the 512x512 logo), header.bmp 150x57,
+                 welcome.bmp 164x314
+  nsis/          portable NSIS 3.10 toolchain (git-ignored)
+  Output:        Spid3r-Setup-0.1.0.exe at repo root (git-ignored).
+  Tested: silent install/uninstall, PATH dedupe, ARP entry, association keys,
+  installed binary runs examples. Installed copy lives OUTSIDE OneDrive.
+
+[11] HOW TO DO COMMON TASKS
+--------------------------------------------------------------------------------
+  Add a builtin function:
+    src/stdlib/mod.rs: write fn n_name(ctx,args)->Result<Value,String>;
+    register in native_defs(); update docs/STANDARD_LIBRARY.md + doc.html + the
+    stdlib section of this file; add tests.
+  Add a collection method:
+    find the type's `method()` impl in value/collections/{seq,nodes,misc}.rs;
+    if both engines must see it, it is automatic (shared layer). Wrong-type args
+    -> Err(String) with a descriptive message (catchable). Update
+    docs/DATA_STRUCTURES.md.
+  Add a collection type:
+    Value variant in value/mod.rs (+type_name/display/equality/serialization
+    rules if const-able), construct() entry, method impl, iter_values entry if
+    iterable, index_get/set if indexable, GC tracing if it can form cycles.
+  Add an opcode:
+    src/vm/bytecode.rs: OpCode enum (next free byte; current max 53=Uncapture),
+    from_u8, operand_width (validate_chunk uses it), disassembler arm, from_u8
+    unit test. Then vm/compiler.rs emit + vm/mod.rs execute. Bytecode version
+    compatibility is not promised across releases.
+  Add a CLI subcommand:
+    src/cli.rs: cmd_x(args)->Result<i32,Diagnostic>, arm in run()'s match, HELP
+    text, exit code 0/1/2 mapping (usage errors -> Phase::Usage).
+  Add an example:
+    examples/name.matrix with `fn main() { ... return 0; }`; it automatically
+    joins the 3-engine differential (spid3r test + tests/difftest.rs).
+  Change language semantics:
+    BOTH engines + semantic (if compile-time) + docs (GRAMMAR.md/STANDARD_
+    LIBRARY.md/doc.html) + regression tests in tests/audit_regressions.rs
+    (pattern: assert_both_engines(name, src, expected_stdout)).
+  Change the installer:
+    edit packaging/nsis/spid3r.nsi; rebuild with packaging/nsis/build.ps1
+    (needs Pillow for icons; makensis lives at
+    packaging/nsis/nsis/nsis-3.10/makensis.exe). Bump APPVERSION
+    with Cargo.toml version.
+
+[12] KNOWN QUIRKS / OPEN ISSUES (do not "fix" blindly; see AUDIT_REPORT.md §8)
+--------------------------------------------------------------------------------
+  - Local `fn` declarations inside blocks parse as expression statements and
+    need a trailing `;` (parser lacks the Stmt::Fn arm). Ready patch is in
+    AUDIT_REPORT.md; blocked because the workspace scanner rejects writes
+    containing the word "token" and lexer/parser files require it.
+  - Lexer: `self.col - 2` underflow (debug panic) on `\`+newline inside a
+    string (~line 336); no exponent float literals (1.5e3 mis-lexes);
+    -9223372036854775808 literal unrepresentable; float overflow literal -> inf.
+  - Parser has no recursion depth cap (deep nesting aborts the process).
+  - GC traces list/vec/set/map/instance only; tree/graph/heap/matrix cycles
+    leak (use weak/deref). VM has no statement-boundary auto-collection.
+  - tar: no ustar prefix/long-name support, no header checksum verification,
+    100-byte name truncation.
+  - int overflow wraps silently; int/int truncates toward zero; err(...) is
+    truthy; comparison chains left-associative; assignments legal in conditions.
+  - native backend rejects class-declared-inside-function (clean diagnostic).
+  - FINAL_REPORT.md predates the audit; prefer AUDIT_REPORT.md + this file.
+
+[13] STYLE / CONVENTIONS
+--------------------------------------------------------------------------------
+  - Rust 2021, no clippy suppressions beyond existing; strict clippy passes
+    today (-D warnings) — keep it that way.
+  - Error messages: lowercase, descriptive, mention the operation and the
+    offending value; positions via err_at/span where available.
+  - User-facing docs and code comments are English; the repo is Windows-first
+    but paths in code use PathBuf (never string concat with \ ).
+  - OneDrive caveat: profile.dev incremental is already false — do not re-enable.
+  - When editing docs (README/doc.html/docs/*), keep them consistent with the
+    ACTUAL behavior; doc.html §23 cites the test counts (250 / 23 ok) — update
+    together with test-count changes.
+================================================================================
+END OF SITEMAP — for questions the authoritative sources are: the code (src/),
+AUDIT_REPORT.md (what changed recently), and doc.html (intended behavior).
+================================================================================

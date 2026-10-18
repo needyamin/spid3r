@@ -1,448 +1,387 @@
 # Spid3r
 
-> A small, dynamically typed language on a Rust host, with a tree-walking reference
-> interpreter **and** a bytecode compiler + stack VM — verified to behave identically.
+**A small, dynamically typed programming language with optional static types, written in pure Rust.**
 
-Spid3r reads like plain English keywords (`fn`, `let`, `class`, `spawn`, `import`) but has
-real semantics: dynamic types, closures with upvalues, single-inheritance classes with
-interfaces, structured error handling (`try`/`catch`/`finally`/`throw`), modules with
-public/private visibility, task-based concurrency, a standard library, gradual type
-annotations, and 20+ builtin data structures backed by real nodes/heaps.
-
-The crate is pure Rust with **no third-party dependencies** and no runtime requirements.
-
-**Current status:** language v1.0 complete. **250 Rust tests, 0 failed**; all 23 shipped
-examples run with identical output on the tree interpreter, the bytecode VM, and
-`compile`+`exec`. The 2026-10 independent audit closed the last known engine divergences
-(VM closure/upvalue semantics) and two packaging security issues; every fix carries a
-regression test (see *Testing* below and `AUDIT_REPORT.md`).
-
----
-
-## Contents
-
-- [Build](#build)
-- [A 30-second tour](#a-30-second-tour)
-- [The toolchain](#the-toolchain)
-- [The language](#the-language)
-  - [Values, types & truthiness](#values-types--truthiness)
-  - [Operators & precedence](#operators--precedence)
-  - [Control flow](#control-flow)
-  - [Functions & closures](#functions--closures)
-  - [Classes & interfaces](#classes--interfaces)
-  - [Error handling](#error-handling)
-  - [Strings](#strings)
-  - [Data structures](#data-structures)
-  - [Gradual typing](#gradual-typing)
-- [Concurrency](#concurrency)
-- [The bytecode VM & `.matrixc`](#the-bytecode-vm--matrixc)
-- [Projects & dependencies](#projects--dependencies)
-- [Tooling: fmt · bench · debug · gui · native](#tooling)
-- [Memory model & GC](#memory-model--gc)
-- [Environment variables](#environment-variables)
-- [Testing](#testing)
-- [Examples](#examples)
-- [Docs](#docs)
-- [Known limitations](#known-limitations)
-
-## Build
-
-Requires a recent Rust toolchain (edition 2021). From the crate root:
-
-```sh
-cargo build                 # debug binary   → target/debug/spid3r(.exe)
-cargo build --release       # optimized      → target/release/spid3r(.exe)
-cargo test                  # unit + integration + differential tests
-```
-
-Optional feature-gated backends (see `docs/BUILDING.md`):
-
-```sh
-cargo build --features native   # LLVM AOT backend (needs LLVM 18.1+)
-cargo build --features gui      # desktop webview GUI (needs the platform webview)
-```
-
-## A 30-second tour
+Spid3r programs (`.matrix` files) run on two interchangeable engines — a tree-walking
+reference interpreter and a bytecode compiler with a stack VM — that are tested to produce
+identical output. The core toolchain has **zero third-party dependencies**.
 
 ```text
-// hello.matrix — the smallest Spid3r program.
 fn main() {
-    println("hello");
+    println("Hello, Spid3r!");
     return 0;
 }
 ```
 
 ```sh
 $ spid3r run hello.matrix
-hello
-$ spid3r run --engine vm hello.matrix      # same output on the bytecode VM
-hello
-$ spid3r compile hello.matrix              # writes hello.matrixc (self-contained)
-$ spid3r exec hello.matrixc                # runs the bytecode, no source needed
-hello
+Hello, Spid3r!
 ```
 
-Functions, closures, collections, classes, and error handling:
+---
+
+## Contents
+
+- [Features](#features)
+- [Getting started](#getting-started)
+- [Language tour](#language-tour)
+- [Execution model](#execution-model)
+- [Command-line reference](#command-line-reference)
+- [Projects and dependencies](#projects-and-dependencies)
+- [Optional backends](#optional-backends)
+- [Testing](#testing)
+- [Documentation](#documentation)
+- [Known limitations](#known-limitations)
+- [License](#license)
+
+## Features
+
+- **Readable syntax**: `fn`, `let`, `const`, `if`/`elif`/`else`, `while`, `for … in`, C-style `for`.
+- **First-class functions and closures** that capture their surrounding variables.
+- **Classes and interfaces**: single inheritance (`extends`), `implements`, and
+  `public`/`private` members (private by default, enforced at check time).
+- **Structured errors**: `throw`, `try`/`catch`/`finally`, plus `option` (`some`/`none`)
+  and `result` (`ok`/`err`) values for expected failures.
+- **Gradual typing**: optional annotations (`a: int`, `-> string`), checked before the program runs.
+- **20+ built-in data structures**: `list`, `map`, `set`, `stack`, `queue`, `deque`,
+  `heap`, `priority_queue`, `bst`, `trie`, `graph`, `matrix`, linked lists, and more.
+- **Concurrency**: `spawn` tasks on a threaded scheduler, `async`/`await`, `channel`, `mutex`, `ref`.
+- **Modules** with explicit `public` exports, and a package manager with lockfiles.
+- **Tooling**: formatter, REPL, line debugger, benchmark runner, and differential tester.
+- **Optional backends**: LLVM ahead-of-time native executables and a desktop webview GUI.
+
+## Getting started
+
+### Build from source
+
+You need a recent stable Rust toolchain (edition 2021).
+
+```sh
+cargo build --release        # binary at target/release/spid3r (spid3r.exe on Windows)
+cargo test                   # run the full test suite
+```
+
+On Windows, `packaging/nsis/build.ps1` builds an NSIS installer from the release binary.
+
+### Run your first program
+
+```sh
+spid3r run examples/hello.matrix              # tree-walking interpreter (default)
+spid3r run --engine vm examples/hello.matrix  # bytecode VM
+spid3r repl                                   # interactive prompt
+```
+
+Every program needs a `fn main()`. If `main` returns an integer, that integer becomes the
+process exit code.
+
+## Language tour
+
+All snippets below run unchanged on both engines. The output is shown in comments.
+
+### Variables, functions, and collections
 
 ```text
-class Animal {
-    public let name;
-    private let noise;
-    fn new(name, noise) { self.name = name; self.noise = noise; }
-    public fn speak(self) -> string { return self.name + " says " + self.noise; }
+const LIMIT = 3;
+
+fn add(a: int, b: int) -> int {            // type annotations are optional
+    return a + b;
+}
+
+fn make_counter() {
+    let count = 0;
+    return fn() {                          // closure captures `count`
+        count += 1;
+        return count;
+    };
 }
 
 fn main() {
-    let adder = fn(x) { return x + 100; };       // closures capture their binding
-    println(adder(5));                           // 105
+    let xs = list(1, 2, 3, 4, 5);
+    println(xs.filter(fn(x) { return x % 2 == 0; }));        // [2, 4]
+    println(xs.reduce(0, fn(acc, x) { return acc + x; }));   // 15
 
-    let orders = stack();
-    orders.push("review"); orders.push("merge");
-    println(orders.pop());                       // merge
+    let tick = make_counter();
+    tick();
+    println(tick());                                         // 2
 
-    println(new Animal("Rex", "woof").speak());  // Rex says woof
+    for i in [1, 2, 3] {
+        if i == LIMIT { break; }
+        println("i={}".format(i));                           // i=1, i=2
+    }
 
-    try { print(10 / 0); } catch (e) { println("caught: " + e); }
+    let ports = map("http", 80, "https", 443);
+    ports["ssh"] = 22;
+    println(ports.keys());                                   // [http, https, ssh]
+    println(add(2, 3));                                      // 5
     return 0;
 }
 ```
 
-## The toolchain
+### Classes and interfaces
 
+```text
+interface Shape {
+    fn area(self) -> float;
+}
+
+class Rect implements Shape {
+    public let w;
+    public let h;
+
+    fn new(w, h) {                 // constructor, called via `new Rect(...)`
+        self.w = w;
+        self.h = h;
+    }
+
+    public fn area(self) -> float {
+        return float(self.w * self.h);
+    }
+}
+
+class Square extends Rect {
+    fn new(side) {
+        self.w = side;
+        self.h = side;
+    }
+}
+
+fn main() {
+    for s in [new Rect(2, 3), new Square(4)] {
+        println(s.area());         // 6.0, then 16.0
+    }
+    return 0;
+}
 ```
-spid3r run [--engine tree|vm] <file.matrix> [args…]
-                                               compile + run; args after the file become
-                                               the program's args()
-spid3r compile <file.matrix> [-o out] [--dump]
-                                               write bytecode (.matrixc); --dump prints
-                                               the disassembly
-spid3r exec <file.matrixc>                     run bytecode on the VM (imports embedded)
-spid3r check <file.matrix>                     lex + parse + semantic check only
-spid3r build <file.matrix> [-o out] [--target triple] [--release]
-                                               native machine-code executable (native
-                                               feature; needs LLVM 18.1+)
-spid3r gui <file.matrix> [--html page.html] [--dry-run]
-                                               run in a webview window (gui feature)
-spid3r test                                    run every examples/*.matrix in all three
-                                               engines and compare
-spid3r bench [--engine tree|vm] [--runs N] [--compare]
-                                               time benchmarks/*.matrix, best of N
-spid3r fmt [--check] [files...]                canonical formatting; --check exits 1
-                                               when a file differs
-spid3r debug <file.matrix> [--break L[,L…]] [--commands FILE]
-                                               line debugger: breakpoints, step/next/
-                                               finish, backtrace, locals
-spid3r init [dir]                              scaffold spider.toml + src/main.matrix
-spid3r install                                 vendor path/git deps into vendor/, write
-                                               spider.lock (commit-pinned, SHA-256)
-spid3r dist [-o out] [--no-opt]                compile the manifest entry into a
-                                               self-contained target/<package>.matrixc
-spid3r pack [-o out.tar]                       archive spider.toml + src/ into
-                                               dist/<name>-<version>.tar; prints the
-                                               archive hash and sha256(tree)
-spid3r unpack <archive> [dir]                  extract a packed project (guarded)
-spid3r repl                                    interactive prompt
-spid3r version | help
-```
-
-Exit codes: `0` success · `1` user-program error · `2` usage error.
-
-Two execution engines share the same front end (lexer → parser → semantic checker):
-
-- **`tree`** (default) — the tree-walk interpreter. The reference implementation.
-- **`vm`** — compiles the checked AST to bytecode and runs a stack machine.
-  Semantically identical to `tree`; an optimizer runs by default (`--no-opt` disables).
-
-## The language
-
-### Values, types & truthiness
-
-Primitives: `int` (64-bit signed), `float` (64-bit IEEE), `bool`, `string` (immutable
-UTF-8), `null`. Everything else is a builtin object. `type_of(x)` names any value.
-
-| Value | Truthy when |
-|---|---|
-| `bool` | its own value |
-| `null` | never |
-| `int` / `float` | non-zero |
-| `string` | non-empty |
-| `option` | `some(…)` |
-| containers, `result`, tasks, instances | always true |
-
-Numeric notes: `int + float` promotes to `float`, but `int / int` truncates toward zero
-(`7 / 2` is `3`). Division or modulo by zero throws. Integer arithmetic **wraps** on i64
-overflow. `1 == 1.0` is true. String escapes: `\n`, `\t`, `\\`, `\"`.
-
-### Operators & precedence
-
-`+ - * / %` · `== != < <= > >=` · `and or not` (short-circuit) · assignment
-`= += -= *= /= %=` (right-associative) · postfix `call` / `xs[i]` / `.field` /
-`.method()` / `m[k] = v`. Precedence, tightest first: postfix → unary
-(`-`, `not`, `await`, `spawn`) → `* / %` → `+ -` → comparisons → `and` → `or` →
-assignment. There is no `!`, `++`, or `**` — use `not`, `x += 1`, and `pow(b, e)`.
-
-### Control flow
-
-`if / elif / else`, `while`, and two `for` forms — collection iteration
-(`for x in [1, 2, 3]`) and C-style (`for let k = 0; k < n; k = k + 1`) — plus
-`break` / `continue`. Lists, vecs, tuples, deques, ring buffers, stacks, queues, sets,
-bags, map values (insertion order), matrix cells, graph nodes, and string characters are
-all iterable.
-
-### Functions & closures
-
-Functions are first-class; `fn(x){…}` literals nest and capture bindings.
-
-Capture rules (identical on both engines, pinned by regression tests):
-
-- **Mutation is visible** through the shared binding.
-- **`for x in …` rebinds per iteration** — closures made in iteration N see that
-  iteration's value (`0, 1, 2`).
-- **`while` and C-style `for` share one binding** — closures there observe the final
-  value; bind a fresh `let` inside the body for snapshots.
-- **Every activation is isolated** — recursive functions and factories never leak state
-  between calls.
-
-Quirk: a `fn` declaration *inside a block* currently parses as an expression statement
-and needs a trailing `;` — prefer `let f = fn(x) { … };` for local functions. Top-level
-`fn` declarations never need a semicolon.
-
-### Classes & interfaces
-
-Single inheritance (`extends`), interfaces (`implements`), explicit `self` receiver, and
-`public`/`private` members (**private is the default**; the checker rejects out-of-class
-access). The constructor is the `new` method, invoked with `new Class(...)`. Methods
-resolve through the parent chain, so overrides dispatch polymorphically.
 
 ### Error handling
 
-`throw` raises any value; `try` / `catch (e)` / `finally` handle it (`finally` always
-runs; at least one of catch/finally is required). Uncaught errors print position and a
-call-stack trace, then exit 1. Expected failure uses sum types:
-
-- `option` — `some(v)` / `none`: `is_some`, `is_none`, `unwrap`, `unwrap_or(d)`.
-- `result` — `ok(v)` / `err(e)`: `is_ok`, `is_err`, `unwrap`, `unwrap_or(d)`, `unwrap_err`.
-
-File and process builtins (`read_file`, `write_file`, `spawn_process`) return `result`
-values rather than throwing — branch with `is_ok`/`is_err`.
-
-### Strings
-
-Immutable UTF-8; lengths and indexes are in characters. Method suite: `len`, `is_empty`,
-`slice(a[, b])`, `chars`, `reverse`, `upper`, `lower`, `trim`, `ltrim`, `rtrim`,
-`contains`, `starts_with`, `ends_with`, `index_of`, `split`, `replace`, `repeat`,
-`pad_left`/`pad_right`, and `format` (`"a={} b={}".format(1, "two")`).
-
-### Data structures
-
-Constructors are ordinary globals: `list`, `vec`, `deque`, `tuple`, `ring_buffer`,
-`stack`, `queue`, `priority_queue`, `map`, `set`, `bag`, `hash_table`, `linked_list`,
-`singly_linked_list`, `doubly_linked_list`, `binary_tree`, `bst`, `trie`, `heap`,
-`matrix`, `graph`, plus shared state (`ref`, `mutex`, `channel`). They share a common
-verb set (`len`, `is_empty`, `clear`, `push`/`pop`/`peek`/`get`/`contains`) and misuse
-throws a descriptive, catchable error.
-
-Highlights:
-
-- `map` keeps insertion order; `m[k]` reads and `m[k] = v` assigns.
-- Lists carry **higher-order methods** — `map`, `filter`, `reduce`, `for_each`, `all`,
-  `any` — over a snapshot, so callbacks can't corrupt the iteration.
-- Trees/graphs/heaps: `bst` (in/pre/post-order traversal, `find_closest`, `get_ith`),
-  `graph` (`bfs`, `dfs`, `path_exists`, `find_path`, `cycle`), `heap`
-  (`change_priority`, `merge`), `matrix[r][c]` read/assign.
-
-### Gradual typing
-
-Annotations are optional everywhere and enforced when present — `let x: int`, parameter
-and return annotations (`fn add(a: int, b: int) -> int`), and class fields.
-`int` widens to `float`; `any` opts out. Mismatched assignments, call arguments, returns,
-and field writes are rejected at compile time with positions.
-
-## Concurrency
-
-`spawn fn(){…};` runs a task on a threaded scheduler and returns a `task`. `await` joins a
-task or receives from a channel — only inside an `async fn`. Shared state: `channel()`
-(unbuffered), `mutex(v)` (RAII guard via `lock()`), `ref(v)` (interior-mutable cell).
-
-```haskell
-async fn settle(t) { return await t; }
+```text
+fn parse_age(s) {
+    let n = int(s);
+    if n < 0 {
+        return err("age cannot be negative");
+    }
+    return ok(n);
+}
 
 fn main() {
-    let t = spawn fn() { return 7; };
-    println(settle(t));                        // 7
+    try {
+        println(10 / 0);
+    } catch (e) {
+        println("caught: " + e);                  // caught: division by zero
+    } finally {
+        println("cleanup");                       // always runs
+    }
 
-    let bad = spawn fn() { throw "task-error"; };
-    sleep_ms(30);
-    println(bad.status());                     // failed
-    try { bad.join(); } catch (e) { println("caught " + e); }
+    let r = parse_age("-1");
+    if r.is_err() {
+        println(r.unwrap_err());                  // age cannot be negative
+    }
+    println(parse_age("42").unwrap_or(0));        // 42
     return 0;
 }
 ```
 
-Task API: `t.status()` (`"running"` / `"done"` / `"failed"`), `t.join()` (repeatable; a
-failed task re-raises its error), `t.is_done()`. Channels: `send`, `recv`, `try_recv`,
-`state`, `len`. Also: `task_count()`, `sleep_ms(n)`, `yield()`,
-`spawn_process(cmd, args)` (synchronous, `ok(exit_code)` / `err(msg)`, no shell).
+If an error is never caught, the program prints its source position and a stack trace,
+then exits with code `1`. File and process builtins (`read_file`, `write_file`,
+`spawn_process`) return `result` values instead of throwing.
 
-## The bytecode VM & `.matrixc`
+### Concurrency
 
-The compiler lowers the checked AST into a clox-style `Chunk` (code bytes + constant,
-function, and class pools + per-instruction spans). The VM is a register-free stack
-machine whose frames double as operand stack and locals; captured locals route through
-per-activation heap cells, so closures stay correct across recursion, loops, and spawned
-tasks. Every value operation is delegated to the shared `value::collections` layer, which
-is what keeps the engines identical.
+```text
+async fn sum(a, b) {
+    return await a + await b;                     // `await` is only valid inside `async fn`
+}
 
-- `compile` writes a **self-contained** `.matrixc`: imported modules are resolved,
-  checked, and embedded keyed by resolved path — `exec` needs no source on disk.
-- Chunks are **validated** before execution: safe opcode decoding (no `transmute`),
-  rejection of truncated instructions, out-of-range pool references, and misaligned jump
-  targets. Bad bytecode becomes a clean runtime error, never a panic.
-- The **optimizer** (on by default, `--no-opt` to disable) folds constants through the
-  interpreter's own helpers (`1/0` is never folded), applies peephole rewrites, folds
-  static branches, and eliminates dead code (skipped inside `try` chunks).
-- Full format and design notes: `docs/BYTECODE.md`.
+fn main() {
+    let t1 = spawn fn() { return 20; };
+    let t2 = spawn fn() { return 22; };
+    println(sum(t1, t2));                         // 42
 
-## Projects & dependencies
+    let ch = channel();
+    spawn fn() { ch.send("ping"); };
+    println(ch.recv());                           // ping
+    return 0;
+}
+```
 
-`spid3r init myproj` scaffolds `spider.toml` + `src/main.matrix`.
+Tasks also expose `status()`, `join()`, and `is_done()`. A failed task re-raises its
+error when joined.
+
+### Modules
+
+```text
+// math_util.matrix — a library: no main, only `public` names are exported
+public fn square(x) { return x * x; }
+fn helper() { return 42; }                        // private to this file
+
+// modules.matrix
+import "math_util";
+
+fn main() {
+    println(square(5));                           // 25
+    return 0;
+}
+```
+
+Imports are resolved next to the importing file first, then on `SPID3R_PATH`, then in
+`./stdlib`, and finally in the project's `vendor/` directory.
+
+### Semantics at a glance
+
+| Topic | Behavior |
+|---|---|
+| Primitive types | `int` (64-bit), `float` (64-bit), `bool`, `string` (immutable UTF-8), `null` |
+| Arithmetic | `int + float` gives a `float`; `7 / 2` is `3`; integer overflow wraps; dividing by zero throws |
+| Equality | `1 == 1.0` is `true` |
+| Logic | `and`, `or`, `not` (short-circuit); there is no `!`, `++`, or `**` (use `pow`) |
+| Truthiness | `null`, `false`, `0`, `0.0`, `""`, and `none` are falsy |
+| Comments | `// line` and `/* block */` |
+
+For the complete grammar, see [`docs/GRAMMAR.md`](docs/GRAMMAR.md).
+
+## Execution model
+
+```mermaid
+flowchart LR
+    S[".matrix source"] --> L[Lexer] --> P[Parser] --> C[Semantic checker]
+    C --> T["Tree-walk interpreter<br/>(--engine tree, default)"]
+    C --> B[Bytecode compiler + optimizer]
+    B --> VM["Stack VM<br/>(--engine vm)"]
+    B --> F[".matrixc file"] --> VM
+    C -. "native feature" .-> N[LLVM AOT executable]
+```
+
+1. **Front end.** Lexing, parsing, and semantic checking are shared by every engine. The
+   checker catches unknown names, private-member access, arity errors, and type-annotation
+   mismatches before any code runs.
+2. **Tree-walk interpreter.** The reference implementation, and the default engine for `run`.
+3. **Bytecode VM.** Compiles the checked syntax tree to bytecode, then optimizes it with
+   constant folding, peephole rewrites, and dead-code elimination (`--no-opt` disables the
+   optimizer). Both engines share one value and runtime layer, which is what keeps their
+   output identical.
+4. **`.matrixc` files.** `spid3r compile` writes self-contained bytecode with every
+   imported module embedded, so `spid3r exec` needs no source files. Bytecode is validated
+   before execution: malformed input becomes a clean error, never a crash.
+
+**Memory.** Values are reference-counted and thread-safe, so they can cross `spawn`
+boundaries. A cycle collector runs automatically and reclaims reference cycles through
+lists, vecs, sets, maps, and class instances. Set `SPID3R_GC=0` to turn it off, or call
+`gc_collect()` to force a collection. For back-references in other containers, use
+`weak(v)` and `deref(w)`. See [`docs/GC.md`](docs/GC.md).
+
+## Command-line reference
+
+| Command | Description |
+|---|---|
+| `spid3r run [--engine tree\|vm] [--no-opt] <file> [args…]` | Check and run a program; extra arguments are available through `args()` |
+| `spid3r check <file>` | Lex, parse, and semantic-check without running |
+| `spid3r compile <file> [-o out] [--dump] [--no-opt]` | Write bytecode (`.matrixc`); `--dump` prints the disassembly |
+| `spid3r exec <file.matrixc>` | Run compiled bytecode on the VM |
+| `spid3r repl` | Interactive prompt (`:help`, `:quit`) |
+| `spid3r fmt [--check] [files…]` | Format files in place; `--check` exits `1` if any file would change |
+| `spid3r debug <file> [--break L,…] [--commands FILE]` | Line debugger: breakpoints, step/next/finish, backtrace, locals |
+| `spid3r test` | Run every `examples/*.matrix` on the tree interpreter, the VM, and compile + exec, and compare their output |
+| `spid3r bench [--engine tree\|vm] [--runs N] [--compare] [files…]` | Time `benchmarks/*.matrix`, keeping the best of N runs |
+| `spid3r init [dir]` | Create `spider.toml` and `src/main.matrix` |
+| `spid3r install` | Vendor dependencies into `vendor/` and write `spider.lock` |
+| `spid3r dist [-o out] [--no-opt]` | Compile the project entry to `target/<package>.matrixc` |
+| `spid3r pack [-o out.tar]` / `spid3r unpack <archive> [dir]` | Archive a project into a tarball, or extract one |
+| `spid3r build <file> [-o out] [--target triple] [--release]` | Build a native executable (`native` feature) |
+| `spid3r gui <file> [--html page.html] [--dry-run]` | Run a program in a webview window (`gui` feature) |
+| `spid3r version` / `spid3r help` | Print version or usage |
+
+**Exit codes:** `0` means success, `1` means a program error, and `2` means a usage error.
+A program's own exit code comes from the integer returned by `main`.
+
+## Projects and dependencies
+
+```sh
+spid3r init myproj && cd myproj
+spid3r run            # with no file argument, runs the manifest's entry
+```
 
 ```toml
+# spider.toml
 [package]
 name = "myproj"
 version = "0.1.0"
 entry = "src/main.matrix"
 
 [dependencies]
-mathlib = { path = "../mathlib" }                            # path dependency
-extras  = { git = "https://example/extras", rev = "main" }   # git dependency
-serde   = { version = "^1.0" }                               # local registry
+mathlib = { path = "../mathlib" }                            # local path
+extras  = { git = "https://example/extras", rev = "main" }   # git, pinned to a commit
+serde   = { version = "^1.0" }                               # offline registry ($SPID3R_REGISTRY)
 ```
 
-- `spid3r install` vendors dependency sources into `vendor/<name>/` and writes a
-  deterministic `spider.lock` (git deps pinned to the resolved commit, SHA-256 tree hash
-  per dependency). Idempotent; tampered or stale `vendor/` trees are re-synced.
-- Version constraints: `^1.0` (same major), `>=1.2`, `=1.2.3`, exact — checked against
-  the dependency's own manifest.
-- **Local registry:** `{ version = "…" }` resolves from `$SPID3R_REGISTRY`, an offline
-  directory of `<name>/<version>/` packages; `dist/sha256.txt` is verified against the
-  tree hash that `spid3r pack` prints.
-- **Workspaces:** `[workspace] members = […]` share one `vendor/` + lockfile with
-  name-conflict detection.
-- **Distribution:** `spid3r dist` builds a self-contained `.matrixc` from the manifest
-  entry; `pack`/`unpack` move source projects as deterministic, path-traversal-guarded
-  tarballs.
-- Inside a project: `run` (no file) runs the manifest entry; `test` differentially runs
-  `tests/*.matrix` per workspace member (use the `assert`/`assert_eq` builtins).
+- `spid3r install` copies dependency sources into `vendor/` and writes a deterministic
+  `spider.lock`, with a SHA-256 hash for each dependency.
+- `[workspace] members = [...]` lets several packages share one `vendor/` and one lockfile.
+- Inside a project, `spid3r test` runs `tests/*.matrix` on both engines. Write tests with
+  `assert` and `assert_eq`.
 
-There is no remote/HTTP registry and registry packages' own dependencies are not resolved
-transitively — declare what you use. Details: `docs/REGISTRY.md`.
+There is no remote package registry. Dependencies of registry packages are not resolved
+transitively. See [`docs/REGISTRY.md`](docs/REGISTRY.md).
 
-## Tooling
+## Optional backends
 
-- **`spid3r fmt`** — canonical formatting in place; machine-checked invariants (re-lexes
-  to the identical token stream, idempotent), comment/literal preservation, line
-  wrapping. `--check` exits 1 on any difference.
-- **`spid3r bench`** — best-of-N timings per engine; `--compare` also asserts
-  tree == vm output, so benchmarks double as differential tests.
-- **`spid3r debug`** — line debugger over the VM: `--break 3,7`, `step`/`next`/`finish`,
-  `backtrace`, `locals`, source listing; scriptable via `--commands FILE`.
-- **`spid3r gui`** (`gui` feature) — desktop webview window. Program side:
-  `gui_set_html(html)`, `gui_eval(js)`, `gui_on(event, handler)`, `gui_emit(event,
-  payload)`; page side: `window.spid3r.emit(event, payload)`. `--dry-run` replays the
-  whole bridge headlessly (what the tests drive). See `docs/GUI.md`.
-- **`spid3r build`** (`native` feature) — LLVM AOT: control flow becomes machine code and
-  runtime operations go through trampolines that reuse the exact VM/value code, so native
-  output matches the interpreter (22/23 examples; a class declared inside a function is
-  rejected with a clear diagnostic). See `docs/NATIVE.md`.
+Both backends are off by default, so the default build stays dependency-free.
 
-## Memory model & GC
+```sh
+cargo build --release --features native   # LLVM AOT compiler (requires LLVM 18.1+)
+cargo build --release --features gui      # desktop webview GUI (wry + tao)
+```
 
-Values are reference-counted (`Arc`/`Mutex` in both engines, so they cross `spawn`
-boundaries). Acyclic garbage is reclaimed eagerly. **Cycles** — a list containing itself,
-an instance pointing at itself — are collected for `list`/`vec`, `set`, `map`, and
-instances, automatically at statement boundaries (`SPID3R_GC=0` disables);
-`gc_collect()` forces a pass and `gc_live_cells()` inspects. Cycles through other
-container types still leak until collection is widened — use `weak(v)` / `deref(w)` for
-those back-edges. Design: `docs/GC.md`.
-
-## Environment variables
-
-| Variable | Effect |
-|---|---|
-| `SPID3R_PATH` | extra module search directories (after the importing file's directory) |
-| `SPID3R_REGISTRY` | offline registry directory for `{ version = "…" }` dependencies |
-| `SPID3R_GC` | `0` disables statement-boundary automatic cycle collection |
+- **Native (`spid3r build`).** Compiles a program to machine code. Runtime operations
+  reuse the VM's value code, so the output matches the interpreters. See
+  [`docs/NATIVE.md`](docs/NATIVE.md) and [`docs/BUILDING.md`](docs/BUILDING.md).
+- **GUI (`spid3r gui`).** Programs call `gui_set_html`, `gui_eval`, `gui_on`, `gui_emit`,
+  and `gui_title`, and the page calls `window.spid3r.emit(event, payload)`. With
+  `--dry-run`, the bridge runs without a window. See [`docs/GUI.md`](docs/GUI.md) and
+  `examples/gui/counter.matrix`.
 
 ## Testing
 
-Correctness is "the two engines agree", so Spid3r is verified differentially:
+Correctness in Spid3r means *the engines agree*, so testing is differential:
 
-- `spid3r test` — every `examples/*.matrix` runs three ways (tree, vm, compile+exec) and
-  all three stdout streams must match; libraries are semantic-checked. **23 ok, 0 failed.**
-- `cargo test` — **250 tests, 0 failed**: unit tests per subsystem, integration tests,
-  the differential harness (`tests/difftest.rs`), and 14 dedicated engine-parity
-  regressions (`tests/audit_regressions.rs`) covering closure capture, per-iteration loop
-  bindings, scope-exit slot release, upvalue index offsets, map index assignment, file-op
-  results, the task API, JSON round-trips, and RNG bounds.
-- `difftest.sh` — standalone shell version of the three-way comparison.
-- The 2026-10 audit added a 27-program probe suite (`audit/probes/`) that pins edge
-  semantics across all three engines; its findings and fixes are summarized in
-  `AUDIT_REPORT.md`.
+- `cargo test` runs the unit, integration, parity-regression, and differential tests.
+- `spid3r test` runs every example three ways (tree interpreter, VM, and compile + exec)
+  and requires identical output.
+- `spid3r bench --compare` also asserts that the tree interpreter and the VM print the same output.
+- `audit/probes/` contains edge-case programs from the 2026-10 audit. The findings are in
+  [`AUDIT_REPORT.md`](AUDIT_REPORT.md).
 
-## Examples
+## Documentation
 
-All runnable from the project root: `spid3r run examples/<name>.matrix` (add
-`--engine vm` to compare engines).
+| Document | Contents |
+|---|---|
+| [`doc.html`](doc.html) | Full developer guide (single self-contained page) |
+| [`docs/GRAMMAR.md`](docs/GRAMMAR.md) | EBNF grammar and precedence rules |
+| [`docs/KEYWORDS.md`](docs/KEYWORDS.md) | Reserved words |
+| [`docs/STANDARD_LIBRARY.md`](docs/STANDARD_LIBRARY.md) | Global functions |
+| [`docs/DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md) | Built-in containers and their methods |
+| [`docs/BYTECODE.md`](docs/BYTECODE.md) | `.matrixc` format and VM design |
+| [`docs/GC.md`](docs/GC.md) | Cycle collector |
+| [`docs/NATIVE.md`](docs/NATIVE.md) · [`docs/BUILDING.md`](docs/BUILDING.md) | LLVM backend and build setup |
+| [`docs/GUI.md`](docs/GUI.md) | Webview GUI layer |
+| [`docs/REGISTRY.md`](docs/REGISTRY.md) | Local dependency registry |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Roadmap and limitations |
 
-| | | |
-|---|---|---|
-| `hello` · smallest program | `variables` · types & promotion | `conditions` · if/elif/else |
-| `loops` · all three forms | `functions` · recursion & closures | `higher_order` · map/filter/reduce |
-| `list` `map` `set` · core collections | `stack` `queue` `heap` · ordered | `graph` `bst` `linked_list` · structures |
-| `class` `interface` · OOP | `error_handling` · try/catch, result | `channel` `tasks` · concurrency |
-| `modules` + `math_util` · imports | `server_report` · larger program | `gui/counter` · webview UI |
-
-## Docs
-
-- [`doc.html`](doc.html) — the full developer documentation (self-contained page).
-- [`docs/GRAMMAR.md`](docs/GRAMMAR.md) — EBNF + precedence + parser rules
-- [`docs/KEYWORDS.md`](docs/KEYWORDS.md) — the reserved-word registry
-- [`docs/DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md) — builtin containers and methods
-- [`docs/STANDARD_LIBRARY.md`](docs/STANDARD_LIBRARY.md) — global functions
-- [`docs/BYTECODE.md`](docs/BYTECODE.md) — `.matrixc` format, VM design, concurrency
-- [`docs/GC.md`](docs/GC.md) — cycle-collector design
-- [`docs/NATIVE.md`](docs/NATIVE.md) — LLVM AOT backend
-- [`docs/GUI.md`](docs/GUI.md) — webview GUI layer
-- [`docs/REGISTRY.md`](docs/REGISTRY.md) — local dependency registry
-- [`docs/BUILDING.md`](docs/BUILDING.md) — building from source (incl. LLVM)
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — phases and honest limitations
-- [`AUDIT_REPORT.md`](AUDIT_REPORT.md) — 2026-10 independent audit: findings, fixes, QA status
+Runnable examples live in [`examples/`](examples/). Run any of them with
+`spid3r run examples/<name>.matrix`.
 
 ## Known limitations
 
-Honest gaps, in priority order:
+- A named `fn` declared *inside a block* needs a trailing `;`. Prefer
+  `let f = fn(x) { … };` for local functions.
+- Exponent float literals such as `1.5e3` are not supported, and
+  `-9223372036854775808` cannot be written as a literal.
+- The cycle collector does not yet trace trees, graphs, heaps, or matrices. Use
+  `weak`/`deref` for back-references in those containers.
+- The native backend rejects classes declared inside a function.
+- Dependencies are local only: path, git, or an offline registry directory.
+- `pack` archives do not support long file names (entries over 100 bytes are truncated).
 
-- **Local `fn` declarations inside blocks** parse as expression statements and need a
-  trailing `;` (bind with `let f = fn(x) { … };` instead); the parser also lacks a
-  recursion depth cap, so pathological nesting aborts the process rather than erroring.
-- **Cycle GC coverage** — trees/graphs/heaps/matrices cycles are not traced yet; use
-  `weak`/`deref` for those back-edges.
-- **Native AOT subset** — a class declared inside a function is rejected (clean
-  diagnostic); everything else (`try`/`catch`/`throw`, `import`, closures, classes,
-  `spawn`/`async`/`await`) compiles and matches the interpreter on 22/23 examples.
-- **Local-only dependencies** — no remote/HTTP registry; registry packages' own
-  dependencies are not resolved transitively.
-- **Lexer edges** — no exponent float literals (`1.5e3` mis-lexes),
-  `-9223372036854775808` is unrepresentable as a literal, overflowing float literals
-  become `inf`, and a `\` at end-of-line inside a string reports a malformed diagnostic.
-- **Tar archives** — no ustar long-name/prefix support and no header-checksum
-  verification; entries over 100 bytes truncate.
-- **Design choices, documented:** integer overflow wraps silently; `int / int` truncates;
-  `err(...)` is truthy; comparison chains are left-associative; assignments are legal in
-  `if`/`while` conditions.
+## License
 
----
-
-**Spid3r** — language v1.0. Pure Rust, no runtime dependencies. Source in `src/`;
-interactive docs in [`doc.html`](doc.html).
+MIT, as declared in [`Cargo.toml`](Cargo.toml).
