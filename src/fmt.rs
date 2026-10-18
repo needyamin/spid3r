@@ -57,6 +57,13 @@ fn tok_kind<'x>(it: &'x Item<'x>) -> Option<&'x TokenKind> {
 /// Format `src`. Errors on a lexer failure; returns the formatted text
 /// (already-formatted input → identical output).
 pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
+    let normalized;
+    let src = if src.contains('\r') {
+        normalized = src.replace("\r\n", "\n").replace('\r', "\n");
+        normalized.as_str()
+    } else {
+        src
+    };
     let lexed = Lexer::new(src, file.clone())
         .tokenize_with_comments()
         .map_err(|mut d| {

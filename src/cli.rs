@@ -909,7 +909,12 @@ fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
                 continue;
             }
         };
-        if formatted == src {
+        let src_lf = if src.contains('\r') {
+            src.replace("\r\n", "\n").replace('\r', "\n")
+        } else {
+            src.clone()
+        };
+        if formatted == src_lf {
             println!("unchanged {}", f);
             continue;
         }

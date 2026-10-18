@@ -204,3 +204,27 @@ fn closure_arguments_keep_the_call_compact() {
     assert!(out.contains("    }));"), "closing should join the brace:/n{}", out);
     check_roundtrip("closure-arg", src);
 }
+
+#[test]
+fn cli_fmt_check_accepts_crlf_line_endings() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("spid3r_fmt_crlf_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let crlf_file = dir.join("canonical_crlf.matrix");
+    // Exact canonical formatting, but with Windows CRLF (\r\n) line endings as produced
+    // by `git checkout` with `core.autocrlf=true` on Windows CI runners.
+    let canonical_crlf = "// header comment\r\nfn main() {\r\n    let x = 1;\r\n    println(x);\r\n    return 0;\r\n}\r\n";
+    std::fs::write(&crlf_file, canonical_crlf).expect("write");
+    let out = Command::new(env!("CARGO_BIN_EXE_spid3r"))
+        .args(["fmt", "--check", crlf_file.to_str().unwrap()])
+        .output()
+        .expect("run fmt --check on CRLF file");
+    assert!(
+        out.status.success(),
+        "--check should succeed on canonically formatted CRLF files, stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+

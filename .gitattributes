@@ -1,0 +1,17 @@
+# Normalize text files to LF across all platforms so tools/scripts and
+# `spid3r fmt --check` behave identically on Windows, macOS, and Linux.
+* text=auto eol=lf
+*.matrix text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.html text eol=lf
+*.txt text eol=lf
+
+# Binary assets
+*.png binary
+*.ico binary
+*.bmp binary
+*.matrixc binary
