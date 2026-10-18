@@ -41,6 +41,15 @@ dist/
 .zwork/
 .workbuddy-ai/
 
+# --- Installer build workspace -----------------------------------------------
+# The portable NSIS toolchain and staged payload are reproducible
+# (packaging/nsis/build.ps1); the .nsi, LICENSE.txt and generated
+# assets/*.ico|*.bmp are tracked.
+packaging/nsis/nsis/
+packaging/nsis/nsis.zip
+packaging/nsis/payload/
+Spid3r-Setup-*.exe
+
 # --- Editor / IDE ------------------------------------------------------------
 .vscode/
 .idea/
