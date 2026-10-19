@@ -34,6 +34,9 @@ COMMANDS:
                                            Compile to a native machine-code executable
     gui <file.matrix> [--html page.html] [--dry-run]
                                            Run a program in a GUI webview window
+    bundle <file> [--target wasm|desktop|android] [--html page.html] [-o out]
+                                           Package into a standalone distribution
+                                           (WebAssembly, Desktop, or Android)
     exec <file.matrixc>                    Run bytecode on the virtual machine
     repl                                   Interactive read-eval-print loop
     debug <file.matrix> [--break L[,L…]] [--commands FILE]
@@ -96,6 +99,7 @@ pub fn run(args: Vec<String>) -> i32 {
         "compile" => cmd_compile(&rest),
         "build" => cmd_build(&rest),
         "gui" => cmd_gui(&rest),
+        "bundle" => cmd_bundle(&rest),
         "exec" => cmd_exec(&rest),
         "repl" => {
             crate::repl::run();
@@ -276,6 +280,76 @@ fn cmd_gui(args: &[String]) -> Result<i32, Diagnostic> {
     #[cfg(feature = "gui")]
     {
         crate::gui::cmd_gui(args)
+    }
+}
+
+/// `spid3r bundle file.matrix [--target wasm|desktop|android] [--html page.html] [-o out] [--single-file]`
+/// Package a Spid3r application into a standalone cross-platform bundle.
+fn cmd_bundle(args: &[String]) -> Result<i32, Diagnostic> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = args;
+        Err(usage("bundler is not supported inside WebAssembly runtime"))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut file: Option<PathBuf> = None;
+        let mut target = crate::bundle::BundleTarget::Wasm;
+        let mut html_file: Option<PathBuf> = None;
+        let mut out: Option<PathBuf> = None;
+        let mut single_file = false;
+
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].as_str() {
+                "--target" => {
+                    i += 1;
+                    let t_str = args
+                        .get(i)
+                        .ok_or_else(|| usage("--target needs a value (wasm, desktop, or android)"))?;
+                    target = crate::bundle::BundleTarget::parse(t_str)
+                        .map_err(|e| usage(&e))?;
+                }
+                "--html" => {
+                    i += 1;
+                    html_file = Some(PathBuf::from(
+                        args.get(i).ok_or_else(|| usage("--html needs a path"))?,
+                    ));
+                }
+                "-o" | "--out" => {
+                    i += 1;
+                    out = Some(PathBuf::from(
+                        args.get(i).ok_or_else(|| usage("-o needs a path"))?,
+                    ));
+                }
+                "--single-file" => {
+                    single_file = true;
+                }
+                a if a.starts_with("--") => return Err(usage(&format!("unknown option '{}'", a))),
+                other => {
+                    if file.is_some() {
+                        return Err(usage(&format!("unexpected extra argument '{}'", other)));
+                    }
+                    file = Some(PathBuf::from(other));
+                }
+            }
+            i += 1;
+        }
+
+        let source_file = file.ok_or_else(|| {
+            usage("bundle needs a source file: spid3r bundle app.matrix [--target wasm|desktop|android]")
+        })?;
+        let opts = crate::bundle::BundleOptions {
+            source_file,
+            target,
+            html_file,
+            output_path: out,
+            single_file,
+        };
+
+        let result_path = crate::bundle::bundle(&opts)?;
+        println!("Bundle generated successfully: {}", result_path.display());
+        Ok(EXIT_OK)
     }
 }
 

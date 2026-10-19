@@ -47,9 +47,10 @@ Hello, Spid3r!
 - **Gradual typing**: optional annotations (`a: int`, `-> string`), checked before the program runs.
 - **20+ built-in data structures**: `list`, `vec`, `tuple`, `map`, `set`, `bag`, `hash_table`, `stack`, `queue`, `deque`, `ring_buffer`, `heap`, `priority_queue`, `binary_tree`, `bst`, `trie`, `graph`, `matrix`, linked lists, and more — all covered by automatic cycle garbage collection.
 - **Concurrency**: `spawn` tasks on a threaded scheduler, `async`/`await`, `channel`, `mutex`, `ref`.
+- **Networking & Web Servers**: TCP sockets, HTTP/1.1 framing, client `http_fetch`, and a pure-Spid3r web framework (`stdlib/http.matrix`) with zero external dependencies.
 - **Modules** with explicit `public` exports, and a package manager with lockfiles and POSIX `ustar` archiving.
 - **Tooling**: formatter, REPL, line debugger, benchmark runner, and differential tester.
-- **Backends**: a desktop webview GUI and an LLVM ahead-of-time compiler for native executables (both built by default).
+- **Backends & Packaging**: WebAssembly in-browser execution, cross-platform bundler (`spid3r bundle` for WASM, Desktop, and Android), desktop webview GUI, and an LLVM ahead-of-time compiler for native executables.
 
 ## Getting started
 
@@ -289,6 +290,7 @@ For the complete grammar, see [`docs/GRAMMAR.md`](docs/GRAMMAR.md).
 |---|---|
 | **Console & I/O** | `print(…)`, `println(…)`, `eprint(…)`, `read_line()` |
 | **Files, env & OS** | `read_file(path)`, `write_file(path, text)`, `file_exists(path)`, `env(name)`, `args()`, `spawn_process(cmd, args)` |
+| **Networking & HTTP** | `tcp_listen(addr)`, `tcp_accept(id)`, `tcp_connect(addr)`, `tcp_read(id, n)`, `tcp_write(id, s)`, `tcp_close(h)`, `tcp_local_addr(h)`, `tcp_peer_addr(id)`, `tcp_set_timeout(id, ms)`, `http_read_request(id)`, `http_write_response(id, st, h, b)`, `http_fetch(m, u[, h, b])`, `url_decode(s)`, `url_encode(s)` |
 | **Math & random** | `abs(x)`, `sqrt(x)`, `pow(b, e)`, `min(a, b, …)`, `max(a, b, …)`, `random_int(lo, hi)` |
 | **Types & conversion** | `int(x)`, `float(x)`, `string(x)`, `bool(x)`, `type_of(x)`, `len(x)` |
 | **Option & result** | `some(v)`, `none`, `ok(v)`, `err(e)` |
@@ -347,6 +349,7 @@ use `weak(v)` and `deref(w)` for explicit non-owning references. See [`docs/GC.m
 | `spid3r pack [-o out.tar]` / `spid3r unpack <archive> [dir]` | Archive a project into a POSIX `ustar` tarball (with long-filename & checksum support), or extract one |
 | `spid3r build <file> [-o out] [--target triple] [--release]` | Build a native executable (`native` feature) |
 | `spid3r gui <file> [--html page.html] [--dry-run]` | Run a program in a webview window (`gui` feature) |
+| `spid3r bundle <file> [--target wasm\|desktop\|android] [--html page.html] [-o out] [--single-file]` | Package into a standalone distribution (WebAssembly, Desktop, or Android) |
 | `spid3r version` / `spid3r help` | Print version or usage |
 
 **Exit codes:** `0` means success, `1` means a program error, and `2` means a usage error.
@@ -403,22 +406,38 @@ cargo build --release --no-default-features                  # core toolchain on
   and `gui_title`, and the page calls `window.spid3r.emit(event, payload)`. With
   `--dry-run`, the bridge runs without a window. See [`docs/GUI.md`](docs/GUI.md) and
   `examples/gui/counter.matrix`.
+- **WebAssembly & Browser ([`docs/html/playground.html`](docs/html/playground.html)).** Compiles the full language toolchain to
+  `wasm32-unknown-unknown` with zero external dependencies. Programs can be evaluated, type-checked,
+  and canonically formatted in web browsers, Node.js, and edge workers via [`web/spid3r.js`](web/spid3r.js)
+  and [`web/spid3r.wasm`](web/spid3r.wasm). Try it live in [`docs/html/playground.html`](docs/html/playground.html).
+  - **Zero-Setup Offline Execution**: Double-clicking `docs/html/playground.html` opens cleanly on local `file:///` URLs
+    using the companion in-memory dataset ([`web/spid3r_wasm_data.js`](web/spid3r_wasm_data.js)), bypassing browser CORS restrictions.
+  - **Rich Features**: Share snippets via URL hash (`#code=...`), import/export `.matrix` files, drag-and-drop,
+    and toggle between Bytecode VM and Tree-walk interpreter.
+- **Application Bundler (`spid3r bundle`).** Package any Spid3r application into standalone distributions:
+  - `--target wasm --single-file`: Completely offline, zero-dependency HTML file containing embedded base64 WebAssembly runtime and program bytecode.
+  - `--target wasm`: Web distribution directory (`index.html`, `spid3r.js`, `spid3r.wasm`, `app.matrix`).
+  - `--target desktop`: Precompiled `.matrixc` bytecode with native launcher scripts (`run.bat` and `run.sh`).
+  - `--target android`: Ready-to-build Android Studio WebView application project scaffold.
 
 ## Developer workflow & testing
 
-Correctness in Spid3r means *the engines agree*. All **282 Rust tests** (**272** core tests + **10** headless GUI bridge tests) and **23/23 differential example programs** can be run locally without LLVM:
+Correctness in Spid3r means *the engines agree*. All **298 Rust tests** (**288** core tests including WASM & Bundler suites + **10** headless GUI bridge tests) and **23/23 differential example programs** can be run locally without LLVM:
 
 ```sh
-# 1. Run all 272 core unit, integration, regression, and fuzz tests
+# 1. Run all 288 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
 cargo test --no-default-features
 
 # 2. Run the 10 headless GUI bridge tests
 cargo test --no-default-features --features gui --test gui_tests
 
-# 3. Run 3-way differential testing across all examples (tree vs VM vs .matrixc)
+# 3. Build the WebAssembly release binary
+cargo build --target wasm32-unknown-unknown --release --lib --no-default-features
+
+# 4. Run 3-way differential testing across all examples (tree vs VM vs .matrixc)
 cargo run --no-default-features -- test
 
-# 4. Verify canonical formatting and zero Clippy warnings (matches CI)
+# 5. Verify canonical formatting and zero Clippy warnings (matches CI)
 cargo run --no-default-features -- fmt --check
 cargo clippy --no-default-features --all-targets -- -D warnings
 ```
@@ -441,17 +460,21 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 | `src/vm` | Bytecode compiler, peephole/constant-folding optimizer, `.matrixc` serializer, validator, stack VM, and line debugger |
 | `src/value` | Shared value representation, 20+ built-in collections (`src/value/collections/`), and full-container trial-deletion cycle GC (`src/value/gc.rs`) |
 | `src/sched`, `src/stdlib`, `src/modules` | Threaded task scheduler, channels/mutexes, global builtins, and module loader |
+| `src/wasm.rs`, `web/`, `docs/html/playground.html` | WebAssembly zero-dependency C-ABI runtime, browser JS SDK, and live interactive playground |
 | `src/pkg`, `src/fmt.rs`, `src/repl`, `src/cli.rs` | Package manager (`spider.toml`, `ustar` archiver), canonical formatter, REPL, and CLI |
 | `src/native`, `src/gui` | Optional LLVM 18.1+ AOT backend (`native`) and desktop webview bridge (`gui`) |
 | `examples/`, `benchmarks/`, `stdlib/` | 23 runnable example programs/libraries, 8 benchmarks, and standard library modules |
-| `tests/`, `fuzz/`, `tools/` | Integration, differential, cycle-GC, packaging, audit-regression, and fuzz suites, plus `tools/difftest.sh` |
-| `docs/`, `doc.html` | Deep-dive technical documentation and self-contained interactive developer guide |
+| `tests/`, `fuzz/`, `tools/` | Integration, differential, cycle-GC, packaging, audit-regression, wasm, and fuzz suites, plus `tools/difftest.sh` |
+| `docs/`, `doc.html`, `docs/html/plan.html` | Deep-dive technical documentation, self-contained interactive developer guide, and cross-platform roadmap |
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
 | [Interactive developer guide (`doc.html`)](https://needyamin.github.io/spid3r/doc.html) | Self-contained single-page reference with search, dark mode, cheat sheet, and examples |
+| [WebAssembly Playground (`playground.html`)](docs/html/playground.html) | Live in-browser code editor, syntax checker, formatter, and dual VM/Tree runner |
+| [Roadmap & Planning (`plan.html`)](docs/html/plan.html) | Web servers, WebAssembly, and cross-platform architecture roadmap |
+| [Benchmarks Report (`benchmarks.html`)](docs/html/benchmarks.html) | Performance comparisons across Spid3r VM, Python 3, and PHP 8 |
 | [`docs/GRAMMAR.md`](docs/GRAMMAR.md) | EBNF grammar and precedence rules |
 | [`docs/KEYWORDS.md`](docs/KEYWORDS.md) | Reserved words |
 | [`docs/STANDARD_LIBRARY.md`](docs/STANDARD_LIBRARY.md) | Global functions |

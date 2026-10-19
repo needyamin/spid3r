@@ -1,0 +1,102 @@
+// examples/web/server.matrix - a JSON API + HTML page served by Spid3r.
+//
+//   spid3r run examples/web/server.matrix            (from the repo root)
+//   spid3r run --engine vm examples/web/server.matrix
+//
+// then open http://127.0.0.1:8080 or try:
+//   curl http://127.0.0.1:8080/api/hello/Ada
+//   curl -X POST -d "{\"title\":\"ship it\"}" http://127.0.0.1:8080/api/todos
+//   curl http://127.0.0.1:8080/api/todos
+//
+// `import "http"` resolves to stdlib/http.matrix through the ./stdlib search
+// path, so run from the repository root (or put stdlib/ on SPID3R_PATH).
+// Lives in examples/web/ on purpose: the differential suite runs every flat
+// examples/*.matrix, and a server never exits.
+
+import "http";
+
+// Shared state: handlers run concurrently on worker threads, so the todo
+// list is guarded by a mutex.
+let todos = mutex(list());
+let next_id = mutex(ref(1));
+
+fn page() {
+    return "<!doctype html><html><head><meta charset='utf-8'><title>Spid3r Web</title>"
+    + "<style>body{font:16px system-ui;background:#0f1117;color:#e8e9ee;max-width:640px;margin:60px auto;padding:0 20px}"
+    + "h1{color:#c7a4f0}code{background:#1d212c;padding:2px 6px;border-radius:4px}"
+    + "li{margin:6px 0}input,button{font:inherit;padding:8px;border-radius:8px;border:1px solid #333;background:#171a23;color:inherit}"
+    + "button{background:#7a3ea8;border:0;cursor:pointer}</style></head><body>"
+    + "<h1>Hello from Spid3r</h1><p>This page and the API are served by a <code>.matrix</code> program.</p>"
+    + "<form id='f'><input id='t' placeholder='New todo' required> <button>Add</button></form><ul id='l'></ul>"
+    + "<script>"
+    + "async function load(){const r=await fetch('/api/todos');const d=await r.json();"
+    + "document.getElementById('l').innerHTML=d.map(t=>'<li>#'+t.id+' '+t.title.replace(/</g,'&lt;')+'</li>').join('');}"
+    + "document.getElementById('f').onsubmit=async e=>{e.preventDefault();const t=document.getElementById('t');"
+    + "await fetch('/api/todos',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({title:t.value})});"
+    + "t.value='';load();};load();"
+    + "</script></body></html>";
+}
+
+fn list_todos(req) {
+    let items = todos.lock();
+    return items;
+}
+
+fn create_todo(req) {
+    let parsed = http_body_json(req);
+    if parsed.is_err() {
+        return http_json(400, map("error", parsed.unwrap_err()));
+    }
+    let body = parsed.unwrap();
+    if type_of(body) != "map" or not body.has("title") {
+        return http_json(422, map("error", "expected {\"title\": \"...\"}"));
+    }
+    let counter = next_id.lock();
+    let id = counter.get();
+    counter.set(id + 1);
+    let todo = map("id", id, "title", string(body["title"]));
+    let items = todos.lock();
+    items.push(todo);
+    return http_json(201, todo);
+}
+
+fn main() {
+    let app = new HttpServer();
+
+    // Middleware: answer CORS preflights for any path.
+    app.before(fn(req) {
+        if req["method"] == "OPTIONS" {
+            return http_response(204, map("access-control-allow-origin", "*"), "");
+        }
+        return null;
+    });
+
+    app.get("/", fn(req) {
+        return http_html(200, page());
+    });
+
+    app.get("/api/hello/:name", fn(req) {
+        let name = req["params"]["name"];
+        return map("message", "Hello, " + name + "!", "engine", "spid3r");
+    });
+
+    app.get("/api/todos", list_todos);
+    app.post("/api/todos", create_todo);
+
+    app.get("/api/search", fn(req) {
+        let q = req["query"];
+        let term = "";
+        if q.has("q") {
+            term = q["q"];
+        }
+        return map("query", term, "length", len(term));
+    });
+
+    let port = "8080";
+    let a = args();
+    if len(a) > 0 {
+        port = a[0];
+    }
+    app.listen("127.0.0.1:" + port);
+    return 0;
+}

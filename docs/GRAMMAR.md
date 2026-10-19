@@ -128,7 +128,7 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
 - Index assignment targets `list`, `vec`, `matrix`, `hash_table`, and `map`
   (`m[k] = v` is an alias for `m.set(k, v)`). The semantic pass rejects it on
   every other type.
-- String literal escapes are `\n`, `\t`, `\\`, and `\"`; identifiers are ASCII
+- String literal escapes are `\n`, `\r`, `\t`, `\\`, and `\"`; identifiers are ASCII
   (`[A-Za-z_][A-Za-z0-9_]*`).
 - A `public`/`private` prefix is accepted before any top-level declaration
   (`fn`, `class`, `interface`, `let`, `const`); class bodies additionally accept

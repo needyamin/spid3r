@@ -19,6 +19,9 @@ pub mod semantic;
 pub mod stdlib;
 pub mod value;
 pub mod vm;
+pub mod wasm;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bundle;
 
 // Native backend. `rt` (the extern "C" runtime trampolines the AOT binaries
 // link against) has zero dependencies and is always compiled; `ir`/`link`

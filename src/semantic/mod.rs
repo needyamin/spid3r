@@ -193,6 +193,21 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "type_of",
     "gc_collect",
     "gc_live_cells",
+    // networking (src/stdlib/net.rs)
+    "tcp_listen",
+    "tcp_accept",
+    "tcp_connect",
+    "tcp_read",
+    "tcp_write",
+    "tcp_close",
+    "tcp_local_addr",
+    "tcp_peer_addr",
+    "tcp_set_timeout",
+    "http_read_request",
+    "http_write_response",
+    "http_fetch",
+    "url_decode",
+    "url_encode",
 ];
 
 /// GUI natives (`spid3r gui`). Only known when the toolchain is built with the

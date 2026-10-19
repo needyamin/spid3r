@@ -12,6 +12,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
 use std::thread;
 
 use crate::value::Value;
@@ -140,6 +141,7 @@ impl TaskHandle {
 
 type Job = Box<dyn FnOnce() -> Result<Value, String> + Send + 'static>;
 
+#[allow(dead_code)]
 struct SchedInner {
     queue: Mutex<VecDeque<Job>>,
     cv: Condvar,
@@ -157,6 +159,7 @@ static SCHED: OnceLock<Arc<Scheduler>> = OnceLock::new();
 /// Stack size for each worker thread: large enough that a task running
 /// deep Spid3r recursion is stopped by the interpreter's call-depth guard
 /// rather than by the OS stack.
+#[cfg(not(target_arch = "wasm32"))]
 const WORKER_STACK_BYTES: usize = 32 * 1024 * 1024;
 
 impl Scheduler {
@@ -171,38 +174,48 @@ impl Scheduler {
             next_id: Mutex::new(1),
             live: Mutex::new(0),
         });
-        let pool = thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        for _ in 0..pool {
-            let inner = inner.clone();
-            thread::Builder::new()
-                .name("spid3r-worker".to_string())
-                .stack_size(WORKER_STACK_BYTES)
-                .spawn(move || loop {
-                    let job = {
-                        let mut q = inner.queue.lock().unwrap();
-                        while q.is_empty() {
-                            q = inner.cv.wait(q).unwrap();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let pool = thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1);
+            for _ in 0..pool {
+                let inner = inner.clone();
+                thread::Builder::new()
+                    .name("spid3r-worker".to_string())
+                    .stack_size(WORKER_STACK_BYTES)
+                    .spawn(move || loop {
+                        let job = {
+                            let mut q = inner.queue.lock().unwrap();
+                            while q.is_empty() {
+                                q = inner.cv.wait(q).unwrap();
+                            }
+                            q.pop_front()
+                        };
+                        match job {
+                            Some(job) => {
+                                let _ = job();
+                            }
+                            None => continue,
                         }
-                        q.pop_front()
-                    };
-                    match job {
-                        Some(job) => {
-                            let _ = job();
-                        }
-                        None => continue,
-                    }
-                })
-                .expect("failed to start a spid3r worker thread");
+                    })
+                    .expect("failed to start a spid3r worker thread");
+            }
         }
         Arc::new(Scheduler { inner })
     }
 
     pub fn pool_size(&self) -> usize {
-        thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            1
+        }
     }
 
     /// Queue a job. Returns the task handle; the caller can `join` it.
@@ -222,8 +235,9 @@ impl Scheduler {
             state: state.clone(),
         });
         *self.inner.live.lock().unwrap() += 1;
-        let inner = self.inner.clone();
-        let wrapped: Job = Box::new(move || {
+
+        #[cfg(target_arch = "wasm32")]
+        {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
             let stored: Result<Value, String> = match result {
                 Ok(r) => r,
@@ -232,14 +246,32 @@ impl Scheduler {
             {
                 let mut r = state.result.lock().unwrap();
                 *r = Some(stored);
-                state.cv.notify_all();
             }
-            *inner.live.lock().unwrap() -= 1;
-            Ok(Value::Null)
-        });
-        self.inner.queue.lock().unwrap().push_back(wrapped);
-        self.inner.cv.notify_one();
-        handle
+            *self.inner.live.lock().unwrap() -= 1;
+            handle
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let inner = self.inner.clone();
+            let wrapped: Job = Box::new(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                let stored: Result<Value, String> = match result {
+                    Ok(r) => r,
+                    Err(_) => Err("task panicked".to_string()),
+                };
+                {
+                    let mut r = state.result.lock().unwrap();
+                    *r = Some(stored);
+                    state.cv.notify_all();
+                }
+                *inner.live.lock().unwrap() -= 1;
+                Ok(Value::Null)
+            });
+            self.inner.queue.lock().unwrap().push_back(wrapped);
+            self.inner.cv.notify_one();
+            handle
+        }
     }
 
     pub fn live_tasks(&self) -> usize {
@@ -250,14 +282,22 @@ impl Scheduler {
 /// Sleep for `ms` milliseconds. A Spid3r-level call, not a shell command.
 pub fn sleep_ms(ms: i64) {
     if ms > 0 {
+        #[cfg(not(target_arch = "wasm32"))]
         thread::sleep(std::time::Duration::from_millis(ms as u64));
     }
 }
 
 /// Milliseconds since the Unix epoch.
 pub fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        0
+    }
 }

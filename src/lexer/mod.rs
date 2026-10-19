@@ -352,6 +352,7 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     match e {
                         b'n' => s.push('\n'),
+                        b'r' => s.push('\r'),
                         b't' => s.push('\t'),
                         b'\\' => s.push('\\'),
                         b'"' => s.push('"'),

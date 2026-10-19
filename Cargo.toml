@@ -8,7 +8,7 @@ license = "MIT"
 [lib]
 name = "spid3r"
 path = "src/lib.rs"
-crate-type = ["rlib", "staticlib"]
+crate-type = ["rlib", "staticlib", "cdylib"]
 
 [[bin]]
 name = "spid3r"

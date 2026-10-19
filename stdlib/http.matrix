@@ -1,0 +1,315 @@
+// stdlib/http.matrix - a small HTTP/1.1 web framework, written in Spid3r.
+//
+//   import "http";
+//
+//   fn main() {
+//       let app = new HttpServer();
+//       app.get("/", fn(req) { return http_html(200, "<h1>Hello</h1>"); });
+//       app.get("/users/:id", fn(req) {
+//           return http_json(200, map("id", req["params"]["id"]));
+//       });
+//       app.listen("127.0.0.1:8080");
+//       return 0;
+//   }
+//
+// Socket I/O and HTTP framing are runtime natives (src/stdlib/net.rs); this
+// module adds routing, path parameters, middleware, and response helpers.
+// Every connection is handled in its own `spawn`ed task on the scheduler's
+// OS-thread pool, so a slow client never blocks the others.
+//
+// A handler receives the request map and returns one of:
+//   - a response built by http_response / http_text / http_html / http_json /
+//     http_redirect
+//   - a string             -> 200 text/html
+//   - any other value      -> 200 application/json (json_write of the value)
+//   - null                 -> 204 No Content
+//
+// Request map keys: method, path, query (map), raw_query, version,
+// headers (map, lower-case names), body, remote, params (map of :name
+// captures).
+
+// ------------------------------------------------------------ responses
+
+/// A response with an explicit status, header map, and body.
+public fn http_response(status, headers, body) {
+    return map("__http_response", true, "status", status, "headers", headers, "body", body);
+}
+
+public fn http_text(status, body) {
+    return http_response(status, map("content-type", "text/plain; charset=utf-8"), body);
+}
+
+public fn http_html(status, body) {
+    return http_response(status, map("content-type", "text/html; charset=utf-8"), body);
+}
+
+/// Serialize `value` with json_write.
+public fn http_json(status, value) {
+    return http_response(
+        status,
+        map("content-type", "application/json; charset=utf-8"),
+        json_write(value)
+    );
+}
+
+public fn http_redirect(location) {
+    return http_response(302, map("location", location), "");
+}
+
+/// Parse a request's JSON body: ok(value) / err(message).
+public fn http_body_json(req) {
+    try {
+        return ok(json_parse(req["body"]));
+    } catch (e) {
+        return err("invalid JSON body: " + string(e));
+    }
+}
+
+/// Turn whatever a handler returned into a response map.
+fn to_response(value) {
+    if value == null {
+        return http_response(204, map(), "");
+    }
+    let t = type_of(value);
+    if t == "string" {
+        return http_html(200, value);
+    }
+    if t == "map" {
+        if value.has("__http_response") {
+            return value;
+        }
+    }
+    return http_json(200, value);
+}
+
+// ------------------------------------------------------------ routing
+
+fn split_path(path) {
+    let out = list();
+    for part in path.split("/") {
+        if part != "" {
+            out.push(part);
+        }
+    }
+    return out;
+}
+
+/// Match a route pattern against a path. Returns some(params) or none.
+/// `:name` captures one segment; a trailing `*` captures the rest as
+/// params["*"].
+fn match_path(pattern_parts, path) {
+    let parts = split_path(path);
+    let params = map();
+    let n = len(pattern_parts);
+    let i = 0;
+    while i < n {
+        let p = pattern_parts[i];
+        if p == "*" {
+            let rest = list();
+            let j = i;
+            while j < len(parts) {
+                rest.push(parts[j]);
+                j += 1;
+            }
+            params["*"] = rest.join("/");
+            return some(params);
+        }
+        if i >= len(parts) {
+            return none;
+        }
+        if p.starts_with(":") {
+            params[p.slice(1)] = parts[i];
+        } elif p != parts[i] {
+            return none;
+        }
+        i += 1;
+    }
+    if len(parts) != n {
+        return none;
+    }
+    return some(params);
+}
+
+// ------------------------------------------------------------ server
+
+public class HttpServer {
+    private let routes;
+    private let middleware;
+    private let listener;
+    public let logging;
+
+    fn new() {
+        self.routes = list();
+        self.middleware = list();
+        self.listener = -1;
+        self.logging = true;
+    }
+
+    /// Register `handler` for `method` ("GET", "POST", ..., or "*" for any).
+    public fn route(self, method, pattern, handler) {
+        self.routes.push(map(
+            "method", method.upper(),
+            "pattern", pattern,
+            "parts", split_path(pattern),
+            "handler", handler
+        ));
+        return self;
+    }
+
+    public fn get(self, pattern, handler) {
+        return self.route("GET", pattern, handler);
+    }
+
+    public fn post(self, pattern, handler) {
+        return self.route("POST", pattern, handler);
+    }
+
+    public fn put(self, pattern, handler) {
+        return self.route("PUT", pattern, handler);
+    }
+
+    public fn patch(self, pattern, handler) {
+        return self.route("PATCH", pattern, handler);
+    }
+
+    public fn delete(self, pattern, handler) {
+        return self.route("DELETE", pattern, handler);
+    }
+
+    /// Middleware runs before routing, in registration order. It receives
+    /// the request and returns null to continue, or a response to stop.
+    public fn before(self, handler) {
+        self.middleware.push(handler);
+        return self;
+    }
+
+    /// Route one request to a response map (no sockets involved), so apps
+    /// can be unit-tested without a network.
+    public fn dispatch(self, req) {
+        if not req.has("params") {
+            req["params"] = map();
+        }
+        for mw in self.middleware {
+            let early = mw(req);
+            if early != null {
+                return to_response(early);
+            }
+        }
+        let method = req["method"];
+        let path_matched = false;
+        for r in self.routes {
+            let m = match_path(r["parts"], req["path"]);
+            if m.is_some() {
+                path_matched = true;
+                let rm = r["method"];
+                if rm == "*" or rm == method or (rm == "GET" and method == "HEAD") {
+                    req["params"] = m.unwrap();
+                    let h = r["handler"];
+                    return to_response(h(req));
+                }
+            }
+        }
+        if path_matched {
+            return http_text(405, "405 Method Not Allowed");
+        }
+        return http_text(404, "404 Not Found: " + req["path"]);
+    }
+
+    /// Bind without serving yet. Returns the real address, which matters
+    /// when `addr` uses port 0 ("127.0.0.1:0" picks a free port).
+    public fn bind(self, addr) {
+        let r = tcp_listen(addr);
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        self.listener = r.unwrap();
+        return tcp_local_addr(self.listener).unwrap();
+    }
+
+    /// Accept connections on a bound server. `max_connections < 0` serves
+    /// forever; otherwise returns after that many connections are handled.
+    public fn serve(self, max_connections) {
+        if self.listener < 0 {
+            throw "HttpServer.serve: call bind() or listen() first";
+        }
+        let app = self;
+        let listener = self.listener;
+        let tasks = list();
+        let count = 0;
+        while max_connections < 0 or count < max_connections {
+            let c = tcp_accept(listener);
+            if c.is_err() {
+                // Closed by close(): stop. Anything else: keep serving.
+                if c.unwrap_err().contains("closed") or c.unwrap_err().contains("not open") {
+                    break;
+                }
+                continue;
+            }
+            let conn = c.unwrap();
+            let t = spawn fn() {
+                handle_connection(app, conn);
+                return null;
+            };
+            count += 1;
+            if max_connections >= 0 {
+                tasks.push(t);
+            }
+        }
+        join_all(tasks);
+        return count;
+    }
+
+    /// Bind and serve forever.
+    public fn listen(self, addr) {
+        let real = self.bind(addr);
+        println("Spid3r HTTP server listening on http://" + real);
+        return self.serve(-1);
+    }
+
+    /// Stop accepting connections; a blocked serve() returns.
+    public fn close(self) {
+        if self.listener >= 0 {
+            tcp_close(self.listener);
+            self.listener = -1;
+        }
+        return null;
+    }
+}
+
+async fn join_all(tasks) {
+    for t in tasks {
+        await t;
+    }
+    return null;
+}
+
+/// One connection = one request (the runtime always sends
+/// `connection: close`).
+fn handle_connection(app, conn) {
+    tcp_set_timeout(conn, 30000);
+    let start = now();
+    let r = http_read_request(conn);
+    if r.is_err() {
+        http_write_response(conn, 400, map(), "400 Bad Request");
+        tcp_close(conn);
+        return null;
+    }
+    let req = r.unwrap();
+    let res = null;
+    try {
+        res = app.dispatch(req);
+    } catch (e) {
+        eprint("[http] handler error on " + req["method"] + " " + req["path"] + ": " + string(e) + "\n");
+        res = http_text(500, "500 Internal Server Error");
+    }
+    let body = res["body"];
+    if req["method"] == "HEAD" {
+        body = "";
+    }
+    http_write_response(conn, res["status"], res["headers"], body);
+    tcp_close(conn);
+    if app.logging {
+        println("[http] " + req["method"] + " " + req["path"] + " -> " + string(res["status"]) + " (" + string(now() - start) + " ms)");
+    }
+    return null;
+}

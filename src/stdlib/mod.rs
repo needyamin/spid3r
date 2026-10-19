@@ -1,6 +1,8 @@
-//! Standard library: console, files, time, env, process, and conversions.
-//! Every call that touches the operating system is explicit; there is no
-//! implicit shell and no network in v1.
+//! Standard library: console, files, time, env, process, conversions, and
+//! networking (`net`: TCP sockets + HTTP framing). Every call that touches
+//! the operating system is explicit; there is no implicit shell.
+
+pub mod net;
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -19,7 +21,7 @@ pub type NativeDef = (
 /// All builtin natives. Shared by the tree-walk interpreter (which installs
 /// into an `Env`) and the bytecode VM (which installs into a flat global map).
 pub fn native_defs() -> Vec<NativeDef> {
-    vec![
+    let mut defs: Vec<NativeDef> = vec![
         ("print", n_print),
         ("println", n_println),
         ("assert", n_assert),
@@ -54,7 +56,9 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("type_of", n_type_of),
         ("gc_collect", n_gc_collect),
         ("gc_live_cells", n_gc_live_cells),
-    ]
+    ];
+    defs.extend(net::native_defs());
+    defs
 }
 
 pub fn install(globals: &Env, sched: Arc<Scheduler>) {
@@ -105,13 +109,47 @@ fn join_display(args: &[Value]) -> String {
 
 // --------------------------------------------------------------- console
 
+thread_local! {
+    static CAPTURE_OUTPUT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Begin capturing stdout/stderr into an in-memory buffer (used by WASM and embedded callers).
+pub fn start_capture() {
+    CAPTURE_OUTPUT.with(|c| {
+        *c.borrow_mut() = Some(String::new());
+    });
+}
+
+/// Take the captured output string and reset the buffer.
+pub fn take_capture() -> String {
+    CAPTURE_OUTPUT.with(|c| {
+        c.borrow_mut().take().unwrap_or_default()
+    })
+}
+
+fn emit_output(s: &str) {
+    let captured = CAPTURE_OUTPUT.with(|c| {
+        if let Some(buf) = c.borrow_mut().as_mut() {
+            buf.push_str(s);
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        print!("{}", s);
+    }
+}
+
 fn n_print(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    print!("{}", join_display(&args));
+    emit_output(&join_display(&args));
     Ok(Value::Null)
 }
 
 fn n_println(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    println!("{}", join_display(&args));
+    let mut s = join_display(&args);
+    s.push('\n');
+    emit_output(&s);
     Ok(Value::Null)
 }
 
@@ -176,9 +214,7 @@ fn n_assert_eq(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 }
 
 fn n_eprint(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    // `eprint` mirrors `print`: no trailing newline (docs table lists no
-    // `eprintln`; previously this appended one, breaking the symmetry).
-    eprint!("{}", join_display(&args));
+    emit_output(&join_display(&args));
     Ok(Value::Null)
 }
 
@@ -261,9 +297,17 @@ fn n_now(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
     // Docs promise a MONOTONIC timestamp; wall-clock time can jump backwards
     // under NTP or a manual clock change. Report milliseconds since the
     // process's first `now()` call instead.
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    let start = START.get_or_init(std::time::Instant::now);
-    Ok(Value::Int(start.elapsed().as_millis() as i64))
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = START.get_or_init(std::time::Instant::now);
+        Ok(Value::Int(start.elapsed().as_millis() as i64))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        static START_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+        Ok(Value::Int(START_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
 }
 
 // -------------------------------------------------------------------- env

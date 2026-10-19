@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spid3r — In-Browser WebAssembly Playground</title>
+  <meta name="description" content="Interactive in-browser WebAssembly playground and code runner for the Spid3r (GaliLang) programming language. Write, check, format, and execute Spid3r scripts in real time.">
+
+  <!-- Modern Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    /* ==========================================================================
+       CSS Variables & Design Tokens (Rich Glassmorphism + Vibrant Theme)
+       ========================================================================== */
+    :root {
+      --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', SFMono-Regular, Consolas, monospace;
+
+      /* Dark Theme (Default) */
+      --bg-main: #0b0f17;
+      --bg-surface: #111722;
+      --bg-card: rgba(17, 23, 34, 0.75);
+      --bg-editor: #080c13;
+      --bg-terminal: #05080e;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-hover: rgba(56, 189, 248, 0.4);
+      --border-active: #38bdf8;
+
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+
+      /* Vibrant Accents */
+      --cyan: #38bdf8;
+      --cyan-glow: rgba(56, 189, 248, 0.25);
+      --indigo: #818cf8;
+      --indigo-glow: rgba(129, 140, 248, 0.25);
+      --purple: #c084fc;
+      --emerald: #34d399;
+      --emerald-glow: rgba(52, 211, 153, 0.2);
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --rose-glow: rgba(251, 113, 133, 0.25);
+
+      --grad-primary: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+      --grad-emerald: linear-gradient(135deg, #34d399 0%, #38bdf8 100%);
+
+      --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+      --shadow-glow: 0 0 25px rgba(56, 189, 248, 0.2);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --radius-pill: 9999px;
+
+      --transition-fast: 0.15s ease;
+      --transition-normal: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    html[data-theme="light"] {
+      --bg-main: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-card: rgba(255, 255, 255, 0.9);
+      --bg-editor: #f1f5f9;
+      --bg-terminal: #0f172a;
+      --border-subtle: rgba(0, 0, 0, 0.1);
+      --border-hover: rgba(14, 165, 233, 0.4);
+      --border-active: #0284c7;
+
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #94a3b8;
+
+      --cyan: #0284c7;
+      --cyan-glow: rgba(2, 132, 199, 0.15);
+      --indigo: #6366f1;
+      --emerald: #059669;
+      --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.08);
+      --shadow-lg: 0 16px 24px rgba(0, 0, 0, 0.12);
+    }
+
+    /* Reset & Base */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-body);
+      background-color: var(--bg-main);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+      line-height: 1.5;
+    }
+
+    a {
+      color: var(--cyan);
+      text-decoration: none;
+      transition: color var(--transition-fast);
+    }
+    a:hover {
+      text-decoration: underline;
+    }
+
+    /* Top Navigation */
+    .navbar {
+      height: 64px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(11, 15, 23, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-family: var(--font-heading);
+      font-weight: 700;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-badge {
+      background: var(--grad-primary);
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: var(--radius-pill);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      box-shadow: 0 0 12px var(--cyan-glow);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .nav-link {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color var(--transition-fast);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .nav-link:hover {
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: var(--font-body);
+      font-size: 0.88rem;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      user-select: none;
+    }
+
+    .btn-primary {
+      background: var(--grad-primary);
+      color: #ffffff;
+      box-shadow: 0 4px 14px var(--cyan-glow);
+    }
+    .btn-primary:hover {
+      opacity: 0.95;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px var(--cyan-glow);
+    }
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-primary);
+      border-color: var(--border-subtle);
+    }
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: var(--border-hover);
+    }
+
+    .btn-sm {
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      border-radius: var(--radius-sm);
+      font-weight: 500;
+    }
+
+    .btn-icon {
+      padding: 8px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+    }
+    .btn-icon:hover {
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+
+    /* Toast Notification */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .toast {
+      background: rgba(17, 23, 34, 0.95);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-hover);
+      color: var(--text-primary);
+      padding: 10px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      font-weight: 500;
+      box-shadow: var(--shadow-lg);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      animation: toastSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      pointer-events: auto;
+    }
+
+    @keyframes toastSlideUp {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    .editor-wrapper.drag-over {
+      outline: 2px dashed var(--cyan);
+      outline-offset: -4px;
+    }
+
+    /* Main Workspace Layout */
+    .playground-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 24px;
+      gap: 16px;
+      max-width: 1700px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* Control Toolbar */
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 16px;
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .select-input {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 7px 12px;
+      border-radius: var(--radius-sm);
+      outline: none;
+      cursor: pointer;
+      transition: border-color var(--transition-fast);
+    }
+    .select-input:hover, .select-input:focus {
+      border-color: var(--border-hover);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: var(--radius-pill);
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--emerald);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+    }
+    .status-badge.ready {
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--emerald);
+      border-color: rgba(52, 211, 153, 0.3);
+    }
+    .status-badge.loading {
+      background: rgba(251, 191, 36, 0.12);
+      color: var(--amber);
+      border-color: rgba(251, 191, 36, 0.3);
+    }
+    .status-badge.error {
+      background: rgba(251, 113, 133, 0.12);
+      color: var(--rose);
+      border-color: rgba(251, 113, 133, 0.3);
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 8px currentColor;
+    }
+
+    /* Split Workspace Panes */
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      flex: 1;
+      min-height: 580px;
+    }
+
+    @media (max-width: 960px) {
+      .workspace-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .pane-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .pane-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: rgba(0, 0, 0, 0.25);
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
+    .pane-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Code Editor Container */
+    .editor-wrapper {
+      position: relative;
+      flex: 1;
+      display: flex;
+      background: var(--bg-editor);
+    }
+
+    .line-numbers {
+      padding: 16px 8px 16px 12px;
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      line-height: 1.6;
+      color: var(--text-muted);
+      text-align: right;
+      user-select: none;
+      background: rgba(0, 0, 0, 0.15);
+      border-right: 1px solid var(--border-subtle);
+      min-width: 44px;
+    }
+
+    .code-textarea {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      line-height: 1.6;
+      padding: 16px;
+      resize: none;
+      outline: none;
+      white-space: pre;
+      overflow-wrap: normal;
+      overflow-x: auto;
+      tab-size: 4;
+    }
+
+    /* Terminal Console */
+    .terminal-body {
+      flex: 1;
+      background: var(--bg-terminal);
+      color: #38bdf8;
+      font-family: var(--font-mono);
+      font-size: 0.86rem;
+      line-height: 1.6;
+      padding: 16px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .term-stdout {
+      color: #e2e8f0;
+    }
+    .term-success {
+      color: var(--emerald);
+    }
+    .term-error {
+      color: var(--rose);
+      font-weight: 600;
+    }
+    .term-meta {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border-subtle);
+    }
+
+    /* Fallback Banner */
+    .file-proto-banner {
+      display: none;
+      background: rgba(251, 191, 36, 0.15);
+      border: 1px solid rgba(251, 191, 36, 0.4);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      color: var(--text-primary);
+      font-size: 0.88rem;
+    }
+    .file-proto-banner.visible {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    /* Quick Guide / Cheat Sheet Accordion */
+    .quick-guide {
+      margin-top: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+    }
+
+    .guide-title {
+      font-family: var(--font-heading);
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--cyan);
+    }
+
+    .guide-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .guide-item {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-size: 0.82rem;
+    }
+    .guide-item h4 {
+      font-family: var(--font-heading);
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      font-size: 0.88rem;
+    }
+    .guide-item code {
+      font-family: var(--font-mono);
+      color: var(--cyan);
+      background: rgba(56, 189, 248, 0.08);
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+
+    /* Footer */
+    .footer {
+      border-top: 1px solid var(--border-subtle);
+      padding: 18px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .file-proto-banner {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 18px;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-size: 0.88rem;
+    }
+    .file-proto-banner.visible {
+      display: flex;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Navigation -->
+  <header class="navbar">
+    <div class="brand">
+      <span style="color: var(--cyan);">⚡ Spid3r</span>
+      <span>In-Browser Runtime</span>
+      <span class="brand-badge">WASM 1.0</span>
+    </div>
+    <div class="nav-actions">
+      <a href="../../doc.html" class="nav-link">Documentation</a>
+      <a href="plan.html" class="nav-link">Roadmap</a>
+      <a href="benchmarks.html" class="nav-link">Benchmarks</a>
+      <button class="btn-icon" id="theme-btn" title="Toggle Theme">🌓</button>
+    </div>
+  </header>
+
+  <!-- Workspace Container -->
+  <main class="playground-container">
+
+    <!-- CORS File Protocol Notice (Shown if opened via file:// and fetch fails) -->
+    <div id="cors-notice" class="file-proto-banner">
+      <div>
+        <strong>Local File Access Notice:</strong> Browsers restrict WebAssembly <code>fetch()</code> over <code>file://</code> URLs.
+        Run a quick local server (e.g. <code>spid3r run server.matrix</code> or <code>npx serve .</code>), or load <code>../../web/spid3r.wasm</code> manually:
+      </div>
+      <input type="file" id="wasm-file-picker" accept=".wasm" style="font-size: 0.8rem; color: var(--text-primary);">
+    </div>
+
+    <!-- Toolbar Controls -->
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <button class="btn btn-primary" id="btn-run" title="Run (Ctrl + Enter)">
+          <span>▶</span> Run Code
+        </button>
+        <button class="btn btn-secondary" id="btn-check" title="Syntax and semantic analysis">
+          <span>✓</span> Check
+        </button>
+        <button class="btn btn-secondary" id="btn-format" title="Canonical code formatter">
+          <span>✦</span> Format
+        </button>
+        <button class="btn btn-secondary" id="btn-share" title="Copy shareable link with code embedded">
+          <span>🔗</span> Share
+        </button>
+        <button class="btn btn-secondary" id="btn-download" title="Export as main.matrix">
+          <span>💾</span> Export
+        </button>
+        <button class="btn btn-secondary" id="btn-open" title="Open .matrix file">
+          <span>📂</span> Open
+        </button>
+        <button class="btn btn-secondary" id="btn-clear" title="Clear console output">
+          <span>⟳</span> Clear
+        </button>
+        <input type="file" id="file-code-input" accept=".matrix,.spid3r,.txt" style="display: none;">
+      </div>
+
+      <div class="toolbar-group">
+        <label style="font-size: 0.85rem; color: var(--text-secondary);">Preset:</label>
+        <select class="select-input" id="preset-selector">
+          <option value="hello">1. Hello World & System</option>
+          <option value="fib">2. Fibonacci & Recursion</option>
+          <option value="http_sim">3. Simulated Web Server Route</option>
+          <option value="oop">4. Classes & Inheritance</option>
+          <option value="closures">5. Higher-Order Closures</option>
+          <option value="benchmark">6. Benchmark (100k Loops)</option>
+        </select>
+
+        <label style="font-size: 0.85rem; color: var(--text-secondary); margin-left: 6px;">Engine:</label>
+        <select class="select-input" id="engine-selector">
+          <option value="vm" selected>Bytecode VM (Fast)</option>
+          <option value="tree">Tree Interpreter (Reference)</option>
+        </select>
+
+        <div class="status-badge loading" id="engine-status">
+          <span class="pulse-dot"></span>
+          <span id="engine-status-text">Loading WASM...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Workspace Grid -->
+    <div class="workspace-grid">
+      <!-- Left: Code Editor -->
+      <section class="pane-card">
+        <div class="pane-header">
+          <div class="pane-title">
+            <span>📝</span> Spid3r Source Code (<code>main.matrix</code>)
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <button class="btn btn-secondary btn-sm" id="btn-copy-code" title="Copy code to clipboard">📋 Copy Code</button>
+            <span style="font-size: 0.78rem; color: var(--text-muted);">Ctrl+Enter</span>
+          </div>
+        </div>
+        <div class="editor-wrapper" id="editor-wrapper">
+          <div class="line-numbers" id="line-numbers">1</div>
+          <textarea class="code-textarea" id="code-editor" spellcheck="false" placeholder="Write your Spid3r code here, or drop a .matrix file..."></textarea>
+        </div>
+      </section>
+
+      <!-- Right: Terminal Console Output -->
+      <section class="pane-card">
+        <div class="pane-header">
+          <div class="pane-title">
+            <span>💻</span> Execution Terminal &amp; Diagnostics
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="perf-pill" style="font-size: 0.78rem; color: var(--cyan);">Ready</span>
+            <button class="btn btn-secondary btn-sm" id="btn-copy-term" title="Copy terminal output">📋 Copy Output</button>
+          </div>
+        </div>
+        <div class="terminal-body" id="term-output">Spid3r WebAssembly Engine Initializing...
+Ready to execute Spid3r scripts entirely within your browser!</div>
+      </section>
+    </div>
+
+    <!-- Quick Syntax Guide -->
+    <section class="quick-guide">
+      <div class="guide-title">
+        <span>⚡</span> Spid3r Language Essentials
+      </div>
+      <div class="guide-grid">
+        <div class="guide-item">
+          <h4>Variables &amp; Types</h4>
+          <code>let x = 42;</code><br>
+          <code>const PI = 3.14159;</code><br>
+          <code>let list = [1, "two", true];</code>
+        </div>
+        <div class="guide-item">
+          <h4>Functions &amp; Closures</h4>
+          <code>fn add(a, b) { return a + b; }</code><br>
+          <code>let sq = fn(x) { x * x };</code>
+        </div>
+        <div class="guide-item">
+          <h4>Classes &amp; OOP</h4>
+          <code>class Point { public let x; }</code><br>
+          <code>let p = new Point(); p.x = 10;</code>
+        </div>
+        <div class="guide-item">
+          <h4>Control Flow</h4>
+          <code>if (x > 0) { ... } else { ... }</code><br>
+          <code>for item in list { println(item); }</code>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    Spid3r (GaliLang) In-Browser Runtime — Built with zero external dependencies compiled to <code>wasm32-unknown-unknown</code>.
+  </footer>
+
+  <!-- Include Spid3r JS SDK & Embedded WASM Binary Data -->
+  <script src="../../web/spid3r.js"></script>
+  <script src="../../web/spid3r_wasm_data.js"></script>
+  <script>
+    (function() {
+      'use strict';
+
+      // Elements
+      const editor = document.getElementById('code-editor');
+      const lineNumbers = document.getElementById('line-numbers');
+      const terminal = document.getElementById('term-output');
+      const btnRun = document.getElementById('btn-run');
+      const btnCheck = document.getElementById('btn-check');
+      const btnFormat = document.getElementById('btn-format');
+      const btnClear = document.getElementById('btn-clear');
+      const presetSelector = document.getElementById('preset-selector');
+      const engineSelector = document.getElementById('engine-selector');
+      const engineStatus = document.getElementById('engine-status');
+      const engineStatusText = document.getElementById('engine-status-text');
+      const perfPill = document.getElementById('perf-pill');
+      const themeBtn = document.getElementById('theme-btn');
+      const corsNotice = document.getElementById('cors-notice');
+      const wasmFilePicker = document.getElementById('wasm-file-picker');
+
+      let runtime = null;
+
+      // Presets
+      const PRESETS = {
+        hello: `// 1. Hello World & System Info
+println("=========================================");
+println("  ⚡ Welcome to Spid3r WebAssembly Engine!");
+println("=========================================");
+
+let name = "Browser Developer";
+let version = 1.0;
+
+println("Hello, " + name + "!");
+println("Language Version: ", version);
+
+// Test math & collections
+let numbers = [10, 20, 30, 40, 50];
+let total = 0;
+for n in numbers {
+    total = total + n;
+}
+println("Sum of array:", total);
+`,
+        fib: `// 2. Recursive Fibonacci
+fn fib(n) {
+    if (n <= 1) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+println("Computing Fibonacci sequence:");
+for let i = 0; i <= 12; i = i + 1 {
+    println("fib(" + string(i) + ") = " + string(fib(i)));
+}
+`,
+        http_sim: `// 3. Simulated Web Server Route Handler
+class Request {
+    public let method;
+    public let path;
+}
+
+class Response {
+    public let status;
+    public let body;
+}
+
+fn handle_route(req) {
+    let res = new Response();
+    if (req.path == "/api/status") {
+        res.status = 200;
+        res.body = "{\\"status\\":\\"ok\\",\\"platform\\":\\"wasm32\\"}";
+    } else {
+        res.status = 404;
+        res.body = "{\\"error\\":\\"Not Found\\"}";
+    }
+    return res;
+}
+
+let req = new Request();
+req.method = "GET";
+req.path = "/api/status";
+
+println("Processing HTTP Request: " + req.method + " " + req.path);
+let res = handle_route(req);
+println("HTTP " + string(res.status) + " OK");
+println("Payload: " + res.body);
+`,
+        oop: `// 4. Object-Oriented Programming (Classes & Inheritance)
+class Shape {
+    public let name;
+    public fn describe(self) {
+        return "Shape: " + self.name;
+    }
+}
+
+class Circle extends Shape {
+    public let radius;
+    public fn area(self) {
+        return 3.14159 * self.radius * self.radius;
+    }
+}
+
+let c = new Circle();
+c.name = "MyCircle";
+c.radius = 5.0;
+
+println(c.describe());
+println("Radius:", c.radius);
+println("Calculated Area:", c.area());
+`,
+        closures: `// 5. Higher-Order Functions & Closures
+fn make_counter(start) {
+    let count = start;
+    return fn() {
+        count = count + 1;
+        return count;
+    };
+}
+
+let c1 = make_counter(100);
+let c2 = make_counter(0);
+
+println("Counter 1 (starts at 100):");
+println("Tick:", c1());
+println("Tick:", c1());
+
+println("Counter 2 (starts at 0):");
+println("Tick:", c2());
+println("Tick:", c2());
+println("Tick:", c2());
+`,
+        benchmark: `// 6. Benchmark: 100,000 iterations
+println("Running 100,000 loop iterations in browser WASM...");
+let count = 0;
+for let i = 0; i < 100000; i = i + 1 {
+    count = count + 1;
+}
+println("Benchmark completed! Total:", count);
+`
+      };
+
+      // Update line numbers
+      function updateLineNumbers() {
+        const lines = editor.value.split('\n').length;
+        let nums = '';
+        for (let i = 1; i <= lines; i++) {
+          nums += i + '\n';
+        }
+        lineNumbers.innerText = nums;
+      }
+      editor.addEventListener('input', updateLineNumbers);
+
+      // Tab key indent in textarea
+      editor.addEventListener('keydown', function(e) {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const start = this.selectionStart;
+          const end = this.selectionEnd;
+          this.value = this.value.substring(0, start) + '    ' + this.value.substring(end);
+          this.selectionStart = this.selectionEnd = start + 4;
+          updateLineNumbers();
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault();
+          executeCode();
+        }
+      });
+
+      // Preset change
+      presetSelector.addEventListener('change', function() {
+        const val = this.value;
+        if (PRESETS[val]) {
+          editor.value = PRESETS[val];
+          updateLineNumbers();
+        }
+      });
+
+      // Clear terminal
+      btnClear.addEventListener('click', function() {
+        terminal.innerText = '';
+        perfPill.innerText = 'Ready';
+        perfPill.style.color = 'var(--text-muted)';
+      });
+
+      // Format code
+      btnFormat.addEventListener('click', function() {
+        if (!runtime) return;
+        const res = runtime.format(editor.value);
+        if (res.ok && res.code) {
+          editor.value = res.code;
+          updateLineNumbers();
+          printMeta("✦ Code canonical formatting applied.");
+        } else {
+          printError("Formatter Error: " + (res.error || "failed"));
+        }
+      });
+
+      // Check code
+      btnCheck.addEventListener('click', function() {
+        if (!runtime) return;
+        const t0 = performance.now();
+        const res = runtime.check(editor.value);
+        const elapsed = (performance.now() - t0).toFixed(2);
+        if (res.ok) {
+          terminal.innerText = "";
+          printSuccess("✓ Syntax and semantic checks passed cleanly! (Checked in " + elapsed + "ms)");
+        } else {
+          terminal.innerText = "";
+          printError("[" + (res.phase || "Check") + " Error at line " + res.line + ":" + res.col + "]\n" + res.error);
+        }
+      });
+
+      // Run code
+      function executeCode() {
+        if (!runtime) {
+          printError("Engine is not ready yet. Please wait or load the WebAssembly binary.");
+          return;
+        }
+
+        const engine = engineSelector.value;
+        terminal.innerText = "";
+        perfPill.innerText = "Running...";
+        perfPill.style.color = "var(--amber)";
+
+        setTimeout(() => {
+          const t0 = performance.now();
+          const res = runtime.eval(editor.value, engine);
+          const elapsed = (performance.now() - t0).toFixed(2);
+
+          perfPill.innerText = "Completed in " + elapsed + "ms (" + engine.toUpperCase() + ")";
+          perfPill.style.color = "var(--cyan)";
+
+          if (res.stdout) {
+            const outDiv = document.createElement("div");
+            outDiv.className = "term-stdout";
+            outDiv.innerText = res.stdout;
+            terminal.appendChild(outDiv);
+          }
+
+          if (res.ok) {
+            printMeta("Exit Code: " + res.exit_code + " · Execution time: " + elapsed + "ms");
+          } else {
+            const errDiv = document.createElement("div");
+            errDiv.className = "term-error";
+            const phase = res.phase ? "[" + res.phase + " Error] " : "[Error] ";
+            const pos = res.line ? " at line " + res.line + ":" + res.col : "";
+            const thrown = res.thrown ? "\nThrown: " + res.thrown : "";
+            errDiv.innerText = phase + res.error + pos + thrown;
+            terminal.appendChild(errDiv);
+          }
+        }, 10);
+      }
+      btnRun.addEventListener('click', executeCode);
+
+      function printSuccess(msg) {
+        const div = document.createElement("div");
+        div.className = "term-success";
+        div.innerText = msg;
+        terminal.appendChild(div);
+      }
+
+      function printError(msg) {
+        const div = document.createElement("div");
+        div.className = "term-error";
+        div.innerText = msg;
+        terminal.appendChild(div);
+      }
+
+      function printMeta(msg) {
+        const div = document.createElement("div");
+        div.className = "term-meta";
+        div.innerText = msg;
+        terminal.appendChild(div);
+      }
+
+      const btnShare = document.getElementById('btn-share');
+      const btnDownload = document.getElementById('btn-download');
+      const btnOpen = document.getElementById('btn-open');
+      const fileCodeInput = document.getElementById('file-code-input');
+      const btnCopyCode = document.getElementById('btn-copy-code');
+      const btnCopyTerm = document.getElementById('btn-copy-term');
+      const editorWrapper = document.getElementById('editor-wrapper');
+      const toastContainer = document.getElementById('toast-container');
+
+      function showToast(msg) {
+        const t = document.createElement('div');
+        t.className = 'toast';
+        t.innerText = msg;
+        toastContainer.appendChild(t);
+        setTimeout(() => {
+          t.style.opacity = '0';
+          t.style.transition = 'opacity 0.3s ease';
+          setTimeout(() => t.remove(), 300);
+        }, 2500);
+      }
+
+      // Share URL
+      btnShare.addEventListener('click', function() {
+        try {
+          const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(editor.value))));
+          const shareUrl = window.location.origin + window.location.pathname + '#code=' + encoded;
+          history.replaceState(null, '', '#code=' + encoded);
+          navigator.clipboard.writeText(shareUrl).then(() => {
+            showToast("🔗 Shareable link copied to clipboard!");
+          });
+        } catch (e) {
+          showToast("Failed to generate share URL: " + e.message);
+        }
+      });
+
+      // Export / Download
+      btnDownload.addEventListener('click', function() {
+        const blob = new Blob([editor.value], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'main.matrix';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast("💾 Exported main.matrix!");
+      });
+
+      // Open file
+      btnOpen.addEventListener('click', () => fileCodeInput.click());
+      fileCodeInput.addEventListener('change', function(e) {
+        const f = e.target.files[0];
+        if (f) {
+          const reader = new FileReader();
+          reader.onload = function(evt) {
+            editor.value = evt.target.result;
+            updateLineNumbers();
+            showToast("📂 Loaded " + f.name);
+          };
+          reader.readAsText(f);
+        }
+      });
+
+      // Drag and Drop
+      editorWrapper.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        editorWrapper.classList.add('drag-over');
+      });
+      editorWrapper.addEventListener('dragleave', () => {
+        editorWrapper.classList.remove('drag-over');
+      });
+      editorWrapper.addEventListener('drop', (e) => {
+        e.preventDefault();
+        editorWrapper.classList.remove('drag-over');
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          const f = e.dataTransfer.files[0];
+          const reader = new FileReader();
+          reader.onload = function(evt) {
+            editor.value = evt.target.result;
+            updateLineNumbers();
+            showToast("📂 Loaded " + f.name);
+          };
+          reader.readAsText(f);
+        }
+      });
+
+      // Copy Code & Copy Output
+      btnCopyCode.addEventListener('click', () => {
+        navigator.clipboard.writeText(editor.value).then(() => {
+          showToast("📋 Code copied to clipboard!");
+        });
+      });
+      btnCopyTerm.addEventListener('click', () => {
+        navigator.clipboard.writeText(terminal.innerText).then(() => {
+          showToast("📋 Terminal output copied to clipboard!");
+        });
+      });
+
+      function loadCodeFromUrl() {
+        const hash = window.location.hash;
+        if (hash && hash.startsWith('#code=')) {
+          try {
+            const raw = hash.substring(6);
+            const decoded = decodeURIComponent(escape(atob(decodeURIComponent(raw))));
+            editor.value = decoded;
+            updateLineNumbers();
+            showToast("🔗 Loaded shared snippet from URL!");
+            return true;
+          } catch (_) {}
+        }
+        return false;
+      }
+
+      function decodeBase64ToBytes(b64) {
+        const binStr = atob(b64);
+        const len = binStr.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binStr.charCodeAt(i);
+        }
+        return bytes;
+      }
+
+      // Initialize WASM
+      async function initEngine(source) {
+        try {
+          engineStatus.className = "status-badge loading";
+          engineStatusText.innerText = "Loading WASM...";
+
+          let wasmInput = source;
+          if (!wasmInput) {
+            // First check embedded base64 data (enables 100% offline file:// instant loading)
+            const g = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this);
+            if (g && typeof g.__SPID3R_WASM_BASE64__ === 'string' && g.__SPID3R_WASM_BASE64__.length > 0) {
+              wasmInput = decodeBase64ToBytes(g.__SPID3R_WASM_BASE64__);
+            } else {
+              wasmInput = "../../web/spid3r.wasm";
+            }
+          }
+
+          runtime = await Spid3r.init(wasmInput);
+          const ver = runtime.version();
+          engineStatus.className = "status-badge ready";
+          engineStatusText.innerText = "Spid3r v" + ver.version + " Ready";
+          if (corsNotice) corsNotice.classList.remove('visible');
+          terminal.innerText = "⚡ Spid3r WebAssembly Engine initialized successfully!\nRuntime: v" + ver.version + " (Language " + ver.language_version + ")\nClick 'Run Code' or press Ctrl+Enter to execute.";
+        } catch (err) {
+          console.error("WASM Load Error:", err);
+          engineStatus.className = "status-badge error";
+          engineStatusText.innerText = "Load Failed";
+          if (corsNotice) corsNotice.classList.add('visible');
+          terminal.innerText = "Notice: Could not load WebAssembly runtime (" + err.message + ").\n\nIf running from a local file:// URL, select '../../web/spid3r.wasm' using the file picker above, or run a local HTTP server:\n  npx serve .\n  or: python -m http.server 8000";
+        }
+      }
+
+      // File picker fallback
+      if (wasmFilePicker) {
+        wasmFilePicker.addEventListener('change', async function(e) {
+          const file = e.target.files && e.target.files[0];
+          if (file) {
+            try {
+              showToast("⏳ Reading " + file.name + "...");
+              const buffer = await file.arrayBuffer();
+              await initEngine(buffer);
+              showToast("⚡ Engine loaded from " + file.name + "!");
+            } catch (loadErr) {
+              showToast("❌ Failed to load file: " + loadErr.message);
+            }
+          }
+        });
+      }
+
+      // Theme toggle
+      themeBtn.addEventListener('click', function() {
+        const current = document.documentElement.getAttribute('data-theme');
+        const next = current === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+      });
+
+      // Load initial preset and start engine
+      if (!loadCodeFromUrl()) {
+        editor.value = PRESETS.hello;
+      }
+      updateLineNumbers();
+      initEngine();
+
+    })();
+  </script>
+  <!-- Toast Floating Container -->
+  <div class="toast-container" id="toast-container"></div>
+</body>
+</html>

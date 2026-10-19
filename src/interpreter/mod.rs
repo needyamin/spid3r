@@ -19,9 +19,7 @@ use crate::value::{FunctionData, InstanceData, Value};
 /// limit - not the OS stack size - is what stops runaway recursion.
 pub const MAX_CALL_DEPTH: usize = 1_000;
 
-/// Stack size for the thread that runs a program. Chosen so that
-/// MAX_CALL_DEPTH tree-walk frames fit with room to spare, even in a
-/// debug build where frames are far larger than in release.
+#[allow(dead_code)]
 const RUN_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 /// Stack size for REPL evaluation threads (same rationale as RUN_STACK_BYTES).
@@ -195,19 +193,32 @@ impl Interp {
     /// recursion is stopped by MAX_CALL_DEPTH with a clean diagnostic instead
     /// of a Rust stack overflow.
     pub fn run_program(&self, program: &Program) -> Result<i32, Diagnostic> {
-        std::thread::scope(|s| {
-            let handle = std::thread::Builder::new()
-                .stack_size(RUN_STACK_BYTES)
-                .spawn_scoped(s, || self.run_program_inner(program))
-                .expect("failed to start the spid3r program thread");
-            match handle.join() {
-                Ok(result) => result,
-                Err(_) => Err(Diagnostic::new(
-                    Phase::Runtime,
-                    "the program thread panicked; this is a bug in spid3r",
-                )),
-            }
-        })
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::scope(|s| {
+                let handle = std::thread::Builder::new()
+                    .stack_size(RUN_STACK_BYTES)
+                    .spawn_scoped(s, || self.run_program_inner(program))
+                    .expect("failed to start the spid3r program thread");
+                match handle.join() {
+                    Ok(result) => result,
+                    Err(_) => Err(Diagnostic::new(
+                        Phase::Runtime,
+                        "the program thread panicked; this is a bug in spid3r",
+                    )),
+                }
+            })
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.run_program_inner(program)
+        }
+    }
+
+    /// Run program inline on the current thread without spawning a new OS thread.
+    /// Used by WebAssembly and embedded/in-memory callers.
+    pub fn run_program_inline(&self, program: &Program) -> Result<i32, Diagnostic> {
+        self.run_program_inner(program)
     }
 
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
