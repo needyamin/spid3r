@@ -30,14 +30,14 @@ Unicode true
 !define WITH_NATIVE 0
 !endif
 !ifndef APPVERSION
-!define APPVERSION     "0.1.0"
+!define APPVERSION     "1.0.0"
 !endif
 !ifndef SPID3R_EXE
 !define SPID3R_EXE     "..\..\target\release\spid3r.exe"
 !endif
 
 !define APPNAME        "Spid3r"
-!define PUBLISHER      "Spid3r"
+!define PUBLISHER      "ANSNEW TECH."
 !define UNINSTKEY      "Software\Microsoft\Windows\CurrentVersion\Uninstall\Spid3r"
 !define DOCSURL        "https://needyamin.github.io/spid3r/doc.html"
 !ifndef HWND_BROADCAST
@@ -128,7 +128,7 @@ Section "Spid3r compiler & runtime (required)" SecCore
   WriteRegStr HKCU "Software\Spid3r" "InstallDir" "$INSTDIR"
 
   ; --- Apps & features entry ---
-  WriteRegStr HKCU "${UNINSTKEY}" "DisplayName"     "${APPNAME} ${APPVERSION} programming language"
+  WriteRegStr HKCU "${UNINSTKEY}" "DisplayName"     "${APPNAME} ${APPVERSION}"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayVersion"  "${APPVERSION}"
   WriteRegStr HKCU "${UNINSTKEY}" "Publisher"       "${PUBLISHER}"
   WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon"     "$INSTDIR\spid3r.ico"

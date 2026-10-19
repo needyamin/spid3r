@@ -98,6 +98,8 @@ BENCHMARKS = [
 def find_binary(name):
     # Check current directory / target/release first for spid3r
     if name == "spid3r":
+        if "SPID3R_BIN" in os.environ and Path(os.environ["SPID3R_BIN"]).exists():
+            return str(Path(os.environ["SPID3R_BIN"]).resolve())
         rel = Path("target/release/spid3r.exe")
         if rel.exists():
             return str(rel.resolve())
@@ -127,10 +129,20 @@ def measure(cmd, runs=3):
 
 def main():
     runs = 3
-    if len(sys.argv) > 1 and sys.argv[1].isdigit():
-        runs = int(sys.argv[1])
+    custom_bin = None
+    i = 1
+    while i < len(sys.argv):
+        arg = sys.argv[i]
+        if arg in ("--bin", "-b") and i + 1 < len(sys.argv):
+            custom_bin = sys.argv[i + 1]
+            i += 2
+        elif arg.isdigit():
+            runs = int(arg)
+            i += 1
+        else:
+            i += 1
 
-    spid3r_bin = find_binary("spid3r")
+    spid3r_bin = custom_bin or find_binary("spid3r")
     python_bin = sys.executable or find_binary("python")
     php_bin = find_binary("php")
 
@@ -216,7 +228,10 @@ def main():
 
     # Generate HTML report
     generate_html_report(report_data, "benchmarks.html")
-    print(f"\n[OK] Benchmark run complete! Results written to benchmarks.html and benchmarks/results.json")
+    docs_html = Path("docs/html/benchmarks.html")
+    if docs_html.parent.exists():
+        generate_html_report(report_data, str(docs_html))
+    print(f"\n[OK] Benchmark run complete! Results written to benchmarks.html, docs/html/benchmarks.html, and benchmarks/results.json")
 
 def generate_html_report(data, out_path):
     benchmarks = data["benchmarks"]

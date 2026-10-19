@@ -67,7 +67,7 @@ installs `spid3r` into `~/.spid3r/bin`, and adds that directory to your `PATH` i
 `~/.bashrc`, `~/.zshrc`, and `~/.profile`. Options:
 
 ```sh
-sh install.sh --version 0.1.0   # pin a release instead of latest
+sh install.sh --version 1.0.0   # pin a release instead of latest
 sh install.sh --dir ~/.local/bin
 sh install.sh --source          # build from source via cargo (no release needed)
 ```

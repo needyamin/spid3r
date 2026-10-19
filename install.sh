@@ -6,7 +6,7 @@
 #
 # or, with options:
 #
-#   sh install.sh --version 0.1.0
+#   sh install.sh --version 1.0.0
 #   sh install.sh --dir /usr/local/bin
 #   sh install.sh --source        # build from source via cargo instead
 #   sh install.sh --source --core # source build, no LLVM/WebKit needed
@@ -38,7 +38,7 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 # ---------------------------------------------------------------- arguments --
 while [ $# -gt 0 ]; do
     case "$1" in
-        --version)  [ $# -ge 2 ] || die "--version needs a value (e.g. 0.1.0)"
+        --version)  [ $# -ge 2 ] || die "--version needs a value (e.g. 1.0.0)"
                     VERSION="$2"; shift 2 ;;
         --dir)      [ $# -ge 2 ] || die "--dir needs a value"
                     INSTALL_DIR="$2"; shift 2 ;;

@@ -26,7 +26,7 @@ webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
 State: 279 Rust tests green (269 core + 10 GUI),
 23/23 examples pass the three-engine differential. Language version 1.0,
-crate version 0.1.0.
+crate version 1.0.0.
 
 [2] TOP-LEVEL LAYOUT
 --------------------------------------------------------------------------------
@@ -269,7 +269,7 @@ GaliLang/
   assets/        spid3r.ico (from the 512x512 logo), header.bmp 150x57,
                  welcome.bmp 164x314
   nsis/          portable NSIS 3.10 toolchain (git-ignored)
-  Output:        Spid3r-Setup-0.1.0.exe at repo root (git-ignored).
+  Output:        Spid3r-Setup-1.0.0.exe at repo root (git-ignored).
   Tested: silent install/uninstall, PATH dedupe, ARP entry, association keys,
   installed binary runs examples. Installed copy lives OUTSIDE OneDrive.
 
