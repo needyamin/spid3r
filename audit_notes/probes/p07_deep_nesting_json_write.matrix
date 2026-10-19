@@ -1,0 +1,18 @@
+// p07: runtime-built deep nesting (no parse-depth cap applies). json_write /
+// deep_clone recurse per level on the host stack. 4M levels should exceed the
+// 512 MiB worker stack (cli.rs R3) if frames are ~130B+.
+fn main() {
+    let l = list(1);
+    let i = 0;
+    while i < 250000 {
+        let n = list();
+        n.push(l);
+        l = n;
+        i = i + 1;
+    }
+    println("built");
+    let s = json_write(l, "deep.json");
+    println(s);
+    println("wrote");
+    return 0;
+}

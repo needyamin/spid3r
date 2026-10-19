@@ -1,0 +1,38 @@
+// p22: mutex held across a throw. Top-level spawn doubles as the module-init
+// spawn scenario for p24 (module that itself spawns). If a user mutex stays
+// locked after a throw (AUDIT_REPORT.md:199 KNOWN-REMAINING), the "task
+// relocked" line never prints; host must still exit cleanly (no panic).
+spawn fn() {
+    sleep_ms(100);
+    print("module-init task ran");
+};
+
+fn hold_and_throw(mu) {
+    let g = mu.lock();
+    g.set(41);
+    throw "boom while holding";
+}
+
+fn main() {
+    let mu = mutex(0);
+    try {
+        let g = mu.lock();
+        g.set(1);
+        throw "main throws while holding";
+    } catch(e) {
+        print("caught: " + e);
+    }
+    let t = spawn fn() {
+        try {
+            hold_and_throw(mu);
+        } catch(e) {
+            print("task caught: " + e);
+        }
+        sleep_ms(50);
+        let g2 = mu.lock();
+        print("task relocked, v=" + string(g2.get()));
+    };
+    sleep_ms(700);
+    print("main done (unjoined worker killed at exit if stuck)");
+    return 0;
+}

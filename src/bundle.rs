@@ -181,7 +181,12 @@ fn bundle_wasm(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic> {
 </html>"#,
             stem,
             user_html_custom,
-            src.replace("</script>", "<\\/script>"),
+            // HTML end tags are case-insensitive and tolerate whitespace, so
+            // a plain `</script>` replace is not enough to keep the program
+            // source inside the <script type="application/spid3r"> element;
+            // neutralize every `<` of a closing-tag sequence instead.
+            src
+                .replace("</", "<\\/"),
             EMBEDDED_JS_SDK,
             base64_wasm
         );

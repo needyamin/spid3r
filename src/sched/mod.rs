@@ -66,6 +66,9 @@ impl Default for ChannelData {
 
 /// Mutual exclusion around a value. `lock` returns the inner value; the lock
 /// is released when the interpreter unlocks the guard at the end of the scope.
+/// `MutexData` is shared as `Arc<MutexData>` (no outer wrapper mutex): `lock`
+/// parks on the internal condvar while holding no other guard, so concurrent
+/// `lock`/`unlock` from several tasks can never deadlock on dispatch.
 pub struct MutexData {
     locked: Mutex<bool>,
     cv: Condvar,

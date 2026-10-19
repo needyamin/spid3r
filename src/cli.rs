@@ -85,14 +85,38 @@ pub fn run(args: Vec<String>) -> i32 {
         }
     };
     let rest: Vec<String> = it.collect();
+    // The parser caps expression nesting at MAX_PARSE_DEPTH, but the semantic
+    // checker, the tree interpreter, and the VM compiler all recurse per AST
+    // level with frames far larger than the parser's; on a 1 MiB default stack
+    // (Windows main thread, debug builds) deep-but-valid input aborted the
+    // host with STATUS_STACK_OVERFLOW and no diagnostic. Run every subcommand
+    // on a dedicated big-stack worker thread so the worst case is a clean
+    // error, and join it so exit codes and panics behave exactly as before.
+    let cmd_for_thread = cmd.clone();
+    let rest_clone = rest.clone();
+    let spawned = std::thread::Builder::new()
+        .name(format!("spid3r-{}", cmd_for_thread))
+        .stack_size(512 * 1024 * 1024)
+        .spawn(move || dispatch(cmd_for_thread, rest_clone));
+    match spawned {
+        Ok(handle) => match handle.join() {
+            Ok(outcome) => outcome_code(outcome),
+            Err(panic) => std::panic::resume_unwind(panic),
+        },
+        // Thread creation failed (extremely unlikely): run inline as before.
+        Err(_) => outcome_code(dispatch(cmd, rest)),
+    }
+}
+
+fn dispatch(cmd: String, rest: Vec<String>) -> Result<i32, Diagnostic> {
     let outcome = match cmd.as_str() {
         "version" | "--version" | "-V" => {
             println!("{}", version_text());
-            return EXIT_OK;
+            return Ok(EXIT_OK);
         }
         "help" | "--help" | "-h" => {
             print!("{}", HELP);
-            return EXIT_OK;
+            return Ok(EXIT_OK);
         }
         "run" => cmd_run(&rest),
         "check" => cmd_check(&rest),
@@ -116,9 +140,13 @@ pub fn run(args: Vec<String>) -> i32 {
         "debug" => cmd_debug(&rest),
         other => {
             eprintln!("error[usage]: unknown command '{}'\n{}", other, HELP);
-            return EXIT_USAGE;
+            return Ok(EXIT_USAGE);
         }
     };
+    outcome
+}
+
+fn outcome_code(outcome: Result<i32, Diagnostic>) -> i32 {
     match outcome {
         Ok(code) => code,
         Err(d) => {
@@ -748,6 +776,9 @@ fn cmd_debug(args: &[String]) -> Result<i32, Diagnostic> {
                     .ok_or_else(|| usage("--commands needs a file"))?;
                 let text = std::fs::read_to_string(path)
                     .map_err(|e| usage(&format!("cannot read commands '{}': {}", path, e)))?;
+                // Strip a UTF-8 BOM so the first scripted command is not seen
+                // as "\u{feff}bt" (the .matrix lexer strips it the same way).
+                let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
                 commands = text
                     .lines()
                     .map(|l| l.trim().to_string())

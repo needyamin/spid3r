@@ -179,11 +179,9 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             if rows < 0 || cols < 0 {
                 return Err("matrix dimensions must be non-negative".to_string());
             }
-            Ok(Value::Matrix(new_ref(misc::MatrixData::new(
-                rows as usize,
-                cols as usize,
-                fill,
-            ))))
+            let (ru, cu) = (rows as usize, cols as usize);
+            misc::check_matrix_dims(ru, cu)?;
+            Ok(Value::Matrix(new_ref(misc::MatrixData::new(ru, cu, fill))))
         }
         "ring_buffer" => {
             let cap = want_int(&one(name, &args)?, "ring_buffer")?;
@@ -200,9 +198,9 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             value: one(name, &args)?,
         }))),
         "channel" => Ok(Value::Channel(Arc::new(ChannelData::new()))),
-        "mutex" => Ok(Value::MutexVal(Arc::new(std::sync::Mutex::new(MutexData::new(
+        "mutex" => Ok(Value::MutexVal(Arc::new(MutexData::new(
             one(name, &args)?,
-        ))))),
+        )))),
         "some" => Ok(Value::Option(Some(Box::new(one(name, &args)?)))),
         "none" => {
             if !args.is_empty() {
@@ -352,10 +350,7 @@ pub fn call_method_host(
         }
         Value::Task(t) => task_method(t, name, &args),
         Value::Channel(c) => channel_method(c, name, args),
-        Value::MutexVal(m) => {
-            let g = m.lock().unwrap();
-            mutex_method(&g, name, &args)
-        }
+        Value::MutexVal(m) => mutex_method(m, name, &args),
         other => Err(format!(
             "{} values have no methods",
             crate::value::type_name(other)

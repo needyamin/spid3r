@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Spid3r — Engineering Audit &amp; Roadmap (2026-10-19)</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --card:#ffffff; --ink:#1c2430; --muted:#5b6b7c; --line:#dde4ec;
+    --accent:#0f766e; --accent2:#4338ca; --head:#0f172a;
+    --p0:#dc2626; --p1:#ea580c; --p2:#d97706; --p3:#64748b;
+    --ok:#15803d; --open:#b91c1c; --info:#1d4ed8; --hyp:#6b7280;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);line-height:1.55;font-size:15.5px}
+  header.hero{background:linear-gradient(135deg,#0f172a 0%,#134e4a 100%);color:#fff;padding:38px 22px 30px}
+  .hero-in{max-width:1180px;margin:0 auto}
+  .hero h1{margin:0 0 6px;font-size:30px;letter-spacing:.3px}
+  .hero p.sub{margin:0 0 18px;color:#a7f3d0;font-size:15px}
+  .stats{display:flex;flex-wrap:wrap;gap:10px}
+  .stat{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.22);border-radius:10px;padding:8px 14px;font-size:13.5px}
+  .stat b{font-size:16px;display:block}
+  nav.top{position:sticky;top:0;z-index:50;background:var(--head);box-shadow:0 2px 8px rgba(0,0,0,.25)}
+  nav.top .in{max-width:1180px;margin:0 auto;display:flex;flex-wrap:wrap;gap:2px;padding:6px 14px}
+  nav.top a{color:#cbd5e1;text-decoration:none;font-size:12.8px;padding:6px 10px;border-radius:6px;white-space:nowrap}
+  nav.top a:hover{background:#1e293b;color:#fff}
+  nav.top a.active{background:var(--accent);color:#fff}
+  main{max-width:1180px;margin:0 auto;padding:26px 18px 70px}
+  section{margin:0 0 42px}
+  h2{font-size:22px;margin:0 0 4px;padding-bottom:8px;border-bottom:3px solid var(--accent)}
+  h2 .num{color:var(--accent);margin-right:8px;font-size:16px;vertical-align:2px}
+  h3{font-size:16.5px;margin:22px 0 8px;color:#0f3d3a}
+  p.lead{color:var(--muted);margin:6px 0 16px;font-size:14.5px}
+  .grid{display:grid;gap:14px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:1fr 1fr 1fr}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;box-shadow:0 1px 3px rgba(15,23,42,.05)}
+  .card h4{margin:0 0 8px;font-size:15px}
+  table{width:100%;border-collapse:collapse;font-size:13.8px;background:var(--card);border-radius:10px;overflow:hidden}
+  th{background:var(--head);color:#e2e8f0;text-align:left;padding:9px 10px;font-weight:600;font-size:12.8px}
+  td{padding:8px 10px;border-top:1px solid var(--line);vertical-align:top}
+  tr:nth-child(even) td{background:#f8fafc}
+  .tbl-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--line)}
+  .badge{display:inline-block;font-size:11.3px;font-weight:700;padding:2px 9px;border-radius:20px;letter-spacing:.4px;vertical-align:1px;white-space:nowrap}
+  .b-P1{background:var(--p1);color:#fff}.b-P2{background:var(--p2);color:#fff}.b-P3{background:var(--p3);color:#fff}.b-P0{background:var(--p0);color:#fff}
+  .b-fixed{background:var(--ok);color:#fff}.b-open{background:#fff;color:var(--open);border:1.6px solid var(--open)}
+  .b-meas{background:#dbeafe;color:var(--info)}.b-ver{background:#ccfbf1;color:#0f766e}
+  .b-rec{background:#ede9fe;color:var(--accent2)}.b-hyp{background:#f3f4f6;color:var(--hyp);border:1.4px dashed var(--hyp)}
+  .b-ok{background:#dcfce7;color:var(--ok)}
+  code,.mono{font-family:Consolas,"Cascadia Code",Menlo,monospace;font-size:12.8px;background:#eef2f6;padding:1px 5px;border-radius:5px}
+  pre{background:#0f172a;color:#d7e3ee;padding:12px 14px;border-radius:10px;overflow-x:auto;font-size:12.6px;line-height:1.5}
+  pre code{background:none;padding:0;color:inherit}
+  details{margin:8px 0;border:1px solid var(--line);border-radius:9px;background:#fbfdff}
+  details summary{cursor:pointer;padding:9px 13px;font-weight:600;font-size:13.6px;color:#0f3d3a}
+  details .body{padding:2px 15px 12px}
+  .kv{margin:3px 0}
+  .kv b{color:#0f3d3a}
+  .warn{border-left:4px solid var(--p1);background:#fff7ed;padding:10px 14px;border-radius:0 9px 9px 0;margin:12px 0}
+  .note{border-left:4px solid var(--info);background:#eff6ff;padding:10px 14px;border-radius:0 9px 9px 0;margin:12px 0}
+  .good{border-left:4px solid var(--ok);background:#f0fdf4;padding:10px 14px;border-radius:0 9px 9px 0;margin:12px 0}
+  .pipe{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:12px 0}
+  .pipe .box{background:#eef7f6;border:1.6px solid var(--accent);border-radius:9px;padding:7px 12px;font-size:13px;font-weight:600;color:#0f3d3a}
+  .pipe .arr{color:var(--accent);font-weight:700}
+  .pipe .split{width:100%;text-align:center;color:var(--accent);font-weight:700;margin:-2px 0}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:4px 0}
+  .small{font-size:12.8px;color:var(--muted)}
+  footer{background:var(--head);color:#94a3b8;padding:22px;text-align:center;font-size:12.8px}
+  #top-btn{position:fixed;right:18px;bottom:18px;background:var(--accent);color:#fff;border:none;border-radius:10px;padding:10px 14px;cursor:pointer;font-size:13px;display:none;box-shadow:0 3px 10px rgba(0,0,0,.25)}
+  @media(max-width:900px){.g2,.g3{grid-template-columns:1fr}.hero h1{font-size:24px}}
+  @media print{nav.top,#top-btn{display:none}body{background:#fff}section{page-break-inside:avoid}}
+</style>
+</head>
+<body>
+
+<header class="hero"><div class="hero-in">
+  <h1>🕷️ Spid3r — Engineering Audit &amp; Roadmap</h1>
+  <p class="sub">Evidence-based technical audit · Repository: GaliLang (language: Spid3r v1.0.0, crate 1.0.0) · Audit date: Monday, October 19, 2026 · Toolchain: cargo/rustc 1.98.1, Windows</p>
+  <div class="stats">
+    <div class="stat"><b>310</b>tests green (300 core + 10 GUI)</div>
+    <div class="stat"><b>23 / 23</b>examples: tree == vm == exec</div>
+    <div class="stat"><b>0 warnings</b>clippy −D warnings</div>
+    <div class="stat"><b>0</b>third-party deps (core)</div>
+    <div class="stat"><b>2 P1 fixed</b>this round, tests added</div>
+    <div class="stat"><b>0 open P0</b>findings</div>
+  </div>
+</div></header>
+
+<nav class="top"><div class="in">
+  <a href="#s1">Summary</a><a href="#s2">Architecture</a><a href="#s3">Health</a><a href="#s4">Findings</a><a href="#s5">Engine Parity</a><a href="#s6">Perf &amp; Security</a><a href="#s7">Comparison</a><a href="#s8">Positioning</a><a href="#s9">Roadmap</a><a href="#s10">Milestones</a><a href="#s11">Testing</a><a href="#s12">Verification Log</a><a href="#s13">Recommendations</a>
+</div></nav>
+
+<main>
+
+<div class="note"><b>How to read this report.</b> Every claim carries an epistemic badge:
+<span class="badge b-ver">VERIFIED</span> = confirmed against the code or by a probe run,
+<span class="badge b-meas">MEASURED</span> = executed in this environment with recorded numbers,
+<span class="badge b-rec">RECOMMENDATION</span> = informed judgment,
+<span class="badge b-hyp">HYPOTHESIS</span> = plausible but not yet proven.
+Severity badges: <span class="badge b-P0">P0</span> critical · <span class="badge b-P1">P1</span> high · <span class="badge b-P2">P2</span> medium · <span class="badge b-P3">P3</span> low.
+Status: <span class="badge b-fixed">FIXED</span> (in this round, with regression tests) · <span class="badge b-open">OPEN</span>.
+Raw evidence: <code>audit_notes\</code> (frontend_audit.md, engines_audit.md, runtime_security_audit.md, market_analysis.md, test_results.md, probes\).</div>
+
+<!-- ================= 1. EXECUTIVE SUMMARY ================= -->
+<section id="s1">
+  <h2><span class="num">1</span>Executive Summary</h2>
+  <p class="lead">An independent, five-track audit (front end · execution engines · runtime &amp; security · build/test validation · market analysis) combined code reading with executed probes, then fixed what was safe to fix. Nothing in this report is asserted without evidence.</p>
+  <div class="grid g2">
+    <div class="card"><h4>✅ What is strong <span class="badge b-ver">VERIFIED</span></h4>
+      <ul>
+        <li><b>Validation claims are true.</b> Every quantitative claim in the docs was re-measured and holds exactly: 300 core tests (now 310 total), 10/10 GUI, 23/23 three-engine differential, clippy <code>-D warnings</code> clean, both feature builds compile and link LLVM.</li>
+        <li><b>Engine parity is real and enforced</b> by a shared value layer plus a differential harness — all executed parity probes produced identical output on tree, VM, and compiled bytecode.</li>
+        <li><b>Security hardening holds.</b> Package-name allowlist, tar unpack containment, git-argument guards, string/allocation caps, and the bytecode validator all behaved correctly under 4 hand-crafted mutations and 15+ edge probes. No host panic was produced by any probe.</li>
+        <li><b>Rare engineering rigor</b> for a v1.0 language: dual differential-tested engines, optimizer-vs-no-optimizer checks, deterministic fuzz suites, and honest known-limitation docs.</li>
+      </ul>
+    </div>
+    <div class="card"><h4>⚠️ What needs work <span class="badge b-ver">VERIFIED</span></h4>
+      <ul>
+        <li><b>Two new P1 VM-compiler bugs were found and <u>fixed in this round</u></b>: list literals &gt;255 elements corrupted the VM value stack silently, and a 129th captured variable silently aliased the first capture's cell. Both produced wrong behavior with no error; <code>compile</code> even wrote the broken bytecode to disk with exit 0. Both now fail with clean diagnostics, pinned by regression tests.</li>
+        <li><b>One open P1:</b> four plain-Spid3r constructs (<i>e.g.</i> a list containing itself, iterated with <code>for</code>) <b>hang both engines forever with no diagnostic</b> — deterministic, user-reachable deadlocks.</li>
+        <li><b>Enforcement gaps (P2):</b> gradual typing is bypassable through rebound function values; privacy is not enforced on computed receivers (<code>new C().hide()</code>); REPL <code>:reset</code> keeps const sets.</li>
+        <li><b>Market reality (P2):</b> no ecosystem, no LSP, no TLS/regex/date-time. The realistic niche is <b>education/teaching</b> + an <b>embedding layer for Rust applications</b> — not general scripting. See §8.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="good"><b>Bottom line:</b> Spid3r v1.0 is in unusually good shape for its stage — the documentation's claims survived a hostile re-measurement. The highest-impact next steps are: (1) eliminate the four hang paths, (2) decide and document the true typing/privacy enforcement contract, (3) build the Rust embedding API that unlocks the only niche where Spid3r can win. <span class="badge b-rec">RECOMMENDATION</span></div>
+</section>
+
+<!-- ================= 2. ARCHITECTURE ================= -->
+<section id="s2">
+  <h2><span class="num">2</span>Current Architecture &amp; Verified Capabilities</h2>
+  <p class="lead">One front end, two execution engines that must stay semantically identical, plus a tooling and packaging layer — all pure Rust with zero third-party dependencies in the default core. <span class="badge b-ver">VERIFIED</span> against <code>sitemap.txt</code>, the source tree (41 files, ~1.06 MB), and this round's runs.</p>
+  <div class="pipe">
+    <span class="box">lexer</span><span class="arr">→</span><span class="box">parser (Pratt, depth-capped 96)</span><span class="arr">→</span><span class="box">semantic checker</span><span class="arr">→</span>
+    <span class="box">tree-walk interpreter<br><small>(reference engine)</small></span>
+    <span class="split">└──────────────┬──────────────┘</span>
+    <span class="box">bytecode compiler → optimizer → stack VM</span><span class="arr">→</span><span class="box">.matrixc serialize / validate / exec</span>
+  </div>
+  <div class="tbl-wrap"><table>
+    <tr><th>Capability</th><th>State</th><th>Evidence (this audit)</th></tr>
+    <tr><td>Dual engines + 3-way differential</td><td><span class="badge b-ok">working</span></td><td><code>spid3r test</code> → 23 ok / 0 failed; <code>cargo test --test difftest</code> → 3/3 <span class="badge b-meas">MEASURED</span></td></tr>
+    <tr><td>20+ builtin collections + higher-order methods</td><td><span class="badge b-ok">working</span></td><td>35 edge probes (p08/p08b) clean, identical across engines <span class="badge b-meas">MEASURED</span></td></tr>
+    <tr><td>Tasks: spawn/await, channels, mutexes (OS thread pool)</td><td><span class="badge b-ok">working</span></td><td>sched probes p22/p24 parity; 9 sched tests green <span class="badge b-meas">MEASURED</span></td></tr>
+    <tr><td>Modules (import/privacy), vendoring, spider.toml/lock</td><td><span class="badge b-ok">working</span></td><td>39 pkg tests green; canonical-path keying verified in code <span class="badge b-ver">VERIFIED</span></td></tr>
+    <tr><td>Cycle-collecting GC (auto, statement-boundary)</td><td><span class="badge b-ok">working</span></td><td>cycle/weak tests green; caveats documented (does not trace closures/environments) <span class="badge b-ver">VERIFIED</span></td></tr>
+    <tr><td>Bytecode: serialize, validate, optimizer, disassembler</td><td><span class="badge b-ok">working</span></td><td>4/4 hostile mutations rejected cleanly; optimizer soundness re-verified in code <span class="badge b-meas">MEASURED</span></td></tr>
+    <tr><td>Tooling: fmt, REPL, line debugger, bench, pack/unpack, registry</td><td><span class="badge b-ok">working</span></td><td>fmt --check 23/23 unchanged; one usability gap (F13) <span class="badge b-meas">MEASURED</span></td></tr>
+    <tr><td>Network stdlib (TCP/HTTP, plaintext)</td><td><span class="badge b-ok">working</span><span class="badge b-open">no TLS</span></td><td><code>src\stdlib\net.rs</code> exports 14 natives; sitemap §6 was stale — corrected this round <span class="badge b-ver">VERIFIED</span></td></tr>
+    <tr><td>Optional backends: LLVM AOT (<code>native</code>), webview GUI (<code>gui</code>), WASM</td><td><span class="badge b-ok">working</span></td><td>default build 7.8 s incl. LLVM C-API link; GUI tests 10/10 <span class="badge b-meas">MEASURED</span></td></tr>
+    <tr><td>Windows NSIS installer (per-user, PATH, file association)</td><td><span class="badge b-ok">shipped</span></td><td><code>Spid3r-Setup-1.0.0.exe</code> present; install flow tested per docs <span class="badge b-ver">VERIFIED</span></td></tr>
+  </table></div>
+</section>
+
+<!-- ================= 3. HEALTH ================= -->
+<section id="s3">
+  <h2><span class="num">3</span>Overall Project Health Assessment</h2>
+  <p class="lead">Grade: <b style="color:var(--ok)">A− for a v1.0 language project</b> — exceptionally disciplined engineering, with a short, now well-characterized list of correctness and completeness gaps. <span class="badge b-rec">RECOMMENDATION</span> based on <span class="badge b-meas">MEASURED</span> data.</p>
+  <div class="grid g3">
+    <div class="card"><h4>Correctness <span style="color:var(--p1)">B+</span></h4><p class="small" style="margin:0">310 tests + differential + fuzz green. Two silent-corruption P1s existed in the VM compiler and were fixed this round; one hang-class P1 remains (§4 F3).</p></div>
+    <div class="card"><h4>Security <span style="color:var(--ok)">A−</span></h4><p class="small" style="margin:0">Threat-model-driven hardening across three audit rounds; no host panic reachable in any executed probe. Residual: 4 hang paths, plaintext-only HTTP, 2 documented races.</p></div>
+    <div class="card"><h4>Docs honesty <span style="color:var(--ok)">A</span></h4><p class="small" style="margin:0">Known-limitations lists are accurate and specific. Two stale spots found and corrected this round (test counts, net stdlib omission in sitemap §6).</p></div>
+    <div class="card"><h4>Tests &amp; CI <span style="color:var(--ok)">A</span></h4><p class="small" style="margin:0">41 regression tests named after audit findings, deterministic fuzz, 3-engine differential in CI, GitHub Actions matrix (Win/Linux/macOS).</p></div>
+    <div class="card"><h4>Performance <span style="color:var(--p2)">B</span></h4><p class="small" style="margin:0">VM ≈ same class as CPython/PUC-Lua on self-run micro-benchmarks; structural analysis says the next level needs a VM redesign. No independent measurements exist yet.</p></div>
+    <div class="card"><h4>Ecosystem &amp; adoption <span style="color:var(--p0)">D</span></h4><p class="small" style="margin:0">No packages, no LSP, no FFI, one author. This is the weakest axis by far — and the one the roadmap's positioning choice is designed around.</p></div>
+  </div>
+</section>
+
+<!-- ================= 4. FINDINGS ================= -->
+<section id="s4">
+  <h2><span class="num">4</span>Confirmed Bugs &amp; Technical Weaknesses</h2>
+  <p class="lead">Every finding below carries evidence (probe output or file:line), impact, severity, and a recommended fix. Nothing is invented; unproven suspicions are labeled as hypotheses. 0 open P0 · 2 P1 fixed · 1 P1 open · 5 P2 open · 5 P3 open · 1 P3 fixed.</p>
+
+  <div class="tbl-wrap"><table>
+    <tr><th>ID</th><th>Sev</th><th>Status</th><th>Area</th><th>Finding</th></tr>
+    <tr><td>F1</td><td><span class="badge b-P1">P1</span></td><td><span class="badge b-fixed">FIXED</span></td><td>VM compiler</td><td>List literals &gt;255 elements truncated the argc byte → silent VM stack corruption; <code>compile</code> wrote broken artifacts with exit 0</td></tr>
+    <tr><td>F2</td><td><span class="badge b-P1">P1</span></td><td><span class="badge b-fixed">FIXED</span></td><td>VM compiler</td><td>A 129th captured variable silently aliased the first capture's cell (wrong values, no error)</td></tr>
+    <tr><td>F3</td><td><span class="badge b-P1">P1</span></td><td><span class="badge b-open">OPEN</span></td><td>Runtime</td><td>Self-referential containers hang <b>both</b> engines with no diagnostic — 4 reachable paths</td></tr>
+    <tr><td>F4</td><td><span class="badge b-P2">P2</span></td><td><span class="badge b-open">OPEN</span></td><td>Runtime/GC</td><td>Building multi-million-deep nested lists stalls both engines &gt;150 s (root cause unverified)</td></tr>
+    <tr><td>F5</td><td><span class="badge b-P2">P2</span></td><td><span class="badge b-open">OPEN</span></td><td>Semantic</td><td>Gradual typing is bypassable (rebound function values, nested <code>fn</code> declarations)</td></tr>
+    <tr><td>F6</td><td><span class="badge b-P2">P2</span></td><td><span class="badge b-open">OPEN</span></td><td>Semantic</td><td>Privacy enforced only on bare-identifier receivers (<code>new C().hide()</code> runs)</td></tr>
+    <tr><td>F7</td><td><span class="badge b-P2">P2</span></td><td><span class="badge b-open">OPEN</span></td><td>REPL</td><td><code>:reset</code> keeps const sets → confusing "cannot assign to const" after reset</td></tr>
+    <tr><td>F8</td><td><span class="badge b-P2">P2</span></td><td><span class="badge b-open">OPEN</span></td><td>VM</td><td>VM <code>Import</code> drops const-ness of imported bindings (observable via crafted <code>.matrixc</code> only)</td></tr>
+    <tr><td>F9</td><td><span class="badge b-P3">P3</span></td><td><span class="badge b-open">OPEN</span></td><td>VM/modules</td><td>VM circular-import error lacks the tree's <code>(chain: …)</code> suffix</td></tr>
+    <tr><td>F10</td><td><span class="badge b-P3">P3</span></td><td><span class="badge b-open">OPEN</span></td><td>VM</td><td>Crafted <code>Return</code> on empty operand stack swallows its own error (code-verified; not reachable via <code>exec</code> in tests)</td></tr>
+    <tr><td>F11</td><td><span class="badge b-P3">P3</span></td><td><span class="badge b-open">OPEN</span></td><td>REPL</td><td>Bare expressions require <code>;</code>, contradicting the REPL's own echo hint</td></tr>
+    <tr><td>F12</td><td><span class="badge b-P3">P3</span></td><td><span class="badge b-open">OPEN</span></td><td>Semantic</td><td>Imported bindings silently shadowed by same-named local <code>fn</code></td></tr>
+    <tr><td>F13</td><td><span class="badge b-P3">P3</span></td><td><span class="badge b-open">OPEN</span></td><td>CLI/fmt</td><td><code>fmt --check &lt;directory&gt;</code> fails with "Access is denied" instead of expanding the directory</td></tr>
+    <tr><td>F14</td><td><span class="badge b-P3">P3</span></td><td><span class="badge b-fixed">FIXED</span></td><td>Docs</td><td>Stale docs: test counts (308→310), sitemap §6 missing the net stdlib, audit_regressions count 30→41 — all corrected this round</td></tr>
+  </table></div>
+
+  <h3>Detail — P1 findings</h3>
+  <details open><summary>F1 · List literal &gt;255 elements corrupted the VM stack <span class="badge b-P1">P1</span> <span class="badge b-fixed">FIXED</span></summary><div class="body">
+    <p class="kv"><b>Evidence</b> <span class="badge b-meas">MEASURED</span> — pre-fix probes (<code>audit_notes\probes\list256/list300.matrix</code>): tree prints <code>256</code>/<code>300</code>; VM fails with misleading <code>error[vm]: int has no length</code> (argc byte wrapped to 0 / 44). <code>compile</code> exited 0 and wrote the broken <code>.matrixc</code>. Root cause: <code>src\vm\compiler.rs</code> <code>Expr::List</code> emitted <code>items.len() as u8</code> into <code>Construct</code> with no <code>check_argc</code> (Call/Method/New all had the guard; the list literal was the only unguarded emission).</p>
+    <p class="kv"><b>Impact</b> — silent wrong behavior or stack corruption from an innocent literal; broken artifacts shipped to disk. A 256-element data table in source code is realistic.</p>
+    <p class="kv"><b>Fix applied</b> — clean compile-time diagnostic <code>too many elements in list literal (max 255, got N)</code>; <code>compile</code> now exits 1 and writes nothing. Regression test <code>vm_rejects_more_than_255_element_list_literals</code> (tree still runs 300 → documents the engine-encoding limit; same precedent as the existing 255-locals limit).</p>
+    <p class="kv"><b>Post-fix</b> — VM: <code>error[vm]: too many elements in list literal (max 255, got 300)</code>; tree unchanged; 3-engine differential still 23/23. <span class="badge b-meas">MEASURED</span></p>
+  </div></details>
+  <details open><summary>F2 · ≥129 captured variables silently aliased cells <span class="badge b-P1">P1</span> <span class="badge b-fixed">FIXED</span></summary><div class="body">
+    <p class="kv"><b>Evidence</b> <span class="badge b-meas">MEASURED</span> — pre-fix probes (<code>cap128/129/130.matrix</code>): 128 captures agree (9256 both engines); 129 captures: tree <b>9385</b> vs VM <b>10257</b>; 130: tree <b>9515</b> vs VM <b>10259</b> — exactly the predicted <code>&amp; 0x7f</code> aliasing arithmetic (capture #129 read capture #1's cell). Root cause: <code>capture_local</code> (<code>compiler.rs:1205</code>) let <code>own_upvalues</code> exceed the 7-bit upvalue descriptor encoding; <code>resolve_upvalue</code> masked with <code>&amp; 0x7f</code> (<code>:1232</code>).</p>
+    <p class="kv"><b>Impact</b> — silently wrong program results; heavy data-closure builders (large generated closures) would be corrupted without any error.</p>
+    <p class="kv"><b>Fix applied</b> — 128-capture limit enforced at both function-finalization sites (<code>compile_function</code>, <code>compile_one</code>): <code>too many captured variables in one function (max 128, got N)</code>. Regression test <code>vm_rejects_more_than_128_captured_variables</code> pins both the rejection and the clean 128-capture boundary on both engines.</p>
+    <p class="kv"><b>Post-fix</b> — cap130 VM: clean diagnostic; cap128: 9256 on both engines; full suite 300/300 green; clippy clean. <span class="badge b-meas">MEASURED</span></p>
+  </div></details>
+  <details open><summary>F3 · Self-referential containers hang both engines, no diagnostic <span class="badge b-P1">P1</span> <span class="badge b-open">OPEN</span></summary><div class="body">
+    <p class="kv"><b>Evidence</b> <span class="badge b-meas">MEASURED</span> — four probes hang on both engines and must be killed externally (<code>audit_notes\probes\</code>): p01 <code>for</code>-in over a self-containing list; p03 <code>set.union</code> with itself; p05 <code>map.values()</code> where the map contains itself; p06 <code>linked_list.to_list()</code> of a self-referencing list. Root cause pattern: the operation holds the container's mutex while recursing into values that re-lock the same (or a partner) mutex — the exact hazard sitemap §5.3 warns about; <code>json_write</code> and <code>deep_clone</code> were fixed for this in earlier audits (p02 proves <code>.clone()</code> is cycle-safe), but these four paths were not covered.</p>
+    <p class="kv"><b>Impact</b> — plain, innocent-looking user code wedges the runtime deterministically with no error and no timeout. Worst open finding.</p>
+    <p class="kv"><b>Recommended fix</b> — apply the established clone-out-under-lock pattern (snapshot under lock, recurse without) or add reentrancy/cycle detection per container operation, in the shared <code>value::collections</code> layer so both engines are fixed at once. Complexity: Medium. Risk: hot-path overhead — benchmark after (<code>bench --compare</code>).</p>
+    <p class="kv"><b>Acceptance</b> — all four probes exit &lt;1 s with clean catchable errors on both engines; new regression tests; full suite + differential stay green; map bench within noise of pre-change numbers.</p>
+  </div></details>
+
+  <h3>Detail — P2 findings</h3>
+  <details><summary>F4 · Deep-nesting build stall (GC interaction suspected) <span class="badge b-P2">P2</span> <span class="badge b-open">OPEN</span> <span class="badge b-hyp">HYPOTHESIS</span> for root cause</summary><div class="body">
+    <p class="kv"><b>Evidence</b> <span class="badge b-meas">MEASURED</span> — p07/p07b: building a ~4-million-deep nested list stalls <b>both</b> engines &gt;150 s during the build loop alone (never reaches the clone/print phase). The behavior (hang-class symptom, allocation-bound related) is verified; the root cause is not.</p>
+    <p class="kv"><b>Hypothesis</b> — statement-boundary auto-GC performs a full-graph rescan per collection window; on a linear chain of N nodes that is O(N²) total. Consistent with the documented "auto-GC gated on <code>live_tasks()==0</code>" design but unproven.</p>
+    <p class="kv"><b>Recommended fix</b> — measure first (GC-off via <code>SPID3R_GC=0</code> vs on, at 100k/400k/1M depths), then either incrementelize the trigger or add a chain-depth-aware bound. Complexity: Medium-High. Acceptance: 4M build completes (or fails cleanly) in &lt;10 s; measurement table recorded in docs.</p>
+  </div></details>
+  <details><summary>F5 · Gradual typing bypassable <span class="badge b-P2">P2</span> <span class="badge b-open">OPEN</span></summary><div class="body">
+    <p class="kv"><b>Evidence</b> <span class="badge b-ver">VERIFIED</span> — <code>fn f(x: int)</code> then <code>let g = f; g("hello")</code> runs and prints 42 on both engines (probe p02); a nested <code>fn h(a: int)</code> is likewise unchecked (p03b). <code>src\semantic\ty.rs:1-9</code> states the checker is compile-time only.</p>
+    <p class="kv"><b>Impact</b> — docs present annotations as enforced; indirect calls silently bypass them. Erodes trust in the "gradual typing" feature.</p>
+    <p class="kv"><b>Recommended fix</b> — make a decision, either: (a) runtime arg/return type checks in the shared call layer (parity-tested, small perf cost, honest gradual typing), or (b) document precisely which annotation paths are enforced. Complexity: Medium (a) / Low (b). Acceptance: an enforced/bypass matrix in the docs + tests pinning every row.</p>
+  </div></details>
+  <details><summary>F6 · Privacy unenforced on computed receivers <span class="badge b-P2">P2</span> <span class="badge b-open">OPEN</span></summary><div class="body">
+    <p class="kv"><b>Evidence</b> <span class="badge b-ver">VERIFIED</span> — <code>new C().hide()</code> on a private method runs and prints 1 on both engines; <code>new C().secret</code> silently prints null (probes p05/p05b). The semantic checker validates privacy only when the receiver is a bare <code>Ident</code> (<code>semantic\mod.rs</code> Method/Field arms).</p>
+    <p class="kv"><b>Impact</b> — the module privacy guarantee has a hole exactly where encapsulation matters (method chains, constructor results).</p>
+    <p class="kv"><b>Recommended fix</b> — enforce on the receiver's <i>resolved type</i> rather than its syntactic form, in the shared semantic pass. Complexity: Medium. Acceptance: both probes rejected with a clean diagnostic on both engines + regression tests.</p>
+  </div></details>
+  <details><summary>F7 · REPL <code>:reset</code> keeps const sets <span class="badge b-P2">P2</span> <span class="badge b-open">OPEN</span></summary><div class="body">
+    <p class="kv"><b>Evidence</b> <span class="badge b-ver">VERIFIED</span> — <code>const c=1;</code> → <code>:reset</code> → <code>let c=2;</code> → <code>c=3;</code> → <code>error[runtime]: cannot assign to const 'c'</code> (<code>repl\mod.rs:46-50</code> clears only the name list).</p>
+    <p class="kv"><b>Fix</b> — rebuild the environment and its const sets on <code>:reset</code>. Complexity: Low. Acceptance: the sequence above works; repl tests extended.</p>
+  </div></details>
+  <details><summary>F8 · VM <code>Import</code> drops const-ness <span class="badge b-P2">P2</span> <span class="badge b-open">OPEN</span></summary><div class="body">
+    <p class="kv"><b>Evidence</b> <span class="badge b-ver">VERIFIED</span> — <code>vm\mod.rs:1492-1493</code> inserts exported bindings with <code>g.insert(n, v)</code> discarding <code>_is_const</code>, while the tree uses <code>define_const</code> (<code>interpreter\mod.rs:335-340</code>). The semantic pass masks the difference for normal source; it is observable only through a crafted <code>.matrixc</code> executed via <code>exec</code> (re-assigning an imported const: tree rejects, VM accepts).</p>
+    <p class="kv"><b>Impact</b> — an engine-parity hole reachable only from hostile bytecode; matters for the "validator + parity" security story.</p>
+    <p class="kv"><b>Fix</b> — route imported bindings through the VM's const mechanism. Complexity: Low-Medium. Acceptance: hand-built chunk test — re-assigning an imported const errors on VM exactly like on tree.</p>
+  </div></details>
+
+  <h3>Detail — P3 findings</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>ID</th><th>Finding &amp; evidence</th><th>Recommended fix (complexity)</th></tr>
+    <tr><td>F9 <span class="badge b-P3">P3</span></td><td>VM circular-import message lacks the tree's <code>(chain: …)</code> suffix (<code>modules\mod.rs:141</code>). <span class="badge b-ver">VERIFIED</span></td><td>Include the chain in the VM path too — parity of diagnostics (Low)</td></tr>
+    <tr><td>F10 <span class="badge b-P3">P3</span></td><td>A crafted <code>Return</code> on an empty operand stack: <code>pop_top</code> raises <code>fail(...)</code> but the <code>Return</code> handler proceeds to <code>return Ok(...)</code> (<code>vm\mod.rs:1591-1599</code>, <code>:1259-1311</code>) — the error is swallowed. Code-verified; not reproduced through <code>exec</code> (validator blocks all 4 mutations). <span class="badge b-ver">VERIFIED</span> in code / <span class="badge b-hyp">HYPOTHESIS</span> on reachability</td><td>Harden the <code>Return</code> handler to propagate the failed state (Low)</td></tr>
+    <tr><td>F11 <span class="badge b-P3">P3</span></td><td>REPL bare expressions need <code>;</code> although the echo path implies they are optional. <span class="badge b-ver">VERIFIED</span></td><td>Accept trailing-<code>;</code>-less expressions in the REPL (Low)</td></tr>
+    <tr><td>F12 <span class="badge b-P3">P3</span></td><td>Imported bindings use raw <code>scope.insert</code> (<code>semantic\mod.rs:541</code>): a same-named local <code>fn</code> shadows them silently (probe p09). <span class="badge b-ver">VERIFIED</span></td><td>Emit a shadowing diagnostic (Low)</td></tr>
+    <tr><td>F13 <span class="badge b-P3">P3</span></td><td><code>fmt --check examples</code> → exit 2 <code>Access is denied (os error 5)</code>: directories are not expanded. Measured on all 23 examples per-file (all unchanged). <span class="badge b-meas">MEASURED</span></td><td>Expand directory args to <code>*.matrix</code> (Low)</td></tr>
+  </table></div>
+
+  <h3>Documented-remaining limitations (from docs\AUDIT_REPORT.md §8 — present in docs, not independently re-verified this round)</h3>
+  <p class="small">Field type annotations unenforced on external <code>obj.field = v</code> · byte-based diagnostic columns (shift on multi-byte lines) · module-load check-then-act race across tasks · a mutex stays locked if a task panics while holding it · GC does not trace closures/environments (cycles through them leak) · auto-GC gated on <code>live_tasks()==0</code> · <code>join()</code> can starve the worker pool · worker threads killed mid-flight at exit · net P3s (no default read timeout on raw <code>http_read_request</code>, handle-table lifecycle, wasm FFI <code>catch_unwind</code>) · <code>error[runtime]</code> vs <code>error[vm]</code> phase-label divergence · cargo bin/lib pdb collision warning (cargo #6313). <span class="badge b-ver">VERIFIED</span> as documented; <span class="badge b-hyp">HYPOTHESIS</span> per-item this round.</p>
+</section>
+
+<!-- ================= 5. PARITY ================= -->
+<section id="s5">
+  <h2><span class="num">5</span>Interpreter-vs-VM Consistency Analysis</h2>
+  <p class="lead">The parity guarantee is structural, not aspirational: both engines share the lexer, parser, semantic checker, and the entire <code>value::collections</code> semantics layer, and a three-way differential harness (tree / vm / compile+exec) runs on every example in CI. <span class="badge b-ver">VERIFIED</span></p>
+  <div class="grid g2">
+    <div class="card"><h4>Parity probe matrix (this round) <span class="badge b-meas">MEASURED</span></h4>
+      <div class="tbl-wrap"><table>
+        <tr><th>Surface</th><th>tree vs vm vs exec</th></tr>
+        <tr><td>23 examples (full differential)</td><td style="color:var(--ok)"><b>identical</b> — 23 ok / 0 failed</td></tr>
+        <tr><td>35 collection edge cases (p08/p08b)</td><td style="color:var(--ok)"><b>identical</b>, clean error strings</td></tr>
+        <tr><td>Cycle-safe <code>.clone()</code> of self-ref list (p02)</td><td style="color:var(--ok)"><b>identical</b></td></tr>
+        <tr><td>NaN ordering in collections (p04/p04b)</td><td style="color:var(--ok)"><b>identical</b></td></tr>
+        <tr><td>Task panic containment, module-init spawn, unjoined exit (p22/p24)</td><td style="color:var(--ok)"><b>identical</b></td></tr>
+        <tr><td>String repeat/pad allocation caps (p23)</td><td style="color:var(--ok)"><b>identical</b></td></tr>
+        <tr><td>List literal &gt;255 elements (pre-fix F1)</td><td style="color:var(--open)"><b>diverged</b> → fixed; now a documented VM encoding limit with clean diagnostic</td></tr>
+        <tr><td>≥129 captured variables (pre-fix F2)</td><td style="color:var(--open)"><b>diverged</b> (wrong values) → fixed; limit 128, clean diagnostic</td></tr>
+        <tr><td>Crafted <code>.matrixc</code> const re-assignment (F8)</td><td style="color:var(--open)"><b>diverges</b> (hostile-bytecode-only)</td></tr>
+      </table></div>
+    </div>
+    <div class="card"><h4>Assessment</h4>
+      <p class="small">Both fixed bugs were <b>VM-compiler encoding bugs</b> — the tree engine (reference) was always correct, and the divergences were invisible to the differential harness because the corpus (examples + 310 tests) contains no &gt;255-element literal or ≥129-capture function. That is the parity lesson of this round:</p>
+      <div class="warn"><b>Structural gap:</b> parity is only as good as the corpus. The two P1s lived exactly where no test looked — single-byte encoding limits in emission code. Recommended countermeasure: add limit-boundary probes (255/256/300 elements; 128/129/130 captures — now in <code>tests\audit_regressions.rs</code>) and keep a generated "stress corpus" in the differential harness, not just hand-written examples.</div>
+      <p class="small">Engine-specific limits with clean diagnostics have precedent in this codebase (255 locals, 255 call args, native backend's class-in-fn rejection). The two new limits follow the same contract and are documented in sitemap §12.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 6. PERF & SECURITY ================= -->
+<section id="s6">
+  <h2><span class="num">6</span>Performance &amp; Security Assessment</h2>
+  <h3>Performance</h3>
+  <div class="grid g2">
+    <div class="card"><h4>Measured this round <span class="badge b-meas">MEASURED</span></h4>
+      <div class="tbl-wrap"><table>
+        <tr><th>Benchmark</th><th>VM</th><th>Tree</th></tr>
+        <tr><td><code>examples\loops.matrix</code>, best of 5, debug build</td><td><b>11.381 ms</b></td><td><b>11.486 ms</b></td></tr>
+      </table></div>
+      <p class="small">Indicative only: debug build, shared machine, OneDrive-synced workspace, no iteration counts printed. Included to prove the harness runs, not as a performance claim.</p>
+      <h4>Self-reported (docs) <span class="badge b-hyp">HYPOTHESIS</span> until rerun independently</h4>
+      <p class="small">~8.1M simple iterations/s (VM); map operations 4.6× faster after the O(1) side-index fix; 1.28–1.92× vs Python 3.15 on 8 micro-workloads; method-call path ~250 ns overhead (measured by ablation, docs); register-VM redesign identified as the next level and explicitly deferred as high-risk. The project honestly labels its own VM performance "closed" at the current design.</p>
+    </div>
+    <div class="card"><h4>Security posture <span class="badge b-ver">VERIFIED</span> + <span class="badge b-meas">MEASURED</span></h4>
+      <p class="small"><b>Verified working (probes/tests this round):</b> string repeat/pad caps (67.1M/16.8M chars) · matrix dimension caps · bytecode validator rejects truncation, bad counts, misplaced opcodes — 4/4 mutations clean, no host panic · task panics contained and catchable · import-path checks (<code>..</code>, drive letters, absolute) · pkg name allowlist + unpack containment + git-arg guards (39 pkg tests) · SHA-256 known-answer tested.</p>
+      <p class="small"><b>Open gaps:</b> F3 hang paths (untrusted input can wedge the runtime) · F4 unbounded build stall · plaintext-only HTTP (no TLS; CRLF-injection guard exists and is regression-tested) · mutex-not-released-on-panic and module-load race (documented) · F10 crafted-bytecode error swallow.</p>
+      <div class="note"><b>Threat model summary.</b> A hostile <code>.matrix</code> can currently hang (not crash) the runtime in four known ways; a hostile <code>.matrixc</code> is rejected cleanly by validation; a malicious vendored package is bounded by name/containment/git-arg guards. Memory safety of the host was never breached in any executed probe across three audit rounds. For untrusted-input deployment, fix F3/F4 first, then add default network timeouts. <span class="badge b-rec">RECOMMENDATION</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 7. COMPARISON ================= -->
+<section id="s7">
+  <h2><span class="num">7</span>Comparison with Competing Languages</h2>
+  <p class="lead">Performance column: high-confidence judgment; ecosystem figures from public trackers (PyPI ~890k packages, npm ~3.1M, crates ~180k, RubyGems ~180k). <span class="badge b-rec">RECOMMENDATION</span> grounded in <span class="badge b-ver">VERIFIED</span> capability facts.</p>
+  <div class="tbl-wrap"><table>
+    <tr><th>Dimension</th><th>Spid3r</th><th>Python</th><th>JavaScript</th><th>Lua</th><th>Ruby</th><th>PHP</th><th>Rust</th></tr>
+    <tr><td>Typing</td><td>dynamic + pre-run checked annotations (bypassable, §4 F5)</td><td>dynamic (mypy opt.)</td><td>dynamic (TS separate)</td><td>dynamic (Teal opt.)</td><td>dynamic (Sorbet)</td><td>dynamic</td><td>static, affine</td></tr>
+    <tr><td>Runtime class</td><td>tree ≈ unspecialized CPython; VM ≈ CPython/PUC-Lua class; LLVM AOT on a subset</td><td>3.13+ JIT experimental</td><td>V8 (top JIT class)</td><td>PUC ≫ CPython; LuaJIT near-C</td><td>YJIT production</td><td>8.x JIT</td><td>AOT, near-C</td></tr>
+    <tr><td>Memory</td><td>refcount + cycle GC</td><td>refcount + cycle GC, GIL</td><td>tracing GC</td><td>incremental GC</td><td>GC</td><td>GC</td><td>ownership</td></tr>
+    <tr><td>Errors/debug</td><td>spans + stack traces, line debugger, REPL</td><td>best tracebacks</td><td>best tooling</td><td>minimal</td><td>decent</td><td>decent</td><td>hardest write, best catch</td></tr>
+    <tr><td>Stdlib</td><td>20+ collections, tasks/channels, JSON, plaintext TCP/HTTP; <b>no regex/date-time/TLS/FFI</b></td><td>huge</td><td>platform-based</td><td>tiny by design</td><td>medium</td><td>huge (web)</td><td>tiny core + crates</td></tr>
+    <tr><td>Ecosystem</td><td><b>none</b> (local/git/registry-dir only)</td><td>~890k pkgs</td><td>~3.1M pkgs</td><td>medium</td><td>~180k gems</td><td>large</td><td>~180k crates</td></tr>
+    <tr><td>Distribution</td><td><b>single static exe</b>, NSIS installer, WASM, bundler</td><td>runtime install</td><td>Node runtime</td><td>~300 KB embeddable</td><td>runtime</td><td>runtime+server</td><td>static exe</td></tr>
+    <tr><td>Tooling</td><td>fmt/REPL/debugger/differential in one binary; <b>no LSP</b></td><td>mature</td><td>best</td><td>minimal</td><td>mature</td><td>mature</td><td>cargo, rust-analyzer</td></tr>
+    <tr><td>Learning curve</td><td>small C-like grammar, 35 keywords</td><td>easy</td><td>easy</td><td>tiny</td><td>medium</td><td>easy</td><td>steep</td></tr>
+  </table></div>
+  <div class="grid g2">
+    <div class="card"><h4>Where Spid3r is behind — do not fight <span class="badge b-rec">RECOMMENDATION</span></h4>
+      <ul class="small">
+        <li><b>Ecosystem:</b> decades behind; unfixable by code — only by years of users. Do not attempt general-purpose adoption.</li>
+        <li><b>Performance at scale:</b> no specializing JIT; "1.3× over CPython on cherry-picked micro-workloads" is same-class evidence, not LuaJIT class.</li>
+        <li><b>Real-world scripting walls:</b> no regex, no date-time, no TLS — hit within the first hour of any serious script.</li>
+        <li><b>Editor experience:</b> no LSP is table-stakes disqualifier for dynamic-language adoption.</li>
+      </ul>
+    </div>
+    <div class="card"><h4>Genuine advantages — lean in <span class="badge b-ver">VERIFIED</span> capabilities</h4>
+      <ul class="small">
+        <li><b>Zero-dependency pure-Rust core</b> → one auditable static binary, trivial supply chain; embeds into Rust apps far more naturally than C-based Lua or CPython. In-Rust rivals (Rhai, Rune) are expression-oriented and lack classes/modules/tasks — Spid3r's surface is broader.</li>
+        <li><b>Dual differential-tested engines + optimizer + fuzzing</b> — rare rigor; a living "Crafting Interpreters".</li>
+        <li><b>20+ built-in collections incl. trees/graphs</b> with cycle-safe GC → teach data structures with zero setup.</li>
+        <li><b>Built-in tasks/channels/mutexes</b>, WASM playground, single-binary distribution, unusually careful Windows installer.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 8. POSITIONING ================= -->
+<section id="s8">
+  <h2><span class="num">8</span>Market Positioning &amp; Differentiation Strategy</h2>
+  <p class="lead">A clear positioning choice instead of "best language for everything". <span class="badge b-rec">RECOMMENDATION</span></p>
+  <div class="tbl-wrap"><table>
+    <tr><th>Candidate niche</th><th>Verdict</th><th>Rationale</th></tr>
+    <tr><td>(a) Education / teaching artifact — how to build a language</td><td style="color:var(--ok)"><b>PICK #1</b></td><td>Needs no ecosystem. The codebase <i>is</i> the curriculum: front end → two engines → differential harness → optimizer → AOT, with honest docs and 310 tests. Competes with "Crafting Interpreters", not with Python.</td></tr>
+    <tr><td>(c) Embedded scripting layer for Rust applications</td><td style="color:var(--ok)"><b>PICK #2</b></td><td>Structurally matches Lua's niche, but in Rust. <b>Precondition: ship a documented, stable embedding API</b> — today the crate is CLI-first, so this is the single build that unlocks the niche. Failure signal: no third-party embed within ~6 months of shipping the API.</td></tr>
+    <tr><td>(b) Windows admin scripting</td><td style="color:var(--p0)">REJECT</td><td>PowerShell owns it; missing regex/date-time/TLS is disqualifying.</td></tr>
+    <tr><td>(d) Hobbyist language community</td><td style="color:var(--p2)">NOT YET</td><td>Requires LSP + packages first; premature as a primary goal.</td></tr>
+    <tr><td>(e) Portfolio / author credibility</td><td style="color:var(--ok)">FREE-RIDING</td><td>Already real: the audit trail itself is strong evidence of engineering ability.</td></tr>
+  </table></div>
+  <div class="grid g2">
+    <div class="card"><h4>Top adoption barriers (ranked)</h4>
+      <ol class="small">
+        <li>No LSP / editor support.</li>
+        <li>No packages to import (empty ecosystem).</li>
+        <li>Stdlib holes: regex, date-time, TLS.</li>
+        <li>No FFI escape hatch — "can't do X" is terminal for scripters.</li>
+        <li>Bus factor of one; no independent performance evidence.</li>
+      </ol>
+    </div>
+    <div class="card"><h4>Do NOT build now <span class="badge b-rec">RECOMMENDATION</span></h4>
+      <ul class="small">
+        <li>Specializing JIT (CPython's is years in and still off by default).</li>
+        <li>Remote registry / package discovery infrastructure (chicken-and-egg).</li>
+        <li>C FFI (kills the zero-dependency story).</li>
+        <li>Full static-typing expansion (2× maintenance across both engines).</li>
+        <li>Android/iOS polish; self-hosting the compiler in Spid3r.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="small"><b>Path:</b> open-source first. KPIs in order: GitHub stars → playground sessions → library downloads once the embedding API ships. Publish a third-party-rerunnable benchmark methodology. Commercialization of a v1.0 language is unrealistic; the nearest realistic revenue is embedding-integration consulting.</p>
+</section>
+
+<!-- ================= 9. ROADMAP ================= -->
+<section id="s9">
+  <h2><span class="num">9</span>Prioritized Improvement Roadmap</h2>
+  <p class="lead">Essential fixes before features. Every item: problem, evidence, solution, benefit, complexity, dependencies/risks, acceptance criteria. <span class="badge b-rec">RECOMMENDATION</span></p>
+
+  <h3><span class="badge b-P0">P0</span> — Critical (crashes / security)</h3>
+  <div class="good" style="margin-top:4px">None open. The only P0-class patterns (host panics, arbitrary write, bytecode OOM) were eliminated in the 2026-10-18/19 audit rounds and held under this round's probes. <span class="badge b-meas">MEASURED</span></div>
+
+  <h3><span class="badge b-P1">P1</span> — High</h3>
+  <div class="card"><h4>R1 · Eliminate the four self-reference hang paths (F3)</h4>
+    <p class="kv"><b>Problem/Evidence</b> — deterministic user-reachable deadlocks: <code>for</code>-in over a self-containing list; <code>set.union</code> self; <code>map.values()</code> self-valued; <code>linked_list.to_list()</code> self-ref (probes p01/p03/p05/p06, both engines, no diagnostic). <span class="badge b-meas">MEASURED</span></p>
+    <p class="kv"><b>Solution</b> — in shared <code>value::collections</code>: clone-out-under-lock (established <code>json_write</code> pattern) or reentrancy/cycle detection per operation; both engines fixed at once by construction.</p>
+    <p class="kv"><b>Benefit</b> — removes the worst open finding; makes untrusted-input deployment defensible. <b>Complexity</b> — Medium. <b>Dependencies/Risks</b> — none external; watch hot-path overhead (re-bench map/list after).</p>
+    <p class="kv"><b>Acceptance</b> — the 4 probes exit &lt;1 s with clean catchable errors on both engines; ≥4 new regression tests; 310+ suite, differential, and clippy stay green; bench within noise.</p>
+  </div>
+  <div class="card"><h4>R2 · Bound the deep-nesting stall (F4) — measure, then fix</h4>
+    <p class="kv"><b>Problem/Evidence</b> — ~4M-deep nested-list build stalls both engines &gt;150 s (p07/p07b). <span class="badge b-meas">MEASURED</span>; root cause <span class="badge b-hyp">HYPOTHESIS</span> (per-window full-graph GC rescan ⇒ O(N²) on chains).</p>
+    <p class="kv"><b>Solution</b> — measurement matrix first (GC on/off × depth 100k/400k/1M/4M), then incremental GC triggering or a depth-aware allocation bound; document whichever limit is chosen.</p>
+    <p class="kv"><b>Benefit</b> — removes a pathological-workload wedge; hardens the GC story. <b>Complexity</b> — Medium-High. <b>Risks</b> — GC timing changes affect all programs; needs broad suite + bench before/after.</p>
+    <p class="kv"><b>Acceptance</b> — 4M build completes or fails cleanly in &lt;10 s; measurement table published in docs/GC.md; no regression in the 8 documented benchmarks.</p>
+  </div>
+
+  <h3><span class="badge b-P2">P2</span> — Medium</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>ID</th><th>Item</th><th>Solution → Benefit</th><th>Complexity</th><th>Acceptance criteria</th></tr>
+    <tr><td>R3 (F5)</td><td>Decide the typing contract</td><td>Either runtime arg/return checks in the shared call layer, or precise docs of the enforced/bypass matrix → restores trust in "gradual typing"</td><td>Medium / Low</td><td>Enforced-vs-bypass matrix documented; tests pin every row on both engines</td></tr>
+    <tr><td>R4 (F6)</td><td>Privacy on resolved-type receivers</td><td>Enforce in shared semantic pass → closes the encapsulation hole</td><td>Medium</td><td><code>new C().hide()</code>/<code>.secret</code> rejected cleanly on both engines + tests</td></tr>
+    <tr><td>R5 (F7)</td><td>REPL <code>:reset</code> rebuilds full state</td><td>Recreate environment + const sets → correct REPL semantics</td><td>Low</td><td>Documented probe sequence passes; repl tests extended</td></tr>
+    <tr><td>R6 (F8)</td><td>VM Import const fidelity</td><td>Route imported bindings through the VM const mechanism → hostile-bytecode parity</td><td>Low-Medium</td><td>Crafted-chunk test: re-assigning imported const errors like tree</td></tr>
+    <tr><td>R7</td><td><b>Embedding API v0</b> (market-unlocking build, §8)</td><td>Library-crate surface: compile/run from Rust, host-function registration, value conversion, docs + example → opens the Rust-embedding niche</td><td>Medium</td><td>A Rust host embeds Spid3r in ~20 lines; API docs + tests + example crate; semver for the API</td></tr>
+    <tr><td>R8</td><td>LSP foundation</td><td>textDocument sync + publish-diagnostics (+ hover from doc.html) → removes barrier #1</td><td>Medium</td><td>VS Code smoke test: errors from <code>spid3r check</code> appear in-editor</td></tr>
+    <tr><td>R9</td><td>Stdlib gap fills</td><td>Regex (own engine), date-time module; explicit TLS decision (stay plaintext + document, or feature-gate a crate) → removes scripting walls</td><td>Medium each</td><td>Each ships with tests + docs; zero-dep core preserved (features where needed)</td></tr>
+  </table></div>
+
+  <h3><span class="badge b-P3">P3</span> — Low</h3>
+  <div class="tbl-wrap"><table>
+    <tr><th>ID</th><th>Item</th><th>Complexity</th></tr>
+    <tr><td>R10 (F9)</td><td>Parity of circular-import diagnostics (chain suffix on VM)</td><td>Low</td></tr>
+    <tr><td>R11 (F10)</td><td>Harden <code>Return</code>-on-empty-stack error propagation</td><td>Low</td></tr>
+    <tr><td>R12 (F11)</td><td>REPL: semicolon-optional bare expressions</td><td>Low</td></tr>
+    <tr><td>R13 (F12)</td><td>Diagnostic on shadowing imported bindings</td><td>Low</td></tr>
+    <tr><td>R14 (F13)</td><td><code>fmt --check</code> directory expansion</td><td>Low</td></tr>
+    <tr><td>R15</td><td>Complete the reachable-panic grep sweep (unwrap/expect/indexing on user-derived values) as a standing checklist item</td><td>Low</td></tr>
+    <tr><td>R16</td><td>Work through the documented-remaining list: mutex Drop guard on panic, module-load race, GC tracing of closures/environments, phase-label unification</td><td>Medium each</td></tr>
+    <tr><td>R17</td><td>Encoding research: u16 argc operand for <code>Construct</code> and a wider upvalue encoding (bytecode-format change, no cross-release compat promise) to raise the 255/128 limits</td><td>Medium-High</td></tr>
+    <tr><td>R18</td><td>Publish a third-party-rerunnable benchmark methodology (release build, fixed hardware, scripts in <code>tools/</code>)</td><td>Low</td></tr>
+  </table></div>
+</section>
+
+<!-- ================= 10. MILESTONES ================= -->
+<section id="s10">
+  <h2><span class="num">10</span>Milestones</h2>
+  <div class="grid g3">
+    <div class="card"><h4>Short-term (0–4 weeks)</h4>
+      <ul class="small">
+        <li>R1: zero known user-reachable hangs + tests</li>
+        <li>R5, R6, R10, R11, R12, R13, R14 (all Low-complexity correctness/UX)</li>
+        <li>Keep: 310+ tests green, differential 23/23, clippy clean</li>
+        <li>Docs: enforced-typing decision made (R3)</li>
+      </ul>
+    </div>
+    <div class="card"><h4>Medium-term (1–3 months)</h4>
+      <ul class="small">
+        <li>R2: deep-nesting/GC measurement + fix</li>
+        <li>R4: privacy enforcement; R3 landed</li>
+        <li>R7: <b>Embedding API v0 released</b> + example + docs</li>
+        <li>R8: LSP foundation (diagnostics in-editor)</li>
+        <li>R18: benchmark methodology published</li>
+      </ul>
+    </div>
+    <div class="card"><h4>Long-term (3–12 months)</h4>
+      <ul class="small">
+        <li>LSP complete (hover, completion over collections)</li>
+        <li>R9: regex + date-time; TLS decision executed</li>
+        <li>R16/R17: documented-remaining cleanup; encoding research</li>
+        <li>Ecosystem pilot: ≥10 real programs authored by others</li>
+        <li>v1.1 with a semver'd embedding API</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 11. TESTING STRATEGY ================= -->
+<section id="s11">
+  <h2><span class="num">11</span>Testing &amp; Benchmarking Strategy</h2>
+  <div class="grid g2">
+    <div class="card"><h4>What exists (keep) <span class="badge b-ver">VERIFIED</span></h4>
+      <ul class="small">
+        <li>310 Rust tests across 28 targets incl. 41 audit regression tests (each named for a finding) and 10 deterministic fuzz tests (lexer/parser/bytecode).</li>
+        <li>Three-engine differential over all examples in CI + as a CLI command; optimizer-vs-<code>--no-opt</code> differential; strict clippy in the loop; GitHub Actions matrix (Windows/Linux/macOS, core + GUI).</li>
+        <li>The audit-regression pattern (<code>assert_both_engines</code>-style probes via the real binary) is exactly right — extend it, don't replace it.</li>
+      </ul>
+    </div>
+    <div class="card"><h4>What to add <span class="badge b-rec">RECOMMENDATION</span></h4>
+      <ul class="small">
+        <li><b>Hang detection:</b> run every differential probe under a wall-clock timeout that fails the test on wedge — this round's F1/F2/F3 class of bugs is invisible to pass/fail-only harnesses.</li>
+        <li><b>Limit-boundary corpus:</b> generated stress programs (255/256/300 elements, 128/129/130 captures, deep nesting) in the differential, so encoding limits are exercised continuously.</li>
+        <li><b>Property tests</b> for container invariants (insert/remove/iterate round-trips across all 20+ types), and a GC stress mode with <code>SPID3R_GC</code> timing jitter.</li>
+        <li><b>Independent benchmarks:</b> release builds, pinned hardware, published scripts + raw numbers in-repo; treat all current perf claims as hypotheses until rerun.</li>
+        <li><b>Bytecode mutation corpus:</b> keep the hand-mutations as permanent fixtures; version them alongside <code>fuzz/</code>.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 12. VERIFICATION LOG ================= -->
+<section id="s12">
+  <h2><span class="num">12</span>Verification Log — what actually ran (2026-10-19)</h2>
+  <p class="lead">Nothing below is claimed without execution. <span class="badge b-meas">MEASURED</span></p>
+  <div class="tbl-wrap"><table>
+    <tr><th>#</th><th>Check</th><th>Result</th><th>Evidence</th></tr>
+    <tr><td>1</td><td><code>cargo build --no-default-features</code></td><td><span class="badge b-ok">PASS</span></td><td>clean recompile 5.33 s; pre-existing pdb-collision warning only (cargo #6313)</td></tr>
+    <tr><td>2</td><td><code>cargo test --no-default-features</code></td><td><span class="badge b-ok">PASS</span></td><td>pre-fix 298/0; post-fix <b>300/0</b> (audit_regressions 39→41), 28 targets, 0 ignored</td></tr>
+    <tr><td>3</td><td><code>cargo test --test gui_tests</code> (default features)</td><td><span class="badge b-ok">PASS</span></td><td>10/10</td></tr>
+    <tr><td>4</td><td><code>cargo build</code> (gui + native)</td><td><span class="badge b-ok">PASS</span></td><td>7.8 s incl. LLVM C-API link via build.rs</td></tr>
+    <tr><td>5</td><td>3-engine differential (cargo + CLI)</td><td><span class="badge b-ok">PASS</span></td><td><code>--test difftest</code> 3/3; <code>spid3r test</code> 23 ok / 0 failed — re-run post-fix, still green</td></tr>
+    <tr><td>6</td><td><code>cargo clippy --no-default-features --all-targets -- -D warnings</code></td><td><span class="badge b-ok">PASS</span></td><td>0 warnings (pre- and post-fix)</td></tr>
+    <tr><td>7</td><td>Tooling smoke (version, hello on tree/vm, fmt --check)</td><td><span class="badge b-ok">PASS</span> + 1 quirk</td><td>23/23 examples unchanged; <code>fmt --check &lt;dir&gt;</code> exit 2 (F13)</td></tr>
+    <tr><td>8</td><td>Benchmark <code>examples\loops.matrix</code> ×5</td><td><span class="badge b-ok">RAN</span></td><td>vm 11.381 ms / tree 11.486 ms (debug, indicative only)</td></tr>
+    <tr><td>9</td><td>Runtime probes p01–p08b (self-ref, NaN, edges, caps)</td><td><span class="badge b-ok">RAN</span></td><td>4 hang paths (F3), clone cycle-safe, 35 edge cases parity, caps enforced</td></tr>
+    <tr><td>10</td><td>Scheduler probes p22–p24 (p20/p21 invalid syntax)</td><td><span class="badge b-ok">RAN</span></td><td>task-panic containment, spawn caps, import+spawn parity</td></tr>
+    <tr><td>11</td><td>P1 reproductions list256/300, cap128/129/130</td><td><span class="badge b-ok">CONFIRMED</span></td><td>pre-fix divergences exactly as predicted; post-fix clean diagnostics</td></tr>
+    <tr><td>12</td><td>Malformed <code>.matrixc</code> mutations ×4</td><td><span class="badge b-ok">RAN</span></td><td>all rejected cleanly; no host panic</td></tr>
+    <tr><td>13</td><td>Not performed / skipped</td><td>—</td><td>fresh crate download (cache was warm) · LLVM version probe · individual re-verification of the 11 documented-remaining items · full reachable-panic grep sweep · p20/p21 probes (invalid syntax, superseded by sched tests)</td></tr>
+  </table></div>
+</section>
+
+<!-- ================= 13. RECOMMENDATIONS ================= -->
+<section id="s13">
+  <h2><span class="num">13</span>Final Recommendations — Highest-Impact Next Steps</h2>
+  <ol>
+    <li><b>Fix the four hang paths (R1).</b> The only open P1; plain code can wedge the runtime. The shared value layer makes this a both-engines fix by construction. <span class="badge b-P1">P1</span></li>
+    <li><b>Make the enforcement contract true (R3/R4).</b> Either enforce gradual typing and privacy where the docs imply it, or document the exact enforced surface. Trust is the product. <span class="badge b-P2">P2</span></li>
+    <li><b>Build the embedding API (R7).</b> It is the single change that turns Spid3r's real strengths (zero-dep Rust, dual-tested engines, rich collections) into a winnable market — Lua's niche, in Rust. <span class="badge b-rec">RECOMMENDATION</span></li>
+    <li><b>Harden the harness against silence (§11).</b> Timeouts on differential probes, boundary corpora, and mutation fixtures — this round's bugs were all silent, and only adversarial probing found them.</li>
+    <li><b>Stay honest at scale.</b> Publish an independent benchmark methodology (R18) and keep the known-limitations discipline that made this audit fast and verifiable.</li>
+  </ol>
+  <div class="good"><b>Success means:</b> zero open P0/P1, a documented-and-true enforcement contract, a shipped embedding API with at least one external user within ~6 months, and an independently rerunnable benchmark — not "zero bugs", which no audit can promise.</div>
+</section>
+
+</main>
+
+<footer>
+  Generated 2026-10-19 · Audit of Spid3r v1.0.0 (repo GaliLang, baseline: 310 tests green) · Fixes this round: F1, F2, F14 (+2 regression tests, docs re-synced) · Raw evidence in <code style="background:rgba(255,255,255,.12);color:#cbd5e1">audit_notes\</code> · Self-contained HTML — no external dependencies.
+</footer>
+
+<button id="top-btn" onclick="window.scrollTo({top:0,behavior:'smooth'})">▲ Top</button>
+
+<script>
+(function(){
+  var links = Array.prototype.slice.call(document.querySelectorAll('nav.top a'));
+  var secs = links.map(function(a){ return document.querySelector(a.getAttribute('href')); });
+  function onScroll(){
+    var y = window.scrollY + 90, best = 0;
+    secs.forEach(function(s,i){ if(s && s.offsetTop <= y) best = i; });
+    links.forEach(function(a,i){ a.classList.toggle('active', i === best); });
+    document.getElementById('top-btn').style.display = window.scrollY > 600 ? 'block' : 'none';
+  }
+  window.addEventListener('scroll', onScroll, {passive:true});
+  onScroll();
+})();
+</script>
+</body>
+</html>

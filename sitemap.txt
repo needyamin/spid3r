@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 279 Rust tests green (269 core + 10 GUI),
+State: 310 Rust tests green (300 core + 10 GUI),
 23/23 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
 
@@ -60,7 +60,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 279 tests (269 with --no-default-features + 10 gui), must stay green
+  cargo test                  FULL suite, 310 tests (300 with --no-default-features + 10 gui), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -208,6 +208,9 @@ GaliLang/
   non-finite float = error; keys escaped; depth cap 512; self-referential
   container = clean error), len, type_of, assert/assert_eq, gc_collect,
   gc_live_cells, weak/deref.
+  net (src/stdlib/net.rs): tcp_listen tcp_accept tcp_connect tcp_read tcp_write
+  tcp_close tcp_local_addr tcp_peer_addr tcp_set_timeout http_read_request
+  http_write_response http_fetch url_encode url_decode (plaintext TCP/HTTP; no TLS).
   Constructors (value::collections::construct): list vec deque tuple ring_buffer
   stack queue priority_queue map set bag hash_table linked_list
   singly_linked_list doubly_linked_list binary_tree bst trie heap matrix graph
@@ -215,7 +218,7 @@ GaliLang/
 
 [7] TESTS (tests/) — one suite per area, all must pass
 --------------------------------------------------------------------------------
-  audit_regressions.rs   30 engine-parity + contract regressions from the 2026-10
+  audit_regressions.rs   41 engine-parity + contract regressions from the 2026-10
                          audits (closures, nested upvalues, local named fn,
                          finally on return/break/continue, cycle-safe containers,
                          self-argument collection methods, linked_list pop_back,
@@ -234,8 +237,9 @@ GaliLang/
   cycle_tests.rs (GC), weak_tests.rs, sched_tests.rs (tasks/channels; includes
                          spawn_process result contract), vm_dispatch_tests.rs,
                          opt_tests.rs, debug_tests.rs (scripted debugger),
-                         fmt_tests.rs, pkg_tests.rs (38: manifest/install/tar/
-                         sha256/registry), gui_tests.rs (10) + native_tests.rs
+                         fmt_tests.rs, pkg_tests.rs (39: manifest/install/tar/
+                         sha256/registry), net_tests.rs (4), wasm_tests.rs (6),
+                         bundle_tests.rs (4), gui_tests.rs (10) + native_tests.rs
 
 [8] EXAMPLES (examples/) — all must pass the 3-engine differential
 --------------------------------------------------------------------------------
@@ -319,6 +323,14 @@ GaliLang/
   - int overflow wraps silently; int/int truncates toward zero; err(...) is
     truthy; comparison chains left-associative; assignments legal in conditions.
   - native backend rejects class-declared-inside-function (clean diagnostic).
+  - VM encoding limits (clean diagnostics; the tree engine has no such limit):
+    a list literal may hold at most 255 elements; a function may capture at
+    most 128 variables (7-bit upvalue descriptor encoding).
+  - Self-referential containers can HANG both engines (mutex re-entry, no
+    diagnostic) via: for-in over a self-containing list, set.union(s) with
+    itself, map.values() of a self-valued map, linked_list.to_list() of a
+    self-referencing list. .clone() IS cycle-safe. See docs/AUDIT_REPORT.md
+    section 9 and plan.html.
 
 [13] STYLE / CONVENTIONS
 --------------------------------------------------------------------------------
@@ -330,7 +342,7 @@ GaliLang/
     but paths in code use PathBuf (never string concat with \ ).
   - OneDrive caveat: profile.dev incremental is already false — do not re-enable.
   - When editing docs (README/doc.html/docs/*), keep them consistent with the
-    ACTUAL behavior; doc.html §23 cites the test counts (279 / 23 ok) — update
+    ACTUAL behavior; doc.html §23 cites the test counts (308 / 23 ok) — update
     together with test-count changes.
 ================================================================================
 END OF SITEMAP — for questions the authoritative sources are: the code (src/),

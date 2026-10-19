@@ -774,3 +774,292 @@ fn native_staticlib_discovery_supports_env_overrides_and_sysroot_layouts() {
 }
 
 
+
+// ================================================================ 2026-10-19
+// Regression tests for the second full audit: mutex cross-task deadlock,
+// uncapped matrix allocation, VM compiler size limits, crafted `.matrixc`
+// reader overflow, module path escapes, `http_fetch` URL control characters,
+// and the debugger's BOM handling.
+
+#[test]
+fn mutex_contention_across_tasks_does_not_deadlock() {
+    // Was: `lock()` parked on the internal condvar while holding the outer
+    // `Arc<Mutex<MutexData>>` guard, so a second task could never reach
+    // `unlock()` — the first contention hung both tasks (and the process).
+    let src = r#"fn main() {
+    let m = mutex(0);
+    let t1 = spawn fn() {
+        m.lock();
+        sleep_ms(50);
+        m.unlock();
+        return 1;
+    };
+    let t2 = spawn fn() {
+        m.lock();
+        m.unlock();
+        return 2;
+    };
+    println(t1.join());
+    println(t2.join());
+    return 0;
+}
+"#;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = run_src("tree", "mutex_contention", src);
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        Ok(out) => assert_eq!(
+            out.expect("mutex contention run failed"),
+            "1\n2\n",
+            "mutex contention result"
+        ),
+        Err(_) => panic!("mutex contention deadlocked again (no completion in 30s)"),
+    }
+}
+
+#[test]
+fn matrix_constructor_rejects_oversized_allocation() {
+    // Was: `matrix(2000000000, 2000000000, 0)` aborted the host (capacity
+    // overflow) and `matrix(9000000000, 9000000000, 0)` overflowed rows*cols.
+    let src = r#"fn main() {
+    let m = matrix(2000000000, 2000000000, 0);
+    println(len(m));
+    return 0;
+}
+"#;
+    let tree = run_src("tree", "matrix_big_tree", src).unwrap_err();
+    let vm = run_src("vm", "matrix_big_vm", src).unwrap_err();
+    for (engine, err) in [("tree", tree), ("vm", vm)] {
+        assert!(
+            err.contains("max") && err.contains("cells"),
+            "[{}] expected a clean matrix size error, got: {}",
+            engine,
+            err
+        );
+    }
+    // A small matrix still works on both engines.
+    assert_both_engines(
+        "matrix_small",
+        "fn main() {\n    let m = matrix(2, 3, 1.5);\n    println(m.rows());\n    println(m.cols());\n    return 0;\n}\n",
+        "2\n3\n",
+    );
+}
+
+#[test]
+fn vm_rejects_more_than_255_call_arguments() {
+    // Was: argc was emitted with `as u8`, silently truncating 300 -> 44 and
+    // corrupting the VM stack (wrong results / bogus errors).
+    let args = (1..=300).map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let src = format!(
+        "fn main() {{\n    let xs = list({});\n    println(len(xs));\n    return 0;\n}}\n",
+        args
+    );
+    let tree = run_src("tree", "args300_tree", &src).expect("tree handles 300 args");
+    assert_eq!(tree, "300\n");
+    let vm = run_src("vm", "args300_vm", &src).unwrap_err();
+    assert!(
+        vm.contains("too many arguments"),
+        "expected a clean argc diagnostic, got: {}",
+        vm
+    );
+}
+
+#[test]
+fn vm_rejects_more_than_255_locals() {
+    // Was: slot indices were `locals.len() as u8`, so local 299 silently
+    // aliased slot 43 and read the wrong value.
+    let mut body = String::from("fn main() {\n");
+    for i in 0..300 {
+        body.push_str(&format!("    let v{} = {};\n", i, i));
+    }
+    body.push_str("    println(v299);\n    return 0;\n}\n");
+    let tree = run_src("tree", "locals300_tree", &body).expect("tree handles 300 locals");
+    assert_eq!(tree, "299\n");
+    let vm = run_src("vm", "locals300_vm", &body).unwrap_err();
+    assert!(
+        vm.contains("too many locals"),
+        "expected a clean locals diagnostic, got: {}",
+        vm
+    );
+}
+
+#[test]
+fn vm_rejects_oversized_function_bodies_instead_of_wrapping_jumps() {
+    // Was: jump offsets were cast to i16, so a >32 KiB function produced a
+    // mis-jumping chunk (and `compile` wrote the broken .matrixc).
+    let mut body = String::from("fn main() {\n    let x = 0;\n    while x < 6000 {\n");
+    for _ in 0..6000 {
+        body.push_str("        x = x + 1;\n");
+    }
+    body.push_str("    }\n    println(x);\n    return 0;\n}\n");
+    let tree = run_src("tree", "bigloop_tree", &body).expect("tree runs the big loop");
+    assert_eq!(tree, "6000\n");
+    let vm = run_src("vm", "bigloop_vm", &body).unwrap_err();
+    assert!(
+        vm.contains("function body too large"),
+        "expected a clean size diagnostic, got: {}",
+        vm
+    );
+    // `compile` must refuse to write the broken artifact.
+    let src_path = std::env::temp_dir().join("spid3r_audit_bigloop_compile.matrix");
+    std::fs::write(&src_path, &body).unwrap();
+    let out = Command::new(bin())
+        .args(["compile", src_path.to_str().unwrap(), "-o"])
+        .arg(std::env::temp_dir().join("spid3r_audit_bigloop.matrixc"))
+        .output()
+        .expect("spawn compile");
+    assert!(!out.status.success(), "compile should fail on oversized functions");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("function body too large"));
+}
+
+#[test]
+fn crafted_matrixc_overflowing_string_length_is_rejected() {
+    // Was: `self.p + n` wrapped for a crafted length near usize::MAX, past the
+    // bounds check, and the host panicked on the slice (exit 101).
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"SPID3R");
+    bytes.extend_from_slice(&1u16.to_le_bytes()); // format version
+    bytes.push(1); // opt_str tag: Some
+    bytes.extend_from_slice(&u64::MAX.to_le_bytes()); // string length
+    let crafted_err = match spid3r::vm::bytecode::deserialize_vmfunc(&bytes) {
+        Err(e) => e,
+        Ok(_) => panic!("crafted header must be rejected"),
+    };
+    assert!(
+        format!("{}", crafted_err).contains("string length exceeds file"),
+        "expected a clean format error, got: {}",
+        crafted_err
+    );
+}
+
+#[test]
+fn import_rejects_escaping_paths() {
+    // Imports must stay inside the documented search roots: no absolute
+    // paths, drive letters, or `..` components.
+    for (name, path) in [
+        ("import_abs", "/etc/passwd"),
+        ("import_parent", "../outside"),
+        ("import_drive", "C:/Windows/win.ini"),
+    ] {
+        let src = format!("import \"{}\";\nfn main() {{ return 0; }}\n", path);
+        for engine in ["tree", "vm"] {
+            let err = run_src(engine, name, &src)
+                .expect_err(&format!("[{}] import '{}' must be rejected", engine, path));
+            assert!(
+                err.contains("invalid module path"),
+                "[{}] expected invalid-module-path, got: {}",
+                engine,
+                err
+            );
+        }
+    }
+}
+
+#[test]
+fn http_fetch_rejects_control_characters_in_url() {
+    // A URL built from untrusted text could inject CRLF into the request line
+    // or host header; the fetch must fail before any connection is attempted.
+    let src = r#"fn main() {
+    let r = http_fetch("GET", "http://example.invalid/\r\nx-injected: 1");
+    if r.is_err() {
+        println(r.unwrap_err());
+    }
+    return 0;
+}
+"#;
+    let tree = run_src("tree", "fetch_ctl_tree", src).expect("tree runs");
+    let vm = run_src("vm", "fetch_ctl_vm", src).expect("vm runs");
+    assert!(tree.contains("control characters"), "tree: {}", tree);
+    assert_eq!(tree, vm, "engines must agree on the fetch error");
+}
+
+#[test]
+fn debugger_commands_file_strips_utf8_bom() {
+    // Was: a BOM-prefixed commands file made the first command
+    // "unknown command '<BOM>bt'".
+    let dir = std::env::temp_dir();
+    let prog = dir.join("spid3r_audit_dbg_bom.matrix");
+    std::fs::write(
+        &prog,
+        "fn add(a, b) {\n    return a + b;\n}\nfn main() {\n    let x = add(2, 3);\n    println(x);\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let cmds = dir.join("spid3r_audit_dbg_bom_cmds.txt");
+    std::fs::write(&cmds, "\u{feff}bt\nquit\n").unwrap();
+    let out = Command::new(bin())
+        .arg("debug")
+        .arg(&prog)
+        .args(["--break", "6", "--commands"])
+        .arg(&cmds)
+        .output()
+        .expect("spawn debug");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        !stdout.contains("unknown command"),
+        "BOM must be stripped from the first command; got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn vm_rejects_more_than_128_captured_variables() {
+    // Was: `capture_local` let `own_upvalues` grow past the 7-bit descriptor
+    // encoding, so capture #129 silently aliased capture #1's cell and the VM
+    // computed wrong values (tree: 9385, vm: 10257 on the 129-capture probe).
+    let mut body = String::from("fn main() {\n");
+    for i in 1..=130 {
+        body.push_str(&format!("    let v{} = {};\n", i, i));
+    }
+    let refs: Vec<String> = (1..=130).map(|i| format!("v{}", i)).collect();
+    body.push_str(&format!(
+        "    let f = fn() {{ return {}; }};\n",
+        refs.join(" + ")
+    ));
+    body.push_str("    v1 = 1001;\n    println(f());\n    return 0;\n}\n");
+    let tree = run_src("tree", "caps130_tree", &body).expect("tree handles 130 captures");
+    assert_eq!(tree, "9515\n");
+    let vm = run_src("vm", "caps130_vm", &body).unwrap_err();
+    assert!(
+        vm.contains("too many captured variables"),
+        "expected a clean capture-limit diagnostic, got: {}",
+        vm
+    );
+    // Boundary: exactly 128 captured locals must still work on both engines.
+    let mut ok = String::from("fn main() {\n");
+    for i in 1..=128 {
+        ok.push_str(&format!("    let v{} = {};\n", i, i));
+    }
+    let ok_refs: Vec<String> = (1..=128).map(|i| format!("v{}", i)).collect();
+    ok.push_str(&format!(
+        "    let f = fn() {{ return {}; }};\n",
+        ok_refs.join(" + ")
+    ));
+    ok.push_str("    v1 = 1001;\n    println(f());\n    return 0;\n}\n");
+    let tree_ok = run_src("tree", "caps128_tree", &ok).expect("tree handles 128 captures");
+    let vm_ok = run_src("vm", "caps128_vm", &ok).expect("vm handles 128 captures");
+    assert_eq!(tree_ok, "9256\n");
+    assert_eq!(vm_ok, "9256\n");
+}
+
+#[test]
+fn vm_rejects_more_than_255_element_list_literals() {
+    // Was: `Expr::List` emitted `items.len() as u8` into Construct with no
+    // argc guard, so a 256-element literal truncated to argc=0 and corrupted
+    // the value stack ("int has no length"); `compile` still wrote the broken
+    // .matrixc with exit 0.
+    let items: Vec<String> = (1..=300).map(|i| i.to_string()).collect();
+    let src = format!(
+        "fn main() {{\n    let xs = [{}];\n    println(len(xs));\n    return 0;\n}}\n",
+        items.join(", ")
+    );
+    let tree = run_src("tree", "list300_tree", &src).expect("tree handles 300 elements");
+    assert_eq!(tree, "300\n");
+    let vm = run_src("vm", "list300_vm", &src).unwrap_err();
+    assert!(
+        vm.contains("too many elements in list literal"),
+        "expected a clean list-literal diagnostic, got: {}",
+        vm
+    );
+}

@@ -1,0 +1,30 @@
+// p20: deep recursion inside a SPAWNED task. Worker threads have 32 MiB
+// stacks (src/sched/mod.rs:166); MAX_CALL_DEPTH=1000 (interpreter/mod.rs:20).
+// If 999 interpreter frames in a debug build exceed 32 MiB, the host aborts
+// (P0). Expect otherwise: clean "stack overflow" diagnostic surfaced on await.
+fn deep(n) {
+    return deep(n + 1);
+}
+
+fn down(n) {
+    if n == 0 {
+        return 0;
+    }
+    return down(n - 1);
+}
+
+fn main() {
+    let t = spawn deep(1);
+    try {
+        print(await t);
+    } catch(e) {
+        print("deep-in-task: " + e);
+    }
+    let t2 = spawn down(999);
+    try {
+        print("down999 => " + string(await t2));
+    } catch(e) {
+        print("down999: " + e);
+    }
+    return 0;
+}

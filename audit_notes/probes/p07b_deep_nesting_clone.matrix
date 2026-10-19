@@ -1,0 +1,16 @@
+// p07b: deep_clone (clone) recursion on 4M-deep nesting.
+fn main() {
+    let l = list(1);
+    let i = 0;
+    while i < 250000 {
+        let n = list();
+        n.push(l);
+        l = n;
+        i = i + 1;
+    }
+    println("built");
+    print("cells=" + string(gc_live_cells()));
+    let b = l.clone();
+    println("cloned");
+    return 0;
+}

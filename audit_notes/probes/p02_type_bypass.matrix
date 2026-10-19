@@ -1,0 +1,10 @@
+// P2: alias bypass — binding a function to a new name escapes the static
+// param-type check. Expect: semantic passes; both engines print 42.
+fn f(x: int) {
+    return 42;
+}
+fn main() {
+    let g = f;
+    print(g("hello"));
+    return 0;
+}

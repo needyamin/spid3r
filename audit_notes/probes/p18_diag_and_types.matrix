@@ -1,0 +1,11 @@
+// P18: diagnostics quality — double comma in call args hits the Debug-name
+// fallback in describe(); `any` and `heap` annotations are accepted by
+// check_type_name but missing from the KEYWORDS.md type-name table.
+fn main() {
+    let a: any = 5;
+    let h: heap = heap("min");
+    print(1,,2);
+    print(a);
+    print(h);
+    return 0;
+}

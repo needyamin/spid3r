@@ -1,0 +1,3 @@
+// p19: circular imports a <-> c (run both engines; compare error text)
+import "lib_c.matrix";
+export const A_CIRC = 1;

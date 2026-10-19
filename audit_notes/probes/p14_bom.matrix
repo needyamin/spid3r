@@ -1,0 +1,5 @@
+﻿// P14: BOM + CRLF probe
+fn main() {
+    print("bom-crlf");
+    return 0;
+}

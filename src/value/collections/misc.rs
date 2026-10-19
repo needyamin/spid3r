@@ -845,12 +845,33 @@ pub struct MatrixData {
     pub data: Vec<f64>,
 }
 
+/// Allocation cap for a single matrix, mirroring the 16M-element caps on
+/// `string.repeat` / `pad_*` (16,777,216 f64 cells = 128 MiB).
+pub const MAX_MATRIX_CELLS: usize = 16_777_216;
+
+/// Validates dimensions and returns the cell count, rejecting overflow and
+/// matrices above `MAX_MATRIX_CELLS` with a clean, catchable error.
+pub fn check_matrix_dims(rows: usize, cols: usize) -> Result<usize, String> {
+    match rows.checked_mul(cols) {
+        Some(cells) if cells <= MAX_MATRIX_CELLS => Ok(cells),
+        Some(cells) => Err(format!(
+            "matrix of {}x{} would need {} cells (max {})",
+            rows, cols, cells, MAX_MATRIX_CELLS
+        )),
+        None => Err(format!(
+            "matrix of {}x{} is too large (max {} cells)",
+            rows, cols, MAX_MATRIX_CELLS
+        )),
+    }
+}
+
 impl MatrixData {
     pub fn new(rows: usize, cols: usize, fill: f64) -> Self {
+        let cells = check_matrix_dims(rows, cols).unwrap_or(0);
         MatrixData {
             rows,
             cols,
-            data: vec![fill; rows * cols],
+            data: vec![fill; cells],
         }
     }
 
@@ -922,7 +943,8 @@ impl MatrixData {
                 self.cols, other.rows
             ));
         }
-        let mut data = vec![0.0; self.rows * other.cols];
+        let cells = check_matrix_dims(self.rows, other.cols)?;
+        let mut data = vec![0.0; cells];
         for i in 0..self.rows {
             for j in 0..other.cols {
                 let mut sum = 0.0;

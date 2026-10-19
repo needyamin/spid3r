@@ -1,0 +1,16 @@
+// P5: private access through a non-identifier receiver (`new C().secret`).
+// The semantic pass only knows receiver classes for bare Ident objects, so
+// this may pass the checker. Does the runtime defend?
+class C {
+    private let secret: int;
+    private fn hide(self) {
+        return 1;
+    }
+    public fn get(self) {
+        return self.secret;
+    }
+}
+fn main() {
+    print(new C().secret);
+    return 0;
+}

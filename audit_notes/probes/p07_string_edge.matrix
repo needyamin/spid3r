@@ -1,0 +1,56 @@
+// p07: string method edges and literal receivers
+fn main() {
+    print("abc".len());
+    print("".len());
+    print("héllo".len());
+    print("abc".upper());
+    print("ABC".lower());
+    print("  x ".trim());
+    print("a,b,c".split(",").len());
+    print("abc".contains("b"));
+    print("abc".starts_with("ab"));
+    print("abc".ends_with("bc"));
+    print("abc".replace("b", "X"));
+    print("abc".find("c"));
+    print("ab".repeat(3));
+    print("abc"[0]);
+    print("abc"[2]);
+    print("abcdef"[1..4]);
+    print("abc" + "def");
+
+    // literal receivers on other types
+    print([1, 2, 3].len());
+    print((1, 2).len());
+    print("x".len() + 1);
+
+    // chained calls
+    print("a,b,c".split(",").join("-"));
+    print("  Hello  ".trim().upper().len());
+
+    // char access and out-of-range error
+    try {
+        print("abc"[10]);
+    } catch(e) {
+        print("oob " + e);
+    }
+    try {
+        print("abc" + 1);
+    } catch(e) {
+        print("cat " + e);
+    }
+    try {
+        print("abc".len(1));
+    } catch(e) {
+        print("argc " + e);
+    }
+
+    // string() conversions
+    print(string(5));
+    print(string(2.5));
+    print(string(true));
+    print(string(false));
+    print(string(null));
+    print(string([1, 2]));
+    print(string("already"));
+    return 0;
+}

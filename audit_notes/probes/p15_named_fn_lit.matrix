@@ -1,0 +1,9 @@
+// P15: EBNF `fnLit` has no name, but the parser accepts a named fn literal
+// in expression position. Does semantic register or ignore "foo"?
+fn main() {
+    let f = fn foo() {
+        return 7;
+    };
+    print(f());
+    return 0;
+}

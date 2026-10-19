@@ -1,0 +1,9 @@
+// P8: annotation type names appear case-insensitive in check_type_name
+// (eq_ignore_ascii_case), while docs say identifiers are case-sensitive.
+fn main() {
+    let x: INT = 5;
+    let l: List = list(1, 2);
+    print(x);
+    print(l);
+    return 0;
+}

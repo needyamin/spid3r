@@ -62,7 +62,7 @@ pub struct Interp {
     pub file: Arc<str>,
     pub module_dirs: Vec<PathBuf>,
     /// Mutex guards held by the current scope; released at block exit.
-    pub guards: Mutex<Vec<crate::value::Ref<crate::sched::MutexData>>>,
+    pub guards: Mutex<Vec<std::sync::Arc<crate::sched::MutexData>>>,
     guards_len: AtomicUsize,
     pub is_module: bool,
     pub public_names: Mutex<HashSet<String>>,
@@ -296,7 +296,7 @@ impl Interp {
         let mut guards = self.guards.lock().unwrap();
         while guards.len() > mark {
             if let Some(m) = guards.pop() {
-                m.lock().unwrap().unlock();
+                m.unlock();
             }
         }
         self.guards_len.store(guards.len(), Ordering::Relaxed);
@@ -833,7 +833,7 @@ impl Interp {
                         if !args.is_empty() {
                             return Err(self.rt(span, "lock takes no arguments"));
                         }
-                        let v = m.lock().unwrap().lock();
+                        let v = m.lock();
                         let mut guards = self.guards.lock().unwrap();
                         guards.push(m.clone());
                         self.guards_len.store(guards.len(), Ordering::Relaxed);

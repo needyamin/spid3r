@@ -1,0 +1,57 @@
+// p01: nested captures, counter closures, capture after loop
+fn make_counter() {
+    let n = 0;
+    let inc = fn() { n = n + 1; return n; };
+    return inc;
+}
+
+fn outer(x) {
+    let mid = fn() {
+        let inner = fn() { return x * 100; };
+        return inner;
+    };
+    return mid();
+}
+
+fn main() {
+    let c = make_counter();
+    print(c());
+    print(c());
+    print(c());
+
+    let f = outer(7);
+    print(f());
+
+    // capture after loop: last iteration binding
+    let g = null;
+    for x in [10, 20, 30] {
+        g = fn() { return x; };
+    }
+    print(g());
+
+    // per-iteration closures
+    let fs = [];
+    for y in [1, 2, 3] {
+        fs.push(fn() { return y; });
+    }
+    print(fs[0]());
+    print(fs[1]());
+    print(fs[2]());
+
+    // shared cell between two closures
+    let shared = 0;
+    let setv = fn(v) { shared = v; };
+    let getv = fn() { return shared; };
+    setv(42);
+    print(getv());
+
+    // while loop capture
+    let h = null;
+    let i = 0;
+    while i < 3 {
+        h = fn() { return i; };
+        i = i + 1;
+    }
+    print(h());
+    return 0;
+}

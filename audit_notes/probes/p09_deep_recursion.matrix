@@ -1,0 +1,53 @@
+// p09: recursion depth limit and error text parity
+fn down(n) {
+    if n == 0 {
+        return 0;
+    }
+    return down(n - 1);
+}
+
+fn deep(n) {
+    return deep(n + 1);
+}
+
+class Node {
+    fn walk(self, n) {
+        if n == 0 {
+            return 0;
+        }
+        return self.walk(n - 1);
+    }
+}
+
+fn main() {
+    print(down(900));
+
+    // hit the depth limit and catch it
+    try {
+        deep(1);
+    } catch(e) {
+        print("depth: " + e);
+    }
+
+    // recursion through method dispatch
+    try {
+        let nd = new Node();
+        print(nd.walk(100000));
+    } catch(e) {
+        print("method: " + e);
+    }
+
+    // mutual recursion near the limit
+    try {
+        fn ping(n) {
+            return pong(n + 1);
+        }
+        fn pong(n) {
+            return ping(n + 1);
+        }
+        ping(1);
+    } catch(e) {
+        print("mutual: " + e);
+    }
+    return 0;
+}

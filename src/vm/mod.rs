@@ -114,7 +114,7 @@ struct CallFrame {
     /// `func.upvalues[own..]` and are shared intentionally.
     own_cells: Vec<UpvalueCell>,
     /// Mutexes locked in this frame (released on return, like `finally`).
-    guards: Vec<Arc<Mutex<crate::sched::MutexData>>>,
+    guards: Vec<std::sync::Arc<crate::sched::MutexData>>,
     /// When `Some`, `OpReturn` from this frame pushes this value instead of
     /// the function's own return (used by class constructors).
     ctor_result: Option<Value>,
@@ -1296,7 +1296,7 @@ impl Vm {
                     if !self.frames[nf].guards.is_empty() {
                         let guards = std::mem::take(&mut self.frames[nf].guards);
                         for g in &guards {
-                            g.lock().unwrap().unlock();
+                            g.unlock();
                         }
                     }
                     if let Some(popped_frame) = self.frames.pop() {
@@ -1409,7 +1409,7 @@ impl Vm {
                         if !self.frames[nf].guards.is_empty() {
                             let guards = std::mem::take(&mut self.frames[nf].guards);
                             for g in &guards {
-                                g.lock().unwrap().unlock();
+                                g.unlock();
                             }
                         }
                         if let Some(popped_frame) = self.frames.pop() {
@@ -1833,7 +1833,7 @@ impl Vm {
                 if !self.frames[nf].guards.is_empty() {
                     let guards = std::mem::take(&mut self.frames[nf].guards);
                     for g in &guards {
-                        g.lock().unwrap().unlock();
+                        g.unlock();
                     }
                 }
                 if let Some(popped_frame) = self.frames.pop() {

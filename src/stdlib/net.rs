@@ -450,8 +450,11 @@ fn read_chunked(stream: &TcpStream, leftover: Vec<u8>, who: &str) -> Result<Vec<
             while !reader.line()?.is_empty() {}
             return Ok(body);
         }
-        if body.len() + size > MAX_BODY_BYTES {
-            return Err(format!("{}: body exceeds the {} byte limit", who, MAX_BODY_BYTES));
+        // checked_add: a hostile chunk size near usize::MAX would otherwise
+        // wrap the sum past the cap and stream unbounded memory.
+        match body.len().checked_add(size) {
+            Some(total) if total <= MAX_BODY_BYTES => {}
+            _ => return Err(format!("{}: body exceeds the {} byte limit", who, MAX_BODY_BYTES)),
         }
         body.extend_from_slice(&reader.take(size)?);
         reader.line()?; // CRLF after each chunk
@@ -676,7 +679,7 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
     let mut has_type = false;
     for (name, value) in &headers {
         let lower = name.to_ascii_lowercase();
-        if lower == "content-length" || lower == "connection" {
+        if lower == "content-length" || lower == "connection" || lower == "transfer-encoding" {
             continue; // framing is owned by the runtime
         }
         has_type |= lower == "content-type";
@@ -740,6 +743,16 @@ fn fetch(method: &str, url: &str, headers: &[(String, String)], body: &str) -> R
     if authority.is_empty() {
         return Err(format!("{}: URL has no host ('{}')", WHO, url));
     }
+    // CR/LF and other control characters in the authority or path would let a
+    // crafted URL inject or overwrite request headers (request smuggling).
+    let has_ctl =
+        |s: &str| s.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}');
+    if has_ctl(authority) || has_ctl(path) {
+        return Err(format!(
+            "{}: URL contains control characters ('{}')",
+            WHO, url
+        ));
+    }
     let addr = if authority.contains(':') && !authority.ends_with(']') {
         authority.to_string()
     } else {
@@ -756,7 +769,10 @@ fn fetch(method: &str, url: &str, headers: &[(String, String)], body: &str) -> R
     );
     for (name, value) in headers {
         let lower = name.to_ascii_lowercase();
-        if matches!(lower.as_str(), "host" | "connection" | "content-length") {
+        if matches!(
+            lower.as_str(),
+            "host" | "connection" | "content-length" | "transfer-encoding"
+        ) {
             continue;
         }
         req.push_str(&format!("{}: {}\r\n", name, value));
@@ -836,5 +852,28 @@ mod tests {
         let s = "a b&c=d/é~";
         assert_eq!(percent_decode(&percent_encode(s), false), s);
         assert_eq!(percent_encode("a b"), "a%20b");
+    }
+
+    /// A hostile chunked response with a chunk size near usize::MAX must be
+    /// rejected by the cap, not wrap `body.len() + size` past it (the cap
+    /// check previously used unchecked addition).
+    #[test]
+    fn chunked_body_overflow_size_is_rejected() {
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            // One huge chunk size, then close.
+            let _ = s.write_all(b"ffffffffffffffff\r\n");
+        });
+        let stream = std::net::TcpStream::connect(addr).unwrap();
+        let err = read_chunked(&stream, Vec::new(), "test").unwrap_err();
+        server.join().unwrap();
+        assert!(
+            err.contains("body exceeds"),
+            "expected the body cap to reject the hostile size, got: {}",
+            err
+        );
     }
 }

@@ -1,0 +1,8 @@
+// P7: annotated return type with a fall-through body (no return statement).
+// Semantic rejects only an explicit bare `return;`. What do the engines do?
+fn f() -> int {
+}
+fn main() {
+    print(f());
+    return 0;
+}

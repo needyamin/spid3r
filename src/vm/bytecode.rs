@@ -730,12 +730,16 @@ impl<'a> Reader<'a> {
 
     fn str(&mut self) -> SpidResult<String> {
         let n = self.usize()?;
-        if self.p + n > self.b.len() {
-            return Err(err(Phase::Vm, "invalid file format: string length exceeds file"));
+        // checked_add: a crafted length near usize::MAX would otherwise wrap
+        // `self.p + n` past the bounds check and panic the host on the slice.
+        match n.checked_add(self.p) {
+            Some(end) if end <= self.b.len() => {
+                let s = String::from_utf8_lossy(&self.b[self.p..end]).into_owned();
+                self.p = end;
+                Ok(s)
+            }
+            _ => Err(err(Phase::Vm, "invalid file format: string length exceeds file")),
         }
-        let s = String::from_utf8_lossy(&self.b[self.p..self.p + n]).into_owned();
-        self.p += n;
-        Ok(s)
     }
 
     fn opt_str(&mut self) -> SpidResult<Option<String>> {

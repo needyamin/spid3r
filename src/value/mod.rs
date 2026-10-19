@@ -221,7 +221,7 @@ pub enum Value {
 
     Task(Arc<crate::sched::TaskHandle>),
     Channel(Arc<crate::sched::ChannelData>),
-    MutexVal(Ref<crate::sched::MutexData>),
+    MutexVal(std::sync::Arc<crate::sched::MutexData>),
 
     /// A type-erased weak reference (`weak(x)` / `deref(w)`): the manual
     /// escape hatch for reference cycles, which would otherwise leak (the
@@ -674,7 +674,7 @@ fn values_equal_inner(
         (VClass(x), VClass(y)) => arc_id(x) == arc_id(y),
         (Task(x), Task(y)) => Arc::ptr_eq(x, y),
         (Channel(x), Channel(y)) => Arc::ptr_eq(x, y),
-        (MutexVal(x), MutexVal(y)) => ptr_id(x) == ptr_id(y),
+        (MutexVal(x), MutexVal(y)) => arc_id(x) == arc_id(y),
         (Cfn(x), Cfn(y)) => arc_id(x) == arc_id(y),
         (CClass(x), CClass(y)) => arc_id(x) == arc_id(y),
         (CInstance(x), CInstance(y)) => ptr_id(x) == ptr_id(y),

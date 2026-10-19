@@ -1,0 +1,19 @@
+// p11: module imports under tree vs vm vs compiled exec
+import "lib_a.matrix";
+
+fn main() {
+    print(VERSION);
+    print(bump());
+    print(bump());
+    print(counter);
+    print(from_b());
+    print(peek_internal());
+    try {
+        print(internal_state);
+    } catch(e) {
+        print("leak " + e);
+    }
+    // assignment to imported const: compile-time error expected (both engines)
+    // (kept in a comment so the probe compiles; see p11b for the negative test)
+    return 0;
+}

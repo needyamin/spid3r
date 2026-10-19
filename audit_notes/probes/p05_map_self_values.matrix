@@ -1,0 +1,10 @@
+// p05: map whose value is the map itself; .values() deep_clones values while
+// the MapData lock is held by method dispatch.
+fn main() {
+    let m = map();
+    m.set("self", m);
+    println("before values");
+    let vs = m.values();
+    println("after values");
+    return 0;
+}

@@ -91,7 +91,8 @@ documented, safe restriction — the leak persists while tasks run).
    allocation is acceptable; measure with `spid3r bench`).
 2. **Trace.** A `trace(&self, f: &mut impl FnMut(&Value))` for every container
    `*Data` that enumerates its strong child `Value`s: list/vec/deque/stack/
-   queue/linked lists (items), map (values + keys), set, trees/bst/trie/graph/
+   queue/linked lists (items), map (values; keys are scalar `MapKey`s and are
+   not traced), set, trees/bst/trie/graph/
    heap/prio-queue/matrix/ring/bag, tuple, option/result, instance/`VInstance`
    (fields), class/closure (upvalues). Start with the common cycle-formers
    (list, instance, map) and leave the rest untraced (safe) — then widen.

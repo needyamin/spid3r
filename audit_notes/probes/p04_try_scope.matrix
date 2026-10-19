@@ -1,0 +1,92 @@
+// p04: try/catch scoping, thrown value types, error messages
+fn main() {
+    // thrown non-string values keep their type
+    try {
+        throw 42;
+    } catch(e) {
+        print("int " + string(e) + " plus1 " + string(e + 1));
+    }
+    try {
+        throw [1, 2];
+    } catch(e) {
+        print("list " + string(e.len()));
+    }
+    try {
+        let m = map();
+        m.set("k", "v");
+        throw m;
+    } catch(e) {
+        print("map " + string(e.get("k")));
+    }
+
+    // division by zero caught with message
+    try {
+        let z = 0;
+        print(10 / z);
+    } catch(e) {
+        print("divz: " + e);
+    }
+    try {
+        let z = 0;
+        print(10 % z);
+    } catch(e) {
+        print("modz: " + e);
+    }
+
+    // unknown method / bad operand errors caught
+    try {
+        let x = 1;
+        print(x.foo());
+    } catch(e) {
+        print("m1: " + e);
+    }
+    try {
+        print("a" - 1);
+    } catch(e) {
+        print("m2: " + e);
+    }
+    try {
+        print(null.foo);
+    } catch(e) {
+        print("m3: " + e);
+    }
+    try {
+        print([1, 2][10]);
+    } catch(e) {
+        print("m4: " + e);
+    }
+    try {
+        print("abc"[99]);
+    } catch(e) {
+        print("m5: " + e);
+    }
+    try {
+        let m = map();
+        m.get("missing");
+    } catch(e) {
+        print("m6: " + e);
+    }
+    try {
+        let n = none;
+        n.unwrap();
+    } catch(e) {
+        print("m7: " + e);
+    }
+    try {
+        print(1 < "x");
+    } catch(e) {
+        print("m8: " + e);
+    }
+    try {
+        print(-"abc");
+    } catch(e) {
+        print("m9: " + e);
+    }
+    try {
+        let bad = int("xyz");
+        print(bad);
+    } catch(e) {
+        print("m10: " + e);
+    }
+    return 0;
+}

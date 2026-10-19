@@ -1,0 +1,39 @@
+// p08: collection edge cases — every case isolated in try/catch; each should
+// produce a clean error string, never a panic or hang.
+fn probe(label, f) {
+    try {
+        let r = f();
+        println(label + " => ok: " + string(r));
+    } catch(e) {
+        println(label + " => err: " + e);
+    }
+    return 0;
+}
+fn main() {
+    probe("stack.pop.empty", fn() { return stack().pop(); });
+    probe("queue.dequeue.empty", fn() { return queue().dequeue(); });
+    probe("deque.pop_front.empty", fn() { return deque().pop_front(); });
+    probe("ll.remove_first.empty", fn() { return linked_list().remove_first(); });
+    probe("bst.remove.empty", fn() { return bst().remove(1); });
+    probe("heap.pop.empty", fn() { return heap().pop(); });
+    probe("pq.pop.empty", fn() { return priority_queue().pop(); });
+    probe("ring.pop.empty", fn() { return ring_buffer(3).pop(); });
+    probe("list.oob", fn() { let l = list(1, 2, 3); return l[999]; });
+    probe("list.neg", fn() { let l = list(1, 2, 3); return l[-1]; });
+    probe("str.oob", fn() { return "abc"[10]; });
+    probe("heap.mixed", fn() { let h = heap(); h.push(1); return h.push("x"); });
+    probe("bst.mixed", fn() { let b = bst(); b.insert(1); return b.insert("x"); });
+    probe("bst.nan", fn() { let b = bst(); b.insert(1); return b.insert(float("nan")); });
+    probe("graph.rm.missing", fn() { let g = graph(true); return g.remove_node("nope"); });
+    probe("graph.edge.missing", fn() { let g = graph(true); return g.add_edge("a", "b", 1); });
+    probe("matrix.huge", fn() { return matrix(50000, 50000, 0.0); });
+    probe("matrix.neg", fn() { return matrix(-1, 2, 0.0); });
+    probe("matrix.get.oob", fn() { let m = matrix(2, 2, 1.0); return m.get(5, 5); });
+    probe("matrix.set.oob", fn() { let m = matrix(2, 2, 1.0); return m.set(5, 5, 9.0); });
+    probe("ht.get.missing", fn() { return hash_table().get("missing"); });
+    probe("ht.rm.missing", fn() { return hash_table().remove("missing"); });
+    probe("map.missing", fn() { return map()["nope"]; });
+    probe("vec.get.oob", fn() { return vec(1, 2).get(99); });
+    probe("str.index.neg", fn() { return "abc"[-1]; });
+    return 0;
+}

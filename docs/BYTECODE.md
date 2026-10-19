@@ -136,9 +136,10 @@ Dynamic values use thread-safe reference counting (`Arc<Mutex<…>>`) across bot
 the tree-walk interpreter and the bytecode VM so values and closures can safely
 cross `spawn` task boundaries:
 
-- **Cycle collector (`src/value/gc.rs`):** Container values capable of forming
-  reference cycles (`list`, `vec`, `map`, `set`, and class instances) are
-  registered with a mark-and-sweep cycle collector (`gc_collect()`,
+- **Cycle collector (`src/value/gc.rs`):** Every container and instance type
+  capable of forming reference cycles (`list`, `vec`, `map`, `set`, linked
+  lists, trees, `graph`, `heap`, `matrix`, and class instances — 20+ types)
+  are registered with a mark-and-sweep cycle collector (`gc_collect()`,
   `gc_live_cells()`, and automatic threshold collection).
 - **Weak references (`weak`):** Non-owning weak references (`weak(x)`, `.get()`,
   `.alive()`) allow caches and parent pointers without extending target lifetimes.

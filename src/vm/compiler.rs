@@ -8,7 +8,7 @@
 //!   (clox style). A local's slot is the index where its initializer sits on
 //!   the stack at the point of declaration, so `add_local` records the current
 //!   local count (params occupy slots 0..arity and are also tracked).
-//! * A local captured by a nested function becomes an upvalue *cell* —
+//! * A local captured by a nested function becomes an upvalue *cell* Ã¢â‚¬â€
 //!   a heap `UpvalueCell` shared by the defining frame and every closure over
 //!   it. This keeps closures `Send` and correct across tasks.
 //! * `try`/`catch`/`finally` compile to one `OpTry` plus an `OpEnterFinally` /
@@ -179,9 +179,17 @@ impl Compiler {
         });
     }
 
-    /// Declare a local; its initializer value is already on top of the stack.
+    /// Declare a local; its initializer value is already on the top of the stack.
     /// Returns the slot index assigned.
-    fn add_local(&mut self, name: &str) -> u8 {
+    fn add_local(&mut self, name: &str) -> Result<u8, Diagnostic> {
+        // Slots are encoded in one byte (GetLocal/SetLocal/CaptureSync); reject
+        // overflow with a clean diagnostic instead of silently aliasing slots.
+        if self.locals.len() >= 256 {
+            return Err(Diagnostic::new(
+                Phase::Vm,
+                "too many locals in one function (max 255)",
+            ));
+        }
         let slot = self.locals.len() as u8;
         self.locals.push(Local {
             name: name.to_string(),
@@ -189,8 +197,22 @@ impl Compiler {
             is_captured: false,
             upvalue_index: None,
         });
-        slot
+        Ok(slot)
     }
+}
+
+/// Argument counts above 255 cannot be encoded in the 1-byte argc operand of
+/// Call/Invoke/Construct; reject with a clean diagnostic instead of silently
+/// truncating the count (which corrupts the value stack).
+fn check_argc(span: &crate::diagnostics::Span, n: usize) -> Result<(), Diagnostic> {
+    if n > u8::MAX as usize {
+        return Err(Diagnostic::at(
+            Phase::Vm,
+            span.clone(),
+            format!("too many arguments in call (max 255, got {})", n),
+        ));
+    }
+    Ok(())
 }
 
 /// Compile a whole program. Returns the script function and the set of public
@@ -200,7 +222,7 @@ impl Compiler {
 /// resolve relative to its parent directory first (mirroring the interpreter and
 /// VM). `module_dirs` are the additional search directories (SPID3R_PATH etc).
 ///
-/// Every imported module — and all of its transitive imports — is resolved,
+/// Every imported module Ã¢â‚¬â€ and all of its transitive imports Ã¢â‚¬â€ is resolved,
 /// parsed, semantically checked, and recursively compiled, then embedded into
 /// the returned script's `Chunk.modules`. This makes the produced `.matrixc`
 /// self-contained: the VM's `exec` path can run it without any `.matrix` source
@@ -274,6 +296,17 @@ fn compile_one(
     compilers[0].chunk.emit(OpCode::Null);
     compilers[0].chunk.emit(OpCode::Return);
     let c = compilers.pop().unwrap();
+    // Same 7-bit upvalue-encoding limit as `compile_function`: the script
+    // frame's own captured locals must stay within 128 entries.
+    if c.own_upvalues > 128 {
+        return Err(Diagnostic::new(
+            Phase::Vm,
+            format!(
+                "too many captured variables in one function (max 128, got {})",
+                c.own_upvalues
+            ),
+        ));
+    }
     let public = c.public.clone();
     let own_upvalues = c.own_upvalues;
     let mut chunk = c.chunk;
@@ -385,11 +418,11 @@ fn compile_stmt(
             } else {
                 compilers[ci].chunk.emit(OpCode::Null);
             }
-            define_variable(compilers, ci, name, *vis);
+            define_variable(compilers, ci, name, *vis)?;
         }
         Stmt::Const { name, value, vis, .. } => {
             compile_expr(compilers, ci, value)?;
-            define_variable(compilers, ci, name, *vis);
+            define_variable(compilers, ci, name, *vis)?;
         }
         Stmt::Fn(proto) => {
             if compilers[ci].is_global && compilers[ci].scope_depth == 0 {
@@ -398,11 +431,11 @@ fn compile_stmt(
                 let idx = compilers[ci].chunk.add_function(f);
                 compilers[ci].chunk.emit_u16(OpCode::Closure, idx);
                 let vis = proto.vis;
-                define_variable(compilers, ci, proto.name.as_deref().unwrap_or(""), vis);
+                define_variable(compilers, ci, proto.name.as_deref().unwrap_or(""), vis)?;
             } else {
                 let fn_name = proto.name.as_deref().unwrap_or("");
                 compilers[ci].chunk.emit(OpCode::Null);
-                let slot = compilers[ci].add_local(fn_name);
+                let slot = compilers[ci].add_local(fn_name)?;
                 let f = compile_function(compilers, ci, proto)?;
                 emit_closure_syncs(compilers, ci, &f);
                 let idx = compilers[ci].chunk.add_function(f);
@@ -416,7 +449,7 @@ fn compile_stmt(
             emit_pending_syncs(compilers, ci);
             let idx = compilers[ci].chunk.add_class(c);
             compilers[ci].chunk.emit_u16(OpCode::Class, idx);
-            define_variable(compilers, ci, &decl.name, decl.vis);
+            define_variable(compilers, ci, &decl.name, decl.vis)?;
         }
         Stmt::Interface(decl) => {
             if compilers[ci].is_global
@@ -493,14 +526,14 @@ fn compile_stmt(
             compilers[ci].chunk.emit(OpCode::Pop);
             let loop_jump = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
             let end = compilers[ci].chunk.here();
-            patch_jump(&mut compilers[ci].chunk, exit_jump, end);
-            patch_jump(&mut compilers[ci].chunk, loop_jump, start);
+            patch_jump(&mut compilers[ci].chunk, exit_jump, end)?;
+            patch_jump(&mut compilers[ci].chunk, loop_jump, start)?;
             let info = compilers[ci].loops.pop().unwrap();
             for p in info.break_patches {
-                patch_jump(&mut compilers[ci].chunk, p, end);
+                patch_jump(&mut compilers[ci].chunk, p, end)?;
             }
             for p in info.continue_patches {
-                patch_jump(&mut compilers[ci].chunk, p, post_pos);
+                patch_jump(&mut compilers[ci].chunk, p, post_pos)?;
             }
         }
         Stmt::Try {
@@ -565,21 +598,21 @@ fn compile_if(
     compile_block(compilers, ci, &then.stmts)?;
     exit_jumps.push(emit_jump(&mut compilers[ci].chunk, OpCode::Jump));
     let mut next = compilers[ci].chunk.here();
-    patch_jump(&mut compilers[ci].chunk, else_jump, next);
+    patch_jump(&mut compilers[ci].chunk, else_jump, next)?;
     for (ec, eb) in elifs {
         compile_expr(compilers, ci, ec)?;
         let ej = emit_jump(&mut compilers[ci].chunk, OpCode::JumpIfFalse);
         compile_block(compilers, ci, &eb.stmts)?;
         exit_jumps.push(emit_jump(&mut compilers[ci].chunk, OpCode::Jump));
         next = compilers[ci].chunk.here();
-        patch_jump(&mut compilers[ci].chunk, ej, next);
+        patch_jump(&mut compilers[ci].chunk, ej, next)?;
     }
     if let Some(b) = els {
         compile_block(compilers, ci, &b.stmts)?;
     }
     let end = compilers[ci].chunk.here();
     for j in exit_jumps {
-        patch_jump(&mut compilers[ci].chunk, j, end);
+        patch_jump(&mut compilers[ci].chunk, j, end)?;
     }
     Ok(())
 }
@@ -602,14 +635,14 @@ fn compile_while(
     compile_block(compilers, ci, &body.stmts)?;
     let loop_jump = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
     let end = compilers[ci].chunk.here();
-    patch_jump(&mut compilers[ci].chunk, exit_jump, end);
-    patch_jump(&mut compilers[ci].chunk, loop_jump, start);
+    patch_jump(&mut compilers[ci].chunk, exit_jump, end)?;
+    patch_jump(&mut compilers[ci].chunk, loop_jump, start)?;
     let info = compilers[ci].loops.pop().unwrap();
     for p in info.break_patches {
-        patch_jump(&mut compilers[ci].chunk, p, end);
+        patch_jump(&mut compilers[ci].chunk, p, end)?;
     }
     for p in info.continue_patches {
-        patch_jump(&mut compilers[ci].chunk, p, start);
+        patch_jump(&mut compilers[ci].chunk, p, start)?;
     }
     Ok(())
 }
@@ -624,14 +657,14 @@ fn compile_for_in(
     // Materialize the iterable into a tuple on the stack, then index it.
     compile_expr(compilers, ci, iter)?;
     compilers[ci].chunk.emit(OpCode::ForEachInit);
-    let items_slot = compilers[ci].add_local("__for_items");
+    let items_slot = compilers[ci].add_local("__for_items")?;
     // push index 0
     let z = compilers[ci].chunk.emit_const(Value::Int(0));
     compilers[ci].chunk.emit_u16(OpCode::Constant, z);
-    let idx_slot = compilers[ci].add_local("__for_idx");
+    let idx_slot = compilers[ci].add_local("__for_idx")?;
     // reserved slot for the loop variable (bound each iteration)
     compilers[ci].chunk.emit(OpCode::Null);
-    let var_slot = compilers[ci].add_local(var);
+    let var_slot = compilers[ci].add_local(var)?;
 
     let start = compilers[ci].chunk.here();
     // Release the previous iteration's cell for the loop variable (no-op on
@@ -672,14 +705,14 @@ fn compile_for_in(
     compilers[ci].chunk.emit(OpCode::Pop);
     let loop_jump = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
     let end = compilers[ci].chunk.here();
-    patch_jump(&mut compilers[ci].chunk, exit_jump, end);
-    patch_jump(&mut compilers[ci].chunk, loop_jump, start);
+    patch_jump(&mut compilers[ci].chunk, exit_jump, end)?;
+    patch_jump(&mut compilers[ci].chunk, loop_jump, start)?;
     let info = compilers[ci].loops.pop().unwrap();
     for p in info.break_patches {
-        patch_jump(&mut compilers[ci].chunk, p, end);
+        patch_jump(&mut compilers[ci].chunk, p, end)?;
     }
     for p in info.continue_patches {
-        patch_jump(&mut compilers[ci].chunk, p, post);
+        patch_jump(&mut compilers[ci].chunk, p, post)?;
     }
     // pop the three for-in locals from both the operand stack and the local
     // table; otherwise later declarations would be assigned the wrong slot.
@@ -780,7 +813,7 @@ fn compile_try(
     let catch_slot_assigned: u8;
     if let Some(cc) = catch {
         compilers[ci].begin_scope();
-        catch_slot_assigned = compilers[ci].add_local(&cc.name);
+        catch_slot_assigned = compilers[ci].add_local(&cc.name)?;
         compile_block(compilers, ci, &cc.body.stmts)?;
         compilers[ci].end_scope();
         compilers[ci].tries.pop();
@@ -803,8 +836,8 @@ fn compile_try(
         compilers[ci]
             .chunk
             .patch_i16(try_pos + 5, (finally_target as i64 - operand_end as i64) as i16);
-        patch_jump(&mut compilers[ci].chunk, success_jump, finally_target);
-        patch_jump(&mut compilers[ci].chunk, catch_jump, finally_target);
+        patch_jump(&mut compilers[ci].chunk, success_jump, finally_target)?;
+        patch_jump(&mut compilers[ci].chunk, catch_jump, finally_target)?;
     } else {
         compilers[ci].tries.pop();
         let finally_target = compilers[ci].chunk.here();
@@ -822,7 +855,7 @@ fn compile_try(
         compilers[ci]
             .chunk
             .patch_i16(try_pos + 5, (finally_target as i64 - operand_end as i64) as i16);
-        patch_jump(&mut compilers[ci].chunk, success_jump, finally_target);
+        patch_jump(&mut compilers[ci].chunk, success_jump, finally_target)?;
     }
     Ok(())
 }
@@ -848,6 +881,20 @@ fn compile_function(
     compilers[sub].chunk.emit(OpCode::Null);
     compilers[sub].chunk.emit(OpCode::Return);
     let c = compilers.pop().unwrap();
+    // Upvalue descriptors encode a direct-local capture index in 7 bits (bit 7
+    // selects direct-local vs enclosing-upvalue). `own_upvalues` counts this
+    // function's captured locals; at 129 the index would wrap to entry 0 and
+    // silently alias the first captured cell (the tree engine has no such
+    // limit). 128 is the representable maximum; reject beyond it cleanly.
+    if c.own_upvalues > 128 {
+        return Err(Diagnostic::new(
+            Phase::Vm,
+            format!(
+                "too many captured variables in one function (max 128, got {})",
+                c.own_upvalues
+            ),
+        ));
+    }
     Ok(VmFuncProto {
         name: proto.name.clone(),
         arity: proto.params.len(),
@@ -933,6 +980,21 @@ fn compile_expr(
             }
         }
         Expr::List(items, span) => {
+            // The Construct argc operand is one byte; a larger literal would
+            // silently truncate the count and corrupt the value stack. The
+            // tree engine has no such limit, so reject with a clean diagnostic
+            // (same contract as `check_argc` for calls) instead of emitting
+            // broken bytecode that `compile` would happily write to disk.
+            if items.len() > u8::MAX as usize {
+                return Err(Diagnostic::at(
+                    Phase::Vm,
+                    span.clone(),
+                    format!(
+                        "too many elements in list literal (max 255, got {})",
+                        items.len()
+                    ),
+                ));
+            }
             for it in items {
                 compile_expr(compilers, ci, it)?;
             }
@@ -986,10 +1048,10 @@ fn compile_expr(
                     compilers[ci].chunk.emit(OpCode::Truthy);
                     let end_jump = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
                     let f = compilers[ci].chunk.here();
-                    patch_jump(&mut compilers[ci].chunk, false_jump, f);
+                    patch_jump(&mut compilers[ci].chunk, false_jump, f)?;
                     compilers[ci].chunk.emit(OpCode::False);
                     let end = compilers[ci].chunk.here();
-                    patch_jump(&mut compilers[ci].chunk, end_jump, end);
+                    patch_jump(&mut compilers[ci].chunk, end_jump, end)?;
                 }
                 LogOp::Or => {
                     let true_jump =
@@ -998,10 +1060,10 @@ fn compile_expr(
                     compilers[ci].chunk.emit(OpCode::Truthy);
                     let end_jump = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
                     let t = compilers[ci].chunk.here();
-                    patch_jump(&mut compilers[ci].chunk, true_jump, t);
+                    patch_jump(&mut compilers[ci].chunk, true_jump, t)?;
                     compilers[ci].chunk.emit(OpCode::True);
                     let end = compilers[ci].chunk.here();
-                    patch_jump(&mut compilers[ci].chunk, end_jump, end);
+                    patch_jump(&mut compilers[ci].chunk, end_jump, end)?;
                 }
             }
         }
@@ -1014,6 +1076,7 @@ fn compile_expr(
         Expr::Call { callee, args, span } => {
             if let Expr::Ident(name, _) = &**callee {
                 if is_constructor(name) {
+                    check_argc(span, args.len())?;
                     for a in args {
                         compile_expr(compilers, ci, a)?;
                     }
@@ -1026,6 +1089,7 @@ fn compile_expr(
                 }
             }
             compile_expr(compilers, ci, callee)?;
+            check_argc(span, args.len())?;
             for a in args {
                 compile_expr(compilers, ci, a)?;
             }
@@ -1039,6 +1103,7 @@ fn compile_expr(
             span,
         } => {
             compile_expr(compilers, ci, object)?;
+            check_argc(span, args.len())?;
             for a in args {
                 compile_expr(compilers, ci, a)?;
             }
@@ -1068,6 +1133,7 @@ fn compile_expr(
             // `Call` pops the argument(s) first, then the callee, so the class
             // (the callee) must be pushed *before* its arguments.
             emit_get(compilers, ci, class);
+            check_argc(span, args.len())?;
             for a in args {
                 compile_expr(compilers, ci, a)?;
             }
@@ -1261,7 +1327,12 @@ fn emit_set(compilers: &mut Vec<Compiler>, ci: usize, name: &str) {
     }
 }
 
-fn define_variable(compilers: &mut [Compiler], ci: usize, name: &str, vis: Vis) {
+fn define_variable(
+    compilers: &mut [Compiler],
+    ci: usize,
+    name: &str,
+    vis: Vis,
+) -> Result<(), Diagnostic> {
     if compilers[ci].is_global && compilers[ci].scope_depth == 0 {
         let idx = compilers[ci].chunk.emit_str_const(name);
         compilers[ci].chunk.emit_u16(OpCode::DefineGlobal, idx);
@@ -1269,8 +1340,9 @@ fn define_variable(compilers: &mut [Compiler], ci: usize, name: &str, vis: Vis) 
             compilers[0].public.insert(name.to_string());
         }
     } else {
-        compilers[ci].add_local(name);
+        compilers[ci].add_local(name)?;
     }
+    Ok(())
 }
 
 /// Emit `CaptureSync` for any newly captured locals in `ci`, plus any direct
@@ -1321,7 +1393,20 @@ fn emit_jump(chunk: &mut Chunk, op: OpCode) -> usize {
     chunk.code.len() - 2
 }
 
-fn patch_jump(chunk: &mut Chunk, operand_pos: usize, target: usize) {
-    let off = (target as i64 - (operand_pos as i64 + 2)) as i16;
+fn patch_jump(
+    chunk: &mut Chunk,
+    operand_pos: usize,
+    target: usize,
+) -> Result<(), Diagnostic> {
+    let diff = target as i64 - (operand_pos as i64 + 2);
+    // Jump offsets are 2-byte i16 operands; a function body larger than 32 KiB
+    // would previously wrap silently and produce a mis-jumping chunk.
+    let off = i16::try_from(diff).map_err(|_| {
+        Diagnostic::new(
+            Phase::Vm,
+            "function body too large: bytecode exceeds the 32 KiB jump range (split the function)",
+        )
+    })?;
     chunk.patch_i16(operand_pos, off);
+    Ok(())
 }

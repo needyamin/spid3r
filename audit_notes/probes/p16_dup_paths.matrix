@@ -1,0 +1,46 @@
+// p16: compound assignment on index targets, Dup/Dup2 paths, nested calls
+fn main() {
+    let l = [1, 2, 3];
+    l[0] += 10;
+    l[1] -= 1;
+    l[2] *= 2;
+    print(l);
+
+    let m = map();
+    m.set("a", 1);
+    m["a"] += 5;
+    print(m.get("a"));
+    print(m["a"]);
+
+    // nested containers
+    let grid = [[1, 2], [3, 4]];
+    grid[0][1] += 100;
+    print(grid);
+
+    // chained method calls on results
+    print([3, 1, 2].push(9).len());
+    let v = vec(1);
+    print(v.push(2).push(3).len());
+
+    // deeply nested invokes with locals in between (peephole stress)
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let r = ("x" + string(a + b * c)).len();
+    print(r);
+
+    // assignment as expression value
+    let d = 0;
+    let e = (d = 7);
+    print(d);
+    print(e);
+
+    // index assignment on nested map
+    let mm = map();
+    mm.set("inner", map());
+    let inner = mm.get("inner");
+    inner.set("k", 1);
+    mm["inner"]["k"] += 41;
+    print(mm["inner"]["k"]);
+    return 0;
+}

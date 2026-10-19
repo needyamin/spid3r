@@ -1,0 +1,8 @@
+// P1: direct call with annotated param — semantic should reject before running.
+fn f(x: int) {
+    return x + 1;
+}
+fn main() {
+    print(f("str"));
+    return 0;
+}

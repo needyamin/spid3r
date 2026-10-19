@@ -1,0 +1,10 @@
+// p06: linked_list containing itself; .to_list() deep_clones node values
+// while the ListData lock is held by method dispatch.
+fn main() {
+    let ll = linked_list();
+    ll.push_back(ll);
+    println("before to_list");
+    let l = ll.to_list();
+    println("after to_list");
+    return 0;
+}

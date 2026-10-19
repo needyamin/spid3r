@@ -1,0 +1,96 @@
+// p03: finally with return / break / continue / throw
+fn f_return() {
+    try {
+        return 1;
+    } finally {
+        print("f_return finally");
+    }
+}
+
+fn f_return_override() {
+    try {
+        return 1;
+    } finally {
+        return 99;
+    }
+}
+
+fn f_catch_then_return() {
+    try {
+        throw "boom";
+    } catch(e) {
+        return 7;
+    } finally {
+        print("f_catch_then_return finally");
+    }
+}
+
+fn f_throw_in_finally() {
+    try {
+        return 1;
+    } finally {
+        throw "from finally";
+    }
+}
+
+fn main() {
+    print(f_return());
+    print(f_return_override());
+    print(f_catch_then_return());
+
+    try {
+        print(f_throw_in_finally());
+    } catch(e) {
+        print("caught " + e);
+    }
+
+    // finally with break out of loop
+    for i in [1, 2, 3] {
+        try {
+            if i == 2 {
+                break;
+            }
+            print("iter " + string(i));
+        } finally {
+            print("fin " + string(i));
+        }
+    }
+
+    // finally with continue
+    let total = 0;
+    for i in [1, 2, 3] {
+        try {
+            if i == 2 {
+                continue;
+            }
+            total = total + i;
+        } finally {
+            print("cfin " + string(i));
+        }
+    }
+    print(total);
+
+    // try without catch: finally runs, error propagates
+    try {
+        try {
+            throw "inner";
+        } finally {
+            print("no-catch finally");
+        }
+    } catch(e) {
+        print("outer caught " + e);
+    }
+
+    // rethrow from catch
+    try {
+        try {
+            throw "first";
+        } catch(e) {
+            print("rethrowing " + e);
+            throw e;
+        }
+    } catch(e2) {
+        print("outer got " + e2);
+    }
+    return 0;
+}

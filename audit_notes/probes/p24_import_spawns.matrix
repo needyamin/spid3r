@@ -1,0 +1,12 @@
+// p24: import a module that itself spawns. Importing p22 runs its top-level
+// `spawn` at module init; the importer's main then coexists with the task.
+// Entry scripts require fn main (interpreter/mod.rs:240), so p24 has its own;
+// p22's fn main is private (modules/mod.rs:296 exports only vis: Public).
+import "p22_mutex_throw.matrix";
+
+fn main() {
+    print("importer main started");
+    sleep_ms(400);
+    print("importer done");
+    return 0;
+}

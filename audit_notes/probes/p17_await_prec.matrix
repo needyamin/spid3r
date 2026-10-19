@@ -1,0 +1,9 @@
+// P17: await precedence — GRAMMAR.md EBNF puts `await expr` at assignment
+// level, the note says unary strength. (await h) + 1 == 6 proves unary.
+async fn main() {
+    let h = spawn fn() {
+        return 5;
+    };
+    print(await h + 1);
+    return 0;
+}

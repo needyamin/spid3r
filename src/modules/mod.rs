@@ -30,7 +30,32 @@ impl ModuleCache {
     }
 }
 
+/// Import paths are search-relative by contract (importing file's directory,
+/// then SPID3R_PATH / vendor walk-up / ./stdlib). Absolute paths, drive/UNC
+/// prefixes, root-anchored forms, and `..` components would escape those
+/// search roots entirely, so both resolution paths (semantic checking and
+/// loading) reject them with a clear diagnostic.
+pub fn check_import_path(path: &str) -> Result<(), Diagnostic> {
+    let p = std::path::Path::new(path);
+    if p.is_absolute()
+        || p.has_root()
+        || path.contains(':')
+        || p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(Diagnostic::new(
+            Phase::Semantic,
+            format!(
+                "invalid module path '{}': imports are relative to the importing file and the module search path (no absolute paths, drive letters, or '..')",
+                path
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn resolve(interp: &Interp, path: &str) -> Result<PathBuf, Diagnostic> {
+    check_import_path(path)?;
     let candidates: Vec<PathBuf> = {
         let mut v = Vec::new();
         let base = PathBuf::from(interp.file.as_ref());
@@ -243,6 +268,7 @@ pub fn public_names_of(
     importer_file: &str,
     span: &Span,
 ) -> Result<Vec<(String, bool)>, Diagnostic> {
+    check_import_path(path)?;
     let base = PathBuf::from(importer_file);
     let mut dirs = default_module_dirs();
     if let Some(dir) = base.parent() {

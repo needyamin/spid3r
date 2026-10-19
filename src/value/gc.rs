@@ -20,9 +20,10 @@
 //! skips weak references, and skips container types it does not track.
 //!
 //! Auto-collection is gated behind `SPID3R_GC` (default off => byte-identical
-//! behavior); `gc_collect()` can always be called explicitly. Tracking currently
-//! covers `list`/`vec` (`VecData`) — the common self-cycle former; other
-//! container types are simply untracked (safe: they just leak as before).
+//! behavior); `gc_collect()` can always be called explicitly. Tracking
+//! covers every container and instance type that can form reference cycles
+//! (20+ `*Data` types below); closures/environments are not tracked yet
+//! (cycles through them leak — see GC.md).
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};

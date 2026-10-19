@@ -1,0 +1,70 @@
+// p05: for-in over every collection type, insertion order
+fn main() {
+    let out = [];
+    for v in [3, 1, 2] { out.push(v); }
+    print("list " + string(out));
+
+    let v2 = vec(5, 6);
+    let a2 = [];
+    for v in v2 { a2.push(v); }
+    print("vec " + string(a2));
+
+    let s = set(3, 1, 2, 1);
+    let a3 = [];
+    for v in s { a3.push(v); }
+    print("set " + string(a3));
+
+    let m = map();
+    m.set("a", 1);
+    m.set("b", 2);
+    let a4 = [];
+    for k in m.keys() { a4.push(k); }
+    print("mapkeys " + string(a4));
+
+    let st = stack();
+    st.push(1); st.push(2);
+    let a5 = [];
+    for v in st { a5.push(v); }
+    print("stack " + string(a5));
+
+    let q = queue();
+    q.enqueue(1); q.enqueue(2);
+    let a6 = [];
+    for v in q { a6.push(v); }
+    print("queue " + string(a6));
+
+    let d = deque();
+    d.push_back(1); d.push_back(2);
+    let a7 = [];
+    for v in d { a7.push(v); }
+    print("deque " + string(a7));
+
+    let ll = linked_list();
+    ll.push(1); ll.push(2);
+    let a8 = [];
+    for v in ll { a8.push(v); }
+    print("ll " + string(a8));
+
+    let t = (7, 8);
+    let a9 = [];
+    for v in t { a9.push(v); }
+    print("tuple " + string(a9));
+
+    let str_acc = "";
+    for ch in "abc" { str_acc = str_acc + ch; }
+    print("str " + str_acc);
+
+    // iterating a map directly
+    let m2 = map(1, "one", 2, "two");
+    let pairs = [];
+    for kv in m2 { pairs.push(string(kv)); }
+    print("mapiter " + string(pairs));
+
+    // for-in over a non-iterable must error identically
+    try {
+        for x in 5 { print(x); }
+    } catch(e) {
+        print("bad: " + e);
+    }
+    return 0;
+}

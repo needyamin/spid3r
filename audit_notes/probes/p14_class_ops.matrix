@@ -1,0 +1,81 @@
+// p14: classes, ctor, fields, compound assignment, method values
+class Point {
+    x;
+    y;
+    fn init(self, x, y) {
+        self.x = x;
+        self.y = y;
+    }
+    fn norm1(self) {
+        return self.x + self.y;
+    }
+    fn bump(self) {
+        self.x += 1;
+        self.y += 2;
+    }
+}
+
+class Counter {
+    n;
+    fn init(self) { self.n = 0; }
+    fn make_inc(self) {
+        return fn() { self.n = self.n + 1; return self.n; };
+    }
+}
+
+fn main() {
+    let p = new Point(3, 4);
+    print(p.norm1());
+    p.bump();
+    print(p.x);
+    print(p.y);
+    print(p.norm1());
+
+    // field compound assignment keeps object identity (Dup path)
+    let q = p;
+    q.x += 10;
+    print(p.x);
+    print(q == p);
+
+    // method value / closure over self
+    let c = new Counter();
+    let inc = c.make_inc();
+    print(inc());
+    print(inc());
+    print(c.n);
+
+    // ctor arity errors
+    try {
+        let bad = new Point(1);
+        print(bad);
+    } catch(e) {
+        print("arity: " + e);
+    }
+    try {
+        let bad2 = new Counter(1, 2);
+        print(bad2);
+    } catch(e) {
+        print("arity2: " + e);
+    }
+
+    // instance in collections and equality identity
+    let l = [p, p];
+    print(l.len());
+    print(l[0] == l[1]);
+    let other = new Point(13, 6);
+    print(p == other);
+
+    // field access on missing field
+    try {
+        print(p.zzz);
+    } catch(e) {
+        print("nofield: " + e);
+    }
+    // method on missing method
+    try {
+        p.nope();
+    } catch(e) {
+        print("nomethod: " + e);
+    }
+    return 0;
+}

@@ -1,0 +1,49 @@
+// p02: for-in rebinding, break/continue across nested loops with captures
+fn main() {
+    // nested loops with capture of inner variable
+    let outs = [];
+    for a in [1, 2] {
+        for b in [10, 20] {
+            outs.push(fn() { return a * 1000 + b; });
+            if b == 10 {
+                continue;
+            }
+            if a == 2 && b == 20 {
+                break;
+            }
+        }
+    }
+    for f in outs {
+        print(f());
+    }
+
+    // break out of inner loop only; outer continues
+    let seen = [];
+    for a in [1, 2] {
+        for b in [1, 2, 3] {
+            if b == 2 {
+                break;
+            }
+            seen.push(a * 10 + b);
+        }
+    }
+    print(seen);
+
+    // for-in over string chars? over tuple and range-like structures
+    let t = (1, 2, 3);
+    let acc = 0;
+    for v in t {
+        acc = acc + v;
+    }
+    print(acc);
+
+    // nested capture: outer loop var captured by closure surviving both loops
+    let g = null;
+    for a in [5, 6] {
+        for b in [7, 8] {
+            g = fn() { return a + b; };
+        }
+    }
+    print(g());
+    return 0;
+}

@@ -159,9 +159,78 @@ embedded table. (`src/modules/mod.rs`, `src/vm/mod.rs`, `src/vm/compiler.rs`)
 - Lexer float literals require decimal form (`1.5`, not scientific notation `1.5e3`), and `-9223372036854775808` (`i64::MIN`) cannot be written as a positive literal before unary negation.
 - Cycle collector (`src/value/gc.rs`) traces `list`, `vec`, `set`, `map`, and class instances; cycles through `tree`, `graph`, `heap`, or `matrix` containers require `weak`/`deref`.
 - Native AOT backend (`--features native`, requires external LLVM 18) rejects classes declared inside functions and higher-order collection callbacks (`list.map(f)`).
-- Tar archive reader/writer (`src/pkg/mod.rs`) supports standard 100-byte ustar entry names without long-name `prefix` extension headers.
+- Tar archive reader/writer (`src/pkg/mod.rs`) supports POSIX ustar `prefix`
+  long names (<= 255 bytes), GNU `@LongLink` headers for longer names, and
+  header checksum verification.
 
 ## 7. Overall QA status
 
 **Production-ready within documented scope.** All confirmed critical, high, and medium bugs across the lexer, parser, semantic analyzer, tree-walk interpreter, bytecode compiler/deserializer/validator/optimizer/VM, value & collection layer, standard library, module loader, and package manager have been resolved at their root causes and pinned by 30 regression tests in `tests/audit_regressions.rs` and 3 deterministic fuzz suites in `tests/fuzz_tests.rs`. All 279 Rust tests and all 23 three-engine differential tests pass with zero clippy warnings.
 
+
+---
+
+## 8. 2026-10-19 addendum — second full audit (commit `9e86135` baseline)
+
+A second evidence-based audit (parallel: build validation, front end, engines,
+runtime/security, market research) confirmed the fixes above still hold and
+found new issues, fixed in this addendum. Every fix was verified by a repro
+that failed before and passes now, plus 10 new regression tests
+(`tests/audit_regressions.rs` 30 -> 39; net unit tests +1).
+
+| ID | Severity | Bug (root cause) | Fix |
+|---|---|---|---|
+| R1 | CRITICAL | Cross-task `mutex` deadlock: `lock()` parked on the internal condvar while holding the outer `Arc<Mutex<MutexData>>` guard; the unlocking task needed that same guard (`interpreter/mod.rs:836` vs `:299`). First contention hung both tasks. | `Value::MutexVal` now carries `Arc<MutexData>` directly (no outer wrapper mutex); `lock`/`unlock` need no dispatch guard anywhere (interpreter, VM, and the shared method host). |
+| R2 | CRITICAL | `matrix(rows, cols, fill)` had no allocation cap: `matrix(2e9, 2e9, 0)` aborted the host (capacity overflow), larger dims overflowed `rows*cols` (`misc.rs:853`). | `check_matrix_dims` (checked multiply + 16,777,216-cell cap, mirroring the string-op caps) enforced in the constructor and in `mul`. |
+| R3 | CRITICAL (dev/CI) | ~30+ nested parens/blocks aborted debug builds with STATUS_STACK_OVERFLOW in the semantic walk (parser's MAX_PARSE_DEPTH=96 bounds AST depth but semantic/interpreter frames are far larger than a 1 MiB Windows main stack). Release builds handled all tested inputs. | `cli::run` dispatches every subcommand on a dedicated 512 MiB-stack worker thread and joins it (exit codes and panic behavior preserved). |
+| R4 | CRITICAL | Crafted `.matrixc` with a string length near `usize::MAX` wrapped `self.p + n` past the bounds check and panicked the host (`bytecode.rs:733`, exit 101). | `Reader::str` uses `checked_add` before slicing. |
+| R5 | CRITICAL | VM compiler emitted argc/slot indices with `as u8`: >255 call arguments truncated silently (stack corruption, wrong results); >255 locals aliased slots (silent wrong reads). | Clean VM diagnostics: "too many arguments in call (max 255, got N)" (Construct/Call/Invoke) and "too many locals in one function (max 255)" (`add_local` now returns `Result`). |
+| R6 | HIGH | Jump offsets cast to `i16`: >32 KiB function bodies mis-jumped, and `compile` wrote the broken `.matrixc` (exit 0). | `patch_jump` errors with "function body too large" when the offset does not fit i16; broken artifacts can no longer be written. |
+| S1 | MEDIUM | `http_fetch` interpolated URL path/authority into the outbound request without CR/LF checks (header injection/request smuggling). | Control characters (`< 0x20`, 0x7F) rejected before connecting. |
+| S2 | MEDIUM | Chunked decoder cap used unchecked `body.len() + size` — a hostile chunk size near `usize::MAX` wrapped past the 8 MiB cap (unbounded memory; debug panic). | `checked_add` before the cap comparison. |
+| S3 | MEDIUM | `bundle --single-file` escaped only exact-case `</script>`; `</ScRiPt>`-style end tags broke out of the embedded source element. | Every `</` in the embedded source is neutralized (`<\/`). |
+| S4 | MEDIUM | Module imports accepted absolute paths, drive letters, and `..` (escaping the documented search roots). | `modules::check_import_path` enforced in both the semantic checker (`public_names_of`) and the loader (`resolve`). |
+| T1 | MEDIUM | Framing headers: user-supplied `transfer-encoding` passed through to fetch requests and responses (CL+TE ambiguity). | Stripped alongside `content-length`/`connection`. |
+| D1 | MINOR | Debugger `--commands` file: UTF-8 BOM made the first command "unknown command '<BOM>bt'". | BOM stripped like the `.matrix` lexer does. |
+| DOC | MINOR | Stale docs: sitemap test counts (269/279 -> 298/308), BYTECODE.md GC paragraph (said only list/vec/map/set traced), GC.md "map (values + keys)" (keys are scalar), AUDIT_REPORT §6 tar line (prefix + @LongLink ARE supported), gc.rs header comment. | All updated to match the code. |
+
+Verification (2026-10-19, post-fix): `cargo test --no-default-features` **298 passed, 0 failed**; GUI **10/10**; `cargo clippy --no-default-features --all-targets -- -D warnings` **0 warnings**; `spid3r fmt --check` **31 files unchanged**; 3-engine differential **23 ok, 0 failed**; deadlock/matrix/argc/locals/jump/crafted-bytecode/module-path/http_fetch repros all now produce clean, catchable diagnostics; post-fix `spid3r bench --engine vm --runs 3` consistent with `benchmarks/results.json` (no regression).
+
+Known-remaining (documented, not fixed here): field type annotations are not enforced on external `obj.field = v` assignments (checked on `self.field`); diagnostic columns are byte-based (shift on lines with multi-byte chars); module loading has a check-then-act race across concurrent tasks; a panic while holding a user mutex leaves it locked (no Drop guard); GC does not trace closures/environments (cycles through them leak); auto-GC is gated on `live_tasks()==0`; `join()` can starve the worker pool; worker threads are killed mid-flight at process exit; net hardening P3s (no default read timeout for raw `http_read_request`, handle-table lifecycle, wasm FFI `catch_unwind`); `error[runtime]` vs `error[vm]` phase label divergence; cargo bin/lib `spid3r.pdb` output-collision warning (cargo #6313).
+
+---
+
+## 9. 2026-10-19 addendum 2 — independent verification round (2 new fixes)
+
+A third-party verification round re-ran the full validation matrix (all green
+before any change: 298 core / 10 GUI / 23-23 differential / clippy clean) and
+confirmed two new VM-compiler bugs by execution; both are fixed in this
+addendum, each pinned by a new regression test.
+
+| ID | Severity | Bug (root cause) | Fix |
+|---|---|---|---|
+| V1 | HIGH (P1) | `Expr::List` emitted `items.len() as u8` into `Construct` with no argc guard (Call/Method/New all had `check_argc`): a 256-element literal truncated the argc byte to 0 and corrupted the value stack (`error[vm]: int has no length`), and `compile` still wrote the broken `.matrixc` with exit 0. Repro: `audit_notes/probes/list{256,300}.matrix`. | argc guard in `src/vm/compiler.rs`: clean `too many elements in list literal (max 255, got N)`; `compile` now exits 1 and writes no artifact. |
+| V2 | HIGH (P1) | `capture_local` let `own_upvalues` exceed the 7-bit descriptor encoding and `resolve_upvalue` masked with `& 0x7f`, so capture #129 silently aliased capture #1's cell (129-capture probe: tree 9385 vs vm 10257; 130: 9515 vs 10259; 128 is clean on both). Repro: `audit_notes/probes/cap{128,129,130}.matrix`. | 128-capture limit enforced at both finalization sites (`compile_function`, `compile_one` in `src/vm/compiler.rs`): `too many captured variables in one function (max 128, got N)`. |
+
+New OPEN findings (recorded in `plan.html`, not fixed in this round):
+user-reachable hangs with no diagnostic on self-referential containers through
+for-in, `set.union`, `map.values`, and `linked_list.to_list` on BOTH engines
+(`.clone()` is cycle-safe; the earlier json_write fix did not cover these
+paths); a multi-minute stall building multi-million-deep nested lists in both
+engines (no allocation/GC bound halts progress; root cause unverified);
+gradual typing is bypassable through rebound function values and nested `fn`
+declarations; privacy is enforced only on bare-identifier receivers; REPL
+`:reset` keeps const sets; VM `Import` drops const-ness (observable only via
+crafted `.matrixc`); `fmt --check` does not expand directories. The bytecode
+deserializer/validator held against four hand-crafted mutations (truncation,
+0xFF opcode byte, misplaced `Return` bytes): clean diagnostics, no host panic.
+Residual code-verified P3: a crafted `Return` on an empty operand stack
+swallows its own error (`src/vm/mod.rs` Return handler reaches
+`return Ok(...)` after `fail`).
+
+Post-fix verification (2026-10-19): `cargo test --no-default-features`
+**300 passed, 0 failed** (`audit_regressions` 39 -> 41); 3-engine differential
+**23 ok, 0 failed**; `cargo clippy --no-default-features --all-targets --
+-D warnings` **0 warnings**; list300/cap130 probes now fail with the clean
+diagnostics above; cap128 still prints 9256 on both engines; `compile` of the
+300-element literal exits 1 and writes no artifact.

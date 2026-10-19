@@ -422,10 +422,10 @@ cargo build --release --no-default-features                  # core toolchain on
 
 ## Developer workflow & testing
 
-Correctness in Spid3r means *the engines agree*. All **298 Rust tests** (**288** core tests including WASM & Bundler suites + **10** headless GUI bridge tests) and **23/23 differential example programs** can be run locally without LLVM:
+Correctness in Spid3r means *the engines agree*. All **308 Rust tests** (**298** core tests including WASM & Bundler suites + **10** headless GUI bridge tests) and **23/23 differential example programs** can be run locally without LLVM:
 
 ```sh
-# 1. Run all 288 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
+# 1. Run all 298 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
 cargo test --no-default-features
 
 # 2. Run the 10 headless GUI bridge tests
