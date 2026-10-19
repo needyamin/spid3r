@@ -170,17 +170,20 @@ fn run_tree(path: &str) -> Result<i32, Diagnostic> {
 /// the token stream (comments and string literals are ignored) and point the
 /// user at `spid3r gui` instead.
 fn reject_gui_program(path: &str) -> Result<(), Diagnostic> {
-    let natives = semantic::gui_builtins();
-    if natives.is_empty() {
-        return Ok(());
-    }
+    const GUI_FUNCTIONS: &[&str] = &[
+        "gui_eval",
+        "gui_set_html",
+        "gui_on",
+        "gui_emit",
+        "gui_title",
+    ];
     let (src, file) = read_source(path)?;
     let Ok(tokens) = crate::lexer::Lexer::new(&src, file).tokenize() else {
         return Ok(()); // lex errors are reported by the normal front end
     };
     for t in &tokens {
         if let crate::lexer::token::TokenKind::Ident(name) = &t.kind {
-            if natives.contains(&name.as_str()) {
+            if GUI_FUNCTIONS.contains(&name.as_str()) {
                 return Err(usage(&format!(
                     "'{}' uses the GUI function `{}` and needs a window; run it with `spid3r gui {}` instead of `spid3r run`",
                     path, name, path
