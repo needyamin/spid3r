@@ -1,15 +1,19 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="dark">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spid3r — In-Browser WebAssembly Playground</title>
-  <meta name="description" content="Interactive in-browser WebAssembly playground and code runner for the Spid3r (GaliLang) programming language. Write, check, format, and execute Spid3r scripts in real time.">
+  <title>Spid3r | In-Browser WebAssembly Playground</title>
+  <meta name="description"
+    content="Interactive in-browser WebAssembly playground and code runner for the Spid3r (GaliLang) programming language. Write, check, format, and execute Spid3r scripts in real time.">
 
   <!-- Modern Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet">
 
   <style>
     /* ==========================================================================
@@ -87,7 +91,9 @@
     }
 
     /* Reset & Base */
-    *, *::before, *::after {
+    *,
+    *::before,
+    *::after {
       box-sizing: border-box;
       margin: 0;
       padding: 0;
@@ -109,6 +115,7 @@
       text-decoration: none;
       transition: color var(--transition-fast);
     }
+
     a:hover {
       text-decoration: underline;
     }
@@ -166,6 +173,7 @@
       align-items: center;
       gap: 6px;
     }
+
     .nav-link:hover {
       color: var(--text-primary);
       text-decoration: none;
@@ -192,11 +200,13 @@
       color: #ffffff;
       box-shadow: 0 4px 14px var(--cyan-glow);
     }
+
     .btn-primary:hover {
       opacity: 0.95;
       transform: translateY(-1px);
       box-shadow: 0 6px 18px var(--cyan-glow);
     }
+
     .btn-primary:active {
       transform: translateY(0);
     }
@@ -206,6 +216,7 @@
       color: var(--text-primary);
       border-color: var(--border-subtle);
     }
+
     .btn-secondary:hover {
       background: rgba(255, 255, 255, 0.1);
       border-color: var(--border-hover);
@@ -225,6 +236,7 @@
       border: 1px solid var(--border-subtle);
       color: var(--text-secondary);
     }
+
     .btn-icon:hover {
       color: var(--text-primary);
       border-color: var(--border-hover);
@@ -260,8 +272,172 @@
     }
 
     @keyframes toastSlideUp {
-      from { transform: translateY(20px); opacity: 0; }
-      to { transform: translateY(0); opacity: 1; }
+      from {
+        transform: translateY(20px);
+        opacity: 0;
+      }
+
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    /* Share Modal Styles */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 7, 13, 0.72);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      padding: 16px;
+    }
+
+    .modal-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-hover);
+      border-radius: var(--radius-lg);
+      width: 100%;
+      max-width: 540px;
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5), 0 0 24px var(--cyan-glow);
+      overflow: hidden;
+      transform: scale(0.94) translateY(8px);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .modal-overlay.active .modal-card {
+      transform: scale(1) translateY(0);
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .modal-title {
+      font-family: var(--font-heading);
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .modal-close {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.15rem;
+      cursor: pointer;
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color var(--transition-fast), background var(--transition-fast);
+    }
+
+    .modal-close:hover {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .modal-body {
+      padding: 20px;
+    }
+
+    .modal-desc {
+      font-size: 0.88rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    .share-input-wrapper {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    .share-url-input {
+      flex: 1;
+      background: var(--bg-main);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+      cursor: text;
+    }
+
+    .share-url-input:focus {
+      border-color: var(--border-active);
+      box-shadow: 0 0 0 2px var(--cyan-glow);
+    }
+
+    .btn-copy-link {
+      white-space: nowrap;
+      flex-shrink: 0;
+      padding: 0 16px;
+    }
+
+    .share-meta-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      font-size: 0.76rem;
+      color: var(--text-muted);
+    }
+
+    .share-meta-stat {
+      font-family: var(--font-mono);
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 12px 20px;
+      background: rgba(0, 0, 0, 0.15);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    /* Light Theme adjustments for modal */
+    html[data-theme="light"] .modal-overlay {
+      background: rgba(15, 23, 42, 0.45);
+    }
+
+    html[data-theme="light"] .modal-card {
+      box-shadow: 0 20px 35px rgba(0, 0, 0, 0.15), 0 0 15px rgba(2, 132, 199, 0.1);
+    }
+
+    html[data-theme="light"] .modal-close:hover {
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    html[data-theme="light"] .modal-footer {
+      background: rgba(0, 0, 0, 0.02);
     }
 
     .editor-wrapper.drag-over {
@@ -315,7 +491,9 @@
       cursor: pointer;
       transition: border-color var(--transition-fast);
     }
-    .select-input:hover, .select-input:focus {
+
+    .select-input:hover,
+    .select-input:focus {
       border-color: var(--border-hover);
     }
 
@@ -331,16 +509,19 @@
       color: var(--emerald);
       border: 1px solid rgba(52, 211, 153, 0.3);
     }
+
     .status-badge.ready {
       background: rgba(52, 211, 153, 0.12);
       color: var(--emerald);
       border-color: rgba(52, 211, 153, 0.3);
     }
+
     .status-badge.loading {
       background: rgba(251, 191, 36, 0.12);
       color: var(--amber);
       border-color: rgba(251, 191, 36, 0.3);
     }
+
     .status-badge.error {
       background: rgba(251, 113, 133, 0.12);
       color: var(--rose);
@@ -384,26 +565,59 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 10px 16px;
+      padding: 8px 14px;
       background: rgba(0, 0, 0, 0.25);
       border-bottom: 1px solid var(--border-subtle);
-      font-size: 0.85rem;
+      font-size: 0.84rem;
       font-weight: 600;
       color: var(--text-secondary);
+      white-space: nowrap;
+      flex-wrap: nowrap;
+      gap: 10px;
+      min-width: 0;
     }
 
     .pane-title {
       display: flex;
       align-items: center;
       gap: 8px;
+      white-space: nowrap;
+      min-width: 0;
+      flex-shrink: 1;
     }
 
-    /* Code Editor Container */
+    .pane-title-text {
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .pane-title-text code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--cyan);
+      background: rgba(56, 189, 248, 0.1);
+      padding: 1px 6px;
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+    }
+
+    .pane-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* Code Editor Container & Overlay Stage */
     .editor-wrapper {
       position: relative;
       flex: 1;
       display: flex;
       background: var(--bg-editor);
+      overflow: hidden;
     }
 
     .line-numbers {
@@ -416,24 +630,216 @@
       user-select: none;
       background: rgba(0, 0, 0, 0.15);
       border-right: 1px solid var(--border-subtle);
-      min-width: 44px;
+      min-width: 46px;
+      overflow: hidden;
+      white-space: pre;
+      box-sizing: border-box;
+      pointer-events: none;
     }
 
-    .code-textarea {
+    .editor-stage {
+      position: relative;
       flex: 1;
-      background: transparent;
+      height: 100%;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .code-highlight,
+    .code-textarea {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 16px;
       border: none;
-      color: var(--text-primary);
+      outline: none;
+      box-sizing: border-box;
       font-family: var(--font-mono);
       font-size: 0.88rem;
       line-height: 1.6;
-      padding: 16px;
-      resize: none;
-      outline: none;
+      tab-size: 4;
+      -moz-tab-size: 4;
+      letter-spacing: 0;
+      word-spacing: 0;
+      font-variant-ligatures: none;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
       white-space: pre;
       overflow-wrap: normal;
-      overflow-x: auto;
-      tab-size: 4;
+      word-break: normal;
+    }
+
+    .code-highlight {
+      pointer-events: none;
+      overflow: hidden;
+      background: transparent;
+      color: #e2e8f0;
+      z-index: 1;
+    }
+
+    .code-highlight code {
+      display: inline-block;
+      min-width: 100%;
+      font-family: inherit;
+      font-size: inherit;
+      line-height: inherit;
+      white-space: pre;
+      background: transparent;
+      padding: 0;
+      border: none;
+      color: inherit;
+    }
+
+    .code-textarea {
+      z-index: 2;
+      background: transparent;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      caret-color: var(--cyan);
+      resize: none;
+      overflow: auto;
+    }
+
+    .code-textarea::selection {
+      background: rgba(56, 189, 248, 0.28);
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .code-textarea::placeholder {
+      color: var(--text-muted);
+      -webkit-text-fill-color: var(--text-muted);
+      opacity: 0.7;
+    }
+
+    /* Editor Syntax Legend */
+    .editor-syntax-legend {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 6px;
+      padding: 2px 8px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-pill);
+      font-size: 0.7rem;
+      font-family: var(--font-mono);
+      font-weight: 500;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 1360px) {
+      .editor-syntax-legend .legend-extra {
+        display: none;
+      }
+    }
+
+    @media (max-width: 1120px) {
+      .editor-syntax-legend {
+        display: none;
+      }
+    }
+
+    /* IDE Syntax Token Colors */
+    .tok-comment {
+      color: #64748b;
+      font-style: italic;
+    }
+
+    .tok-kw {
+      color: #c084fc;
+      font-weight: 600;
+    }
+
+    .tok-type {
+      color: #38bdf8;
+      font-weight: 600;
+      text-shadow: 0 0 10px rgba(56, 189, 248, 0.22);
+    }
+
+    .tok-str {
+      color: #4ade80;
+    }
+
+    .tok-num {
+      color: #fb923c;
+    }
+
+    .tok-builtin {
+      color: #facc15;
+      font-weight: 500;
+    }
+
+    .tok-lit {
+      color: #fb7185;
+      font-weight: 600;
+    }
+
+    .tok-fn {
+      color: #67e8f9;
+    }
+
+    .tok-op {
+      color: #94a3b8;
+    }
+
+    /* Light Theme Syntax Tokens */
+    html[data-theme="light"] .code-highlight {
+      color: #0f172a;
+    }
+
+    html[data-theme="light"] .code-textarea::selection {
+      background: rgba(2, 132, 199, 0.22);
+    }
+
+    html[data-theme="light"] .editor-syntax-legend {
+      background: rgba(0, 0, 0, 0.04);
+    }
+
+    html[data-theme="light"] .tok-comment {
+      color: #64748b;
+      font-style: italic;
+    }
+
+    html[data-theme="light"] .tok-kw {
+      color: #9333ea;
+      font-weight: 600;
+    }
+
+    html[data-theme="light"] .tok-type {
+      color: #0284c7;
+      font-weight: 600;
+      text-shadow: none;
+    }
+
+    html[data-theme="light"] .tok-str {
+      color: #16a34a;
+    }
+
+    html[data-theme="light"] .tok-num {
+      color: #ea580c;
+    }
+
+    html[data-theme="light"] .tok-builtin {
+      color: #ca8a04;
+      font-weight: 600;
+    }
+
+    html[data-theme="light"] .tok-lit {
+      color: #e11d48;
+      font-weight: 600;
+    }
+
+    html[data-theme="light"] .tok-fn {
+      color: #0891b2;
+    }
+
+    html[data-theme="light"] .tok-op {
+      color: #475569;
     }
 
     /* Terminal Console */
@@ -453,13 +859,16 @@
     .term-stdout {
       color: #e2e8f0;
     }
+
     .term-success {
       color: var(--emerald);
     }
+
     .term-error {
       color: var(--rose);
       font-weight: 600;
     }
+
     .term-meta {
       color: var(--text-muted);
       font-size: 0.8rem;
@@ -478,6 +887,7 @@
       color: var(--text-primary);
       font-size: 0.88rem;
     }
+
     .file-proto-banner.visible {
       display: flex;
       align-items: center;
@@ -518,12 +928,14 @@
       padding: 10px 14px;
       font-size: 0.82rem;
     }
+
     .guide-item h4 {
       font-family: var(--font-heading);
       color: var(--text-primary);
       margin-bottom: 4px;
       font-size: 0.88rem;
     }
+
     .guide-item code {
       font-family: var(--font-mono);
       color: var(--cyan);
@@ -553,11 +965,13 @@
       color: var(--text-primary);
       font-size: 0.88rem;
     }
+
     .file-proto-banner.visible {
       display: flex;
     }
   </style>
 </head>
+
 <body>
 
   <!-- Top Navigation -->
@@ -569,7 +983,6 @@
     </div>
     <div class="nav-actions">
       <a href="../../doc.html" class="nav-link">Documentation</a>
-      <a href="plan.html" class="nav-link">Roadmap</a>
       <a href="benchmarks.html" class="nav-link">Benchmarks</a>
       <button class="btn-icon" id="theme-btn" title="Toggle Theme">🌓</button>
     </div>
@@ -581,8 +994,10 @@
     <!-- CORS File Protocol Notice (Shown if opened via file:// and fetch fails) -->
     <div id="cors-notice" class="file-proto-banner">
       <div>
-        <strong>Local File Access Notice:</strong> Browsers restrict WebAssembly <code>fetch()</code> over <code>file://</code> URLs.
-        Run a quick local server (e.g. <code>spid3r run server.matrix</code> or <code>npx serve .</code>), or load <code>../../web/spid3r.wasm</code> manually:
+        <strong>Local File Access Notice:</strong> Browsers restrict WebAssembly <code>fetch()</code> over
+        <code>file://</code> URLs.
+        Run a quick local server (e.g. <code>spid3r run server.matrix</code> or <code>npx serve .</code>), or load
+        <code>../../web/spid3r.wasm</code> manually:
       </div>
       <input type="file" id="wasm-file-picker" accept=".wasm" style="font-size: 0.8rem; color: var(--text-primary);">
     </div>
@@ -644,16 +1059,27 @@
       <section class="pane-card">
         <div class="pane-header">
           <div class="pane-title">
-            <span>📝</span> Spid3r Source Code (<code>main.matrix</code>)
+            <span>📝</span>
+            <span class="pane-title-text">Spid3r Source Code <code>(main.matrix)</code></span>
+            <div class="editor-syntax-legend" title="IDE Syntax Highlighting">
+              <span class="tok-comment">// comments</span>
+              <span class="tok-kw">keywords</span>
+              <span class="tok-type">types</span>
+              <span class="tok-builtin legend-extra">builtins</span>
+              <span class="tok-str legend-extra">"strings"</span>
+            </div>
           </div>
-          <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="pane-actions">
             <button class="btn btn-secondary btn-sm" id="btn-copy-code" title="Copy code to clipboard">📋 Copy Code</button>
-            <span style="font-size: 0.78rem; color: var(--text-muted);">Ctrl+Enter</span>
+            <span style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;">Ctrl+Enter</span>
           </div>
         </div>
         <div class="editor-wrapper" id="editor-wrapper">
           <div class="line-numbers" id="line-numbers">1</div>
-          <textarea class="code-textarea" id="code-editor" spellcheck="false" placeholder="Write your Spid3r code here, or drop a .matrix file..."></textarea>
+          <div class="editor-stage">
+            <pre class="code-highlight" id="code-highlight" aria-hidden="true"><code id="code-highlight-inner"></code></pre>
+            <textarea class="code-textarea" id="code-editor" spellcheck="false" placeholder="Write your Spid3r code here, or drop a .matrix file..."></textarea>
+          </div>
         </div>
       </section>
 
@@ -661,10 +1087,11 @@
       <section class="pane-card">
         <div class="pane-header">
           <div class="pane-title">
-            <span>💻</span> Execution Terminal &amp; Diagnostics
+            <span>💻</span>
+            <span class="pane-title-text">Execution Terminal &amp; Diagnostics</span>
           </div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <span id="perf-pill" style="font-size: 0.78rem; color: var(--cyan);">Ready</span>
+          <div class="pane-actions">
+            <span id="perf-pill" style="font-size: 0.78rem; color: var(--cyan); white-space: nowrap;">Ready</span>
             <button class="btn btn-secondary btn-sm" id="btn-copy-term" title="Copy terminal output">📋 Copy Output</button>
           </div>
         </div>
@@ -681,24 +1108,24 @@ Ready to execute Spid3r scripts entirely within your browser!</div>
       <div class="guide-grid">
         <div class="guide-item">
           <h4>Variables &amp; Types</h4>
-          <code>let x = 42;</code><br>
-          <code>const PI = 3.14159;</code><br>
-          <code>let list = [1, "two", true];</code>
+          <code><span class="tok-kw">let</span> x<span class="tok-op">:</span> <span class="tok-type">int</span> <span class="tok-op">=</span> <span class="tok-num">42</span>;</code><br>
+          <code><span class="tok-kw">const</span> PI <span class="tok-op">=</span> <span class="tok-num">3.14159</span>;</code><br>
+          <code><span class="tok-kw">let</span> list<span class="tok-op">:</span> <span class="tok-type">list</span> <span class="tok-op">=</span> [<span class="tok-num">1</span>, <span class="tok-str">"two"</span>, <span class="tok-lit">true</span>];</code>
         </div>
         <div class="guide-item">
           <h4>Functions &amp; Closures</h4>
-          <code>fn add(a, b) { return a + b; }</code><br>
-          <code>let sq = fn(x) { x * x };</code>
+          <code><span class="tok-kw">fn</span> <span class="tok-fn">add</span>(a, b) { <span class="tok-kw">return</span> a <span class="tok-op">+</span> b; }</code><br>
+          <code><span class="tok-kw">let</span> sq <span class="tok-op">=</span> <span class="tok-kw">fn</span>(x) { x <span class="tok-op">*</span> x };</code>
         </div>
         <div class="guide-item">
           <h4>Classes &amp; OOP</h4>
-          <code>class Point { public let x; }</code><br>
-          <code>let p = new Point(); p.x = 10;</code>
+          <code><span class="tok-kw">class</span> <span class="tok-type">Point</span> { <span class="tok-kw">public</span> <span class="tok-kw">let</span> x; }</code><br>
+          <code><span class="tok-kw">let</span> p <span class="tok-op">=</span> <span class="tok-kw">new</span> <span class="tok-type">Point</span>(); p.x <span class="tok-op">=</span> <span class="tok-num">10</span>;</code>
         </div>
         <div class="guide-item">
           <h4>Control Flow</h4>
-          <code>if (x > 0) { ... } else { ... }</code><br>
-          <code>for item in list { println(item); }</code>
+          <code><span class="tok-kw">if</span> (x <span class="tok-op">&gt;</span> <span class="tok-num">0</span>) { ... } <span class="tok-kw">else</span> { ... }</code><br>
+          <code><span class="tok-kw">for</span> item <span class="tok-kw">in</span> list { <span class="tok-builtin">println</span>(item); }</code>
         </div>
       </div>
     </section>
@@ -707,19 +1134,22 @@ Ready to execute Spid3r scripts entirely within your browser!</div>
 
   <!-- Footer -->
   <footer class="footer">
-    Spid3r (GaliLang) In-Browser Runtime — Built with zero external dependencies compiled to <code>wasm32-unknown-unknown</code>.
+    Spid3r (GaliLang) In-Browser Runtime — Built with zero external dependencies compiled to
+    <code>wasm32-unknown-unknown</code>.
   </footer>
 
   <!-- Include Spid3r JS SDK & Embedded WASM Binary Data -->
   <script src="../../web/spid3r.js"></script>
   <script src="../../web/spid3r_wasm_data.js"></script>
   <script>
-    (function() {
+    (function () {
       'use strict';
 
       // Elements
       const editor = document.getElementById('code-editor');
       const lineNumbers = document.getElementById('line-numbers');
+      const codeHighlight = document.getElementById('code-highlight');
+      const codeHighlightInner = document.getElementById('code-highlight-inner');
       const terminal = document.getElementById('term-output');
       const btnRun = document.getElementById('btn-run');
       const btnCheck = document.getElementById('btn-check');
@@ -856,7 +1286,84 @@ println("Benchmark completed! Total:", count);
 `
       };
 
-      // Update line numbers
+      // IDE Syntax Tokenizer & Highlighter
+      const TOKEN_REGEX = new RegExp(
+        [
+          '(?<comment>\\/\\/[^\\r\\n]*|\\/\\*[\\s\\S]*?(?:\\*\\/|$))',
+          '(?<str>"(?:\\\\.|[^"\\r\\n\\\\])*"|\'(?:\\\\.|[^\'\\r\\n\\\\])*\'|`(?:\\\\.|[^`\\\\])*`)',
+          '(?<num>\\b0x[0-9a-fA-F]+\\b|\\b0b[01]+\\b|\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b)',
+          '(?<type>\\b(?:int|float|string|bool|list|vec|tuple|map|set|bag|stack|queue|deque|heap|priority_queue|binary_tree|bst|trie|graph|matrix|ring_buffer|linked_list|hash_table|option|result|ref|weak|any|void)\\b)',
+          '(?<kw>\\b(?:fn|let|const|if|elif|else|while|for|in|return|break|continue|throw|try|catch|finally|spawn|async|await|class|extends|implements|public|private|new|import|export|as|this|self|super|match|case|default|yield|struct|enum|interface)\\b)',
+          '(?<lit>\\b(?:true|false|null|nil|some|none|ok|err)\\b)',
+          '(?<builtin>\\b(?:println|print|eprint|eprintln|read_line|read_file|write_file|file_exists|len|type_of|now|abs|sqrt|pow|min|max|random_int|tcp_listen|tcp_accept|tcp_connect|tcp_read|tcp_write|tcp_close|http_fetch|url_encode|url_decode|gc_collect|gc_live_cells|assert|panic)\\b)',
+          '(?<cls>\\b[A-Z][a-zA-Z0-9_]*\\b)',
+          '(?<call>\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*\\())',
+          '(?<op>==|!=|<=|>=|=>|->|::|\\+\\+|--|\\+=|-=|\\*=|\\/=|&&|\\|\\||[+\\-*\\/%!=<>~&|^?:])'
+        ].join('|'),
+        'g'
+      );
+
+      function escapeHtml(s) {
+        return s
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function highlightSpid3rCode(code) {
+        let html = '';
+        let lastIndex = 0;
+        TOKEN_REGEX.lastIndex = 0;
+        let match;
+        while ((match = TOKEN_REGEX.exec(code)) !== null) {
+          if (match.index > lastIndex) {
+            html += escapeHtml(code.substring(lastIndex, match.index));
+          }
+          const token = match[0];
+          const g = match.groups;
+          if (g.comment) {
+            html += '<span class="tok-comment">' + escapeHtml(token) + '</span>';
+          } else if (g.str) {
+            html += '<span class="tok-str">' + escapeHtml(token) + '</span>';
+          } else if (g.num) {
+            html += '<span class="tok-num">' + escapeHtml(token) + '</span>';
+          } else if (g.type) {
+            html += '<span class="tok-type">' + escapeHtml(token) + '</span>';
+          } else if (g.kw) {
+            html += '<span class="tok-kw">' + escapeHtml(token) + '</span>';
+          } else if (g.lit) {
+            html += '<span class="tok-lit">' + escapeHtml(token) + '</span>';
+          } else if (g.builtin) {
+            html += '<span class="tok-builtin">' + escapeHtml(token) + '</span>';
+          } else if (g.cls) {
+            html += '<span class="tok-type">' + escapeHtml(token) + '</span>';
+          } else if (g.call) {
+            html += '<span class="tok-fn">' + escapeHtml(token) + '</span>';
+          } else if (g.op) {
+            html += '<span class="tok-op">' + escapeHtml(token) + '</span>';
+          } else {
+            html += escapeHtml(token);
+          }
+          lastIndex = TOKEN_REGEX.lastIndex;
+        }
+        if (lastIndex < code.length) {
+          html += escapeHtml(code.substring(lastIndex));
+        }
+        return html;
+      }
+
+      function updateHighlight() {
+        if (!codeHighlightInner) return;
+        const code = editor.value;
+        let html = highlightSpid3rCode(code);
+        if (code.endsWith('\n')) {
+          html += ' ';
+        }
+        codeHighlightInner.innerHTML = html;
+      }
+
       function updateLineNumbers() {
         const lines = editor.value.split('\n').length;
         let nums = '';
@@ -865,17 +1372,35 @@ println("Benchmark completed! Total:", count);
         }
         lineNumbers.innerText = nums;
       }
-      editor.addEventListener('input', updateLineNumbers);
+
+      function syncEditorScroll() {
+        if (codeHighlight) {
+          codeHighlight.scrollTop = editor.scrollTop;
+          codeHighlight.scrollLeft = editor.scrollLeft;
+        }
+        if (lineNumbers) {
+          lineNumbers.scrollTop = editor.scrollTop;
+        }
+      }
+
+      function refreshEditor() {
+        updateLineNumbers();
+        updateHighlight();
+        syncEditorScroll();
+      }
+
+      editor.addEventListener('input', refreshEditor);
+      editor.addEventListener('scroll', syncEditorScroll);
 
       // Tab key indent in textarea
-      editor.addEventListener('keydown', function(e) {
+      editor.addEventListener('keydown', function (e) {
         if (e.key === 'Tab') {
           e.preventDefault();
           const start = this.selectionStart;
           const end = this.selectionEnd;
           this.value = this.value.substring(0, start) + '    ' + this.value.substring(end);
           this.selectionStart = this.selectionEnd = start + 4;
-          updateLineNumbers();
+          refreshEditor();
         }
         if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
           e.preventDefault();
@@ -884,28 +1409,28 @@ println("Benchmark completed! Total:", count);
       });
 
       // Preset change
-      presetSelector.addEventListener('change', function() {
+      presetSelector.addEventListener('change', function () {
         const val = this.value;
         if (PRESETS[val]) {
           editor.value = PRESETS[val];
-          updateLineNumbers();
+          refreshEditor();
         }
       });
 
       // Clear terminal
-      btnClear.addEventListener('click', function() {
+      btnClear.addEventListener('click', function () {
         terminal.innerText = '';
         perfPill.innerText = 'Ready';
         perfPill.style.color = 'var(--text-muted)';
       });
 
       // Format code
-      btnFormat.addEventListener('click', function() {
+      btnFormat.addEventListener('click', function () {
         if (!runtime) return;
         const res = runtime.format(editor.value);
         if (res.ok && res.code) {
           editor.value = res.code;
-          updateLineNumbers();
+          refreshEditor();
           printMeta("✦ Code canonical formatting applied.");
         } else {
           printError("Formatter Error: " + (res.error || "failed"));
@@ -913,7 +1438,7 @@ println("Benchmark completed! Total:", count);
       });
 
       // Check code
-      btnCheck.addEventListener('click', function() {
+      btnCheck.addEventListener('click', function () {
         if (!runtime) return;
         const t0 = performance.now();
         const res = runtime.check(editor.value);
@@ -1011,22 +1536,94 @@ println("Benchmark completed! Total:", count);
         }, 2500);
       }
 
-      // Share URL
-      btnShare.addEventListener('click', function() {
+      const shareModal = document.getElementById('share-modal');
+      const shareUrlInput = document.getElementById('share-url-input');
+      const btnCloseShareModal = document.getElementById('btn-close-share-modal');
+      const btnModalCopy = document.getElementById('btn-modal-copy');
+      const modalCopyIcon = document.getElementById('modal-copy-icon');
+      const modalCopyText = document.getElementById('modal-copy-text');
+      const btnModalDone = document.getElementById('btn-modal-done');
+      const shareCodeSize = document.getElementById('share-code-size');
+
+      function openShareModal() {
         try {
-          const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(editor.value))));
+          const code = editor.value;
+          const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(code))));
           const shareUrl = window.location.origin + window.location.pathname + '#code=' + encoded;
           history.replaceState(null, '', '#code=' + encoded);
-          navigator.clipboard.writeText(shareUrl).then(() => {
-            showToast("🔗 Shareable link copied to clipboard!");
-          });
+
+          shareUrlInput.value = shareUrl;
+          shareCodeSize.innerText = code.length.toLocaleString() + ' chars (' + (new Blob([code]).size) + ' bytes)';
+
+          // Reset copy button state
+          modalCopyIcon.innerText = '📋';
+          modalCopyText.innerText = 'Copy Link';
+          btnModalCopy.style.background = '';
+
+          shareModal.classList.add('active');
+          shareModal.setAttribute('aria-hidden', 'false');
+
+          // Auto-focus and select URL
+          setTimeout(() => {
+            shareUrlInput.focus();
+            shareUrlInput.select();
+          }, 60);
         } catch (e) {
           showToast("Failed to generate share URL: " + e.message);
         }
+      }
+
+      function closeShareModal() {
+        shareModal.classList.remove('active');
+        shareModal.setAttribute('aria-hidden', 'true');
+      }
+
+      btnShare.addEventListener('click', openShareModal);
+      if (btnCloseShareModal) btnCloseShareModal.addEventListener('click', closeShareModal);
+      if (btnModalDone) btnModalDone.addEventListener('click', closeShareModal);
+
+      // Close on clicking backdrop
+      shareModal.addEventListener('click', function (e) {
+        if (e.target === shareModal) {
+          closeShareModal();
+        }
+      });
+
+      // Close on Escape key
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && shareModal.classList.contains('active')) {
+          closeShareModal();
+        }
+      });
+
+      // Auto-select on clicking input
+      shareUrlInput.addEventListener('click', function () {
+        this.select();
+      });
+
+      // Copy link inside modal
+      btnModalCopy.addEventListener('click', function () {
+        const url = shareUrlInput.value;
+        if (!url) return;
+        navigator.clipboard.writeText(url).then(() => {
+          modalCopyIcon.innerText = '✓';
+          modalCopyText.innerText = 'Copied!';
+          btnModalCopy.style.background = 'var(--grad-emerald)';
+          showToast("🔗 Shareable link copied to clipboard!");
+          setTimeout(() => {
+            modalCopyIcon.innerText = '📋';
+            modalCopyText.innerText = 'Copy Link';
+            btnModalCopy.style.background = '';
+          }, 2500);
+        }).catch(() => {
+          shareUrlInput.select();
+          document.execCommand('copy');
+          showToast("🔗 Link copied to clipboard!");
+        });
       });
 
       // Export / Download
-      btnDownload.addEventListener('click', function() {
+      btnDownload.addEventListener('click', function () {
         const blob = new Blob([editor.value], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -1039,13 +1636,13 @@ println("Benchmark completed! Total:", count);
 
       // Open file
       btnOpen.addEventListener('click', () => fileCodeInput.click());
-      fileCodeInput.addEventListener('change', function(e) {
+      fileCodeInput.addEventListener('change', function (e) {
         const f = e.target.files[0];
         if (f) {
           const reader = new FileReader();
-          reader.onload = function(evt) {
+          reader.onload = function (evt) {
             editor.value = evt.target.result;
-            updateLineNumbers();
+            refreshEditor();
             showToast("📂 Loaded " + f.name);
           };
           reader.readAsText(f);
@@ -1066,9 +1663,9 @@ println("Benchmark completed! Total:", count);
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
           const f = e.dataTransfer.files[0];
           const reader = new FileReader();
-          reader.onload = function(evt) {
+          reader.onload = function (evt) {
             editor.value = evt.target.result;
-            updateLineNumbers();
+            refreshEditor();
             showToast("📂 Loaded " + f.name);
           };
           reader.readAsText(f);
@@ -1094,10 +1691,10 @@ println("Benchmark completed! Total:", count);
             const raw = hash.substring(6);
             const decoded = decodeURIComponent(escape(atob(decodeURIComponent(raw))));
             editor.value = decoded;
-            updateLineNumbers();
+            refreshEditor();
             showToast("🔗 Loaded shared snippet from URL!");
             return true;
-          } catch (_) {}
+          } catch (_) { }
         }
         return false;
       }
@@ -1146,7 +1743,7 @@ println("Benchmark completed! Total:", count);
 
       // File picker fallback
       if (wasmFilePicker) {
-        wasmFilePicker.addEventListener('change', async function(e) {
+        wasmFilePicker.addEventListener('change', async function (e) {
           const file = e.target.files && e.target.files[0];
           if (file) {
             try {
@@ -1162,7 +1759,7 @@ println("Benchmark completed! Total:", count);
       }
 
       // Theme toggle
-      themeBtn.addEventListener('click', function() {
+      themeBtn.addEventListener('click', function () {
         const current = document.documentElement.getAttribute('data-theme');
         const next = current === 'light' ? 'dark' : 'light';
         document.documentElement.setAttribute('data-theme', next);
@@ -1172,12 +1769,43 @@ println("Benchmark completed! Total:", count);
       if (!loadCodeFromUrl()) {
         editor.value = PRESETS.hello;
       }
-      updateLineNumbers();
+      refreshEditor();
       initEngine();
 
     })();
   </script>
   <!-- Toast Floating Container -->
   <div class="toast-container" id="toast-container"></div>
+
+  <!-- Share Modal Dialog -->
+  <div class="modal-overlay" id="share-modal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-labelledby="share-modal-title" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title" id="share-modal-title">
+          <span>🔗</span> Share Spid3r Snippet
+        </div>
+        <button class="modal-close" id="btn-close-share-modal" title="Close modal" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Your code is encoded directly in this URL. Anyone who opens it will load your exact Spid3r script in their browser:
+        </p>
+        <div class="share-input-wrapper">
+          <input type="text" id="share-url-input" class="share-url-input" readonly spellcheck="false" placeholder="Generating link...">
+          <button class="btn btn-primary btn-copy-link" id="btn-modal-copy">
+            <span id="modal-copy-icon">📋</span> <span id="modal-copy-text">Copy Link</span>
+          </button>
+        </div>
+        <div class="share-meta-row">
+          <span class="share-meta-stat" id="share-code-size">0 chars</span>
+          <span class="share-meta-hint">Click the input or button to copy</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-modal-done">Done</button>
+      </div>
+    </div>
+  </div>
 </body>
+
 </html>

@@ -465,7 +465,7 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 | `src/native`, `src/gui` | Optional LLVM 18.1+ AOT backend (`native`) and desktop webview bridge (`gui`) |
 | `examples/`, `benchmarks/`, `stdlib/` | 23 runnable example programs/libraries, 8 benchmarks, and standard library modules |
 | `tests/`, `fuzz/`, `tools/` | Integration, differential, cycle-GC, packaging, audit-regression, wasm, and fuzz suites, plus `tools/difftest.sh` |
-| `docs/`, `doc.html`, `docs/html/plan.html` | Deep-dive technical documentation, self-contained interactive developer guide, and cross-platform roadmap |
+| `docs/`, `doc.html` | Deep-dive technical documentation and self-contained interactive developer guide |
 
 ## Documentation
 
@@ -473,7 +473,6 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 |---|---|
 | [Interactive developer guide (`doc.html`)](https://needyamin.github.io/spid3r/doc.html) | Self-contained single-page reference with search, dark mode, cheat sheet, and examples |
 | [WebAssembly Playground (`playground.html`)](docs/html/playground.html) | Live in-browser code editor, syntax checker, formatter, and dual VM/Tree runner |
-| [Roadmap & Planning (`plan.html`)](docs/html/plan.html) | Web servers, WebAssembly, and cross-platform architecture roadmap |
 | [Benchmarks Report (`benchmarks.html`)](docs/html/benchmarks.html) | Performance comparisons across Spid3r VM, Python 3, and PHP 8 |
 | [`docs/GRAMMAR.md`](docs/GRAMMAR.md) | EBNF grammar and precedence rules |
 | [`docs/KEYWORDS.md`](docs/KEYWORDS.md) | Reserved words |
