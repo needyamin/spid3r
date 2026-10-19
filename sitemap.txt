@@ -48,7 +48,7 @@ GaliLang/
   tests/              integration + differential + fuzz tests (see [7])
   fuzz/               cargo-fuzz targets (fuzz_lexer, fuzz_parser, fuzz_bytecode)
   examples/           23 .matrix programs + gui/counter (see [8])
-  calculator/         flagship desktop GUI calculator app (shipped in Windows installer)
+  demo_apps/          web & native calculator demo applications (shipped in Windows installer)
   benchmarks/         .matrix benchmarks for `spid3r bench`
   docs/               deep-dive .md documents + AUDIT_REPORT.md (see [9])
   tools/              gate.sh (full CI gate), difftest.sh (3-engine diff),

@@ -903,7 +903,7 @@ cargo build --release --no-default-features                  # zero-dependency c
         <p>On Windows, <code>cargo build --release</code> also writes <code>Spid3r-Setup-&lt;version&gt;.exe</code>
           to the repository root. <code>build.rs</code> builds a release binary with the same features into
           <code>target/installer/</code> and runs NSIS on <code>packaging/nsis/spid3r.nsi</code>, packing the
-          binary with <code>README.md</code>, <code>docs/</code>, <code>examples/</code>, and the calculator demo.
+          binary with <code>README.md</code>, <code>docs/</code>, <code>examples/</code>, and the web/native calculator demos.
           With the native backend it also ships <code>LLVM-C.dll</code>, <code>LLVM-C.lib</code>, and the
           <code>spid3r.lib</code> runtime library that <code>spid3r build</code> links into programs; users need MSVC
           Build Tools with the Windows SDK to link. NSIS 3.x is taken from <code>packaging/nsis/nsis/nsis-3.10/</code>

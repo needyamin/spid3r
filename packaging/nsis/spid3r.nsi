@@ -27,7 +27,16 @@ Unicode true
 ; WITH_NATIVE=1 (the native LLVM backend) also needs LLVM_DLL, LLVM_LIB, and
 ; RUNTIME_LIB: LLVM-C.dll, LLVM-C.lib, and the spid3r.lib runtime staticlib.
 !ifndef WITH_NATIVE
-!define WITH_NATIVE 0
+!define WITH_NATIVE 1
+!endif
+!ifndef LLVM_DLL
+!define LLVM_DLL "C:\Program Files\LLVM\bin\LLVM-C.dll"
+!endif
+!ifndef LLVM_LIB
+!define LLVM_LIB "C:\Program Files\LLVM\lib\LLVM-C.lib"
+!endif
+!ifndef RUNTIME_LIB
+!define RUNTIME_LIB "..\..\target\release\spid3r.lib"
 !endif
 !ifndef APPVERSION
 !define APPVERSION     "1.0.0"
@@ -77,7 +86,7 @@ BrandingText "Spid3r — pure Rust, no runtime dependencies"
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TITLE "Spid3r is installed"
 !if ${WITH_GUI} == 1
-!define FINISH_GUI      "$\r$\n    spid3r gui calculator\calculator.matrix"
+!define FINISH_GUI      "$\r$\n    spid3r gui demo_apps\web_calculator\calculator.matrix"
 !define FINISH_GUI_NOTE " GUI programs need the WebView2 runtime (included with Windows 11 and Microsoft Edge)."
 !else
 !define FINISH_GUI      ""
@@ -210,9 +219,10 @@ Section "Examples, documentation & reference" SecDocs
   SetOutPath "$INSTDIR\examples"
   File /r "..\..\examples\*.*"
 !if ${WITH_GUI} == 1
-  SetOutPath "$INSTDIR\calculator"
-  File "..\..\demo_apps\calculator\*.matrix"
-  File "..\..\demo_apps\calculator\README.md"
+  SetOutPath "$INSTDIR\demo_apps\web_calculator"
+  File /r "..\..\demo_apps\web_calculator\*.*"
+  SetOutPath "$INSTDIR\demo_apps\native_calculator"
+  File /r "..\..\demo_apps\native_calculator\*.*"
 !endif
 SectionEnd
 
@@ -288,6 +298,7 @@ Section "Uninstall"
   RMDir /r "$INSTDIR\docs"
   RMDir /r "$INSTDIR\stdlib"
   RMDir /r "$INSTDIR\examples"
+  RMDir /r "$INSTDIR\demo_apps"
   RMDir /r "$INSTDIR\calculator"
   RMDir "$INSTDIR"
 SectionEnd

@@ -984,6 +984,7 @@
     <div class="nav-actions">
       <a href="../../doc.html" class="nav-link">Documentation</a>
       <a href="benchmarks.html" class="nav-link">Benchmarks</a>
+      <a href="../../demo_apps/web_calculator/index.html" class="nav-link">Web Calculator</a>
       <button class="btn-icon" id="theme-btn" title="Toggle Theme">🌓</button>
     </div>
   </header>
@@ -1038,6 +1039,7 @@
           <option value="oop">4. Classes & Inheritance</option>
           <option value="closures">5. Higher-Order Closures</option>
           <option value="benchmark">6. Benchmark (100k Loops)</option>
+          <option value="calculator">7. Calculator Engine Demo</option>
         </select>
 
         <label style="font-size: 0.85rem; color: var(--text-secondary); margin-left: 6px;">Engine:</label>
@@ -1313,6 +1315,47 @@ for let i = 0; i < 100000; i = i + 1 {
     count = count + 1;
 }
 println("Benchmark completed! Total:", count);
+`,
+        calculator: `// 7. Spid3r Calculator Engine State Machine Demo
+println("=========================================");
+println("  🧮 Spid3r Calculator Engine State Demo");
+println("=========================================");
+
+class Calculator {
+    public let acc;
+    public let op;
+
+    fn new() {
+        self.acc = 0;
+        self.op = "+";
+    }
+
+    public fn compute(self, next_op, val) {
+        if (self.op == "+") { self.acc = self.acc + val; }
+        elif (self.op == "-") { self.acc = self.acc - val; }
+        elif (self.op == "*") { self.acc = self.acc * val; }
+        elif (self.op == "/") {
+            if (val == 0) {
+                println("Error: Division by 0");
+                return self.acc;
+            }
+            self.acc = self.acc / val;
+        }
+        self.op = next_op;
+        return self.acc;
+    }
+}
+
+let calc = new Calculator();
+println("Initial display:", calc.acc);
+
+println("  Step 1: + 50   -> display:", calc.compute("+", 50));
+println("  Step 2: * 4    -> display:", calc.compute("*", 4));
+println("  Step 3: - 20   -> display:", calc.compute("-", 20));
+println("  Step 4: / 2    -> display:", calc.compute("=", 2));
+
+println("\\nFinal Calculated Result:", calc.acc);
+println("Desk calculator left-to-right chaining verified!");
 `
       };
 
