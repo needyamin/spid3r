@@ -202,6 +202,16 @@ pub fn default_module_dirs() -> Vec<PathBuf> {
         }
     }
     dirs.push(PathBuf::from("stdlib"));
+    // The stdlib shipped beside the executable (installer / release tarball
+    // layout), so `import "http"` works from any working directory.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let shipped = dir.join("stdlib");
+            if shipped.is_dir() {
+                dirs.push(shipped);
+            }
+        }
+    }
     // Project dependencies vendored by `spid3r install`. Inside a workspace
     // member the shared `vendor/` lives at the workspace root, so walk up.
     if let Some(vendor) = find_vendor_dir() {

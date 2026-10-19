@@ -224,12 +224,12 @@ const GUI_BUILTIN_FUNCTIONS: &[&str] = &[
 
 /// GUI natives known to this build (empty without the `gui` feature).
 #[cfg(feature = "gui")]
-fn gui_builtins() -> &'static [&'static str] {
+pub fn gui_builtins() -> &'static [&'static str] {
     GUI_BUILTIN_FUNCTIONS
 }
 
 #[cfg(not(feature = "gui"))]
-fn gui_builtins() -> &'static [&'static str] {
+pub fn gui_builtins() -> &'static [&'static str] {
     &[]
 }
 

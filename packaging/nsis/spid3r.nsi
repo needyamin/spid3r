@@ -112,6 +112,9 @@ Section "Spid3r compiler & runtime (required)" SecCore
   File "${RUNTIME_LIB}"
 !endif
   File "assets\spid3r.ico"
+  SetOutPath "$INSTDIR\stdlib"
+  File /r "..\..\stdlib\*.*"
+  SetOutPath "$INSTDIR"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   ; --- add to the current user's PATH (deduplicated) ---
@@ -208,8 +211,8 @@ Section "Examples, documentation & reference" SecDocs
   File /r "..\..\examples\*.*"
 !if ${WITH_GUI} == 1
   SetOutPath "$INSTDIR\calculator"
-  File "..\..\calculator\*.matrix"
-  File "..\..\calculator\README.md"
+  File "..\..\demo_apps\calculator\*.matrix"
+  File "..\..\demo_apps\calculator\README.md"
 !endif
 SectionEnd
 
@@ -230,9 +233,9 @@ LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / 
 LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl, plus automatic PATH registration."
 !endif
 !if ${WITH_GUI} == 1
-LangString DESC_SecDocs  ${LANG_ENGLISH} "The 23 example programs, the GUI calculator demo, and the documentation folder. The developer reference is online at ${DOCSURL}."
+LangString DESC_SecDocs  ${LANG_ENGLISH} "The example programs, the GUI calculator demo, and the documentation folder. The developer reference is online at ${DOCSURL}."
 !else
-LangString DESC_SecDocs  ${LANG_ENGLISH} "The 23 example programs and the documentation folder. The developer reference is online at ${DOCSURL}."
+LangString DESC_SecDocs  ${LANG_ENGLISH} "The example programs and the documentation folder. The developer reference is online at ${DOCSURL}."
 !endif
 LangString DESC_SecAssoc ${LANG_ENGLISH} "Double-clicking a .matrix source file runs it with ``spid3r run``."
 !ifdef WEBVIEW2_SETUP
@@ -283,6 +286,7 @@ Section "Uninstall"
   Delete "$INSTDIR\doc.html"          ; shipped by installers before the docs moved online
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR\docs"
+  RMDir /r "$INSTDIR\stdlib"
   RMDir /r "$INSTDIR\examples"
   RMDir /r "$INSTDIR\calculator"
   RMDir "$INSTDIR"

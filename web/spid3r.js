@@ -99,6 +99,24 @@
    */
   const Spid3r = {
     /**
+     * Synchronously initialize the Spid3r WebAssembly runtime from an ArrayBuffer, TypedArray, or WebAssembly.Module.
+     * @param {BufferSource|WebAssembly.Module} source
+     * @returns {Spid3rRuntime}
+     */
+    initSync(source) {
+      if (source instanceof WebAssembly.Module) {
+        const instance = new WebAssembly.Instance(source, {});
+        return new Spid3rRuntime(instance);
+      }
+      if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
+        const module = new WebAssembly.Module(source);
+        const instance = new WebAssembly.Instance(module, {});
+        return new Spid3rRuntime(instance);
+      }
+      throw new Error("initSync requires an ArrayBuffer, TypedArray, or WebAssembly.Module");
+    },
+
+    /**
      * Initialize the Spid3r WebAssembly runtime.
      * @param {string|URL|Response|BufferSource|WebAssembly.Module} [source="web/spid3r.wasm"]
      * @returns {Promise<Spid3rRuntime>}
@@ -107,11 +125,32 @@
       let moduleOrInstance;
 
       if (source instanceof WebAssembly.Module) {
-        const instance = await WebAssembly.instantiate(source, {});
-        return new Spid3rRuntime(instance);
+        try {
+          const instance = new WebAssembly.Instance(source, {});
+          return new Spid3rRuntime(instance);
+        } catch (_) {
+          const instance = await WebAssembly.instantiate(source, {});
+          return new Spid3rRuntime(instance);
+        }
       }
 
-      if (typeof source === 'string' || source instanceof URL) {
+      if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
+        try {
+          const module = new WebAssembly.Module(source);
+          const instance = new WebAssembly.Instance(module, {});
+          return new Spid3rRuntime(instance);
+        } catch (_) {
+          const { instance } = await WebAssembly.instantiate(source, {});
+          return new Spid3rRuntime(instance);
+        }
+      }
+
+      if (typeof Response !== 'undefined' && source instanceof Response) {
+        const bytes = await source.arrayBuffer();
+        return this.init(bytes);
+      }
+
+      if (typeof source === 'string' || (typeof URL !== 'undefined' && source instanceof URL)) {
         if (typeof fetch === 'function' && typeof WebAssembly.instantiateStreaming === 'function') {
           try {
             const response = await fetch(source);
@@ -123,19 +162,7 @@
         }
         const resp = await fetch(source);
         const bytes = await resp.arrayBuffer();
-        const { instance } = await WebAssembly.instantiate(bytes, {});
-        return new Spid3rRuntime(instance);
-      }
-
-      if (source instanceof Response) {
-        const bytes = await source.arrayBuffer();
-        const { instance } = await WebAssembly.instantiate(bytes, {});
-        return new Spid3rRuntime(instance);
-      }
-
-      if (source instanceof ArrayBuffer || ArrayBuffer.isView(source)) {
-        const { instance } = await WebAssembly.instantiate(source, {});
-        return new Spid3rRuntime(instance);
+        return this.init(bytes);
       }
 
       throw new Error("Unsupported WebAssembly source provided to Spid3r.init()");

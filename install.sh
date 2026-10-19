@@ -9,6 +9,8 @@
 #   sh install.sh --version 0.1.0
 #   sh install.sh --dir /usr/local/bin
 #   sh install.sh --source        # build from source via cargo instead
+#   sh install.sh --source --core # source build, no LLVM/WebKit needed
+#   sh install.sh --source --features native,gui
 #
 # What it does:
 #   1. Detects OS + architecture, picks the right release tarball.
@@ -25,6 +27,8 @@ RAW_BASE="https://raw.githubusercontent.com/${REPO}/main"
 
 VERSION=""                 # empty = latest release
 FROM_SOURCE=0
+FEATURES=""                # empty = auto-detect (source builds only)
+CORE_ONLY=0
 INSTALL_DIR="${SPID3R_INSTALL_DIR:-$HOME/.spid3r/bin}"
 
 say()  { printf '%s\n' "$*"; }
@@ -39,7 +43,10 @@ while [ $# -gt 0 ]; do
         --dir)      [ $# -ge 2 ] || die "--dir needs a value"
                     INSTALL_DIR="$2"; shift 2 ;;
         --source)   FROM_SOURCE=1; shift ;;
-        -h|--help)  sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --features) [ $# -ge 2 ] || die "--features needs a value (e.g. native,gui)"
+                    FEATURES="$2"; shift 2 ;;
+        --core)     CORE_ONLY=1; shift ;;
+        -h|--help)  sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)          die "unknown option: $1 (try --help)" ;;
     esac
 done
@@ -60,8 +67,34 @@ fetch() { # fetch <url> <outfile|- >
 if [ "$FROM_SOURCE" -eq 1 ]; then
     command -v cargo >/dev/null 2>&1 \
         || die "cargo not found. Install Rust first: https://rustup.rs"
+    command -v cc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1 \
+        || die "a C toolchain is required (Debian/Ubuntu: sudo apt install build-essential)"
+
+    # The default features (gui + native) need system libraries. Enable only
+    # the ones that are actually installed so the build does not fail.
+    if [ -z "$FEATURES" ] && [ "$CORE_ONLY" -eq 0 ]; then
+        have_llvm=0; have_webkit=0
+        for c in llvm-config llvm-config-18 llvm-config-19 /usr/lib/llvm-18/bin/llvm-config; do
+            if command -v "$c" >/dev/null 2>&1; then have_llvm=1; break; fi
+        done
+        if command -v pkg-config >/dev/null 2>&1 \
+            && pkg-config --exists webkit2gtk-4.1 2>/dev/null; then have_webkit=1; fi
+        [ "$have_llvm" -eq 1 ]   && FEATURES="native"
+        [ "$have_webkit" -eq 1 ] && FEATURES="${FEATURES:+$FEATURES,}gui"
+        [ "$have_llvm" -eq 1 ]   || warn "LLVM 18 not found: skipping the native backend (sudo apt install llvm-18-dev)"
+        [ "$have_webkit" -eq 1 ] || warn "WebKit2GTK 4.1 not found: skipping 'spid3r gui' (sudo apt install libwebkit2gtk-4.1-dev)"
+    fi
+
     say "Building spid3r from source (this compiles the whole toolchain)..."
-    cargo install --git "https://github.com/${REPO}.git" spid3r
+    if [ -n "$FEATURES" ]; then
+        say "Features: ${FEATURES}"
+        cargo install --locked --git "https://github.com/${REPO}.git" spid3r \
+            --no-default-features --features "$FEATURES"
+    else
+        say "Features: core only (VM + interpreter, zero dependencies)"
+        cargo install --locked --git "https://github.com/${REPO}.git" spid3r \
+            --no-default-features
+    fi
     say "Done. spid3r is installed into ~/.cargo/bin (make sure it is on PATH)."
     exit 0
 fi

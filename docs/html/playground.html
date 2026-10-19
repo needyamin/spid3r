@@ -996,8 +996,8 @@
       <div>
         <strong>Local File Access Notice:</strong> Browsers restrict WebAssembly <code>fetch()</code> over
         <code>file://</code> URLs.
-        Run a quick local server (e.g. <code>spid3r run server.matrix</code> or <code>npx serve .</code>), or load
-        <code>../../web/spid3r.wasm</code> manually:
+        Run a quick local server (e.g. <code>spid3r run server.matrix</code> or <code>npx serve .</code>), or select
+        <code>spid3r.wasm</code> manually:
       </div>
       <input type="file" id="wasm-file-picker" accept=".wasm" style="font-size: 0.8rem; color: var(--text-primary);">
     </div>
@@ -1135,12 +1135,42 @@ Ready to execute Spid3r scripts entirely within your browser!</div>
   <!-- Footer -->
   <footer class="footer">
     Spid3r (GaliLang) In-Browser Runtime — Built with zero external dependencies compiled to
-    <code>wasm32-unknown-unknown</code>.
-  </footer>
+  <!-- Toast Floating Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Share Modal Dialog -->
+  <div class="modal-overlay" id="share-modal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-labelledby="share-modal-title" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title" id="share-modal-title">
+          <span>🔗</span> Share Spid3r Snippet
+        </div>
+        <button class="modal-close" id="btn-close-share-modal" title="Close modal" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Your code is encoded directly in this URL. Anyone who opens it will load your exact Spid3r script in their browser:
+        </p>
+        <div class="share-input-wrapper">
+          <input type="text" id="share-url-input" class="share-url-input" readonly spellcheck="false" placeholder="Generating link...">
+          <button class="btn btn-primary btn-copy-link" id="btn-modal-copy">
+            <span id="modal-copy-icon">📋</span> <span id="modal-copy-text">Copy Link</span>
+          </button>
+        </div>
+        <div class="share-meta-row">
+          <span class="share-meta-stat" id="share-code-size">0 chars</span>
+          <span class="share-meta-hint">Click the input or button to copy</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-modal-done">Done</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Include Spid3r JS SDK & Embedded WASM Binary Data -->
-  <script src="../../web/spid3r.js"></script>
-  <script src="../../web/spid3r_wasm_data.js"></script>
+  <script src="spid3r.js"></script>
+  <script src="spid3r_wasm_data.js"></script>
   <script>
     (function () {
       'use strict';
@@ -1425,8 +1455,14 @@ println("Benchmark completed! Total:", count);
       });
 
       // Format code
-      btnFormat.addEventListener('click', function () {
-        if (!runtime) return;
+      btnFormat.addEventListener('click', async function () {
+        if (!runtime) {
+          try { await initEngine(); } catch (_) { }
+          if (!runtime) {
+            printError("Engine is not ready yet.");
+            return;
+          }
+        }
         const res = runtime.format(editor.value);
         if (res.ok && res.code) {
           editor.value = res.code;
@@ -1438,8 +1474,14 @@ println("Benchmark completed! Total:", count);
       });
 
       // Check code
-      btnCheck.addEventListener('click', function () {
-        if (!runtime) return;
+      btnCheck.addEventListener('click', async function () {
+        if (!runtime) {
+          try { await initEngine(); } catch (_) { }
+          if (!runtime) {
+            printError("Engine is not ready yet.");
+            return;
+          }
+        }
         const t0 = performance.now();
         const res = runtime.check(editor.value);
         const elapsed = (performance.now() - t0).toFixed(2);
@@ -1453,10 +1495,16 @@ println("Benchmark completed! Total:", count);
       });
 
       // Run code
-      function executeCode() {
+      async function executeCode() {
         if (!runtime) {
-          printError("Engine is not ready yet. Please wait or load the WebAssembly binary.");
-          return;
+          printMeta("⏳ Engine is still initializing, attempting to connect...");
+          try {
+            await initEngine();
+          } catch (_) { }
+          if (!runtime) {
+            printError("Engine is not ready yet. Please wait or select spid3r.wasm using the file picker above.");
+            return;
+          }
         }
 
         const engine = engineSelector.value;
@@ -1574,53 +1622,61 @@ println("Benchmark completed! Total:", count);
       }
 
       function closeShareModal() {
-        shareModal.classList.remove('active');
-        shareModal.setAttribute('aria-hidden', 'true');
+        if (shareModal) {
+          shareModal.classList.remove('active');
+          shareModal.setAttribute('aria-hidden', 'true');
+        }
       }
 
-      btnShare.addEventListener('click', openShareModal);
+      if (btnShare) btnShare.addEventListener('click', openShareModal);
       if (btnCloseShareModal) btnCloseShareModal.addEventListener('click', closeShareModal);
       if (btnModalDone) btnModalDone.addEventListener('click', closeShareModal);
 
       // Close on clicking backdrop
-      shareModal.addEventListener('click', function (e) {
-        if (e.target === shareModal) {
-          closeShareModal();
-        }
-      });
+      if (shareModal) {
+        shareModal.addEventListener('click', function (e) {
+          if (e.target === shareModal) {
+            closeShareModal();
+          }
+        });
 
-      // Close on Escape key
-      document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && shareModal.classList.contains('active')) {
-          closeShareModal();
-        }
-      });
+        // Close on Escape key
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && shareModal.classList.contains('active')) {
+            closeShareModal();
+          }
+        });
+      }
 
       // Auto-select on clicking input
-      shareUrlInput.addEventListener('click', function () {
-        this.select();
-      });
+      if (shareUrlInput) {
+        shareUrlInput.addEventListener('click', function () {
+          this.select();
+        });
+      }
 
       // Copy link inside modal
-      btnModalCopy.addEventListener('click', function () {
-        const url = shareUrlInput.value;
-        if (!url) return;
-        navigator.clipboard.writeText(url).then(() => {
-          modalCopyIcon.innerText = '✓';
-          modalCopyText.innerText = 'Copied!';
-          btnModalCopy.style.background = 'var(--grad-emerald)';
-          showToast("🔗 Shareable link copied to clipboard!");
-          setTimeout(() => {
-            modalCopyIcon.innerText = '📋';
-            modalCopyText.innerText = 'Copy Link';
-            btnModalCopy.style.background = '';
-          }, 2500);
-        }).catch(() => {
-          shareUrlInput.select();
-          document.execCommand('copy');
-          showToast("🔗 Link copied to clipboard!");
+      if (btnModalCopy) {
+        btnModalCopy.addEventListener('click', function () {
+          const url = shareUrlInput ? shareUrlInput.value : '';
+          if (!url) return;
+          navigator.clipboard.writeText(url).then(() => {
+            if (modalCopyIcon) modalCopyIcon.innerText = '✓';
+            if (modalCopyText) modalCopyText.innerText = 'Copied!';
+            btnModalCopy.style.background = 'var(--grad-emerald)';
+            showToast("🔗 Shareable link copied to clipboard!");
+            setTimeout(() => {
+              if (modalCopyIcon) modalCopyIcon.innerText = '📋';
+              if (modalCopyText) modalCopyText.innerText = 'Copy Link';
+              btnModalCopy.style.background = '';
+            }, 2500);
+          }).catch(() => {
+            if (shareUrlInput) shareUrlInput.select();
+            document.execCommand('copy');
+            showToast("🔗 Link copied to clipboard!");
+          });
         });
-      });
+      }
 
       // Export / Download
       btnDownload.addEventListener('click', function () {
@@ -1712,32 +1768,52 @@ println("Benchmark completed! Total:", count);
       // Initialize WASM
       async function initEngine(source) {
         try {
+          if (runtime) return runtime;
+
           engineStatus.className = "status-badge loading";
           engineStatusText.innerText = "Loading WASM...";
 
           let wasmInput = source;
           if (!wasmInput) {
-            // First check embedded base64 data (enables 100% offline file:// instant loading)
             const g = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this);
             if (g && typeof g.__SPID3R_WASM_BASE64__ === 'string' && g.__SPID3R_WASM_BASE64__.length > 0) {
               wasmInput = decodeBase64ToBytes(g.__SPID3R_WASM_BASE64__);
             } else {
-              wasmInput = "../../web/spid3r.wasm";
+              wasmInput = "spid3r.wasm";
             }
           }
 
-          runtime = await Spid3r.init(wasmInput);
+          if (typeof Spid3r === 'undefined') {
+            throw new Error("Spid3r JavaScript SDK is not loaded. Please verify spid3r.js is present.");
+          }
+
+          try {
+            if (typeof Spid3r.initSync === 'function' && (wasmInput instanceof ArrayBuffer || ArrayBuffer.isView(wasmInput))) {
+              runtime = Spid3r.initSync(wasmInput);
+            } else {
+              runtime = await Spid3r.init(wasmInput);
+            }
+          } catch (firstErr) {
+            if (typeof wasmInput === 'string' && wasmInput === "spid3r.wasm") {
+              runtime = await Spid3r.init("../../web/spid3r.wasm");
+            } else {
+              throw firstErr;
+            }
+          }
+
           const ver = runtime.version();
           engineStatus.className = "status-badge ready";
           engineStatusText.innerText = "Spid3r v" + ver.version + " Ready";
           if (corsNotice) corsNotice.classList.remove('visible');
           terminal.innerText = "⚡ Spid3r WebAssembly Engine initialized successfully!\nRuntime: v" + ver.version + " (Language " + ver.language_version + ")\nClick 'Run Code' or press Ctrl+Enter to execute.";
+          return runtime;
         } catch (err) {
           console.error("WASM Load Error:", err);
           engineStatus.className = "status-badge error";
           engineStatusText.innerText = "Load Failed";
           if (corsNotice) corsNotice.classList.add('visible');
-          terminal.innerText = "Notice: Could not load WebAssembly runtime (" + err.message + ").\n\nIf running from a local file:// URL, select '../../web/spid3r.wasm' using the file picker above, or run a local HTTP server:\n  npx serve .\n  or: python -m http.server 8000";
+          terminal.innerText = "Notice: Could not load WebAssembly runtime (" + err.message + ").\n\nIf running from a local file:// URL, select 'spid3r.wasm' using the file picker above, or run a local HTTP server:\n  npx serve .\n  or: python -m http.server 8000";
+          throw err;
         }
       }
 
@@ -1774,38 +1850,6 @@ println("Benchmark completed! Total:", count);
 
     })();
   </script>
-  <!-- Toast Floating Container -->
-  <div class="toast-container" id="toast-container"></div>
-
-  <!-- Share Modal Dialog -->
-  <div class="modal-overlay" id="share-modal" aria-hidden="true">
-    <div class="modal-card" role="dialog" aria-labelledby="share-modal-title" aria-modal="true">
-      <div class="modal-header">
-        <div class="modal-title" id="share-modal-title">
-          <span>🔗</span> Share Spid3r Snippet
-        </div>
-        <button class="modal-close" id="btn-close-share-modal" title="Close modal" aria-label="Close">✕</button>
-      </div>
-      <div class="modal-body">
-        <p class="modal-desc">
-          Your code is encoded directly in this URL. Anyone who opens it will load your exact Spid3r script in their browser:
-        </p>
-        <div class="share-input-wrapper">
-          <input type="text" id="share-url-input" class="share-url-input" readonly spellcheck="false" placeholder="Generating link...">
-          <button class="btn btn-primary btn-copy-link" id="btn-modal-copy">
-            <span id="modal-copy-icon">📋</span> <span id="modal-copy-text">Copy Link</span>
-          </button>
-        </div>
-        <div class="share-meta-row">
-          <span class="share-meta-stat" id="share-code-size">0 chars</span>
-          <span class="share-meta-hint">Click the input or button to copy</span>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary btn-sm" id="btn-modal-done">Done</button>
-      </div>
-    </div>
-  </div>
 </body>
 
 </html>

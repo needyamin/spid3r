@@ -164,6 +164,33 @@ fn run_tree(path: &str) -> Result<i32, Diagnostic> {
     interp.run_program(&program)
 }
 
+/// `spid3r run` has no webview, so a program that calls the `gui_*`
+/// natives would die later with an engine-specific error (`unknown name` on
+/// the tree engine, `null is not callable` on the VM). Detect it up front from
+/// the token stream (comments and string literals are ignored) and point the
+/// user at `spid3r gui` instead.
+fn reject_gui_program(path: &str) -> Result<(), Diagnostic> {
+    let natives = semantic::gui_builtins();
+    if natives.is_empty() {
+        return Ok(());
+    }
+    let (src, file) = read_source(path)?;
+    let Ok(tokens) = crate::lexer::Lexer::new(&src, file).tokenize() else {
+        return Ok(()); // lex errors are reported by the normal front end
+    };
+    for t in &tokens {
+        if let crate::lexer::token::TokenKind::Ident(name) = &t.kind {
+            if natives.contains(&name.as_str()) {
+                return Err(usage(&format!(
+                    "'{}' uses the GUI function `{}` and needs a window; run it with `spid3r gui {}` instead of `spid3r run`",
+                    path, name, path
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 // ----------------------------------------------------------------- commands
 
 fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
@@ -212,6 +239,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             manifest.entry().to_string()
         }
     };
+    reject_gui_program(&file)?;
     // `args()` must see the program's arguments, not the interpreter's argv.
     crate::stdlib::set_script_args(script_args);
     match engine {
