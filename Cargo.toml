@@ -14,6 +14,12 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 name = "spid3r"
 path = "src/main.rs"
 
+[[bin]]
+name = "calculator"
+path = "demo_apps/native_calculator/main.rs"
+required-features = ["gui"]
+
+
 [features]
 # The core language toolchain is zero-dependency; the backends add their own
 # dependencies and are both on by default (build the core alone with

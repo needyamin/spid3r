@@ -57,6 +57,16 @@ pub fn open(interp: &Arc<Interp>, html: Option<&str>) -> Result<(), String> {
     let event_loop = tao::event_loop::EventLoopBuilder::<Msg>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+        let local_app_data = std::env::var_os("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let spid3r_webview = local_app_data.join("Spid3r").join("WebView2");
+        let _ = std::fs::create_dir_all(&spid3r_webview);
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", spid3r_webview);
+    }
+
     let window = tao::window::WindowBuilder::new()
         .with_title(title)
         .with_inner_size(tao::dpi::LogicalSize::new(920.0, 640.0))

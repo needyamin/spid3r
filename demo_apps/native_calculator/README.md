@@ -1,54 +1,29 @@
 # Spid3r Native Calculator
 
-A high-precision native terminal and CLI calculator written in pure Spid3r.
+A flagship native calculator application for Windows and cross-platform desktop, written in pure Spid3r.
 
-## Features
+## Running the Native GUI Window
 
-- **Direct Expression Evaluation**: Pass expressions directly as CLI arguments.
-- **Interactive REPL Mode**: Run standalone terminal calculator session with history, clear, and recall.
-- **Standard & Scientific Operations**: `+`, `-`, `*`, `/`, `%`, `neg`, `sqrt`, `sqr`, `inv`.
-- **Zero Dependencies**: Runs on both the Spid3r Bytecode VM and the Tree Interpreter.
+To launch the real desktop GUI window with interactive mouse buttons, keypad, display, and history tape:
 
-## Usage
-
-### 1. Interactive Terminal Session
 ```bash
-spid3r run demo_apps/native_calculator/calculator.matrix
-```
-Example interactive session:
-```text
-calc> 25 + 75
-Result:  100
-
-calc> * 2
-Result:  200
-
-calc> sqrt
-Result:  14.1421356237
-
-calc> history
-History (3 entries):
-  [0] 25 + 75 = 100
-  [1] 100 × 2 = 200
-  [2] sqrt(200) = 14.1421356237
-
-calc> q
-Goodbye!
+spid3r gui demo_apps/native_calculator/calculator.matrix
 ```
 
-### 2. Direct CLI Evaluation
-```bash
-spid3r run demo_apps/native_calculator/calculator.matrix 25 + 75
-# Output: 100
-```
+### GUI Features
+- **Native OS Window**: Rendered using native desktop webview with Windows 11 aesthetics and titlebar.
+- **Full Keypad**: Digits `0-9`, operators `+`, `-`, `×`, `÷`, `%`, `±`, `√`, `x²`, `1/x`, `CE`, `C`, `⌫`, `=`.
+- **Keyboard Shortcuts**: Type numbers and operations directly on your physical keyboard.
+- **History Tape**: Click any past calculation result on the side panel to recall it back into the display.
 
-### 3. Self-Test Suite
-```bash
-spid3r run demo_apps/native_calculator/calculator.matrix test
-```
 
-### 4. Bytecode Compilation
-```bash
-spid3r compile demo_apps/native_calculator/calculator.matrix -o calculator.matrixc
-spid3r exec calculator.matrixc test
-```
+
+---
+
+## Standalone Native GUI Application (`calculator.exe`)
+
+The standalone binary [calculator.exe](file:///c:/Users/needyamin/OneDrive/Desktop/GaliLang/calculator.exe) in the project root is a genuine Windows GUI executable (`windows_subsystem`).
+
+- Double-click **`calculator.exe`** in Windows Explorer or run `.\calculator.exe` to immediately launch the Native Desktop GUI Calculator window.
+- No terminal window, no command-line prompt, and no external dependencies required.
+

@@ -79,6 +79,10 @@ public fn history_items() {
     return out;
 }
 
+public fn history_entries() {
+    return history_items();
+}
+
 /// Put history item `i` back on the display as the current operand.
 public fn recall(i) {
     if i < 0 or i >= history.len() {

@@ -464,6 +464,7 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 | `src/pkg`, `src/fmt.rs`, `src/repl`, `src/cli.rs` | Package manager (`spider.toml`, `ustar` archiver), canonical formatter, REPL, and CLI |
 | `src/native`, `src/gui` | Optional LLVM 18.1+ AOT backend (`native`) and desktop webview bridge (`gui`) |
 | `examples/`, `benchmarks/`, `stdlib/` | 23 runnable example programs/libraries, 8 benchmarks, and standard library modules |
+| `demo_apps/` | Native GUI Calculator (`demo_apps/native_calculator/`) and Web Calculator (`demo_apps/web_calculator/`) |
 | `tests/`, `fuzz/`, `tools/` | Integration, differential, cycle-GC, packaging, audit-regression, wasm, and fuzz suites, plus `tools/difftest.sh` |
 | `docs/`, `doc.html` | Deep-dive technical documentation and self-contained interactive developer guide |
 
@@ -474,6 +475,8 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 | [Interactive developer guide (`doc.html`)](https://needyamin.github.io/spid3r/doc.html) | Self-contained single-page reference with search, dark mode, cheat sheet, and examples |
 | [WebAssembly Playground (`playground.html`)](docs/html/playground.html) | Live in-browser code editor, syntax checker, formatter, and dual VM/Tree runner |
 | [Benchmarks Report (`benchmarks.html`)](docs/html/benchmarks.html) | Performance comparisons across Spid3r VM, Python 3, and PHP 8 |
+| [Web Calculator Demo (`demo_apps/web_calculator`)](demo_apps/web_calculator/index.html) | Interactive browser calculator powered by `engine.matrix` |
+| [Native Calculator Demo (`demo_apps/native_calculator`)](demo_apps/native_calculator/README.md) | Flagship native Windows GUI calculator app |
 | [`docs/GRAMMAR.md`](docs/GRAMMAR.md) | EBNF grammar and precedence rules |
 | [`docs/KEYWORDS.md`](docs/KEYWORDS.md) | Reserved words |
 | [`docs/STANDARD_LIBRARY.md`](docs/STANDARD_LIBRARY.md) | Global functions |

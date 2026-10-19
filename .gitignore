@@ -64,3 +64,5 @@ desktop.ini
 ~$*
 .~lock.*#
 *.tmp
+*.WebView2/
+*.WebView2

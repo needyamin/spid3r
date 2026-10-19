@@ -1405,8 +1405,8 @@ fn main() {
   }
 
   function copyNativeCmd() {
-    navigator.clipboard.writeText("spid3r run demo_apps/native_calculator/calculator.matrix").then(() => {
-      showToast("Copied: spid3r run demo_apps/native_calculator/calculator.matrix");
+    navigator.clipboard.writeText("spid3r gui demo_apps/native_calculator/calculator.matrix").then(() => {
+      showToast("Copied: spid3r gui demo_apps/native_calculator/calculator.matrix");
     });
   }
 
@@ -1424,7 +1424,7 @@ fn main() {
   }
 
   function copyResultsJson() {
-    fetch('benchmarks/results.json')
+    fetch('../../benchmarks/results.json')
       .then(res => res.text())
       .then(text => {
         navigator.clipboard.writeText(text).then(() => {
@@ -1443,31 +1443,32 @@ fn main() {
   <div style="background:#0d131f;border:1px solid rgba(56,189,248,0.3);border-radius:18px;max-width:580px;width:100%;padding:1.75rem;box-shadow:0 25px 50px -12px rgba(0,0,0,0.7);position:relative;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;padding-bottom:0.75rem;border-bottom:1px solid rgba(255,255,255,0.08);">
       <h3 style="font-size:1.15rem;font-weight:700;color:#fff;display:flex;align-items:center;gap:0.5rem;">
-        <span>💻</span> Spid3r Native Calculator Demo
+        <span>💻</span> Spid3r Native GUI Calculator Demo
       </h3>
       <button onclick="closeNativeModal()" style="background:transparent;border:none;color:var(--text-muted);font-size:1.25rem;cursor:pointer;padding:0.25rem;">✕</button>
     </div>
     <p style="font-size:0.88rem;color:var(--text-muted);line-height:1.5;margin-bottom:1rem;">
-      The native calculator executes directly in your command line with high-precision arithmetic, history stack, and zero external dependencies:
+      Spid3r includes a real native desktop GUI calculator window with interactive buttons, keyboard shortcuts, and history tape:
     </p>
     
-    <div style="background:#06080e;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:0.9rem;margin-bottom:0.75rem;">
-      <div style="font-size:0.75rem;color:var(--cyan);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">1. Interactive Terminal REPL</div>
-      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run demo_apps/native_calculator/calculator.matrix</code>
+    <div style="background:#06080e;border:1px solid rgba(56,189,248,0.3);border-radius:10px;padding:0.9rem;margin-bottom:0.75rem;">
+      <div style="font-size:0.75rem;color:var(--cyan);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">1. Native Desktop GUI Window (Recommended)</div>
+      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#38bdf8;display:block;">spid3r gui demo_apps/native_calculator/calculator.matrix</code>
+      <small style="color:var(--text-muted);font-size:0.75rem;display:block;margin-top:0.25rem;">Opens a native Windows desktop GUI application with mouse, buttons, and history.</small>
     </div>
 
     <div style="background:#06080e;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:0.9rem;margin-bottom:0.75rem;">
-      <div style="font-size:0.75rem;color:var(--cyan);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">2. Direct CLI Evaluation</div>
-      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run demo_apps/native_calculator/calculator.matrix 25 + 75</code>
+      <div style="font-size:0.75rem;color:var(--text-muted);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">2. Terminal CLI Interactive REPL</div>
+      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run demo_apps/native_calculator/cli_calculator.matrix</code>
     </div>
 
     <div style="background:#06080e;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:0.9rem;margin-bottom:1.25rem;">
-      <div style="font-size:0.75rem;color:var(--cyan);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">3. Automated Self-Tests</div>
-      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run demo_apps/native_calculator/calculator.matrix test</code>
+      <div style="font-size:0.75rem;color:var(--text-muted);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">3. Direct CLI Expression Math</div>
+      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run demo_apps/native_calculator/cli_calculator.matrix 25 + 75</code>
     </div>
 
     <div style="display:flex;justify-content:flex-end;gap:0.75rem;">
-      <button class="btn" onclick="copyNativeCmd()">Copy Command</button>
+      <button class="btn" onclick="copyNativeCmd()">Copy GUI Command</button>
       <button class="btn btn-primary" onclick="closeNativeModal()">Done</button>
     </div>
   </div>
