@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 310 Rust tests green (300 core + 10 GUI),
+State: 350 Rust tests green (340 core + 10 GUI),
 23/23 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
 
@@ -60,7 +60,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 310 tests (300 with --no-default-features + 10 gui), must stay green
+  cargo test                  FULL suite, 350 tests (340 with --no-default-features + 10 gui), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -230,6 +230,11 @@ GaliLang/
                          standalone staticlib discovery).
   fuzz_tests.rs          deterministic mutation/fuzzing suite for lexer, parser,
                          and bytecode deserializer/validator.
+  fix_f3_hangs.rs, fix_f4_gc.rs, fix_vm_trio.rs, fix_repl_cli.rs,
+                         fix_semantic_priv.rs   40 fix-round regressions
+                         (2026-10-19: deadlock paths, GC amortization + deep
+                         teardown, VM const/return hardening, REPL/fmt, privacy
+                         + import shadowing + signature call checking)
   difftest.rs            every examples/*.matrix through tree, vm, compile+exec
   lexer_tests.rs         token/spans; parser_tests.rs; semantic/gradual_typing
   interpreter_tests.rs, integration_tests.rs, error_tests.rs
@@ -326,11 +331,13 @@ GaliLang/
   - VM encoding limits (clean diagnostics; the tree engine has no such limit):
     a list literal may hold at most 255 elements; a function may capture at
     most 128 variables (7-bit upvalue descriptor encoding).
-  - Self-referential containers can HANG both engines (mutex re-entry, no
-    diagnostic) via: for-in over a self-containing list, set.union(s) with
-    itself, map.values() of a self-valued map, linked_list.to_list() of a
-    self-referencing list. .clone() IS cycle-safe. See docs/AUDIT_REPORT.md
-    section 9 and plan.html.
+  - Self-referential container ops USED TO HANG both engines (mutex re-entry):
+    for-in over a self-containing list, set.union(s) with itself, map.values()
+    of a self-valued map, linked_list.to_list() of a self-referencing list —
+    FIXED 2026-10-19 (snapshot-under-lock in the shared value layer; tests/
+    fix_f3_hangs.rs). Deep nested list/map/set chains also tear down
+    iteratively now (deep builds verified to 4M levels; tests/fix_f4_gc.rs).
+    See docs/AUDIT_REPORT.md section 10 and plan.html.
 
 [13] STYLE / CONVENTIONS
 --------------------------------------------------------------------------------

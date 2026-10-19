@@ -1031,6 +1031,36 @@ fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
         return Err(usage("fmt needs at least one file"));
     }
 
+    // Expand directory arguments in place: each directory contributes its
+    // `*.matrix` files (sorted by name, non-recursive) and then behaves
+    // exactly like multiple file arguments. A directory without any .matrix
+    // file is a clean usage error instead of a failed directory read.
+    let mut expanded: Vec<String> = Vec::new();
+    for arg in &files {
+        let path = Path::new(arg);
+        if path.is_dir() {
+            let mut found: Vec<String> = std::fs::read_dir(path)
+                .map_err(|e| usage(&format!("cannot read '{}': {}", arg, e)))?
+                .filter_map(|entry| entry.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.is_file() && p.extension().map(|x| x == "matrix").unwrap_or(false)
+                })
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            found.sort();
+            if found.is_empty() {
+                return Err(usage(&format!(
+                    "no .matrix files found in directory '{}'",
+                    arg
+                )));
+            }
+            expanded.extend(found);
+        } else {
+            expanded.push(arg.clone());
+        }
+    }
+    let files = expanded;
+
     let mut changed = 0usize;
     let mut errors = 0usize;
     for f in &files {

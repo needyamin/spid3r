@@ -13,8 +13,7 @@ use crate::value::display_value;
 
 pub fn run() {
     println!("spid3r repl - :quit to leave, :help for commands");
-    let interp = Interp::new(Arc::from("<repl>"), modules::default_module_dirs());
-    let env = interp.globals.clone();
+    let (mut interp, mut env) = fresh_session();
     let mut buffer = String::new();
     // Names bound by earlier lines, so a later line can use them.
     let mut known: Vec<String> = Vec::new();
@@ -40,6 +39,13 @@ pub fn run() {
                     continue;
                 }
                 ":reset" => {
+                    // A reset must rebuild the whole per-session state, not
+                    // just the name list: the const set lives in the global
+                    // environment, so consts from earlier lines would
+                    // otherwise survive a reset and reject `let`/assignment
+                    // of the same name. fresh_session() is the same
+                    // constructor startup uses, so the two cannot drift.
+                    (interp, env) = fresh_session();
                     known.clear();
                     println!("bindings cleared");
                     continue;
@@ -66,6 +72,16 @@ pub fn run() {
             }
         }
     }
+}
+
+/// The per-session state a fresh REPL starts with: a new interpreter (which
+/// owns a fresh global environment, including its empty const set) and a clone
+/// of that environment handle. Both REPL startup and `:reset` build from here,
+/// so a reset produces exactly the state a fresh session has.
+fn fresh_session() -> (Interp, crate::environment::Env) {
+    let interp = Interp::new(Arc::from("<repl>"), modules::default_module_dirs());
+    let env = interp.globals.clone();
+    (interp, env)
 }
 
 /// True when braces, brackets, and parens balance outside strings and comments.
@@ -159,7 +175,30 @@ fn eval_line(
 ) -> Result<Option<crate::value::Value>, crate::diagnostics::Diagnostic> {
     let file: Arc<str> = Arc::from("<repl>");
     let toks = Lexer::new(src, file.clone()).tokenize()?;
-    let program = parser::parse(toks)?;
+    let program = match parser::parse(toks) {
+        Ok(p) => p,
+        Err(d) => {
+            // A bare expression may omit its trailing `;` in the REPL (its
+            // value is echoed either way). When the line failed to parse, is
+            // a bare expression, and does not already end in `;`, retry the
+            // parse once with `;` appended. If that also fails, report the
+            // original diagnostic so genuinely broken input keeps its
+            // accurate error. The retry happens at parse time only, before
+            // any semantic check or execution, so nothing can run twice.
+            if is_bare_expr(src) && !src.trim_end().ends_with(';') {
+                let retried = format!("{};", src.trim_end());
+                match Lexer::new(&retried, file.clone())
+                    .tokenize()
+                    .and_then(parser::parse)
+                {
+                    Ok(p) => p,
+                    Err(_) => return Err(d),
+                }
+            } else {
+                return Err(d);
+            }
+        }
+    };
     semantic::check_repl(&program, known)?;
     // Evaluate on a large-stack thread, same as `run`: deep recursion must
     // hit the interpreter's depth guard, not the OS stack.

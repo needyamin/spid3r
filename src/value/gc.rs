@@ -19,8 +19,10 @@
 //! OVER-counting one could, so `gc_trace` counts each strong `Value` child once,
 //! skips weak references, and skips container types it does not track.
 //!
-//! Auto-collection is gated behind `SPID3R_GC` (default off => byte-identical
-//! behavior); `gc_collect()` can always be called explicitly. Tracking
+//! Auto-collection runs at statement boundaries by default, amortized so a
+//! deep build pays O(N) total collection work instead of O(N²) (see
+//! `maybe_collect`); `SPID3R_GC=0` disables it and `gc_collect()` can always
+//! be called explicitly. Tracking
 //! covers every container and instance type that can form reference cycles
 //! (20+ `*Data` types below); closures/environments are not tracked yet
 //! (cycles through them leak — see GC.md).
@@ -375,9 +377,14 @@ pub fn track<T: GcTrace + Send + 'static>(cell: Arc<Mutex<T>>) -> Arc<Mutex<T>> 
     // Safety valve: programs that never collect (e.g. the native runtime, which
     // has no auto-trigger) still keep the registry bounded — prune dead handles
     // once it grows, so it tracks live cells rather than all-time allocations.
-    if reg.len() > 8192 {
+    // Amortized (F-4): prune only past the `PRUNE_AT` watermark and then double
+    // it. The old prune-on-every-allocation-above-8192 cost O(registry) per
+    // allocation — quadratic on a deep build where the registry stays large and
+    // live, on BOTH engines (they share `new_ref` → `track`).
+    if reg.len() > PRUNE_AT.load(Ordering::Relaxed) {
         let mut seen = HashSet::new();
         reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
+        PRUNE_AT.store(reg.len().saturating_mul(2).max(8192), Ordering::Relaxed);
     }
     drop(reg);
     ALLOCS.fetch_add(1, Ordering::Relaxed);
@@ -441,6 +448,7 @@ pub fn collect() -> usize {
     };
     let n = snapshot.len();
     if n == 0 {
+        NEXT_GC.store(1024, Ordering::Relaxed);
         return 0;
     }
 
@@ -507,10 +515,29 @@ pub fn collect() -> usize {
     let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let mut seen = HashSet::new();
     reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
+    // Amortized re-arm (F-4): the next automatic collection waits until this
+    // many more cells have been allocated, scaled to what survived this pass,
+    // so collections double in interval on a growing heap (O(log N) of them
+    // for a linear build) while churny garbage keeps the 1024 baseline.
+    NEXT_GC.store(n.saturating_sub(freed).max(1024), Ordering::Relaxed);
     freed
 }
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+
+/// `ALLOCS` level at which the next automatic collection fires. Amortized
+/// (F-4): 1024 at first, then raised to the surviving cell count of each
+/// collection, so building a linear chain of N cells needs only O(log N)
+/// collections and O(N) total re-scan work instead of O(N²) at a fixed
+/// threshold.
+static NEXT_GC: AtomicUsize = AtomicUsize::new(1024);
+
+/// Registry watermark for the `track` safety valve: dead entries are pruned
+/// only once the registry grows past this, and the watermark then doubles
+/// (min 8192). Keeps `track` O(1) amortized instead of O(registry) per
+/// allocation while the registry stays bounded at roughly twice the live set
+/// plus the 8192 baseline (F-4).
+static PRUNE_AT: AtomicUsize = AtomicUsize::new(8192);
 
 /// Is automatic collection enabled? **On by default**; `SPID3R_GC=0` disables it.
 fn auto_enabled() -> bool {
@@ -518,13 +545,14 @@ fn auto_enabled() -> bool {
     *E.get_or_init(|| std::env::var("SPID3R_GC").map(|v| v != "0").unwrap_or(true))
 }
 
-/// Called at interpreter statement boundaries. Collects once at least 1024
-/// tracked cells have been allocated since the last collection, and only while
-/// the scheduler has no live tasks (a worker could clone a cell concurrently,
-/// racing the strong counts).
+/// Called at interpreter statement boundaries. Collects once at least
+/// `NEXT_GC` tracked cells have been allocated since the last collection
+/// (1024 at first, then the previous pass's surviving cell count — amortized
+/// exponential backoff, see F-4), and only while the scheduler has no live
+/// tasks (a worker could clone a cell concurrently, racing the strong counts).
 #[inline]
 pub fn maybe_collect() {
-    if ALLOCS.load(Ordering::Relaxed) >= 1024
+    if ALLOCS.load(Ordering::Relaxed) >= NEXT_GC.load(Ordering::Relaxed)
         && auto_enabled()
         && crate::sched::Scheduler::shared().live_tasks() == 0
     {

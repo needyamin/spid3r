@@ -288,21 +288,42 @@ pub fn call_method_host(
         Value::Stack(d) => d.lock().unwrap().method(name, &args),
         Value::Queue(d) => d.lock().unwrap().method(name, &args),
         Value::Deque(d) => d.lock().unwrap().method(name, &args),
-        Value::LinkedList(d) => d.lock().unwrap().method(name, &args),
-        Value::SinglyList(d) => d.lock().unwrap().method(name, &args),
-        Value::DoublyList(d) => d.lock().unwrap().method(name, &args),
-        Value::Map(d) => d.lock().unwrap().method(name, &args),
+        Value::LinkedList(d) | Value::SinglyList(d) | Value::DoublyList(d) => {
+            if name == "to_list" && args.is_empty() {
+                // Snapshot the node values under the list's lock, then
+                // deep-clone outside it: a node value can be the list itself,
+                // and deep_clone would re-lock the mutex dispatch already
+                // holds (audit F3/p06).
+                let vals = d.lock().unwrap().to_vec();
+                return Ok(make_list(vals.iter().map(deep_clone).collect()));
+            }
+            d.lock().unwrap().method(name, &args)
+        }
+        Value::Map(d) => {
+            if name == "values" && args.is_empty() {
+                // Snapshot the entries under the map's lock, then deep-clone
+                // the values outside it: a value can be the map itself, and
+                // deep_clone would re-lock the mutex dispatch already holds
+                // (audit F3/p05).
+                let entries = d.lock().unwrap().entries.clone();
+                return Ok(seq::map_values_out(&entries));
+            }
+            d.lock().unwrap().method(name, &args)
+        }
         Value::Set(d) => {
             if matches!(name, "union" | "intersection" | "intersect" | "difference")
                 && args.len() == 1
             {
                 if let Value::Set(o) = &args[0] {
-                    if std::sync::Arc::ptr_eq(d, o) {
-                        let snapshot = Value::Set(new_ref(SetData {
-                            items: d.lock().unwrap().items.clone(),
-                        }));
-                        return d.lock().unwrap().method(name, &[snapshot]);
-                    }
+                    // Snapshot both sides under their own locks and release
+                    // before any values_equal/deep_clone recursion: items can
+                    // be (or reach) either set, and the comparison re-locks
+                    // both containers — the old ptr_eq self-guard plus the
+                    // as_set guard deadlocked on mutually self-referencing
+                    // sets (audit F3/p03).
+                    let self_items = d.lock().unwrap().items.clone();
+                    let other_items = o.lock().unwrap().items.clone();
+                    return seq::set_op(name, self_items, other_items);
                 }
             }
             d.lock().unwrap().method(name, &args)
@@ -922,20 +943,42 @@ pub fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
 // -------------------------------------------------------------- iteration
 
 /// Values produced by `for x in <expr>`, in each structure's natural order.
+///
+/// Lock discipline (audit F3/p01): every arm that deep-clones items first
+/// snapshots the contents under the container's lock and releases it before
+/// any `deep_clone` recursion. An item can be (or reach, through a cycle) the
+/// container itself, and `deep_clone` re-locks container mutexes — holding a
+/// lock across the recursion deadlocked the loop forever.
 pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
     match v {
         Value::List(d) | Value::VecDyn(d) => {
-            Ok(d.lock().unwrap().items.iter().map(deep_clone).collect())
+            let items = d.lock().unwrap().items.clone();
+            Ok(items.iter().map(deep_clone).collect())
         }
         Value::Stack(d) => {
-            let d = d.lock().unwrap();
-            Ok(d.items.iter().rev().map(deep_clone).collect())
+            let items = d.lock().unwrap().items.clone();
+            Ok(items.iter().rev().map(deep_clone).collect())
         }
-        Value::Queue(d) => Ok(d.lock().unwrap().items.iter().map(deep_clone).collect()),
-        Value::Deque(d) => Ok(d.lock().unwrap().items.iter().map(deep_clone).collect()),
-        Value::Set(d) => Ok(d.lock().unwrap().items.iter().map(deep_clone).collect()),
-        Value::Ring(d) => Ok(d.lock().unwrap().items.iter().map(deep_clone).collect()),
-        Value::Tuple(t) => Ok(t.lock().unwrap().iter().map(deep_clone).collect()),
+        Value::Queue(d) => {
+            let items = d.lock().unwrap().items.clone();
+            Ok(items.iter().map(deep_clone).collect())
+        }
+        Value::Deque(d) => {
+            let items = d.lock().unwrap().items.clone();
+            Ok(items.iter().map(deep_clone).collect())
+        }
+        Value::Set(d) => {
+            let items = d.lock().unwrap().items.clone();
+            Ok(items.iter().map(deep_clone).collect())
+        }
+        Value::Ring(d) => {
+            let items = d.lock().unwrap().items.clone();
+            Ok(items.iter().map(deep_clone).collect())
+        }
+        Value::Tuple(t) => {
+            let items = t.lock().unwrap().clone();
+            Ok(items.iter().map(deep_clone).collect())
+        }
         Value::Map(d) => Ok(d
             .lock()
             .unwrap()
@@ -943,16 +986,22 @@ pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
             .iter()
             .map(|(k, _)| key_to_value(k))
             .collect()),
-        Value::Bst(d) => Ok(d.lock().unwrap().inorder().iter().map(deep_clone).collect()),
-        Value::BinTree(d) => Ok(d
-            .lock()
-            .unwrap()
-            .level_order()
-            .iter()
-            .map(deep_clone)
-            .collect()),
-        Value::Heap(d) => Ok(d.lock().unwrap().items.iter().map(deep_clone).collect()),
-        Value::Graph(d) => Ok(d.lock().unwrap().nodes.iter().map(deep_clone).collect()),
+        Value::Bst(d) => {
+            let items = d.lock().unwrap().inorder();
+            Ok(items.iter().map(deep_clone).collect())
+        }
+        Value::BinTree(d) => {
+            let items = d.lock().unwrap().level_order();
+            Ok(items.iter().map(deep_clone).collect())
+        }
+        Value::Heap(d) => {
+            let items = d.lock().unwrap().items.clone();
+            Ok(items.iter().map(deep_clone).collect())
+        }
+        Value::Graph(d) => {
+            let nodes = d.lock().unwrap().nodes.clone();
+            Ok(nodes.iter().map(deep_clone).collect())
+        }
         Value::HashTable(d) => {
             let d = d.lock().unwrap();
             let mut out = Vec::new();
@@ -968,9 +1017,9 @@ pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
             Ok(words.into_iter().map(|w| Value::Str(w.into())).collect())
         }
         Value::Bag(d) => {
-            let d = d.lock().unwrap();
+            let counts = d.lock().unwrap().counts.clone();
             let mut out = Vec::new();
-            for (v, n) in &d.counts {
+            for (v, n) in &counts {
                 for _ in 0..*n {
                     out.push(deep_clone(v));
                 }
@@ -979,15 +1028,11 @@ pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
         }
         Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string().into())).collect()),
         Value::LinkedList(d) | Value::SinglyList(d) | Value::DoublyList(d) => {
-            let d = d.lock().unwrap();
-            let mut out = Vec::new();
-            let mut cur = d.head.clone();
-            while let Some(n) = cur {
-                let node = n.lock().unwrap();
-                out.push(deep_clone(&node.value));
-                cur = node.next.clone();
-            }
-            Ok(out)
+            // to_vec() walks the nodes under the list lock and returns shallow
+            // (Arc-cheap) value clones; the guard drops with the statement, so
+            // the deep clones below re-lock nothing that is still held.
+            let vals = d.lock().unwrap().to_vec();
+            Ok(vals.iter().map(deep_clone).collect())
         }
         other => Err(format!(
             "{} is not iterable",

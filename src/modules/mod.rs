@@ -30,6 +30,27 @@ impl ModuleCache {
     }
 }
 
+/// Build the diagnostic message for a circular import: the in-progress load
+/// chain (`a.matrix -> b.matrix`) followed by the offending path, in the
+/// wording shared by the tree interpreter and the VM. Mirrors the tree's
+/// chain rendering exactly: file names when available, full paths otherwise.
+pub fn circular_import_message(in_progress: &[PathBuf], path: &str) -> String {
+    let mut chain: Vec<String> = in_progress
+        .iter()
+        .map(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.to_string_lossy().to_string())
+        })
+        .collect();
+    chain.push(path.to_string());
+    format!(
+        "circular import of '{}' (chain: {})",
+        path,
+        chain.join(" -> ")
+    )
+}
+
 /// Import paths are search-relative by contract (importing file's directory,
 /// then SPID3R_PATH / vendor walk-up / ./stdlib). Absolute paths, drive/UNC
 /// prefixes, root-anchored forms, and `..` components would escape those
@@ -125,20 +146,10 @@ pub fn load(
         if cache.in_progress.contains(&resolved) {
             // Show the full chain so the cycle is obvious:
             //   circular import of 'a' (chain: main -> a -> b -> a)
-            let mut chain: Vec<String> = cache
-                .in_progress
-                .iter()
-                .map(|p| {
-                    p.file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| p.to_string_lossy().to_string())
-                })
-                .collect();
-            chain.push(path.to_string());
             return Err(Diagnostic::at(
                 Phase::Semantic,
                 span.clone(),
-                format!("circular import of '{}' (chain: {})", path, chain.join(" -> ")),
+                circular_import_message(&cache.in_progress, path),
             ));
         }
     }

@@ -120,11 +120,14 @@ class C {
 }
 
 #[test]
-fn annotated_field_read_has_type() {
+fn annotated_field_write_has_type() {
     // A correctly typed field assignment must pass.
+    // (Audit 2026-10-19, F6: field WRITES are now privacy-checked like reads,
+    // so this fixture uses a public field to keep testing the type contract;
+    // the private-write rejection is pinned in tests/fix_semantic_priv.rs.)
     let src = "\
 class C {
-    let v: int;
+    public let v: int;
     fn set(self) {
         self.v = 7;
     }

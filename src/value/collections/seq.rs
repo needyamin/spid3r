@@ -14,6 +14,41 @@ pub struct VecData {
     pub items: Vec<Value>,
 }
 
+impl Drop for VecData {
+    fn drop(&mut self) {
+        // F4: a deeply nested, singly-owned list chain (a list containing a
+        // list containing ...) overflows the host stack with the default
+        // recursive drop at ~10^5 levels — the teardown of a deep build
+        // crashed the host after the build stall was fixed. Drain the chain
+        // iteratively instead: when a child list's cell is the LAST owner,
+        // take its items into our worklist rather than letting its own Drop
+        // recurse. Shared cells (strong_count > 1) fall back to the normal
+        // drop — their recursion depth is bounded by the sharing structure.
+        let mut work = std::mem::take(&mut self.items);
+        while let Some(v) = work.pop() {
+            let sole = match &v {
+                Value::List(arc) | Value::VecDyn(arc) => {
+                    std::sync::Arc::strong_count(arc) == 1
+                }
+                _ => false,
+            };
+            if !sole {
+                drop(v);
+                continue;
+            }
+            match v {
+                Value::List(arc) | Value::VecDyn(arc) => {
+                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
+                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                        work.extend(std::mem::take(&mut data.items));
+                    }
+                }
+                _ => drop(v),
+            }
+        }
+    }
+}
+
 impl VecData {
     pub fn method(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
         match name {
@@ -462,6 +497,50 @@ pub struct MapData {
     index: std::collections::HashMap<super::MapKey, usize>,
 }
 
+impl Drop for MapData {
+    fn drop(&mut self) {
+        // F4: same iterative teardown as VecData — a map whose values nest
+        // maps/lists deeply must not recurse per level when the last owner
+        // drops. Values from sole-owned child maps/lists are drained into a
+        // worklist; keys (usually scalars) drop inline.
+        let entries = std::mem::take(&mut self.entries);
+        let mut work: Vec<Value> = Vec::with_capacity(entries.len());
+        for (_, v) in entries {
+            work.push(v);
+        }
+        while let Some(v) = work.pop() {
+            let sole = match &v {
+                Value::Map(arc) => std::sync::Arc::strong_count(arc) == 1,
+                Value::List(arc) | Value::VecDyn(arc) => {
+                    std::sync::Arc::strong_count(arc) == 1
+                }
+                _ => false,
+            };
+            if !sole {
+                drop(v);
+                continue;
+            }
+            match v {
+                Value::Map(arc) => {
+                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
+                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                        for (_, v) in data.entries.drain(..) {
+                            work.push(v);
+                        }
+                    }
+                }
+                Value::List(arc) | Value::VecDyn(arc) => {
+                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
+                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                        work.extend(std::mem::take(&mut data.items));
+                    }
+                }
+                _ => drop(v),
+            }
+        }
+    }
+}
+
 impl MapData {
     /// Build a map from entries (last duplicate wins, like the `map(...)`
     /// constructor). The only sanctioned way to construct `MapData`.
@@ -578,9 +657,7 @@ impl MapData {
             }
             "values" => {
                 want(name, args, 0)?;
-                Ok(Value::List(new_ref(VecData {
-                    items: self.entries.iter().map(|(_, v)| deep_clone(v)).collect(),
-                })))
+                Ok(map_values_out(&self.entries))
             }
             "clone" => {
                 want(name, args, 0)?;
@@ -596,12 +673,57 @@ impl MapData {
     }
 }
 
+/// `map.values()` list built from an entries snapshot. Method dispatch used to
+/// run this `deep_clone` loop while the map's mutex was held; a map containing
+/// itself as a value re-locked it and hung (audit F3/p05). Callers snapshot
+/// `entries` under the lock and build the result here without it.
+pub fn map_values_out(entries: &[(super::MapKey, Value)]) -> Value {
+    Value::List(new_ref(VecData {
+        items: entries.iter().map(|(_, v)| deep_clone(v)).collect(),
+    }))
+}
+
 // --------------------------------------------------------------------- set
 
 /// Unique membership, insertion order kept for display and iteration.
 #[derive(Debug, Default)]
 pub struct SetData {
     pub items: Vec<Value>,
+}
+
+impl Drop for SetData {
+    fn drop(&mut self) {
+        // F4: iterative teardown, same contract as VecData above.
+        let mut work = std::mem::take(&mut self.items);
+        while let Some(v) = work.pop() {
+            let sole = match &v {
+                Value::Set(arc) => std::sync::Arc::strong_count(arc) == 1,
+                Value::List(arc) | Value::VecDyn(arc) => {
+                    std::sync::Arc::strong_count(arc) == 1
+                }
+                _ => false,
+            };
+            if !sole {
+                drop(v);
+                continue;
+            }
+            match v {
+                Value::Set(arc) => {
+                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
+                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                        work.extend(std::mem::take(&mut data.items));
+                    }
+                }
+                Value::List(arc) | Value::VecDyn(arc) => {
+                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
+                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                        work.extend(std::mem::take(&mut data.items));
+                    }
+                }
+                _ => drop(v),
+            }
+        }
+    }
 }
 
 impl SetData {
@@ -646,36 +768,18 @@ impl SetData {
             }
             "union" => {
                 want(name, args, 1)?;
-                let other = as_set(&args[0])?;
-                let mut items = self.items.clone();
-                for v in other.items.iter() {
-                    if !items.iter().any(|x| values_equal(x, v)) {
-                        items.push(deep_clone(v));
-                    }
-                }
-                Ok(Value::Set(new_ref(SetData { items })))
+                let other_items = as_set(&args[0])?.items.clone();
+                set_op(name, self.items.clone(), other_items)
             }
             "intersection" | "intersect" => {
                 want(name, args, 1)?;
-                let other = as_set(&args[0])?;
-                let items: Vec<Value> = self
-                    .items
-                    .iter()
-                    .filter(|v| other.items.iter().any(|w| values_equal(v, w)))
-                    .map(deep_clone)
-                    .collect();
-                Ok(Value::Set(new_ref(SetData { items })))
+                let other_items = as_set(&args[0])?.items.clone();
+                set_op(name, self.items.clone(), other_items)
             }
             "difference" => {
                 want(name, args, 1)?;
-                let other = as_set(&args[0])?;
-                let items: Vec<Value> = self
-                    .items
-                    .iter()
-                    .filter(|v| !other.items.iter().any(|w| values_equal(v, w)))
-                    .map(deep_clone)
-                    .collect();
-                Ok(Value::Set(new_ref(SetData { items })))
+                let other_items = as_set(&args[0])?.items.clone();
+                set_op(name, self.items.clone(), other_items)
             }
             "to_list" => {
                 want(name, args, 0)?;
@@ -691,6 +795,47 @@ impl SetData {
             }
             _ => Err(unknown(name, "set")),
         }
+    }
+}
+
+/// Set algebra over item snapshots. The old `union`/`intersection`/
+/// `difference` arms ran `values_equal` while holding both the receiver's
+/// mutex (method dispatch) and the argument's (`as_set` guard); with sets that
+/// reference each other the comparison re-locked both and hung forever
+/// (audit F3/p03). Callers clone `items` under the locks and run this helper
+/// with no lock held, so `values_equal`/`deep_clone` may re-lock freely.
+pub fn set_op(
+    op: &str,
+    self_items: Vec<Value>,
+    other_items: Vec<Value>,
+) -> Result<Value, String> {
+    match op {
+        "union" => {
+            let mut items = self_items;
+            for v in other_items.iter() {
+                if !items.iter().any(|x| values_equal(x, v)) {
+                    items.push(deep_clone(v));
+                }
+            }
+            Ok(Value::Set(new_ref(SetData { items })))
+        }
+        "intersection" | "intersect" => {
+            let items: Vec<Value> = self_items
+                .iter()
+                .filter(|v| other_items.iter().any(|w| values_equal(v, w)))
+                .map(deep_clone)
+                .collect();
+            Ok(Value::Set(new_ref(SetData { items })))
+        }
+        "difference" => {
+            let items: Vec<Value> = self_items
+                .iter()
+                .filter(|v| !other_items.iter().any(|w| values_equal(v, w)))
+                .map(deep_clone)
+                .collect();
+            Ok(Value::Set(new_ref(SetData { items })))
+        }
+        _ => Err(unknown(op, "set")),
     }
 }
 
@@ -793,8 +938,10 @@ pub fn heap_less(a: &Value, b: &Value) -> Result<bool, String> {
 pub fn vec_items(v: &Value) -> Result<Vec<Value>, String> {
     match v {
         Value::List(d) | Value::VecDyn(d) => {
-            let d = d.lock().unwrap();
-            Ok(d.items.iter().map(deep_clone).collect())
+            // Snapshot under the lock, deep-clone outside it (audit F3: items
+            // can reach the container itself and deep_clone re-locks it).
+            let items = d.lock().unwrap().items.clone();
+            Ok(items.iter().map(deep_clone).collect())
         }
         other => Err(format!(
             "expected a list, found {}",

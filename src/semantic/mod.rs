@@ -47,6 +47,10 @@ struct VarInfo {
     class: Option<String>,
     /// Static type of the binding. `None` means dynamically typed (`Any`).
     ty: Option<Ty>,
+    /// True when the binding entered scope through an `import`. Used to
+    /// diagnose local declarations that shadow an imported binding (and
+    /// imports that would shadow an existing local in the REPL).
+    is_import: bool,
 }
 
 struct Checker {
@@ -61,6 +65,11 @@ struct Checker {
     current_ret: Option<Ty>,
     is_main: bool,
     source_file: String,
+    /// Top-level `fn` names pass 1 pre-declared into scope[0]. They sit in
+    /// scope before any `import` is processed even though they come later in
+    /// source order, so the import handler uses this set to tell a later-in-
+    /// this-chunk local fn from an earlier one (REPL `known` names).
+    predeclared: HashSet<String>,
 }
 
 pub fn check(program: &Program, is_main: bool) -> SpidResult<()> {
@@ -95,7 +104,14 @@ pub fn declared_names(program: &Program) -> Vec<String> {
 /// Check one REPL chunk. `known` holds the names bound by earlier lines, so a
 /// later line can refer to them.
 pub fn check_repl(program: &Program, known: &[String]) -> SpidResult<()> {
-    let mut c = Checker::new(false, "<repl>");
+    check_repl_in(program, known, "<repl>")
+}
+
+/// Like [`check_repl`], but with an explicit source file so the import
+/// resolver can locate modules relative to it (used to exercise REPL-style
+/// chunk checking against real module files).
+pub fn check_repl_in(program: &Program, known: &[String], source_file: &str) -> SpidResult<()> {
+    let mut c = Checker::new(false, source_file);
     for n in known {
         c.scopes[0].insert(
             n.clone(),
@@ -103,6 +119,7 @@ pub fn check_repl(program: &Program, known: &[String]) -> SpidResult<()> {
                 is_const: false,
                 class: None,
                 ty: None,
+                is_import: false,
             },
         );
     }
@@ -123,6 +140,7 @@ impl Checker {
             current_ret: None,
             is_main,
             source_file: source_file.to_string(),
+            predeclared: HashSet::new(),
         }
     }
 }
@@ -275,15 +293,31 @@ impl Checker {
                             ret: f.ret.clone(),
                         },
                     );
+                    // F12 (REPL direction): an earlier chunk may have imported
+                    // this name — catch the collision at the declaration, not
+                    // silently at the overwrite. File-mode pass 1 runs before
+                    // any import is processed, so scope[0] holds nothing here.
+                    if let Some(v) = self.scopes.last().and_then(|s| s.get(&name)) {
+                        if v.is_import {
+                            return Err(self.err(
+                                &f.span,
+                                format!("local '{}' shadows an imported binding", name),
+                            ));
+                        }
+                    }
                     self.declare(
                         &name,
                         &f.span,
                         VarInfo {
                             is_const: false,
                             class: None,
-                            ty: None,
+                            // F5: the declaration name carries the function's
+                            // signature so `let g = f; g(...)` is checked.
+                            ty: Some(self.fn_sig_type(f)),
+                            is_import: false,
                         },
                     )?;
+                    self.predeclared.insert(name);
                 }
                 Stmt::Class(c) => {
                     if !seen.insert(c.name.clone()) {
@@ -540,14 +574,33 @@ impl Checker {
         match s {
             Stmt::Import { path, span } => {
                 let names = crate::modules::public_names_of(path, &self.source_file, span)?;
-                let scope = self.scopes.last_mut().unwrap();
                 for (n, is_const) in names {
+                    // Collision detection against a same-named LOCAL binding
+                    // in this scope. An existing IMPORT binding may be
+                    // overwritten (re-import: last import wins). A top-level
+                    // `fn` of this chunk is pre-declared by pass 1 before any
+                    // import runs, so a raw entry that matches `predeclared`
+                    // belongs to a fn that comes LATER in source order; the
+                    // collision is reported at that fn statement instead.
+                    let local_here = self
+                        .scopes
+                        .last()
+                        .and_then(|s| s.get(&n))
+                        .map(|v| !v.is_import)
+                        .unwrap_or(false);
+                    if local_here && !self.predeclared.contains(&n) {
+                        return Err(
+                            self.err(span, format!("import '{}' shadows a local binding", n))
+                        );
+                    }
+                    let scope = self.scopes.last_mut().unwrap();
                     scope.insert(
                         n,
                         VarInfo {
                             is_const,
                             class: None,
                             ty: None,
+                            is_import: true,
                         },
                     );
                 }
@@ -557,6 +610,21 @@ impl Checker {
                 if f.params.iter().any(|p| p.name == "self") {
                     return Err(self.err(&f.span, "self is only allowed in methods"));
                 }
+                if let Some(name) = &f.name {
+                    // A local fn may not shadow an imported binding in the
+                    // SAME scope: the file-mode case is an import that
+                    // overwrote this chunk's pass-1 pre-declaration (probe
+                    // p09); the REPL case is caught at pass 1. Ordinary
+                    // nested-scope shadowing stays legal, exactly like `let`.
+                    if let Some(v) = self.scopes.last().and_then(|s| s.get(name)) {
+                        if v.is_import {
+                            return Err(self.err(
+                                &f.span,
+                                format!("local '{}' shadows an imported binding", name),
+                            ));
+                        }
+                    }
+                }
                 if self.scopes.len() > 1 {
                     if let Some(name) = &f.name {
                         self.declare(
@@ -565,7 +633,9 @@ impl Checker {
                             VarInfo {
                                 is_const: false,
                                 class: None,
-                                ty: Some(Ty::Fn),
+                                // F5: nested functions carry their signature.
+                                ty: Some(self.fn_sig_type(f)),
+                                is_import: false,
                             },
                         )?;
                     }
@@ -593,6 +663,7 @@ impl Checker {
                             is_const: false,
                             class,
                             ty: p.ty.as_ref().map(|t| self.resolve_type(t)),
+                            is_import: false,
                         },
                     )?;
                 }
@@ -627,6 +698,7 @@ impl Checker {
                                 is_const: false,
                                 class: Some(c.name.clone()),
                                 ty: Some(Ty::Class(c.name.clone())),
+                                is_import: false,
                             },
                         )?;
                         let mut names = HashSet::new();
@@ -644,6 +716,7 @@ impl Checker {
                                     is_const: false,
                                     class: None,
                                     ty: p.ty.as_ref().map(|t| self.resolve_type(t)),
+                                    is_import: false,
                                 },
                             )?;
                         }
@@ -655,6 +728,7 @@ impl Checker {
                                 is_const: false,
                                 class: Some(c.name.clone()),
                                 ty: Some(Ty::Class(c.name.clone())),
+                                is_import: false,
                             },
                         )?;
                         let mut names = HashSet::new();
@@ -672,6 +746,7 @@ impl Checker {
                                     is_const: false,
                                     class: None,
                                     ty: p.ty.as_ref().map(|t| self.resolve_type(t)),
+                                    is_import: false,
                                 },
                             )?;
                         }
@@ -729,13 +804,32 @@ impl Checker {
                         ));
                     }
                 }
+                // F12: a local binding may not shadow an imported binding in
+                // the same scope (the import-then-local direction; the local-
+                // then-import direction is diagnosed at the import itself).
+                if let Some(v) = self.scopes.last().and_then(|s| s.get(name)) {
+                    if v.is_import {
+                        return Err(self.err(
+                            span,
+                            format!("local '{}' shadows an imported binding", name),
+                        ));
+                    }
+                }
                 self.declare(
                     name,
                     span,
                     VarInfo {
                         is_const: false,
                         class,
-                        ty: ty.as_ref().map(|t| self.resolve_type(t)),
+                        // F5: an unannotated let keeps the value's function
+                        // SIGNATURE when it binds a function value, so calls
+                        // through the new name are checked; everything else
+                        // stays dynamically typed (Any).
+                        ty: ty
+                            .as_ref()
+                            .map(|t| self.resolve_type(t))
+                            .or_else(|| value.as_ref().and_then(|v| self.fn_value_type(v))),
+                        is_import: false,
                     },
                 )
             }
@@ -765,13 +859,27 @@ impl Checker {
                         ));
                     }
                 }
+                // F12: same-scope import collision, as in Stmt::Let.
+                if let Some(v) = self.scopes.last().and_then(|s| s.get(name)) {
+                    if v.is_import {
+                        return Err(self.err(
+                            span,
+                            format!("local '{}' shadows an imported binding", name),
+                        ));
+                    }
+                }
                 self.declare(
                     name,
                     span,
                     VarInfo {
                         is_const: true,
                         class: None,
-                        ty: ty.as_ref().map(|t| self.resolve_type(t)),
+                        // F5: propagate a function signature, as in Stmt::Let.
+                        ty: ty
+                            .as_ref()
+                            .map(|t| self.resolve_type(t))
+                            .or_else(|| self.fn_value_type(value)),
+                        is_import: false,
                     },
                 )
             }
@@ -812,6 +920,7 @@ impl Checker {
                         is_const: false,
                         class: None,
                         ty: None,
+                        is_import: false,
                     },
                 )?;
                 self.loop_depth += 1;
@@ -865,6 +974,7 @@ impl Checker {
                             is_const: false,
                             class: None,
                             ty: tyo,
+                            is_import: false,
                         },
                     )?;
                 }
@@ -945,6 +1055,7 @@ impl Checker {
                             is_const: false,
                             class: None,
                             ty: None,
+                            is_import: false,
                         },
                     )?;
                     let r = self.check_stmts(&cc.body.stmts);
@@ -994,6 +1105,99 @@ impl Checker {
 
     /// Best-effort static type of an expression. Returns `Any` whenever the type
     /// cannot be determined (which keeps unannotated code fully dynamic).
+    /// Best-effort static class of a receiver expression (F6): `self` maps to
+    /// the class whose member is being checked; a binding contributes its
+    /// declared class or class annotation; any other expression falls back to
+    /// the gradual type computer. Only locally declared classes are returned —
+    /// imported or builtin-class receivers stay dynamically unchecked, exactly
+    /// as bare-Ident receivers behaved before.
+    fn receiver_class(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::Ident(n, _) if n == "self" => self.current_class.clone(),
+            Expr::Ident(n, _) => {
+                let v = self.lookup(n)?;
+                v.class.clone().or_else(|| match &v.ty {
+                    Some(Ty::Class(c)) if self.classes.contains_key(c) => Some(c.clone()),
+                    _ => None,
+                })
+            }
+            other => match self.type_of(other) {
+                Ty::Class(c) if self.classes.contains_key(&c) => Some(c),
+                _ => None,
+            },
+        }
+    }
+
+    /// Static type of a function value. Carries the parameter/return
+    /// signature so call checking works through let-bound functions, nested
+    /// declarations, and lambdas — not only direct calls (F5).
+    fn fn_sig_type(&self, f: &FnProto) -> Ty {
+        let params = f
+            .params
+            .iter()
+            .map(|p| p.ty.as_ref().map(|t| self.resolve_type(t)))
+            .collect();
+        Ty::Fn(Some(std::sync::Arc::new(ty::FnSig {
+            arity: f.params.len(),
+            params,
+            ret: f.ret.as_ref().map(|t| self.resolve_type(t)),
+        })))
+    }
+
+    /// F5 helper: the propagated type of a let-bound function value, or
+    /// `None` for anything that is not a (annotated or not) function.
+    fn fn_value_type(&self, e: &Expr) -> Option<Ty> {
+        match e {
+            Expr::Fn(proto) => Some(self.fn_sig_type(proto)),
+            Expr::Ident(n, _) => self.lookup(n).and_then(|v| match &v.ty {
+                Some(t @ Ty::Fn(_)) => Some(t.clone()),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// F5 helper: validate a call against a propagated signature (arity plus
+    /// annotated parameter types), with the same wording as the direct-call
+    /// path so diagnostics stay consistent.
+    fn check_sig_args(
+        &self,
+        label: &str,
+        sig: &ty::FnSig,
+        args: &[Expr],
+        span: &Span,
+    ) -> SpidResult<()> {
+        if args.len() != sig.arity {
+            return Err(self.err(
+                span,
+                format!(
+                    "{} expects {} argument(s), got {}",
+                    label,
+                    sig.arity,
+                    args.len()
+                ),
+            ));
+        }
+        for (i, a) in args.iter().enumerate() {
+            if let Some(Some(want)) = sig.params.get(i) {
+                let got = self.type_of(a);
+                if !self.assignable(&got, want) {
+                    return Err(self.err(
+                        a.span(),
+                        format!(
+                            "argument {} of '{}' expects {}, got {}",
+                            i + 1,
+                            label,
+                            want.name(),
+                            got.name()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn type_of(&self, e: &Expr) -> Ty {
         match e {
             Expr::Int(_, _) => Ty::Int,
@@ -1026,7 +1230,7 @@ impl Checker {
                 }
                 Ty::Coll("list".to_string(), elem.map(Box::new))
             }
-            Expr::Fn(_) => Ty::Fn,
+            Expr::Fn(f) => self.fn_sig_type(f),
             Expr::Unary { op, expr, .. } => match op {
                 UnOp::Neg => {
                     let t = self.type_of(expr);
@@ -1099,6 +1303,16 @@ impl Checker {
                     if let Some(rt) = builtin_return_type(name) {
                         return rt;
                     }
+                    // F5: a signature-carrying function value bound to a name.
+                    if let Ty::Fn(Some(sig)) = self
+                        .lookup(name)
+                        .and_then(|v| v.ty.clone())
+                        .unwrap_or(Ty::Any)
+                    {
+                        return sig.ret.clone().unwrap_or(Ty::Any);
+                    }
+                } else if let Ty::Fn(Some(sig)) = self.type_of(callee) {
+                    return sig.ret.clone().unwrap_or(Ty::Any);
                 }
                 Ty::Any
             }
@@ -1165,7 +1379,7 @@ impl Checker {
             (Ty::Class(c), Ty::Class(p)) => c == p || self.is_subclass(c, p),
             (Ty::Class(c), Ty::Interface(i)) => self.implements(c, i),
             (Ty::Coll(a, _), Ty::Coll(b, _)) => a == b,
-            (Ty::Fn, Ty::Fn) => true,
+            (Ty::Fn(_), Ty::Fn(_)) => true,
             _ => false,
         }
     }
@@ -1289,6 +1503,7 @@ impl Checker {
                             is_const: false,
                             class: None,
                             ty: p.ty.as_ref().map(|t| self.resolve_type(t)),
+                            is_import: false,
                         },
                     )?;
                 }
@@ -1340,6 +1555,32 @@ impl Checker {
                     Expr::Index { object, .. } => self.check_expr(object)?,
                     Expr::Field { object, name, .. } => {
                         self.check_expr(object)?;
+                        // F6: field writes are privacy-checked exactly like
+                        // reads, for any statically-typed receiver — this arm
+                        // previously had no privacy check at all.
+                        if let Some(c) = self.receiver_class(object) {
+                            match self.field_vis(&c, name) {
+                                Some(vis) => {
+                                    if vis == Vis::Private
+                                        && self.current_class.as_deref() != Some(&c)
+                                    {
+                                        return Err(self.err(
+                                            span,
+                                            format!(
+                                                "field '{}' of class '{}' is private",
+                                                name, c
+                                            ),
+                                        ));
+                                    }
+                                }
+                                None => {
+                                    return Err(self.err(
+                                        span,
+                                        format!("class '{}' has no field '{}'", c, name),
+                                    ))
+                                }
+                            }
+                        }
                         let recv = self.type_of(object);
                         if let Ty::Class(c) = recv {
                             if let Some((_, Some(ft))) =
@@ -1397,11 +1638,28 @@ impl Checker {
                                 }
                             }
                         }
-                    } else if !self.known(name) {
-                        return Err(self.err(span, format!("unknown name '{}'", name)));
+                    } else {
+                        // F5: a signature-carrying function value bound to a
+                        // name (`let g = f`, a nested fn, an imported fn
+                        // value) is checked through its propagated signature
+                        // instead of being skipped as a dynamic callee.
+                        let sig = self.lookup(name).and_then(|v| match &v.ty {
+                            Some(Ty::Fn(Some(s))) => Some(s.clone()),
+                            _ => None,
+                        });
+                        if let Some(sig) = sig {
+                            self.check_sig_args(name, &sig, args, span)?;
+                        } else if !self.known(name) {
+                            return Err(self.err(span, format!("unknown name '{}'", name)));
+                        }
                     }
                 } else {
                     self.check_expr(callee)?;
+                    // F5: a non-Ident callee whose static type carries a
+                    // signature — e.g. a call returning a function value.
+                    if let Ty::Fn(Some(sig)) = self.type_of(callee) {
+                        self.check_sig_args("<expression>", &sig, args, span)?;
+                    }
                 }
                 for a in args {
                     self.check_expr(a)?;
@@ -1418,11 +1676,9 @@ impl Checker {
                 for a in args {
                     self.check_expr(a)?;
                 }
-                // when the receiver class is statically known, check it
-                let recv_class = match &**object {
-                    Expr::Ident(n, _) => self.lookup(n).and_then(|v| v.class.clone()),
-                    _ => None,
-                };
+                // When the receiver class is statically known, check it — for
+                // ANY receiver expression (F6), not only bare Idents.
+                let recv_class = self.receiver_class(object);
                 if let Some(cls) = recv_class {
                     match self.method_info(&cls, name) {
                         Some((vis, arity)) => {
@@ -1480,11 +1736,7 @@ impl Checker {
             }
             Expr::Field { object, name, span } => {
                 self.check_expr(object)?;
-                let recv_class = match &**object {
-                    Expr::Ident(n, _) if n == "self" => self.current_class.clone(),
-                    Expr::Ident(n, _) => self.lookup(n).and_then(|v| v.class.clone()),
-                    _ => None,
-                };
+                let recv_class = self.receiver_class(object);
                 if let Some(cls) = recv_class {
                     match self.field_vis(&cls, name) {
                         Some(vis) => {

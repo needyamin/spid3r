@@ -123,6 +123,12 @@ struct CallFrame {
 /// The virtual machine.
 pub struct Vm {
     globals: Arc<Mutex<HashMap<String, Value>>>,
+    /// Names bound as `public const` by imported modules: the VM-level
+    /// counterpart of the tree's per-environment const sets. `SetGlobal`
+    /// refuses to rebind these names. Source-compiled programs never emit
+    /// such an assignment (the semantic pass rejects it at compile time),
+    /// so the runtime check only fires for crafted bytecode.
+    global_consts: Arc<Mutex<HashSet<String>>>,
     sched: Arc<Scheduler>,
     modules: Arc<Mutex<ModuleCache>>,
     file: Arc<str>,
@@ -170,6 +176,7 @@ impl Vm {
     pub fn new(file: Arc<str>, module_dirs: Vec<PathBuf>) -> Self {
         let mut vm = Vm {
             globals: Arc::new(Mutex::new(HashMap::new())),
+            global_consts: Arc::new(Mutex::new(HashSet::new())),
             sched: Scheduler::shared(),
             modules: Arc::new(Mutex::new(ModuleCache::new())),
             file,
@@ -190,10 +197,11 @@ impl Vm {
         vm
     }
 
-    /// A VM that shares globals/scheduler/module cache with another (used for
-    /// spawned tasks and imported modules).
+    /// A VM that shares globals/imported-const names/scheduler/module cache
+    /// with another (used for spawned tasks and imported modules).
     fn with_shared(
         globals: Arc<Mutex<HashMap<String, Value>>>,
+        global_consts: Arc<Mutex<HashSet<String>>>,
         sched: Arc<Scheduler>,
         modules: Arc<Mutex<ModuleCache>>,
         embedded: EmbeddedModules,
@@ -202,6 +210,7 @@ impl Vm {
     ) -> Self {
         Vm {
             globals,
+            global_consts,
             sched,
             modules,
             embedded,
@@ -633,6 +642,15 @@ impl Vm {
                         }
                     };
                     let v = self.frames[nf].slots.last().cloned().unwrap_or(Value::Null);
+                    // Imported `public const` names are immutable: the tree
+                    // rejects the rebind in `environment::assign` with this
+                    // same message. Declarations (`DefineGlobal`) stay
+                    // unchecked — the tree's `environment::define` does not
+                    // consult const sets either.
+                    if self.global_consts.lock().unwrap().contains(name.as_ref()) {
+                        self.fail(format!("cannot assign to const '{}'", name));
+                        continue;
+                    }
                     let mut g = self.globals.lock().unwrap();
                     match g.get_mut(name.as_ref()) {
                         Some(slot) => *slot = v,
@@ -1258,6 +1276,14 @@ impl Vm {
                 }
                 OpCode::Return => {
                     let ret = self.pop_top();
+                    if self.error.is_some() {
+                        // pop_top underflowed on a malformed (crafted)
+                        // chunk: route through the normal error funnel at
+                        // the top of the run loop instead of falling
+                        // through to `return Ok`, which would swallow the
+                        // failure.
+                        continue;
+                    }
                     let nf = self.frames.len() - 1;
                     if self
                         .pending_str
@@ -1469,9 +1495,17 @@ impl Vm {
                     let embedded = self.embedded.clone();
                     let file = self.file.clone();
                     let module_dirs = self.module_dirs.clone();
+                    let global_consts = self.global_consts.clone();
                     let handle = self.sched.spawn_job(Box::new(move || {
-                        let mut vm =
-                            Vm::with_shared(globals, sched, modules, embedded, file, module_dirs);
+                        let mut vm = Vm::with_shared(
+                            globals,
+                            global_consts,
+                            sched,
+                            modules,
+                            embedded,
+                            file,
+                            module_dirs,
+                        );
                         vm.run_function(fd, Vec::new()).map_err(|e| e.task_error_string())
                     }));
                     self.frames[nf].slots.push(Value::Task(handle));
@@ -1488,6 +1522,17 @@ impl Vm {
                     };
                     match self.import_module(&path) {
                         Ok(exports) => {
+                            // Record which exports are `public const` before
+                            // binding them: global assignment consults this
+                            // set (mirrors the tree's `define_const`).
+                            {
+                                let mut consts = self.global_consts.lock().unwrap();
+                                for (n, _v, is_const) in &exports {
+                                    if *is_const {
+                                        consts.insert(n.clone());
+                                    }
+                                }
+                            }
                             let mut g = self.globals.lock().unwrap();
                             for (n, v, _is_const) in exports {
                                 g.insert(n, v);
@@ -1976,7 +2021,10 @@ impl Vm {
                     if cache.in_progress.contains(&resolved) {
                         return Err(VmError {
                             thrown: None,
-                            message: format!("circular import of '{}'", path),
+                            message: crate::modules::circular_import_message(
+                                &cache.in_progress,
+                                path,
+                            ),
                             span: self.cur_span(),
                             trace: Vec::new(),
                         });
@@ -1993,9 +2041,17 @@ impl Vm {
                 let embedded = self.embedded.clone();
                 let file = self.file.clone();
                 let module_dirs = self.module_dirs.clone();
-                let out =
-                    Vm::with_shared(globals, sched, modules, embedded, file, module_dirs)
-                        .run_module_from_func(func, public);
+                let global_consts = self.global_consts.clone();
+                let out = Vm::with_shared(
+                    globals,
+                    global_consts,
+                    sched,
+                    modules,
+                    embedded,
+                    file,
+                    module_dirs,
+                )
+                .run_module_from_func(func, public);
                 self.modules.lock().unwrap().in_progress.pop();
                 if let Ok(exports) = &out {
                     self.modules
@@ -2022,7 +2078,7 @@ impl Vm {
             if cache.in_progress.contains(&resolved) {
                 return Err(VmError {
                     thrown: None,
-                    message: format!("circular import of '{}'", path),
+                    message: crate::modules::circular_import_message(&cache.in_progress, path),
                     span: self.cur_span(),
                     trace: Vec::new(),
                 });
@@ -2054,6 +2110,7 @@ impl Vm {
         }
         let mut mvm = Vm::with_shared(
             self.globals.clone(),
+            self.global_consts.clone(),
             self.sched.clone(),
             self.modules.clone(),
             self.embedded.clone(),

@@ -294,7 +294,10 @@ impl ListData {
         Err("value not in list".to_string())
     }
 
-    fn to_vec(&self) -> Vec<Value> {
+    /// Shallow snapshot of the node values, head first. Callers that recurse
+    /// into the values (deep_clone) must drop the list's lock first — a node
+    /// value can be the list itself (audit F3/p06).
+    pub fn to_vec(&self) -> Vec<Value> {
         let mut out = Vec::new();
         let mut cur = self.head.clone();
         while let Some(node) = cur {
@@ -360,7 +363,8 @@ impl ListData {
             }
             "to_list" => {
                 want(name, args, 0)?;
-                Ok(make_list(self.to_vec().iter().map(deep_clone).collect()))
+                let vals = self.to_vec();
+                Ok(make_list(vals.iter().map(deep_clone).collect()))
             }
             "clone" => {
                 want(name, args, 0)?;

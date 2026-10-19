@@ -234,3 +234,42 @@ Post-fix verification (2026-10-19): `cargo test --no-default-features`
 -D warnings` **0 warnings**; list300/cap130 probes now fail with the clean
 diagnostics above; cap128 still prints 9256 on both engines; `compile` of the
 300-element literal exits 1 and writes no artifact.
+
+---
+
+## 10. 2026-10-19 fix round — all open audit findings resolved
+
+The findings from plan.html (F3–F13) were implemented and verified the same
+day. Full validation after the round: `cargo test --no-default-features`
+**340 passed, 0 failed** (40 new regression tests in five new files);
+GUI **10/10**; 3-engine differential **23 ok, 0 failed**;
+`cargo clippy --no-default-features --all-targets -- -D warnings` **0
+warnings**; `spid3r fmt --check examples` (directory form, F13) exit 0.
+
+| ID | Fix (files) | Verification |
+|---|---|---|
+| F3 | Snapshot-under-lock in the shared value layer: `iter_values` all arms; `call_method_host` to_list/values/set-algebra special cases; `set_op`/`map_values_out`/`to_vec` helpers (value/collections/*) | p01/p03/p05/p06 exit 0 on both engines; tests/fix_f3_hangs.rs 5/5 (deadline-guarded) |
+| F4 | Two quadratic cost centers amortized in gc.rs (`NEXT_GC` backoff, `PRUNE_AT` watermark) + iterative `Drop` for VecData/MapData/SetData (seq.rs) — the teardown recursion (~10^5 levels) was a SECOND, previously masked defect | Before: 100k stalls >60s even with SPID3R_GC=0. After: 100k 0.6s / 400k 2.4s / 1M 6.5s / 4M 27.3s, all exit 0; tests/fix_f4_gc.rs 1/1 |
+| F5 | `Ty::Fn` carries `Option<Arc<FnSig>>` (semantic/ty.rs); signatures propagate through declaration names, nested fns, lambdas, and `let g = <fn value>`; the Call arm checks arity + annotated argument types through any statically-typed callee; unannotated functions stay fully dynamic | Bypass probes rejected at check time (gates both engines); tests/fix_semantic_priv.rs 19/19 |
+| F6 | `receiver_class` resolves any receiver expression's static class; Method/Field arms + the previously-missing Assign-Field privacy check (semantic/mod.rs) | `new C().hide()`, private-field reads AND writes rejected; dynamic receivers unchecked (documented); tests green |
+| F7 | REPL `:reset` rebuilds the full session via a shared `fresh_session()` (repl/mod.rs) | Reset sequence test green (tests/fix_repl_cli.rs 11/11) |
+| F8 | `Vm.global_consts`: Import records `public const` exports; SetGlobal refuses with the tree's wording (vm/mod.rs) | Code-reviewed against the tree contract; behavioral test needs a crafted-bytecode construction seam (follow-up in plan.html) |
+| F9 | Shared `modules::circular_import_message` used by both engines | Format-parity test + tree behavioral test green |
+| F10 | Return handler routes a failed pop through the error funnel (vm/mod.rs) | Mutation sweep (20+ hand-mutated .matrixc) — clean diagnostics, no host panic; crafted-Return behavioral test needs the same seam as F8 |
+| F11 | REPL bare expressions retry the parse with `;` appended (parse-time only) | Echo tests green incl. broken-input reporting |
+| F12 | Import/local collision diagnostics both directions, same-scope only (semantic/mod.rs, `VarInfo.is_import`, `predeclared`) | p09 case rejected; nested-scope shadowing stays legal; REPL direction via `check_repl_in` |
+| F13 | `cmd_fmt` expands directory args (*.matrix, sorted, non-recursive) (cli.rs) | `fmt --check examples` exit 0; empty-dir usage error tested |
+
+CONTRACT CHANGE (documented per sitemap invariant #5): external writes to
+private fields are now rejected, consistent with the pre-existing read
+behavior. tests/gradual_typing_tests.rs::annotated_field_read_has_type was
+updated to a public field with a citation (its purpose — the field TYPE
+contract — is unchanged; the private-write rejection is pinned in
+tests/fix_semantic_priv.rs).
+
+Known residuals after the round: deep container chains through SHARED cells
+still recurse on drop (sole-owned chains are iterative); container types
+outside list/vec/map/set keep recursive drops; F8/F10 lack behavioral
+crafted-bytecode tests (construction seam follow-up); the mutex-on-panic
+guard, module-load race, and GC tracing of closures/environments remain on
+the documented roadmap (R16).

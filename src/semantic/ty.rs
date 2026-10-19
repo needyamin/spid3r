@@ -6,6 +6,8 @@
 //! field, or return position carries a concrete annotation do we compare the
 //! computed static type of the value against it.
 
+use std::sync::Arc;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Ty {
     /// Dynamically typed: never checked. The default for unannotated names and
@@ -24,8 +26,25 @@ pub enum Ty {
     Coll(String, Option<Box<Ty>>),
     Class(String),
     Interface(String),
-    /// A function value (lambda or named function). Not deeply typed yet.
-    Fn,
+    /// A function value (lambda or named function). When its parameter/return
+    /// annotations are known, the carried signature lets the checker validate
+    /// calls through let-bound functions, nested declarations, and lambdas —
+    /// not only direct calls to the declaration name (audit F5). `None` keeps
+    /// the fully dynamic behavior for unannotated functions.
+    Fn(Option<Arc<FnSig>>),
+}
+
+/// Parameter/return signature carried by [`Ty::Fn`] for functions whose
+/// annotations are known. Types are already resolved against the class
+/// registry at construction time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FnSig {
+    /// Number of parameters.
+    pub arity: usize,
+    /// Resolved per-parameter type; `None` = unannotated (unchecked).
+    pub params: Vec<Option<Ty>>,
+    /// Resolved return type, if annotated.
+    pub ret: Option<Ty>,
 }
 
 impl Ty {
@@ -41,7 +60,7 @@ impl Ty {
             Ty::Coll(n, _) => n.clone(),
             Ty::Class(c) => c.clone(),
             Ty::Interface(i) => i.clone(),
-            Ty::Fn => "function".to_string(),
+            Ty::Fn(_) => "function".to_string(),
         }
     }
 }
