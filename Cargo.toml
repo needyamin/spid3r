@@ -4,6 +4,7 @@ version = "1.0.0"
 edition = "2021"
 description = "Spid3r - A professional programming language. The compiler and VM are written in Rust."
 license = "MIT"
+default-run = "spid3r"
 
 [lib]
 name = "spid3r"

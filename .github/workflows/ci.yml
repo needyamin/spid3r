@@ -33,10 +33,10 @@ jobs:
         run: cargo test --no-default-features
 
       - name: Run 3-engine differential example suite (tree == vm == exec)
-        run: cargo run --no-default-features -- test
+        run: cargo run --bin spid3r --no-default-features -- test
 
       - name: Verify Spid3r source formatting
-        run: cargo run --no-default-features -- fmt --check
+        run: cargo run --bin spid3r --no-default-features -- fmt --check
 
   gui:
     name: GUI Feature (${{ matrix.os }})
