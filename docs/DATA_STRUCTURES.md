@@ -29,11 +29,69 @@ let okv  = ok(1);  let errv = err("bad");   // result
 
 | Type | Notes |
 |---|---|
-| `list(a, b, …)` | Ordered, indexable by `list[i]`. Methods: `get(i)`, `set(i, v)`, `push`, `pop`, `remove`, `remove_at(i)`, `contains`, `sort`, `reverse`, `sorted` (new list), `reversed` (new list), `slice`, `join(sep)`, `append(other)`, `index_of`, `len`, `is_empty`, `clear`. **Higher-order (callback) methods:** `map(f)`, `filter(f)`, `reduce(init, f)`, `for_each(f)`, `all(f)`, `any(f)` — `f` is any Spid3r function; the list is snapshotted so the callback cannot mutate it mid-iteration. |
+| `list(a, b, …)` | Ordered, indexable by `list[i]`. Methods: `get(i)`, `set(i, v)`, `push`, `pop`, `remove`, `remove_at(i)`, `contains`, `sort`, `reverse`, `sorted` (new list), `reversed` (new list), `slice`, `join(sep)`, `append(other)`, `index_of`, `len`, `is_empty`, `clear`. **Higher-order (callback) methods:** `map(f)`, `filter(f)`, `reduce(init, f)`, `for_each(f)`, `all(f)`, `any(f)`, `sort_by(cmp)`, `sorted_by(cmp)`, `argsort()` — see [Sorting with a comparator](#sorting-with-a-comparator) and [Formatting floats](#formatting-floats). |
 | `vec()` | Resizable array. `push_back`, `push_front`, `pop_back`, `pop_front`, `get`, `set`, `contains`, `len`. |
 | `deque()` | Double-ended queue. `push_front`/`push_back`, `pop_front`/`pop_back`, `peek_front`, `len`. |
 | `tuple(a, b, …)` | Fixed, immutable-length grouping; indexable by `t[i]`. |
 | `ring_buffer(n)` | Fixed-capacity circular queue; overwrites the oldest when full. |
+
+## Sorting with a comparator
+
+`list` adds three ways to sort beyond the natural `sort`/`sorted`:
+
+| Method | Meaning |
+|---|---|
+| `xs.sort_by(cmp)` | Sort **in place** using `cmp`; returns `null`. |
+| `xs.sorted_by(cmp)` | Return a **new** sorted list; `xs` is untouched. |
+| `xs.argsort()` | Return a list of the original indices in ascending order. |
+
+`argsort()[i]` is the position in the *unsorted* list of the element that
+belongs at position `i`, so `xs.argsort()` tells you how to permute `xs`
+into sorted order:
+
+```
+let xs = list(30, 10, 20);
+let order = xs.argsort();        // [1, 2, 0]
+let by_order = list();
+for i in order { by_order.push(xs[i]); }   // [10, 20, 30]
+```
+
+`argsort` uses the same natural order as `sort` — all numbers (ints and floats
+may mix) or all strings, and it throws a catchable error otherwise.
+
+### Writing a comparator
+
+`cmp(a, b)` is called with two elements and answers how they order. It may
+return **either**:
+
+- a `bool`: `true` means "`a` comes before `b`";
+- an `int` or `float`: negative means "before", `0` means "equal", positive
+  means "after".
+
+```
+xs.sort_by(fn(a, b) { return a < b; });          // bool form
+xs.sort_by(fn(a, b) { return b - a; });          // descending, numeric form
+people.sort_by(fn(a, b) { return a["age"] < b["age"]; });
+```
+
+Sorts are **stable**: equal elements keep the order they had in the input.
+A comparator returning anything other than a bool/int/float — or one that
+returns `NaN` — throws a catchable error rather than guessing.
+
+Because a boolean `false` cannot distinguish "after" from "equal", the
+implementation asks the mirrored question (`cmp(b, a)`) whenever `cmp(a, b)`
+answers `false`. That is what preserves stability; it also means a comparator
+may be called more than once per pair, so keep it side-effect free.
+
+### Errors and re-entrancy
+
+The list is snapshotted before any comparison, and no lock is held while a
+comparator runs. A comparator that throws, mutates the receiver, or touches a
+self-referential list therefore gets a clean error or a deterministic result —
+never a deadlock and never a host panic. `sort_by` writes the sorted snapshot
+back into the receiver *after* the last comparator call, so a comparator that
+mutates the list cannot change the outcome. A throw propagates with the thrown
+value, and the list is left as it was.
 
 ## Stacks & queues
 
@@ -57,7 +115,30 @@ Strings are immutable values with a method suite (dot syntax):
 | `replace(from, to)`, `repeat(n)` | Build new strings. |
 | `reverse`, `chars` | Reverse / `list` of 1-char strings. |
 | `pad_left(w, pad)`, `pad_right(w, pad)` | Pad to width `w` with `pad` (cycled). |
-| `format(args…)` | `"{}` placeholders filled left to right; `{{`/`}}` escape braces. |
+| `format(args…)` | `"{}` placeholders filled left to right; `{{`/`}}` escape braces. A placeholder may also carry a precision: `"{:.2}"` renders its number with exactly 2 fractional digits — see [Formatting floats](#formatting-floats). |
+
+## Formatting floats
+
+A `format` placeholder may carry a precision, written `{:.N}` where `N` is
+`0` through `15`:
+
+```
+"{:.2}".format(88.6875)   // "88.69"
+"{:.0}".format(2.5)       // "2"
+"[{:.2}]".format(1.0)     // "[1.00]"
+"{:.0}".format(5)         // "5"  (an int is widened, so it gets a fixed point)
+```
+
+`N` is the number of digits printed *after* the decimal point. Rounding uses
+the same tie-to-even rule as `{:.N}` in Rust, so `2.5` and `3.5` at precision
+`0` print `2` and `4` — note this differs from `round(x)`, which rounds halves
+away from zero.
+
+Anything else keeps its existing meaning: `{}` (and a bare name inside braces)
+fills with the element's display form, and `{{`/`}}` are literal braces. A
+precision larger than 15, a placeholder that is not a number, or a malformed
+spec such as `{:.}` or `{:x}` is a catchable error rather than a silently
+ignored format.
 
 ## Associative
 

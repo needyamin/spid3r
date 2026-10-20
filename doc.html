@@ -828,7 +828,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">412 tests · 23/23 examples agree</span>
+          <span class="badge">425 tests · 23/23 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -1446,6 +1446,12 @@ fn main() {
           <tr>
             <td>Format</td>
             <td class="wrap"><code>format(args…)</code> fills <code>{}</code> placeholders left to right;
+              a placeholder may instead carry a precision — <code>"{:.2}"</code> renders its number with
+              exactly 2 fractional digits, for <code>N</code> from 0 to 15 (an int is widened so it gets a
+              fixed point). Rounding is tie-to-even, so <code>"{:.0}".format(2.5)</code> is <code>"2"</code>
+              — unlike <code>round(2.5)</code>, which rounds halves away from zero. A bad spec
+              (<code>{:.16}</code>, <code>{:.}</code>, <code>{:x}</code>) or a non-number argument is a
+              catchable error;
               <code>{{</code> and <code>}}</code> escape braces
             </td>
           </tr>
@@ -1459,6 +1465,7 @@ fn main() {
     println("héllo"[1]);                          // é
     println("hello".slice(1, 3));                 // el
     println("abc".reverse());                     // cba
+    println("{:.2}".format(88.6875));             // 88.69
     return 0;
 }</code></pre>
 
@@ -1665,7 +1672,40 @@ fn main() {
             <td>every / some result truthy</td>
             <td><code>true</code> / <code>false</code></td>
           </tr>
+          <tr>
+            <td><code>xs.sort_by(cmp)</code></td>
+            <td>sort in place with a comparator; returns <code>null</code></td>
+            <td>no-op</td>
+          </tr>
+          <tr>
+            <td><code>xs.sorted_by(cmp)</code></td>
+            <td>new sorted list; <code>xs</code> is left alone</td>
+            <td>empty list</td>
+          </tr>
+          <tr>
+            <td><code>xs.argsort()</code></td>
+            <td>original indices in ascending order — <code>argsort()[i]</code> is where the element that belongs at <code>i</code> came from</td>
+            <td>empty list</td>
+          </tr>
         </table>
+        <p>A comparator <code>cmp(a, b)</code> may answer a <strong>bool</strong> (<code>true</code> = <code>a</code>
+          comes first) or a <strong>number</strong> (negative / zero / positive). Sorts are
+          <strong>stable</strong>: equal elements keep their input order. Because a boolean
+          <code>false</code> cannot tell "after" from "equal", the mirrored question
+          <code>cmp(b, a)</code> is asked whenever <code>cmp(a, b)</code> is <code>false</code>, which is what
+          recovers equality — so a comparator may run more than once per pair and should stay
+          side-effect free. The list is snapshotted and no lock is held while a comparator runs:
+          a comparator that throws, mutates the receiver, or walks a self-referential list gets
+          a clean error or a deterministic result, never a deadlock or a host panic. A throw
+          propagates the thrown value and leaves the list as it was.
+        </p>
+        <pre data-lang="spid3r"><code>fn main() {
+    let xs = list(30, 10, 20);
+    xs.sort_by(fn(a, b) { return a &gt; b; });        // descending, in place
+    println(xs);                                    // [30, 20, 10]
+    println(list(30, 10, 20).argsort());            // [1, 2, 0]
+    println("{:.2}".format(88.6875));               // 88.69
+}</code></pre>
         <pre data-lang="spid3r"><code>fn main() {
     let xs = list(10, 20, 30);
     xs.push(40);
@@ -2875,7 +2915,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>412 tests</strong> (<strong>384</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>425 tests</strong> (<strong>396</strong> with
             <code>--no-default-features</code> including networking, wasm, bundler, and embedding suites, plus
             <strong>28</strong> GUI/AOT tests) and
             <code>spid3r test</code> reports <strong>23 ok, 0 failed</strong>.

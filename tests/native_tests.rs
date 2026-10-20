@@ -196,6 +196,66 @@ fn native_matches_tree_on_new_stdlib_builtins() {
 }
 
 #[test]
+fn native_matches_tree_on_sorting_and_formatting() {
+    // The 2026-10 sorting/formatting round on the AOT backend: the runtime
+    // installs the same `native_defs()` table and runs callbacks through
+    // `NativeCallbackHost`, so a stable sort and a fixed-precision format must
+    // answer identically from generated machine code.
+    if !native_available() {
+        eprintln!("skip: LLVM-C.dll not found");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let src_path = dir.join("spid3r_nat_sort.matrix");
+    let src = r#"fn main() {
+    let xs = list(30, 10, 20, 10);
+    xs.sort_by(fn(a, b) { return a < b; });
+    println(xs);
+    println(list(3, 1, 2).argsort());
+    println(list(3, 1, 2).sorted_by(fn(a, b) { return b - a; }));
+    println("{:.2}".format(88.6875));
+    println("{:.0}".format(2.5));
+    println(hmac_sha256("k", "m"));
+    return 0;
+}
+"#;
+    std::fs::write(&src_path, src).expect("write scratch");
+    let src_path = src_path.to_str().unwrap().to_string();
+
+    let tree = out(&["run", "--engine", "tree", &src_path])
+        .unwrap_or_else(|e| panic!("tree run failed://n{}", e));
+
+    let exe = dir.join(if cfg!(windows) {
+        "spid3r_nat_sort.exe"
+    } else {
+        "spid3r_nat_sort"
+    });
+    let exe = exe.to_str().unwrap().to_string();
+    out(&["build", &src_path, "-o", &exe])
+        .unwrap_or_else(|e| panic!("native build failed://n{}", e));
+    let native = run_exe(&exe).unwrap_or_else(|e| panic!("native run failed://n{}", e));
+    assert_eq!(
+        tree, native,
+        "tree vs native stdout differ for sorting/formatting"
+    );
+
+    assert_eq!(
+        tree,
+        concat!(
+            "[10, 10, 20, 30]\n",
+            "[1, 2, 0]\n",
+            "[3, 2, 1]\n",
+            "88.69\n",
+            "2\n",
+            "b60090e3052297aeb5a080889ce2fc4bca957e756faeb4df7d31800ca1e771ec\n",
+        ),
+        "tree output drifted from the expected values",
+    );
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe);
+}
+
+#[test]
 fn unsupported_features_are_rejected_with_clear_diagnostics() {
     if !native_available() {
         eprintln!("skip: LLVM-C.dll not found");

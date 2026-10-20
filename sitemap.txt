@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 412 Rust tests green (384 core + 28 GUI/AOT; embed-API round 2026-10-20,
+State: 425 Rust tests green (396 core + 29 GUI/AOT; embed-API round 2026-10-20,
 stdlib expansion round 2026-10-20, per-suite evidence in docs/AUDIT_REPORT.md §11),
 23/23 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
@@ -61,7 +61,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 412 tests (384 with --no-default-features + 28 gui/aot), must stay green
+  cargo test                  FULL suite, 425 tests (396 with --no-default-features + 29 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -230,6 +230,13 @@ GaliLang/
   net (src/stdlib/net.rs): tcp_listen tcp_accept tcp_connect tcp_read tcp_write
   tcp_close tcp_local_addr tcp_peer_addr tcp_set_timeout http_read_request
   http_write_response http_fetch url_encode url_decode (plaintext TCP/HTTP; no TLS).
+  higher-order list methods (value/collections/mod.rs list_callback_method,
+  dispatched via is_callback_method so BOTH engines snapshot first): map
+  filter reduce for_each all any sort_by(cmp) sorted_by(cmp) argsort() —
+  a comparator may return a bool or a number; sorts are STABLE (a bool
+  `false` is resolved by asking the mirrored question so equal elements keep
+  their input order); a comparator that throws leaves the list untouched and
+  propagates the thrown value.
   Constructors (value::collections::construct): list vec deque tuple ring_buffer
   stack queue priority_queue map set bag hash_table linked_list
   singly_linked_list doubly_linked_list binary_tree bst trie heap matrix graph
@@ -237,7 +244,7 @@ GaliLang/
 
 [7] TESTS (tests/) — one suite per area, all must pass
 --------------------------------------------------------------------------------
-  audit_regressions.rs   58 engine-parity + contract regressions from the 2026-10
+  audit_regressions.rs   70 engine-parity + contract regressions from the 2026-10
                          audits (closures, nested upvalues, local named fn,
                          finally on return/break/continue, cycle-safe containers,
                          self-argument collection methods, linked_list pop_back,
@@ -250,7 +257,12 @@ GaliLang/
                          stdlib expansion round: every new math builtin,
                          sha256/hmac_sha256 reference vectors, exec_capture
                          (stdin/stdout/stderr/exit code/failed spawn), and
-                         scientific-notation float literals.
+                         scientific-notation float literals, plus the 2026-10-20
+                         sorting round: sort_by/sorted_by (bool + numeric
+                         comparators, lists of maps, stability), argsort,
+                         comparator throw / bad-return-type / arity errors,
+                         self-referential and receiver-mutating comparators, and
+                         "{:.N}" float formatting.
   fuzz_tests.rs          deterministic mutation/fuzzing suite for lexer, parser,
                          and bytecode deserializer/validator.
   fix_f3_hangs.rs, fix_f4_gc.rs, fix_vm_trio.rs, fix_repl_cli.rs,

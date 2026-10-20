@@ -291,6 +291,17 @@ For the complete grammar, see [`docs/GRAMMAR.md`](docs/GRAMMAR.md).
 > `m.set(r, c, v)` for two-dimensional addressing, `m.row(r)` / `m.col(c)`
 > for whole rows and columns, and `len(m)` for the cell count
 > (`rows * cols`). See [`docs/DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md).
+
+> **Sorting with a comparator.** `xs.sort_by(cmp)` sorts in place and
+> `xs.sorted_by(cmp)` returns a new list; `xs.argsort()` returns the original
+> indices in ascending order. `cmp(a, b)` may return a bool (`true` means `a`
+> comes first) or a number (negative / zero / positive). Sorts are stable, and
+> a comparator that throws, mutates the receiver, or touches a self-referential
+> list gets a clean error or a deterministic result — never a deadlock.
+
+> **Float precision in `format`.** `"{:.2}".format(88.6875)` renders `"88.69"`;
+> `N` runs 0–15. `{}` is unchanged, and rounding is tie-to-even (so
+> `"{:.0}".format(2.5)` is `"2"`, unlike `round(2.5)`).
 | **Concurrency & refs** | `channel()`, `mutex(v)`, `ref(v)`, `weak(v)` | `send`, `recv`, `try_recv`, `lock`, `unlock`, `get`, `set`, `deref(w)` |
 
 ### Global standard library functions
@@ -468,10 +479,10 @@ A runnable demo ships as `cargo run --example embed_hello`. Full API reference:
 
 ## Developer workflow & testing
 
-Correctness in Spid3r means *the engines agree*. All **412 Rust tests** (**384** core tests including WASM & Bundler suites + **28** GUI/AOT-headless tests) and **23/23 differential example programs** can be run locally without LLVM:
+Correctness in Spid3r means *the engines agree*. All **425 Rust tests** (**396** core tests including WASM & Bundler suites + **29** GUI/AOT-headless tests) and **23/23 differential example programs** can be run locally without LLVM:
 
 ```sh
-# 1. Run all 384 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
+# 1. Run all 396 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
 cargo test --no-default-features
 
 # 2. Run the 10 headless GUI bridge tests

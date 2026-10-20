@@ -934,6 +934,112 @@ pub fn heap_less(a: &Value, b: &Value) -> Result<bool, String> {
     }
 }
 
+/// Interpret what a user comparator (`sort_by`'s argument) returned.
+///
+/// A comparator may answer either a `bool` (`true` means "`a` is less than
+/// `b`", so `false` means greater-or-equal and is normalized to `Greater`) or
+/// a number (negative → less, `0` → equal, positive → greater). A NaN has no
+/// order at all, so it is reported rather than silently folded into `Equal`.
+pub fn comparator_ordering(
+    meth: &str,
+    v: &Value,
+) -> Result<std::cmp::Ordering, String> {
+    match v {
+        Value::Bool(true) => Ok(std::cmp::Ordering::Less),
+        Value::Bool(false) => Ok(std::cmp::Ordering::Greater),
+        Value::Int(i) => Ok(i.cmp(&0)),
+        Value::Float(f) => f.partial_cmp(&0.0).ok_or_else(|| {
+            format!("{}: comparator returned NaN, which has no order", meth)
+        }),
+        other => Err(format!(
+            "{}: comparator must return a bool, int, or float, found {}",
+            meth,
+            super::type_name(other)
+        )),
+    }
+}
+
+/// Stable bottom-up merge sort over `order`, a permutation of the indices
+/// into the caller's snapshot. `order` and `scratch` must both be `n` long.
+///
+/// This is deliberately hand-written: `slice::sort_by` is allowed to panic
+/// when the comparator does not implement a total order, and a comparator
+/// written in Spid3r can be anything (`fn(a, b) { return a > b; }` is not
+/// transitive-safe in combination with `b > a`). A program must get a
+/// deterministic result or a clean error — never a host panic (Invariant #3).
+///
+/// Taking the left run on `Equal` is what makes the sort stable.
+pub fn merge_sort_indices<F>(
+    order: &mut [usize],
+    scratch: &mut [usize],
+    cmp: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(usize, usize) -> Result<std::cmp::Ordering, String>,
+{
+    let n = order.len();
+    let mut width = 1;
+    while width < n {
+        let mut i = 0;
+        while i < n {
+            let mid = (i + width).min(n);
+            let end = (i + 2 * width).min(n);
+            if mid < end {
+                let (mut a, mut b) = (i, mid);
+                for slot in scratch[i..end].iter_mut() {
+                    if a >= mid {
+                        // Left run exhausted: the right run is already in order.
+                        *slot = order[b];
+                        b += 1;
+                    } else if b >= end {
+                        *slot = order[a];
+                        a += 1;
+                    } else if cmp(order[a], order[b])? == std::cmp::Ordering::Greater {
+                        *slot = order[b];
+                        b += 1;
+                    } else {
+                        *slot = order[a];
+                        a += 1;
+                    }
+                }
+            } else {
+                // Nothing to merge: carry the lone run through untouched.
+                scratch[i..end].copy_from_slice(&order[i..end]);
+            }
+            i = end;
+        }
+        order.copy_from_slice(scratch);
+        width = width.saturating_mul(2);
+    }
+    Ok(())
+}
+
+/// Reorder `items` by `order` (a permutation of `0..items.len()`).
+pub fn permuted(items: &[Value], order: &[usize]) -> Vec<Value> {
+    order.iter().map(|&i| items[i].clone()).collect()
+}
+
+/// The index permutation that would sort `items` into natural ascending
+/// order: the numbers-or-strings rule `list.sort()` enforces, applied to
+/// positions instead of values. `argsort()[i]` is the position in the
+/// original list of the element that belongs at position `i`.
+pub fn argsort_indices(items: &[Value]) -> Result<Vec<usize>, String> {
+    let all_num = items
+        .iter()
+        .all(|v| matches!(v, Value::Int(_) | Value::Float(_)));
+    let all_str = items.iter().all(|v| matches!(v, Value::Str(_)));
+    if !(all_num || all_str) {
+        return Err("cannot sort: values are not all numbers or all strings".to_string());
+    }
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    let mut scratch = vec![0usize; items.len()];
+    // Unreachable in practice: the pre-check above guarantees comparability.
+    merge_sort_indices(&mut order, &mut scratch, &mut |i, j| {
+        Ok(value_cmp(&items[i], &items[j]).unwrap_or(std::cmp::Ordering::Equal))
+    })?;
+    Ok(order)
+}
+
 /// Shared: lock a `VecData`-shaped value (list or vec) for read-only use.
 pub fn vec_items(v: &Value) -> Result<Vec<Value>, String> {
     match v {

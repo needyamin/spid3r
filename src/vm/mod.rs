@@ -1175,7 +1175,7 @@ impl Vm {
                         match &obj {
                             Value::List(d) | Value::VecDyn(d) => {
                                 let items = d.lock().unwrap().items.clone();
-                                match self.list_callback_vm(&items, &name, args) {
+                                match self.list_callback_vm(&obj, &items, &name, args) {
                                     Ok(v) => self.frames[nf].slots.push(v),
                                     Err(e) => self.error = Some(e),
                                 }
@@ -1893,6 +1893,34 @@ impl Vm {
     fn unwind(&mut self, err: VmError) -> Result<(), VmError> {
         self.flush_pending_str();
         while let Some(mut h) = self.handlers.pop() {
+            // `stop` bounds this synchronous run: frames at index >= `stop` and
+            // handlers with `frame_depth > stop` belong to it, everything below
+            // belongs to the OUTER run that called `call_value_sync` (for
+            // example the `try` around a `list.sort_by(cmp)` when `cmp`
+            // throws). Consuming an outer handler here would catch the error in
+            // a frame whose nested frames are already gone, leaving the frame
+            // stack below `stop` — and the next `Return` then popped past the
+            // boundary and panicked on an empty stack (Invariant #3).
+            if h.frame_depth <= self.stop {
+                self.handlers.push(h);
+                // Tear this run's frames down to the boundary so the outer run
+                // resumes on a clean stack.
+                while self.frames.len() > self.stop {
+                    let nf = self.frames.len() - 1;
+                    if !self.frames[nf].guards.is_empty() {
+                        let guards = std::mem::take(&mut self.frames[nf].guards);
+                        for g in &guards {
+                            g.unlock();
+                        }
+                    }
+                    if let Some(popped_frame) = self.frames.pop() {
+                        self.free_slots(popped_frame.slots);
+                    }
+                    self.depth = self.depth.saturating_sub(1);
+                }
+                self.error = Some(err.clone());
+                return Err(err);
+            }
             while self.frames.len() > h.frame_depth {
                 let nf = self.frames.len() - 1;
                 if !self.frames[nf].guards.is_empty() {
@@ -2186,6 +2214,7 @@ impl Vm {
     /// supplies the engine side of the `CallbackHost` trait.
     fn list_callback_vm(
         &mut self,
+        receiver: &Value,
         items: &[Value],
         name: &str,
         args: Vec<Value>,
@@ -2195,17 +2224,29 @@ impl Vm {
         }
         impl crate::value::collections::CallbackHost for VmHost<'_> {
             fn call_callback(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, String> {
-                self.vm.call_value_sync(f, args).map_err(|e| e.message)
+                // Same rule as the tree engine and as the task boundary:
+                // surface the user's thrown value rather than the generic
+                // "uncaught throw" message.
+                self.vm.call_value_sync(f, args).map_err(|e| match &e.thrown {
+                    Some(v) => crate::value::display_value(v),
+                    None => e.message,
+                })
             }
         }
         let mut host = VmHost { vm: self };
-        crate::value::collections::list_callback_method(&mut host, items, name, &args)
-            .map_err(|msg| VmError {
-                thrown: None,
-                message: msg,
-                span: self.cur_span(),
-                trace: Vec::new(),
-            })
+        crate::value::collections::list_callback_method(
+            &mut host,
+            Some(receiver),
+            items,
+            name,
+            &args,
+        )
+        .map_err(|msg| VmError {
+            thrown: None,
+            message: msg,
+            span: self.cur_span(),
+            trace: Vec::new(),
+        })
     }
 
     // ------------------------------------------------------------- code read

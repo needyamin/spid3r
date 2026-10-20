@@ -247,9 +247,24 @@ impl CallbackHost for NoCallbacks {
     }
 }
 
-/// The list methods that take a Spid3r function as their first argument.
+/// The list methods dispatched through [`list_callback_method`]: the ones that
+/// take a Spid3r function as an argument (`map`, `filter`, ...), the sort
+/// variants that need the same snapshot-before-callback discipline, and
+/// `argsort`, which shares the index machinery. Every one of them operates on
+/// the snapshot the caller takes — never on the live list.
 pub fn is_callback_method(name: &str) -> bool {
-    matches!(name, "map" | "filter" | "reduce" | "for_each" | "all" | "any")
+    matches!(
+        name,
+        "map"
+            | "filter"
+            | "reduce"
+            | "for_each"
+            | "all"
+            | "any"
+            | "sort_by"
+            | "sorted_by"
+            | "argsort"
+    )
 }
 
 pub fn call_method(obj: &Value, name: &str, args: Vec<Value>) -> Result<Value, String> {
@@ -272,7 +287,9 @@ pub fn call_method_host(
                 // Snapshot the items so the callback cannot mutate the list
                 // while it is being iterated (both engines share this rule).
                 let items = d.lock().unwrap().items.clone();
-                return list_callback_method(host, &items, name, &args);
+                // `obj` is passed through for the in-place variants; it is
+                // never locked until every callback has returned.
+                return list_callback_method(host, Some(obj), &items, name, &args);
             }
             if name == "append" && args.len() == 1 {
                 if let Value::List(o) | Value::VecDyn(o) = &args[0] {
@@ -381,8 +398,13 @@ pub fn call_method_host(
 
 /// Higher-order list methods. `items` is a snapshot taken by the caller.
 /// The callback is invoked through the engine-specific `CallbackHost`.
+/// `receiver` is the list the method was called on, when there is one — the
+/// in-place variants (`sort_by`) write their result back into it. It is only
+/// used AFTER the last callback returns, so no lock is ever held across a
+/// call back into Spid3r.
 pub fn list_callback_method(
     host: &mut dyn CallbackHost,
+    receiver: Option<&Value>,
     items: &[Value],
     name: &str,
     args: &[Value],
@@ -465,6 +487,64 @@ pub fn list_callback_method(
                 }
             }
             Ok(Value::Bool(false))
+        }
+        "sort_by" | "sorted_by" => {
+            let f = want_fn(name, args, 1)?.clone();
+            // Sort a permutation of the snapshot, not the snapshot's own
+            // order: the comparator is arbitrary Spid3r code (it can call
+            // back into this same list), so it must run with no lock held.
+            let mut order: Vec<usize> = (0..items.len()).collect();
+            let mut scratch = vec![0usize; items.len()];
+            // A boolean comparator answers only "is `a` less than `b`"; it has
+            // no way to say "equal". So when the first answer is `false` the
+            // mirror question is asked too, which separates `a > b` from
+            // `a == b`. Without that, `false` would have to be read as
+            // "greater" and equal elements would come out reversed (and an
+            // always-false comparator would reverse the whole list).
+            let mut cmp = |ia: usize, ib: usize| -> Result<_, String> {
+                let first =
+                    host.call_callback(&f, vec![items[ia].clone(), items[ib].clone()])?;
+                if !matches!(first, Value::Bool(false)) {
+                    return seq::comparator_ordering(name, &first);
+                }
+                let mirror =
+                    host.call_callback(&f, vec![items[ib].clone(), items[ia].clone()])?;
+                match &mirror {
+                    Value::Bool(false) => Ok(std::cmp::Ordering::Equal),
+                    Value::Bool(true) => Ok(std::cmp::Ordering::Greater),
+                    other => seq::comparator_ordering(name, other),
+                }
+            };
+            seq::merge_sort_indices(&mut order, &mut scratch, &mut cmp)?;
+            // `cmp`'s borrow of `host` ends here; nothing below touches it.
+            let sorted = seq::permuted(items, &order);
+            if name == "sorted_by" {
+                return Ok(make_list(sorted));
+            }
+            // In-place: the write-back happens after the last comparator call,
+            // so it cannot deadlock against the list the comparator mutated.
+            match receiver {
+                Some(Value::List(d)) | Some(Value::VecDyn(d)) => {
+                    d.lock().unwrap().items = sorted;
+                    Ok(Value::Null)
+                }
+                _ => Err("sort_by needs a list receiver".to_string()),
+            }
+        }
+        "argsort" => {
+            if !args.is_empty() {
+                return Err(format!(
+                    "argsort expects 0 arguments, got {}",
+                    args.len()
+                ));
+            }
+            let order = seq::argsort_indices(items)?;
+            Ok(make_list(
+                order
+                    .into_iter()
+                    .map(|i| Value::Int(i as i64))
+                    .collect::<Vec<_>>(),
+            ))
         }
         _ => Err(unknown(name, "list")),
     }
@@ -623,7 +703,9 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
         }
         "format" => {
             // `format("a={} b={}", x, y)` - `{}` placeholders are filled left
-            // to right with display forms; `{{`/`}}` escape braces.
+            // to right with display forms; `{{`/`}}` escape braces. A
+            // placeholder may also carry a precision, `"{:.2}"`, which renders
+            // its number with exactly that many fractional digits.
             let mut out = String::new();
             let mut it = args.iter();
             let mut chars = s.chars().peekable();
@@ -638,29 +720,39 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
                         out.push('}');
                     }
                     '{' => {
+                        let mut spec = String::new();
                         let mut closed = false;
                         for c2 in chars.by_ref() {
                             if c2 == '}' {
                                 closed = true;
                                 break;
                             }
-                            if !c2.is_ascii_alphanumeric() && c2 != '_' {
+                            // ':' and '.' are only meaningful as the start of
+                            // a `:.N` precision; anything else still has to be
+                            // a literal name character.
+                            if !c2.is_ascii_alphanumeric()
+                                && c2 != '_'
+                                && !(c2 == ':' && spec.is_empty())
+                                && !(c2 == '.' && spec.starts_with(':'))
+                            {
                                 return Err(
                                     "format: placeholders must be '{}' or escape as '{{'".to_string()
                                 );
                             }
+                            spec.push(c2);
                         }
                         if !closed {
                             return Err("format: unclosed '{' placeholder".to_string());
                         }
-                        match it.next() {
-                            Some(v) => out.push_str(&crate::value::display_value(v)),
+                        let v = match it.next() {
+                            Some(v) => v,
                             None => {
                                 return Err(
                                     "format: more placeholders than arguments".to_string()
                                 )
                             }
-                        }
+                        };
+                        out.push_str(&format_one_placeholder(&spec, v)?);
                     }
                     '}' => {
                         return Err("format: unexpected '}' (escape as '}}')".to_string());
@@ -674,6 +766,50 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
             Ok(Value::Str(out.into()))
         }
         _ => Err(unknown(name, "string")),
+    }
+}
+
+/// Highest precision `{:.N}` accepts. Sixteen digits is past the point where a
+/// `f64` carries information, and it keeps a typo like `{:.99}` a diagnostic.
+const MAX_FORMAT_PRECISION: usize = 15;
+
+/// Render one `format` placeholder. `spec` is the text between the braces, so
+/// `{}` gives `""`, `{:.2}` gives `":.2"`, and `{name}` gives `"name"` (a name
+/// is accepted for symmetry with `{}` and still fills positionally).
+fn format_one_placeholder(spec: &str, v: &Value) -> Result<String, String> {
+    match spec.strip_prefix(":.") {
+        Some(digits) => {
+            let n: usize = digits.parse().map_err(|_| {
+                format!(
+                    "format: ':.{}' is not a precision (expected ':.0' through ':.{}')",
+                    digits, MAX_FORMAT_PRECISION
+                )
+            })?;
+            if n > MAX_FORMAT_PRECISION {
+                return Err(format!(
+                    "format: precision ':.{}' is above the maximum ':.{}'",
+                    n, MAX_FORMAT_PRECISION
+                ));
+            }
+            // An int is widened so the precision applies to it too: the whole
+            // point of a fixed precision is a stable number of decimals.
+            match v {
+                Value::Int(i) => Ok(format!("{:.*}", n, *i as f64)),
+                Value::Float(f) => Ok(format!("{:.*}", n, f)),
+                other => Err(format!(
+                    "format: ':.{}' expects a number, found {}",
+                    n,
+                    type_name(other)
+                )),
+            }
+        }
+        // Anything else keeps the historical behavior (display form), except
+        // that a stray ':' or '.' is now reported instead of being ignored.
+        None if spec.contains(':') || spec.contains('.') => Err(format!(
+            "format: '{{{}}}' is not a valid placeholder (expected '{{}}' or '{{:.N}}')",
+            spec
+        )),
+        None => Ok(crate::value::display_value(v).to_string()),
     }
 }
 

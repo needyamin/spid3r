@@ -84,7 +84,15 @@ impl crate::value::collections::CallbackHost for InterpCallbackHost<'_> {
         match f {
             Value::Function(fd) => match self.interp.call_function(fd, args, &self.span) {
                 Ok(v) => Ok(v),
-                Err(Flow::Error(d)) => Err(d.message),
+                // A callback's throw becomes the method's error. The user's
+                // value is preferred over the generic "uncaught throw"
+                // message, the same rule `join`/`await` use across the task
+                // boundary, so `try { xs.sort_by(...) } catch (e)` sees what
+                // the comparator threw.
+                Err(Flow::Error(d)) => Err(match &d.thrown {
+                    Some(v) => crate::value::display_value(v),
+                    None => d.message.clone(),
+                }),
                 Err(Flow::Return(v)) => Ok(v),
                 Err(_) => Err("invalid control flow in a callback".to_string()),
             },

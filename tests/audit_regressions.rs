@@ -1495,3 +1495,385 @@ fn matrix_flat_index_out_of_bounds_throws() {
     }
 }
 
+
+// ===========================================================================
+// 2026-10-20: comparator sorting & float-precision formatting round.
+// Every program below must produce the same stdout on tree and on the VM.
+// ===========================================================================
+
+#[test]
+fn sort_by_accepts_bool_and_numeric_comparators() {
+    // `sort_by` sorts in place; `sorted_by` returns a new list and leaves the
+    // receiver alone. Both accept a bool comparator (`true` means `a < b`)
+    // and a 3-way numeric one.
+    assert_both_engines(
+        "sort_by_kinds",
+        r#"fn main() {
+    let xs = list(3, 1, 2, 1);
+    xs.sort_by(fn(a, b) { return a < b; });
+    println(xs);
+    let ys = list(5, 1, 4, 2);
+    ys.sorted_by(fn(a, b) { return b - a; });
+    println(ys);
+    let zs = ys.sorted_by(fn(a, b) { return a < b; });
+    println(zs);
+    let ws = list(3, 1, 2);
+    println(ws.sorted_by(fn(a, b) { return float(b) - float(a); }));
+    println(ws);
+    let vs = list();
+    vs.sort_by(fn(a, b) { return a < b; });
+    println(vs);
+    let one = list(7);
+    one.sort_by(fn(a, b) { return a < b; });
+    println(one);
+    return 0;
+}
+"#,
+        "[1, 1, 2, 3]\n[5, 1, 4, 2]\n[1, 2, 4, 5]\n[3, 2, 1]\n[3, 1, 2]\n[]\n[7]\n",
+    );
+}
+
+#[test]
+fn sort_by_on_lists_of_maps_sorts_by_field() {
+    // The comparator sees whole elements, so a list of maps sorts by any
+    // expression over them — including a compound (length, then value) key.
+    assert_both_engines(
+        "sort_by_maps",
+        r#"fn main() {
+    let people = list(
+        map("name", "carol", "age", 30),
+        map("name", "alice", "age", 25),
+        map("name", "bob", "age", 35)
+    );
+    people.sort_by(fn(a, b) { return a["age"] < b["age"]; });
+    println(people[0]["name"] + " " + people[1]["name"] + " " + people[2]["name"]);
+    let words = list("pear", "fig", "banana", "fig");
+    println(words.sorted_by(fn(a, b) { return len(a) < len(b) or (len(a) == len(b) and a < b); }));
+    return 0;
+}
+"#,
+        "alice carol bob\n[fig, fig, pear, banana]\n",
+    );
+}
+
+#[test]
+fn sort_by_is_stable_for_equal_elements() {
+    // A bool comparator can only say "a is less than b", so a `false` alone
+    // cannot distinguish "greater" from "equal". Was: reading `false` as
+    // "greater" reversed every equal group (this printed dbca instead of
+    // bdac, and reversed the whole list for an always-false comparator). The
+    // implementation asks the mirrored question to recover equality, so the
+    // input order survives inside an equal group.
+    assert_both_engines(
+        "sort_by_stable",
+        r#"fn main() {
+    let pairs = list(list(1, "a"), list(0, "b"), list(1, "c"), list(0, "d"));
+    pairs.sort_by(fn(x, y) { return x[0] < y[0]; });
+    let out = "";
+    for p in pairs { out = out + p[1]; }
+    println(out);
+
+    let big = list();
+    for i in list(1, 0, 1, 0, 1, 0, 0, 1) {
+        big.push(list(i, string(i)));
+    }
+    big.sort_by(fn(x, y) { return x[0] < y[0]; });
+    let seq = "";
+    for p in big { seq = seq + p[1]; }
+    println(seq);
+
+    // Comparators that describe no order at all must not scramble the list.
+    let same = list(1, 2, 3, 4, 5);
+    same.sort_by(fn(a, b) { return false; });
+    println(same);
+    let same2 = list(1, 2, 3, 4, 5);
+    same2.sort_by(fn(a, b) { return true; });
+    println(same2);
+    return 0;
+}
+"#,
+        "bdac\n00001111\n[1, 2, 3, 4, 5]\n[1, 2, 3, 4, 5]\n",
+    );
+}
+
+#[test]
+fn argsort_returns_the_ascending_index_permutation() {
+    // `argsort()[i]` is the ORIGINAL position of the element that belongs at
+    // position i — a stable argsort of numbers and of strings, plus the natural
+    // order `list.sort()` uses (so `xs.argsort()` agrees with `xs.sort()`).
+    assert_both_engines(
+        "argsort_basic",
+        r#"fn main() {
+    println(list(3, 1, 2).argsort());
+    println(list(1, 0, 1, 0).argsort());
+    println(list("pear", "fig", "banana").argsort());
+    println(list().argsort());
+    println(list(42).argsort());
+    println(list(2.5, -1.0, 2.5, 0.0).argsort());
+    // Cross-check against sort(): applying the permutation must equal sort().
+    let xs = list(5, 2, 9, 2, 1);
+    let perm = xs.argsort();
+    let by_perm = list();
+    for i in perm { by_perm.push(xs[i]); }
+    let sorted = xs.clone();
+    sorted.sort();
+    println(by_perm == sorted);
+    return 0;
+}
+"#,
+        "[1, 2, 0]\n[1, 3, 0, 2]\n[2, 1, 0]\n[]\n[0]\n[1, 3, 0, 2]\ntrue\n",
+    );
+}
+
+#[test]
+fn sort_and_argsort_agree_with_natural_order() {
+    // `sort`/`sorted` already existed; `argsort` must order the same way.
+    assert_both_engines(
+        "argsort_natural",
+        r#"fn main() {
+    let a = list(4, -2, 7, 0, 4);
+    let b = a.clone();
+    a.sort();
+    let c = list();
+    for i in b.argsort() { c.push(b[i]); }
+    println(a == c);
+    println(c);
+    return 0;
+}
+"#,
+        "true\n[-2, 0, 4, 4, 7]\n",
+    );
+}
+
+#[test]
+fn sort_by_propagates_a_comparator_throw() {
+    // A comparator that throws must surface as a catchable error carrying the
+    // THROWN value, and the list must be left untouched. This also covers the
+    // VM bug where a throw inside any callback unwound past the `call_value_sync`
+    // frame boundary and panicked the host on the next `Return` (Invariant #3:
+    // user code must never panic the host).
+    assert_both_engines(
+        "sort_by_throw",
+        r#"fn main() {
+    let xs = list(3, 1, 2);
+    try {
+        xs.sort_by(fn(a, b) { if a == 1 { throw "comparator refused"; } return a < b; });
+        println("NO ERROR");
+    } catch (e) {
+        println("caught: " + e);
+    }
+    println(xs);
+
+    // The same path through the pre-existing higher-order methods.
+    try {
+        let r = list(1, 2).map(fn(x) { if x == 1 { throw "map boom"; } return x; });
+        println(r);
+    } catch (e) {
+        println("caught: " + e);
+    }
+    return 0;
+}
+"#,
+        "caught: comparator refused\n[3, 1, 2]\ncaught: map boom\n",
+    );
+}
+
+#[test]
+fn sort_by_rejects_a_comparator_with_a_bad_return_type() {
+    // Only bool / int / float answers mean anything; a comparator returning a
+    // string is a clean, catchable error (not a panic, and not silently
+    // treated as "equal").
+    assert_both_engines(
+        "sort_by_badtype",
+        r#"fn main() {
+    let xs = list(3, 1, 2);
+    try {
+        xs.sort_by(fn(a, b) { return string(a); });
+        println("NO ERROR");
+    } catch (e) {
+        println(e);
+    }
+    println(xs);
+    // Arity: exactly one comparator argument.
+    let ys = list(1, 2);
+    try {
+        ys.sort_by(fn(a, b) { return a < b; }, 1);
+    } catch (e) {
+        println(e);
+    }
+    try {
+        ys.sorted_by();
+    } catch (e) {
+        println(e);
+    }
+    // Not a function at all.
+    try {
+        ys.sort_by(5);
+    } catch (e) {
+        println(e);
+    }
+    return 0;
+}
+"#,
+        concat!(
+            "sort_by: comparator must return a bool, int, or float, found string\n",
+            "[3, 1, 2]\n",
+            "sort_by expects 1 argument(s), got 2\n",
+            "sorted_by expects 1 argument(s), got 0\n",
+            "sort_by expects a function, found int\n",
+        ),
+    );
+}
+
+#[test]
+fn sort_by_does_not_deadlock_on_a_self_referential_list() {
+    // The list contains itself, and the comparator reaches back into it
+    // (len / index / push all re-lock the same container). Invariant #3: no
+    // collection mutex may be held across a callback, or this deadlocks.
+    // Sorting a permutation of a snapshot keeps the lock out of the way.
+    assert_both_engines(
+        "sort_by_selfref",
+        r#"fn main() {
+    let xs = list(3, 1, 2);
+    xs.push(xs);
+    xs.sort_by(fn(a, b) {
+        let av = a;
+        let bv = b;
+        if type_of(a) == "list" and len(a) > 0 { av = a[0]; }
+        if type_of(b) == "list" and len(b) > 0 { bv = b[0]; }
+        return av < bv;
+    });
+    println(len(xs));
+    println(xs[0]);
+    // The self-reference sorts last (its key is its own first cell, 3), and
+    // the engines agree on the cycle-safe recursive display.
+    println(xs);
+    return 0;
+}
+"#,
+        "4\n1\n[1, 2, 3, [...]]\n",
+    );
+}
+
+#[test]
+fn sort_by_survives_a_comparator_that_mutates_the_receiver() {
+    // The comparator pops from the list it is sorting. No lock is held while
+    // it runs, so the mutation completes without deadlocking; the write-back
+    // happens only after the last comparator call, so the outcome is the
+    // sorted snapshot either way — deterministic, never a panic.
+    assert_both_engines(
+        "sort_by_mutating",
+        r#"fn main() {
+    let ys = list(5, 4, 3, 2, 1);
+    ys.sort_by(fn(a, b) { if len(ys) > 0 { ys.pop(); } return a < b; });
+    println(len(ys));
+    // `clear()` during the comparator is overwritten by the write-back: the
+    // sorted snapshot is what the receiver ends up holding, so a comparator
+    // that mutates the list cannot change the outcome.
+    let zs = list(3, 1, 2);
+    zs.sort_by(fn(a, b) { zs.clear(); return a < b; });
+    println(len(zs));
+    return 0;
+}
+"#,
+        "5\n3\n",
+    );
+}
+
+#[test]
+fn string_format_precision_renders_fixed_decimals() {
+    // `{:.N}` pins N fractional digits; `{}` behavior is unchanged.
+    assert_both_engines(
+        "fmt_precision",
+        r#"fn main() {
+    println("{:.2}".format(88.6875));
+    println("{:.0}".format(2.5));
+    println("{:.0}".format(3.5));
+    println("{:.3}".format(1.0 / 3.0));
+    println("{:.15}".format(1.0 / 3.0));
+    println("{:.0}".format(5));
+    println("{:.2}".format(-1.0));
+    println("[{:.2}]".format(1.0));
+    println("[{:.2}]".format(99.5));
+    println("{:.1}".format(0.0));
+    println("{:.6}".format(pow(2.0, 0.5)));
+    // {} and {{ }} escapes keep their old meaning
+    println("a={} b={}".format("x", 1));
+    println("{} {} {}".format(1, 2.5, "s"));
+    println("{{{}}}".format(7));
+    println("no args".format());
+    println("{}".format(list(1, 2)));
+    println("{}{}{}".format(1, 2, 3));
+    return 0;
+}
+"#,
+        concat!(
+            "88.69\n2\n4\n0.333\n0.333333333333333\n5\n-1.00\n[1.00]\n[99.50]\n0.0\n1.414214\n",
+            "a=x b=1\n1 2.5 s\n{7}\nno args\n[1, 2]\n123\n",
+        ),
+    );
+}
+
+#[test]
+fn string_format_rejects_bad_precision_specs() {
+    for (name, src, needle) in [
+        ("fmt_toobig", "fn main() { println(\"{:.16}\".format(1.0)); return 0; }", "above the maximum"),
+        ("fmt_nodigit", "fn main() { println(\"{:.}\".format(1.0)); return 0; }", "not a precision"),
+        ("fmt_alpha", "fn main() { println(\"{:.2a}\".format(1.0)); return 0; }", "not a precision"),
+        ("fmt_colon", "fn main() { println(\"{:}\".format(1.0)); return 0; }", "not a valid placeholder"),
+        ("fmt_baretype", "fn main() { println(\"{:.2}\".format(\"s\")); return 0; }", "expects a number, found string"),
+        ("fmt_listtype", "fn main() { println(\"{:.2}\".format(list())); return 0; }", "expects a number, found list"),
+        ("fmt_opttype", "fn main() { println(\"{:.2}\".format(none)); return 0; }", "expects a number, found option"),
+        ("fmt_fewargs", "fn main() { println(\"{:.2}\".format()); return 0; }", "more placeholders than arguments"),
+        ("fmt_manyargs", "fn main() { println(\"{}\".format(1, 2)); return 0; }", "more arguments than placeholders"),
+    ] {
+        for engine in ["tree", "vm"] {
+            let err = run_src(engine, name, src).expect_err("bad precision must be rejected");
+            assert!(
+                err.contains(needle),
+                "[{} {}] expected {:?}, got: {}",
+                engine,
+                name,
+                needle,
+                err
+            );
+        }
+    }
+}
+
+#[test]
+fn throw_inside_any_callback_is_caught_not_a_panic() {
+    // 2026-10-20: a `throw` inside a callback unwound past the
+    // `call_value_sync` frame boundary on the VM, which popped the frame stack
+    // below `stop` and then PANICKED the host on the next `Return`
+    // (Invariant #3: user code must never panic the host). The naive case is
+    // worth pinning separately from sort_by: it reproduces with `map` alone.
+    for engine in ["tree", "vm"] {
+        let src = r#"fn main() {
+    try {
+        let r = list(1, 2, 3).map(fn(x) {
+            if x == 2 { throw "boom in map"; }
+            return x * 2;
+        });
+        println(r);
+    } catch (e) {
+        println("caught: " + e);
+    }
+    // Nested: a second try after the failed callback still works.
+    try {
+        throw "outer";
+    } catch (e2) {
+        println("outer caught: " + e2);
+    }
+    return 0;
+}
+"#;
+        let out = run_src(engine, "throw_in_map", src)
+            .unwrap_or_else(|e| panic!("[{}] throw_in_map run failed:/n{}", engine, e));
+        assert_eq!(
+            out, "caught: boom in map\nouter caught: outer\n",
+            "[{}] engine output",
+            engine
+        );
+    }
+}
