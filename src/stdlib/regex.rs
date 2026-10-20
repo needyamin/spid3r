@@ -8,7 +8,10 @@
 enum RegexNode {
     Literal(char),
     Any,
-    Class { ranges: Vec<(char, char)>, negated: bool },
+    Class {
+        ranges: Vec<(char, char)>,
+        negated: bool,
+    },
     AnchorStart,
     AnchorEnd,
     Concat(Vec<RegexNode>),
@@ -56,7 +59,10 @@ impl<'a> Parser<'a> {
     fn parse(&mut self) -> Result<RegexNode, String> {
         let node = self.parse_alt()?;
         if self.pos < self.chars.len() {
-            return Err(format!("unexpected character '{}' at position {}", self.chars[self.pos], self.pos));
+            return Err(format!(
+                "unexpected character '{}' at position {}",
+                self.chars[self.pos], self.pos
+            ));
         }
         Ok(node)
     }
@@ -235,7 +241,10 @@ impl<'a> Parser<'a> {
 enum StateKind {
     Char(char),
     Any,
-    Class { ranges: Vec<(char, char)>, negated: bool },
+    Class {
+        ranges: Vec<(char, char)>,
+        negated: bool,
+    },
     AnchorStart,
     AnchorEnd,
     Split,
@@ -363,7 +372,10 @@ impl Nfa {
                 if nodes.is_empty() {
                     return Self::compile_node(&RegexNode::Empty, states);
                 }
-                let mut frags: Vec<Frag> = nodes.iter().map(|n| Self::compile_node(n, states)).collect();
+                let mut frags: Vec<Frag> = nodes
+                    .iter()
+                    .map(|n| Self::compile_node(n, states))
+                    .collect();
                 for i in 0..frags.len() - 1 {
                     let next_start = frags[i + 1].start;
                     for (s, slot) in frags[i].exits.drain(..) {
@@ -382,7 +394,10 @@ impl Nfa {
                 if nodes.is_empty() {
                     return Self::compile_node(&RegexNode::Empty, states);
                 }
-                let mut branches: Vec<Frag> = nodes.iter().map(|n| Self::compile_node(n, states)).collect();
+                let mut branches: Vec<Frag> = nodes
+                    .iter()
+                    .map(|n| Self::compile_node(n, states))
+                    .collect();
                 let mut cur = branches.remove(0);
                 for next_branch in branches {
                     let s = states.len();
@@ -460,7 +475,14 @@ impl Nfa {
         let mut visited = vec![false; num_states];
         let mut matched_end = None;
 
-        self.add_state(self.start, start_idx, n, &mut active, &mut visited, &mut matched_end);
+        self.add_state(
+            self.start,
+            start_idx,
+            n,
+            &mut active,
+            &mut visited,
+            &mut matched_end,
+        );
 
         for (cur_idx, &ch) in chars.iter().enumerate().skip(start_idx) {
             if active.is_empty() {
@@ -474,23 +496,48 @@ impl Nfa {
                     StateKind::Char(c) => {
                         if *c == ch {
                             if let Some(nxt) = self.states[s_idx].next1 {
-                                self.add_state(nxt, cur_idx + 1, n, &mut next_active, &mut visited, &mut matched_end);
+                                self.add_state(
+                                    nxt,
+                                    cur_idx + 1,
+                                    n,
+                                    &mut next_active,
+                                    &mut visited,
+                                    &mut matched_end,
+                                );
                             }
                         }
                     }
                     StateKind::Any => {
                         if ch != '\n' {
                             if let Some(nxt) = self.states[s_idx].next1 {
-                                self.add_state(nxt, cur_idx + 1, n, &mut next_active, &mut visited, &mut matched_end);
+                                self.add_state(
+                                    nxt,
+                                    cur_idx + 1,
+                                    n,
+                                    &mut next_active,
+                                    &mut visited,
+                                    &mut matched_end,
+                                );
                             }
                         }
                     }
                     StateKind::Class { ranges, negated } => {
                         let in_range = ranges.iter().any(|&(lo, hi)| ch >= lo && ch <= hi);
-                        let ok = if *negated { !in_range && ch != '\n' } else { in_range };
+                        let ok = if *negated {
+                            !in_range && ch != '\n'
+                        } else {
+                            in_range
+                        };
                         if ok {
                             if let Some(nxt) = self.states[s_idx].next1 {
-                                self.add_state(nxt, cur_idx + 1, n, &mut next_active, &mut visited, &mut matched_end);
+                                self.add_state(
+                                    nxt,
+                                    cur_idx + 1,
+                                    n,
+                                    &mut next_active,
+                                    &mut visited,
+                                    &mut matched_end,
+                                );
                             }
                         }
                     }
@@ -648,8 +695,14 @@ mod tests {
 
     #[test]
     fn test_find() {
-        assert_eq!(regex_find(r"\d+", "abc123xyz").unwrap(), Some("123".to_string()));
-        assert_eq!(regex_find(r"foo|bar", "start bar end").unwrap(), Some("bar".to_string()));
+        assert_eq!(
+            regex_find(r"\d+", "abc123xyz").unwrap(),
+            Some("123".to_string())
+        );
+        assert_eq!(
+            regex_find(r"foo|bar", "start bar end").unwrap(),
+            Some("bar".to_string())
+        );
     }
 
     #[test]

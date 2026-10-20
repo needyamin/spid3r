@@ -453,7 +453,9 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
     let indent = "  ".repeat(depth);
     out.push_str(&format!(
         "{}== {} ({} bytes) ==\n",
-        indent, name, chunk.code.len()
+        indent,
+        name,
+        chunk.code.len()
     ));
     let mut ip = 0usize;
     while ip < chunk.code.len() {
@@ -486,8 +488,14 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
                 o = no;
                 out.push_str(&format!("{:?} slot {}", op, s));
             }
-            OpCode::GetGlobal | OpCode::SetGlobal | OpCode::DefineGlobal | OpCode::Closure
-            | OpCode::FieldGet | OpCode::FieldSet | OpCode::Import | OpCode::Class => {
+            OpCode::GetGlobal
+            | OpCode::SetGlobal
+            | OpCode::DefineGlobal
+            | OpCode::Closure
+            | OpCode::FieldGet
+            | OpCode::FieldSet
+            | OpCode::Import
+            | OpCode::Class => {
                 let (c, no) = read_u16(&chunk.code, o);
                 o = no;
                 out.push_str(&format!("{:?} {}", op, c));
@@ -725,16 +733,15 @@ const MAX_DESERIALIZE_DEPTH: usize = 128;
 
 impl<'a> Reader<'a> {
     fn new(b: &'a [u8]) -> Self {
-        Reader {
-            b,
-            p: 0,
-            depth: 0,
-        }
+        Reader { b, p: 0, depth: 0 }
     }
 
     fn u8(&mut self) -> SpidResult<u8> {
         if self.p >= self.b.len() {
-            return Err(err(Phase::Vm, "invalid file format: unexpected end of file"));
+            return Err(err(
+                Phase::Vm,
+                "invalid file format: unexpected end of file",
+            ));
         }
         let v = self.b[self.p];
         self.p += 1;
@@ -743,7 +750,10 @@ impl<'a> Reader<'a> {
 
     fn u16(&mut self) -> SpidResult<u16> {
         if self.p + 2 > self.b.len() {
-            return Err(err(Phase::Vm, "invalid file format: unexpected end of file"));
+            return Err(err(
+                Phase::Vm,
+                "invalid file format: unexpected end of file",
+            ));
         }
         let v = u16::from_le_bytes([self.b[self.p], self.b[self.p + 1]]);
         self.p += 2;
@@ -752,7 +762,10 @@ impl<'a> Reader<'a> {
 
     fn usize(&mut self) -> SpidResult<usize> {
         if self.p + 8 > self.b.len() {
-            return Err(err(Phase::Vm, "invalid file format: unexpected end of file"));
+            return Err(err(
+                Phase::Vm,
+                "invalid file format: unexpected end of file",
+            ));
         }
         let mut a = [0u8; 8];
         a.copy_from_slice(&self.b[self.p..self.p + 8]);
@@ -774,7 +787,10 @@ impl<'a> Reader<'a> {
                 self.p = end;
                 Ok(s)
             }
-            _ => Err(err(Phase::Vm, "invalid file format: string length exceeds file")),
+            _ => Err(err(
+                Phase::Vm,
+                "invalid file format: string length exceeds file",
+            )),
         }
     }
 
@@ -805,7 +821,10 @@ impl<'a> Reader<'a> {
         match tag {
             0 => {
                 if self.p + 8 > self.b.len() {
-                    return Err(err(Phase::Vm, "invalid file format: unexpected end of file"));
+                    return Err(err(
+                        Phase::Vm,
+                        "invalid file format: unexpected end of file",
+                    ));
                 }
                 a.copy_from_slice(&self.b[self.p..self.p + 8]);
                 self.p += 8;
@@ -813,7 +832,10 @@ impl<'a> Reader<'a> {
             }
             1 => {
                 if self.p + 8 > self.b.len() {
-                    return Err(err(Phase::Vm, "invalid file format: unexpected end of file"));
+                    return Err(err(
+                        Phase::Vm,
+                        "invalid file format: unexpected end of file",
+                    ));
                 }
                 a.copy_from_slice(&self.b[self.p..self.p + 8]);
                 self.p += 8;
@@ -866,7 +888,10 @@ fn get_chunk(r: &mut Reader) -> SpidResult<Chunk> {
 fn get_chunk_body(r: &mut Reader) -> SpidResult<Chunk> {
     let code_len = r.usize()?;
     if code_len > r.b.len().saturating_sub(r.p) {
-        return Err(err(Phase::Vm, "invalid file format: code length exceeds file"));
+        return Err(err(
+            Phase::Vm,
+            "invalid file format: code length exceeds file",
+        ));
     }
     let mut code = vec![0u8; code_len];
     code.copy_from_slice(&r.b[r.p..r.p + code_len]);
@@ -1062,7 +1087,10 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
     if len == 0 {
         return Err(err(
             Phase::Vm,
-            format!("empty code section in {} (a chunk must end with a return)", where_),
+            format!(
+                "empty code section in {} (a chunk must end with a return)",
+                where_
+            ),
         ));
     }
     // Instruction metadata must line up with the code: `span_at` maps an
@@ -1084,7 +1112,10 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
     if !chunk.inst_offsets.windows(2).all(|w| w[0] < w[1]) {
         return Err(err(
             Phase::Vm,
-            format!("instruction offsets are not strictly increasing in {}", where_),
+            format!(
+                "instruction offsets are not strictly increasing in {}",
+                where_
+            ),
         ));
     }
     if let Some(&last) = chunk.inst_offsets.last() {
@@ -1232,7 +1263,10 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
         if !on_boundary {
             return Err(err(
                 Phase::Vm,
-                format!("invalid jump target {} from offset {} in {}", target, src, where_),
+                format!(
+                    "invalid jump target {} from offset {} in {}",
+                    target, src, where_
+                ),
             ));
         }
     }
@@ -1264,7 +1298,10 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
             if idx >= chunk.functions.len() {
                 return Err(err(
                     Phase::Vm,
-                    format!("class method references invalid function index {} in {}", idx, where_),
+                    format!(
+                        "class method references invalid function index {} in {}",
+                        idx, where_
+                    ),
                 ));
             }
             validate_chunk_inner(&chunk.functions[idx].chunk, "<method>")?;

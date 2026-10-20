@@ -193,7 +193,9 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
                 let transparent_level = f
                     .wrap_stack
                     .last()
-                    .map(|g| g.transparent && g.paren_level == f.paren && g.brace_at_open == f.brace)
+                    .map(|g| {
+                        g.transparent && g.paren_level == f.paren && g.brace_at_open == f.brace
+                    })
                     .unwrap_or(false);
                 if !must_break && !transparent_level && !f.first && tline > f.last_src_line {
                     must_break = true;
@@ -213,10 +215,7 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
                     && !matches!(
                         tok.kind,
                         TokenKind::Kw(
-                            Keyword::Else
-                                | Keyword::Elif
-                                | Keyword::Catch
-                                | Keyword::Finally
+                            Keyword::Else | Keyword::Elif | Keyword::Catch | Keyword::Finally
                         )
                     );
                 if must_break {
@@ -320,7 +319,11 @@ pub fn format_source(src: &str, file: &Arc<str>) -> Result<String, Diagnostic> {
                     TokenKind::Kw(kw) => f.put(kw.as_str()),
                     TokenKind::Minus | TokenKind::Plus => {
                         let unary = !matches!(prev, Some(p) if ends_value(p));
-                        f.put(if tok.kind == TokenKind::Minus { "-" } else { "+" });
+                        f.put(if tok.kind == TokenKind::Minus {
+                            "-"
+                        } else {
+                            "+"
+                        });
                         f.after_unary = unary;
                     }
                     _ => {
@@ -564,9 +567,7 @@ fn needs_space(prev: &TokenKind, next: &TokenKind) -> bool {
         // Sign vs binary plus/minus: spaced after a value or a keyword
         // (`a + 1`, `return -x`), tight after separators and operators
         // (`(-1`, `x = -1`, `== -1`).
-        TokenKind::Minus | TokenKind::Plus => {
-            ends_value(prev) || matches!(prev, TokenKind::Kw(_))
-        }
+        TokenKind::Minus | TokenKind::Plus => ends_value(prev) || matches!(prev, TokenKind::Kw(_)),
         _ => match prev {
             // Nothing after these on the same line is spaced (`(x`, `[x`).
             TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot => false,

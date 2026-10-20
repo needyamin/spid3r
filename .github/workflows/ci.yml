@@ -29,6 +29,11 @@ jobs:
       - name: Clippy (core, zero warnings)
         run: cargo clippy --no-default-features --all-targets -- -D warnings
 
+      # The tree is rustfmt-clean (2026-10-21 normalization); gate it so the
+      # drift that made `cargo fmt --check` fail on 70 files cannot return (F1).
+      - name: Rustfmt (core, zero diff)
+        run: cargo fmt --all -- --check
+
       - name: Run unit, integration, and fuzz/regression test suites
         run: cargo test --no-default-features
 

@@ -63,7 +63,12 @@ fn compiled_bytecode_behaves_identically_with_and_without_opt() {
     let mut outputs = Vec::new();
     for (tag, extra) in [("opt", None), ("plain", Some("--no-opt"))] {
         let mc = dir.join(format!("{}.matrixc", tag));
-        let mut args = vec!["compile", prog.to_str().unwrap(), "-o", mc.to_str().unwrap()];
+        let mut args = vec![
+            "compile",
+            prog.to_str().unwrap(),
+            "-o",
+            mc.to_str().unwrap(),
+        ];
         if let Some(e) = extra {
             args.push(e);
         }
@@ -73,9 +78,20 @@ fn compiled_bytecode_behaves_identically_with_and_without_opt() {
         assert_eq!(rc, 0, "exec failed for {}", tag);
         outputs.push(stdout);
     }
-    assert_eq!(outputs[0], outputs[1], "optimized bytecode changed behaviour");
-    assert!(outputs[0].contains("14"), "expected folded arithmetic: {}", outputs[0]);
-    assert!(outputs[0].contains("xy"), "expected folded concat: {}", outputs[0]);
+    assert_eq!(
+        outputs[0], outputs[1],
+        "optimized bytecode changed behaviour"
+    );
+    assert!(
+        outputs[0].contains("14"),
+        "expected folded arithmetic: {}",
+        outputs[0]
+    );
+    assert!(
+        outputs[0].contains("xy"),
+        "expected folded concat: {}",
+        outputs[0]
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -92,7 +108,12 @@ fn folding_shrinks_compiled_bytecode() {
     let mut sizes = Vec::new();
     for (tag, extra) in [("opt", None), ("plain", Some("--no-opt"))] {
         let mc = dir.join(format!("{}.matrixc", tag));
-        let mut args = vec!["compile", prog.to_str().unwrap(), "-o", mc.to_str().unwrap()];
+        let mut args = vec![
+            "compile",
+            prog.to_str().unwrap(),
+            "-o",
+            mc.to_str().unwrap(),
+        ];
         if let Some(e) = extra {
             args.push(e);
         }
@@ -130,6 +151,10 @@ fn runtime_errors_still_fire_with_the_same_message_under_opt() {
     assert_ne!(c1, 0, "division by zero must fail");
     assert_eq!(c1, c2);
     assert_eq!(e1, e2, "error text must be identical with and without opt");
-    assert!(e1.contains("zero"), "expected a division-by-zero error: {}", e1);
+    assert!(
+        e1.contains("zero"),
+        "expected a division-by-zero error: {}",
+        e1
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

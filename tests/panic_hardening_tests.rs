@@ -41,10 +41,10 @@ fn run_src(engine: &str, name: &str, src: &str) -> Result<String, String> {
 
 /// Assert a program produces `expected` identically on tree and vm.
 fn assert_both_engines(name: &str, src: &str, expected: &str) {
-    let tree = run_src("tree", name, src)
-        .unwrap_or_else(|e| panic!("[{}] tree run failed:\n{}", name, e));
-    let vm = run_src("vm", name, src)
-        .unwrap_or_else(|e| panic!("[{}] vm run failed:\n{}", name, e));
+    let tree =
+        run_src("tree", name, src).unwrap_or_else(|e| panic!("[{}] tree run failed:\n{}", name, e));
+    let vm =
+        run_src("vm", name, src).unwrap_or_else(|e| panic!("[{}] vm run failed:\n{}", name, e));
     assert_eq!(tree, expected, "[{}] tree output", name);
     assert_eq!(vm, expected, "[{}] vm output (diverged from tree)", name);
 }
@@ -157,10 +157,9 @@ fn sort_and_argsort_are_total_over_nan_and_huge_ints() {
 }
 "#,
         concat!(
-            "true\n", "true\n", "true\n", "true\n", "true\n",
-            "true\n", "true\n", "true\n",
-            "true\n", "true\n", "true\n", "true\n",
-            "true\n", "true\n", "true\n", "true\n", "true\n", "true\n",
+            "true\n", "true\n", "true\n", "true\n", "true\n", "true\n", "true\n", "true\n",
+            "true\n", "true\n", "true\n", "true\n", "true\n", "true\n", "true\n", "true\n",
+            "true\n", "true\n",
         ),
     );
 }

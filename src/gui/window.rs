@@ -101,9 +101,9 @@ pub fn open(interp: &Arc<Interp>, html: Option<&str>) -> Result<(), String> {
         None => builder.with_html(DEFAULT_PAGE),
     };
 
-    let webview = builder
-        .build(&window)
-        .map_err(|e| format!("cannot start the webview (is the WebView2 runtime installed?): {e}"))?;
+    let webview = builder.build(&window).map_err(|e| {
+        format!("cannot start the webview (is the WebView2 runtime installed?): {e}")
+    })?;
 
     // The loop owns the interpreter handle and the webview from here on.
     let interp = Arc::clone(interp);

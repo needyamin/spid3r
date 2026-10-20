@@ -5,7 +5,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("spid3r-bundle-test-{}-{}", name, std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "spid3r-bundle-test-{}-{}",
+        name,
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create scratch dir");
     dir
@@ -13,10 +17,7 @@ fn scratch(name: &str) -> PathBuf {
 
 fn spid3r(args: &[&str]) -> (i32, String, String) {
     let exe = env!("CARGO_BIN_EXE_spid3r");
-    let out = Command::new(exe)
-        .args(args)
-        .output()
-        .expect("run spid3r");
+    let out = Command::new(exe).args(args).output().expect("run spid3r");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).to_string(),
@@ -31,7 +32,14 @@ fn bundle_wasm_directory() {
     fs::write(&app, "fn main() { println(\"bundled wasm\"); return 0; }").unwrap();
 
     let out_dir = dir.join("dist_web");
-    let (code, stdout, stderr) = spid3r(&["bundle", app.to_str().unwrap(), "--target", "wasm", "-o", out_dir.to_str().unwrap()]);
+    let (code, stdout, stderr) = spid3r(&[
+        "bundle",
+        app.to_str().unwrap(),
+        "--target",
+        "wasm",
+        "-o",
+        out_dir.to_str().unwrap(),
+    ]);
     assert_eq!(code, 0, "bundle stderr: {}", stderr);
     assert!(stdout.contains("Bundle generated successfully"));
 
@@ -45,7 +53,11 @@ fn bundle_wasm_directory() {
 fn bundle_wasm_single_file_html() {
     let dir = scratch("wasm-single");
     let app = dir.join("app.matrix");
-    fs::write(&app, "fn main() { println(\"single file app\"); return 0; }").unwrap();
+    fs::write(
+        &app,
+        "fn main() { println(\"single file app\"); return 0; }",
+    )
+    .unwrap();
 
     let out_html = dir.join("app.html");
     let (code, stdout, stderr) = spid3r(&[
@@ -112,10 +124,39 @@ fn bundle_android_project() {
     assert_eq!(code, 0, "bundle stderr: {}", stderr);
     assert!(stdout.contains("Bundle generated successfully"));
 
-    assert!(out_dir.join("app").join("src").join("main").join("AndroidManifest.xml").is_file());
-    assert!(out_dir.join("app").join("src").join("main").join("assets").join("spid3r.wasm").is_file());
-    assert!(out_dir.join("app").join("src").join("main").join("assets").join("spid3r.js").is_file());
-    assert!(out_dir.join("app").join("src").join("main").join("assets").join("index.html").is_file());
-    assert!(out_dir.join("app").join("src").join("main").join("assets").join("app.matrix").is_file());
+    assert!(out_dir
+        .join("app")
+        .join("src")
+        .join("main")
+        .join("AndroidManifest.xml")
+        .is_file());
+    assert!(out_dir
+        .join("app")
+        .join("src")
+        .join("main")
+        .join("assets")
+        .join("spid3r.wasm")
+        .is_file());
+    assert!(out_dir
+        .join("app")
+        .join("src")
+        .join("main")
+        .join("assets")
+        .join("spid3r.js")
+        .is_file());
+    assert!(out_dir
+        .join("app")
+        .join("src")
+        .join("main")
+        .join("assets")
+        .join("index.html")
+        .is_file());
+    assert!(out_dir
+        .join("app")
+        .join("src")
+        .join("main")
+        .join("assets")
+        .join("app.matrix")
+        .is_file());
     assert!(out_dir.join("app").join("build.gradle.kts").is_file());
 }

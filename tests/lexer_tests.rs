@@ -182,7 +182,11 @@ fn scientific_notation_spans_cover_the_whole_literal() {
     let f = &toks[2];
     assert_eq!(f.kind, TokenKind::Float(0.0015));
     // "1.5e-3" is six characters; the span must cover all of them.
-    assert_eq!(f.span.len, 6, "span should cover 1.5e-3, got {}", f.span.len);
+    assert_eq!(
+        f.span.len, 6,
+        "span should cover 1.5e-3, got {}",
+        f.span.len
+    );
 }
 
 #[test]

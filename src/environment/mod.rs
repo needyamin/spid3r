@@ -43,7 +43,6 @@ pub fn child_with_vars(parent: &Env, vars: HashMap<String, Value>) -> Env {
     }))
 }
 
-
 impl EnvironmentData {
     /// Read a variable, walking the parent chain. Clones the value out, so no
     /// lock is held while user code runs.

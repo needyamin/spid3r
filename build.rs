@@ -128,7 +128,14 @@ fn windows_installer() {
     let mut build = Command::new(cargo);
     build
         .current_dir(&root)
-        .args(["build", "--release", "--bin", "spid3r", "--lib", "--no-default-features"])
+        .args([
+            "build",
+            "--release",
+            "--bin",
+            "spid3r",
+            "--lib",
+            "--no-default-features",
+        ])
         .arg("--target")
         .arg(&triple)
         .arg("--target-dir")
@@ -153,7 +160,11 @@ fn windows_installer() {
     if native {
         native_files.push(("RUNTIME_LIB", release_dir.join("spid3r_lang.lib")));
     }
-    let webview2 = if gui { webview2_bootstrapper(&nsis_dir) } else { None };
+    let webview2 = if gui {
+        webview2_bootstrapper(&nsis_dir)
+    } else {
+        None
+    };
 
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let mut nsis = Command::new(&makensis);
@@ -181,7 +192,10 @@ fn windows_installer() {
             for line in log.lines().filter(|l| !l.trim().is_empty()) {
                 println!("cargo:warning=makensis: {line}");
             }
-            println!("cargo:warning=installer skipped: makensis failed ({})", o.status);
+            println!(
+                "cargo:warning=installer skipped: makensis failed ({})",
+                o.status
+            );
         }
         Err(e) => println!("cargo:warning=installer skipped: cannot run makensis: {e}"),
     }
@@ -308,7 +322,10 @@ fn unix_llvm() {
     }
 
     // Homebrew fallback.
-    for base in ["/opt/homebrew/opt/llvm@18/lib", "/usr/local/opt/llvm@18/lib"] {
+    for base in [
+        "/opt/homebrew/opt/llvm@18/lib",
+        "/usr/local/opt/llvm@18/lib",
+    ] {
         if PathBuf::from(base).is_dir() {
             println!("cargo:rustc-link-search=native={base}");
             println!("cargo:rustc-link-lib=dylib=LLVM");

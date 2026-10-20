@@ -89,7 +89,11 @@ pub fn bundle(opts: &BundleOptions) -> Result<PathBuf, Diagnostic> {
     let src = fs::read_to_string(&opts.source_file).map_err(|e| {
         Diagnostic::new(
             Phase::Semantic,
-            format!("failed to read source '{}': {}", opts.source_file.display(), e),
+            format!(
+                "failed to read source '{}': {}",
+                opts.source_file.display(),
+                e
+            ),
         )
     })?;
 
@@ -118,13 +122,25 @@ fn bundle_wasm(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic> {
         .and_then(|s| s.to_str())
         .unwrap_or("app");
 
-    if opts.single_file || opts.output_path.as_ref().map(|p| p.extension().and_then(|e| e.to_str()) == Some("html")).unwrap_or(false) {
-        let out_html_path = opts.output_path.clone().unwrap_or_else(|| PathBuf::from(format!("{}.html", stem)));
+    if opts.single_file
+        || opts
+            .output_path
+            .as_ref()
+            .map(|p| p.extension().and_then(|e| e.to_str()) == Some("html"))
+            .unwrap_or(false)
+    {
+        let out_html_path = opts
+            .output_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(format!("{}.html", stem)));
         let base64_wasm = base64_encode(EMBEDDED_WASM_BYTES);
 
         let user_html_custom = if let Some(ref html_p) = opts.html_file {
             fs::read_to_string(html_p).map_err(|e| {
-                Diagnostic::new(Phase::Semantic, format!("failed to read HTML template '{}': {}", html_p.display(), e))
+                Diagnostic::new(
+                    Phase::Semantic,
+                    format!("failed to read HTML template '{}': {}", html_p.display(), e),
+                )
             })?
         } else {
             default_wasm_html_template(stem)
@@ -185,25 +201,40 @@ fn bundle_wasm(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic> {
             // a plain `</script>` replace is not enough to keep the program
             // source inside the <script type="application/spid3r"> element;
             // neutralize every `<` of a closing-tag sequence instead.
-            src
-                .replace("</", "<\\/"),
+            src.replace("</", "<\\/"),
             EMBEDDED_JS_SDK,
             base64_wasm
         );
 
         fs::write(&out_html_path, single_file_html).map_err(|e| {
-            Diagnostic::new(Phase::Semantic, format!("failed to write HTML bundle '{}': {}", out_html_path.display(), e))
+            Diagnostic::new(
+                Phase::Semantic,
+                format!(
+                    "failed to write HTML bundle '{}': {}",
+                    out_html_path.display(),
+                    e
+                ),
+            )
         })?;
         Ok(out_html_path)
     } else {
-        let out_dir = opts.output_path.clone().unwrap_or_else(|| PathBuf::from(format!("{}_web", stem)));
+        let out_dir = opts
+            .output_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(format!("{}_web", stem)));
         fs::create_dir_all(&out_dir).map_err(|e| {
-            Diagnostic::new(Phase::Semantic, format!("failed to create output dir '{}': {}", out_dir.display(), e))
+            Diagnostic::new(
+                Phase::Semantic,
+                format!("failed to create output dir '{}': {}", out_dir.display(), e),
+            )
         })?;
 
         // 1. Copy spid3r.wasm
         fs::write(out_dir.join("spid3r.wasm"), EMBEDDED_WASM_BYTES).map_err(|e| {
-            Diagnostic::new(Phase::Semantic, format!("failed to write spid3r.wasm: {}", e))
+            Diagnostic::new(
+                Phase::Semantic,
+                format!("failed to write spid3r.wasm: {}", e),
+            )
         })?;
 
         // 2. Copy spid3r.js
@@ -213,7 +244,10 @@ fn bundle_wasm(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic> {
 
         // 3. Copy app source
         fs::write(out_dir.join("app.matrix"), src).map_err(|e| {
-            Diagnostic::new(Phase::Semantic, format!("failed to write app.matrix: {}", e))
+            Diagnostic::new(
+                Phase::Semantic,
+                format!("failed to write app.matrix: {}", e),
+            )
         })?;
 
         // 4. Write index.html
@@ -254,7 +288,10 @@ fn bundle_wasm(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic> {
             stem
         );
         fs::write(out_dir.join("index.html"), index_html).map_err(|e| {
-            Diagnostic::new(Phase::Semantic, format!("failed to write index.html: {}", e))
+            Diagnostic::new(
+                Phase::Semantic,
+                format!("failed to write index.html: {}", e),
+            )
         })?;
 
         Ok(out_dir)
@@ -267,25 +304,42 @@ fn default_wasm_html_template(_stem: &str) -> String {
 
 // ------------------------------------------------------------- DESKTOP BUNDLER
 
-fn bundle_desktop(opts: &BundleOptions, program: &crate::ast::Program) -> Result<PathBuf, Diagnostic> {
+fn bundle_desktop(
+    opts: &BundleOptions,
+    program: &crate::ast::Program,
+) -> Result<PathBuf, Diagnostic> {
     let stem = opts
         .source_file
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("app");
 
-    let out_dir = opts.output_path.clone().unwrap_or_else(|| PathBuf::from(format!("{}_desktop", stem)));
+    let out_dir = opts
+        .output_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("{}_desktop", stem)));
     fs::create_dir_all(&out_dir).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to create desktop bundle dir '{}': {}", out_dir.display(), e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!(
+                "failed to create desktop bundle dir '{}': {}",
+                out_dir.display(),
+                e
+            ),
+        )
     })?;
 
     // 1. Compile bytecode with all modules embedded
     let dirs = crate::modules::default_module_dirs();
-    let (vfunc, _public) = compile_program(program, opts.source_file.to_string_lossy().as_ref(), &dirs)?;
+    let (vfunc, _public) =
+        compile_program(program, opts.source_file.to_string_lossy().as_ref(), &dirs)?;
     let bytecode_bytes = crate::vm::bytecode::serialize_vmfunc(&vfunc);
     let matrixc_path = out_dir.join(format!("{}.matrixc", stem));
     fs::write(&matrixc_path, bytecode_bytes).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to write compiled bytecode: {}", e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to write compiled bytecode: {}", e),
+        )
     })?;
 
     // 2. If HTML frontend provided, copy it
@@ -295,7 +349,10 @@ fn bundle_desktop(opts: &BundleOptions, program: &crate::ast::Program) -> Result
                 Diagnostic::new(Phase::Semantic, format!("failed to read HTML file: {}", e))
             })?;
             fs::write(out_dir.join("index.html"), html_content).map_err(|e| {
-                Diagnostic::new(Phase::Semantic, format!("failed to write index.html: {}", e))
+                Diagnostic::new(
+                    Phase::Semantic,
+                    format!("failed to write index.html: {}", e),
+                )
             })?;
         }
     }
@@ -303,20 +360,14 @@ fn bundle_desktop(opts: &BundleOptions, program: &crate::ast::Program) -> Result
     // 3. Write native platform launcher scripts
     #[cfg(target_os = "windows")]
     {
-        let bat = format!(
-            "@echo off\r\nspid3r exec \"{}.matrixc\"\r\npause\r\n",
-            stem
-        );
+        let bat = format!("@echo off\r\nspid3r exec \"{}.matrixc\"\r\npause\r\n", stem);
         fs::write(out_dir.join("run.bat"), bat).map_err(|e| {
             Diagnostic::new(Phase::Semantic, format!("failed to write run.bat: {}", e))
         })?;
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let sh = format!(
-            "#!/bin/sh\nspid3r exec \"{}.matrixc\"\n",
-            stem
-        );
+        let sh = format!("#!/bin/sh\nspid3r exec \"{}.matrixc\"\n", stem);
         let sh_path = out_dir.join("run.sh");
         fs::write(&sh_path, sh).map_err(|e| {
             Diagnostic::new(Phase::Semantic, format!("failed to write run.sh: {}", e))
@@ -335,27 +386,52 @@ fn bundle_android(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic
         .and_then(|s| s.to_str())
         .unwrap_or("app");
 
-    let app_name = stem.chars().filter(|c| c.is_alphanumeric()).collect::<String>();
-    let out_dir = opts.output_path.clone().unwrap_or_else(|| PathBuf::from(format!("{}_android", stem)));
+    let app_name = stem
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>();
+    let out_dir = opts
+        .output_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("{}_android", stem)));
     let assets_dir = out_dir.join("app").join("src").join("main").join("assets");
-    let java_dir = out_dir.join("app").join("src").join("main").join("java").join("com").join("spid3r").join(&app_name);
+    let java_dir = out_dir
+        .join("app")
+        .join("src")
+        .join("main")
+        .join("java")
+        .join("com")
+        .join("spid3r")
+        .join(&app_name);
 
     fs::create_dir_all(&assets_dir).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to create android assets dir: {}", e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to create android assets dir: {}", e),
+        )
     })?;
     fs::create_dir_all(&java_dir).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to create android java dir: {}", e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to create android java dir: {}", e),
+        )
     })?;
 
     // Copy web assets to Android assets
     fs::write(assets_dir.join("spid3r.wasm"), EMBEDDED_WASM_BYTES).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to write spid3r.wasm: {}", e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to write spid3r.wasm: {}", e),
+        )
     })?;
     fs::write(assets_dir.join("spid3r.js"), EMBEDDED_JS_SDK).map_err(|e| {
         Diagnostic::new(Phase::Semantic, format!("failed to write spid3r.js: {}", e))
     })?;
     fs::write(assets_dir.join("app.matrix"), src).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to write app.matrix: {}", e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to write app.matrix: {}", e),
+        )
     })?;
 
     // Index.html
@@ -390,7 +466,10 @@ fn bundle_android(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic
 </body>
 </html>"#;
     fs::write(assets_dir.join("index.html"), index_html).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to write android index.html: {}", e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to write android index.html: {}", e),
+        )
     })?;
 
     // AndroidManifest.xml
@@ -415,8 +494,19 @@ fn bundle_android(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic
 </manifest>"#,
         app_name, stem
     );
-    fs::write(out_dir.join("app").join("src").join("main").join("AndroidManifest.xml"), manifest).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to write AndroidManifest.xml: {}", e))
+    fs::write(
+        out_dir
+            .join("app")
+            .join("src")
+            .join("main")
+            .join("AndroidManifest.xml"),
+        manifest,
+    )
+    .map_err(|e| {
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to write AndroidManifest.xml: {}", e),
+        )
     })?;
 
     // MainActivity.kt
@@ -445,7 +535,10 @@ class MainActivity : Activity() {{
         app_name
     );
     fs::write(java_dir.join("MainActivity.kt"), kt).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to write MainActivity.kt: {}", e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to write MainActivity.kt: {}", e),
+        )
     })?;
 
     // build.gradle.kts
@@ -468,7 +561,10 @@ android {
 }
 "#;
     fs::write(out_dir.join("app").join("build.gradle.kts"), gradle).map_err(|e| {
-        Diagnostic::new(Phase::Semantic, format!("failed to write build.gradle.kts: {}", e))
+        Diagnostic::new(
+            Phase::Semantic,
+            format!("failed to write build.gradle.kts: {}", e),
+        )
     })?;
 
     Ok(out_dir)

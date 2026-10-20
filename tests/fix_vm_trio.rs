@@ -85,8 +85,16 @@ fn tree_engine_still_reports_the_import_chain() {
     // Behavioral F9 half: the tree loader keeps producing the chain suffix.
     let dir = std::env::temp_dir().join(format!("spid3r_f9_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("a.matrix"), "import \"b\";\nfn main() { return 0; }\n").unwrap();
-    std::fs::write(dir.join("b.matrix"), "import \"a\";\nfn main() { return 0; }\n").unwrap();
+    std::fs::write(
+        dir.join("a.matrix"),
+        "import \"b\";\nfn main() { return 0; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("b.matrix"),
+        "import \"a\";\nfn main() { return 0; }\n",
+    )
+    .unwrap();
     let main = dir.join("a.matrix");
     let (code, _, err) = run_with_deadline(
         &["run", "--engine", "tree", main.to_str().unwrap()],
@@ -110,7 +118,11 @@ fn compiled_artifact_run_is_unaffected() {
     let dir = std::env::temp_dir().join(format!("spid3r_f8_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("ok.matrix");
-    std::fs::write(&src, "fn main() {\n    println(\"ok\");\n    return 0;\n}\n").unwrap();
+    std::fs::write(
+        &src,
+        "fn main() {\n    println(\"ok\");\n    return 0;\n}\n",
+    )
+    .unwrap();
     let out_path = dir.join("ok.matrixc");
     let (code, _, err) = run_with_deadline(
         &[
@@ -142,7 +154,11 @@ fn hand_mutated_bytecode_never_panics_the_host() {
     let dir = std::env::temp_dir().join(format!("spid3r_f10_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let src = dir.join("hello.matrix");
-    std::fs::write(&src, "fn main() {\n    println(\"hello\");\n    return 0;\n}\n").unwrap();
+    std::fs::write(
+        &src,
+        "fn main() {\n    println(\"hello\");\n    return 0;\n}\n",
+    )
+    .unwrap();
     let base = dir.join("hello.matrixc");
     let (code, _, err) = run_with_deadline(
         &[
@@ -159,7 +175,10 @@ fn hand_mutated_bytecode_never_panics_the_host() {
     assert!(bytes.len() > 16, "artifact unexpectedly small");
 
     let mut mutations: Vec<(String, Vec<u8>)> = Vec::new();
-    mutations.push(("trunc60".to_string(), bytes[..bytes.len() * 6 / 10].to_vec()));
+    mutations.push((
+        "trunc60".to_string(),
+        bytes[..bytes.len() * 6 / 10].to_vec(),
+    ));
     let mut b = bytes.clone();
     let mid = bytes.len() / 2;
     b[mid] = 0xFF;
@@ -181,11 +200,9 @@ fn hand_mutated_bytecode_never_panics_the_host() {
     for (name, data) in mutations {
         let path = dir.join(format!("mut_{}.matrixc", name));
         std::fs::write(&path, &data).unwrap();
-        let (code, out, err) = run_with_deadline(
-            &["exec", path.to_str().unwrap()],
-            Duration::from_secs(15),
-        )
-        .unwrap_or_else(|e| panic!("[{}] {}", name, e));
+        let (code, out, err) =
+            run_with_deadline(&["exec", path.to_str().unwrap()], Duration::from_secs(15))
+                .unwrap_or_else(|e| panic!("[{}] {}", name, e));
         assert!(
             code == 0 || code == 1,
             "[{}] host panic/abort: exit {} stderr: {}",

@@ -249,8 +249,15 @@ pub fn compile_program_unoptimized(
     let mut keys: HashSet<String> = HashSet::new();
     let mut in_progress: HashSet<String> = HashSet::new();
     in_progress.insert(importer_file.to_string());
-    let (func, public) =
-        compile_one(program, importer_file, module_dirs, &mut embedded, &mut keys, &mut in_progress, true)?;
+    let (func, public) = compile_one(
+        program,
+        importer_file,
+        module_dirs,
+        &mut embedded,
+        &mut keys,
+        &mut in_progress,
+        true,
+    )?;
     Ok((func, public))
 }
 
@@ -280,11 +287,17 @@ fn compile_one(
             if import_keys.contains_key(path) {
                 continue;
             }
-            let resolved = resolve_module_path(importer_file, module_dirs, path).map_err(|mut e| {
-                e.span = Some(span.clone());
-                e
-            })?;
-            import_keys.insert(path.clone(), crate::modules::canonical_key(&resolved).to_string_lossy().to_string());
+            let resolved =
+                resolve_module_path(importer_file, module_dirs, path).map_err(|mut e| {
+                    e.span = Some(span.clone());
+                    e
+                })?;
+            import_keys.insert(
+                path.clone(),
+                crate::modules::canonical_key(&resolved)
+                    .to_string_lossy()
+                    .to_string(),
+            );
         }
     }
     let mut compilers: Vec<Compiler> = vec![Compiler::new_script()];
@@ -314,7 +327,10 @@ fn compile_one(
     // Resolve and embed every import (directly, and transitively via recursion).
     for stmt in &program.stmts {
         if let Stmt::Import { path, .. } = stmt {
-            let rkey = import_keys.get(path).cloned().unwrap_or_else(|| path.clone());
+            let rkey = import_keys
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| path.clone());
             if keys.contains(&rkey) {
                 continue;
             }
@@ -325,17 +341,21 @@ fn compile_one(
                 ));
             }
             let src = std::fs::read_to_string(&rkey).map_err(|e| {
-                Diagnostic::new(
-                    Phase::Semantic,
-                    format!("cannot import '{}': {}", path, e),
-                )
+                Diagnostic::new(Phase::Semantic, format!("cannot import '{}': {}", path, e))
             })?;
             let file: Arc<str> = Arc::from(rkey.clone());
             let mod_program = parser::parse_file(&src, file.clone())?;
             semantic::check_file(&mod_program, false, &rkey)?;
             in_progress.insert(rkey.clone());
-            let (mod_func, mod_public) =
-                compile_one(&mod_program, &file, module_dirs, embedded, keys, in_progress, false)?;
+            let (mod_func, mod_public) = compile_one(
+                &mod_program,
+                &file,
+                module_dirs,
+                embedded,
+                keys,
+                in_progress,
+                false,
+            )?;
             in_progress.remove(&rkey);
             let public_vec: Vec<String> = mod_public.into_iter().collect();
             embedded.push(EmbeddedModule {
@@ -401,18 +421,16 @@ fn resolve_module_path(
 
 // ------------------------------------------------------------- statements
 
-fn compile_stmt(
-    compilers: &mut Vec<Compiler>,
-    ci: usize,
-    stmt: &Stmt,
-) -> Result<(), Diagnostic> {
+fn compile_stmt(compilers: &mut Vec<Compiler>, ci: usize, stmt: &Stmt) -> Result<(), Diagnostic> {
     compilers[ci].chunk.set_span(stmt.span().clone());
     match stmt {
         Stmt::Expr(e) => {
             compile_expr(compilers, ci, e)?;
             compilers[ci].chunk.emit(OpCode::Pop);
         }
-        Stmt::Let { name, value, vis, .. } => {
+        Stmt::Let {
+            name, value, vis, ..
+        } => {
             if let Some(v) = value {
                 compile_expr(compilers, ci, v)?;
             } else {
@@ -420,7 +438,9 @@ fn compile_stmt(
             }
             define_variable(compilers, ci, name, *vis)?;
         }
-        Stmt::Const { name, value, vis, .. } => {
+        Stmt::Const {
+            name, value, vis, ..
+        } => {
             compile_expr(compilers, ci, value)?;
             define_variable(compilers, ci, name, *vis)?;
         }
@@ -452,9 +472,7 @@ fn compile_stmt(
             define_variable(compilers, ci, &decl.name, decl.vis)?;
         }
         Stmt::Interface(decl) => {
-            if compilers[ci].is_global
-                && compilers[ci].scope_depth == 0
-                && decl.vis == Vis::Public
+            if compilers[ci].is_global && compilers[ci].scope_depth == 0 && decl.vis == Vis::Public
             {
                 compilers[0].public.insert(decl.name.clone());
             }
@@ -498,10 +516,7 @@ fn compile_stmt(
         } => compile_if(compilers, ci, cond, then, elifs, els)?,
         Stmt::While { cond, body, .. } => compile_while(compilers, ci, cond, body)?,
         Stmt::ForIn {
-            var,
-            iter,
-            body,
-            ..
+            var, iter, body, ..
         } => compile_for_in(compilers, ci, var, iter, body)?,
         Stmt::ForC {
             init,
@@ -567,7 +582,9 @@ fn compile_stmt(
             let path_idx = compilers[ci].chunk.emit_str_const(&key);
             if let Some(alias_name) = alias {
                 let alias_idx = compilers[ci].chunk.emit_str_const(alias_name);
-                compilers[ci].chunk.emit_u16_u16(OpCode::ImportAs, path_idx, alias_idx);
+                compilers[ci]
+                    .chunk
+                    .emit_u16_u16(OpCode::ImportAs, path_idx, alias_idx);
             } else {
                 compilers[ci].chunk.emit_u16(OpCode::Import, path_idx);
             }
@@ -835,12 +852,14 @@ fn compile_try(
         compilers[ci].chunk.emit(OpCode::EndTry);
         let _ = finally_target;
         let _end = compilers[ci].chunk.here();
-        compilers[ci]
-            .chunk
-            .patch_i16(try_pos + 3, (catch_target as i64 - operand_end as i64) as i16);
-        compilers[ci]
-            .chunk
-            .patch_i16(try_pos + 5, (finally_target as i64 - operand_end as i64) as i16);
+        compilers[ci].chunk.patch_i16(
+            try_pos + 3,
+            (catch_target as i64 - operand_end as i64) as i16,
+        );
+        compilers[ci].chunk.patch_i16(
+            try_pos + 5,
+            (finally_target as i64 - operand_end as i64) as i16,
+        );
         patch_jump(&mut compilers[ci].chunk, success_jump, finally_target)?;
         patch_jump(&mut compilers[ci].chunk, catch_jump, finally_target)?;
     } else {
@@ -854,12 +873,14 @@ fn compile_try(
         }
         compilers[ci].chunk.emit(OpCode::EndTry);
         let _end = compilers[ci].chunk.here();
-        compilers[ci]
-            .chunk
-            .patch_i16(try_pos + 3, (finally_target as i64 - operand_end as i64) as i16);
-        compilers[ci]
-            .chunk
-            .patch_i16(try_pos + 5, (finally_target as i64 - operand_end as i64) as i16);
+        compilers[ci].chunk.patch_i16(
+            try_pos + 3,
+            (finally_target as i64 - operand_end as i64) as i16,
+        );
+        compilers[ci].chunk.patch_i16(
+            try_pos + 5,
+            (finally_target as i64 - operand_end as i64) as i16,
+        );
         patch_jump(&mut compilers[ci].chunk, success_jump, finally_target)?;
     }
     Ok(())
@@ -945,18 +966,18 @@ fn compile_class(
     Ok(VmClassProto {
         name: decl.name.clone(),
         parent: decl.parent.clone(),
-        fields: decl.fields.iter().map(|f| (f.name.clone(), f.vis)).collect(),
+        fields: decl
+            .fields
+            .iter()
+            .map(|f| (f.name.clone(), f.vis))
+            .collect(),
         methods,
     })
 }
 
 // ------------------------------------------------------------- expressions
 
-fn compile_expr(
-    compilers: &mut Vec<Compiler>,
-    ci: usize,
-    e: &Expr,
-) -> Result<(), Diagnostic> {
+fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<(), Diagnostic> {
     compilers[ci].chunk.set_span(e.span().clone());
     match e {
         Expr::Int(i, _) => {
@@ -1047,8 +1068,7 @@ fn compile_expr(
             compile_expr(compilers, ci, l)?;
             match op {
                 LogOp::And => {
-                    let false_jump =
-                        emit_jump(&mut compilers[ci].chunk, OpCode::JumpIfFalse);
+                    let false_jump = emit_jump(&mut compilers[ci].chunk, OpCode::JumpIfFalse);
                     compile_expr(compilers, ci, r)?;
                     compilers[ci].chunk.emit(OpCode::Truthy);
                     let end_jump = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
@@ -1059,8 +1079,7 @@ fn compile_expr(
                     patch_jump(&mut compilers[ci].chunk, end_jump, end)?;
                 }
                 LogOp::Or => {
-                    let true_jump =
-                        emit_jump(&mut compilers[ci].chunk, OpCode::JumpIfTrue);
+                    let true_jump = emit_jump(&mut compilers[ci].chunk, OpCode::JumpIfTrue);
                     compile_expr(compilers, ci, r)?;
                     compilers[ci].chunk.emit(OpCode::Truthy);
                     let end_jump = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
@@ -1073,10 +1092,7 @@ fn compile_expr(
             }
         }
         Expr::Assign {
-            target,
-            op,
-            value,
-            ..
+            target, op, value, ..
         } => compile_assign(compilers, ci, target, *op, value)?,
         Expr::Call { callee, args, span } => {
             if let Expr::Ident(name, _) = &**callee {
@@ -1385,7 +1401,9 @@ fn emit_closure_syncs(compilers: &mut [Compiler], ci: usize, f: &VmFuncProto) {
 fn emit_pending_syncs(compilers: &mut [Compiler], ci: usize) {
     let syncs = std::mem::take(&mut compilers[ci].pending_syncs);
     for (slot, idx) in syncs {
-        compilers[ci].chunk.emit_u8_u8(OpCode::CaptureSync, slot as u8, idx);
+        compilers[ci]
+            .chunk
+            .emit_u8_u8(OpCode::CaptureSync, slot as u8, idx);
     }
 }
 
@@ -1398,11 +1416,7 @@ fn emit_jump(chunk: &mut Chunk, op: OpCode) -> usize {
     chunk.code.len() - 2
 }
 
-fn patch_jump(
-    chunk: &mut Chunk,
-    operand_pos: usize,
-    target: usize,
-) -> Result<(), Diagnostic> {
+fn patch_jump(chunk: &mut Chunk, operand_pos: usize, target: usize) -> Result<(), Diagnostic> {
     let diff = target as i64 - (operand_pos as i64 + 2);
     // Jump offsets are 2-byte i16 operands; a function body larger than 32 KiB
     // would previously wrap silently and produce a mis-jumping chunk.

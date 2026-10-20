@@ -13,7 +13,8 @@ fn bin() -> PathBuf {
 }
 
 fn write_case(name: &str, src: &str) -> String {
-    let path = std::env::temp_dir().join(format!("spid3r_gc_{}_{}.matrix", name, std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("spid3r_gc_{}_{}.matrix", name, std::process::id()));
     std::fs::write(&path, src).expect("write case");
     path.to_string_lossy().to_string()
 }
@@ -99,7 +100,11 @@ fn gc_reclaims_instance_and_map_self_cycles() {
         "only the live cycle should survive the 4000 garbage cycles, got {}",
         live
     );
-    assert_eq!(lines[1], "true", "the live self-cycle must be intact: {}", out);
+    assert_eq!(
+        lines[1], "true",
+        "the live self-cycle must be intact: {}",
+        out
+    );
 }
 
 #[test]
@@ -153,7 +158,11 @@ fn gc_never_frees_live_data() {
     let path = write_case("live", src);
     let (code, out, err) = run(&path, Some("1"));
     assert_eq!(code, 0, "run failed: {}{}", out, err);
-    assert_eq!(out, "123\n3\n", "live data must survive collection: {}", out);
+    assert_eq!(
+        out, "123\n3\n",
+        "live data must survive collection: {}",
+        out
+    );
 }
 
 #[test]
@@ -224,4 +233,3 @@ fn gc_reclaims_cycles_across_all_container_types() {
         before, after
     );
 }
-

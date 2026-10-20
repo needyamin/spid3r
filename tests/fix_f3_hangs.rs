@@ -24,7 +24,8 @@ fn bin() -> PathBuf {
 }
 
 fn run_with_deadline(engine: &str, src: &str, name: &str) -> Result<String, String> {
-    let path = std::env::temp_dir().join(format!("spid3r_f3_{}_{}.matrix", name, std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("spid3r_f3_{}_{}.matrix", name, std::process::id()));
     std::fs::write(&path, src).map_err(|e| format!("write {}: {}", path.display(), e))?;
     let mut child = Command::new(bin())
         .args(["run", "--engine", engine])
@@ -117,8 +118,8 @@ const P06_LINKED_LIST_SELF_TO_LIST: &str = r#"fn main() {
 #[test]
 fn for_in_over_self_containing_list_terminates() {
     for engine in ["tree", "vm"] {
-        let out = run_with_deadline(engine, P01_FOR_IN_SELF, "p01")
-            .unwrap_or_else(|e| panic!("{}", e));
+        let out =
+            run_with_deadline(engine, P01_FOR_IN_SELF, "p01").unwrap_or_else(|e| panic!("{}", e));
         assert!(out.contains("before for"), "[{}] {}", engine, out);
         assert!(out.contains("iterating"), "[{}] {}", engine, out);
         assert!(out.contains("after for"), "[{}] {}", engine, out);
@@ -175,8 +176,7 @@ fn normal_iteration_is_unaffected() {
 }
 "#;
     for engine in ["tree", "vm"] {
-        let out = run_with_deadline(engine, src, "normal")
-            .unwrap_or_else(|e| panic!("{}", e));
+        let out = run_with_deadline(engine, src, "normal").unwrap_or_else(|e| panic!("{}", e));
         assert!(out.contains("123"), "[{}] {}", engine, out);
         assert!(out.contains("2"), "[{}] {}", engine, out);
     }

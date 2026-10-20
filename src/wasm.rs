@@ -3,7 +3,6 @@
 //! Provides zero-dependency, C-ABI and Rust APIs to check, evaluate, and
 //! format Spid3r programs in browser environments, Node.js, Deno, or Workers.
 
-use std::sync::Arc;
 use crate::fmt;
 use crate::interpreter::Interp;
 use crate::modules;
@@ -13,6 +12,7 @@ use crate::stdlib;
 use crate::value::display_value;
 use crate::vm::Vm;
 use crate::{LANGUAGE_VERSION, VERSION};
+use std::sync::Arc;
 
 /// Escape a string for JSON output without external crates.
 fn json_escape(s: &str) -> String {

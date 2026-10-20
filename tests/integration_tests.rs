@@ -24,10 +24,7 @@ fn write(dir: &Path, name: &str, src: &str) -> PathBuf {
 /// Run the built binary (cargo has already built it for `cargo test`).
 fn spid3r(args: &[&str]) -> (i32, String, String) {
     let exe = env!("CARGO_BIN_EXE_spid3r");
-    let out = Command::new(exe)
-        .args(args)
-        .output()
-        .expect("run spid3r");
+    let out = Command::new(exe).args(args).output().expect("run spid3r");
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).to_string(),
@@ -101,7 +98,11 @@ fn a_missing_module_is_a_clean_error() {
     );
     let (code, _out, err) = spid3r(&["run", main.to_str().unwrap()]);
     assert_eq!(code, 1);
-    assert!(err.contains("nope"), "error should name the module: {}", err);
+    assert!(
+        err.contains("nope"),
+        "error should name the module: {}",
+        err
+    );
 }
 
 #[test]
@@ -165,7 +166,11 @@ fn a_runtime_error_exits_1_with_a_message() {
     );
     let (code, _out, err) = spid3r(&["run", main.to_str().unwrap()]);
     assert_eq!(code, 1);
-    assert!(err.contains("error"), "stderr should carry a diagnostic: {}", err);
+    assert!(
+        err.contains("error"),
+        "stderr should carry a diagnostic: {}",
+        err
+    );
 }
 
 #[test]
@@ -333,12 +338,7 @@ fn example_count() -> usize {
     std::fs::read_dir(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"))
         .expect("read examples/")
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .map(|x| x == "matrix")
-                .unwrap_or(false)
-        })
+        .filter(|e| e.path().extension().map(|x| x == "matrix").unwrap_or(false))
         .count()
 }
 
@@ -349,14 +349,26 @@ fn compile_now_emits_and_runs_bytecode() {
     let dir = scratch("compile-ok");
     let main = write(&dir, "main.matrix", "fn main() { return 4; }");
     let (code, out, err) = spid3r(&["compile", main.to_str().unwrap()]);
-    assert_eq!(code, 0, "compile should now succeed\nstdout: {}\nstderr: {}", out, err);
-    assert!(out.contains("wrote"), "compile should report the written file: {}", out);
+    assert_eq!(
+        code, 0,
+        "compile should now succeed\nstdout: {}\nstderr: {}",
+        out, err
+    );
+    assert!(
+        out.contains("wrote"),
+        "compile should report the written file: {}",
+        out
+    );
 
     let mc = dir.join("main.matrixc");
     assert!(mc.exists(), "expected bytecode file at {:?}", mc);
 
     let (code2, out2, err2) = spid3r(&["exec", mc.to_str().unwrap()]);
-    assert_eq!(code2, 4, "exec should return the program's exit code\nstdout: {}\nstderr: {}", out2, err2);
+    assert_eq!(
+        code2, 4,
+        "exec should return the program's exit code\nstdout: {}\nstderr: {}",
+        out2, err2
+    );
 }
 
 #[test]

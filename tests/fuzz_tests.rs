@@ -9,7 +9,9 @@ use std::sync::Arc;
 use spid3r_lang::lexer;
 use spid3r_lang::parser;
 use spid3r_lang::semantic;
-use spid3r_lang::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc, validate_chunk, FORMAT_MAGIC, FORMAT_VERSION};
+use spid3r_lang::vm::bytecode::{
+    deserialize_vmfunc, serialize_vmfunc, validate_chunk, FORMAT_MAGIC, FORMAT_VERSION,
+};
 use spid3r_lang::vm::compile_program;
 
 struct Rng(u64);
@@ -91,13 +93,78 @@ fn fuzz_lexer_never_panics_on_mutated_and_arbitrary_inputs() {
 fn fuzz_parser_and_semantic_never_panic_on_mutated_token_streams() {
     let mut rng = Rng::new(0xA570_DA7A_1234_5678);
     let fragments = [
-        "fn", "async", "let", "const", "mut", "if", "elif", "else", "while", "for", "in",
-        "try", "catch", "finally", "throw", "return", "break", "continue", "class",
-        "extends", "implements", "interface", "pub", "priv", "new", "spawn", "await",
-        "import", "true", "false", "null", "and", "or", "not", "self",
-        "x", "y", "main", "Foo", "0", "1", "3.14", "\"str\"", "\"a{x}b\"",
-        "(", ")", "{", "}", "[", "]", ";", ",", ".", ":", "=", "+=", "-=", "*=", "/=", "%=",
-        "+", "-", "*", "/", "%", "==", "!=", "<", "<=", ">", ">=", "->",
+        "fn",
+        "async",
+        "let",
+        "const",
+        "mut",
+        "if",
+        "elif",
+        "else",
+        "while",
+        "for",
+        "in",
+        "try",
+        "catch",
+        "finally",
+        "throw",
+        "return",
+        "break",
+        "continue",
+        "class",
+        "extends",
+        "implements",
+        "interface",
+        "pub",
+        "priv",
+        "new",
+        "spawn",
+        "await",
+        "import",
+        "true",
+        "false",
+        "null",
+        "and",
+        "or",
+        "not",
+        "self",
+        "x",
+        "y",
+        "main",
+        "Foo",
+        "0",
+        "1",
+        "3.14",
+        "\"str\"",
+        "\"a{x}b\"",
+        "(",
+        ")",
+        "{",
+        "}",
+        "[",
+        "]",
+        ";",
+        ",",
+        ".",
+        ":",
+        "=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "+",
+        "-",
+        "*",
+        "/",
+        "%",
+        "==",
+        "!=",
+        "<",
+        "<=",
+        ">",
+        ">=",
+        "->",
     ];
 
     for _ in 0..1000 {
@@ -117,13 +184,25 @@ fn fuzz_parser_and_semantic_never_panic_on_mutated_token_streams() {
 
     // Stress deep nesting of different syntactic forms around MAX_PARSE_DEPTH.
     for depth in [64usize, 96, 128, 200] {
-        let nested_lists = format!("fn main() {{ let x = {}{}; }}", "[".repeat(depth), "]".repeat(depth));
+        let nested_lists = format!(
+            "fn main() {{ let x = {}{}; }}",
+            "[".repeat(depth),
+            "]".repeat(depth)
+        );
         let _ = parser::parse_file(&nested_lists, Arc::from("<fuzz_depth>"));
 
-        let nested_blocks = format!("fn main() {{ {}{} }}", "{ ".repeat(depth), " }".repeat(depth));
+        let nested_blocks = format!(
+            "fn main() {{ {}{} }}",
+            "{ ".repeat(depth),
+            " }".repeat(depth)
+        );
         let _ = parser::parse_file(&nested_blocks, Arc::from("<fuzz_depth>"));
 
-        let nested_calls = format!("fn main() {{ let x = {}1{}; }}", "f(".repeat(depth), ")".repeat(depth));
+        let nested_calls = format!(
+            "fn main() {{ let x = {}1{}; }}",
+            "f(".repeat(depth),
+            ")".repeat(depth)
+        );
         let _ = parser::parse_file(&nested_calls, Arc::from("<fuzz_depth>"));
     }
 }

@@ -28,7 +28,13 @@ pub fn flatten_imports(program: &Program, importer_file: &str) -> Result<Program
     if importer_path.is_file() {
         in_progress.insert(crate::modules::canonical_key(&importer_path));
     }
-    flatten_stmts(&program.stmts, importer_file, &mut out, &mut done, &mut in_progress)?;
+    flatten_stmts(
+        &program.stmts,
+        importer_file,
+        &mut out,
+        &mut done,
+        &mut in_progress,
+    )?;
     Ok(Program { stmts: out })
 }
 
@@ -111,17 +117,20 @@ mod tests {
 
     #[test]
     fn no_imports_passthrough() {
-        let program = crate::parser::parse_file("fn main() { return 0; }", std::sync::Arc::from("m"))
-            .expect("parse");
+        let program =
+            crate::parser::parse_file("fn main() { return 0; }", std::sync::Arc::from("m"))
+                .expect("parse");
         let flat = flatten_imports(&program, "m").expect("flatten");
         assert_eq!(flat.stmts.len(), program.stmts.len());
     }
 
     #[test]
     fn missing_module_errors() {
-        let program =
-            crate::parser::parse_file("import \"nope\";\nfn main() { return 0; }", std::sync::Arc::from("m"))
-                .expect("parse");
+        let program = crate::parser::parse_file(
+            "import \"nope\";\nfn main() { return 0; }",
+            std::sync::Arc::from("m"),
+        )
+        .expect("parse");
         let e = flatten_imports(&program, "m").unwrap_err();
         assert!(e.message.contains("not found"), "got: {}", e.message);
     }

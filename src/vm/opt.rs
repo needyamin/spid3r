@@ -264,8 +264,7 @@ fn optimize_body(chunk: &mut Chunk, stats: &mut OptStats) {
                 };
                 if let Some(cond) = cond {
                     let jump_op = ins[i + 1].op;
-                    let is_cond_jump =
-                        matches!(jump_op, OpCode::JumpIfFalse | OpCode::JumpIfTrue);
+                    let is_cond_jump = matches!(jump_op, OpCode::JumpIfFalse | OpCode::JumpIfTrue);
                     // A label may not point into the middle of the pair.
                     if is_cond_jump && !targets.contains(&ins[i + 1].old) {
                         let takes_branch = match jump_op {
@@ -306,10 +305,7 @@ fn optimize_body(chunk: &mut Chunk, stats: &mut OptStats) {
                 // [Not][JumpIfFalse] -> [JumpIfTrue] (and vice versa): the
                 // `Not` only exists to invert the branch.
                 if ins[i].op == OpCode::Not
-                    && matches!(
-                        ins[i + 1].op,
-                        OpCode::JumpIfFalse | OpCode::JumpIfTrue
-                    )
+                    && matches!(ins[i + 1].op, OpCode::JumpIfFalse | OpCode::JumpIfTrue)
                     && !targets.contains(&ins[i + 1].old)
                 {
                     ins[i + 1].op = if ins[i + 1].op == OpCode::JumpIfFalse {
@@ -341,10 +337,7 @@ fn optimize_body(chunk: &mut Chunk, stats: &mut OptStats) {
                 // [True|False|Null][Not] -> [False|True|True]
                 if ins[i + 1].op == OpCode::Not
                     && !targets.contains(&ins[i + 1].old)
-                    && matches!(
-                        ins[i].op,
-                        OpCode::True | OpCode::False | OpCode::Null
-                    )
+                    && matches!(ins[i].op, OpCode::True | OpCode::False | OpCode::Null)
                 {
                     let v = ins[i].op == OpCode::True;
                     ins[i] = Ins {
@@ -549,13 +542,7 @@ fn is_foldable(v: &Value) -> bool {
 /// for the dedicated values, a `Constant` otherwise. Booleans and null are
 /// deliberately NOT put in the constant pool: the bytecode codec only encodes
 /// Int/Float/Str.
-fn folded_push(
-    chunk: &Chunk,
-    extra: &mut Vec<Value>,
-    v: Value,
-    span: Span,
-    old: usize,
-) -> Ins {
+fn folded_push(chunk: &Chunk, extra: &mut Vec<Value>, v: Value, span: Span, old: usize) -> Ins {
     match v {
         Value::Bool(true) => Ins {
             op: OpCode::True,
@@ -626,17 +613,25 @@ mod tests {
     fn compile(src: &str) -> VmFunc {
         let program = parser::parse_file(src, Arc::from("t.matrix")).expect("parse");
         semantic::check_file(&program, true, "t.matrix").expect("check");
-        super::super::compile_program_unoptimized(&program, "t.matrix", &[]).expect("compile").0
+        super::super::compile_program_unoptimized(&program, "t.matrix", &[])
+            .expect("compile")
+            .0
     }
 
     /// Total bytecode size across the script chunk and every nested chunk.
     fn total_code_len(chunk: &Chunk) -> usize {
-        chunk.code.len() + chunk.functions.iter().map(|f| total_code_len(&f.chunk)).sum::<usize>()
+        chunk.code.len()
+            + chunk
+                .functions
+                .iter()
+                .map(|f| total_code_len(&f.chunk))
+                .sum::<usize>()
     }
 
     #[test]
     fn folds_arithmetic_constants() {
-        let mut f = compile("fn main() {\n    let x = 1 + 2 * 3;\n    println(x);\n    return 0;\n}\n");
+        let mut f =
+            compile("fn main() {\n    let x = 1 + 2 * 3;\n    println(x);\n    return 0;\n}\n");
         let before = total_code_len(&f.chunk);
         let stats = optimize_script(&mut f);
         assert!(stats.folded >= 2, "expected folds, got {:?}", stats);
@@ -658,7 +653,9 @@ mod tests {
 
     #[test]
     fn folds_string_concat_and_unary() {
-        let mut f = compile("fn main() {\n    println(\"a\" + \"b\");\n    println(-5);\n    return 0;\n}\n");
+        let mut f = compile(
+            "fn main() {\n    println(\"a\" + \"b\");\n    println(-5);\n    return 0;\n}\n",
+        );
         let stats = optimize_script(&mut f);
         assert!(stats.folded >= 2, "expected folds, got {:?}", stats);
     }
@@ -691,7 +688,12 @@ mod tests {
             "expected folding + dead-arm removal, got {:?}",
             stats
         );
-        assert!(after < before, "code should shrink: {} -> {}", before, after);
+        assert!(
+            after < before,
+            "code should shrink: {} -> {}",
+            before,
+            after
+        );
         assert_eq!(
             count_op(&f.chunk, OpCode::JumpIfFalse),
             0,
@@ -713,10 +715,15 @@ mod tests {
 
     #[test]
     fn double_negation_becomes_truthy() {
-        let src = "fn main() {\n    println(not not 0);\n    println(not not 1);\n    return 0;\n}\n";
+        let src =
+            "fn main() {\n    println(not not 0);\n    println(not not 1);\n    return 0;\n}\n";
         let mut f = compile(src);
         let stats = optimize_script(&mut f);
-        assert!(stats.folded >= 2, "expected not-not folding, got {:?}", stats);
+        assert!(
+            stats.folded >= 2,
+            "expected not-not folding, got {:?}",
+            stats
+        );
         let mut vm = super::super::Vm::new(Arc::from("t.matrix"), Vec::new());
         vm.run_compiled(Arc::new(f)).expect("run");
     }

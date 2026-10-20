@@ -29,8 +29,8 @@ use crate::sched::Scheduler;
 use crate::semantic;
 use crate::value::collections;
 use crate::value::{
-    new_ref, truthy, type_name, values_equal, NativeCtx, NativeFn, UpvalueCell,
-    Value, VmClass, VmFunc, VmInstanceData,
+    new_ref, truthy, type_name, values_equal, NativeCtx, NativeFn, UpvalueCell, Value, VmClass,
+    VmFunc, VmInstanceData,
 };
 use crate::vm::bytecode::*;
 pub use crate::vm::compiler::{compile_program, compile_program_unoptimized};
@@ -255,8 +255,7 @@ impl Vm {
     /// Run a program file: top-level statements, then `main`. Returns the
     /// process exit code.
     pub fn run_program(&mut self, program: &Program) -> Result<i32, Diagnostic> {
-        let (script, _public) =
-            compile_program(program, self.file.as_ref(), &self.module_dirs)?;
+        let (script, _public) = compile_program(program, self.file.as_ref(), &self.module_dirs)?;
         self.run_compiled(Arc::new(script))
     }
 
@@ -282,7 +281,8 @@ impl Vm {
             let main = self.globals.lock().unwrap().get("main").cloned();
             match main {
                 Some(Value::VFunc(f)) => {
-                    self.call_vfunc_frame(f, Vec::new()).map_err(|e| e.to_diag())?;
+                    self.call_vfunc_frame(f, Vec::new())
+                        .map_err(|e| e.to_diag())?;
                     let ret = self.run().map_err(|e| e.to_diag())?;
                     match ret {
                         Value::Int(i) => Ok(i as i32),
@@ -307,8 +307,7 @@ impl Vm {
 
     /// Run a module: top-level statements only, then collect its public names.
     fn run_module(&mut self, program: &Program) -> Result<Vec<(String, Value, bool)>, Diagnostic> {
-        let (script, public) =
-            compile_program(program, self.file.as_ref(), &self.module_dirs)?;
+        let (script, public) = compile_program(program, self.file.as_ref(), &self.module_dirs)?;
         // Mirror `run_compiled`: expose any embedded modules to the import path.
         {
             let mut emb = self.embedded.lock().unwrap();
@@ -326,9 +325,7 @@ impl Vm {
             .stmts
             .iter()
             .filter_map(|s| match s {
-                crate::ast::Stmt::Const { name, vis, .. }
-                    if *vis == crate::ast::Vis::Public =>
-                {
+                crate::ast::Stmt::Const { name, vis, .. } if *vis == crate::ast::Vis::Public => {
                     Some(name.clone())
                 }
                 _ => None,
@@ -534,7 +531,8 @@ impl Vm {
                                     }
                                 }
                             } else if next_op == OpCode::Constant as u8 && ip + 5 < code.len() {
-                                let cidx = u16::from_le_bytes([code[ip + 3], code[ip + 4]]) as usize;
+                                let cidx =
+                                    u16::from_le_bytes([code[ip + 3], code[ip + 4]]) as usize;
                                 let op2 = code[ip + 5];
                                 if op2 == OpCode::Add as u8
                                     && code.get(ip + 6) == Some(&(OpCode::SetLocal as u8))
@@ -879,8 +877,7 @@ impl Vm {
                 OpCode::Less => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
-                    if let (Some(Value::Int(a)), Value::Int(b)) =
-                        (self.frames[nf].slots.last(), &r)
+                    if let (Some(Value::Int(a)), Value::Int(b)) = (self.frames[nf].slots.last(), &r)
                     {
                         let res = *a < *b;
                         *self.frames[nf].slots.last_mut().unwrap() = Value::Bool(res);
@@ -1091,7 +1088,9 @@ impl Vm {
                                 } else if mname == "get" && argc == 1 {
                                     let key = self.frames[nf].slots.pop().unwrap();
                                     if let Ok(mk) = crate::value::as_map_key(&key) {
-                                        let found = if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
+                                        let found = if let Value::Map(m) =
+                                            &self.frames[nf].slots[recv_idx]
+                                        {
                                             let guard = m.lock().unwrap();
                                             guard.find(&mk).map(|i| guard.entries[i].1.clone())
                                         } else {
@@ -1113,7 +1112,9 @@ impl Vm {
                                 } else if mname == "has" && argc == 1 {
                                     let key = self.frames[nf].slots.pop().unwrap();
                                     if let Ok(mk) = crate::value::as_map_key(&key) {
-                                        let b = if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
+                                        let b = if let Value::Map(m) =
+                                            &self.frames[nf].slots[recv_idx]
+                                        {
                                             m.lock().unwrap().find(&mk).is_some()
                                         } else {
                                             false
@@ -1125,20 +1126,25 @@ impl Vm {
                                     }
                                 } else if !collections::seq::is_builtin_map_method(mname) {
                                     let key = crate::value::MapKey::Str(name.clone());
-                                    let found = if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
-                                        let guard = m.lock().unwrap();
-                                        guard.find(&key).map(|i| guard.entries[i].1.clone())
-                                    } else {
-                                        None
-                                    };
+                                    let found =
+                                        if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
+                                            let guard = m.lock().unwrap();
+                                            guard.find(&key).map(|i| guard.entries[i].1.clone())
+                                        } else {
+                                            None
+                                        };
                                     match found {
                                         Some(callee) => {
                                             let mut call_args = self.alloc_slots(argc);
-                                            call_args.extend(self.frames[nf].slots.drain((recv_idx + 1)..));
+                                            call_args.extend(
+                                                self.frames[nf].slots.drain((recv_idx + 1)..),
+                                            );
                                             self.frames[nf].slots.pop();
                                             match callee {
                                                 Value::VFunc(fd) => {
-                                                    if let Err(e) = self.call_vfunc_frame(fd, call_args) {
+                                                    if let Err(e) =
+                                                        self.call_vfunc_frame(fd, call_args)
+                                                    {
                                                         self.error = Some(e);
                                                         continue;
                                                     }
@@ -1162,14 +1168,18 @@ impl Vm {
                                                     }
                                                 }
                                                 Value::VClass(c) => {
-                                                    if let Err(e) = self.new_instance_vm(c, call_args) {
+                                                    if let Err(e) =
+                                                        self.new_instance_vm(c, call_args)
+                                                    {
                                                         self.error = Some(e);
                                                         continue;
                                                     }
                                                 }
                                                 Value::Class(cd) => {
                                                     let vc = tree_class_to_vclass(&cd);
-                                                    if let Err(e) = self.new_instance_vm(vc, call_args) {
+                                                    if let Err(e) =
+                                                        self.new_instance_vm(vc, call_args)
+                                                    {
                                                         self.error = Some(e);
                                                         continue;
                                                     }
@@ -1186,7 +1196,10 @@ impl Vm {
                                         }
                                         None => {
                                             self.frames[nf].slots.truncate(recv_idx);
-                                            self.fail(format!("map has no method or function '{}'", name));
+                                            self.fail(format!(
+                                                "map has no method or function '{}'",
+                                                name
+                                            ));
                                             continue;
                                         }
                                     }
@@ -1434,11 +1447,9 @@ impl Vm {
                     }
                     // If returning from inside a `finally` block, pop that handler
                     // and cancel any pending re-raise from its `try`/`catch`.
-                    while self
-                        .handlers
-                        .last()
-                        .is_some_and(|h| h.frame_depth == self.frames.len() && h.phase == HandlerPhase::Finally)
-                    {
+                    while self.handlers.last().is_some_and(|h| {
+                        h.frame_depth == self.frames.len() && h.phase == HandlerPhase::Finally
+                    }) {
                         self.handlers.pop();
                         self.reraise = None;
                     }
@@ -1735,9 +1746,8 @@ impl Vm {
                             for (name, value, _) in exports {
                                 entries.push((crate::value::MapKey::Str(name.into()), value));
                             }
-                            let map_val = Value::Map(new_ref(
-                                collections::MapData::from_entries(entries),
-                            ));
+                            let map_val =
+                                Value::Map(new_ref(collections::MapData::from_entries(entries)));
                             {
                                 let mut consts = self.global_consts.lock().unwrap();
                                 consts.insert(alias.to_string());
@@ -2242,9 +2252,10 @@ impl Vm {
                 // When no source exists on disk (pure `.matrixc` exec), fall
                 // back to a key derived from the import operand itself, which
                 // is already spelling-independent.
-                let resolved = self.resolve_module_path(path).ok().unwrap_or_else(|| {
-                    PathBuf::from(format!("<embedded:{}>", path))
-                });
+                let resolved = self
+                    .resolve_module_path(path)
+                    .ok()
+                    .unwrap_or_else(|| PathBuf::from(format!("<embedded:{}>", path)));
                 {
                     let cache = self.modules.lock().unwrap();
                     if let Some(exports) = cache.loaded.get(&resolved) {
@@ -2332,13 +2343,19 @@ impl Vm {
             span: d.span.unwrap_or_else(|| self.cur_span()),
             trace: Vec::new(),
         })?;
-        semantic::check_file(&program, false, &resolved.to_string_lossy()).map_err(|d| VmError {
-            thrown: None,
-            message: d.message,
-            span: d.span.unwrap_or_else(|| self.cur_span()),
-            trace: Vec::new(),
+        semantic::check_file(&program, false, &resolved.to_string_lossy()).map_err(|d| {
+            VmError {
+                thrown: None,
+                message: d.message,
+                span: d.span.unwrap_or_else(|| self.cur_span()),
+                trace: Vec::new(),
+            }
         })?;
-        self.modules.lock().unwrap().in_progress.push(resolved.clone());
+        self.modules
+            .lock()
+            .unwrap()
+            .in_progress
+            .push(resolved.clone());
         let mut module_dirs = self.module_dirs.clone();
         if let Some(dir) = resolved.parent() {
             module_dirs.push(dir.to_path_buf());
@@ -2360,7 +2377,11 @@ impl Vm {
         });
         self.modules.lock().unwrap().in_progress.pop();
         if let Ok(ref ex) = exports {
-            self.modules.lock().unwrap().loaded.insert(resolved, ex.clone());
+            self.modules
+                .lock()
+                .unwrap()
+                .loaded
+                .insert(resolved, ex.clone());
         }
         exports
     }
@@ -2486,14 +2507,16 @@ impl Vm {
             .functions
             .get(idx)
             .cloned()
-            .unwrap_or_else(|| std::sync::Arc::new(VmFuncProto {
-                name: None,
-                arity: 0,
-                is_async: false,
-                upvalues: Vec::new(),
-                own_upvalues: 0,
-                chunk: std::sync::Arc::new(Chunk::new()),
-            }))
+            .unwrap_or_else(|| {
+                std::sync::Arc::new(VmFuncProto {
+                    name: None,
+                    arity: 0,
+                    is_async: false,
+                    upvalues: Vec::new(),
+                    own_upvalues: 0,
+                    chunk: std::sync::Arc::new(Chunk::new()),
+                })
+            })
     }
 
     fn class_proto_at(&self, nf: usize, idx: usize) -> VmClassProto {

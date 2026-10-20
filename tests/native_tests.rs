@@ -51,7 +51,10 @@ fn run_exe(path: &str) -> Result<String, String> {
 /// The native backend links `LLVM-C.dll` beside the compiler (see build.rs);
 /// if it was not copied there, skip the whole module instead of failing.
 fn native_available() -> bool {
-    let dll = bin().parent().map(|d| d.join("LLVM-C.dll")).unwrap_or_default();
+    let dll = bin()
+        .parent()
+        .map(|d| d.join("LLVM-C.dll"))
+        .unwrap_or_default();
     dll.is_file()
 }
 
@@ -113,8 +116,8 @@ fn native_matches_tree_on_supported_examples() {
             }
         }
 
-        let native = run_exe(&exe)
-            .unwrap_or_else(|e| panic!("native run of {} failed:\n{}", path, e));
+        let native =
+            run_exe(&exe).unwrap_or_else(|e| panic!("native run of {} failed:\n{}", path, e));
         assert_eq!(tree, native, "tree vs native stdout differ for {}", path);
         checked += 1;
         let _ = std::fs::remove_file(&exe);
@@ -125,7 +128,10 @@ fn native_matches_tree_on_supported_examples() {
         "expected at least 10 examples to run natively, only {} did",
         checked
     );
-    eprintln!("native differential: {} passed, {} skipped (documented gaps)", checked, skipped);
+    eprintln!(
+        "native differential: {} passed, {} skipped (documented gaps)",
+        checked, skipped
+    );
 }
 
 #[test]
@@ -273,7 +279,10 @@ fn unsupported_features_are_rejected_with_clear_diagnostics() {
         (
             "class-in-fn",
             "fn main() { class A { fn new() {} } let a = new A(); return 0; }",
-            &["not supported by the native backend yet", "unexpected keyword 'class'"],
+            &[
+                "not supported by the native backend yet",
+                "unexpected keyword 'class'",
+            ],
         ),
     ];
     for (name, src, accepted) in cases {

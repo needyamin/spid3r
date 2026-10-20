@@ -8,8 +8,8 @@ use super::nodes::join_words;
 use super::seq::{
     make_list, unknown, value_cmp, want, want_index, want_int, want_num, want_str, MapData,
 };
-use crate::value::Ref;
 use super::{deep_clone, key_to_value, new_ref, values_equal, MapKey, Value};
+use crate::value::Ref;
 
 // -------------------------------------------------------------------- heap
 
@@ -1966,7 +1966,10 @@ impl MatrixData {
                     let a = want_int(&args[0], "matrix.sum")?;
                     self.sum(Some(a))
                 } else {
-                    Err(format!("matrix.sum expects 0 or 1 argument, got {}", args.len()))
+                    Err(format!(
+                        "matrix.sum expects 0 or 1 argument, got {}",
+                        args.len()
+                    ))
                 }
             }
             "mean" => {
@@ -1976,7 +1979,10 @@ impl MatrixData {
                     let a = want_int(&args[0], "matrix.mean")?;
                     self.mean(Some(a))
                 } else {
-                    Err(format!("matrix.mean expects 0 or 1 argument, got {}", args.len()))
+                    Err(format!(
+                        "matrix.mean expects 0 or 1 argument, got {}",
+                        args.len()
+                    ))
                 }
             }
             "solve" => {
@@ -2356,8 +2362,16 @@ pub fn bytes_from_base64(s: &str) -> Result<Vec<u8>, String> {
     for chunk in clean.as_chunks::<4>().0 {
         let v0 = b64_val(chunk[0])?;
         let v1 = b64_val(chunk[1])?;
-        let v2 = if chunk[2] == b'=' { 0 } else { b64_val(chunk[2])? };
-        let v3 = if chunk[3] == b'=' { 0 } else { b64_val(chunk[3])? };
+        let v2 = if chunk[2] == b'=' {
+            0
+        } else {
+            b64_val(chunk[2])?
+        };
+        let v3 = if chunk[3] == b'=' {
+            0
+        } else {
+            b64_val(chunk[3])?
+        };
 
         let b0 = (v0 << 2) | (v1 >> 4);
         out.push(b0);
@@ -2416,7 +2430,10 @@ pub fn bytes_method(cell: &Ref<Vec<u8>>, name: &str, args: &[Value]) -> Result<V
         }
         "slice" => {
             if args.is_empty() || args.len() > 2 {
-                return Err(format!("bytes.slice expects 1 or 2 arguments, got {}", args.len()));
+                return Err(format!(
+                    "bytes.slice expects 1 or 2 arguments, got {}",
+                    args.len()
+                ));
             }
             let b = cell.lock().unwrap();
             let len = b.len();
@@ -2440,7 +2457,9 @@ pub fn bytes_method(cell: &Ref<Vec<u8>>, name: &str, args: &[Value]) -> Result<V
             let b = cell.lock().unwrap();
             match std::str::from_utf8(&b) {
                 Ok(s) => Ok(Value::Result(Ok(Box::new(Value::Str(s.into()))))),
-                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(format!("utf-8 error: {}", e).into()))))),
+                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(
+                    format!("utf-8 error: {}", e).into(),
+                ))))),
             }
         }
         "to_hex" => {
@@ -2478,7 +2497,11 @@ pub fn bytes_method(cell: &Ref<Vec<u8>>, name: &str, args: &[Value]) -> Result<V
 
 pub enum NpyLoaded {
     Vector(Vec<f64>),
-    Matrix { rows: usize, cols: usize, data: Vec<f64> },
+    Matrix {
+        rows: usize,
+        cols: usize,
+        data: Vec<f64>,
+    },
 }
 
 pub fn save_npy_file(path: &str, shape: &[usize], data: &[f64]) -> Result<(), String> {
@@ -2490,7 +2513,10 @@ pub fn save_npy_file(path: &str, shape: &[usize], data: &[f64]) -> Result<(), St
         return Err("npy save only supports 1D and 2D arrays".to_string());
     };
 
-    let dict = format!("{{'descr': '<f8', 'fortran_order': False, 'shape': {}}}", shape_str);
+    let dict = format!(
+        "{{'descr': '<f8', 'fortran_order': False, 'shape': {}}}",
+        shape_str
+    );
     let unpadded_len = 10 + dict.len() + 1; // +1 for trailing '\n'
     let pad = (64 - (unpadded_len % 64)) % 64;
     let mut header = dict;
@@ -2514,7 +2540,8 @@ pub fn save_npy_file(path: &str, shape: &[usize], data: &[f64]) -> Result<(), St
 }
 
 pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read npy file '{}': {}", path, e))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("cannot read npy file '{}': {}", path, e))?;
     if bytes.len() < 10 {
         return Err("npy file is too short (truncated header)".to_string());
     }
@@ -2531,11 +2558,17 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
     let h_str = std::str::from_utf8(&bytes[10..10 + h_len])
         .map_err(|_| "npy header is not valid utf-8/ascii".to_string())?;
 
-    if !h_str.contains("'<f8'") && !h_str.contains("\"<f8\"") && !h_str.contains("'|f8'") && !h_str.contains("\"|f8\"") {
+    if !h_str.contains("'<f8'")
+        && !h_str.contains("\"<f8\"")
+        && !h_str.contains("'|f8'")
+        && !h_str.contains("\"|f8\"")
+    {
         return Err(format!("unsupported npy dtype in header: {}", h_str));
     }
 
-    let open_paren = h_str.find('(').ok_or_else(|| "missing shape in npy header".to_string())?;
+    let open_paren = h_str
+        .find('(')
+        .ok_or_else(|| "missing shape in npy header".to_string())?;
     let close_paren = h_str[open_paren..]
         .find(')')
         .ok_or_else(|| "unterminated shape in npy header".to_string())?
@@ -2545,7 +2578,10 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| s.parse::<usize>().map_err(|_| format!("invalid dimension '{}'", s)))
+        .map(|s| {
+            s.parse::<usize>()
+                .map_err(|_| format!("invalid dimension '{}'", s))
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     let payload = &bytes[10 + h_len..];
@@ -2585,7 +2621,6 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
         ))
     }
 }
-
 
 // ------------------------------------------------------- detached operations
 
@@ -2730,10 +2765,10 @@ pub fn graph_detached(
                 let g = d.lock().unwrap().clone();
                 (g.index_of(&args[0]), g.index_of(&args[1]))
             };
-            let ia = ia
-                .ok_or_else(|| format!("edge endpoint is not a node: {}", short(&args[0])))?;
-            let ib = ib
-                .ok_or_else(|| format!("edge endpoint is not a node: {}", short(&args[1])))?;
+            let ia =
+                ia.ok_or_else(|| format!("edge endpoint is not a node: {}", short(&args[0])))?;
+            let ib =
+                ib.ok_or_else(|| format!("edge endpoint is not a node: {}", short(&args[1])))?;
             let mut g = d.lock().unwrap();
             if ia >= g.adj.len() || ib >= g.nodes.len() {
                 return Err("edge endpoint is not a node".to_string());

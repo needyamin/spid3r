@@ -470,7 +470,10 @@ pub fn collect() -> usize {
 
     // Strong counts, read before any upgrade (so our own temporary refs are not
     // counted).
-    let strong: Vec<usize> = snapshot.iter().map(|(_, w, _, _)| w.strong_count()).collect();
+    let strong: Vec<usize> = snapshot
+        .iter()
+        .map(|(_, w, _, _)| w.strong_count())
+        .collect();
 
     let mut index: HashMap<usize, usize> = HashMap::with_capacity(n);
     for (i, (id, _, _, _)) in snapshot.iter().enumerate() {

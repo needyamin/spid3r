@@ -241,12 +241,14 @@ fn local_fn_shadowing_an_import_is_rejected() {
     let mod_path = dir.join("shadow_mod.matrix");
     std::fs::write(&mod_path, "public fn helper() {\n    return 1;\n}\n").unwrap();
     let main_path = dir.join("main.matrix");
-    let src = "import \"shadow_mod\";\nfn helper() {\n    return 2;\n}\nfn main() {\n    return 0;\n}\n";
+    let src =
+        "import \"shadow_mod\";\nfn helper() {\n    return 2;\n}\nfn main() {\n    return 0;\n}\n";
     std::fs::write(&main_path, src).unwrap();
     let program = parser::parse_file(src, Arc::from(main_path.to_str().unwrap())).unwrap();
     let err = semantic::check_file(&program, true, main_path.to_str().unwrap()).unwrap_err();
     assert!(
-        err.message.contains("local 'helper' shadows an imported binding"),
+        err.message
+            .contains("local 'helper' shadows an imported binding"),
         "got: {}",
         err.message
     );
@@ -256,7 +258,8 @@ fn local_fn_shadowing_an_import_is_rejected() {
     let program2 = parser::parse_file(src2, Arc::from(main_path.to_str().unwrap())).unwrap();
     let err2 = semantic::check_file(&program2, true, main_path.to_str().unwrap()).unwrap_err();
     assert!(
-        err2.message.contains("local 'helper' shadows an imported binding"),
+        err2.message
+            .contains("local 'helper' shadows an imported binding"),
         "got: {}",
         err2.message
     );
@@ -282,7 +285,8 @@ fn import_shadowing_a_known_local_is_rejected_in_repl_mode() {
     )
     .unwrap_err();
     assert!(
-        err.message.contains("import 'helper' shadows a local binding"),
+        err.message
+            .contains("import 'helper' shadows a local binding"),
         "got: {}",
         err.message
     );
@@ -371,7 +375,9 @@ fn rebound_return_type_propagates() {
 
 #[test]
 fn correct_rebound_calls_still_run() {
-    expect_ok(r#"fn f(x: int) -> int { return x + 1; } fn main() { let g = f; println(g(41)); return 0; }"#);
+    expect_ok(
+        r#"fn f(x: int) -> int { return x + 1; } fn main() { let g = f; println(g(41)); return 0; }"#,
+    );
 }
 
 #[test]

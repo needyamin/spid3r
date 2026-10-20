@@ -410,10 +410,7 @@ impl Scheduler {
     pub fn current() -> Option<Arc<Scheduler>> {
         let slot = SCHED.get_or_init(|| Mutex::new(None));
         let guard = slot.lock().unwrap();
-        guard
-            .as_ref()
-            .filter(|sched| !sched.is_stopped())
-            .cloned()
+        guard.as_ref().filter(|sched| !sched.is_stopped()).cloned()
     }
 
     fn start() -> Arc<Scheduler> {
@@ -449,10 +446,7 @@ impl Scheduler {
             cv: Condvar::new(),
             space_cv: Condvar::new(),
             queue_cap,
-            workers: Mutex::new(Workers {
-                alive: 0,
-                busy: 0,
-            }),
+            workers: Mutex::new(Workers { alive: 0, busy: 0 }),
             base,
             max_workers,
             handles: Mutex::new(Vec::new()),

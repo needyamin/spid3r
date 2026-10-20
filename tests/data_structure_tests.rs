@@ -27,7 +27,10 @@ fn expect_err(src: &str, needle: &str) {
             d.message,
             needle
         ),
-        Ok(code) => panic!("expected failure mentioning {}, exited with {}", needle, code),
+        Ok(code) => panic!(
+            "expected failure mentioning {}, exited with {}",
+            needle, code
+        ),
     }
 }
 
@@ -954,5 +957,3 @@ fn datetime_builtin_tests() {
     "#,
     );
 }
-
-

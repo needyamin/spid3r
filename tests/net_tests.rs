@@ -1,13 +1,13 @@
 //! Networking & HTTP tests: TCP sockets, HTTP framing, URL helpers,
 //! and the pure-Spid3r HttpServer framework on both tree and VM engines.
 
-use std::sync::Arc;
 use spid3r_lang::diagnostics::Diagnostic;
 use spid3r_lang::interpreter::Interp;
 use spid3r_lang::modules;
 use spid3r_lang::parser;
 use spid3r_lang::semantic;
 use spid3r_lang::vm::Vm;
+use std::sync::Arc;
 
 fn run_tree(src: &str) -> Result<i32, Diagnostic> {
     let program = parser::parse_file(src, Arc::from("net_test.matrix"))?;

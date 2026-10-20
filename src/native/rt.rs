@@ -40,9 +40,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::ast::{BinOp, UnOp};
 use crate::sched::Scheduler;
 use crate::value::collections;
-use crate::value::{
-    new_ref, NativeCtx, NativeFn, Value, CompiledFn, CompiledInstanceData,
-};
+use crate::value::{new_ref, CompiledFn, CompiledInstanceData, NativeCtx, NativeFn, Value};
 use crate::vm::{vm_eval_binary, vm_eval_unary};
 
 // ----------------------------------------------------------------------------
@@ -121,7 +119,9 @@ pub extern "C" fn spid3r_threw() -> u8 {
 /// pending. A `try` handler calls this to obtain the exception it caught.
 #[no_mangle]
 pub extern "C" fn spid3r_take_thrown() -> *mut Value {
-    THROWN.with(|t| t.borrow_mut().take()).unwrap_or(std::ptr::null_mut())
+    THROWN
+        .with(|t| t.borrow_mut().take())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Read the pending thrown value without clearing it (for the uncaught path).
@@ -168,11 +168,7 @@ fn rt_throw_value(v: Value) -> *mut Value {
 /// the runtime's normal error channel: `on_panic` turns it into a pending throw
 /// (so the generated `spid3r_threw` guard unwinds the script and the program
 /// exits 1 with a message), or supplies a safe sentinel for setup calls.
-fn ffi_guard<T>(
-    what: &str,
-    on_panic: impl FnOnce(String) -> T,
-    f: impl FnOnce() -> T,
-) -> T {
+fn ffi_guard<T>(what: &str, on_panic: impl FnOnce(String) -> T, f: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(v) => v,
         Err(payload) => {
@@ -181,7 +177,10 @@ fn ffi_guard<T>(
                 .map(|s| s.to_string())
                 .or_else(|| payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            eprintln!("spid3r: internal error in the native runtime ({}): {}", what, detail);
+            eprintln!(
+                "spid3r: internal error in the native runtime ({}): {}",
+                what, detail
+            );
             on_panic(detail)
         }
     }
@@ -448,7 +447,10 @@ fn spid3r_call_inner(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mu
             }
         }
         Value::CClass(c) => construct_cinstance(c, unsafe { args_vec(argc, argv) }),
-        other => abort(&format!("{} is not callable", crate::value::type_name(&other))),
+        other => abort(&format!(
+            "{} is not callable",
+            crate::value::type_name(&other)
+        )),
     }
 }
 
@@ -531,7 +533,11 @@ fn make_fn_inner(
 
 /// `list(...)`, `map(...)`, `stack(...)` ... via the shared collections layer.
 #[no_mangle]
-pub extern "C" fn spid3r_construct(name: *const c_char, argc: usize, argv: *const *mut Value) -> *mut Value {
+pub extern "C" fn spid3r_construct(
+    name: *const c_char,
+    argc: usize,
+    argv: *const *mut Value,
+) -> *mut Value {
     let name = cstr(name);
     let args = unsafe { args_vec(argc, argv) };
     match collections::construct(&name, args) {
@@ -820,11 +826,7 @@ pub extern "C" fn spid3r_cell_get(cell: *mut UpvalueSlot) -> *mut Value {
     if cell.is_null() {
         abort("native runtime: null upvalue cell");
     }
-    unsafe {
-        (*cell)
-            .value
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
+    unsafe { (*cell).value.load(std::sync::atomic::Ordering::SeqCst) }
 }
 
 #[no_mangle]
@@ -832,11 +834,7 @@ pub extern "C" fn spid3r_cell_set(cell: *mut UpvalueSlot, v: *mut Value) {
     if cell.is_null() {
         abort("native runtime: null upvalue cell");
     }
-    unsafe {
-        (*cell)
-            .value
-            .store(v, std::sync::atomic::Ordering::SeqCst)
-    };
+    unsafe { (*cell).value.store(v, std::sync::atomic::Ordering::SeqCst) };
 }
 
 /// Allocate the captured-variable array of a closure environment.
@@ -964,7 +962,9 @@ pub extern "C" fn spid3r_class_add_method(
         code,
         env: std::ptr::null_mut(),
     });
-    class_mut(class).methods.insert(name, (crate::ast::Vis::Public, f));
+    class_mut(class)
+        .methods
+        .insert(name, (crate::ast::Vis::Public, f));
 }
 
 #[no_mangle]
@@ -983,7 +983,10 @@ pub extern "C" fn spid3r_class_set_ctor(class: *const Value, arity: usize, code:
 
 /// Construct an instance of a compiled class: initialize fields along the
 /// inheritance chain (root first), then run the nearest constructor (if any).
-pub fn construct_cinstance(class: std::sync::Arc<crate::value::CompiledClass>, args: Vec<Value>) -> *mut Value {
+pub fn construct_cinstance(
+    class: std::sync::Arc<crate::value::CompiledClass>,
+    args: Vec<Value>,
+) -> *mut Value {
     let mut fields: HashMap<String, Value> = HashMap::new();
     let mut chain: Vec<std::sync::Arc<crate::value::CompiledClass>> = Vec::new();
     let mut cur = Some(class.clone());
@@ -1158,7 +1161,10 @@ unsafe impl Send for SendCfn {}
 pub extern "C" fn spid3r_spawn(f: *mut Value) -> *mut Value {
     match to_owned(f) {
         Value::Cfn(c) => {
-            let cfn = SendCfn { code: c.code, env: c.env };
+            let cfn = SendCfn {
+                code: c.code,
+                env: c.env,
+            };
             let sched = Scheduler::shared();
             let handle = sched.spawn_job(Box::new(move || {
                 // Bind the whole `SendCfn` into a local so edition-2021 disjoint
@@ -1323,11 +1329,7 @@ mod tests {
             spid3r_value_int(2),
             spid3r_value_int(3),
         ];
-        let list = spid3r_construct(
-            CString::new("list").unwrap().as_ptr(),
-            3,
-            items.as_ptr(),
-        );
+        let list = spid3r_construct(CString::new("list").unwrap().as_ptr(), 3, items.as_ptr());
         let it = spid3r_forin_start(list);
         let mut seen = Vec::new();
         loop {
@@ -1355,11 +1357,7 @@ mod tests {
     fn method_dispatch_on_list_len() {
         let name = CString::new("len").unwrap();
         let items = [spid3r_value_int(1), spid3r_value_int(2)];
-        let list = spid3r_construct(
-            CString::new("list").unwrap().as_ptr(),
-            2,
-            items.as_ptr(),
-        );
+        let list = spid3r_construct(CString::new("list").unwrap().as_ptr(), 2, items.as_ptr());
         let r = spid3r_method(list, name.as_ptr(), 0, std::ptr::null());
         assert!(matches!(owned(r), Value::Int(2)));
     }
@@ -1373,11 +1371,7 @@ mod tests {
                 CString::new("__RtPoint").unwrap().as_ptr(),
                 std::ptr::null(),
             );
-            spid3r_class_add_field(
-                cls,
-                CString::new("x").unwrap().as_ptr(),
-                1,
-            );
+            spid3r_class_add_field(cls, CString::new("x").unwrap().as_ptr(), 1);
             set_probe_ctor(cls);
             spid3r_global_set(CString::new("__RtPoint").unwrap().as_ptr(), cls);
 
@@ -1397,11 +1391,7 @@ mod tests {
     /// Attach a plain Rust constructor with the compiled ABI to `cls`:
     /// self at argv[0], store argv[1] into field "x" of the receiver.
     unsafe fn set_probe_ctor(cls: *mut Value) {
-        extern "C" fn ctor(
-            _env: *mut c_void,
-            argc: u64,
-            argv: *const *mut Value,
-        ) -> *mut Value {
+        extern "C" fn ctor(_env: *mut c_void, argc: u64, argv: *const *mut Value) -> *mut Value {
             assert_eq!(argc, 2);
             unsafe {
                 let recv = *argv;

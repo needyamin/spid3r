@@ -6,11 +6,7 @@
 use crate::value::collections::{make_list, MapData};
 use crate::value::{new_ref, MapKey, Value};
 
-pub fn parse_csv_text(
-    text: &str,
-    delimiter: char,
-    has_header: bool,
-) -> Result<Value, String> {
+pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<Value, String> {
     let mut raw_rows: Vec<Vec<String>> = Vec::new();
     let mut cur_row: Vec<String> = Vec::new();
     let mut cur_field = String::new();
@@ -138,10 +134,7 @@ pub fn write_csv_file(path: &str, headers: &[Value], rows: &[Value]) -> Result<V
     let mut out = String::new();
 
     // Headers
-    let header_strs: Vec<String> = headers
-        .iter()
-        .map(|h| format_csv_field(h, ','))
-        .collect();
+    let header_strs: Vec<String> = headers.iter().map(|h| format_csv_field(h, ',')).collect();
     out.push_str(&header_strs.join(","));
     out.push('\n');
 

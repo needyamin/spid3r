@@ -375,11 +375,10 @@ fn cmd_bundle(args: &[String]) -> Result<i32, Diagnostic> {
             match args[i].as_str() {
                 "--target" => {
                     i += 1;
-                    let t_str = args
-                        .get(i)
-                        .ok_or_else(|| usage("--target needs a value (wasm, desktop, or android)"))?;
-                    target = crate::bundle::BundleTarget::parse(t_str)
-                        .map_err(|e| usage(&e))?;
+                    let t_str = args.get(i).ok_or_else(|| {
+                        usage("--target needs a value (wasm, desktop, or android)")
+                    })?;
+                    target = crate::bundle::BundleTarget::parse(t_str).map_err(|e| usage(&e))?;
                 }
                 "--html" => {
                     i += 1;
@@ -456,7 +455,11 @@ fn cmd_compile(args: &[String]) -> Result<i32, Diagnostic> {
     compile_file(
         &file,
         out.as_deref(),
-        CompileOptions { dump, no_opt, entry: false },
+        CompileOptions {
+            dump,
+            no_opt,
+            entry: false,
+        },
     )
 }
 
@@ -471,11 +474,7 @@ struct CompileOptions {
     entry: bool,
 }
 
-fn compile_file(
-    file: &str,
-    out: Option<&str>,
-    opts: CompileOptions,
-) -> Result<i32, Diagnostic> {
+fn compile_file(file: &str, out: Option<&str>, opts: CompileOptions) -> Result<i32, Diagnostic> {
     let (src, file_name) = read_source(file)?;
     let program = parser::parse_file(&src, file_name)?;
     // A file without `fn main` is a library module: check it without the
@@ -516,9 +515,8 @@ fn compile_file(
     };
     if let Some(parent) = Path::new(&out_path).parent() {
         if !parent.as_os_str().is_empty() && !parent.is_dir() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                usage(&format!("cannot create '{}': {}", parent.display(), e))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| usage(&format!("cannot create '{}': {}", parent.display(), e)))?;
         }
     }
     std::fs::write(&out_path, bytes)
@@ -590,7 +588,10 @@ fn cmd_test(_args: &[String]) -> Result<i32, Diagnostic> {
         ));
     }
     let bin = std::env::current_exe().map_err(|e| {
-        Diagnostic::new(Phase::Usage, format!("cannot locate the spid3r binary: {}", e))
+        Diagnostic::new(
+            Phase::Usage,
+            format!("cannot locate the spid3r binary: {}", e),
+        )
     })?;
     let mut files: Vec<PathBuf> = std::fs::read_dir(&root)
         .map_err(|e| usage(&format!("cannot read examples/: {}", e)))?
@@ -607,11 +608,21 @@ fn cmd_test(_args: &[String]) -> Result<i32, Diagnostic> {
         let is_program = has_main_fn(&path);
         let result: Result<(), String> = if is_program {
             // Differential test: all three engines must produce identical stdout.
-            let tree = run_capture(&bin, &["run", "--engine", "tree", f.as_os_str().to_str().unwrap()]);
-            let vm = run_capture(&bin, &["run", "--engine", "vm", f.as_os_str().to_str().unwrap()]);
-            let tc = std::env::temp_dir().join(format!("spid3r_test_{}.matrixc", name.replace('.', "_")));
+            let tree = run_capture(
+                &bin,
+                &["run", "--engine", "tree", f.as_os_str().to_str().unwrap()],
+            );
+            let vm = run_capture(
+                &bin,
+                &["run", "--engine", "vm", f.as_os_str().to_str().unwrap()],
+            );
+            let tc = std::env::temp_dir()
+                .join(format!("spid3r_test_{}.matrixc", name.replace('.', "_")));
             let tc = tc.to_string_lossy().to_string();
-            let compiled = run_capture(&bin, &["compile", f.as_os_str().to_str().unwrap(), "-o", &tc]);
+            let compiled = run_capture(
+                &bin,
+                &["compile", f.as_os_str().to_str().unwrap(), "-o", &tc],
+            );
             let exec_out = match &compiled {
                 Ok(_) => run_capture(&bin, &["exec", &tc]),
                 Err(e) => Err(e.clone()),
@@ -638,7 +649,11 @@ fn cmd_test(_args: &[String]) -> Result<i32, Diagnostic> {
                 println!(
                     "ok   {} {}",
                     name,
-                    if is_program { "(tree==vm==exec)" } else { "(library: checked)" }
+                    if is_program {
+                        "(tree==vm==exec)"
+                    } else {
+                        "(library: checked)"
+                    }
                 );
                 ok += 1;
             }
@@ -667,7 +682,10 @@ fn project_test_in(dir: &Path) -> Result<(usize, usize), Diagnostic> {
         return Ok((0, 0));
     }
     let bin = std::env::current_exe().map_err(|e| {
-        Diagnostic::new(Phase::Usage, format!("cannot locate the spid3r binary: {}", e))
+        Diagnostic::new(
+            Phase::Usage,
+            format!("cannot locate the spid3r binary: {}", e),
+        )
     })?;
     let mut files: Vec<PathBuf> = std::fs::read_dir(&tests)
         .map_err(|e| usage(&format!("cannot read tests/: {}", e)))?
@@ -705,13 +723,11 @@ fn project_test_in(dir: &Path) -> Result<(usize, usize), Diagnostic> {
             }
         } else {
             // Library: the semantic check runs in the member directory.
-            let saved = std::env::current_dir()
-                .map_err(|e| usage(&format!("cannot read cwd: {}", e)))?;
+            let saved =
+                std::env::current_dir().map_err(|e| usage(&format!("cannot read cwd: {}", e)))?;
             std::env::set_current_dir(dir)
                 .map_err(|e| usage(&format!("cannot enter {}: {}", dir.display(), e)))?;
-            let r = cmd_check(&[path])
-                .map(|_| ())
-                .map_err(|d| d.message);
+            let r = cmd_check(&[path]).map(|_| ()).map_err(|d| d.message);
             let _ = std::env::set_current_dir(saved);
             r
         };
@@ -720,7 +736,11 @@ fn project_test_in(dir: &Path) -> Result<(usize, usize), Diagnostic> {
                 println!(
                     "ok   tests/{} {}",
                     name,
-                    if is_program { "(tree==vm)" } else { "(library: checked)" }
+                    if is_program {
+                        "(tree==vm)"
+                    } else {
+                        "(library: checked)"
+                    }
                 );
                 ok += 1;
             }
@@ -739,9 +759,10 @@ fn project_test_in(dir: &Path) -> Result<(usize, usize), Diagnostic> {
 fn has_main_fn(path: &str) -> bool {
     match read_source(path) {
         Ok((src, file)) => match parser::parse_file(&src, file) {
-            Ok(program) => program.stmts.iter().any(|s| {
-                matches!(s, Stmt::Fn(f) if f.name.as_deref() == Some("main"))
-            }),
+            Ok(program) => program
+                .stmts
+                .iter()
+                .any(|s| matches!(s, Stmt::Fn(f) if f.name.as_deref() == Some("main"))),
             Err(_) => false,
         },
         Err(_) => false,
@@ -774,10 +795,9 @@ fn cmd_debug(args: &[String]) -> Result<i32, Diagnostic> {
                     .get(i)
                     .ok_or_else(|| usage("--break needs a line number"))?;
                 for part in spec.split(',') {
-                    let l = part
-                        .trim()
-                        .parse::<u32>()
-                        .map_err(|_| usage(&format!("--break expects line numbers, got '{}'", part)))?;
+                    let l = part.trim().parse::<u32>().map_err(|_| {
+                        usage(&format!("--break expects line numbers, got '{}'", part))
+                    })?;
                     breakpoints.insert(l);
                 }
             }
@@ -832,8 +852,6 @@ fn cmd_debug(args: &[String]) -> Result<i32, Diagnostic> {
     result
 }
 
-
-
 /// `spid3r fmt [--check] [files...]`
 ///
 /// `spid3r pack [-o out.tar]` — archive the project (spider.toml + src/) into
@@ -845,7 +863,11 @@ fn cmd_pack(args: &[String]) -> Result<i32, Diagnostic> {
         match args[i].as_str() {
             "-o" => {
                 i += 1;
-                out = Some(args.get(i).cloned().ok_or_else(|| usage("-o needs a path"))?);
+                out = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| usage("-o needs a path"))?,
+                );
             }
             a => return Err(usage(&format!("unknown argument '{}'", a))),
         }
@@ -856,11 +878,9 @@ fn cmd_pack(args: &[String]) -> Result<i32, Diagnostic> {
         .map_err(|e| usage(&e))?
         .ok_or_else(|| usage("no spider.toml in this directory — run `spid3r init` first"))?;
     if manifest.members.is_empty() {
-        let (path, files, hash) = crate::pkg::pack(
-            &root,
-            out.as_deref().map(PathBuf::from).as_deref(),
-        )
-        .map_err(|e| usage(&e))?;
+        let (path, files, hash) =
+            crate::pkg::pack(&root, out.as_deref().map(PathBuf::from).as_deref())
+                .map_err(|e| usage(&e))?;
         println!("packed {} file(s) into {}", files, path.display());
         println!("sha256: {}", hash);
         return Ok(EXIT_OK);
@@ -893,9 +913,12 @@ fn cmd_unpack(args: &[String]) -> Result<i32, Diagnostic> {
                 .unwrap_or_else(|| "unpacked".to_string()),
         ),
     };
-    let extracted =
-        crate::pkg::unpack(&archive, &dest).map_err(|e| usage(&e))?;
-    println!("unpacked {} file(s) into {}", extracted.len(), dest.display());
+    let extracted = crate::pkg::unpack(&archive, &dest).map_err(|e| usage(&e))?;
+    println!(
+        "unpacked {} file(s) into {}",
+        extracted.len(),
+        dest.display()
+    );
     for f in &extracted {
         println!("  {}", f);
     }
@@ -1058,9 +1081,7 @@ fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
             let mut found: Vec<String> = std::fs::read_dir(path)
                 .map_err(|e| usage(&format!("cannot read '{}': {}", arg, e)))?
                 .filter_map(|entry| entry.ok().map(|e| e.path()))
-                .filter(|p| {
-                    p.is_file() && p.extension().map(|x| x == "matrix").unwrap_or(false)
-                })
+                .filter(|p| p.is_file() && p.extension().map(|x| x == "matrix").unwrap_or(false))
                 .map(|p| p.to_string_lossy().to_string())
                 .collect();
             found.sort();
@@ -1117,7 +1138,6 @@ fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
     }
     Ok(EXIT_OK)
 }
-
 
 /// Run the spid3r binary as a subprocess and capture its stdout. Returns an error
 /// string on non-zero exit or IO failure (stderr is included in the message).
@@ -1230,7 +1250,10 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
     }
 
     let bin = std::env::current_exe().map_err(|e| {
-        Diagnostic::new(Phase::Usage, format!("cannot locate the spid3r binary: {}", e))
+        Diagnostic::new(
+            Phase::Usage,
+            format!("cannot locate the spid3r binary: {}", e),
+        )
     })?;
 
     println!(
@@ -1316,7 +1339,9 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         println!(
             "{:<12} {:>12} {:>14} {:>10}",
             stem,
-            bench_iters(&stem).map(|c| c.to_string()).unwrap_or_else(|| "-".into()),
+            bench_iters(&stem)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".into()),
             time_s,
             rate
         );

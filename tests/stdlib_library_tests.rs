@@ -98,7 +98,10 @@ fn main() {
     let path = write_tmp("test_stdlib_web.matrix", src);
     let out_tree = run_engine("tree", &path).expect("tree run web");
     let out_vm = run_engine("vm", &path).expect("vm run web");
-    assert_eq!(out_tree, out_vm, "web module outputs differ between tree and vm");
+    assert_eq!(
+        out_tree, out_vm,
+        "web module outputs differ between tree and vm"
+    );
     assert!(out_tree.contains("jwt_valid:true"));
     assert!(out_tree.contains("get_body:{\"item_id\":\"99\"}"));
     let _ = std::fs::remove_file(path);
@@ -162,7 +165,10 @@ fn main() {
     let path = write_tmp("test_stdlib_dataframe.matrix", src);
     let out_tree = run_engine("tree", &path).expect("tree run dataframe");
     let out_vm = run_engine("vm", &path).expect("vm run dataframe");
-    assert_eq!(out_tree, out_vm, "dataframe module outputs differ between tree and vm");
+    assert_eq!(
+        out_tree, out_vm,
+        "dataframe module outputs differ between tree and vm"
+    );
     assert!(out_tree.contains("df_rows:5"));
     assert!(out_tree.contains("high_earners_rows:2"));
     assert!(out_tree.contains("top_earner:Alice"));
@@ -221,7 +227,10 @@ fn main() {
     let path = write_tmp("test_stdlib_stats.matrix", src);
     let out_tree = run_engine("tree", &path).expect("tree run stats");
     let out_vm = run_engine("vm", &path).expect("vm run stats");
-    assert_eq!(out_tree, out_vm, "stats module outputs differ between tree and vm");
+    assert_eq!(
+        out_tree, out_vm,
+        "stats module outputs differ between tree and vm"
+    );
     assert!(out_tree.contains("mean:5.0"));
     assert!(out_tree.contains("mode:4.0"));
     assert!(out_tree.contains("pearson:1.0"));
@@ -298,7 +307,10 @@ fn main() {
     let path = write_tmp("test_stdlib_ml.matrix", src);
     let out_tree = run_engine("tree", &path).expect("tree run ml");
     let out_vm = run_engine("vm", &path).expect("vm run ml");
-    assert_eq!(out_tree, out_vm, "ml module outputs differ between tree and vm");
+    assert_eq!(
+        out_tree, out_vm,
+        "ml module outputs differ between tree and vm"
+    );
     assert!(out_tree.contains("lin_r2_high:true"));
     assert!(out_tree.contains("lin_pred_0:3.0"));
     assert!(out_tree.contains("log_acc_high:true"));
@@ -357,17 +369,24 @@ fn main() {
         .args(["compile", &path, "-o", comp_path.to_str().unwrap()])
         .output()
         .expect("compile all four");
-    assert!(comp.status.success(), "compile failed: {}", String::from_utf8_lossy(&comp.stderr));
+    assert!(
+        comp.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&comp.stderr)
+    );
 
     let exec = Command::new(bin())
         .args(["exec", comp_path.to_str().unwrap()])
         .output()
         .expect("exec all four");
-    assert!(exec.status.success(), "exec failed: {}", String::from_utf8_lossy(&exec.stderr));
+    assert!(
+        exec.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&exec.stderr)
+    );
     let out_exec = String::from_utf8_lossy(&exec.stdout).to_string();
     assert_eq!(out_tree, out_exec, "compile+exec differed from tree/vm");
 
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&comp_path);
 }
-

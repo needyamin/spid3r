@@ -116,7 +116,11 @@ class C {
 ";
     let (code, out) = check(src, "fieldmis");
     assert_ne!(code, 0);
-    assert!(out.contains("type mismatch assigning to field 'v'"), "{}", out);
+    assert!(
+        out.contains("type mismatch assigning to field 'v'"),
+        "{}",
+        out
+    );
 }
 
 #[test]

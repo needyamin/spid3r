@@ -29,8 +29,16 @@ fn run(engine: &str, src: &str, tag: &str) -> (i32, String, String) {
 fn run_both(src: &str, tag: &str) -> (i32, String) {
     let (c1, o1, e1) = run("tree", src, tag);
     let (c2, o2, e2) = run("vm", src, tag);
-    assert_eq!(c1, c2, "{}: exit codes differ (tree={}, vm={})", tag, e1, e2);
-    assert_eq!(o1, o2, "{}: stdout differs\n--- tree ---\n{}\n--- vm ---\n{}", tag, o1, o2);
+    assert_eq!(
+        c1, c2,
+        "{}: exit codes differ (tree={}, vm={})",
+        tag, e1, e2
+    );
+    assert_eq!(
+        o1, o2,
+        "{}: stdout differs\n--- tree ---\n{}\n--- vm ---\n{}",
+        tag, o1, o2
+    );
     (c1, o1)
 }
 
@@ -154,7 +162,11 @@ fn main() {
     let src2 = "fn main() {\n    println(deref(list(1)));\n    return 0;\n}\n";
     let (c1, _, e1) = run("tree", src2, "err2");
     assert_ne!(c1, 0);
-    assert!(e1.contains("deref expects a weak reference"), "error: {}", e1);
+    assert!(
+        e1.contains("deref expects a weak reference"),
+        "error: {}",
+        e1
+    );
 }
 
 #[test]

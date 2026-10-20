@@ -3,7 +3,10 @@
 fn main() {
     let script_path = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|p| p.join("demo_apps/native_calculator/calculator.matrix")))
+        .and_then(|p| {
+            p.parent()
+                .map(|p| p.join("demo_apps/native_calculator/calculator.matrix"))
+        })
         .filter(|p| p.is_file())
         .or_else(|| {
             let p = std::path::PathBuf::from("demo_apps/native_calculator/calculator.matrix");

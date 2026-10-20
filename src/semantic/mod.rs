@@ -713,15 +713,19 @@ impl Checker {
                         .map(|v| !v.is_import)
                         .unwrap_or(false);
                     if local_here && !self.predeclared.contains(alias_name) {
-                        return Err(
-                            self.err(span, format!("import '{}' shadows a local binding", alias_name))
-                        );
+                        return Err(self.err(
+                            span,
+                            format!("import '{}' shadows a local binding", alias_name),
+                        ));
                     }
                     if let Some(v) = self.scopes.last().and_then(|s| s.get(alias_name)) {
                         if v.is_import {
                             return Err(self.err(
                                 span,
-                                format!("import collision: '{}' is imported multiple times", alias_name),
+                                format!(
+                                    "import collision: '{}' is imported multiple times",
+                                    alias_name
+                                ),
                             ));
                         }
                     }
@@ -755,7 +759,10 @@ impl Checker {
                             if v.is_import {
                                 return Err(self.err(
                                     span,
-                                    format!("import collision: '{}' is imported by multiple modules", n),
+                                    format!(
+                                        "import collision: '{}' is imported by multiple modules",
+                                        n
+                                    ),
                                 ));
                             }
                         }
@@ -871,10 +878,9 @@ impl Checker {
                         let mut names = HashSet::new();
                         for p in &m.params {
                             if !names.insert(p.name.clone()) {
-                                return Err(self.err(
-                                    &p.span,
-                                    format!("duplicate parameter '{}'", p.name),
-                                ));
+                                return Err(
+                                    self.err(&p.span, format!("duplicate parameter '{}'", p.name))
+                                );
                             }
                             self.declare(
                                 &p.name,
@@ -901,10 +907,9 @@ impl Checker {
                         let mut names = HashSet::new();
                         for p in m.params.iter().skip(1) {
                             if !names.insert(p.name.clone()) {
-                                return Err(self.err(
-                                    &p.span,
-                                    format!("duplicate parameter '{}'", p.name),
-                                ));
+                                return Err(
+                                    self.err(&p.span, format!("duplicate parameter '{}'", p.name))
+                                );
                             }
                             self.declare(
                                 &p.name,
@@ -1250,11 +1255,11 @@ impl Checker {
             "bool" => Ty::Bool,
             "string" => Ty::Str,
             "null" => Ty::Null,
-            "list" | "vec" | "stack" | "queue" | "deque" | "linked_list"
-            | "singly_linked_list" | "doubly_linked_list" | "map" | "set" | "tuple"
-            | "binary_tree" | "bst" | "heap" | "priority_queue" | "graph" | "hash_table"
-            | "trie" | "matrix" | "vector" | "bytes" | "ring_buffer" | "bag" | "ref" | "option" | "result"
-            | "task" | "channel" | "mutex" | "some" | "none" | "ok" | "err" => {
+            "list" | "vec" | "stack" | "queue" | "deque" | "linked_list" | "singly_linked_list"
+            | "doubly_linked_list" | "map" | "set" | "tuple" | "binary_tree" | "bst" | "heap"
+            | "priority_queue" | "graph" | "hash_table" | "trie" | "matrix" | "vector"
+            | "bytes" | "ring_buffer" | "bag" | "ref" | "option" | "result" | "task"
+            | "channel" | "mutex" | "some" | "none" | "ok" | "err" => {
                 let elem = t.arg.as_ref().map(|a| Box::new(self.resolve_type(a)));
                 Ty::Coll(lower, elem)
             }
@@ -1374,12 +1379,11 @@ impl Checker {
             Expr::Null(_) => Ty::Null,
             Expr::Ident(name, _) => {
                 if name == "self" {
-                    self.current_class
-                        .clone()
-                        .map(Ty::Class)
-                        .unwrap_or(Ty::Any)
+                    self.current_class.clone().map(Ty::Class).unwrap_or(Ty::Any)
                 } else {
-                    self.lookup(name).and_then(|v| v.ty.clone()).unwrap_or(Ty::Any)
+                    self.lookup(name)
+                        .and_then(|v| v.ty.clone())
+                        .unwrap_or(Ty::Any)
                 }
             }
             Expr::List(items, _) => {
@@ -1487,7 +1491,11 @@ impl Checker {
                 let recv = self.type_of(object);
                 if let Ty::Class(c) = recv {
                     if let Some(mi) = self.method_sig(&c, name) {
-                        return mi.ret.as_ref().map(|t| self.resolve_type(t)).unwrap_or(Ty::Any);
+                        return mi
+                            .ret
+                            .as_ref()
+                            .map(|t| self.resolve_type(t))
+                            .unwrap_or(Ty::Any);
                     }
                 }
                 Ty::Any
@@ -1723,7 +1731,12 @@ impl Checker {
                 self.check_expr(l)?;
                 self.check_expr(r)
             }
-            Expr::Assign { target, value, span, .. } => {
+            Expr::Assign {
+                target,
+                value,
+                span,
+                ..
+            } => {
                 match &**target {
                     Expr::Ident(name, _) => match self.lookup(name) {
                         Some(v) if v.is_const => {
@@ -1771,10 +1784,7 @@ impl Checker {
                                     {
                                         return Err(self.err(
                                             span,
-                                            format!(
-                                                "field '{}' of class '{}' is private",
-                                                name, c
-                                            ),
+                                            format!("field '{}' of class '{}' is private", name, c),
                                         ));
                                     }
                                 }

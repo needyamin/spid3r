@@ -33,7 +33,9 @@ use inkwell::values::{FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 use inkwell::IntPredicate;
 
-use crate::ast::{AssignOp, BinOp, Block, CatchClause, ClassDecl, Expr, FnProto, LogOp, Program, Stmt, UnOp};
+use crate::ast::{
+    AssignOp, BinOp, Block, CatchClause, ClassDecl, Expr, FnProto, LogOp, Program, Stmt, UnOp,
+};
 use crate::value::collections;
 
 pub type IrResult<T> = Result<T, String>;
@@ -124,7 +126,11 @@ fn call_int<'a>(r: inkwell::values::CallSiteValue<'a>) -> inkwell::values::IntVa
 // capture analysis
 // ---------------------------------------------------------------------------
 
-fn collect_outer_uses(stmts: &[Stmt], declared: &mut Vec<HashSet<String>>, out: &mut HashSet<String>) {
+fn collect_outer_uses(
+    stmts: &[Stmt],
+    declared: &mut Vec<HashSet<String>>,
+    out: &mut HashSet<String>,
+) {
     for s in stmts {
         collect_outer_uses_stmt(s, declared, out);
     }
@@ -136,7 +142,11 @@ fn declare_name(declared: &mut [HashSet<String>], name: &str) {
     }
 }
 
-fn collect_outer_uses_stmt(s: &Stmt, declared: &mut Vec<HashSet<String>>, out: &mut HashSet<String>) {
+fn collect_outer_uses_stmt(
+    s: &Stmt,
+    declared: &mut Vec<HashSet<String>>,
+    out: &mut HashSet<String>,
+) {
     match s {
         Stmt::Let { name, value, .. } => {
             if let Some(v) = value {
@@ -184,13 +194,19 @@ fn collect_outer_uses_stmt(s: &Stmt, declared: &mut Vec<HashSet<String>>, out: &
             collect_outer_uses_expr(cond, declared, out);
             collect_outer_uses(&body.stmts, declared, out);
         }
-        Stmt::ForIn { var, iter, body, .. } => {
+        Stmt::ForIn {
+            var, iter, body, ..
+        } => {
             collect_outer_uses_expr(iter, declared, out);
             declare_name(declared, var);
             collect_outer_uses(&body.stmts, declared, out);
         }
         Stmt::ForC {
-            init, cond, post, body, ..
+            init,
+            cond,
+            post,
+            body,
+            ..
         } => {
             collect_outer_uses_stmt(init, declared, out);
             collect_outer_uses_expr(cond, declared, out);
@@ -207,7 +223,10 @@ fn collect_outer_uses_stmt(s: &Stmt, declared: &mut Vec<HashSet<String>>, out: &
         Stmt::Expr(e) => collect_outer_uses_expr(e, declared, out),
         Stmt::Spawn { callable, .. } => collect_outer_uses_expr(callable, declared, out),
         Stmt::Try {
-            body, catch, finally, ..
+            body,
+            catch,
+            finally,
+            ..
         } => {
             collect_outer_uses(&body.stmts, declared, out);
             if let Some(c) = catch {
@@ -223,7 +242,11 @@ fn collect_outer_uses_stmt(s: &Stmt, declared: &mut Vec<HashSet<String>>, out: &
     }
 }
 
-fn collect_outer_uses_expr(e: &Expr, declared: &mut Vec<HashSet<String>>, out: &mut HashSet<String>) {
+fn collect_outer_uses_expr(
+    e: &Expr,
+    declared: &mut Vec<HashSet<String>>,
+    out: &mut HashSet<String>,
+) {
     match e {
         Expr::Ident(name, _) => {
             let local = declared.iter().any(|f| f.contains(name));
@@ -273,13 +296,18 @@ fn collect_outer_uses_expr(e: &Expr, declared: &mut Vec<HashSet<String>>, out: &
                 collect_outer_uses_expr(a, declared, out);
             }
         }
-        Expr::Await(inner, _) | Expr::Spawn { callable: inner, .. } => {
-            collect_outer_uses_expr(inner, declared, out)
-        }
+        Expr::Await(inner, _)
+        | Expr::Spawn {
+            callable: inner, ..
+        } => collect_outer_uses_expr(inner, declared, out),
     }
 }
 
-fn collect_outer_uses_fn(p: &FnProto, declared: &mut Vec<HashSet<String>>, out: &mut HashSet<String>) {
+fn collect_outer_uses_fn(
+    p: &FnProto,
+    declared: &mut Vec<HashSet<String>>,
+    out: &mut HashSet<String>,
+) {
     let frame = p.params.iter().map(|x| x.name.clone()).collect();
     declared.push(frame);
     collect_outer_uses(&p.body.stmts, declared, out);
@@ -320,7 +348,9 @@ fn collect_declared_stmt(s: &Stmt, out: &mut HashSet<String>) {
                 collect_declared(&m.body.stmts, out);
             }
         }
-        Stmt::If { then, elifs, els, .. } => {
+        Stmt::If {
+            then, elifs, els, ..
+        } => {
             collect_declared(&then.stmts, out);
             for (_, b) in elifs {
                 collect_declared(&b.stmts, out);
@@ -339,7 +369,12 @@ fn collect_declared_stmt(s: &Stmt, out: &mut HashSet<String>) {
             collect_declared(&body.stmts, out);
         }
         Stmt::Block(b) => collect_declared(&b.stmts, out),
-        Stmt::Try { body, catch, finally, .. } => {
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
             collect_declared(&body.stmts, out);
             if let Some(c) = catch {
                 out.insert(c.name.clone());
@@ -366,7 +401,8 @@ fn collect_declared_expr(e: &Expr, out: &mut HashSet<String>) {
 /// order: the outer uses minus everything declared inside the function.
 fn capture_list(p: &FnProto) -> Vec<String> {
     let mut uses: HashSet<String> = HashSet::new();
-    let mut declared: Vec<HashSet<String>> = vec![p.params.iter().map(|x| x.name.clone()).collect()];
+    let mut declared: Vec<HashSet<String>> =
+        vec![p.params.iter().map(|x| x.name.clone()).collect()];
     collect_outer_uses(&p.body.stmts, &mut declared, &mut uses);
     let mut inner: HashSet<String> = HashSet::new();
     collect_declared(&p.body.stmts, &mut inner);
@@ -409,7 +445,11 @@ pub struct Ir<'ctx> {
 }
 
 /// Signature of compiled Spid3r functions.
-type FnTy<'ctx> = unsafe extern "C" fn(*mut core::ffi::c_void, u64, *const *mut crate::value::Value) -> *mut crate::value::Value;
+type FnTy<'ctx> = unsafe extern "C" fn(
+    *mut core::ffi::c_void,
+    u64,
+    *const *mut crate::value::Value,
+) -> *mut crate::value::Value;
 
 impl<'ctx> Ir<'ctx> {
     pub fn new(ctx: &'ctx Context, module_name: &str) -> Self {
@@ -495,7 +535,11 @@ impl<'ctx> Ir<'ctx> {
         self.alloca_entry_ty(self.ptr_ty(), name)
     }
 
-    fn alloca_entry_ty<T: inkwell::types::BasicType<'ctx>>(&mut self, ty: T, name: &str) -> PointerValue<'ctx> {
+    fn alloca_entry_ty<T: inkwell::types::BasicType<'ctx>>(
+        &mut self,
+        ty: T,
+        name: &str,
+    ) -> PointerValue<'ctx> {
         let f = self.current_fn();
         let entry = f
             .get_first_basic_block()
@@ -529,7 +573,12 @@ impl<'ctx> Ir<'ctx> {
         for (i, a) in argv.iter().enumerate() {
             let elem = unsafe {
                 self.builder
-                    .build_in_bounds_gep(arr_ty, slot, &[self.i64c(0), self.i64c(i as i64)], "argv.elem")
+                    .build_in_bounds_gep(
+                        arr_ty,
+                        slot,
+                        &[self.i64c(0), self.i64c(i as i64)],
+                        "argv.elem",
+                    )
                     .unwrap()
             };
             self.builder.build_store(elem, *a).unwrap();
@@ -540,7 +589,12 @@ impl<'ctx> Ir<'ctx> {
     // -------------------------------------------------------- trampolines
 
     /// Declare (or fetch) an extern trampoline from the runtime.
-    fn tramp(&mut self, name: &str, params: &[BasicTypeEnum<'ctx>], ret: Option<BasicTypeEnum<'ctx>>) -> FunctionValue<'ctx> {
+    fn tramp(
+        &mut self,
+        name: &str,
+        params: &[BasicTypeEnum<'ctx>],
+        ret: Option<BasicTypeEnum<'ctx>>,
+    ) -> FunctionValue<'ctx> {
         if let Some(f) = self.tramps.get(name) {
             return *f;
         }
@@ -590,7 +644,12 @@ impl<'ctx> Ir<'ctx> {
         call_ptr(r)
     }
 
-    fn call2p(&mut self, name: &str, a: PointerValue<'ctx>, b: PointerValue<'ctx>) -> PointerValue<'ctx> {
+    fn call2p(
+        &mut self,
+        name: &str,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+    ) -> PointerValue<'ctx> {
         let f = self.tramp(
             name,
             &[self.ptr_ty().into(), self.ptr_ty().into()],
@@ -600,7 +659,13 @@ impl<'ctx> Ir<'ctx> {
         call_ptr(r)
     }
 
-    fn call3p(&mut self, name: &str, a: PointerValue<'ctx>, b: PointerValue<'ctx>, c: PointerValue<'ctx>) -> PointerValue<'ctx> {
+    fn call3p(
+        &mut self,
+        name: &str,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+        c: PointerValue<'ctx>,
+    ) -> PointerValue<'ctx> {
         let f = self.tramp(
             name,
             &[
@@ -614,10 +679,19 @@ impl<'ctx> Ir<'ctx> {
         call_ptr(r)
     }
 
-    fn call_binop(&mut self, a: PointerValue<'ctx>, b: PointerValue<'ctx>, op: u8) -> PointerValue<'ctx> {
+    fn call_binop(
+        &mut self,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+        op: u8,
+    ) -> PointerValue<'ctx> {
         let f = self.tramp(
             "spid3r_binop",
-            &[self.ptr_ty().into(), self.ptr_ty().into(), self.i64_ty().into()],
+            &[
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+                self.i64_ty().into(),
+            ],
             Some(self.ptr_ty().into()),
         );
         let op = self.i64c(op as i64);
@@ -632,10 +706,18 @@ impl<'ctx> Ir<'ctx> {
 
     fn call_void2p(&mut self, name: &str, a: PointerValue<'ctx>, b: PointerValue<'ctx>) {
         let f = self.tramp(name, &[self.ptr_ty().into(), self.ptr_ty().into()], None);
-        self.builder.build_call(f, &[a.into(), b.into()], "").unwrap();
+        self.builder
+            .build_call(f, &[a.into(), b.into()], "")
+            .unwrap();
     }
 
-    fn call_void3p(&mut self, name: &str, a: PointerValue<'ctx>, b: PointerValue<'ctx>, c: PointerValue<'ctx>) {
+    fn call_void3p(
+        &mut self,
+        name: &str,
+        a: PointerValue<'ctx>,
+        b: PointerValue<'ctx>,
+        c: PointerValue<'ctx>,
+    ) {
         let f = self.tramp(
             name,
             &[
@@ -645,13 +727,19 @@ impl<'ctx> Ir<'ctx> {
             ],
             None,
         );
-        self.builder.build_call(f, &[a.into(), b.into(), c.into()], "").unwrap();
+        self.builder
+            .build_call(f, &[a.into(), b.into(), c.into()], "")
+            .unwrap();
     }
 
     // -------------------------------------------------------- value makers
 
     fn v_int(&mut self, v: i64) -> PointerValue<'ctx> {
-        let f = self.tramp("spid3r_value_int", &[self.i64_ty().into()], Some(self.ptr_ty().into()));
+        let f = self.tramp(
+            "spid3r_value_int",
+            &[self.i64_ty().into()],
+            Some(self.ptr_ty().into()),
+        );
         let v = self.i64c(v);
         let r = self.emit_call(f, &[v.into()], "i");
         call_ptr(r)
@@ -669,7 +757,11 @@ impl<'ctx> Ir<'ctx> {
     }
 
     fn v_bool(&mut self, v: bool) -> PointerValue<'ctx> {
-        let f = self.tramp("spid3r_value_bool", &[self.i8_ty().into()], Some(self.ptr_ty().into()));
+        let f = self.tramp(
+            "spid3r_value_bool",
+            &[self.i8_ty().into()],
+            Some(self.ptr_ty().into()),
+        );
         let v = self.i8c(v as u8);
         let r = self.emit_call(f, &[v.into()], "b");
         call_ptr(r)
@@ -701,7 +793,9 @@ impl<'ctx> Ir<'ctx> {
         let bytes = s.as_bytes();
         let arr = self.ctx.const_string(bytes, true);
         let name = format!(".str.{}", self.strings.len());
-        let g = self.module.add_global(arr.get_type(), Some(AddressSpace::default()), &name);
+        let g = self
+            .module
+            .add_global(arr.get_type(), Some(AddressSpace::default()), &name);
         g.set_initializer(&arr);
         g.set_constant(true);
         g.set_linkage(Linkage::Private);
@@ -714,7 +808,9 @@ impl<'ctx> Ir<'ctx> {
     // -------------------------------------------------------- scopes
 
     fn push_scope(&mut self) {
-        self.scopes.push(Scope { vars: HashMap::new() });
+        self.scopes.push(Scope {
+            vars: HashMap::new(),
+        });
     }
 
     fn pop_scope(&mut self) {
@@ -744,7 +840,11 @@ impl<'ctx> Ir<'ctx> {
     }
 
     fn current_fn(&self) -> FunctionValue<'ctx> {
-        self.builder.get_insert_block().unwrap().get_parent().unwrap()
+        self.builder
+            .get_insert_block()
+            .unwrap()
+            .get_parent()
+            .unwrap()
     }
 
     fn cur_block(&self) -> Option<BasicBlock<'ctx>> {
@@ -780,7 +880,11 @@ impl<'ctx> Ir<'ctx> {
 
     /// Convert a value handle to an i1 condition.
     fn cond_i1(&mut self, v: PointerValue<'ctx>) -> inkwell::values::IntValue<'ctx> {
-        let f = self.tramp("spid3r_truthy", &[self.ptr_ty().into()], Some(self.i8_ty().into()));
+        let f = self.tramp(
+            "spid3r_truthy",
+            &[self.ptr_ty().into()],
+            Some(self.i8_ty().into()),
+        );
         let r = self.emit_call(f, &[v.into()], "t");
         let b = call_int(r);
         let zero = self.i8c(0);
@@ -799,7 +903,11 @@ impl<'ctx> Ir<'ctx> {
     fn read_upvalue(&mut self, index: usize) -> PointerValue<'ctx> {
         let env = self.cur_env();
         let slot = self.call_env_slot(env, index);
-        let f = self.tramp("spid3r_cell_get", &[self.ptr_ty().into()], Some(self.ptr_ty().into()));
+        let f = self.tramp(
+            "spid3r_cell_get",
+            &[self.ptr_ty().into()],
+            Some(self.ptr_ty().into()),
+        );
         let r = self.emit_call(f, &[slot.into()], "uv");
         call_ptr(r)
     }
@@ -844,7 +952,13 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
                 nested_fns_block(&m.body.stmts, out);
             }
         }
-        Stmt::If { cond, then, elifs, els, .. } => {
+        Stmt::If {
+            cond,
+            then,
+            elifs,
+            els,
+            ..
+        } => {
             nested_fns_expr(cond, out);
             nested_fns_block(&then.stmts, out);
             for (c, b) in elifs {
@@ -863,7 +977,13 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
             nested_fns_expr(iter, out);
             nested_fns_block(&body.stmts, out);
         }
-        Stmt::ForC { init, cond, post, body, .. } => {
+        Stmt::ForC {
+            init,
+            cond,
+            post,
+            body,
+            ..
+        } => {
             nested_fns_stmt(init, out);
             nested_fns_expr(cond, out);
             nested_fns_expr(post, out);
@@ -877,7 +997,12 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
         Stmt::Block(b) => nested_fns_block(&b.stmts, out),
         Stmt::Expr(e) => nested_fns_expr(e, out),
         Stmt::Spawn { callable, .. } => nested_fns_expr(callable, out),
-        Stmt::Try { body, catch, finally, .. } => {
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
             nested_fns_block(&body.stmts, out);
             if let Some(c) = catch {
                 nested_fns_block(&c.body.stmts, out);
@@ -933,8 +1058,16 @@ fn nested_fns_expr<'a>(e: &'a Expr, out: &mut Vec<&'a FnProto>) {
                 nested_fns_expr(a, out);
             }
         }
-        Expr::Await(inner, _) | Expr::Spawn { callable: inner, .. } => nested_fns_expr(inner, out),
-        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Null(_) | Expr::Ident(..) => {}
+        Expr::Await(inner, _)
+        | Expr::Spawn {
+            callable: inner, ..
+        } => nested_fns_expr(inner, out),
+        Expr::Int(..)
+        | Expr::Float(..)
+        | Expr::Str(..)
+        | Expr::Bool(..)
+        | Expr::Null(_)
+        | Expr::Ident(..) => {}
     }
 }
 
@@ -1061,11 +1194,17 @@ impl<'ctx> Ir<'ctx> {
                 self.builder.position_at_end(end_bb);
                 Ok(())
             }
-            Stmt::ForIn { var, iter, body, .. } => {
+            Stmt::ForIn {
+                var, iter, body, ..
+            } => {
                 let obj = self.compile_expr(iter)?;
                 // iterator state lives in a slot across the loop body
                 let iter_slot = self.alloca_entry("forin.iter");
-                let f = self.tramp("spid3r_forin_start", &[self.ptr_ty().into()], Some(self.ptr_ty().into()));
+                let f = self.tramp(
+                    "spid3r_forin_start",
+                    &[self.ptr_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
                 let it = self
                     .builder
                     .build_call(f, &[obj.into()], "forin.start")
@@ -1086,16 +1225,17 @@ impl<'ctx> Ir<'ctx> {
                     .build_load(self.ptr_ty(), iter_slot, "forin.it")
                     .unwrap()
                     .into_pointer_value();
-                let f = self.tramp("spid3r_forin_next", &[self.ptr_ty().into()], Some(self.ptr_ty().into()));
+                let f = self.tramp(
+                    "spid3r_forin_next",
+                    &[self.ptr_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
                 let next = self
                     .builder
                     .build_call(f, &[it.into()], "forin.next")
                     .unwrap();
                 let next = call_ptr(next);
-                let is_end = self
-                    .builder
-                    .build_is_null(next, "forin.done")
-                    .unwrap();
+                let is_end = self.builder.build_is_null(next, "forin.done").unwrap();
                 self.builder
                     .build_conditional_branch(is_end, end_bb, body_bb)
                     .unwrap();
@@ -1135,7 +1275,11 @@ impl<'ctx> Ir<'ctx> {
                 Ok(())
             }
             Stmt::ForC {
-                init, cond, post, body, ..
+                init,
+                cond,
+                post,
+                body,
+                ..
             } => {
                 self.compile_stmt(init)?;
                 let cond_bb = self.new_block("forc.cond");
@@ -1211,9 +1355,12 @@ impl<'ctx> Ir<'ctx> {
                 self.throw_guard();
                 Ok(())
             }
-            Stmt::Try { body, catch, finally, .. } => {
-                self.compile_try(body, catch.as_ref(), finally.as_ref())
-            }
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => self.compile_try(body, catch.as_ref(), finally.as_ref()),
             Stmt::Throw { value, .. } => {
                 let v = self.compile_expr(value)?;
                 self.throw_value(v);
@@ -1252,7 +1399,10 @@ impl<'ctx> Ir<'ctx> {
         let has_catch = catch.is_some();
         // The handler a re-throw from *this* try should reach: the enclosing
         // try's handler, or the current function's propagate / uncaught frame.
-        let outer_handler = *self.exc.last().expect("compile_try with no active handler frame");
+        let outer_handler = *self
+            .exc
+            .last()
+            .expect("compile_try with no active handler frame");
 
         let after_bb = self.new_block("try.after");
 
@@ -1321,11 +1471,13 @@ impl<'ctx> Ir<'ctx> {
                 self.exc.pop();
                 self.finally_stack.pop();
                 self.br_to(finally_entry.unwrap()); // catch handled it (pending 0)
-                // the catch itself threw: re-throw after finally
+                                                    // the catch itself threw: re-throw after finally
                 self.builder.position_at_end(catch_fh);
                 let nt = self.take_thrown();
                 self.builder.build_store(pend_thrown.unwrap(), nt).unwrap();
-                self.builder.build_store(pend_exit.unwrap(), self.i32c(4)).unwrap();
+                self.builder
+                    .build_store(pend_exit.unwrap(), self.i32c(4))
+                    .unwrap();
                 self.br_to(finally_entry.unwrap());
             } else {
                 self.push_scope();
@@ -1339,8 +1491,12 @@ impl<'ctx> Ir<'ctx> {
         } else if has_finally {
             // no catch: run `finally`, then re-throw the pending value.
             let thrown = self.take_thrown();
-            self.builder.build_store(pend_thrown.unwrap(), thrown).unwrap();
-            self.builder.build_store(pend_exit.unwrap(), self.i32c(4)).unwrap();
+            self.builder
+                .build_store(pend_thrown.unwrap(), thrown)
+                .unwrap();
+            self.builder
+                .build_store(pend_exit.unwrap(), self.i32c(4))
+                .unwrap();
             self.br_to(finally_entry.unwrap());
         } else {
             // no catch, no finally: propagate to the enclosing handler. The
@@ -1431,7 +1587,11 @@ impl<'ctx> Ir<'ctx> {
             .expect("finally routing without an active try/finally")
             .clone();
         if let Some(v) = value {
-            let slot = if exit == 1 { ctx.pending_ret } else { ctx.pending_thrown };
+            let slot = if exit == 1 {
+                ctx.pending_ret
+            } else {
+                ctx.pending_thrown
+            };
             self.builder.build_store(slot, v).unwrap();
         }
         self.builder
@@ -1491,16 +1651,18 @@ impl<'ctx> Ir<'ctx> {
 
     fn store_return(&mut self, v: PointerValue<'ctx>) {
         // The current function must have a return slot.
-        let slot = *self
-            .ret_slots
-            .last()
-            .expect("return outside of a function");
+        let slot = *self.ret_slots.last().expect("return outside of a function");
         self.builder.build_store(slot, v).unwrap();
         let bb = self.ret_bb.expect("return outside of a function");
         self.br_to(bb);
     }
 
-    fn emit_cond_branch(&mut self, cond: &Expr, then_bb: BasicBlock<'ctx>, else_bb: BasicBlock<'ctx>) -> IrResult<()> {
+    fn emit_cond_branch(
+        &mut self,
+        cond: &Expr,
+        then_bb: BasicBlock<'ctx>,
+        else_bb: BasicBlock<'ctx>,
+    ) -> IrResult<()> {
         let v = self.compile_expr(cond)?;
         let c = self.cond_i1(v);
         self.builder
@@ -1515,8 +1677,14 @@ impl<'ctx> Ir<'ctx> {
         let in_entry_root = self.is_entry && self.scopes.len() == 1;
         if in_entry_root {
             let (np, _) = self.str_global(name);
-            let f = self.tramp("spid3r_global_set", &[self.ptr_ty().into(), self.ptr_ty().into()], None);
-            self.builder.build_call(f, &[np.into(), v.into()], "").unwrap();
+            let f = self.tramp(
+                "spid3r_global_set",
+                &[self.ptr_ty().into(), self.ptr_ty().into()],
+                None,
+            );
+            self.builder
+                .build_call(f, &[np.into(), v.into()], "")
+                .unwrap();
             return Ok(());
         }
         let boxed = self
@@ -1598,10 +1766,14 @@ impl<'ctx> Ir<'ctx> {
                 let end_bb = self.new_block("logic.end");
                 match op {
                     LogOp::And => {
-                        self.builder.build_conditional_branch(c, rhs_bb, end_bb).unwrap();
+                        self.builder
+                            .build_conditional_branch(c, rhs_bb, end_bb)
+                            .unwrap();
                     }
                     LogOp::Or => {
-                        self.builder.build_conditional_branch(c, end_bb, rhs_bb).unwrap();
+                        self.builder
+                            .build_conditional_branch(c, end_bb, rhs_bb)
+                            .unwrap();
                     }
                 }
                 self.builder.position_at_end(rhs_bb);
@@ -1610,16 +1782,17 @@ impl<'ctx> Ir<'ctx> {
                 self.br_to(end_bb);
                 self.builder.position_at_end(end_bb);
                 let pname = self.tmp_name("logic");
-                let phi = self
-                    .builder
-                    .build_phi(self.ptr_ty(), &pname)
-                    .unwrap();
+                let phi = self.builder.build_phi(self.ptr_ty(), &pname).unwrap();
                 phi.add_incoming(&[(&lhs, lhs_from), (&rhs, rhs_from)]);
                 Ok(phi.as_basic_value().into_pointer_value())
             }
-            Expr::Assign { target, op, value, .. } => self.compile_assign(target, *op, value),
+            Expr::Assign {
+                target, op, value, ..
+            } => self.compile_assign(target, *op, value),
             Expr::Call { callee, args, .. } => self.compile_call(callee, args),
-            Expr::Method { object, name, args, .. } => {
+            Expr::Method {
+                object, name, args, ..
+            } => {
                 let obj = self.compile_expr(object)?;
                 let mut argv: Vec<PointerValue<'ctx>> = Vec::with_capacity(args.len());
                 for a in args {
@@ -1707,7 +1880,12 @@ impl<'ctx> Ir<'ctx> {
     }
 
     /// Call an arbitrary value handle with `argc` arguments from a raw array.
-    fn build_call_value(&mut self, callee: PointerValue<'ctx>, argc: usize, argv: PointerValue<'ctx>) -> IrResult<PointerValue<'ctx>> {
+    fn build_call_value(
+        &mut self,
+        callee: PointerValue<'ctx>,
+        argc: usize,
+        argv: PointerValue<'ctx>,
+    ) -> IrResult<PointerValue<'ctx>> {
         let f = self.tramp(
             "spid3r_call",
             &[
@@ -1764,7 +1942,12 @@ impl<'ctx> Ir<'ctx> {
         Ok(r)
     }
 
-    fn compile_assign(&mut self, target: &Expr, op: AssignOp, value: &Expr) -> IrResult<PointerValue<'ctx>> {
+    fn compile_assign(
+        &mut self,
+        target: &Expr,
+        op: AssignOp,
+        value: &Expr,
+    ) -> IrResult<PointerValue<'ctx>> {
         // compound assignment: x += e  ==>  x = x + e
         if op != AssignOp::Assign {
             let bin = match op {
@@ -1784,7 +1967,11 @@ impl<'ctx> Ir<'ctx> {
         self.store_assign(target, v)
     }
 
-    fn store_assign(&mut self, target: &Expr, v: PointerValue<'ctx>) -> IrResult<PointerValue<'ctx>> {
+    fn store_assign(
+        &mut self,
+        target: &Expr,
+        v: PointerValue<'ctx>,
+    ) -> IrResult<PointerValue<'ctx>> {
         match target {
             Expr::Ident(name, _) => match self.lookup(name) {
                 Some(VarLoc::Local(slot)) => {
@@ -1797,21 +1984,39 @@ impl<'ctx> Ir<'ctx> {
                         .build_load(self.ptr_ty(), slot, "c")
                         .unwrap()
                         .into_pointer_value();
-                    let f = self.tramp("spid3r_cell_set", &[self.ptr_ty().into(), self.ptr_ty().into()], None);
-                    self.builder.build_call(f, &[cell.into(), v.into()], "").unwrap();
+                    let f = self.tramp(
+                        "spid3r_cell_set",
+                        &[self.ptr_ty().into(), self.ptr_ty().into()],
+                        None,
+                    );
+                    self.builder
+                        .build_call(f, &[cell.into(), v.into()], "")
+                        .unwrap();
                     Ok(v)
                 }
                 Some(VarLoc::Upvalue(i)) => {
                     let env = self.cur_env();
                     let slot = self.call_env_slot(env, i);
-                    let f = self.tramp("spid3r_cell_set", &[self.ptr_ty().into(), self.ptr_ty().into()], None);
-                    self.builder.build_call(f, &[slot.into(), v.into()], "").unwrap();
+                    let f = self.tramp(
+                        "spid3r_cell_set",
+                        &[self.ptr_ty().into(), self.ptr_ty().into()],
+                        None,
+                    );
+                    self.builder
+                        .build_call(f, &[slot.into(), v.into()], "")
+                        .unwrap();
                     Ok(v)
                 }
                 None => {
                     let (np, _) = self.str_global(name);
-                    let f = self.tramp("spid3r_global_set", &[self.ptr_ty().into(), self.ptr_ty().into()], None);
-                    self.builder.build_call(f, &[np.into(), v.into()], "").unwrap();
+                    let f = self.tramp(
+                        "spid3r_global_set",
+                        &[self.ptr_ty().into(), self.ptr_ty().into()],
+                        None,
+                    );
+                    self.builder
+                        .build_call(f, &[np.into(), v.into()], "")
+                        .unwrap();
                     Ok(v)
                 }
             },
@@ -1820,7 +2025,11 @@ impl<'ctx> Ir<'ctx> {
                 let (np, _) = self.str_global(name);
                 let f = self.tramp(
                     "spid3r_field_set",
-                    &[self.ptr_ty().into(), self.ptr_ty().into(), self.ptr_ty().into()],
+                    &[
+                        self.ptr_ty().into(),
+                        self.ptr_ty().into(),
+                        self.ptr_ty().into(),
+                    ],
                     None,
                 );
                 self.builder
@@ -1870,14 +2079,7 @@ impl<'ctx> Ir<'ctx> {
         self_offset: usize,
     ) -> IrResult<FunctionValue<'ctx>> {
         let ptr_ty = self.ptr_ty();
-        let fty = ptr_ty.fn_type(
-            &[
-                ptr_ty.into(),
-                self.i64_ty().into(),
-                ptr_ty.into(),
-            ],
-            false,
-        );
+        let fty = ptr_ty.fn_type(&[ptr_ty.into(), self.i64_ty().into(), ptr_ty.into()], false);
         self.fn_counter += 1;
         let llvm_name = format!("spid3r_fn.{}.{}", self.fn_counter, name_hint);
         let f = self.module.add_function(&llvm_name, fty, None);
@@ -1951,7 +2153,12 @@ impl<'ctx> Ir<'ctx> {
         for (i, p) in proto.params.iter().enumerate() {
             let gep = unsafe {
                 self.builder
-                    .build_in_bounds_gep(self.ptr_ty(), argv, &[self.i64c((self_offset + i) as i64)], "arg")
+                    .build_in_bounds_gep(
+                        self.ptr_ty(),
+                        argv,
+                        &[self.i64c((self_offset + i) as i64)],
+                        "arg",
+                    )
                     .unwrap()
             };
             let a = self
@@ -2039,10 +2246,14 @@ impl<'ctx> Ir<'ctx> {
                         // analysis missed it; box it defensively.
                         let v = self
                             .builder
-                            .build_load(self.ptr_ty(), match src {
-                                VarLoc::Local(s) => *s,
-                                _ => unreachable!(),
-                            }, "capv")
+                            .build_load(
+                                self.ptr_ty(),
+                                match src {
+                                    VarLoc::Local(s) => *s,
+                                    _ => unreachable!(),
+                                },
+                                "capv",
+                            )
                             .unwrap()
                             .into_pointer_value();
                         self.call1p("spid3r_cell_new", v)
@@ -2068,14 +2279,16 @@ impl<'ctx> Ir<'ctx> {
         );
         let n = self.i64c(count as i64);
         let ename = self.tmp_name("env");
-        let r = self
-            .builder
-            .build_call(f, &[n.into()], &ename)
-            .unwrap();
+        let r = self.builder.build_call(f, &[n.into()], &ename).unwrap();
         call_ptr(r)
     }
 
-    fn call_env_set_slot(&mut self, env: PointerValue<'ctx>, index: usize, cell: PointerValue<'ctx>) {
+    fn call_env_set_slot(
+        &mut self,
+        env: PointerValue<'ctx>,
+        index: usize,
+        cell: PointerValue<'ctx>,
+    ) {
         let f = self.tramp(
             "spid3r_env_set_slot",
             &[
@@ -2086,7 +2299,11 @@ impl<'ctx> Ir<'ctx> {
             None,
         );
         self.builder
-            .build_call(f, &[env.into(), self.i64c(index as i64).into(), cell.into()], "")
+            .build_call(
+                f,
+                &[env.into(), self.i64c(index as i64).into(), cell.into()],
+                "",
+            )
             .unwrap();
     }
 
@@ -2111,7 +2328,11 @@ impl<'ctx> Ir<'ctx> {
         let fname = self.tmp_name("fn");
         let r = self
             .builder
-            .build_call(f, &[name_ptr.into(), n.into(), code_ptr.into(), env.into()], &fname)
+            .build_call(
+                f,
+                &[name_ptr.into(), n.into(), code_ptr.into(), env.into()],
+                &fname,
+            )
             .unwrap();
         call_ptr(r)
     }
@@ -2197,7 +2418,11 @@ impl<'ctx> Ir<'ctx> {
         // Arc while no other reference exists.
         for field in &c.fields {
             let (fp, _) = self.str_global(&field.name);
-            let vis = if field.vis == crate::ast::Vis::Public { 1u8 } else { 0u8 };
+            let vis = if field.vis == crate::ast::Vis::Public {
+                1u8
+            } else {
+                0u8
+            };
             let f = self.tramp(
                 "spid3r_class_add_field",
                 &[
@@ -2221,7 +2446,12 @@ impl<'ctx> Ir<'ctx> {
             // constructors carry an implicit self at argv[0], so their
             // parameters start one slot later (matching the VM's layout)
             let self_offset = if is_ctor { 1 } else { 0 };
-            let f = self.compile_function(m, Vec::new(), &format!("{}.{}", c.name, m.name.as_deref().unwrap_or("m")), self_offset)?;
+            let f = self.compile_function(
+                m,
+                Vec::new(),
+                &format!("{}.{}", c.name, m.name.as_deref().unwrap_or("m")),
+                self_offset,
+            )?;
             let code_ptr = f.as_global_value().as_pointer_value();
             if is_ctor {
                 let ft = self.tramp(
@@ -2286,18 +2516,22 @@ impl<'ctx> Ir<'ctx> {
         let main = self.module.add_function("main", fty, None);
         let bb = self.ctx.append_basic_block(main, "entry");
         self.builder.position_at_end(bb);
-        let f = self.tramp("spid3r_rt_start", &[self.ptr_ty().into()], Some(i32_ty.into()));
-        let r = self
-            .builder
-            .build_call(f, &[entry.into()], "code")
-            .unwrap();
+        let f = self.tramp(
+            "spid3r_rt_start",
+            &[self.ptr_ty().into()],
+            Some(i32_ty.into()),
+        );
+        let r = self.builder.build_call(f, &[entry.into()], "code").unwrap();
         let code = call_int(r);
         self.builder.build_return(Some(&code)).unwrap();
     }
 }
 
 /// Compile a checked program to an LLVM module.
-pub fn build_module(program: &Program, module_name: &str) -> IrResult<inkwell::module::Module<'static>> {
+pub fn build_module(
+    program: &Program,
+    module_name: &str,
+) -> IrResult<inkwell::module::Module<'static>> {
     let ctx = Box::leak(Box::new(Context::create()));
     let mut ir = Ir::new(ctx, module_name);
     // top-level functions are globals holding closure values

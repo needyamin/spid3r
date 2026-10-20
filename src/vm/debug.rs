@@ -69,11 +69,7 @@ pub struct DebugState {
 }
 
 impl DebugState {
-    pub fn new(
-        source: Vec<String>,
-        breakpoints: HashSet<u32>,
-        commands: Vec<String>,
-    ) -> Self {
+    pub fn new(source: Vec<String>, breakpoints: HashSet<u32>, commands: Vec<String>) -> Self {
         let interactive = commands.is_empty();
         DebugState {
             breakpoints,
@@ -341,7 +337,11 @@ impl Vm {
             println!("{}: no slots", name);
             return;
         }
-        println!("{} slots (0..{} are parameters/locals):", name, arity.saturating_sub(1));
+        println!(
+            "{} slots (0..{} are parameters/locals):",
+            name,
+            arity.saturating_sub(1)
+        );
         for (i, v) in frame.slots.iter().enumerate() {
             let tag = if i < arity { "param/local" } else { "stack" };
             println!("  [{}] ({}) {}", i, tag, display_short(v));

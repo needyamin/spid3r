@@ -167,7 +167,9 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
         "trie" => Ok(Value::Trie(new_ref(misc::TrieData::new()))),
         "vector" => {
             if args.is_empty() {
-                Ok(Value::Vector(new_ref(misc::VectorData { data: Vec::new() })))
+                Ok(Value::Vector(new_ref(misc::VectorData {
+                    data: Vec::new(),
+                })))
             } else if args.len() == 1 {
                 match &args[0] {
                     Value::List(l) | Value::VecDyn(l) => {
@@ -243,7 +245,10 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                     data: vec![fill; nu],
                 })))
             } else {
-                Err(format!("vector expects at most 2 arguments, got {}", args.len()))
+                Err(format!(
+                    "vector expects at most 2 arguments, got {}",
+                    args.len()
+                ))
             }
         }
         "bytes" => {
@@ -306,11 +311,17 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                 }
                 let fill = want_int(&args[1], "bytes")?;
                 if !(0..=255).contains(&fill) {
-                    return Err(format!("byte value must be between 0 and 255, got {}", fill));
+                    return Err(format!(
+                        "byte value must be between 0 and 255, got {}",
+                        fill
+                    ));
                 }
                 Ok(Value::Bytes(new_ref(vec![fill as u8; nu])))
             } else {
-                Err(format!("bytes expects at most 2 arguments, got {}", args.len()))
+                Err(format!(
+                    "bytes expects at most 2 arguments, got {}",
+                    args.len()
+                ))
             }
         }
         "matrix_from_list" => {
@@ -356,9 +367,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             value: one(name, &args)?,
         }))),
         "channel" => Ok(Value::Channel(Arc::new(ChannelData::new()))),
-        "mutex" => Ok(Value::MutexVal(Arc::new(MutexData::new(
-            one(name, &args)?,
-        )))),
+        "mutex" => Ok(Value::MutexVal(Arc::new(MutexData::new(one(name, &args)?)))),
         "some" => Ok(Value::Option(Some(Box::new(one(name, &args)?)))),
         "none" => {
             if !args.is_empty() {
@@ -715,11 +724,7 @@ pub fn list_callback_method(
     args: &[Value],
 ) -> Result<Value, String> {
     // Validates that the last of `n` arguments is a callable value.
-    fn want_fn<'a>(
-        meth: &str,
-        args: &'a [Value],
-        n: usize,
-    ) -> Result<&'a Value, String> {
+    fn want_fn<'a>(meth: &str, args: &'a [Value], n: usize) -> Result<&'a Value, String> {
         if args.len() != n {
             return Err(format!(
                 "{} expects {} argument(s), got {}",
@@ -730,7 +735,11 @@ pub fn list_callback_method(
         }
         let f = &args[n - 1];
         match f {
-            Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::VFunc(_) | Value::Cfn(_) => Ok(f),
+            Value::Function(_)
+            | Value::Native(_)
+            | Value::NativeClosure(_)
+            | Value::VFunc(_)
+            | Value::Cfn(_) => Ok(f),
             other => Err(format!(
                 "{} expects a function, found {}",
                 meth,
@@ -807,13 +816,11 @@ pub fn list_callback_method(
             // "greater" and equal elements would come out reversed (and an
             // always-false comparator would reverse the whole list).
             let mut cmp = |ia: usize, ib: usize| -> Result<_, String> {
-                let first =
-                    host.call_callback(&f, vec![items[ia].clone(), items[ib].clone()])?;
+                let first = host.call_callback(&f, vec![items[ia].clone(), items[ib].clone()])?;
                 if !matches!(first, Value::Bool(false)) {
                     return seq::comparator_ordering(name, &first);
                 }
-                let mirror =
-                    host.call_callback(&f, vec![items[ib].clone(), items[ia].clone()])?;
+                let mirror = host.call_callback(&f, vec![items[ib].clone(), items[ia].clone()])?;
                 match &mirror {
                     Value::Bool(false) => Ok(std::cmp::Ordering::Equal),
                     Value::Bool(true) => Ok(std::cmp::Ordering::Greater),
@@ -838,10 +845,7 @@ pub fn list_callback_method(
         }
         "argsort" => {
             if !args.is_empty() {
-                return Err(format!(
-                    "argsort expects 0 arguments, got {}",
-                    args.len()
-                ));
+                return Err(format!("argsort expects 0 arguments, got {}", args.len()));
             }
             let order = seq::argsort_indices(items)?;
             Ok(make_list(
@@ -893,12 +897,14 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
         }
         "upper" | "lower" => {
             want(name, args, 0)?;
-            Ok(Value::Str(if name == "upper" {
-                s.to_uppercase()
-            } else {
-                s.to_lowercase()
-            }
-            .into()))
+            Ok(Value::Str(
+                if name == "upper" {
+                    s.to_uppercase()
+                } else {
+                    s.to_lowercase()
+                }
+                .into(),
+            ))
         }
         "trim" => {
             want(name, args, 0)?;
@@ -908,7 +914,9 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
             want(name, args, 1)?;
             let sep = want_str(&args[0], "string.split")?;
             let items: Vec<Value> = if sep.is_empty() {
-                s.chars().map(|c| Value::Str(c.to_string().into())).collect()
+                s.chars()
+                    .map(|c| Value::Str(c.to_string().into()))
+                    .collect()
             } else {
                 s.split(&sep).map(|p| Value::Str(p.into())).collect()
             };
@@ -971,7 +979,11 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
         }
         "chars" => {
             want(name, args, 0)?;
-            Ok(make_list(s.chars().map(|c| Value::Str(c.to_string().into())).collect()))
+            Ok(make_list(
+                s.chars()
+                    .map(|c| Value::Str(c.to_string().into()))
+                    .collect(),
+            ))
         }
         "pad_left" | "pad_right" => {
             if args.len() != 2 {
@@ -999,12 +1011,14 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
                 return Ok(Value::Str(s.into()));
             }
             let fill: String = pad.chars().cycle().take(width - len).collect();
-            Ok(Value::Str(if name == "pad_left" {
-                format!("{}{}", fill, s)
-            } else {
-                format!("{}{}", s, fill)
-            }
-            .into()))
+            Ok(Value::Str(
+                if name == "pad_left" {
+                    format!("{}{}", fill, s)
+                } else {
+                    format!("{}{}", s, fill)
+                }
+                .into(),
+            ))
         }
         "format" => {
             // `format("a={} b={}", x, y)` - `{}` placeholders are filled left
@@ -1040,9 +1054,8 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
                                 && !(c2 == ':' && spec.is_empty())
                                 && !(c2 == '.' && spec.starts_with(':'))
                             {
-                                return Err(
-                                    "format: placeholders must be '{}' or escape as '{{'".to_string()
-                                );
+                                return Err("format: placeholders must be '{}' or escape as '{{'"
+                                    .to_string());
                             }
                             spec.push(c2);
                         }
@@ -1052,9 +1065,7 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
                         let v = match it.next() {
                             Some(v) => v,
                             None => {
-                                return Err(
-                                    "format: more placeholders than arguments".to_string()
-                                )
+                                return Err("format: more placeholders than arguments".to_string())
                             }
                         };
                         out.push_str(&format_one_placeholder(&spec, v)?);
@@ -1511,7 +1522,10 @@ pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
             }
             Ok(out)
         }
-        Value::Str(s) => Ok(s.chars().map(|c| Value::Str(c.to_string().into())).collect()),
+        Value::Str(s) => Ok(s
+            .chars()
+            .map(|c| Value::Str(c.to_string().into()))
+            .collect()),
         Value::LinkedList(d) | Value::SinglyList(d) | Value::DoublyList(d) => {
             // to_vec() walks the nodes under the list lock and returns shallow
             // (Arc-cheap) value clones; the guard drops with the statement, so

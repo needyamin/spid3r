@@ -37,7 +37,10 @@ fn run_gc_on(engine: &str, path: &Path, limit: Duration) -> Result<String, Strin
         .map_err(|e| format!("spawn failed: {}", e))?;
     let deadline = Instant::now() + limit;
     loop {
-        if let Some(status) = child.try_wait().map_err(|e| format!("wait failed: {}", e))? {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("wait failed: {}", e))?
+        {
             let mut out = String::new();
             if let Some(mut s) = child.stdout.take() {
                 let _ = s.read_to_string(&mut out);

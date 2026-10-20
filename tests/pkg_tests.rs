@@ -124,7 +124,10 @@ impl Project {
                 name, version
             ),
         );
-        self.write_sibling(&format!("registry/{}/{}/src/lib.matrix", name, version), body);
+        self.write_sibling(
+            &format!("registry/{}/{}/src/lib.matrix", name, version),
+            body,
+        );
     }
 
     fn registry_dir(&self) -> String {
@@ -161,7 +164,8 @@ impl Drop for Project {
     }
 }
 
-const DEP_BODY: &str = "public fn square(x) {\n    return x * x;\n}\npublic const VERSION = \"1.0.0\";\n";
+const DEP_BODY: &str =
+    "public fn square(x) {\n    return x * x;\n}\npublic const VERSION = \"1.0.0\";\n";
 
 #[test]
 fn init_scaffolds_a_project_and_never_overwrites() {
@@ -172,7 +176,11 @@ fn init_scaffolds_a_project_and_never_overwrites() {
     assert!(p.exists("src/main.matrix"), "entry missing");
     let manifest = p.read("spider.toml");
     assert!(manifest.contains("[package]"), "manifest: {}", manifest);
-    assert!(manifest.contains("[dependencies]"), "manifest: {}", manifest);
+    assert!(
+        manifest.contains("[dependencies]"),
+        "manifest: {}",
+        manifest
+    );
 
     // Second run leaves the existing files alone.
     p.write("src/main.matrix", "// mine\nfn main() { return 0; }\n");
@@ -189,12 +197,18 @@ fn init_scaffolds_a_project_and_never_overwrites() {
 fn install_vendors_path_dependencies_and_writes_a_lockfile() {
     let p = Project::new("install");
     p.add_dep("mathlib", "1.0.0", DEP_BODY);
-    p.add_app(&[("mathlib", "../mathlib")], "fn main() {\n    return 0;\n}\n");
+    p.add_app(
+        &[("mathlib", "../mathlib")],
+        "fn main() {\n    return 0;\n}\n",
+    );
 
     let (code, out, err) = p.run(&["install"]);
     assert_eq!(code, 0, "install failed: {}{}", out, err);
     assert!(out.contains("mathlib"), "summary: {}", out);
-    assert!(p.exists("vendor/mathlib/lib.matrix"), "vendored file missing");
+    assert!(
+        p.exists("vendor/mathlib/lib.matrix"),
+        "vendored file missing"
+    );
     let lock = p.read("spider.lock");
     assert!(lock.contains("name = \"mathlib\""), "lock: {}", lock);
     assert!(lock.contains("version = \"1.0.0\""), "lock: {}", lock);
@@ -206,7 +220,10 @@ fn install_vendors_path_dependencies_and_writes_a_lockfile() {
 fn install_is_idempotent_and_restores_tampered_vendor_files() {
     let p = Project::new("idem");
     p.add_dep("mathlib", "1.0.0", DEP_BODY);
-    p.add_app(&[("mathlib", "../mathlib")], "fn main() {\n    return 0;\n}\n");
+    p.add_app(
+        &[("mathlib", "../mathlib")],
+        "fn main() {\n    return 0;\n}\n",
+    );
 
     assert_eq!(p.run(&["install"]).0, 0);
     let first_lock = p.read("spider.lock");
@@ -214,7 +231,10 @@ fn install_is_idempotent_and_restores_tampered_vendor_files() {
     assert_eq!(p.read("spider.lock"), first_lock, "lock must be stable");
 
     // Tamper with the vendored copy: install re-syncs it from the dependency.
-    p.write("vendor/mathlib/lib.matrix", "public fn square(x) {\n    return 0;\n}\n");
+    p.write(
+        "vendor/mathlib/lib.matrix",
+        "public fn square(x) {\n    return 0;\n}\n",
+    );
     let (code, out, _) = p.run(&["install"]);
     assert_eq!(code, 0);
     assert!(
@@ -293,7 +313,10 @@ fn two_dependencies_are_vendored_independently() {
 fn lockfile_paths_are_recorded_relative_to_the_manifest() {
     let p = Project::new("lockpaths");
     p.add_dep("mathlib", "1.0.0", DEP_BODY);
-    p.add_app(&[("mathlib", "../mathlib")], "fn main() {\n    return 0;\n}\n");
+    p.add_app(
+        &[("mathlib", "../mathlib")],
+        "fn main() {\n    return 0;\n}\n",
+    );
     assert_eq!(p.run(&["install"]).0, 0);
     let lock = p.read("spider.lock");
     assert!(
@@ -308,11 +331,18 @@ fn lockfile_paths_are_recorded_relative_to_the_manifest() {
 fn vendor_directory_lives_inside_the_project() {
     let p = Project::new("vendorloc");
     p.add_dep("mathlib", "1.0.0", DEP_BODY);
-    p.add_app(&[("mathlib", "../mathlib")], "fn main() {\n    return 0;\n}\n");
+    p.add_app(
+        &[("mathlib", "../mathlib")],
+        "fn main() {\n    return 0;\n}\n",
+    );
     assert_eq!(p.run(&["install"]).0, 0);
     let vendor = Path::new(&p.root).join("vendor");
     assert!(vendor.is_dir());
-    let outside = p.root.parent().map(|d| d.join("vendor")).unwrap_or_default();
+    let outside = p
+        .root
+        .parent()
+        .map(|d| d.join("vendor"))
+        .unwrap_or_default();
     let _ = outside; // documented: vendor/ is per-project
     assert!(p.exists("vendor/mathlib/lib.matrix"));
 }
@@ -421,7 +451,12 @@ fn install_clones_a_git_dependency_and_pins_the_commit() {
         .find(|l| l.starts_with("source = \"git+"))
         .expect("source line");
     let commit = sha_line.rsplit('#').next().unwrap().trim_end_matches('"');
-    assert_eq!(commit.len(), 40, "expected a full commit hash: {}", sha_line);
+    assert_eq!(
+        commit.len(),
+        40,
+        "expected a full commit hash: {}",
+        sha_line
+    );
     assert!(
         commit.chars().all(|c| c.is_ascii_hexdigit()),
         "commit should be hex: {}",
@@ -493,7 +528,11 @@ fn a_git_dependency_that_is_not_a_repository_fails_clearly() {
     let p = Project::new("gitbad");
     let not_a_repo = p.base.join("plain");
     std::fs::create_dir_all(not_a_repo.join("src")).expect("mkdir");
-    std::fs::write(not_a_repo.join("spider.toml"), "[package]\nname = \"plain\"\n").expect("write");
+    std::fs::write(
+        not_a_repo.join("spider.toml"),
+        "[package]\nname = \"plain\"\n",
+    )
+    .expect("write");
     let url = not_a_repo.to_string_lossy().replace('\\', "/");
     p.write(
         "spider.toml",
@@ -634,7 +673,10 @@ fn build_outside_a_project_is_a_clear_error() {
 #[test]
 fn run_without_a_file_runs_the_project_entry() {
     let p = Project::new("runentry");
-    p.add_app(&[], "fn main() {\n    println(\"entry ran\");\n    return 0;\n}\n");
+    p.add_app(
+        &[],
+        "fn main() {\n    println(\"entry ran\");\n    return 0;\n}\n",
+    );
     for engine in ["tree", "vm"] {
         let (code, out, err) = p.run(&["run", "--engine", engine]);
         assert_eq!(code, 0, "{} run failed: {}{}", engine, out, err);
@@ -662,7 +704,10 @@ fn project_test_runs_the_tests_directory_differentially() {
         &[],
         "fn add(a, b) {\n    return a + b;\n}\nfn main() {\n    println(add(2, 3));\n    return 0;\n}\n",
     );
-    p.write("tests/add.matrix", "fn main() {\n    println(5);\n    return 0;\n}\n");
+    p.write(
+        "tests/add.matrix",
+        "fn main() {\n    println(5);\n    return 0;\n}\n",
+    );
     // A library file in tests/ only needs the semantic check.
     p.write(
         "tests/lib.matrix",
@@ -671,8 +716,16 @@ fn project_test_runs_the_tests_directory_differentially() {
 
     let (code, out, err) = p.run(&["test"]);
     assert_eq!(code, 0, "test failed: {}{}", out, err);
-    assert!(out.contains("ok   tests/add.matrix (tree==vm)"), "output:/n{}", out);
-    assert!(out.contains("ok   tests/lib.matrix (library: checked)"), "output:/n{}", out);
+    assert!(
+        out.contains("ok   tests/add.matrix (tree==vm)"),
+        "output:/n{}",
+        out
+    );
+    assert!(
+        out.contains("ok   tests/lib.matrix (library: checked)"),
+        "output:/n{}",
+        out
+    );
     assert!(out.contains("2 ok, 0 failed"), "output:/n{}", out);
 }
 
@@ -770,7 +823,11 @@ fn a_workspace_installs_all_members_into_one_shared_vendor() {
     let lock = std::fs::read_to_string(ws.join("spider.lock")).expect("lock");
     assert!(lock.contains("# workspace"), "lock: {}", lock);
     assert!(lock.contains("used-by = \"apps/cli\""), "lock: {}", lock);
-    assert!(lock.contains("source = \"path+../../../extdep\""), "lock: {}", lock);
+    assert!(
+        lock.contains("source = \"path+../../../extdep\""),
+        "lock: {}",
+        lock
+    );
 
     // Running from INSIDE a member resolves the shared vendor via walk-up.
     let (code, out, err) = run(&["run", "--engine", "vm"], &ws.join("apps/cli"));
@@ -785,7 +842,11 @@ fn a_workspace_installs_all_members_into_one_shared_vendor() {
     // A workspace-only root has no entry to run: clear error, not a panic.
     let (code, _, err) = run(&["run"], &ws);
     assert_ne!(code, 0, "running a workspace-only root should fail");
-    assert!(err.contains("does not exist") || err.contains("entry"), "error: {}", err);
+    assert!(
+        err.contains("does not exist") || err.contains("entry"),
+        "error: {}",
+        err
+    );
 
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -806,9 +867,17 @@ fn the_same_dependency_name_from_two_sources_is_a_workspace_error() {
         "[workspace]\nmembers = [\"m1\", \"m2\"]\n",
     )
     .expect("write");
-    std::fs::write(ws.join("m1/spider.toml"), "[package]\nname = \"m1\"\n\n[dependencies]\nlib = { path = \"../depA\" }\n").expect("write");
+    std::fs::write(
+        ws.join("m1/spider.toml"),
+        "[package]\nname = \"m1\"\n\n[dependencies]\nlib = { path = \"../depA\" }\n",
+    )
+    .expect("write");
     std::fs::write(ws.join("m1/src/lib.matrix"), "").expect("write");
-    std::fs::write(ws.join("m2/spider.toml"), "[package]\nname = \"m2\"\n\n[dependencies]\nlib = { path = \"../depB\" }\n").expect("write");
+    std::fs::write(
+        ws.join("m2/spider.toml"),
+        "[package]\nname = \"m2\"\n\n[dependencies]\nlib = { path = \"../depB\" }\n",
+    )
+    .expect("write");
     std::fs::write(ws.join("m2/src/lib.matrix"), "").expect("write");
     std::fs::write(ws.join("depA/spider.toml"), "[package]\nname = \"depA\"\n").expect("write");
     std::fs::write(ws.join("depB/spider.toml"), "[package]\nname = \"depB\"\n").expect("write");
@@ -830,10 +899,8 @@ fn the_same_dependency_name_from_two_sources_is_a_workspace_error() {
 
 #[test]
 fn a_workspace_only_root_parses_without_a_package() {
-    let m = spid3r_lang::pkg::parse_manifest(
-        "[workspace]\nmembers = [\"a\", \"b\"]\n",
-    )
-    .expect("parse");
+    let m =
+        spid3r_lang::pkg::parse_manifest("[workspace]\nmembers = [\"a\", \"b\"]\n").expect("parse");
     assert!(m.package.is_none());
     assert_eq!(m.members, vec!["a".to_string(), "b".to_string()]);
     // A manifest with neither package nor workspace is still an error.
@@ -869,7 +936,11 @@ fn assert_builtins_pass_and_fail_in_both_engines() {
     );
     let (code, _, err) = p.run(&["run", "--engine", "vm", "src/main.matrix"]);
     assert_ne!(code, 0);
-    assert!(err.contains("1 != 2") && err.contains("numbers differ"), "error: {}", err);
+    assert!(
+        err.contains("1 != 2") && err.contains("numbers differ"),
+        "error: {}",
+        err
+    );
 }
 
 #[test]
@@ -894,7 +965,11 @@ fn project_tests_use_the_assert_builtins() {
     );
     let (code, out, _) = p.run(&["test"]);
     assert_ne!(code, 0);
-    assert!(out.contains("assertion failed") && out.contains("4 != 5"), "output:/n{}", out);
+    assert!(
+        out.contains("assertion failed") && out.contains("4 != 5"),
+        "output:/n{}",
+        out
+    );
 }
 
 #[test]
@@ -905,7 +980,11 @@ fn workspace_test_runs_every_member() {
     for d in ["liba", "libb"] {
         std::fs::create_dir_all(ws.join(d).join("tests")).expect("mkdir");
     }
-    std::fs::write(ws.join("spider.toml"), "[workspace]\nmembers = [\"liba\", \"libb\"]\n").expect("write");
+    std::fs::write(
+        ws.join("spider.toml"),
+        "[workspace]\nmembers = [\"liba\", \"libb\"]\n",
+    )
+    .expect("write");
     std::fs::write(ws.join("liba/spider.toml"), "[package]\nname = \"liba\"\n").expect("write");
     std::fs::write(ws.join("libb/spider.toml"), "[package]\nname = \"libb\"\n").expect("write");
     // liba: one passing test.
@@ -932,11 +1011,23 @@ fn workspace_test_runs_every_member() {
         .output()
         .expect("spawn");
     let out = String::from_utf8_lossy(&o.stdout).to_string();
-    assert_ne!(o.status.code().unwrap_or(-1), 0, "a failing member must fail the workspace");
+    assert_ne!(
+        o.status.code().unwrap_or(-1),
+        0,
+        "a failing member must fail the workspace"
+    );
     assert!(out.contains("== member liba =="), "output:/n{}", out);
     assert!(out.contains("== member libb =="), "output:/n{}", out);
-    assert!(out.contains("member liba: 1 ok, 0 failed"), "output:/n{}", out);
-    assert!(out.contains("member libb: 1 ok, 1 failed"), "output:/n{}", out);
+    assert!(
+        out.contains("member liba: 1 ok, 0 failed"),
+        "output:/n{}",
+        out
+    );
+    assert!(
+        out.contains("member libb: 1 ok, 1 failed"),
+        "output:/n{}",
+        out
+    );
     assert!(out.contains("2 ok, 1 failed"), "output:/n{}", out);
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -946,8 +1037,14 @@ fn workspace_test_runs_every_member() {
 #[test]
 fn tar_round_trips_entries_exactly() {
     let entries = vec![
-        ("spider.toml".to_string(), b"[package]\nname = \"x\"\n".to_vec()),
-        ("src/lib.matrix".to_string(), b"public fn f() {\n    return 1;\n}\n".to_vec()),
+        (
+            "spider.toml".to_string(),
+            b"[package]\nname = \"x\"\n".to_vec(),
+        ),
+        (
+            "src/lib.matrix".to_string(),
+            b"public fn f() {\n    return 1;\n}\n".to_vec(),
+        ),
         ("src/empty.matrix".to_string(), Vec::new()),
         (
             "src/big.matrix".to_string(),
@@ -971,12 +1068,20 @@ fn pack_and_unpack_restore_a_project_byte_for_byte() {
         "spider.toml",
         "[package]\nname = \"packedlib\"\nversion = \"2.1.0\"\nentry = \"src/lib.matrix\"\n",
     );
-    p.write("src/lib.matrix", "public fn triple(x) {\n    return x * 3;\n}\n");
+    p.write(
+        "src/lib.matrix",
+        "public fn triple(x) {\n    return x * 3;\n}\n",
+    );
 
     let (code, out, err) = p.run(&["pack"]);
     assert_eq!(code, 0, "pack failed: {}{}", out, err);
     let archive = p.root.join("dist/packedlib-2.1.0.tar");
-    assert!(archive.is_file(), "archive missing; pack said: {}{}", out, err);
+    assert!(
+        archive.is_file(),
+        "archive missing; pack said: {}{}",
+        out,
+        err
+    );
     assert!(out.contains("sha256:"), "pack should print a hash: {}", out);
 
     // Unpack elsewhere and compare every file (cwd is the project root, so
@@ -1038,7 +1143,10 @@ fn a_packed_library_works_as_a_path_dependency() {
     let (code, out, err) = run(&["pack"], &lib);
     assert_eq!(code, 0, "pack failed: {}{}", out, err);
     std::fs::create_dir_all(&app).expect("mkdir");
-    let (code, out, err) = run(&["unpack", "../lib/dist/coolmath-1.0.0.tar", "deps/coolmath"], &app);
+    let (code, out, err) = run(
+        &["unpack", "../lib/dist/coolmath-1.0.0.tar", "deps/coolmath"],
+        &app,
+    );
     assert_eq!(code, 0, "unpack failed: {}{}", out, err);
     std::fs::write(
         app.join("spider.toml"),
@@ -1067,19 +1175,31 @@ fn workspace_pack_archives_every_member() {
     for d in ["libs/core", "apps/tool"] {
         std::fs::create_dir_all(ws.join(d).join("src")).expect("mkdir");
     }
-    std::fs::write(ws.join("spider.toml"), "[workspace]\nmembers = [\"libs/core\", \"apps/tool\"]\n").expect("write");
+    std::fs::write(
+        ws.join("spider.toml"),
+        "[workspace]\nmembers = [\"libs/core\", \"apps/tool\"]\n",
+    )
+    .expect("write");
     std::fs::write(
         ws.join("libs/core/spider.toml"),
         "[package]\nname = \"core\"\nversion = \"0.5.0\"\nentry = \"src/lib.matrix\"\n",
     )
     .expect("write");
-    std::fs::write(ws.join("libs/core/src/lib.matrix"), "public fn id(x) {\n    return x;\n}\n").expect("write");
+    std::fs::write(
+        ws.join("libs/core/src/lib.matrix"),
+        "public fn id(x) {\n    return x;\n}\n",
+    )
+    .expect("write");
     std::fs::write(
         ws.join("apps/tool/spider.toml"),
         "[package]\nname = \"tool\"\nversion = \"1.1.0\"\nentry = \"src/main.matrix\"\n",
     )
     .expect("write");
-    std::fs::write(ws.join("apps/tool/src/main.matrix"), "fn main() {\n    return 0;\n}\n").expect("write");
+    std::fs::write(
+        ws.join("apps/tool/src/main.matrix"),
+        "fn main() {\n    return 0;\n}\n",
+    )
+    .expect("write");
 
     let o = Command::new(bin())
         .args(["pack"])
@@ -1087,9 +1207,22 @@ fn workspace_pack_archives_every_member() {
         .output()
         .expect("spawn");
     let out = String::from_utf8_lossy(&o.stdout).to_string();
-    assert_eq!(o.status.code().unwrap_or(-1), 0, "workspace pack failed: {}", out);
-    assert!(ws.join("dist/core-0.5.0.tar").is_file(), "core archive missing:/n{}", out);
-    assert!(ws.join("dist/tool-1.1.0.tar").is_file(), "tool archive missing:/n{}", out);
+    assert_eq!(
+        o.status.code().unwrap_or(-1),
+        0,
+        "workspace pack failed: {}",
+        out
+    );
+    assert!(
+        ws.join("dist/core-0.5.0.tar").is_file(),
+        "core archive missing:/n{}",
+        out
+    );
+    assert!(
+        ws.join("dist/tool-1.1.0.tar").is_file(),
+        "tool archive missing:/n{}",
+        out
+    );
     assert!(out.contains("2 archive(s)"), "output:/n{}", out);
 
     // Each archive is a valid tar of its member: unpack and check contents.
@@ -1111,9 +1244,16 @@ fn registry_dependency_installs_from_a_local_index() {
     let reg = p.registry_dir();
     let (code, out, err) = p.run_env(&["install"], &[("SPID3R_REGISTRY", &reg)]);
     assert_eq!(code, 0, "install failed: {}{}", out, err);
-    assert!(p.exists("vendor/mathlib/lib.matrix"), "vendored file missing");
+    assert!(
+        p.exists("vendor/mathlib/lib.matrix"),
+        "vendored file missing"
+    );
     let lock = p.read("spider.lock");
-    assert!(lock.contains("source = \"registry+1.2.0\""), "lock: {}", lock);
+    assert!(
+        lock.contains("source = \"registry+1.2.0\""),
+        "lock: {}",
+        lock
+    );
     assert!(lock.contains("sha256 = \""), "lock: {}", lock);
 }
 
@@ -1171,24 +1311,42 @@ fn registry_errors_are_clear() {
 #[test]
 fn tar_supports_ustar_prefix_and_longlink_and_verifies_checksum() {
     // 1. Path between 101 and 255 bytes with a `/` split (uses POSIX ustar prefix).
-    let ustar_path = format!("src/{}/module_{}.matrix", "deep_subdir_".repeat(8), "a".repeat(30));
+    let ustar_path = format!(
+        "src/{}/module_{}.matrix",
+        "deep_subdir_".repeat(8),
+        "a".repeat(30)
+    );
     assert!(ustar_path.len() > 100 && ustar_path.len() <= 255);
 
     // 2. Path > 255 bytes (uses GNU @LongLink 'L' block).
-    let longlink_path = format!("src/{}/very_long_{}.matrix", "nested_dir_".repeat(20), "b".repeat(80));
+    let longlink_path = format!(
+        "src/{}/very_long_{}.matrix",
+        "nested_dir_".repeat(20),
+        "b".repeat(80)
+    );
     assert!(longlink_path.len() > 255);
 
     let entries = vec![
-        (ustar_path.clone(), b"public fn a() { return 1; }\n".to_vec()),
-        (longlink_path.clone(), b"public fn b() { return 2; }\n".to_vec()),
+        (
+            ustar_path.clone(),
+            b"public fn a() { return 1; }\n".to_vec(),
+        ),
+        (
+            longlink_path.clone(),
+            b"public fn b() { return 2; }\n".to_vec(),
+        ),
     ];
     let mut archive = spid3r_lang::pkg::write_tar(&entries);
     let decoded = spid3r_lang::pkg::read_tar(&archive).expect("read_tar with long names");
-    assert_eq!(decoded, entries, "long paths must round-trip without truncation");
+    assert_eq!(
+        decoded, entries,
+        "long paths must round-trip without truncation"
+    );
 
     // 3. Corrupt a byte in the first header and verify checksum rejection.
     archive[0] ^= 0xff;
-    let err = spid3r_lang::pkg::read_tar(&archive).expect_err("corrupted header must fail checksum");
+    let err =
+        spid3r_lang::pkg::read_tar(&archive).expect_err("corrupted header must fail checksum");
     assert!(
         err.contains("checksum mismatch"),
         "expected checksum mismatch error, got: {}",
@@ -1283,7 +1441,6 @@ fn transitive_version_constraint_mismatch_fails_install() {
         err
     );
 }
-
 
 // -------------------------------------------------- A-5 / A-13 (Stage 3)
 
@@ -1394,7 +1551,11 @@ fn a_reinstall_honors_the_locked_commit_and_update_moves_it() {
         p.read("vendor/moving/lib.matrix").contains("x * x"),
         "a re-install must reproduce the locked commit, not the new tip"
     );
-    assert_eq!(p.read("spider.lock"), first_lock, "the lock must stay stable");
+    assert_eq!(
+        p.read("spider.lock"),
+        first_lock,
+        "the lock must stay stable"
+    );
 
     // --update re-resolves and vendors the new tip.
     let (code, out, err) = p.run(&["install", "--update"]);
@@ -1403,7 +1564,11 @@ fn a_reinstall_honors_the_locked_commit_and_update_moves_it() {
         p.read("vendor/moving/lib.matrix").contains("x * x * x"),
         "--update must move to the new upstream commit"
     );
-    assert_ne!(p.read("spider.lock"), first_lock, "the lock must record the new commit");
+    assert_ne!(
+        p.read("spider.lock"),
+        first_lock,
+        "the lock must record the new commit"
+    );
 }
 
 /// Everything under `src/` is vendored and covered by the lockfile hash, with
@@ -1430,8 +1595,14 @@ fn non_matrix_and_binary_assets_are_vendored_and_hashed() {
     );
     p.write("src/main.matrix", "fn main() {\n    return 0;\n}\n");
     assert_eq!(p.run(&["install"]).0, 0);
-    assert!(p.exists("vendor/withdata/table.txt"), "data asset not vendored");
-    assert!(p.exists("vendor/withdata/blob.bin"), "binary asset not vendored");
+    assert!(
+        p.exists("vendor/withdata/table.txt"),
+        "data asset not vendored"
+    );
+    assert!(
+        p.exists("vendor/withdata/blob.bin"),
+        "binary asset not vendored"
+    );
     let hash_before = spid3r_lang::pkg::tree_hash(&dep).expect("tree hash");
 
     // A different non-UTF-8 payload must change the hash.
@@ -1445,7 +1616,10 @@ fn non_matrix_and_binary_assets_are_vendored_and_hashed() {
     // Changing only the data asset must change the hash too.
     std::fs::write(dep.join("src/table.txt"), "4,5,6\n").expect("write");
     let hash_asset = spid3r_lang::pkg::tree_hash(&dep).expect("tree hash");
-    assert_ne!(hash_after, hash_asset, "a data asset must be covered by the hash");
+    assert_ne!(
+        hash_after, hash_asset,
+        "a data asset must be covered by the hash"
+    );
 }
 
 /// The transport policy itself (audit A-5): what a manifest may point git at,

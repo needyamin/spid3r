@@ -39,11 +39,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
         match args[i].as_str() {
             "-o" => {
                 i += 1;
-                out = Some(
-                    args.get(i)
-                        .cloned()
-                        .ok_or_else(|| err("-o needs a path"))?,
-                );
+                out = Some(args.get(i).cloned().ok_or_else(|| err("-o needs a path"))?);
             }
             "--target" => {
                 i += 1;
@@ -73,8 +69,8 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     if !path.is_file() {
         return Err(err(format!("'{}' is not a file", file)));
     }
-    let src = std::fs::read_to_string(path)
-        .map_err(|e| err(format!("cannot read '{}': {}", file, e)))?;
+    let src =
+        std::fs::read_to_string(path).map_err(|e| err(format!("cannot read '{}': {}", file, e)))?;
     let file_id: std::sync::Arc<str> = std::sync::Arc::from(file.as_str());
     let program: Program = crate::parser::parse_file(&src, file_id.clone())?;
     crate::semantic::check_file(&program, true, &file)?;
@@ -122,7 +118,11 @@ pub fn build_native(
         "built {} ({} {} bit, {})",
         out_path.display(),
         triple,
-        if triple.contains("i686") || triple.contains("i586") { 32 } else { 64 },
+        if triple.contains("i686") || triple.contains("i586") {
+            32
+        } else {
+            64
+        },
         if opt { "release" } else { "debug" }
     ))
 }
@@ -153,7 +153,10 @@ fn find_llvm_lib_dir() -> Option<PathBuf> {
         }
     }
     if cfg!(windows) {
-        if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        if let Some(dir) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.parent().map(Path::to_path_buf))
+        {
             if dir.join("LLVM-C.lib").is_file() {
                 return Some(dir);
             }
@@ -166,7 +169,10 @@ fn find_llvm_lib_dir() -> Option<PathBuf> {
         }
     }
     let candidates: &[&str] = if cfg!(windows) {
-        &[r"C:\Program Files\LLVM\lib", r"C:\Program Files (x86)\LLVM\lib"]
+        &[
+            r"C:\Program Files\LLVM\lib",
+            r"C:\Program Files (x86)\LLVM\lib",
+        ]
     } else if cfg!(target_os = "macos") {
         &["/usr/local/lib", "/opt/homebrew/lib", "/usr/lib"]
     } else {
@@ -178,7 +184,11 @@ fn find_llvm_lib_dir() -> Option<PathBuf> {
             "/usr/lib",
         ]
     };
-    candidates.iter().map(Path::new).find(|p| p.is_dir()).map(|p| p.to_path_buf())
+    candidates
+        .iter()
+        .map(Path::new)
+        .find(|p| p.is_dir())
+        .map(|p| p.to_path_buf())
 }
 
 /// Find `libspid3r.a` / `spid3r.lib` via environment overrides, sysroot layout,
@@ -215,7 +225,12 @@ fn vs_roots() -> Vec<PathBuf> {
         let p = PathBuf::from(base);
         if let Ok(entries) = std::fs::read_dir(&p) {
             for e in entries.flatten() {
-                let vc = e.path().join("BuildTools").join("VC").join("Tools").join("MSVC");
+                let vc = e
+                    .path()
+                    .join("BuildTools")
+                    .join("VC")
+                    .join("Tools")
+                    .join("MSVC");
                 if let Ok(versions) = std::fs::read_dir(&vc) {
                     let mut dirs: Vec<PathBuf> = versions.flatten().map(|v| v.path()).collect();
                     dirs.sort();
@@ -246,7 +261,11 @@ fn link_windows(obj: &Path, out: &Path, lib: &Path) -> Result<(), Diagnostic> {
     let mut link_exe: Option<PathBuf> = None;
     let mut libs_dir: Option<PathBuf> = None;
     for root in vs_roots() {
-        let cand = root.join("bin").join("HostX64").join("x64").join("link.exe");
+        let cand = root
+            .join("bin")
+            .join("HostX64")
+            .join("x64")
+            .join("link.exe");
         if cand.is_file() {
             link_exe = Some(cand);
             libs_dir = Some(root.join("lib").join("x64"));
@@ -285,8 +304,14 @@ fn link_windows(obj: &Path, out: &Path, lib: &Path) -> Result<(), Diagnostic> {
     if let Some(dir) = &libs_dir {
         args.push(format!("-libpath:{}", dir.display()));
     }
-    args.push(format!("-libpath:{}", sdk_latest.join("ucrt").join("x64").display()));
-    args.push(format!("-libpath:{}", sdk_latest.join("um").join("x64").display()));
+    args.push(format!(
+        "-libpath:{}",
+        sdk_latest.join("ucrt").join("x64").display()
+    ));
+    args.push(format!(
+        "-libpath:{}",
+        sdk_latest.join("um").join("x64").display()
+    ));
     // the staticlib also contains the compiler's inkwell bindings; resolve
     // their LLVM-C references and then strip everything the program does not
     // use, so the shipped executable has no LLVM-C.dll dependency.
@@ -391,13 +416,10 @@ fn which_program(name: &str) -> Option<PathBuf> {
 }
 
 fn run_linker(exe: &Path, args: &[String]) -> Result<(), Diagnostic> {
-    let out = Command::new(exe).args(args).output().map_err(|e| {
-        err(format!(
-            "cannot run the linker '{}': {}",
-            exe.display(),
-            e
-        ))
-    })?;
+    let out = Command::new(exe)
+        .args(args)
+        .output()
+        .map_err(|e| err(format!("cannot run the linker '{}': {}", exe.display(), e)))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stdout = String::from_utf8_lossy(&out.stdout);

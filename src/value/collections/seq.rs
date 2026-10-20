@@ -27,9 +27,7 @@ impl Drop for VecData {
         let mut work = std::mem::take(&mut self.items);
         while let Some(v) = work.pop() {
             let sole = match &v {
-                Value::List(arc) | Value::VecDyn(arc) => {
-                    std::sync::Arc::strong_count(arc) == 1
-                }
+                Value::List(arc) | Value::VecDyn(arc) => std::sync::Arc::strong_count(arc) == 1,
                 _ => false,
             };
             if !sole {
@@ -674,9 +672,7 @@ impl Drop for MapData {
         while let Some(v) = work.pop() {
             let sole = match &v {
                 Value::Map(arc) => std::sync::Arc::strong_count(arc) == 1,
-                Value::List(arc) | Value::VecDyn(arc) => {
-                    std::sync::Arc::strong_count(arc) == 1
-                }
+                Value::List(arc) | Value::VecDyn(arc) => std::sync::Arc::strong_count(arc) == 1,
                 _ => false,
             };
             if !sole {
@@ -801,9 +797,7 @@ impl MapData {
                     items: self
                         .entries
                         .iter()
-                        .map(|(k, v)| {
-                            Value::Tuple(new_ref(vec![key_to_value(k), v.clone()]))
-                        })
+                        .map(|(k, v)| Value::Tuple(new_ref(vec![key_to_value(k), v.clone()])))
                         .collect(),
                 })))
             }
@@ -880,9 +874,7 @@ impl Drop for SetData {
         while let Some(v) = work.pop() {
             let sole = match &v {
                 Value::Set(arc) => std::sync::Arc::strong_count(arc) == 1,
-                Value::List(arc) | Value::VecDyn(arc) => {
-                    std::sync::Arc::strong_count(arc) == 1
-                }
+                Value::List(arc) | Value::VecDyn(arc) => std::sync::Arc::strong_count(arc) == 1,
                 _ => false,
             };
             if !sole {
@@ -986,11 +978,7 @@ impl SetData {
 /// reference each other the comparison re-locked both and hung forever
 /// (audit F3/p03). Callers clone `items` under the locks and run this helper
 /// with no lock held, so `values_equal`/`deep_clone` may re-lock freely.
-pub fn set_op(
-    op: &str,
-    self_items: Vec<Value>,
-    other_items: Vec<Value>,
-) -> Result<Value, String> {
+pub fn set_op(op: &str, self_items: Vec<Value>, other_items: Vec<Value>) -> Result<Value, String> {
     match op {
         "union" => {
             let mut items = self_items;
@@ -1174,17 +1162,14 @@ pub fn heap_less(a: &Value, b: &Value) -> Result<bool, String> {
 /// `b`", so `false` means greater-or-equal and is normalized to `Greater`) or
 /// a number (negative → less, `0` → equal, positive → greater). A NaN has no
 /// order at all, so it is reported rather than silently folded into `Equal`.
-pub fn comparator_ordering(
-    meth: &str,
-    v: &Value,
-) -> Result<std::cmp::Ordering, String> {
+pub fn comparator_ordering(meth: &str, v: &Value) -> Result<std::cmp::Ordering, String> {
     match v {
         Value::Bool(true) => Ok(std::cmp::Ordering::Less),
         Value::Bool(false) => Ok(std::cmp::Ordering::Greater),
         Value::Int(i) => Ok(i.cmp(&0)),
-        Value::Float(f) => f.partial_cmp(&0.0).ok_or_else(|| {
-            format!("{}: comparator returned NaN, which has no order", meth)
-        }),
+        Value::Float(f) => f
+            .partial_cmp(&0.0)
+            .ok_or_else(|| format!("{}: comparator returned NaN, which has no order", meth)),
         other => Err(format!(
             "{}: comparator must return a bool, int, or float, found {}",
             meth,
@@ -1333,7 +1318,9 @@ mod tests {
 
     #[test]
     fn set_remove_with_a_shifted_slot_reports_conflict() {
-        let set = new_ref(SetData { items: vec![s("a"), s("b")] });
+        let set = new_ref(SetData {
+            items: vec![s("a"), s("b")],
+        });
         let stale = set.lock().unwrap().items.clone();
         // A concurrent remove shifts "b" into slot 0.
         set.lock().unwrap().items.remove(0);

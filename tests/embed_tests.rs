@@ -95,8 +95,16 @@ fn concurrent_engines_do_not_cross_captured_output() {
             .unwrap()
     });
     let (r1, r2) = (h1.join().unwrap(), h2.join().unwrap());
-    assert!(r1.output.contains("engine-one") && !r1.output.contains("engine-two"), "{}", r1.output);
-    assert!(r2.output.contains("engine-two") && !r2.output.contains("engine-one"), "{}", r2.output);
+    assert!(
+        r1.output.contains("engine-one") && !r1.output.contains("engine-two"),
+        "{}",
+        r1.output
+    );
+    assert!(
+        r2.output.contains("engine-two") && !r2.output.contains("engine-one"),
+        "{}",
+        r2.output
+    );
 }
 
 #[test]
@@ -108,16 +116,26 @@ fn runtime_failure_carries_diagnostic_and_partial_output() {
             "fn main() { println(\"step1\"); assert(false, \"nope\"); return 0; }",
         )
         .unwrap_err();
-    assert_eq!(err.diagnostic.phase, spid3r_lang::diagnostics::Phase::Runtime);
+    assert_eq!(
+        err.diagnostic.phase,
+        spid3r_lang::diagnostics::Phase::Runtime
+    );
     assert!(err.output.contains("step1"), "{}", err.output);
-    assert!(err.diagnostic.message.contains("nope"), "{}", err.diagnostic.message);
+    assert!(
+        err.diagnostic.message.contains("nope"),
+        "{}",
+        err.diagnostic.message
+    );
 }
 
 #[test]
 fn check_failures_name_the_phase() {
     let engine = Engine::new();
     for (src, phase) in [
-        ("fn main( { return 0; }", spid3r_lang::diagnostics::Phase::Parser),
+        (
+            "fn main( { return 0; }",
+            spid3r_lang::diagnostics::Phase::Parser,
+        ),
         (
             "fn main() { return unknown_thing(); }",
             spid3r_lang::diagnostics::Phase::Semantic,

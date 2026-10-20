@@ -46,7 +46,10 @@ pub enum DepSource {
     /// directory named by `SPID3R_REGISTRY`, or a named sub-registry via
     /// `registry = "name"`). No network: the registry is a directory of
     /// `<name>/<version>/` package trees. See `docs/REGISTRY.md`.
-    Registry { version: String, registry: Option<String> },
+    Registry {
+        version: String,
+        registry: Option<String>,
+    },
 }
 
 impl DepSource {
@@ -102,8 +105,7 @@ impl Constraint {
             Constraint::Exact(want) => v == want,
             Constraint::AtLeast(want) => v >= want,
             Constraint::Caret(want) => {
-                v.major == want.major
-                    && (v.minor, v.patch) >= (want.minor, want.patch)
+                v.major == want.major && (v.minor, v.patch) >= (want.minor, want.patch)
             }
         }
     }
@@ -184,10 +186,7 @@ impl Manifest {
 
     /// The `[package]` name (empty for a workspace-only root).
     pub fn name(&self) -> &str {
-        self.package
-            .as_ref()
-            .map(|p| p.name.as_str())
-            .unwrap_or("")
+        self.package.as_ref().map(|p| p.name.as_str()).unwrap_or("")
     }
 
     /// The `[package]` version (empty for a workspace-only root).
@@ -258,9 +257,8 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
                     })?;
                     let version = table.get("version").cloned();
                     if let Some(v) = &version {
-                        Constraint::parse(v).map_err(|e| {
-                            format!("{}: dependency '{}': {}", where_, key, e)
-                        })?;
+                        Constraint::parse(v)
+                            .map_err(|e| format!("{}: dependency '{}': {}", where_, key, e))?;
                     }
                     let source = match (table.get("path"), table.get("git")) {
                         (Some(p), None) => DepSource::Path(p.clone()),
@@ -311,9 +309,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
                         format!("{}: workspace.members expects [\"a\", \"b\"]", where_)
                     })?;
                 }
-                other => {
-                    return Err(format!("{}: unknown workspace key '{}'", where_, other))
-                }
+                other => return Err(format!("{}: unknown workspace key '{}'", where_, other)),
             },
             "" => return Err(format!("{}: value outside of a section", where_)),
             other => return Err(format!("{}: unknown section '{}'", where_, other)),
@@ -410,11 +406,7 @@ fn split_ustar_path(path: &str) -> Option<(&str, &str)> {
         if b == b'/' {
             let prefix = &path[..i];
             let name = &path[i + 1..];
-            if !prefix.is_empty()
-                && prefix.len() <= 155
-                && !name.is_empty()
-                && name.len() <= 100
-            {
+            if !prefix.is_empty() && prefix.len() <= 155 && !name.is_empty() && name.len() <= 100 {
                 return Some((prefix, name));
             }
         }
@@ -501,7 +493,13 @@ pub fn read_tar(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         let actual_cksum: u64 = header
             .iter()
             .enumerate()
-            .map(|(i, &b)| if (148..156).contains(&i) { b' ' as u64 } else { b as u64 })
+            .map(|(i, &b)| {
+                if (148..156).contains(&i) {
+                    b' ' as u64
+                } else {
+                    b as u64
+                }
+            })
             .sum();
         if expected_cksum != actual_cksum {
             return Err(format!(
@@ -512,10 +510,7 @@ pub fn read_tar(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
 
         let name_end = header[..100].iter().position(|b| *b == 0).unwrap_or(100);
         let raw_name = String::from_utf8_lossy(&header[..name_end]).to_string();
-        let prefix_end = header[345..500]
-            .iter()
-            .position(|b| *b == 0)
-            .unwrap_or(155);
+        let prefix_end = header[345..500].iter().position(|b| *b == 0).unwrap_or(155);
         let prefix = String::from_utf8_lossy(&header[345..345 + prefix_end]).to_string();
 
         let size = parse_octal(&header[124..136])
@@ -532,7 +527,10 @@ pub fn read_tar(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
         pos = end + (512 - size as usize % 512) % 512;
 
         if typeflag == b'L' {
-            let len = payload.iter().position(|&b| b == 0).unwrap_or(payload.len());
+            let len = payload
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(payload.len());
             pending_long_name = Some(String::from_utf8_lossy(&payload[..len]).to_string());
             continue;
         }
@@ -568,7 +566,10 @@ fn parse_octal(field: &[u8]) -> Option<u64> {
 /// `src/`, sorted, with `/` separators regardless of platform.
 pub fn pack_entries(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
     let manifest = Manifest::load(root)?.ok_or_else(|| {
-        format!("no spider.toml in {} — run `spid3r init` first", root.display())
+        format!(
+            "no spider.toml in {} — run `spid3r init` first",
+            root.display()
+        )
     })?;
     let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
     let manifest_bytes = std::fs::read(root.join("spider.toml"))
@@ -582,8 +583,8 @@ pub fn pack_entries(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
         for f in files {
             let rel = f.strip_prefix(root).unwrap_or(&f).to_path_buf();
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            let bytes = std::fs::read(&f)
-                .map_err(|e| format!("cannot read {}: {}", f.display(), e))?;
+            let bytes =
+                std::fs::read(&f).map_err(|e| format!("cannot read {}: {}", f.display(), e))?;
             entries.push((rel_str, bytes));
         }
     }
@@ -592,8 +593,8 @@ pub fn pack_entries(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
 }
 
 fn collect_all_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
     for e in entries {
         let p = e
             .map_err(|e| format!("cannot read {}: {}", dir.display(), e))?
@@ -615,9 +616,12 @@ fn collect_all_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 /// lockfile hash (audit A-13: the old filter hashed only `.matrix` files, so a
 /// non-`.matrix` payload was neither copied nor verified).
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
     for e in entries {
-        let p = e.map_err(|e| format!("cannot read {}: {}", dir.display(), e))?.path();
+        let p = e
+            .map_err(|e| format!("cannot read {}: {}", dir.display(), e))?
+            .path();
         if p.is_dir() {
             collect_files(&p, out)?;
         } else {
@@ -698,7 +702,10 @@ pub fn pack(root: &Path, out_override: Option<&Path>) -> Result<(PathBuf, usize,
 /// `spid3r pack` at a **workspace root**: pack every member into the root's
 /// `dist/` as `<member-name>-<version>.tar`. Returns (path, files, sha256) per
 /// member.
-pub fn pack_workspace(root: &Path, manifest: &Manifest) -> Result<Vec<(PathBuf, usize, String)>, String> {
+pub fn pack_workspace(
+    root: &Path,
+    manifest: &Manifest,
+) -> Result<Vec<(PathBuf, usize, String)>, String> {
     let dist = root.join("dist");
     std::fs::create_dir_all(&dist)
         .map_err(|e| format!("cannot create {}: {}", dist.display(), e))?;
@@ -708,9 +715,8 @@ pub fn pack_workspace(root: &Path, manifest: &Manifest) -> Result<Vec<(PathBuf, 
             .join(member)
             .canonicalize()
             .map_err(|e| format!("workspace member '{}': cannot resolve: {}", member, e))?;
-        let member_manifest = Manifest::load(&member_dir)?.ok_or_else(|| {
-            format!("workspace member '{}' has no spider.toml", member)
-        })?;
+        let member_manifest = Manifest::load(&member_dir)?
+            .ok_or_else(|| format!("workspace member '{}' has no spider.toml", member))?;
         let entries = pack_entries(&member_dir)?;
         let data = write_tar(&entries);
         let hash = sha256_hex(&data);
@@ -735,8 +741,8 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<Vec<String>, String> {
             dest.display()
         ));
     }
-    let data = std::fs::read(archive)
-        .map_err(|e| format!("cannot read {}: {}", archive.display(), e))?;
+    let data =
+        std::fs::read(archive).map_err(|e| format!("cannot read {}: {}", archive.display(), e))?;
     let entries = read_tar(&data)?;
     let mut extracted = Vec::new();
     for (name, bytes) in entries {
@@ -824,7 +830,10 @@ fn vendor_dep(root: &Path, name: &str, dep_dir: &Path) -> Result<(usize, String)
     // Defense in depth: the delete below must never leave `vendor/`.
     let vendor_root = root.join("vendor");
     if !dest.starts_with(&vendor_root) || dest == vendor_root {
-        return Err(format!("refusing to vendor outside vendor/: {}", dest.display()));
+        return Err(format!(
+            "refusing to vendor outside vendor/: {}",
+            dest.display()
+        ));
     }
     // Start clean so removed files do not linger.
     if dest.exists() {
@@ -1095,11 +1104,7 @@ fn env_flag(key: &str) -> bool {
 /// points at the same URL. `spider.lock` is the reproducibility contract: a
 /// re-install must reproduce the locked tree instead of tracking a moving
 /// branch or tag (audit A-13).
-fn locked_commit(
-    locked: &BTreeMap<String, String>,
-    name: &str,
-    url: &str,
-) -> Option<String> {
+fn locked_commit(locked: &BTreeMap<String, String>, name: &str, url: &str) -> Option<String> {
     let source = locked.get(name)?;
     let rest = source.strip_prefix("git+")?;
     let (locked_url, commit) = rest.rsplit_once('#')?;
@@ -1191,7 +1196,16 @@ fn fetch_git(
         let target = remote_default_branch(&dir)
             .map(|b| format!("origin/{}", b))
             .unwrap_or_else(|| "origin/HEAD".to_string());
-        if run_git(&["-C", &path_str(&dir), "checkout", "--quiet", "--detach", &target]).is_err() {
+        if run_git(&[
+            "-C",
+            &path_str(&dir),
+            "checkout",
+            "--quiet",
+            "--detach",
+            &target,
+        ])
+        .is_err()
+        {
             // Very old/odd clone: fall back to a fast-forward pull.
             let _ = run_git(&["-C", &path_str(&dir), "pull", "--quiet", "--ff-only"]);
         }
@@ -1239,8 +1253,16 @@ fn run_git(args: &[&str]) -> Result<String, String> {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(format!(
             "git {} failed: {}",
-            args.iter().filter(|a| !a.starts_with('-')).cloned().collect::<Vec<_>>().join(" "),
-            if err.is_empty() { "unknown error".to_string() } else { err }
+            args.iter()
+                .filter(|a| !a.starts_with('-'))
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" "),
+            if err.is_empty() {
+                "unknown error".to_string()
+            } else {
+                err
+            }
         ));
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
@@ -1306,8 +1328,14 @@ fn install_workspace(
                 ));
             }
 
-            let (dep_dir, origin) =
-                resolve_source(root, &item.base_dir, name, &item.dep.source, &locked, update)?;
+            let (dep_dir, origin) = resolve_source(
+                root,
+                &item.base_dir,
+                name,
+                &item.dep.source,
+                &locked,
+                update,
+            )?;
 
             if let Some((prev_origin, prev_version)) = seen.get(name) {
                 if prev_origin != &origin {
@@ -1324,10 +1352,7 @@ fn install_workspace(
                     if !constraint.matches(&actual) {
                         return Err(format!(
                             "dependency '{}' requires version {}, but {} provides {}",
-                            name,
-                            constraint_text,
-                            name,
-                            prev_version
+                            name, constraint_text, name, prev_version
                         ));
                     }
                 }
@@ -1410,7 +1435,11 @@ pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> 
     let locked = read_locked_sources(root);
     let mut report = InstallReport::default();
     let mut lock = String::from("# generated by spid3r install; do not edit\n");
-    lock.push_str(&format!("# package {} {}\n", manifest.name(), manifest.version()));
+    lock.push_str(&format!(
+        "# package {} {}\n",
+        manifest.name(),
+        manifest.version()
+    ));
 
     struct QueueItem {
         dep: Dependency,
@@ -1440,8 +1469,14 @@ pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> 
             ));
         }
 
-        let (dep_dir, origin) =
-            resolve_source(root, &item.base_dir, name, &item.dep.source, &locked, update)?;
+        let (dep_dir, origin) = resolve_source(
+            root,
+            &item.base_dir,
+            name,
+            &item.dep.source,
+            &locked,
+            update,
+        )?;
 
         if let Some((prev_origin, prev_version)) = seen.get(name) {
             if prev_origin != &origin {
@@ -1458,10 +1493,7 @@ pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> 
                 if !constraint.matches(&actual) {
                     return Err(format!(
                         "dependency '{}' requires version {}, but {} provides {}",
-                        name,
-                        constraint_text,
-                        name,
-                        prev_version
+                        name, constraint_text, name, prev_version
                     ));
                 }
             }
@@ -1533,7 +1565,8 @@ pub fn init(dir: &Path, name: &str) -> Result<Vec<String>, String> {
             "[package]\nname = \"{}\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\n",
             name
         );
-        std::fs::write(&manifest, text).map_err(|e| format!("cannot write {}: {}", manifest.display(), e))?;
+        std::fs::write(&manifest, text)
+            .map_err(|e| format!("cannot write {}: {}", manifest.display(), e))?;
         created.push("spider.toml".to_string());
     }
     let src = dir.join("src");
@@ -1615,7 +1648,9 @@ mod tests {
         );
         // Multi-block message: padding and the length field must be right.
         assert_eq!(
-            hex_encode(&sha256_bytes(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+            hex_encode(&sha256_bytes(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
         // Exactly one full block (63 bytes of data forces a second, padding-only
@@ -1667,7 +1702,10 @@ mod tests {
     #[test]
     fn rejects_bad_manifests() {
         assert!(parse_manifest("[package]\nname = \"x\"\n").is_ok());
-        assert!(parse_manifest("[package]\nversion = \"1\"\n").is_err(), "name required");
+        assert!(
+            parse_manifest("[package]\nversion = \"1\"\n").is_err(),
+            "name required"
+        );
         assert!(parse_manifest("[dependencies]\nlib = 1\n").is_err());
         assert!(parse_manifest("[other]\nname = \"x\"\n").is_err());
     }

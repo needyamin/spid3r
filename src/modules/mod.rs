@@ -335,14 +335,10 @@ pub fn public_names_of_in(
             crate::ast::Stmt::Interface(i) if i.vis == crate::ast::Vis::Public => {
                 names.push((i.name.clone(), false));
             }
-            crate::ast::Stmt::Let { name, vis, .. }
-                if *vis == crate::ast::Vis::Public =>
-            {
+            crate::ast::Stmt::Let { name, vis, .. } if *vis == crate::ast::Vis::Public => {
                 names.push((name.clone(), false));
             }
-            crate::ast::Stmt::Const { name, vis, .. }
-                if *vis == crate::ast::Vis::Public =>
-            {
+            crate::ast::Stmt::Const { name, vis, .. } if *vis == crate::ast::Vis::Public => {
                 names.push((name.clone(), true));
             }
             _ => {}

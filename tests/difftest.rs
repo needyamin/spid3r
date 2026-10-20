@@ -57,7 +57,8 @@ fn all_examples_match_across_engines() {
 
     for lib in &libraries {
         let path = lib.to_str().unwrap();
-        out(&["check", path]).unwrap_or_else(|e| panic!("library {} must pass check:\n{}", path, e));
+        out(&["check", path])
+            .unwrap_or_else(|e| panic!("library {} must pass check:\n{}", path, e));
     }
 
     for prog in &programs {
@@ -69,13 +70,15 @@ fn all_examples_match_across_engines() {
 
         let tc = std::env::temp_dir().join(format!(
             "spid3r_dt_{}.matrixc",
-            prog.file_name().unwrap().to_string_lossy().replace('.', "_")
+            prog.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replace('.', "_")
         ));
         let tc = tc.to_str().unwrap();
         out(&["compile", path, "-o", tc])
             .unwrap_or_else(|e| panic!("compile of {} failed:\n{}", path, e));
-        let exec = out(&["exec", tc])
-            .unwrap_or_else(|e| panic!("exec of {} failed:\n{}", path, e));
+        let exec = out(&["exec", tc]).unwrap_or_else(|e| panic!("exec of {} failed:\n{}", path, e));
 
         assert_eq!(tree, vm, "tree vs vm stdout differ for {}", path);
         assert_eq!(vm, exec, "vm vs exec stdout differ for {}", path);

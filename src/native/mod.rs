@@ -23,8 +23,8 @@ pub mod modules;
 #[cfg(feature = "native")]
 pub mod llvm;
 
-use std::path::{Path, PathBuf};
 use crate::diagnostics::{Diagnostic, Phase};
+use std::path::{Path, PathBuf};
 
 /// Platform-specific filename of the Spid3r native runtime static library.
 ///
@@ -157,4 +157,3 @@ pub fn find_staticlib() -> Result<PathBuf, Diagnostic> {
         ),
     ))
 }
-

@@ -392,7 +392,9 @@ impl Interp {
                 }
                 Flow::Value(Value::Null)
             }
-            Stmt::Let { name, value, vis, .. } => {
+            Stmt::Let {
+                name, value, vis, ..
+            } => {
                 let v = match value {
                     Some(e) => match self.eval(e, env) {
                         Ok(v) => v,
@@ -406,7 +408,9 @@ impl Interp {
                 }
                 Flow::Value(Value::Null)
             }
-            Stmt::Const { name, value, vis, .. } => {
+            Stmt::Const {
+                name, value, vis, ..
+            } => {
                 let v = match self.eval(value, env) {
                     Ok(v) => v,
                     Err(f) => return f,
@@ -882,7 +886,10 @@ impl Interp {
                 for a in args {
                     vals.push(self.eval(a, env)?);
                 }
-                let mut host = InterpCallbackHost { interp: self, span: span.clone() };
+                let mut host = InterpCallbackHost {
+                    interp: self,
+                    span: span.clone(),
+                };
                 match collections::call_method_host(&mut host, &obj, name, vals) {
                     Ok(v) => Ok(v),
                     Err(msg) => {
@@ -1416,7 +1423,11 @@ impl Interp {
         } else if !args.is_empty() {
             return Err(self.rt(
                 span,
-                format!("new {} expects 0 argument(s), got {}", class.name, args.len()),
+                format!(
+                    "new {} expects 0 argument(s), got {}",
+                    class.name,
+                    args.len()
+                ),
             ));
         }
         Ok(obj)

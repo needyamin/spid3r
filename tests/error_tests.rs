@@ -28,7 +28,10 @@ fn expect_err(src: &str, needle: &str) {
             d.message,
             needle
         ),
-        Ok(code) => panic!("expected failure mentioning {}, exited with {}", needle, code),
+        Ok(code) => panic!(
+            "expected failure mentioning {}, exited with {}",
+            needle, code
+        ),
     }
 }
 
@@ -118,13 +121,11 @@ fn finally_runs_while_returning_from_try() {
 
 #[test]
 fn uncaught_throw_propagates_with_its_value() {
-    let d = run(
-        r#"
+    let d = run(r#"
         fn main() {
             throw "kaboom";
         }
-    "#,
-    )
+    "#)
     .unwrap_err();
     assert!(
         d.message.contains("uncaught throw"),
@@ -202,19 +203,21 @@ fn an_error_inside_a_caught_task_becomes_a_catch_value() {
 
 #[test]
 fn errors_carry_spans() {
-    let d = run(
-        r#"
+    let d = run(r#"
         fn main() {
             let xs = list(1);
             let y = xs.get(9);
             return 0;
         }
-    "#,
-    )
+    "#)
     .unwrap_err();
     assert!(d.span.is_some(), "runtime errors should carry a span");
     let sp = d.span.unwrap();
-    assert!(sp.line >= 3, "span should point at the failing line, got {}", sp.line);
+    assert!(
+        sp.line >= 3,
+        "span should point at the failing line, got {}",
+        sp.line
+    );
 }
 
 #[test]

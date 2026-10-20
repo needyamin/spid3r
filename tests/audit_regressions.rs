@@ -41,27 +41,32 @@ fn run_src(engine: &str, name: &str, src: &str) -> Result<String, String> {
 
 /// Assert a program produces `expected` identically on tree and vm.
 fn assert_both_engines(name: &str, src: &str, expected: &str) {
-    let tree = run_src("tree", name, src)
-        .unwrap_or_else(|e| panic!("[{}] tree run failed:\n{}", name, e));
-    let vm = run_src("vm", name, src)
-        .unwrap_or_else(|e| panic!("[{}] vm run failed:\n{}", name, e));
+    let tree =
+        run_src("tree", name, src).unwrap_or_else(|e| panic!("[{}] tree run failed:\n{}", name, e));
+    let vm =
+        run_src("vm", name, src).unwrap_or_else(|e| panic!("[{}] vm run failed:\n{}", name, e));
     assert_eq!(tree, expected, "[{}] tree output", name);
     assert_eq!(vm, expected, "[{}] vm output (diverged from tree)", name);
 }
 
 /// Assert a program produces `expected` identically on tree, vm, and compile+exec.
 fn assert_three_engines(name: &str, src: &str, expected: &str) {
-    let tree = run_src("tree", name, src)
-        .unwrap_or_else(|e| panic!("[{}] tree run failed:\n{}", name, e));
-    let vm = run_src("vm", name, src)
-        .unwrap_or_else(|e| panic!("[{}] vm run failed:\n{}", name, e));
+    let tree =
+        run_src("tree", name, src).unwrap_or_else(|e| panic!("[{}] tree run failed:\n{}", name, e));
+    let vm =
+        run_src("vm", name, src).unwrap_or_else(|e| panic!("[{}] vm run failed:\n{}", name, e));
     assert_eq!(tree, expected, "[{}] tree output", name);
     assert_eq!(vm, expected, "[{}] vm output (diverged from tree)", name);
 
     let path = std::env::temp_dir().join(format!("spid3r_audit_{}.matrix", name));
     let tc = std::env::temp_dir().join(format!("spid3r_audit_{}.matrixc", name));
     let comp = Command::new(bin())
-        .args(["compile", path.to_str().unwrap(), "-o", tc.to_str().unwrap()])
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "-o",
+            tc.to_str().unwrap(),
+        ])
         .output()
         .expect("compile");
     assert!(
@@ -81,7 +86,11 @@ fn assert_three_engines(name: &str, src: &str, expected: &str) {
         String::from_utf8_lossy(&exec.stderr)
     );
     let exec_out = String::from_utf8_lossy(&exec.stdout).to_string();
-    assert_eq!(exec_out, expected, "[{}] exec output (diverged from tree/vm)", name);
+    assert_eq!(
+        exec_out, expected,
+        "[{}] exec output (diverged from tree/vm)",
+        name
+    );
 }
 
 // ------------------------------------------------------------- VM closures
@@ -604,21 +613,36 @@ fn lexer_bom_crlf_comments_float_overflow_and_multiline_escape_span() {
 
     // Overflowing float literal is rejected at lex time.
     let overflow_float = format!("fn main() {{ let x = {}.0; return 0; }}", "9".repeat(310));
-    assert!(spid3r_lang::lexer::Lexer::new(&overflow_float, std::sync::Arc::from("<test>")).tokenize().is_err());
+    assert!(
+        spid3r_lang::lexer::Lexer::new(&overflow_float, std::sync::Arc::from("<test>"))
+            .tokenize()
+            .is_err()
+    );
 
     // Backslash followed by newline in string literal does not underflow column.
     let bs_newline = "fn main() { let s = \"\\\n\"; return 0; }";
-    assert!(spid3r_lang::lexer::Lexer::new(bs_newline, std::sync::Arc::from("<test>")).tokenize().is_err());
+    assert!(
+        spid3r_lang::lexer::Lexer::new(bs_newline, std::sync::Arc::from("<test>"))
+            .tokenize()
+            .is_err()
+    );
 
     // Unexpected multi-byte UTF-8 character reports the full character.
-    let err = spid3r_lang::lexer::Lexer::new("€", std::sync::Arc::from("<test>")).tokenize().unwrap_err();
+    let err = spid3r_lang::lexer::Lexer::new("€", std::sync::Arc::from("<test>"))
+        .tokenize()
+        .unwrap_err();
     assert!(err.message.contains("'€'"), "got: {}", err.message);
 }
 
 #[test]
 fn parser_deep_nesting_returns_diagnostic_instead_of_stack_overflow() {
-    let deep_parens = format!("fn main() {{ let x = {}1{}; return 0; }}", "(".repeat(300), ")".repeat(300));
-    let err = spid3r_lang::parser::parse_file(&deep_parens, std::sync::Arc::from("<test>")).unwrap_err();
+    let deep_parens = format!(
+        "fn main() {{ let x = {}1{}; return 0; }}",
+        "(".repeat(300),
+        ")".repeat(300)
+    );
+    let err =
+        spid3r_lang::parser::parse_file(&deep_parens, std::sync::Arc::from("<test>")).unwrap_err();
     assert!(
         err.message.contains("nesting deeper than"),
         "unexpected error: {}",
@@ -628,8 +652,10 @@ fn parser_deep_nesting_returns_diagnostic_instead_of_stack_overflow() {
 
 #[test]
 fn bytecode_deserializer_rejects_truncated_constants_huge_counts_and_negative_jumps() {
-    use spid3r_lang::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc, validate_chunk, Chunk, OpCode};
     use spid3r_lang::value::{Value, VmFunc};
+    use spid3r_lang::vm::bytecode::{
+        deserialize_vmfunc, serialize_vmfunc, validate_chunk, Chunk, OpCode,
+    };
     use std::sync::Arc;
 
     // 1. Huge constant count in header must fail immediately without OOM.
@@ -808,8 +834,6 @@ fn native_staticlib_discovery_supports_env_overrides_and_sysroot_layouts() {
     assert!(cands.contains(&cwd_path.join("target").join("debug").join(name)));
 }
 
-
-
 // ================================================================ 2026-10-19
 // Regression tests for the second full audit: mutex cross-task deadlock,
 // uncapped matrix allocation, VM compiler size limits, crafted `.matrixc`
@@ -886,7 +910,10 @@ fn matrix_constructor_rejects_oversized_allocation() {
 fn vm_rejects_more_than_255_call_arguments() {
     // Was: argc was emitted with `as u8`, silently truncating 300 -> 44 and
     // corrupting the VM stack (wrong results / bogus errors).
-    let args = (1..=300).map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let args = (1..=300)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
     let src = format!(
         "fn main() {{\n    let xs = list({});\n    println(len(xs));\n    return 0;\n}}\n",
         args
@@ -945,7 +972,10 @@ fn vm_rejects_oversized_function_bodies_instead_of_wrapping_jumps() {
         .arg(std::env::temp_dir().join("spid3r_audit_bigloop.matrixc"))
         .output()
         .expect("spawn compile");
-    assert!(!out.status.success(), "compile should fail on oversized functions");
+    assert!(
+        !out.status.success(),
+        "compile should fail on oversized functions"
+    );
     assert!(String::from_utf8_lossy(&out.stderr).contains("function body too large"));
 }
 
@@ -1392,10 +1422,26 @@ fn exec_capture_reports_a_failed_spawn_as_an_error() {
 #[test]
 fn exec_capture_arity_and_type_errors_are_clean() {
     for (name, src, needle) in [
-        ("exec_arity", "fn main() { exec_capture(\"x\", list()); return 0; }", "exec_capture expects 3 arguments"),
-        ("exec_cmd_type", "fn main() { exec_capture(1, list(), null); return 0; }", "exec_capture expects a string"),
-        ("exec_argv_type", "fn main() { exec_capture(\"x\", \"not-a-list\", null); return 0; }", "expects a list of arguments"),
-        ("exec_stdin_type", "fn main() { exec_capture(\"x\", list(), 5); return 0; }", "expects a string or null for stdin"),
+        (
+            "exec_arity",
+            "fn main() { exec_capture(\"x\", list()); return 0; }",
+            "exec_capture expects 3 arguments",
+        ),
+        (
+            "exec_cmd_type",
+            "fn main() { exec_capture(1, list(), null); return 0; }",
+            "exec_capture expects a string",
+        ),
+        (
+            "exec_argv_type",
+            "fn main() { exec_capture(\"x\", \"not-a-list\", null); return 0; }",
+            "expects a list of arguments",
+        ),
+        (
+            "exec_stdin_type",
+            "fn main() { exec_capture(\"x\", list(), 5); return 0; }",
+            "expects a string or null for stdin",
+        ),
     ] {
         for engine in ["tree", "vm"] {
             // run_src reports a non-zero exit as Err, so the diagnostic is
@@ -1459,8 +1505,12 @@ fn overflowing_scientific_float_literal_is_a_clean_lexer_error() {
     // `1e400` overflows f64. It must be a lexer diagnostic naming the literal,
     // never an infinity, a host panic, or a silently truncated value.
     for engine in ["tree", "vm"] {
-        let err = run_src(engine, "sci_overflow", "fn main() { println(1e400); return 0; }")
-            .expect_err("an overflowing float literal must be rejected");
+        let err = run_src(
+            engine,
+            "sci_overflow",
+            "fn main() { println(1e400); return 0; }",
+        )
+        .expect_err("an overflowing float literal must be rejected");
         assert!(
             err.contains("out of f64 range"),
             "[{}] expected an out-of-range diagnostic, got: {}",
@@ -1529,7 +1579,6 @@ fn matrix_flat_index_out_of_bounds_throws() {
         );
     }
 }
-
 
 // ===========================================================================
 // 2026-10-20: comparator sorting & float-precision formatting round.
@@ -1852,15 +1901,51 @@ fn string_format_precision_renders_fixed_decimals() {
 #[test]
 fn string_format_rejects_bad_precision_specs() {
     for (name, src, needle) in [
-        ("fmt_toobig", "fn main() { println(\"{:.16}\".format(1.0)); return 0; }", "above the maximum"),
-        ("fmt_nodigit", "fn main() { println(\"{:.}\".format(1.0)); return 0; }", "not a precision"),
-        ("fmt_alpha", "fn main() { println(\"{:.2a}\".format(1.0)); return 0; }", "not a precision"),
-        ("fmt_colon", "fn main() { println(\"{:}\".format(1.0)); return 0; }", "not a valid placeholder"),
-        ("fmt_baretype", "fn main() { println(\"{:.2}\".format(\"s\")); return 0; }", "expects a number, found string"),
-        ("fmt_listtype", "fn main() { println(\"{:.2}\".format(list())); return 0; }", "expects a number, found list"),
-        ("fmt_opttype", "fn main() { println(\"{:.2}\".format(none)); return 0; }", "expects a number, found option"),
-        ("fmt_fewargs", "fn main() { println(\"{:.2}\".format()); return 0; }", "more placeholders than arguments"),
-        ("fmt_manyargs", "fn main() { println(\"{}\".format(1, 2)); return 0; }", "more arguments than placeholders"),
+        (
+            "fmt_toobig",
+            "fn main() { println(\"{:.16}\".format(1.0)); return 0; }",
+            "above the maximum",
+        ),
+        (
+            "fmt_nodigit",
+            "fn main() { println(\"{:.}\".format(1.0)); return 0; }",
+            "not a precision",
+        ),
+        (
+            "fmt_alpha",
+            "fn main() { println(\"{:.2a}\".format(1.0)); return 0; }",
+            "not a precision",
+        ),
+        (
+            "fmt_colon",
+            "fn main() { println(\"{:}\".format(1.0)); return 0; }",
+            "not a valid placeholder",
+        ),
+        (
+            "fmt_baretype",
+            "fn main() { println(\"{:.2}\".format(\"s\")); return 0; }",
+            "expects a number, found string",
+        ),
+        (
+            "fmt_listtype",
+            "fn main() { println(\"{:.2}\".format(list())); return 0; }",
+            "expects a number, found list",
+        ),
+        (
+            "fmt_opttype",
+            "fn main() { println(\"{:.2}\".format(none)); return 0; }",
+            "expects a number, found option",
+        ),
+        (
+            "fmt_fewargs",
+            "fn main() { println(\"{:.2}\".format()); return 0; }",
+            "more placeholders than arguments",
+        ),
+        (
+            "fmt_manyargs",
+            "fn main() { println(\"{}\".format(1, 2)); return 0; }",
+            "more arguments than placeholders",
+        ),
     ] {
         for engine in ["tree", "vm"] {
             let err = run_src(engine, name, src).expect_err("bad precision must be rejected");
@@ -2400,7 +2485,3 @@ fn phase3_collections_and_linear_algebra_edge_cases() {
         ),
     );
 }
-
-
-
-

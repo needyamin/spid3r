@@ -20,8 +20,8 @@ fn tokens_of(src: &str) -> Vec<spid3r_lang::lexer::token::TokenKind> {
 
 fn check_roundtrip(name: &str, src: &str) {
     let file: Arc<str> = Arc::from("<fmt-test>");
-    let formatted = format_source(src, &file)
-        .unwrap_or_else(|e| panic!("{}: fmt failed: {}", name, e.message));
+    let formatted =
+        format_source(src, &file).unwrap_or_else(|e| panic!("{}: fmt failed: {}", name, e.message));
     assert_eq!(
         tokens_of(src),
         tokens_of(&formatted),
@@ -54,7 +54,11 @@ fn formats_every_example_and_benchmark() {
             }
         }
     }
-    assert!(files.len() >= 20, "expected the shipped corpus, got {}", files.len());
+    assert!(
+        files.len() >= 20,
+        "expected the shipped corpus, got {}",
+        files.len()
+    );
     for p in files {
         let src = std::fs::read_to_string(&p).expect("read");
         check_roundtrip(&p.to_string_lossy(), &src);
@@ -101,8 +105,14 @@ fn cli_fmt_check_exits_nonzero_on_unformatted_input() {
         .args(["fmt", "--check", messy.to_str().unwrap()])
         .output()
         .expect("run fmt --check");
-    assert!(!out.status.success(), "--check should fail on unformatted input");
-    assert_eq!(std::fs::read_to_string(&messy).unwrap(), "fn main() {\nlet x=1;\nprintln(x);\nreturn 0;\n}\n");
+    assert!(
+        !out.status.success(),
+        "--check should fail on unformatted input"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&messy).unwrap(),
+        "fn main() {\nlet x=1;\nprintln(x);\nreturn 0;\n}\n"
+    );
     // Plain fmt rewrites; a second --check then passes.
     let out = Command::new(env!("CARGO_BIN_EXE_spid3r"))
         .args(["fmt", messy.to_str().unwrap()])
@@ -115,10 +125,13 @@ fn cli_fmt_check_exits_nonzero_on_unformatted_input() {
         .expect("run fmt --check");
     assert!(out.status.success(), "--check should pass after fmt");
     let formatted = std::fs::read_to_string(&messy).unwrap();
-    assert!(formatted.contains("    let x = 1;"), "canonical form: {}", formatted);
+    assert!(
+        formatted.contains("    let x = 1;"),
+        "canonical form: {}",
+        formatted
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
-
 
 #[test]
 fn keywords_operators_and_for_headers_are_canonical() {
@@ -130,7 +143,11 @@ fn keywords_operators_and_for_headers_are_canonical() {
         "for header should be spaced: {}",
         out
     );
-    assert!(out.contains("println(k * 2);"), "binary * should be spaced: {}", out);
+    assert!(
+        out.contains("println(k * 2);"),
+        "binary * should be spaced: {}",
+        out
+    );
     check_roundtrip("for-header", src);
 }
 
@@ -139,9 +156,21 @@ fn strings_and_float_literals_are_untouched() {
     let src = "fn main() {\n    let a = \"x\\n\\t\\\"y\\\"\";\n    let b = 7.0;\n    let c = 0.5;\n    println(a + string(b + c));\n    return 0;\n}\n";
     let file: Arc<str> = Arc::from("<fmt-test>");
     let out = format_source(src, &file).expect("fmt");
-    assert!(out.contains("7.0"), "float literal must keep its form: {}", out);
-    assert!(out.contains("0.5"), "float literal must keep its form: {}", out);
-    assert!(out.contains("\\n\\t"), "string escapes must be preserved: {}", out);
+    assert!(
+        out.contains("7.0"),
+        "float literal must keep its form: {}",
+        out
+    );
+    assert!(
+        out.contains("0.5"),
+        "float literal must keep its form: {}",
+        out
+    );
+    assert!(
+        out.contains("\\n\\t"),
+        "string escapes must be preserved: {}",
+        out
+    );
     check_roundtrip("literals", src);
 }
 
@@ -153,7 +182,11 @@ fn scientific_notation_literals_survive_formatting() {
     let file: Arc<str> = Arc::from("<fmt-test>");
     let out = format_source(src, &file).expect("fmt");
     for lit in ["1.5e3", "1e-5", "2E+4"] {
-        assert!(out.contains(lit), "exponent form must be preserved: {}", out);
+        assert!(
+            out.contains(lit),
+            "exponent form must be preserved: {}",
+            out
+        );
     }
     check_roundtrip("scientific-notation", src);
 }
@@ -168,7 +201,11 @@ fn long_argument_lists_are_wrapped_one_per_line() {
         "expected one argument per line:/n{}",
         out
     );
-    assert!(out.contains("\n    );"), "closing paren on its own line:/n{}", out);
+    assert!(
+        out.contains("\n    );"),
+        "closing paren on its own line:/n{}",
+        out
+    );
     check_roundtrip("wrapped-call", src);
 }
 
@@ -214,7 +251,11 @@ fn closure_arguments_keep_the_call_compact() {
         "call should stay compact:/n{}",
         out
     );
-    assert!(out.contains("    }));"), "closing should join the brace:/n{}", out);
+    assert!(
+        out.contains("    }));"),
+        "closing should join the brace:/n{}",
+        out
+    );
     check_roundtrip("closure-arg", src);
 }
 
@@ -246,4 +287,3 @@ fn namespaced_import_formatting_roundtrip() {
     let src = "import \"math/stats\" as stats;\nimport \"util\" as u;\nimport \"flat\";\n\nfn main() {\n    return stats.mean(u.data());\n}\n";
     check_roundtrip("namespaced-import", src);
 }
-

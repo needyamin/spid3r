@@ -335,7 +335,8 @@ pub fn emit_object(
 ) -> Result<(), String> {
     Target::initialize_all(&InitializationConfig::default());
     let triple_val = inkwell::targets::TargetTriple::create(triple);
-    let target = Target::from_triple(&triple_val).map_err(|e| format!("unknown target '{triple}': {e:?}"))?;
+    let target = Target::from_triple(&triple_val)
+        .map_err(|e| format!("unknown target '{triple}': {e:?}"))?;
     let level = if opt {
         OptimizationLevel::Aggressive
     } else {

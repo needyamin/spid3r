@@ -76,11 +76,19 @@ fn breakpoint_pauses_and_inspection_commands_work() {
     );
     let (code, out, err) = s.run(&prog, &["--break", "3", "--commands", &cmds]);
     assert_eq!(code, 0, "program should finish; stderr: {}", err);
-    assert!(out.contains("breakpoint at"), "pause banner missing:\n{}", out);
+    assert!(
+        out.contains("breakpoint at"),
+        "pause banner missing:\n{}",
+        out
+    );
     assert!(out.contains("prog.matrix:3:"), "location missing:\n{}", out);
     assert!(out.contains("return s;"), "source line missing:\n{}", out);
     assert!(out.contains("add slots"), "locals missing:\n{}", out);
-    assert!(out.contains("stack trace (most recent call first):"), "bt missing:\n{}", out);
+    assert!(
+        out.contains("stack trace (most recent call first):"),
+        "bt missing:\n{}",
+        out
+    );
     assert!(out.contains("at add ("), "bt frame missing:\n{}", out);
     assert!(out.contains("at main ("), "bt caller missing:\n{}", out);
     // The program itself still ran to completion and printed both results.
@@ -95,7 +103,11 @@ fn next_steps_over_into_the_caller() {
     let cmds = s.write("cmds.txt", "next\ncontinue\n");
     let (code, out, _) = s.run(&prog, &["--break", "3", "--commands", &cmds]);
     assert_eq!(code, 0);
-    assert!(out.contains("next at"), "next should report a pause:\n{}", out);
+    assert!(
+        out.contains("next at"),
+        "next should report a pause:\n{}",
+        out
+    );
     assert!(
         out.contains("in main()"),
         "next should land in the caller:\n{}",
@@ -140,7 +152,11 @@ fn quit_aborts_with_exit_code_three() {
     let cmds = s.write("cmds.txt", "quit\n");
     let (code, out, _) = s.run(&prog, &["--break", "3", "--commands", &cmds]);
     assert_eq!(code, 3, "quit should exit 3:\n{}", out);
-    assert!(out.contains("debugger: quit"), "quit summary missing:\n{}", out);
+    assert!(
+        out.contains("debugger: quit"),
+        "quit summary missing:\n{}",
+        out
+    );
     assert!(
         !out.contains("sum="),
         "program must not continue after quit:\n{}",
@@ -157,7 +173,11 @@ fn break_command_and_delete_work_mid_session() {
     let cmds = s.write("cmds.txt", "break 10\ncontinue\ncontinue\nquit\n");
     let (code, out, _) = s.run(&prog, &["--break", "3", "--commands", &cmds]);
     assert_eq!(code, 3);
-    assert!(out.contains("breakpoint set at line 10"), "set missing:\n{}", out);
+    assert!(
+        out.contains("breakpoint set at line 10"),
+        "set missing:\n{}",
+        out
+    );
     assert!(
         out.contains("prog.matrix:10:"),
         "second breakpoint should fire:\n{}",
@@ -172,6 +192,10 @@ fn unknown_command_is_reported_without_aborting() {
     let cmds = s.write("cmds.txt", "frobnicate\nhelp\ncontinue\n");
     let (code, out, _) = s.run(&prog, &["--break", "3", "--commands", &cmds]);
     assert_eq!(code, 0);
-    assert!(out.contains("unknown command"), "diagnostic missing:\n{}", out);
+    assert!(
+        out.contains("unknown command"),
+        "diagnostic missing:\n{}",
+        out
+    );
     assert!(out.contains("commands: continue"), "help missing:\n{}", out);
 }

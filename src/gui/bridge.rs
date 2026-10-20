@@ -44,7 +44,9 @@ static BRIDGE: Mutex<Bridge> = Mutex::new(Bridge::new());
 /// Lock the bridge, recovering a poisoned mutex instead of panicking: a
 /// panicking GUI handler must not make the whole runtime unusable.
 fn lock() -> std::sync::MutexGuard<'static, Bridge> {
-    BRIDGE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    BRIDGE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Clear every queue and handler. Called once per `spid3r gui` run and by the
@@ -69,7 +71,9 @@ pub fn take_out() -> Vec<String> {
 
 /// Queue an event (payload is always a string; the page side JSON-encodes).
 pub fn push_event(event: &str, payload: &str) {
-    lock().inbound.push_back((event.to_string(), payload.to_string()));
+    lock()
+        .inbound
+        .push_back((event.to_string(), payload.to_string()));
 }
 
 /// Take every queued event paired with its handler. Events without a
@@ -319,7 +323,14 @@ mod tests {
 
     #[test]
     fn json_quote_roundtrips_unicode_and_controls() {
-        for s in ["é", "🦀", "a\u{0}b", "tab\there", "back\\slash\"q", "nul\u{0}and\r"] {
+        for s in [
+            "é",
+            "🦀",
+            "a\u{0}b",
+            "tab\there",
+            "back\\slash\"q",
+            "nul\u{0}and\r",
+        ] {
             let q = json_quote(s);
             let body = format!("{{{}}}", json_quote("k") + ":" + &q);
             assert_eq!(

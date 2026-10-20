@@ -78,8 +78,11 @@ fn imported_const_assignment_is_rejected_at_check_time() {
     let dir = std::env::temp_dir().join(format!("spid3r_modconst_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("mkdir");
     let module = dir.join("version.module.matrix");
-    std::fs::write(&module, "public const VERSION = 7;\npublic fn ver() { return VERSION; }\n")
-        .expect("write module");
+    std::fs::write(
+        &module,
+        "public const VERSION = 7;\npublic fn ver() { return VERSION; }\n",
+    )
+    .expect("write module");
     let user = dir.join("user.matrix");
     std::fs::write(
         &user,
@@ -134,11 +137,17 @@ fn spid3r_path_is_searched_for_imports() {
     let root = std::env::temp_dir().join(format!("spid3r_modpath_{}", std::process::id()));
     let libdir = root.join("libs");
     std::fs::create_dir_all(&libdir).expect("mkdir libs");
-    std::fs::write(libdir.join("far.matrix"), "public fn far() { return 42; }\n")
-        .expect("write module");
+    std::fs::write(
+        libdir.join("far.matrix"),
+        "public fn far() { return 42; }\n",
+    )
+    .expect("write module");
     let main = root.join("main.matrix");
-    std::fs::write(&main, "import \"far\";\nfn main() {\n    println(far());\n    return 0;\n}\n")
-        .expect("write main");
+    std::fs::write(
+        &main,
+        "import \"far\";\nfn main() {\n    println(far());\n    return 0;\n}\n",
+    )
+    .expect("write main");
     // Without SPID3R_PATH the import cannot resolve next to the importer...
     assert!(out(&["run", "--engine", "tree", main.to_str().unwrap()]).is_err());
     // ...with it, both engines resolve and agree.
@@ -200,15 +209,28 @@ fn main() {
 
     let tc = dir.join("main.matrixc");
     let comp = Command::new(bin())
-        .args(["compile", main.to_str().unwrap(), "-o", tc.to_str().unwrap()])
+        .args([
+            "compile",
+            main.to_str().unwrap(),
+            "-o",
+            tc.to_str().unwrap(),
+        ])
         .output()
         .expect("compile");
-    assert!(comp.status.success(), "compile failed: {}", String::from_utf8_lossy(&comp.stderr));
+    assert!(
+        comp.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&comp.stderr)
+    );
     let exec = Command::new(bin())
         .args(["exec", tc.to_str().unwrap()])
         .output()
         .expect("exec");
-    assert!(exec.status.success(), "exec failed: {}", String::from_utf8_lossy(&exec.stderr));
+    assert!(
+        exec.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&exec.stderr)
+    );
     let out_exec = String::from_utf8_lossy(&exec.stdout).to_string();
     assert_eq!(out_tree, out_exec);
 
@@ -239,7 +261,8 @@ fn main() {
     )
     .expect("write main");
 
-    let err_tree = out(&["run", "--engine", "tree", main.to_str().unwrap()]).expect_err("must error");
+    let err_tree =
+        out(&["run", "--engine", "tree", main.to_str().unwrap()]).expect_err("must error");
     assert!(
         err_tree.contains("import collision") || err_tree.contains("common"),
         "expected collision error, got: {}",

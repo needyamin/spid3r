@@ -83,7 +83,10 @@ fn lookup(id: i64) -> Option<Sock> {
 fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
     match lookup(id) {
         Some(Sock::Listener(l)) => Ok(l),
-        Some(Sock::Stream(_)) => Err(format!("{}: handle {} is a connection, not a listener", who, id)),
+        Some(Sock::Stream(_)) => Err(format!(
+            "{}: handle {} is a connection, not a listener",
+            who, id
+        )),
         None => Err(format!("{}: handle {} is not open", who, id)),
     }
 }
@@ -91,7 +94,10 @@ fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
 fn get_stream(id: i64, who: &str) -> Result<Arc<TcpStream>, String> {
     match lookup(id) {
         Some(Sock::Stream(s)) => Ok(s),
-        Some(Sock::Listener(_)) => Err(format!("{}: handle {} is a listener, not a connection", who, id)),
+        Some(Sock::Listener(_)) => Err(format!(
+            "{}: handle {} is a listener, not a connection",
+            who, id
+        )),
         None => Err(format!("{}: handle {} is not open", who, id)),
     }
 }
@@ -110,21 +116,35 @@ fn arity(who: &str, args: &[Value], n: usize) -> Result<(), String> {
     if args.len() == n {
         Ok(())
     } else {
-        Err(format!("{} expects {} argument{}, got {}", who, n, if n == 1 { "" } else { "s" }, args.len()))
+        Err(format!(
+            "{} expects {} argument{}, got {}",
+            who,
+            n,
+            if n == 1 { "" } else { "s" },
+            args.len()
+        ))
     }
 }
 
 fn want_int(v: &Value, who: &str) -> Result<i64, String> {
     match v {
         Value::Int(i) => Ok(*i),
-        other => Err(format!("{} expects an int, found {}", who, type_name(other))),
+        other => Err(format!(
+            "{} expects an int, found {}",
+            who,
+            type_name(other)
+        )),
     }
 }
 
 fn want_str(v: &Value, who: &str) -> Result<String, String> {
     match v {
         Value::Str(s) => Ok(s.to_string()),
-        other => Err(format!("{} expects a string, found {}", who, type_name(other))),
+        other => Err(format!(
+            "{} expects a string, found {}",
+            who,
+            type_name(other)
+        )),
     }
 }
 
@@ -167,7 +187,11 @@ fn header_pairs(v: &Value, who: &str) -> Result<Vec<(String, String)>, String> {
             }
             Ok(out)
         }
-        other => Err(format!("{} expects a map of headers, found {}", who, type_name(other))),
+        other => Err(format!(
+            "{} expects a map of headers, found {}",
+            who,
+            type_name(other)
+        )),
     }
 }
 
@@ -177,7 +201,9 @@ fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn io_msg(who: &str, e: &std::io::Error) -> String {
     match e.kind() {
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => format!("{}: timed out", who),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+            format!("{}: timed out", who)
+        }
         _ => format!("{}: {}", who, e),
     }
 }
@@ -249,7 +275,10 @@ fn n_tcp_read(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let id = want_int(&args[0], "tcp_read")?;
     let max = want_int(&args[1], "tcp_read")?;
     if max <= 0 || max > MAX_READ_BYTES {
-        return Err(format!("tcp_read: max_bytes must be between 1 and {}", MAX_READ_BYTES));
+        return Err(format!(
+            "tcp_read: max_bytes must be between 1 and {}",
+            MAX_READ_BYTES
+        ));
     }
     let stream = get_stream(id, "tcp_read")?;
     let mut buf = vec![0u8; max as usize];
@@ -265,7 +294,10 @@ fn n_tcp_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let id = want_int(&args[0], "tcp_write")?;
     let text = want_str(&args[1], "tcp_write")?;
     let stream = get_stream(id, "tcp_write")?;
-    match (&*stream).write_all(text.as_bytes()).and_then(|_| (&*stream).flush()) {
+    match (&*stream)
+        .write_all(text.as_bytes())
+        .and_then(|_| (&*stream).flush())
+    {
         Ok(()) => ok(Value::Int(text.len() as i64)),
         Err(e) => err(io_msg("tcp_write", &e)),
     }
@@ -289,7 +321,9 @@ fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                 if addr.ip().is_unspecified() {
                     addr = match addr {
                         SocketAddr::V4(a) => SocketAddr::from(([127, 0, 0, 1], a.port())),
-                        SocketAddr::V6(a) => SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, a.port())),
+                        SocketAddr::V6(a) => {
+                            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, a.port()))
+                        }
                     };
                 }
                 let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(250));
@@ -335,8 +369,15 @@ fn n_tcp_set_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String
         return Err("tcp_set_timeout: ms must be >= 0".to_string());
     }
     let stream = get_stream(id, "tcp_set_timeout")?;
-    let t = if ms == 0 { None } else { Some(Duration::from_millis(ms as u64)) };
-    match stream.set_read_timeout(t).and_then(|_| stream.set_write_timeout(t)) {
+    let t = if ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(ms as u64))
+    };
+    match stream
+        .set_read_timeout(t)
+        .and_then(|_| stream.set_write_timeout(t))
+    {
         Ok(()) => ok(Value::Null),
         Err(e) => err(io_msg("tcp_set_timeout", &e)),
     }
@@ -369,7 +410,10 @@ fn read_head(mut stream: &TcpStream, who: &str) -> Result<Head, String> {
             break pos;
         }
         if buf.len() > MAX_HEAD_BYTES {
-            return Err(format!("{}: header section larger than {} bytes", who, MAX_HEAD_BYTES));
+            return Err(format!(
+                "{}: header section larger than {} bytes",
+                who, MAX_HEAD_BYTES
+            ));
         }
         let n = stream.read(&mut chunk).map_err(|e| io_msg(who, &e))?;
         if n == 0 {
@@ -406,15 +450,28 @@ fn read_head(mut stream: &TcpStream, who: &str) -> Result<Head, String> {
     })
 }
 
-fn read_exact_body(mut stream: &TcpStream, mut body: Vec<u8>, len: usize, who: &str) -> Result<Vec<u8>, String> {
+fn read_exact_body(
+    mut stream: &TcpStream,
+    mut body: Vec<u8>,
+    len: usize,
+    who: &str,
+) -> Result<Vec<u8>, String> {
     if len > MAX_BODY_BYTES {
-        return Err(format!("{}: body of {} bytes exceeds the {} byte limit", who, len, MAX_BODY_BYTES));
+        return Err(format!(
+            "{}: body of {} bytes exceeds the {} byte limit",
+            who, len, MAX_BODY_BYTES
+        ));
     }
     let mut chunk = [0u8; 8192];
     while body.len() < len {
         let n = stream.read(&mut chunk).map_err(|e| io_msg(who, &e))?;
         if n == 0 {
-            return Err(format!("{}: connection closed mid-body ({} of {} bytes)", who, body.len(), len));
+            return Err(format!(
+                "{}: connection closed mid-body ({} of {} bytes)",
+                who,
+                body.len(),
+                len
+            ));
         }
         body.extend_from_slice(&chunk[..n]);
     }
@@ -426,7 +483,10 @@ fn read_to_eof(mut stream: &TcpStream, mut body: Vec<u8>, who: &str) -> Result<V
     let mut chunk = [0u8; 8192];
     loop {
         if body.len() > MAX_BODY_BYTES {
-            return Err(format!("{}: body exceeds the {} byte limit", who, MAX_BODY_BYTES));
+            return Err(format!(
+                "{}: body exceeds the {} byte limit",
+                who, MAX_BODY_BYTES
+            ));
         }
         let n = stream.read(&mut chunk).map_err(|e| io_msg(who, &e))?;
         if n == 0 {
@@ -438,7 +498,12 @@ fn read_to_eof(mut stream: &TcpStream, mut body: Vec<u8>, who: &str) -> Result<V
 
 /// Decode a `Transfer-Encoding: chunked` body.
 fn read_chunked(stream: &TcpStream, leftover: Vec<u8>, who: &str) -> Result<Vec<u8>, String> {
-    let mut reader = ChunkReader { stream, buf: leftover, pos: 0, who };
+    let mut reader = ChunkReader {
+        stream,
+        buf: leftover,
+        pos: 0,
+        who,
+    };
     let mut body = Vec::new();
     loop {
         let size_line = reader.line()?;
@@ -454,7 +519,12 @@ fn read_chunked(stream: &TcpStream, leftover: Vec<u8>, who: &str) -> Result<Vec<
         // wrap the sum past the cap and stream unbounded memory.
         match body.len().checked_add(size) {
             Some(total) if total <= MAX_BODY_BYTES => {}
-            _ => return Err(format!("{}: body exceeds the {} byte limit", who, MAX_BODY_BYTES)),
+            _ => {
+                return Err(format!(
+                    "{}: body exceeds the {} byte limit",
+                    who, MAX_BODY_BYTES
+                ))
+            }
         }
         body.extend_from_slice(&reader.take(size)?);
         reader.line()?; // CRLF after each chunk
@@ -471,7 +541,9 @@ struct ChunkReader<'a> {
 impl ChunkReader<'_> {
     fn fill(&mut self) -> Result<(), String> {
         let mut chunk = [0u8; 8192];
-        let n = (&*self.stream).read(&mut chunk).map_err(|e| io_msg(self.who, &e))?;
+        let n = (&*self.stream)
+            .read(&mut chunk)
+            .map_err(|e| io_msg(self.who, &e))?;
         if n == 0 {
             return Err(format!("{}: connection closed mid-chunk", self.who));
         }
@@ -519,16 +591,14 @@ fn percent_decode(s: &str, plus_is_space: bool) -> String {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                match (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                    (Some(h), Some(l)) => {
-                        out.push(h * 16 + l);
-                        i += 3;
-                        continue;
-                    }
-                    _ => out.push(b'%'),
+            b'%' if i + 2 < bytes.len() => match (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                (Some(h), Some(l)) => {
+                    out.push(h * 16 + l);
+                    i += 3;
+                    continue;
                 }
-            }
+                _ => out.push(b'%'),
+            },
             b'+' if plus_is_space => out.push(b' '),
             b => out.push(b),
         }
@@ -587,7 +657,10 @@ fn read_request(stream: &TcpStream) -> Result<Value, String> {
     let head = read_head(stream, WHO)?;
     let parts: Vec<&str> = head.start_line.split_whitespace().collect();
     if parts.len() != 3 || !parts[2].starts_with("HTTP/") {
-        return Err(format!("{}: malformed request line '{}'", WHO, head.start_line));
+        return Err(format!(
+            "{}: malformed request line '{}'",
+            WHO, head.start_line
+        ));
     }
     let method = parts[0].to_ascii_uppercase();
     let target = parts[1];
@@ -609,7 +682,10 @@ fn read_request(stream: &TcpStream) -> Result<Value, String> {
     let body = read_exact_body(stream, leftover, len, WHO)?;
 
     let (raw_path, raw_query) = target.split_once('?').unwrap_or((target, ""));
-    let remote = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+    let remote = stream
+        .peer_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
     make_map(vec![
         ("method".to_string(), str_val(method)),
         ("path".to_string(), str_val(percent_decode(raw_path, false))),
@@ -617,7 +693,10 @@ fn read_request(stream: &TcpStream) -> Result<Value, String> {
         ("raw_query".to_string(), str_val(raw_query)),
         ("version".to_string(), str_val(version)),
         ("headers".to_string(), headers_value(&head.headers)?),
-        ("body".to_string(), str_val(String::from_utf8_lossy(&body).into_owned())),
+        (
+            "body".to_string(),
+            str_val(String::from_utf8_lossy(&body).into_owned()),
+        ),
         ("remote".to_string(), str_val(remote)),
     ])
 }
@@ -688,10 +767,16 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
     if !has_type {
         out.push_str("content-type: text/plain; charset=utf-8\r\n");
     }
-    out.push_str(&format!("content-length: {}\r\nconnection: close\r\nserver: spid3r\r\n\r\n", body.len()));
+    out.push_str(&format!(
+        "content-length: {}\r\nconnection: close\r\nserver: spid3r\r\n\r\n",
+        body.len()
+    ));
     let mut bytes = out.into_bytes();
     bytes.extend_from_slice(body.as_bytes());
-    match (&*stream).write_all(&bytes).and_then(|_| (&*stream).flush()) {
+    match (&*stream)
+        .write_all(&bytes)
+        .and_then(|_| (&*stream).flush())
+    {
         Ok(()) => ok(Value::Int(bytes.len() as i64)),
         Err(e) => err(io_msg(WHO, &e)),
     }
@@ -703,7 +788,11 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
 fn n_http_fetch(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     const WHO: &str = "http_fetch";
     if !(2..=4).contains(&args.len()) {
-        return Err(format!("{} expects 2 to 4 arguments, got {}", WHO, args.len()));
+        return Err(format!(
+            "{} expects 2 to 4 arguments, got {}",
+            WHO,
+            args.len()
+        ));
     }
     let method = want_str(&args[0], WHO)?.to_ascii_uppercase();
     let url = want_str(&args[1], WHO)?;
@@ -724,7 +813,12 @@ fn n_http_fetch(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
 }
 
-fn fetch(method: &str, url: &str, headers: &[(String, String)], body: &str) -> Result<Value, String> {
+fn fetch(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &str,
+) -> Result<Value, String> {
     const WHO: &str = "http_fetch";
     let rest = if let Some(r) = url.strip_prefix("http://") {
         r
@@ -745,8 +839,7 @@ fn fetch(method: &str, url: &str, headers: &[(String, String)], body: &str) -> R
     }
     // CR/LF and other control characters in the authority or path would let a
     // crafted URL inject or overwrite request headers (request smuggling).
-    let has_ctl =
-        |s: &str| s.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}');
+    let has_ctl = |s: &str| s.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}');
     if has_ctl(authority) || has_ctl(path) {
         return Err(format!(
             "{}: URL contains control characters ('{}')",
@@ -795,7 +888,8 @@ fn fetch(method: &str, url: &str, headers: &[(String, String)], body: &str) -> R
         .filter(|_| version.starts_with("HTTP/"))
         .ok_or_else(|| format!("{}: malformed status line '{}'", WHO, head.start_line))?;
 
-    let no_body = method == "HEAD" || status == 204 || status == 304 || (100..200).contains(&status);
+    let no_body =
+        method == "HEAD" || status == 204 || status == 304 || (100..200).contains(&status);
     let leftover = head.leftover.clone();
     let body_bytes = if no_body {
         Vec::new()
@@ -817,14 +911,20 @@ fn fetch(method: &str, url: &str, headers: &[(String, String)], body: &str) -> R
     make_map(vec![
         ("status".to_string(), Value::Int(status)),
         ("headers".to_string(), headers_value(&head.headers)?),
-        ("body".to_string(), str_val(String::from_utf8_lossy(&body_bytes).into_owned())),
+        (
+            "body".to_string(),
+            str_val(String::from_utf8_lossy(&body_bytes).into_owned()),
+        ),
     ])
 }
 
 /// `url_decode("a%20b+c")` -> `"a b c"` (form rules: `+` is a space).
 fn n_url_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("url_decode", &args, 1)?;
-    Ok(str_val(percent_decode(&want_str(&args[0], "url_decode")?, true)))
+    Ok(str_val(percent_decode(
+        &want_str(&args[0], "url_decode")?,
+        true,
+    )))
 }
 
 /// `url_encode("a b&c")` -> `"a%20b%26c"` (RFC 3986 unreserved kept).

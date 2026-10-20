@@ -160,7 +160,11 @@ impl Parser {
             None
         };
         self.expect(&TokenKind::Semi, "';' after import")?;
-        Ok(Stmt::Import { path, alias, span: sp })
+        Ok(Stmt::Import {
+            path,
+            alias,
+            span: sp,
+        })
     }
 
     fn parse_declaration(&mut self) -> SpidResult<Stmt> {
@@ -175,9 +179,9 @@ impl Parser {
             had_vis = true;
         }
         match self.kind() {
-            TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => {
-                Ok(Stmt::Fn(self.parse_fn(false, if had_vis { Some(vis) } else { None })?))
-            }
+            TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => Ok(Stmt::Fn(
+                self.parse_fn(false, if had_vis { Some(vis) } else { None })?,
+            )),
             TokenKind::Kw(Keyword::Class) => Ok(Stmt::Class(self.parse_class(vis)?)),
             TokenKind::Kw(Keyword::Interface) => Ok(Stmt::Interface(self.parse_interface(vis)?)),
             TokenKind::Kw(Keyword::Let) | TokenKind::Kw(Keyword::Const) => {

@@ -1,10 +1,10 @@
 //! The Spid3r value model. Reference types are `Arc<Mutex<_>>` so values can
 //! cross task boundaries; assignment aliases, `clone()` deep-copies.
 
+use std::any::Any;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::os::raw::c_void;
-use std::any::Any;
 use std::sync::{Arc, Mutex};
 
 use crate::ast::{FnProto, Vis};
@@ -132,8 +132,7 @@ pub struct NativeClosureData {
 
 /// The closure signature behind [`NativeClosureData`] (factored out so host
 /// APIs can name it without a clippy type-complexity complaint).
-pub type NativeClosureFn =
-    dyn Fn(&NativeCtx, Vec<Value>) -> Result<Value, String> + Send + Sync;
+pub type NativeClosureFn = dyn Fn(&NativeCtx, Vec<Value>) -> Result<Value, String> + Send + Sync;
 
 pub struct ClassData {
     pub name: String,
@@ -416,23 +415,31 @@ pub fn weak_upgrade(v: &Value) -> Result<Option<Value>, String> {
         Map => Value::Map(downcast_cell::<crate::value::collections::MapData>(&any)?),
         Set => Value::Set(downcast_cell::<crate::value::collections::SetData>(&any)?),
         Tuple => Value::Tuple(downcast_cell::<Vec<Value>>(&any)?),
-        BinTree => Value::BinTree(downcast_cell::<crate::value::collections::BinTreeData>(&any)?),
+        BinTree => Value::BinTree(downcast_cell::<crate::value::collections::BinTreeData>(
+            &any,
+        )?),
         Bst => Value::Bst(downcast_cell::<crate::value::collections::BstData>(&any)?),
         Heap => Value::Heap(downcast_cell::<crate::value::collections::HeapData>(&any)?),
-        PrioQueue => {
-            Value::PrioQueue(downcast_cell::<crate::value::collections::PrioQueueData>(&any)?)
-        }
+        PrioQueue => Value::PrioQueue(downcast_cell::<crate::value::collections::PrioQueueData>(
+            &any,
+        )?),
         Graph => Value::Graph(downcast_cell::<crate::value::collections::GraphData>(&any)?),
-        HashTable => {
-            Value::HashTable(downcast_cell::<crate::value::collections::HashTableData>(&any)?)
-        }
+        HashTable => Value::HashTable(downcast_cell::<crate::value::collections::HashTableData>(
+            &any,
+        )?),
         Trie => Value::Trie(downcast_cell::<crate::value::collections::TrieData>(&any)?),
-        Matrix => Value::Matrix(downcast_cell::<crate::value::collections::MatrixData>(&any)?),
-        Vector => Value::Vector(downcast_cell::<crate::value::collections::VectorData>(&any)?),
+        Matrix => Value::Matrix(downcast_cell::<crate::value::collections::MatrixData>(
+            &any,
+        )?),
+        Vector => Value::Vector(downcast_cell::<crate::value::collections::VectorData>(
+            &any,
+        )?),
         Bytes => Value::Bytes(downcast_cell::<Vec<u8>>(&any)?),
         Ring => Value::Ring(downcast_cell::<crate::value::collections::RingData>(&any)?),
         Bag => Value::Bag(downcast_cell::<crate::value::collections::BagData>(&any)?),
-        RefBox => Value::RefBox(downcast_cell::<crate::value::collections::RefBoxData>(&any)?),
+        RefBox => Value::RefBox(downcast_cell::<crate::value::collections::RefBoxData>(
+            &any,
+        )?),
         Instance => Value::Instance(downcast_cell::<InstanceData>(&any)?),
         VInstance => Value::VInstance(downcast_cell::<VmInstanceData>(&any)?),
         CInstance => Value::CInstance(downcast_cell::<CompiledInstanceData>(&any)?),
@@ -460,9 +467,7 @@ fn downcast_cell<T: Any + Send + Sync>(
 ) -> Result<Arc<Mutex<T>>, String> {
     match Arc::downcast(any.clone()) {
         Ok(arc) => Ok(arc),
-        Err(_) => Err(
-            "weak reference target has an unexpected type (internal error)".to_string(),
-        ),
+        Err(_) => Err("weak reference target has an unexpected type (internal error)".to_string()),
     }
 }
 
@@ -879,10 +884,8 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
         }
         Value::Stack(d) => {
             let raw = d.lock().unwrap().items.clone();
-            let mut items: Vec<String> = raw
-                .iter()
-                .map(|it| display_value_inner(it, seen))
-                .collect();
+            let mut items: Vec<String> =
+                raw.iter().map(|it| display_value_inner(it, seen)).collect();
             items.reverse(); // top first
             format!("stack({})", items.join(", "))
         }

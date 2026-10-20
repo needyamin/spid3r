@@ -315,9 +315,9 @@ pub mod conv {
 
     /// Build a Spid3r `list` from Rust values.
     pub fn from_list(items: Vec<Value>) -> Value {
-        Value::List(crate::value::new_ref(
-            crate::value::collections::VecData { items },
-        ))
+        Value::List(crate::value::new_ref(crate::value::collections::VecData {
+            items,
+        }))
     }
 }
 
@@ -340,7 +340,10 @@ mod tests {
             Ok(conv::from_i64(c.fetch_add(1, Ordering::SeqCst)))
         });
         let out = engine
-            .run("t", "fn main() { tick(); tick(); println(tick()); return 0; }")
+            .run(
+                "t",
+                "fn main() { tick(); tick(); println(tick()); return 0; }",
+            )
             .expect("run");
         assert_eq!(out.exit_code, 0);
         assert_eq!(out.output, "2\n");
@@ -431,6 +434,10 @@ mod tests {
         let err = engine
             .run("t", "fn main() { return not_registered(); }")
             .unwrap_err();
-        assert!(err.diagnostic.message.contains("unknown name"), "{}", err.diagnostic.message);
+        assert!(
+            err.diagnostic.message.contains("unknown name"),
+            "{}",
+            err.diagnostic.message
+        );
     }
 }

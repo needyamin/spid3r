@@ -183,9 +183,7 @@ pub fn start_capture() {
 
 /// Take the captured output string and reset the buffer.
 pub fn take_capture() -> String {
-    CAPTURE_OUTPUT.with(|c| {
-        c.borrow_mut().take().unwrap_or_default()
-    })
+    CAPTURE_OUTPUT.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
 fn emit_output(s: &str) {
@@ -367,7 +365,9 @@ fn n_now(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
     #[cfg(target_arch = "wasm32")]
     {
         static START_COUNTER: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
-        Ok(Value::Int(START_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+        Ok(Value::Int(
+            START_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ))
     }
 }
 
@@ -437,10 +437,9 @@ fn n_spawn_process(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
     // Documented contract (docs/STANDARD_LIBRARY.md notes): process
     // operations that can fail return a `result` instead of throwing.
     match std::process::Command::new(&cmd).args(&argv).status() {
-        Ok(status) => collections::construct(
-            "ok",
-            vec![Value::Int(status.code().unwrap_or(-1) as i64)],
-        ),
+        Ok(status) => {
+            collections::construct("ok", vec![Value::Int(status.code().unwrap_or(-1) as i64)])
+        }
         Err(e) => collections::construct(
             "err",
             vec![Value::Str(format!("spawn_process '{}': {}", cmd, e).into())],
@@ -515,7 +514,9 @@ fn run_capture(
 }
 
 /// Join a reader thread, turning a panic inside it into a clean error string.
-fn join_reader(h: Option<std::thread::JoinHandle<Result<String, String>>>) -> Result<String, String> {
+fn join_reader(
+    h: Option<std::thread::JoinHandle<Result<String, String>>>,
+) -> Result<String, String> {
     match h {
         Some(h) => match h.join() {
             Ok(r) => r,
@@ -535,8 +536,7 @@ fn read_pipe_capped<R: std::io::Read>(r: R) -> Result<String, String> {
     limited
         .read_to_end(&mut buf)
         .map_err(|e| format!("exec_capture: reading child output failed: {}", e))?;
-    String::from_utf8(buf)
-        .map_err(|_| "exec_capture: child output is not valid UTF-8".to_string())
+    String::from_utf8(buf).map_err(|_| "exec_capture: child output is not valid UTF-8".to_string())
 }
 
 /// `exec_capture(cmd, args, stdin_text) -> result` — run a process and capture
@@ -737,10 +737,7 @@ fn n_hypot(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 /// so a value already in numeric form needs no guard at the call site.
 fn n_float_or(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!(
-            "float_or expects 2 arguments, got {}",
-            args.len()
-        ));
+        return Err(format!("float_or expects 2 arguments, got {}", args.len()));
     }
     let fallback = want_num(&args[1], "float_or")?;
     match &args[0] {
@@ -832,7 +829,9 @@ fn n_random_normal(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
 /// program-computed and tool-computed digests agree bit for bit.
 fn n_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let s = want_str(&one("sha256", &args)?, "sha256")?;
-    Ok(Value::Str(crate::pkg::hex_encode(&sha256_bytes(s.as_bytes())).into()))
+    Ok(Value::Str(
+        crate::pkg::hex_encode(&sha256_bytes(s.as_bytes())).into(),
+    ))
 }
 
 /// `hmac_sha256(key, msg)` — RFC 2104 HMAC-SHA256 of the UTF-8 bytes of
@@ -1208,9 +1207,7 @@ impl JsonParser {
                                     if !(0xDC00..=0xDFFF).contains(&lo) {
                                         return Err("json_parse: bad surrogate pair".to_string());
                                     }
-                                    char::from_u32(
-                                        0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00),
-                                    )
+                                    char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))
                                 } else {
                                     return Err("json_parse: lone high surrogate".to_string());
                                 }
@@ -1473,13 +1470,11 @@ fn n_load_npy(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         Ok(collections::misc::NpyLoaded::Vector(data)) => Ok(Value::Result(Ok(Box::new(
             Value::Vector(new_ref(collections::misc::VectorData { data })),
         )))),
-        Ok(collections::misc::NpyLoaded::Matrix { rows, cols, data }) => Ok(Value::Result(Ok(
-            Box::new(Value::Matrix(new_ref(collections::misc::MatrixData {
-                rows,
-                cols,
-                data,
-            }))),
-        ))),
+        Ok(collections::misc::NpyLoaded::Matrix { rows, cols, data }) => {
+            Ok(Value::Result(Ok(Box::new(Value::Matrix(new_ref(
+                collections::misc::MatrixData { rows, cols, data },
+            ))))))
+        }
         Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
     }
 }
@@ -1488,7 +1483,10 @@ fn n_load_npy(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_parse_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.is_empty() || args.len() > 2 {
-        return Err(format!("parse_csv expects 1 or 2 arguments, got {}", args.len()));
+        return Err(format!(
+            "parse_csv expects 1 or 2 arguments, got {}",
+            args.len()
+        ));
     }
     let text = want_str(&args[0], "parse_csv")?;
     let mut delimiter = ',';
@@ -1526,7 +1524,10 @@ fn n_parse_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_read_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.is_empty() || args.len() > 2 {
-        return Err(format!("read_csv expects 1 or 2 arguments, got {}", args.len()));
+        return Err(format!(
+            "read_csv expects 1 or 2 arguments, got {}",
+            args.len()
+        ));
     }
     let path = want_str(&args[0], "read_csv")?;
     let text = match std::fs::read_to_string(&path) {
@@ -1579,7 +1580,10 @@ fn n_write_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_regex_match(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("regex_match expects 2 arguments, got {}", args.len()));
+        return Err(format!(
+            "regex_match expects 2 arguments, got {}",
+            args.len()
+        ));
     }
     let pat = want_str(&args[0], "regex_match")?;
     let text = want_str(&args[1], "regex_match")?;
@@ -1589,7 +1593,10 @@ fn n_regex_match(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_regex_find(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("regex_find expects 2 arguments, got {}", args.len()));
+        return Err(format!(
+            "regex_find expects 2 arguments, got {}",
+            args.len()
+        ));
     }
     let pat = want_str(&args[0], "regex_find")?;
     let text = want_str(&args[1], "regex_find")?;
@@ -1599,7 +1606,10 @@ fn n_regex_find(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_regex_find_all(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("regex_find_all expects 2 arguments, got {}", args.len()));
+        return Err(format!(
+            "regex_find_all expects 2 arguments, got {}",
+            args.len()
+        ));
     }
     let pat = want_str(&args[0], "regex_find_all")?;
     let text = want_str(&args[1], "regex_find_all")?;
@@ -1611,7 +1621,10 @@ fn n_regex_find_all(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
 
 fn n_regex_replace(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 3 {
-        return Err(format!("regex_replace expects 3 arguments, got {}", args.len()));
+        return Err(format!(
+            "regex_replace expects 3 arguments, got {}",
+            args.len()
+        ));
     }
     let pat = want_str(&args[0], "regex_replace")?;
     let text = want_str(&args[1], "regex_replace")?;
@@ -1648,7 +1661,9 @@ fn n_datetime_parts(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
         (MapKey::Str("second".into()), Value::Int(second)),
         (MapKey::Str("weekday".into()), Value::Int(weekday)),
     ];
-    Ok(Value::Map(new_ref(collections::MapData::from_entries(entries))))
+    Ok(Value::Map(new_ref(collections::MapData::from_entries(
+        entries,
+    ))))
 }
 
 fn n_datetime_from_parts(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
@@ -1670,7 +1685,10 @@ fn n_datetime_from_parts(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
 
 fn n_format_datetime(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("format_datetime expects 2 arguments, got {}", args.len()));
+        return Err(format!(
+            "format_datetime expects 2 arguments, got {}",
+            args.len()
+        ));
     }
     let sec = want_int(&args[0], "format_datetime")?;
     let fmt = want_str(&args[1], "format_datetime")?;

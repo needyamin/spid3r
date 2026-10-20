@@ -43,8 +43,8 @@ fn dry_run_replays_the_counter_demo() {
         "js: document.getElementById('spid3r-root').innerHTML = \"<button id=\\\"go\\\" onclick=\\\"window.spid3r.emit('click','go')\\\">click me</button> <span id=\\\"count\\\"></span>\";\n",
         "js: document.getElementById('count').textContent = \"clicks: 2\";\n",
     );
-    let out = gui(&["gui", "examples/gui/counter.matrix", "--dry-run"])
-        .expect("dry-run must succeed");
+    let out =
+        gui(&["gui", "examples/gui/counter.matrix", "--dry-run"]).expect("dry-run must succeed");
     assert_eq!(out, expected);
 }
 
@@ -111,11 +111,7 @@ fn gui_rejects_unknown_options_and_missing_files() {
     assert!(err.contains("is not a file"), "got: {}", err);
 
     let err = gui(&["gui"]).expect_err("must fail");
-    assert!(
-        err.contains("gui needs a source file"),
-        "got: {}",
-        err
-    );
+    assert!(err.contains("gui needs a source file"), "got: {}", err);
 }
 
 #[test]
@@ -206,7 +202,11 @@ fn dry_run_prints_set_html_before_handler_queued_js() {
     let out = gui(&["gui", &path, "--dry-run"]).expect("dry-run must succeed");
     let html_at = out.find("innerHTML").expect("set_html js missing");
     let render_at = out.find("js: render()").expect("handler js missing");
-    assert!(html_at < render_at, "set_html must precede handler js:/n{}", out);
+    assert!(
+        html_at < render_at,
+        "set_html must precede handler js:/n{}",
+        out
+    );
     assert!(
         out.contains("\"<div id=\\\"x\\\"></div>\";"),
         "html must be JSON-quoted in the emitted JS:/n{}",
