@@ -1506,17 +1506,17 @@ impl MatrixData {
             Some(0) => {
                 let mut res = vec![0.0; self.cols];
                 for r in 0..self.rows {
-                    for c in 0..self.cols {
-                        res[c] += self.data[r * self.cols + c];
+                    for (c, slot) in res.iter_mut().enumerate() {
+                        *slot += self.data[r * self.cols + c];
                     }
                 }
                 Ok(Value::Vector(new_ref(VectorData { data: res })))
             }
             Some(1) => {
                 let mut res = vec![0.0; self.rows];
-                for r in 0..self.rows {
+                for (r, slot) in res.iter_mut().enumerate() {
                     for c in 0..self.cols {
-                        res[r] += self.data[r * self.cols + c];
+                        *slot += self.data[r * self.cols + c];
                     }
                 }
                 Ok(Value::Vector(new_ref(VectorData { data: res })))
@@ -1540,8 +1540,8 @@ impl MatrixData {
                 }
                 let mut res = vec![0.0; self.cols];
                 for r in 0..self.rows {
-                    for c in 0..self.cols {
-                        res[c] += self.data[r * self.cols + c];
+                    for (c, slot) in res.iter_mut().enumerate() {
+                        *slot += self.data[r * self.cols + c];
                     }
                 }
                 for x in &mut res {
@@ -1554,9 +1554,9 @@ impl MatrixData {
                     return Err("cannot compute mean with 0 cols".to_string());
                 }
                 let mut res = vec![0.0; self.rows];
-                for r in 0..self.rows {
+                for (r, slot) in res.iter_mut().enumerate() {
                     for c in 0..self.cols {
-                        res[r] += self.data[r * self.cols + c];
+                        *slot += self.data[r * self.cols + c];
                     }
                 }
                 for x in &mut res {
@@ -2277,7 +2277,7 @@ pub fn bytes_to_hex(bytes: &[u8]) -> String {
 
 pub fn bytes_from_hex(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("hex string must have an even length".to_string());
     }
     let mut bytes = Vec::with_capacity(s.len() / 2);
@@ -2336,11 +2336,11 @@ pub fn bytes_from_base64(s: &str) -> Result<Vec<u8>, String> {
     if clean.is_empty() {
         return Ok(Vec::new());
     }
-    if clean.len() % 4 != 0 {
+    if !clean.len().is_multiple_of(4) {
         return Err("invalid base64 length (must be a multiple of 4)".to_string());
     }
     let mut out = Vec::with_capacity((clean.len() / 4) * 3);
-    for chunk in clean.chunks_exact(4) {
+    for chunk in clean.as_chunks::<4>().0 {
         let v0 = b64_val(chunk[0])?;
         let v1 = b64_val(chunk[1])?;
         let v2 = if chunk[2] == b'=' { 0 } else { b64_val(chunk[2])? };
@@ -2546,8 +2546,8 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
             ));
         }
         let mut data = Vec::with_capacity(n);
-        for chunk in payload.chunks_exact(8) {
-            data.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+        for chunk in payload.as_chunks::<8>().0 {
+            data.push(f64::from_le_bytes(*chunk));
         }
         Ok(NpyLoaded::Vector(data))
     } else if dims.len() == 2 {
@@ -2561,8 +2561,8 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
             ));
         }
         let mut data = Vec::with_capacity(total);
-        for chunk in payload.chunks_exact(8) {
-            data.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+        for chunk in payload.as_chunks::<8>().0 {
+            data.push(f64::from_le_bytes(*chunk));
         }
         Ok(NpyLoaded::Matrix { rows, cols, data })
     } else {

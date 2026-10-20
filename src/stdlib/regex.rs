@@ -448,11 +448,10 @@ impl Nfa {
 
         self.add_state(self.start, start_idx, n, &mut active, &mut visited, &mut matched_end);
 
-        for cur_idx in start_idx..=n {
-            if cur_idx == n || active.is_empty() {
+        for (cur_idx, &ch) in chars.iter().enumerate().skip(start_idx) {
+            if active.is_empty() {
                 break;
             }
-            let ch = chars[cur_idx];
             let mut next_active = Vec::new();
             visited.fill(false);
 
