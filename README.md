@@ -46,7 +46,9 @@ Hello, Spid3r!
 - **Structured errors**: `throw`, `try`/`catch`/`finally` (running `finally` deterministically on normal exit, throw, `return`, `break`, and `continue`), plus `option` (`some`/`none`)
   and `result` (`ok`/`err`) values for expected failures.
 - **Gradual typing**: optional annotations (`a: int`, `-> string`), checked before the program runs.
-- **20+ built-in data structures**: `list`, `vec`, `tuple`, `map`, `set`, `bag`, `hash_table`, `stack`, `queue`, `deque`, `ring_buffer`, `heap`, `priority_queue`, `binary_tree`, `bst`, `trie`, `graph`, `matrix`, linked lists, and more — all covered by automatic cycle garbage collection.
+- **20+ built-in data structures**: `list`, `vec`, `tuple`, `map`, `set`, `bag`, `hash_table`, `stack`, `queue`, `deque`, `ring_buffer`, `heap`, `priority_queue`, `binary_tree`, `bst`, `trie`, `graph`, `matrix`, `vector`, `bytes`, linked lists, and more — all covered by automatic cycle garbage collection.
+- **Scientific computing & Linear algebra**: Contiguous 1D `vector` and 2D `matrix` types with BLAS-style operations (dot product, norm, cross product, matrix multiplication, axis reductions), elementwise math, and NumPy `.npy` v1.0 binary serialization (`save_npy`, `load_npy`).
+- **Binary I/O, CSV, Regex & DateTime**: Native raw `bytes` type with hex/base64 encoding, RFC-4180 CSV parser/writer with type inference, zero-dependency Thompson NFA regex engine, and civil calendar date/time math.
 - **Concurrency**: `spawn` tasks on a threaded scheduler, `async`/`await`, `channel`, `mutex`, `ref`.
 - **Networking & Web Servers**: TCP sockets, HTTP/1.1 framing, client `http_fetch`, and a pure-Spid3r web framework (`stdlib/http.matrix`) with zero external dependencies.
 - **Modules** with explicit `public` exports, and a package manager with lockfiles and POSIX `ustar` archiving.
@@ -281,16 +283,30 @@ For the complete grammar, see [`docs/GRAMMAR.md`](docs/GRAMMAR.md).
 | Category | Constructors | Key methods |
 |---|---|---|
 | **Sequences** | `[a, b]` / `list(…)`, `vec(…)`, `tuple(…)`, `deque()`, `ring_buffer(cap)`, `linked_list()`, `singly_linked_list()`, `doubly_linked_list()` | `push`, `pop`, `peek`, `get`, `set`, `insert`, `remove`, `slice`, `sort`, `reverse`, `map`, `filter`, `reduce`, `for_each`, `all`, `any` |
+| **Binary & buffers** | `bytes(size\|list\|str)` | `len`, `get`, `set`, `slice`, `to_list`, `to_string`, `to_hex`, `from_hex`, `to_base64`, `from_base64`, `copy` |
+| **Numeric & linear algebra** | `vector(n[, fill])` / `vector(list)`, `matrix(rows, cols[, fill])` / `matrix_from_list(rows, cols, list)` | `dot`, `norm`, `normalize`, `outer`, `cross`, `to_list`, `to_matrix`, `reshape`, `sum`, `mean`, `save_npy`, `row`, `col`, `add`, `mul` |
 | **Stacks, queues & heaps** | `stack(…)`, `queue()`, `heap("min"\|"max")`, `priority_queue(["min"\|"max"])` | `push`, `pop`, `peek`, `len`, `is_empty`, `to_list` |
 | **Associative** | `map(k, v, …)`, `set(…)`, `bag()`, `hash_table()` | `m[k]`, `m[k] = v`, `get`, `set`, `remove`, `has`, `keys`, `values`, `items`, `union`, `intersection`, `difference`, `count_of` |
-| **Trees, graphs & grids** | `binary_tree()`, `bst()`, `trie()`, `graph("directed"\|"undirected")`, `matrix(rows, cols[, fill])` | `insert`, `contains`, `inorder`, `bfs`, `dfs`, `add_node`, `add_edge`, `find_path`, `row`, `col`, `add`, `mul` |
+| **Trees & graphs** | `binary_tree()`, `bst()`, `trie()`, `graph("directed"\|"undirected")` | `insert`, `contains`, `inorder`, `bfs`, `dfs`, `add_node`, `add_edge`, `find_path` |
+| **Concurrency & refs** | `channel()`, `mutex(v)`, `ref(v)`, `weak(v)` | `send`, `recv`, `try_recv`, `lock`, `unlock`, `get`, `set`, `deref(w)` |
+
+> **Vectors & linear algebra.** `vector(n, fill)` creates a contiguous 1D array of 64-bit floats.
+> Supports vector-vector operations (`v1.dot(v2)`, `v.norm()`, `v.normalize()`, `v1.outer(v2)`,
+> `v1.cross(v2)` for 3D), vector-matrix multiplication (`v * m` and `m * v`), elementwise math
+> (`v + v`, `v * scalar`), indexing (`v[i]`), slicing, and `.save_npy(path)` binary export.
+> See [`docs/DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md).
+
+> **Binary `bytes` type.** `bytes(size)` allocates a zero-initialized buffer; `bytes("hello")`
+> or `bytes([0xde, 0xad])` converts from text or numeric lists. Supports `b[i]` indexing
+> (integers `0..255`), `.to_hex()` / `bytes.from_hex(s)`, `.to_base64()` / `bytes.from_base64(s)`,
+> `.slice(s, e)`, and native binary file I/O via `read_bytes(path)` and `write_bytes(path, b)`.
 
 > **Grid indexing.** A `matrix` is one flat row-major buffer of floats:
 > `m[i]` reads (or assigns) cell `i` counted from the top-left and answers
 > with a `float`, *not* a row — so `m[i][j]` is invalid. Use `m.get(r, c)` /
 > `m.set(r, c, v)` for two-dimensional addressing, `m.row(r)` / `m.col(c)`
-> for whole rows and columns, and `len(m)` for the cell count
-> (`rows * cols`). See [`docs/DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md).
+> for whole rows and columns, `m.sum([axis])` / `m.mean([axis])`, `m.save_npy(path)`,
+> and `len(m)` for the cell count (`rows * cols`). See [`docs/DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md).
 
 > **Sorting with a comparator.** `xs.sort_by(cmp)` sorts in place and
 > `xs.sorted_by(cmp)` returns a new list; `xs.argsort()` returns the original
@@ -302,20 +318,22 @@ For the complete grammar, see [`docs/GRAMMAR.md`](docs/GRAMMAR.md).
 > **Float precision in `format`.** `"{:.2}".format(88.6875)` renders `"88.69"`;
 > `N` runs 0–15. `{}` is unchanged, and rounding is tie-to-even (so
 > `"{:.0}".format(2.5)` is `"2"`, unlike `round(2.5)`).
-| **Concurrency & refs** | `channel()`, `mutex(v)`, `ref(v)`, `weak(v)` | `send`, `recv`, `try_recv`, `lock`, `unlock`, `get`, `set`, `deref(w)` |
 
 ### Global standard library functions
 
 | Category | Functions |
 |---|---|
 | **Console & I/O** | `print(…)`, `println(…)`, `eprint(…)`, `read_line()`, `exec_capture(cmd, args[, stdin])` |
-| **Files, env & OS** | `read_file(path)`, `write_file(path, text)`, `file_exists(path)`, `env(name)`, `args()`, `spawn_process(cmd, args)` |
+| **Files & binary I/O** | `read_file(path)`, `write_file(path, text)`, `read_bytes(path)`, `write_bytes(path, b)`, `load_npy(path)`, `file_exists(path)`, `env(name)`, `args()`, `spawn_process(cmd, args)` |
+| **Structured data (CSV & JSON)** | `read_csv(path[, delim])`, `parse_csv(str[, delim])`, `write_csv(path, rows[, delim])`, `json_parse(s)`, `json_write(v)` |
+| **Regular expressions** | `regex_match(pat, text)`, `regex_find(pat, text)`, `regex_find_all(pat, text)`, `regex_replace(pat, text, repl)` |
+| **Date & time** | `unix_time()`, `unix_ms()`, `datetime_parts(ts)`, `datetime_from_parts(map)`, `format_datetime(ts, fmt)` |
 | **Networking & HTTP** | `tcp_listen(addr)`, `tcp_accept(id)`, `tcp_connect(addr)`, `tcp_read(id, n)`, `tcp_write(id, s)`, `tcp_close(h)`, `tcp_local_addr(h)`, `tcp_peer_addr(id)`, `tcp_set_timeout(id, ms)`, `http_read_request(id)`, `http_write_response(id, st, h, b)`, `http_fetch(m, u[, h, b])`, `url_decode(s)`, `url_encode(s)` |
 | **Math & random** | `abs(x)`, `sqrt(x)`, `pow(b, e)`, `min(a, b, …)`, `max(a, b, …)`, `clamp(x, lo, hi)`, `floor(x)`, `ceil(x)`, `round(x)`, `trunc(x)`, `sign(x)`, `exp(x)`, `ln(x)`, `log10(x)`, `log2(x)`, `sin(x)`, `cos(x)`, `tan(x)`, `asin(x)`, `acos(x)`, `atan(x)`, `atan2(y, x)`, `hypot(x, y)`, `is_nan(x)`, `is_inf(x)`, `float_or(s, default)`, `nan()`, `inf()`, `random_int(lo, hi)`, `random_float()`, `random_normal()` |
 | **Crypto** | `sha256(s)`, `hmac_sha256(key, msg)` — lowercase hex digests |
 | **Types & conversion** | `int(x)`, `float(x)`, `string(x)`, `bool(x)`, `type_of(x)`, `len(x)` |
 | **Option & result** | `some(v)`, `none`, `ok(v)`, `err(e)` |
-| **JSON & testing** | `json_parse(s)`, `json_write(v)`, `assert(cond[, msg])`, `assert_eq(a, b[, msg])` |
+| **Testing & assertions** | `assert(cond[, msg])`, `assert_eq(a, b[, msg])` |
 | **Time, tasks & GC** | `now()`, `sleep_ms(n)`, `yield()`, `task_count()`, `gc_collect()`, `gc_live_cells()` |
 
 `exec_capture(cmd, args, stdin_text)` spawns a process with piped stdin,
@@ -479,10 +497,10 @@ A runnable demo ships as `cargo run --example embed_hello`. Full API reference:
 
 ## Developer workflow & testing
 
-Correctness in Spid3r means *the engines agree*. All **425 Rust tests** (**396** core tests including WASM & Bundler suites + **29** GUI/AOT-headless tests) and **23/23 differential example programs** can be run locally without LLVM:
+Correctness in Spid3r means *the engines agree*. All **444 Rust tests** (**415** core tests including WASM & Bundler suites + **29** GUI/AOT-headless tests) and **23/23 differential example programs** can be run locally without LLVM:
 
 ```sh
-# 1. Run all 396 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
+# 1. Run all 415 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
 cargo test --no-default-features
 
 # 2. Run the 10 headless GUI bridge tests
@@ -555,8 +573,7 @@ Runnable examples live in [`examples/`](examples/). Run any of them with
 
 ## Known limitations
 
-- Exponent float literals such as `1.5e3` are not supported, and
-  `-9223372036854775808` cannot be written as a literal.
+- `-9223372036854775808` cannot be written as a direct integer literal before unary negation.
 - The native backend rejects classes declared inside a function.
 - Dependencies are local only: path, git, or an offline registry directory.
 

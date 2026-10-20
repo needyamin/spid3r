@@ -139,10 +139,19 @@ GaliLang/
                        incl. "set"/"get"/"remove")
   value/collections/nodes.rs linked lists, binary_tree, bst, trie, heap
   value/collections/misc.rs  priority_queue, graph, hash_table, bag, matrix,
+                       vector (contiguous 1D numeric array, linear algebra ops),
+                       bytes methods (hex, base64), NumPy .npy v1.0 binary format,
                        ref/weak helpers, option_method, result_method
   stdlib/mod.rs        global natives (see [6]); includes the JSON parser and
                        writer, xorshift RNG (per-thread entropy seed), SCRIPT_ARGS
                        static (RwLock<Vec<String>>) + pub set_script_args()
+  stdlib/csv.rs        RFC-4180 CSV parser & writer with type inference (int,
+                       float, bool, null, string) and configurable delimiters
+  stdlib/datetime.rs   Howard Hinnant civil calendar math (unix_time, unix_ms,
+                       datetime_parts, datetime_from_parts, format_datetime)
+  stdlib/regex.rs      zero-dependency Thompson NFA regex engine (regex_match,
+                       regex_find, regex_find_all, regex_replace)
+  stdlib/net.rs        TCP client/server and HTTP/1.1 wire framing
   modules/mod.rs       module resolution/caching shared by interpreter; resolve()
                        canonicalizes (modules::canonical_key strips Windows \\?\
                        prefix); load() with loaded/in_progress caches (cycle
@@ -227,6 +236,14 @@ GaliLang/
   non-finite float = error; keys escaped; depth cap 512; self-referential
   container = clean error), len, type_of, assert/assert_eq, gc_collect,
   gc_live_cells, weak/deref.
+  binary & csv & npy: read_bytes(path) -> ok(bytes)/err(msg), write_bytes(path, b)
+  -> ok(null)/err(msg), load_npy(path) -> ok(vector|matrix)/err(msg),
+  read_csv(path[, delim]) -> ok(list of maps)/err(msg), parse_csv(str[, delim])
+  -> ok(list of maps)/err(msg), write_csv(path, rows[, delim]) -> ok(null)/err(msg).
+  regex (src/stdlib/regex.rs): regex_match(pat, text), regex_find(pat, text),
+  regex_find_all(pat, text), regex_replace(pat, text, repl).
+  datetime (src/stdlib/datetime.rs): unix_time(), unix_ms(), datetime_parts(ts),
+  datetime_from_parts(map), format_datetime(ts, fmt).
   net (src/stdlib/net.rs): tcp_listen tcp_accept tcp_connect tcp_read tcp_write
   tcp_close tcp_local_addr tcp_peer_addr tcp_set_timeout http_read_request
   http_write_response http_fetch url_encode url_decode (plaintext TCP/HTTP; no TLS).
@@ -279,7 +296,10 @@ GaliLang/
   difftest.rs            every examples/*.matrix through tree, vm, compile+exec
   lexer_tests.rs         token/spans; parser_tests.rs; semantic/gradual_typing
   interpreter_tests.rs, integration_tests.rs, error_tests.rs
-  data_structure_tests.rs (23), oop_tests.rs, const_module_tests.rs
+  data_structure_tests.rs (34: lists, sets, maps, deque, queue, stack, heap,
+                         ring_buffer, trees, graph, matrix, vector linear
+                         algebra, bytes, and GC interaction), oop_tests.rs,
+                         const_module_tests.rs
   cycle_tests.rs (GC), weak_tests.rs, sched_tests.rs (tasks/channels; includes
                          spawn_process result contract), vm_dispatch_tests.rs,
                          opt_tests.rs, debug_tests.rs (scripted debugger),
