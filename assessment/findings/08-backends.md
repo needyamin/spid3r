@@ -1,5 +1,25 @@
 # 08 — Backends & Delivery Layer: native/LLVM, gui/wry, embed, bundle, wasm, build.rs
 
+> **Status 2026-10-21 (verification round).** This file is the 2026-10-20
+> static record and is not rewritten. What changed since:
+>
+> - **Fixed:** **F1** (`build.rs` fetched and ran a network binary on every plain release
+>   build — audit A-11; the fetch is now opt-in, SHA-256-verified and fail-closed) and
+>   **F2** (cross-thread data race on AOT upvalue cells — audit A-12; the cell is an
+>   `AtomicPtr` with `SeqCst` load/store, and environment arrays are length-headed and
+>   bounds-checked).
+> - **Partially fixed:** **F3** (no unwind barrier at the AOT ABI — `ffi_guard` now wraps
+>   `rt_start`/`call`/`method`/`make_fn`/`global_exists`, so a panic becomes a script
+>   error or a safe sentinel; the raw-pointer contracts themselves are unchanged).
+> - **Still open:** F4 (wasm behavioural divergences, including `MAX_CALL_DEPTH`
+>   calibrated for 64 MB stacks on a ~1 MB JS stack), F5 (wasm C-ABI free contract /
+>   non-UTF-8 input), F6 (bundle/Android naming), F7 (GUI robustness), F8 (link.rs version
+>   coupling), F9 (`out_dir.ancestors().nth(4)`).
+>
+> Full status table: `assessment/AUDIT_2026-10-20.md` §9. Reproduce the
+> dynamic checks with `python audit_notes/probes/verify_2026-10-21.py`.
+
+
 Static inspection, 2026-10-20. Scope: `src/native/*` (mod, llvm, ir, rt, link, modules), `src/gui/*` (mod, bridge, window), `src/embed.rs`, `src/bundle.rs`, `src/wasm.rs`, `build.rs`. No build/run performed (forbidden); all evidence is first-hand file reads at the cited lines. `Cargo.toml`, `web/spid3r.js`, `src/sched/mod.rs`, `src/interpreter/mod.rs`, `src/stdlib/mod.rs` were read as cross-reference evidence for contracts these files depend on. Siblings vm/, pkg/, stdlib/ are outside ownership except where a call crosses the boundary.
 
 Confidence labels: **确定** = read directly this run; **高置信** = mechanism verified, trigger depends on generated/external input; **低置信** = plausible, not fully traceable within scope.

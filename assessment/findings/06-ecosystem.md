@@ -1,5 +1,22 @@
 # 06 — Ecosystem: Package Manager, Module Loader, Scheduler, REPL, CLI
 
+> **Status 2026-10-21 (verification round).** This file is the 2026-10-20
+> static record and is not rewritten. What changed since:
+>
+> - **Fixed:** **F1** (`ext::` git URL → command execution — audit A-5; rejected
+>   unconditionally, with a test that proves no command ran), **F2** (scheduler starvation
+>   / unbounded queue / no exit join — audit A-3), **F3** (lockfile hashed lossy UTF-8 of
+>   only `*.matrix` files — now every file under `src/` as raw bytes), **F4** (pinned rev
+>   not enforced on re-install — a re-install now reproduces the locked commit;
+>   `install --update` moves it).
+> - **Still open:** F5 (tar entry-type handling — `read_tar` still special-cases only
+>   `'L'`), F6 (CLI panic on non-UTF-8 arguments; exit-code contract), F7 (module-loader
+>   symlink/walk-up), F8 (REPL). F9 was informational.
+>
+> Full status table: `assessment/AUDIT_2026-10-20.md` §9. Reproduce the
+> dynamic checks with `python audit_notes/probes/verify_2026-10-21.py`.
+
+
 Scope: `src/pkg/mod.rs`, `src/modules/mod.rs`, `src/sched/mod.rs`, `src/repl/mod.rs`, `src/cli.rs`.
 Method: static code inspection only (no build/exec per task boundary). All line numbers from the
 working tree at `C:\Users\needyamin\OneDrive\Desktop\GaliLang`, read 2026-10-20.

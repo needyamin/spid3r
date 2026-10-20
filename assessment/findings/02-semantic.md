@@ -1,5 +1,23 @@
 # 02 — Static inspection: Spid3r semantic checker
 
+> **Status 2026-10-21 (verification round).** This file is the 2026-10-20
+> static record and is not rewritten. What changed since:
+>
+> - **Fixed (audit A-10):** **F1** (index-assignment targets never checked the index
+>   expression), **F2** (`main` validation was existence-only) and **F3** (function
+>   assignability ignored signatures). Verified by `tests/fix_semantic_priv.rs`
+>   (`index_assignment_checks_its_index_expression`, `main_signature_is_validated`,
+>   `function_types_compare_their_signatures`) and by probes A-10a/b/c in
+>   `audit_notes/probes/verify_2026-10-21.py`.
+> - **Still open as recorded:** F4 (annotation typos degrade to `Any`), F5 (`option`/
+>   `result` annotations), F6 (`builtin_return_type("abs")`), F7 (element types erased —
+>   by design), F8 (latent `usize` underflow), F9 (dead arm), F10 (calling a class name).
+>   These were never in the plan and were not re-verified in this round.
+>
+> Full status table: `assessment/AUDIT_2026-10-20.md` §9. Reproduce the
+> dynamic checks with `python audit_notes/probes/verify_2026-10-21.py`.
+
+
 - Scope: `src/semantic/mod.rs` (~1959 lines) and `src/semantic/ty.rs` (79 lines), working tree as of 2026-10-20.
 - Method: static reading only. `cargo`/`rustc`/execution forbidden by task, so nothing here was run; every claim is a code trace with file:line. Sibling dirs (parser, interpreter, vm, stdlib, tests) were grepped **only** to confirm API contracts, and those citations are marked as such.
 - Doc claims re-verified, not trusted: README.md:106 ("static type, arity, and privacy check"), README.md:110 ("Every executable program defines `fn main()`"), README.md:371-372 ("checker catches unknown names, private-member access, arity errors, and type-annotation mismatches before any code runs"), README.md:548 ("Name resolution, arity, privacy, `main` validation, and gradual type checker"). Prior audit note `audit_notes/fix_semantic_priv.md` treated as claims; its F6/F12/F5 fix claims were re-checked in code (verdict below).

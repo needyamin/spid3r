@@ -1,5 +1,25 @@
 # 09 — Tests, fuzz, benchmarks, and documentation consistency
 
+> **Status 2026-10-21 (verification round).** This file is the 2026-10-20
+> static record and is not rewritten. What changed since:
+>
+> - **Every claim in the table below has been resolved** (audit A-18 / F3):
+>   - The four circulating test totals (447 / 454 / 467 / 425 / 279) are replaced by one
+>     canonical counter, `tools/count_tests.sh` — currently **500 tests** (484 core + 10
+>     GUI + 6 AOT), **25 example files** (24 programs + 1 shared module), **3 fuzz
+>     targets** — and README, doc.html, `docs/AUDIT_REPORT.md`, `sitemap.txt` and the
+>     audit notes quote its output.
+>   - "23 examples" → 25 files (24 runnable + `math_util.matrix`).
+>   - Fuzz surfaces: three targets, stated as three everywhere; `fuzz_tests=10` corrected
+>     to 3; a nightly `.github/workflows/fuzz.yml` now actually runs them.
+>   - `audit_regressions` count 30 → 83 (and documented in `sitemap.txt`).
+>   - `tools/bench_compare.py` no longer hardcodes a host string or the PHP path, and no
+>     longer deletes a root `benchmarks.html`.
+>
+> Full status table: `assessment/AUDIT_2026-10-20.md` §9. Reproduce the
+> dynamic checks with `python audit_notes/probes/verify_2026-10-21.py`.
+
+
 Author note: the dispatched child exhausted its budget before it could write this file; its
 full findings were recovered from the run transcript (`.zwork/runs/38dfa112/8-研究员.md`)
 and are transcribed here by the coordinator, then cross-checked against the coordinator's

@@ -1,5 +1,22 @@
 # 03 — Runtime Core Static Assessment (interpreter + environments + values + cycle GC)
 
+> **Status 2026-10-21 (verification round).** This file is the 2026-10-20
+> static record and is not rewritten. What changed since:
+>
+> - **Fixed:** **F1** (`gc_collect()` collected concurrently with live tasks — audit A-4;
+>   the gate is now `sched::gc_quiescent()`, and a probe confirms it refuses while another
+>   thread runs) and **F2** (thrown values were degraded to strings across task/callback
+>   seams — audit A-9; a thrown map now reaches `catch` intact).
+> - **Still open:** **F3** (closure/environment cycles leak — audit A-13; the collector
+>   still only tracks value containers and instances), **F4** (`deep_clone` of a cyclic
+>   value aliases the original — audit A-14, **reproduced**: mutating through the clone's
+>   inner element changed the original), **F5** (poisoned-mutex panic cascade), F6
+>   (`is_callable`), F7 (assorted smalls).
+>
+> Full status table: `assessment/AUDIT_2026-10-20.md` §9. Reproduce the
+> dynamic checks with `python audit_notes/probes/verify_2026-10-21.py`.
+
+
 Scope owned: `src/interpreter/mod.rs`, `src/environment/mod.rs`, `src/value/mod.rs`, `src/value/gc.rs`.
 Method: static read of all 3,378 lines of owned code; sibling files (`value/collections/`, `vm/`, `semantic/`, `stdlib/`, `sched/`) read only where a one-line cross-check was needed for an owned-code claim (cited as such). No build/run performed (forbidden). Docs' claims (README trial-deletion, "identical engine output") were treated as unverified inputs and checked against code.
 Date: 2026-10-20.

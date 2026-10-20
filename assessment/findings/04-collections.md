@@ -1,5 +1,22 @@
 # 04 — Static Audit: Built-in Collections (`src/value/collections/*`)
 
+> **Status 2026-10-21 (verification round).** This file is the 2026-10-20
+> static record and is not rewritten. What changed since:
+>
+> - **Fixed:** **F1** (`bytes.from_hex` host panic — audit A-1; a probe with `"a⚡"` now
+>   returns a clean error), **F2** (self-referential membership/clone methods deadlocked —
+>   audit A-7; 16 families covered by `tests/stage2_concurrency.rs`), **F3**
+>   (`list.sort`/`sorted` panicked on NaN or mixed huge int·float — audit A-6; sorting
+>   both now succeeds through a total order).
+> - **Still open:** **F4** (deep-recursion crash class for BST/stack/queue/deque — audit
+>   A-17, **reproduced**: a 200 000-deep `stack`/`queue`/`deque` chain aborts with a stack
+>   overflow on drop; `list` is safe), F5 (dead method arms), F6 (npy size arithmetic),
+>   F7 (`append` lock-order inversion).
+>
+> Full status table: `assessment/AUDIT_2026-10-20.md` §9. Reproduce the
+> dynamic checks with `python audit_notes/probes/verify_2026-10-21.py`.
+
+
 Date: 2026-10-20. Scope owned: `mod.rs`, `seq.rs`, `nodes.rs`, `misc.rs` (~2,570 + ~1,000 + ~880 + ~1,060 lines).
 Sibling files (`src/value/mod.rs`, `src/value/gc.rs`, `interpreter/`) were read/grepped **only** to confirm API contracts
 (`Ref<T>`, `new_ref`, `values_equal`, `deep_clone`, `ref_id`, `MapKey`); their own defects are out of scope.

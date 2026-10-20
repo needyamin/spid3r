@@ -1,5 +1,21 @@
 # 07 — Stdlib static inspection (globals + net + regex + csv + datetime)
 
+> **Status 2026-10-21 (verification round).** This file is the 2026-10-20
+> static record and is not rewritten. What changed since:
+>
+> - **Fixed:** **F1** (regex unbounded recursion aborted the host — audit A-2; now
+>   `MAX_REGEX_DEPTH = 512` with a clean error).
+> - **Still open, and re-measured on 2026-10-21:** **F2** (regex is O(n²·|NFA|) — audit
+>   A-15: 2 500 chars took 634 ms, 5 000 chars took 2 553 ms, i.e. 4.0× for 2× input;
+>   20 000 chars exceeds 30 s), **F6** (negated classes never match `\n` — reproduced),
+>   **F5** (CSV BOM is not stripped — no BOM handling in `src/stdlib/csv.rs`), F3/F4
+>   (`net.rs` buffer growth and the missing server read timeout — audit A-16, not
+>   exercised), F7 (datetime validation), F8-F11 (smalls).
+>
+> Full status table: `assessment/AUDIT_2026-10-20.md` §9. Reproduce the
+> dynamic checks with `python audit_notes/probes/verify_2026-10-21.py`.
+
+
 Scope: `src/stdlib/mod.rs`, `src/stdlib/net.rs`, `src/stdlib/regex.rs`, `src/stdlib/csv.rs`, `src/stdlib/datetime.rs` (GaliLang / Spid3r).
 Method: full read of all five files (mod.rs paged over two reads), plus one read-only verification of `src/pkg/mod.rs::sha256_bytes` because the stdlib crypto builtins delegate to it. No build/run (constraint); all findings are static structural evidence, marked with confidence.
 Date: 2026-10-20. Claims in README were not trusted; each was checked against code.

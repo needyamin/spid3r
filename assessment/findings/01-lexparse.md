@@ -1,5 +1,21 @@
 # Spid3r frontend static inspection — lexer, parser, ast, diagnostics, fmt
 
+> **Status 2026-10-21 (verification round).** This file is the 2026-10-20
+> static record and is not rewritten. What changed since:
+>
+> - This file's findings were **not** part of the A-1…A-18 remediation plan, so none
+>   were fixed by it; they remain open as recorded.
+> - Re-confirmed by inspection on 2026-10-21: **F1** (`Parser::parse` with an empty token
+>   vector panics — `peek_kind` computes `self.toks.len() - 1`) and **F2** (diagnostic
+>   columns are byte-based on non-ASCII lines). Both are listed as open in
+>   `AUDIT_2026-10-20.md` §9.3.
+> - The panic-path sweep in §1 still holds: no other front-end panic was reachable from
+>   source text (the whole 500-test suite and the differential run exercise this).
+>
+> Full status table: `assessment/AUDIT_2026-10-20.md` §9. Reproduce the
+> dynamic checks with `python audit_notes/probes/verify_2026-10-21.py`.
+
+
 Date: 2026-10-20. Method: static reading only (no cargo/rustc/exec, per task boundary).
 Files inspected (owned set): `src/lexer/mod.rs`, `src/lexer/token.rs`, `src/parser/mod.rs`,
 `src/ast/mod.rs`, `src/diagnostics/mod.rs`, `src/fmt.rs`. Sibling files touched only by

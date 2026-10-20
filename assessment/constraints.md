@@ -32,3 +32,26 @@ Established facts (verified by coordinator, 2026-10-20):
 - README claims to verify: 447 Rust tests total (418 core + 29 GUI/AOT-headless), 25/25 differential example programs, 23 examples, 8 benchmarks, "engines produce identical output", zero third-party deps in core, package manager with lockfiles+SHA-256, path-traversal-protected ustar archiver.
 - CI (.github/workflows/ci.yml): clippy `--no-default-features --all-targets -- -D warnings`, `cargo test --no-default-features`, `cargo run --no-default-features -- test`, `cargo run --no-default-features -- fmt --check`, plus gui/wasm jobs.
 - Prior audit artifacts exist (`audit_notes/*.md`, `docs/AUDIT_REPORT.md`) — prior claims, to be re-verified, not trusted.
+
+---
+
+## Status update — 2026-10-21
+
+**The assessment gate is closed.** Item 10 ("wait for the assessment to finish before
+performing source-code modifications") was satisfied on 2026-10-20 when the audit was
+delivered; the user then approved and the four staged remediation plans were executed
+(Stage 1 panic-hardening, Stage 2 concurrency, Stage 3 artifacts/dependencies, Stage 4
+toolchain/docs), plus a CI fix for a Rust 1.99 deprecation.
+
+Two statements above are now historical rather than current:
+
+- *"Scratch/notes area: `assessment/` (untracked; never committed)"* — `assessment/` is
+  tracked (commit `11e78cb`) and is updated by the verification round.
+- *"No source modification anywhere in the repo during this run"* — true for the audit
+  run only. Since then ~60 files changed across the four stages; see `git log` and
+  `audit_notes/stage2_concurrency.md`, `stage3_artifact_hardening.md`,
+  `stage4_toolchain_docs.md`.
+
+The environment facts also moved: the toolchain is now pinned to **rustc/cargo 1.99.1**
+in `rust-toolchain.toml` (it was 1.98.1 during the audit), and the test suite grew from
+454 to **500** tests. Current status of every finding: `AUDIT_2026-10-20.md` §9.
