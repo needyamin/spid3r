@@ -166,11 +166,58 @@ ignored format.
 | `trie()` | Prefix tree of strings. `add(word)`, `exists(word)`, `remove(word)`, `collect(prefix)`, `n_words`, `is_empty`. |
 | `heap("min"\|"max")` | Min/max heap. `push`, `pop`, `peek`, `change_priority`, `merge`, `len`, `is_empty`. |
 
-## Numeric grid
+## Numeric Vector & Matrix (Linear Algebra)
 
-| Type | Notes |
+Spid3r provides high-performance, contiguous 64-bit float storage for 1-D vectors and 2-D matrices with zero external dependencies. Both types are capped at 16,777,216 elements to protect system memory.
+
+### Vector (`vector`)
+
+A contiguous 1-D buffer of `f64` values.
+
+| Constructor | Meaning |
 |---|---|
-| `matrix(rows, cols, fill)` | 2-D grid of floats. `fill` defaults to `0.0`. Indexing is described below. |
+| `vector(n, fill_val)` | Creates an `n`-element vector filled with `fill_val` (defaults to `0.0`). |
+| `vector(list_of_numbers)` | Converts a `list` or `tuple` of `int`/`float` into a `vector`. |
+
+#### Indexing & Iteration
+- **Indexing**: `v[i]` reads or writes the `float` at index `i`. Supports negative indexing (e.g. `v[-1]` is the last element). Throws a catchable error on out-of-bounds access.
+- **Iteration**: `for x in v { ... }` yields each element as a `float`.
+- **Length**: `len(v)`.
+
+#### Native Methods
+- **Basics**:
+  - `v.len()`: Number of elements (`int`).
+  - `v.is_empty()`: `true` if empty.
+  - `v.get(i)`: Element at index `i` (supports negative indices).
+  - `v.set(i, val)`: Set element at index `i` (supports negative indices).
+  - `v.push(val)`: Append a number to the vector.
+  - `v.slice(start, end)`: Returns a new sub-vector (supports negative indices and clamping).
+  - `v.to_list()`: Converts vector to a `list` of floats.
+  - `v.copy()` / `v.clone()`: Returns an independent clone.
+- **Elementwise Arithmetic**:
+  - `v.add(other)`, `v.sub(other)`, `v.mul(other)`, `v.div(other)`: Accepts either another `vector` of identical length or a scalar (`int` or `float`). Returns a new `vector`. Division by zero throws a catchable runtime error.
+- **Fast Native Reductions & Stats**:
+  - `v.sum()`: Sum of elements.
+  - `v.mean()`: Arithmetic mean.
+  - `v.variance()`: Population variance ($N$).
+  - `v.std()`: Population standard deviation.
+  - `v.min()`, `v.max()`: Minimum / maximum value.
+  - `v.argmin()`, `v.argmax()`: Index of minimum / maximum value.
+  - `v.dot(other_vec)`: Dot product with another vector of identical length.
+  - `v.norm()`: Euclidean $L_2$ norm ($\sqrt{\sum v_i^2}$).
+  - `v.cumsum()`: Cumulative sum as a new `vector`.
+  - `v.diff()`: Forward differences ($v_{i+1} - v_i$) as an $(N-1)$-element `vector`.
+  - `v.sort()`: In-place stable sort (using IEEE 754 total ordering).
+  - `v.argsort()`: Returns a `list` of integer indices representing sorted order.
+
+### Matrix (`matrix`)
+
+A contiguous row-major 2-D grid of `f64` floats.
+
+| Constructor | Meaning |
+|---|---|
+| `matrix(rows, cols, fill)` | 2-D grid of floats (`rows` x `cols`). `fill` defaults to `0.0`. |
+| `matrix(rows_list)` / `matrix_from_list(rows_list)` | Construct from a list/tuple of row sequences. |
 
 ### Matrix indexing: `m[i]` is a *flat* index, not a row
 
@@ -203,9 +250,22 @@ there is no second dimension behind a flat index. For 2-D addressing use
 | `m.row(r)` | row `r` as a new `list` of floats |
 | `m.col(c)` | column `c` as a new `list` of floats |
 | `m.rows()` / `m.cols()` | dimensions as `int` |
-| `m.add(other)` / `m.mul(other)` | new `matrix` (sum / product) |
+| `m.to_list()` | nested `list` of row float lists |
+| `m.transpose()` | returns transposed matrix ($A^T$) |
+| `m.scale(s)` | scales all elements by scalar `s` |
+| `m.add(other)` | matrix addition ($A + B$) |
+| `m.sub(other)` | matrix subtraction ($A - B$) |
+| `m.hadamard(other)` | elementwise (Schur / Hadamard) multiplication |
+| `m.mul(other)` | standard matrix multiplication ($A \cdot B$) |
+| `m.trace()` | sum of diagonal elements (square matrices only) |
+| `m.sum(axis)` | sum: `axis=null` overall float, `axis=0` 1xCols matrix, `axis=1` Rowsx1 matrix |
+| `m.mean(axis)` | mean: `axis=null` overall float, `axis=0` 1xCols matrix, `axis=1` Rowsx1 matrix |
+| `m.solve(b)` | solves $A X = B$ via LU decomposition with partial pivoting (returns `vector` or `matrix`) |
+| `m.inverse()` | matrix inverse $A^{-1}$ via LU decomposition |
+| `m.det()` | determinant $\det(A)$ (returns 0.0 if singular) |
+| `m.eigen_sym()` | Jacobi eigensolver for symmetric matrices -> `map("values", vector, "vectors", matrix)` |
 | `m.is_empty()` | `true` when `rows == 0` or `cols == 0` |
-| `m.clone()` | an independent copy |
+| `m.clone()` / `m.copy()` | an independent copy |
 
 The cell count is `len(m)` (`rows * cols`); the `matrix` type has no `push`
 or `pop`, and `m[i] = v` writes a cell rather than appending one.
@@ -213,7 +273,8 @@ or `pop`, and `m[i] = v` writes a cell rather than appending one.
 `m.get`/`m.set` and the flat index agree by construction: for a matrix with
 `cols` columns, `mx[r * mx.cols + c]` and `mx.get(r, c)` are the same cell.
 A single matrix may hold at most 16,777,216 cells; larger dimensions throw a
-catchable error instead of attempting the allocation.
+catchable error instead of attempting the allocation. Singular matrices in `solve`
+and `inverse` throw catchable runtime errors (`"matrix is singular"`).
 
 ## Graphs
 

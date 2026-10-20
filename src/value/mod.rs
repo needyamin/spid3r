@@ -214,6 +214,7 @@ pub enum Value {
     HashTable(Ref<crate::value::collections::HashTableData>),
     Trie(Ref<crate::value::collections::TrieData>),
     Matrix(Ref<crate::value::collections::MatrixData>),
+    Vector(Ref<crate::value::collections::VectorData>),
     Ring(Ref<crate::value::collections::RingData>),
     Bag(Ref<crate::value::collections::BagData>),
     RefBox(Ref<crate::value::collections::RefBoxData>),
@@ -293,6 +294,7 @@ pub enum WeakKind {
     HashTable,
     Trie,
     Matrix,
+    Vector,
     Ring,
     Bag,
     RefBox,
@@ -344,6 +346,7 @@ pub fn make_weak(v: &Value) -> Result<Value, String> {
         Value::HashTable(r) => (HashTable, Arc::downgrade(&erase(r))),
         Value::Trie(r) => (Trie, Arc::downgrade(&erase(r))),
         Value::Matrix(r) => (Matrix, Arc::downgrade(&erase(r))),
+        Value::Vector(r) => (Vector, Arc::downgrade(&erase(r))),
         Value::Ring(r) => (Ring, Arc::downgrade(&erase(r))),
         Value::Bag(r) => (Bag, Arc::downgrade(&erase(r))),
         Value::RefBox(r) => (RefBox, Arc::downgrade(&erase(r))),
@@ -407,6 +410,7 @@ pub fn weak_upgrade(v: &Value) -> Result<Option<Value>, String> {
         }
         Trie => Value::Trie(downcast_cell::<crate::value::collections::TrieData>(&any)?),
         Matrix => Value::Matrix(downcast_cell::<crate::value::collections::MatrixData>(&any)?),
+        Vector => Value::Vector(downcast_cell::<crate::value::collections::VectorData>(&any)?),
         Ring => Value::Ring(downcast_cell::<crate::value::collections::RingData>(&any)?),
         Bag => Value::Bag(downcast_cell::<crate::value::collections::BagData>(&any)?),
         RefBox => Value::RefBox(downcast_cell::<crate::value::collections::RefBoxData>(&any)?),
@@ -469,6 +473,7 @@ fn ref_id(v: &Value) -> Option<u64> {
         Value::HashTable(r) => ref_id_of!(r),
         Value::Trie(r) => ref_id_of!(r),
         Value::Matrix(r) => ref_id_of!(r),
+        Value::Vector(r) => ref_id_of!(r),
         Value::Ring(r) => ref_id_of!(r),
         Value::Bag(r) => ref_id_of!(r),
         Value::RefBox(r) => ref_id_of!(r),
@@ -562,6 +567,10 @@ pub fn hash_value(v: &Value) -> u64 {
         Value::VClass(c) => {
             17u8.hash(&mut h);
             arc_id(c).hash(&mut h);
+        }
+        Value::Vector(d) => {
+            18u8.hash(&mut h);
+            ptr_id(d).hash(&mut h);
         }
         _ => {
             255u8.hash(&mut h);
@@ -683,6 +692,16 @@ fn values_equal_inner(
                     .iter()
                     .all(|v| yi.iter().any(|w| values_equal_inner(v, w, seen)))
         }
+        (Vector(x), Vector(y)) => {
+            let xi = x.lock().unwrap().data.clone();
+            let yi = y.lock().unwrap().data.clone();
+            xi == yi
+        }
+        (Matrix(x), Matrix(y)) => {
+            let x = x.lock().unwrap();
+            let y = y.lock().unwrap();
+            x.rows == y.rows && x.cols == y.cols && x.data == y.data
+        }
         (Instance(x), Instance(y)) => ptr_id(x) == ptr_id(y),
         (VInstance(x), VInstance(y)) => ptr_id(x) == ptr_id(y),
         (Function(x), Function(y)) => arc_id(x) == arc_id(y),
@@ -739,6 +758,7 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::HashTable(_) => "hash_table",
         Value::Trie(_) => "trie",
         Value::Matrix(_) => "matrix",
+        Value::Vector(_) => "vector",
         Value::Ring(_) => "ring_buffer",
         Value::Bag(_) => "bag",
         Value::RefBox(_) => "ref",
@@ -970,6 +990,14 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("matrix[{}]", rows)
+        }
+        Value::Vector(d) => {
+            let data = d.lock().unwrap().data.clone();
+            let items: Vec<String> = data
+                .iter()
+                .map(|v| display_value_inner(&Value::Float(*v), seen))
+                .collect();
+            format!("vector[{}]", items.join(", "))
         }
         Value::Ring(d) => {
             let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
@@ -1262,6 +1290,12 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
             Value::Matrix(new_ref(c::MatrixData {
                 rows: d.rows,
                 cols: d.cols,
+                data: d.data.clone(),
+            }))
+        }
+        Value::Vector(d) => {
+            let d = d.lock().unwrap();
+            Value::Vector(new_ref(c::VectorData {
                 data: d.data.clone(),
             }))
         }

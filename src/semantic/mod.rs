@@ -200,6 +200,8 @@ const BUILTIN_CONSTRUCTORS: &[&str] = &[
     "hash_table",
     "trie",
     "matrix",
+    "matrix_from_list",
+    "vector",
     "ring_buffer",
     "bag",
     "ref",
@@ -1164,7 +1166,7 @@ impl Checker {
             "list" | "vec" | "stack" | "queue" | "deque" | "linked_list"
             | "singly_linked_list" | "doubly_linked_list" | "map" | "set" | "tuple"
             | "binary_tree" | "bst" | "heap" | "priority_queue" | "graph" | "hash_table"
-            | "trie" | "matrix" | "ring_buffer" | "bag" | "ref" | "option" | "result"
+            | "trie" | "matrix" | "vector" | "ring_buffer" | "bag" | "ref" | "option" | "result"
             | "task" | "channel" | "mutex" | "some" | "none" | "ok" | "err" => {
                 let elem = t.arg.as_ref().map(|a| Box::new(self.resolve_type(a)));
                 Ty::Coll(lower, elem)
@@ -1521,6 +1523,7 @@ impl Checker {
             "hash_table",
             "trie",
             "matrix",
+            "vector",
             "ring_buffer",
             "bag",
             "ref",

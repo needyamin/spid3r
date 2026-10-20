@@ -49,6 +49,41 @@ fn assert_both_engines(name: &str, src: &str, expected: &str) {
     assert_eq!(vm, expected, "[{}] vm output (diverged from tree)", name);
 }
 
+/// Assert a program produces `expected` identically on tree, vm, and compile+exec.
+fn assert_three_engines(name: &str, src: &str, expected: &str) {
+    let tree = run_src("tree", name, src)
+        .unwrap_or_else(|e| panic!("[{}] tree run failed:\n{}", name, e));
+    let vm = run_src("vm", name, src)
+        .unwrap_or_else(|e| panic!("[{}] vm run failed:\n{}", name, e));
+    assert_eq!(tree, expected, "[{}] tree output", name);
+    assert_eq!(vm, expected, "[{}] vm output (diverged from tree)", name);
+
+    let path = std::env::temp_dir().join(format!("spid3r_audit_{}.matrix", name));
+    let tc = std::env::temp_dir().join(format!("spid3r_audit_{}.matrixc", name));
+    let comp = Command::new(bin())
+        .args(["compile", path.to_str().unwrap(), "-o", tc.to_str().unwrap()])
+        .output()
+        .expect("compile");
+    assert!(
+        comp.status.success(),
+        "[{}] compile failed: {}",
+        name,
+        String::from_utf8_lossy(&comp.stderr)
+    );
+    let exec = Command::new(bin())
+        .args(["exec", tc.to_str().unwrap()])
+        .output()
+        .expect("exec");
+    assert!(
+        exec.status.success(),
+        "[{}] exec failed: {}",
+        name,
+        String::from_utf8_lossy(&exec.stderr)
+    );
+    let exec_out = String::from_utf8_lossy(&exec.stdout).to_string();
+    assert_eq!(exec_out, expected, "[{}] exec output (diverged from tree/vm)", name);
+}
+
 // ------------------------------------------------------------- VM closures
 
 #[test]
@@ -1877,3 +1912,141 @@ fn throw_inside_any_callback_is_caught_not_a_panic() {
         );
     }
 }
+
+// ------------------------------------------------------------- vector & matrix
+
+#[test]
+fn vector_differential_all_three_engines() {
+    assert_three_engines(
+        "vector_diff",
+        r#"fn main() {
+    let v = vector([1.0, 2.0, 3.0, 4.0]);
+    println(v.len());
+    println(v[0]);
+    println(v[-1]);
+    v[-1] = 10.0;
+    println(v[3]);
+    let s = 0.0;
+    for x in v {
+        s = s + x;
+    }
+    println(s);
+    let sl = v.slice(1, 3);
+    println(sl);
+    let v2 = vector([2.0, 2.0, 2.0, 2.0]);
+    println(v.add(v2));
+    println(v.sub(v2));
+    println(v.mul(2.0));
+    println(v.div(2.0));
+    println(v.sum());
+    println(v.mean());
+    println(v.min());
+    println(v.max());
+    println(v.argmin());
+    println(v.argmax());
+    println(v.dot(v2));
+    let v3 = vector([3.0, 4.0]);
+    println(v3.norm());
+    println(v3.cumsum());
+    println(v.diff());
+    let u = vector([9.0, 3.0, 7.0, 1.0]);
+    println(u.argsort());
+    u.sort();
+    println(u);
+    return 0;
+}
+"#,
+        "4\n1.0\n4.0\n10.0\n16.0\nvector[2.0, 3.0]\nvector[3.0, 4.0, 5.0, 12.0]\nvector[-1.0, 0.0, 1.0, 8.0]\nvector[2.0, 4.0, 6.0, 20.0]\nvector[0.5, 1.0, 1.5, 5.0]\n16.0\n4.0\n1.0\n10.0\n0\n3\n32.0\n5.0\nvector[3.0, 7.0]\nvector[1.0, 1.0, 7.0]\n[3, 1, 2, 0]\nvector[1.0, 3.0, 7.0, 9.0]\n",
+    );
+}
+
+#[test]
+fn matrix_algebra_differential_all_three_engines() {
+    assert_three_engines(
+        "matrix_diff",
+        r#"fn main() {
+    let m = matrix_from_list([[4.0, 7.0], [2.0, 6.0]]);
+    println(m.rows());
+    println(m.cols());
+    println(m.transpose());
+    println(m.scale(2.0));
+    let m2 = matrix([[1.0, 1.0], [1.0, 1.0]]);
+    println(m.sub(m2));
+    println(m.hadamard(m2));
+    println(m.trace());
+    println(m.sum(null));
+    println(m.sum(0));
+    println(m.sum(1));
+    println(m.mean(null));
+    println(m.mean(0));
+    println(m.mean(1));
+    println(m.det());
+
+    // Inverse check: m * inv(m) == I
+    let inv = m.inverse();
+    let ident = m.mul(inv);
+    let ok_inv = (abs(ident.get(0, 0) - 1.0) < 1e-9) and
+                 (abs(ident.get(0, 1)) < 1e-9) and
+                 (abs(ident.get(1, 0)) < 1e-9) and
+                 (abs(ident.get(1, 1) - 1.0) < 1e-9);
+    println(ok_inv);
+
+    // Solve check: m * x = b => x
+    let b = vector([18.0, 14.0]);
+    let x = m.solve(b);
+    let ok_solve = (abs(x[0] - 1.0) < 1e-9) and (abs(x[1] - 2.0) < 1e-9);
+    println(ok_solve);
+
+    // Solve with matrix B:
+    let bm = matrix([[18.0], [14.0]]);
+    let xm = m.solve(bm);
+    let ok_solve_m = (abs(xm.get(0, 0) - 1.0) < 1e-9) and (abs(xm.get(1, 0) - 2.0) < 1e-9);
+    println(ok_solve_m);
+
+    // Symmetric Eigenvalues:
+    let s = matrix([[2.0, 1.0], [1.0, 2.0]]);
+    let res = s.eigen_sym();
+    let vals = res["values"];
+    let vecs = res["vectors"];
+    let ok_eig = (abs(vals[0] - 1.0) < 1e-9) and (abs(vals[1] - 3.0) < 1e-9);
+    println(ok_eig);
+    let vt = vecs.transpose();
+    let v_ident = vt.mul(vecs);
+    let ok_ortho = (abs(v_ident.get(0, 0) - 1.0) < 1e-9) and
+                   (abs(v_ident.get(1, 1) - 1.0) < 1e-9) and
+                   (abs(v_ident.get(0, 1)) < 1e-9) and
+                   (abs(v_ident.get(1, 0)) < 1e-9);
+    println(ok_ortho);
+
+    return 0;
+}
+"#,
+        "2\n2\nmatrix[[4.0, 2.0], [7.0, 6.0]]\nmatrix[[8.0, 14.0], [4.0, 12.0]]\nmatrix[[3.0, 6.0], [1.0, 5.0]]\nmatrix[[4.0, 7.0], [2.0, 6.0]]\n10.0\n19.0\nvector[6.0, 13.0]\nvector[11.0, 8.0]\n4.75\nvector[3.0, 6.5]\nvector[5.5, 4.0]\n10.0\ntrue\ntrue\ntrue\ntrue\ntrue\n",
+    );
+}
+
+#[test]
+fn matrix_singular_differential_catch() {
+    assert_both_engines(
+        "singular_catch",
+        r#"fn main() {
+    let m = matrix([[1.0, 2.0], [2.0, 4.0]]);
+    try {
+        let inv = m.inverse();
+        println("fail: did not throw");
+    } catch (e) {
+        println("caught inv: " + e);
+    }
+    try {
+        let x = m.solve(vector([1.0, 2.0]));
+        println("fail: did not throw");
+    } catch (e2) {
+        println("caught solve: " + e2);
+    }
+    return 0;
+}
+"#,
+        "caught inv: matrix is singular\ncaught solve: matrix is singular\n",
+    );
+}
+

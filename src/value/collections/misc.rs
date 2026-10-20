@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use super::nodes::join_words;
-use super::seq::{make_list, unknown, value_cmp, want, want_index, want_num, want_str};
+use super::seq::{
+    make_list, unknown, value_cmp, want, want_index, want_int, want_num, want_str, MapData,
+};
 use super::{deep_clone, key_to_value, new_ref, values_equal, MapKey, Value};
 
 // -------------------------------------------------------------------- heap
@@ -835,6 +837,353 @@ impl TrieData {
     }
 }
 
+// ------------------------------------------------------------------ vector
+
+/// Allocation cap for a single vector, mirroring the 16M-element caps on
+/// `MatrixData` (16,777,216 f64 elements = 128 MiB).
+pub const MAX_VECTOR_ELEMENTS: usize = 16_777_216;
+
+/// Contiguous 1D numeric vector.
+#[derive(Debug, Clone)]
+pub struct VectorData {
+    pub data: Vec<f64>,
+}
+
+pub fn resolve_vector_index(idx: &Value, len: usize, who: &str) -> Result<usize, String> {
+    match idx {
+        Value::Int(i) => {
+            if *i >= 0 {
+                let u = *i as usize;
+                if u < len {
+                    Ok(u)
+                } else {
+                    Err(format!("index {} out of bounds for length {}", i, len))
+                }
+            } else {
+                let neg = i.unsigned_abs() as usize;
+                if neg <= len && neg > 0 {
+                    Ok(len - neg)
+                } else {
+                    Err(format!("index {} out of bounds for length {}", i, len))
+                }
+            }
+        }
+        other => Err(format!(
+            "{} expects an int index, found {}",
+            who,
+            super::type_name(other)
+        )),
+    }
+}
+
+fn resolve_slice_bound(v: &Value, len: usize, who: &str) -> Result<usize, String> {
+    match v {
+        Value::Int(i) => {
+            if *i >= 0 {
+                Ok((*i as usize).min(len))
+            } else {
+                let neg = i.unsigned_abs() as usize;
+                if neg <= len {
+                    Ok(len - neg)
+                } else {
+                    Ok(0)
+                }
+            }
+        }
+        other => Err(format!(
+            "{} expects an int index, found {}",
+            who,
+            super::type_name(other)
+        )),
+    }
+}
+
+impl VectorData {
+    pub fn new(len: usize, fill: f64) -> Self {
+        let actual_len = len.min(MAX_VECTOR_ELEMENTS);
+        VectorData {
+            data: vec![fill; actual_len],
+        }
+    }
+
+    pub fn elementwise_op<F>(&self, name: &str, arg: &Value, f: F) -> Result<Value, String>
+    where
+        F: Fn(f64, f64) -> Result<f64, String>,
+    {
+        if let Value::Vector(o) = arg {
+            let other = o.lock().unwrap();
+            if self.data.len() != other.data.len() {
+                return Err(format!(
+                    "vector {} length mismatch: {} and {}",
+                    name,
+                    self.data.len(),
+                    other.data.len()
+                ));
+            }
+            let mut data = Vec::with_capacity(self.data.len());
+            for (&a, &b) in self.data.iter().zip(other.data.iter()) {
+                data.push(f(a, b)?);
+            }
+            Ok(Value::Vector(new_ref(VectorData { data })))
+        } else if let Ok(scalar) = want_num(arg, &format!("vector.{}", name)) {
+            let mut data = Vec::with_capacity(self.data.len());
+            for &a in &self.data {
+                data.push(f(a, scalar)?);
+            }
+            Ok(Value::Vector(new_ref(VectorData { data })))
+        } else {
+            Err(format!(
+                "vector {} expects a vector or number, found {}",
+                name,
+                super::type_name(arg)
+            ))
+        }
+    }
+
+    pub fn method(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
+        match name {
+            "len" => {
+                want(name, args, 0)?;
+                Ok(Value::Int(self.data.len() as i64))
+            }
+            "is_empty" => {
+                want(name, args, 0)?;
+                Ok(Value::Bool(self.data.is_empty()))
+            }
+            "get" => {
+                want(name, args, 1)?;
+                let idx = resolve_vector_index(&args[0], self.data.len(), "vector.get")?;
+                Ok(Value::Float(self.data[idx]))
+            }
+            "set" => {
+                want(name, args, 2)?;
+                let idx = resolve_vector_index(&args[0], self.data.len(), "vector.set")?;
+                let val = want_num(&args[1], "vector.set")?;
+                self.data[idx] = val;
+                Ok(Value::Null)
+            }
+            "push" => {
+                want(name, args, 1)?;
+                let val = want_num(&args[0], "vector.push")?;
+                if self.data.len() >= MAX_VECTOR_ELEMENTS {
+                    return Err(format!(
+                        "vector cannot exceed {} elements",
+                        MAX_VECTOR_ELEMENTS
+                    ));
+                }
+                self.data.push(val);
+                Ok(Value::Null)
+            }
+            "slice" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(format!(
+                        "vector.slice expects 1 or 2 arguments, got {}",
+                        args.len()
+                    ));
+                }
+                let start = resolve_slice_bound(&args[0], self.data.len(), "vector.slice")?;
+                let end = if args.len() == 2 {
+                    resolve_slice_bound(&args[1], self.data.len(), "vector.slice")?
+                } else {
+                    self.data.len()
+                };
+                if start > end {
+                    return Err(format!("slice range {}..{} out of bounds", start, end));
+                }
+                Ok(Value::Vector(new_ref(VectorData {
+                    data: self.data[start..end].to_vec(),
+                })))
+            }
+            "to_list" => {
+                want(name, args, 0)?;
+                let items: Vec<Value> = self.data.iter().map(|&x| Value::Float(x)).collect();
+                Ok(make_list(items))
+            }
+            "copy" | "clone" => {
+                want(name, args, 0)?;
+                Ok(Value::Vector(new_ref(self.clone())))
+            }
+            "add" => {
+                want(name, args, 1)?;
+                self.elementwise_op("add", &args[0], |a, b| Ok(a + b))
+            }
+            "sub" => {
+                want(name, args, 1)?;
+                self.elementwise_op("sub", &args[0], |a, b| Ok(a - b))
+            }
+            "mul" => {
+                want(name, args, 1)?;
+                self.elementwise_op("mul", &args[0], |a, b| Ok(a * b))
+            }
+            "div" => {
+                want(name, args, 1)?;
+                self.elementwise_op("div", &args[0], |a, b| {
+                    if b == 0.0 {
+                        Err("division by zero".to_string())
+                    } else {
+                        Ok(a / b)
+                    }
+                })
+            }
+            "sum" => {
+                want(name, args, 0)?;
+                let sum: f64 = self.data.iter().sum();
+                Ok(Value::Float(sum))
+            }
+            "mean" => {
+                want(name, args, 0)?;
+                if self.data.is_empty() {
+                    return Err("cannot compute mean of empty vector".to_string());
+                }
+                let sum: f64 = self.data.iter().sum();
+                Ok(Value::Float(sum / self.data.len() as f64))
+            }
+            "variance" => {
+                want(name, args, 0)?;
+                if self.data.is_empty() {
+                    return Err("cannot compute variance of empty vector".to_string());
+                }
+                let n = self.data.len() as f64;
+                let mean: f64 = self.data.iter().sum::<f64>() / n;
+                let var: f64 = self.data.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+                Ok(Value::Float(var))
+            }
+            "std" => {
+                want(name, args, 0)?;
+                if self.data.is_empty() {
+                    return Err("cannot compute std of empty vector".to_string());
+                }
+                let n = self.data.len() as f64;
+                let mean: f64 = self.data.iter().sum::<f64>() / n;
+                let var: f64 = self.data.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+                Ok(Value::Float(var.sqrt()))
+            }
+            "min" => {
+                want(name, args, 0)?;
+                if self.data.is_empty() {
+                    return Err("cannot compute min of empty vector".to_string());
+                }
+                let mut min_val = self.data[0];
+                for &x in &self.data[1..] {
+                    if x.total_cmp(&min_val) == std::cmp::Ordering::Less {
+                        min_val = x;
+                    }
+                }
+                Ok(Value::Float(min_val))
+            }
+            "max" => {
+                want(name, args, 0)?;
+                if self.data.is_empty() {
+                    return Err("cannot compute max of empty vector".to_string());
+                }
+                let mut max_val = self.data[0];
+                for &x in &self.data[1..] {
+                    if x.total_cmp(&max_val) == std::cmp::Ordering::Greater {
+                        max_val = x;
+                    }
+                }
+                Ok(Value::Float(max_val))
+            }
+            "argmin" => {
+                want(name, args, 0)?;
+                if self.data.is_empty() {
+                    return Err("cannot compute argmin of empty vector".to_string());
+                }
+                let mut best_i = 0;
+                let mut best_val = self.data[0];
+                for (i, &x) in self.data.iter().enumerate().skip(1) {
+                    if x.total_cmp(&best_val) == std::cmp::Ordering::Less {
+                        best_val = x;
+                        best_i = i;
+                    }
+                }
+                Ok(Value::Int(best_i as i64))
+            }
+            "argmax" => {
+                want(name, args, 0)?;
+                if self.data.is_empty() {
+                    return Err("cannot compute argmax of empty vector".to_string());
+                }
+                let mut best_i = 0;
+                let mut best_val = self.data[0];
+                for (i, &x) in self.data.iter().enumerate().skip(1) {
+                    if x.total_cmp(&best_val) == std::cmp::Ordering::Greater {
+                        best_val = x;
+                        best_i = i;
+                    }
+                }
+                Ok(Value::Int(best_i as i64))
+            }
+            "dot" => {
+                want(name, args, 1)?;
+                let other_data = match &args[0] {
+                    Value::Vector(v) => v.lock().unwrap().data.clone(),
+                    other => {
+                        return Err(format!(
+                            "vector dot expects a vector, found {}",
+                            super::type_name(other)
+                        ))
+                    }
+                };
+                if self.data.len() != other_data.len() {
+                    return Err(format!(
+                        "vector dot length mismatch: {} and {}",
+                        self.data.len(),
+                        other_data.len()
+                    ));
+                }
+                let sum: f64 = self
+                    .data
+                    .iter()
+                    .zip(other_data.iter())
+                    .map(|(a, b)| a * b)
+                    .sum();
+                Ok(Value::Float(sum))
+            }
+            "norm" => {
+                want(name, args, 0)?;
+                let sum_sq: f64 = self.data.iter().map(|x| x * x).sum();
+                Ok(Value::Float(sum_sq.sqrt()))
+            }
+            "cumsum" => {
+                want(name, args, 0)?;
+                let mut data = Vec::with_capacity(self.data.len());
+                let mut acc = 0.0;
+                for &x in &self.data {
+                    acc += x;
+                    data.push(acc);
+                }
+                Ok(Value::Vector(new_ref(VectorData { data })))
+            }
+            "diff" => {
+                want(name, args, 0)?;
+                if self.data.len() < 2 {
+                    return Ok(Value::Vector(new_ref(VectorData { data: Vec::new() })));
+                }
+                let mut data = Vec::with_capacity(self.data.len() - 1);
+                for i in 0..self.data.len() - 1 {
+                    data.push(self.data[i + 1] - self.data[i]);
+                }
+                Ok(Value::Vector(new_ref(VectorData { data })))
+            }
+            "sort" => {
+                want(name, args, 0)?;
+                self.data.sort_by(|a, b| a.total_cmp(b));
+                Ok(Value::Null)
+            }
+            "argsort" => {
+                want(name, args, 0)?;
+                let mut indices: Vec<usize> = (0..self.data.len()).collect();
+                indices.sort_by(|&i, &j| self.data[i].total_cmp(&self.data[j]));
+                Ok(make_list(
+                    indices.into_iter().map(|i| Value::Int(i as i64)).collect(),
+                ))
+            }
+            _ => Err(unknown(name, "vector")),
+        }
+    }
+}
+
 // ------------------------------------------------------------------ matrix
 
 /// Row-major numeric grid. `add` and `mul` check dimensions.
@@ -863,6 +1212,99 @@ pub fn check_matrix_dims(rows: usize, cols: usize) -> Result<usize, String> {
             rows, cols, MAX_MATRIX_CELLS
         )),
     }
+}
+
+pub fn matrix_from_list_val(val: &Value) -> Result<Value, String> {
+    let rows: Vec<Value> = match val {
+        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+        Value::Tuple(t) => t.lock().unwrap().clone(),
+        other => {
+            return Err(format!(
+                "matrix_from_list expects a list of rows, found {}",
+                super::type_name(other)
+            ))
+        }
+    };
+    if rows.is_empty() {
+        return Ok(Value::Matrix(new_ref(MatrixData::new(0, 0, 0.0))));
+    }
+    let mut cols_n: Option<usize> = None;
+    let mut data = Vec::new();
+
+    for (r_idx, row_val) in rows.iter().enumerate() {
+        let (row_len, items) = match row_val {
+            Value::List(l) | Value::VecDyn(l) => {
+                let items = l.lock().unwrap().items.clone();
+                let len = items.len();
+                let mut nums = Vec::with_capacity(len);
+                for it in &items {
+                    nums.push(want_num(it, "matrix_from_list")?);
+                }
+                (len, nums)
+            }
+            Value::Vector(v) => {
+                let d = v.lock().unwrap().data.clone();
+                (d.len(), d)
+            }
+            Value::Tuple(t) => {
+                let items = t.lock().unwrap().clone();
+                let len = items.len();
+                let mut nums = Vec::with_capacity(len);
+                for it in &items {
+                    nums.push(want_num(it, "matrix_from_list")?);
+                }
+                (len, nums)
+            }
+            other => {
+                return Err(format!(
+                    "matrix_from_list row {} must be a list or vector, found {}",
+                    r_idx,
+                    super::type_name(other)
+                ))
+            }
+        };
+
+        if let Some(c) = cols_n {
+            if row_len != c {
+                return Err(format!(
+                    "matrix_from_list row {} length mismatch (expected {}, got {})",
+                    r_idx, c, row_len
+                ));
+            }
+        } else {
+            cols_n = Some(row_len);
+        }
+        data.extend(items);
+    }
+
+    let cols = cols_n.unwrap_or(0);
+    check_matrix_dims(rows.len(), cols)?;
+    Ok(Value::Matrix(new_ref(MatrixData {
+        rows: rows.len(),
+        cols,
+        data,
+    })))
+}
+
+fn solve_vec_lu(lu: &[f64], p: &[usize], b: &[f64]) -> Vec<f64> {
+    let n = p.len();
+    let mut y = vec![0.0; n];
+    for i in 0..n {
+        let mut sum = b[p[i]];
+        for j in 0..i {
+            sum -= lu[i * n + j] * y[j];
+        }
+        y[i] = sum;
+    }
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let mut sum = y[i];
+        for j in (i + 1)..n {
+            sum -= lu[i * n + j] * x[j];
+        }
+        x[i] = sum / lu[i * n + i];
+    }
+    x
 }
 
 impl MatrixData {
@@ -916,6 +1358,42 @@ impl MatrixData {
         Ok(make_list(items))
     }
 
+    pub fn to_list(&self) -> Result<Value, String> {
+        let mut rows = Vec::with_capacity(self.rows);
+        for r in 0..self.rows {
+            let mut row = Vec::with_capacity(self.cols);
+            for c in 0..self.cols {
+                row.push(Value::Float(self.data[r * self.cols + c]));
+            }
+            rows.push(make_list(row));
+        }
+        Ok(make_list(rows))
+    }
+
+    pub fn transpose(&self) -> Result<Value, String> {
+        let cells = check_matrix_dims(self.cols, self.rows)?;
+        let mut data = vec![0.0; cells];
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                data[c * self.rows + r] = self.data[r * self.cols + c];
+            }
+        }
+        Ok(Value::Matrix(new_ref(MatrixData {
+            rows: self.cols,
+            cols: self.rows,
+            data,
+        })))
+    }
+
+    pub fn scale(&self, scalar: f64) -> Result<Value, String> {
+        let data: Vec<f64> = self.data.iter().map(|&x| x * scalar).collect();
+        Ok(Value::Matrix(new_ref(MatrixData {
+            rows: self.rows,
+            cols: self.cols,
+            data,
+        })))
+    }
+
     pub fn add(&self, other: &MatrixData) -> Result<Value, String> {
         if self.rows != other.rows || self.cols != other.cols {
             return Err(format!(
@@ -928,6 +1406,46 @@ impl MatrixData {
             .iter()
             .zip(other.data.iter())
             .map(|(a, b)| a + b)
+            .collect();
+        Ok(Value::Matrix(new_ref(MatrixData {
+            rows: self.rows,
+            cols: self.cols,
+            data,
+        })))
+    }
+
+    pub fn sub(&self, other: &MatrixData) -> Result<Value, String> {
+        if self.rows != other.rows || self.cols != other.cols {
+            return Err(format!(
+                "matrix sub needs equal dimensions, got {}x{} and {}x{}",
+                self.rows, self.cols, other.rows, other.cols
+            ));
+        }
+        let data: Vec<f64> = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a - b)
+            .collect();
+        Ok(Value::Matrix(new_ref(MatrixData {
+            rows: self.rows,
+            cols: self.cols,
+            data,
+        })))
+    }
+
+    pub fn hadamard(&self, other: &MatrixData) -> Result<Value, String> {
+        if self.rows != other.rows || self.cols != other.cols {
+            return Err(format!(
+                "matrix hadamard needs equal dimensions, got {}x{} and {}x{}",
+                self.rows, self.cols, other.rows, other.cols
+            ));
+        }
+        let data: Vec<f64> = self
+            .data
+            .iter()
+            .zip(other.data.iter())
+            .map(|(a, b)| a * b)
             .collect();
         Ok(Value::Matrix(new_ref(MatrixData {
             rows: self.rows,
@@ -959,6 +1477,405 @@ impl MatrixData {
             cols: other.cols,
             data,
         })))
+    }
+
+    pub fn trace(&self) -> Result<Value, String> {
+        if self.rows != self.cols {
+            return Err(format!(
+                "matrix trace requires square matrix, got {}x{}",
+                self.rows, self.cols
+            ));
+        }
+        let tr: f64 = (0..self.rows).map(|i| self.data[i * self.cols + i]).sum();
+        Ok(Value::Float(tr))
+    }
+
+    pub fn sum(&self, axis: Option<i64>) -> Result<Value, String> {
+        match axis {
+            None => {
+                let total: f64 = self.data.iter().sum();
+                Ok(Value::Float(total))
+            }
+            Some(0) => {
+                let mut res = vec![0.0; self.cols];
+                for r in 0..self.rows {
+                    for c in 0..self.cols {
+                        res[c] += self.data[r * self.cols + c];
+                    }
+                }
+                Ok(Value::Vector(new_ref(VectorData { data: res })))
+            }
+            Some(1) => {
+                let mut res = vec![0.0; self.rows];
+                for r in 0..self.rows {
+                    for c in 0..self.cols {
+                        res[r] += self.data[r * self.cols + c];
+                    }
+                }
+                Ok(Value::Vector(new_ref(VectorData { data: res })))
+            }
+            Some(a) => Err(format!("matrix sum axis must be 0, 1, or null, got {}", a)),
+        }
+    }
+
+    pub fn mean(&self, axis: Option<i64>) -> Result<Value, String> {
+        match axis {
+            None => {
+                if self.rows == 0 || self.cols == 0 {
+                    return Err("cannot compute mean of empty matrix".to_string());
+                }
+                let total: f64 = self.data.iter().sum();
+                Ok(Value::Float(total / (self.rows * self.cols) as f64))
+            }
+            Some(0) => {
+                if self.rows == 0 {
+                    return Err("cannot compute mean with 0 rows".to_string());
+                }
+                let mut res = vec![0.0; self.cols];
+                for r in 0..self.rows {
+                    for c in 0..self.cols {
+                        res[c] += self.data[r * self.cols + c];
+                    }
+                }
+                for x in &mut res {
+                    *x /= self.rows as f64;
+                }
+                Ok(Value::Vector(new_ref(VectorData { data: res })))
+            }
+            Some(1) => {
+                if self.cols == 0 {
+                    return Err("cannot compute mean with 0 cols".to_string());
+                }
+                let mut res = vec![0.0; self.rows];
+                for r in 0..self.rows {
+                    for c in 0..self.cols {
+                        res[r] += self.data[r * self.cols + c];
+                    }
+                }
+                for x in &mut res {
+                    *x /= self.cols as f64;
+                }
+                Ok(Value::Vector(new_ref(VectorData { data: res })))
+            }
+            Some(a) => Err(format!("matrix mean axis must be 0, 1, or null, got {}", a)),
+        }
+    }
+
+    pub fn lu_decompose(&self) -> Result<(Vec<f64>, Vec<usize>, usize), String> {
+        if self.rows != self.cols {
+            return Err(format!(
+                "requires square matrix, got {}x{}",
+                self.rows, self.cols
+            ));
+        }
+        let n = self.rows;
+        if n == 0 {
+            return Err("cannot decompose empty matrix".to_string());
+        }
+        let mut lu = self.data.clone();
+        let mut p: Vec<usize> = (0..n).collect();
+        let mut num_swaps = 0;
+
+        for k in 0..n {
+            let mut max_val = 0.0;
+            let mut pivot_row = k;
+            for i in k..n {
+                let val = lu[i * n + k].abs();
+                if val > max_val {
+                    max_val = val;
+                    pivot_row = i;
+                }
+            }
+
+            if max_val < 1e-14 {
+                return Err("matrix is singular".to_string());
+            }
+
+            if pivot_row != k {
+                p.swap(k, pivot_row);
+                for j in 0..n {
+                    lu.swap(k * n + j, pivot_row * n + j);
+                }
+                num_swaps += 1;
+            }
+
+            let pivot = lu[k * n + k];
+            for i in (k + 1)..n {
+                let factor = lu[i * n + k] / pivot;
+                lu[i * n + k] = factor;
+                for j in (k + 1)..n {
+                    lu[i * n + j] -= factor * lu[k * n + j];
+                }
+            }
+        }
+        Ok((lu, p, num_swaps))
+    }
+
+    pub fn solve(&self, b_val: &Value) -> Result<Value, String> {
+        let (lu, p, _) = self.lu_decompose()?;
+        let n = self.rows;
+
+        match b_val {
+            Value::Vector(v) => {
+                let v = v.lock().unwrap();
+                if v.data.len() != n {
+                    return Err(format!(
+                        "matrix solve dimension mismatch: matrix has {} rows, vector has {}",
+                        n,
+                        v.data.len()
+                    ));
+                }
+                let x = solve_vec_lu(&lu, &p, &v.data);
+                Ok(Value::Vector(new_ref(VectorData { data: x })))
+            }
+            Value::Matrix(bm) => {
+                let bm = bm.lock().unwrap();
+                if bm.rows != n {
+                    return Err(format!(
+                        "matrix solve dimension mismatch: matrix A has {} rows, matrix B has {}",
+                        n, bm.rows
+                    ));
+                }
+                let cols = bm.cols;
+                let cells = check_matrix_dims(n, cols)?;
+                let mut res = vec![0.0; cells];
+                for c in 0..cols {
+                    let col_b: Vec<f64> = (0..n).map(|r| bm.data[r * cols + c]).collect();
+                    let x = solve_vec_lu(&lu, &p, &col_b);
+                    for r in 0..n {
+                        res[r * cols + c] = x[r];
+                    }
+                }
+                Ok(Value::Matrix(new_ref(MatrixData {
+                    rows: n,
+                    cols,
+                    data: res,
+                })))
+            }
+            Value::List(l) | Value::VecDyn(l) => {
+                let items = l.lock().unwrap().items.clone();
+                if items.len() != n {
+                    return Err(format!(
+                        "matrix solve dimension mismatch: matrix has {} rows, list has {}",
+                        n,
+                        items.len()
+                    ));
+                }
+                let mut b = Vec::with_capacity(n);
+                for it in &items {
+                    b.push(want_num(it, "matrix.solve")?);
+                }
+                let x = solve_vec_lu(&lu, &p, &b);
+                Ok(Value::Vector(new_ref(VectorData { data: x })))
+            }
+            other => Err(format!(
+                "matrix solve expects a vector or matrix, found {}",
+                super::type_name(other)
+            )),
+        }
+    }
+
+    pub fn inverse(&self) -> Result<Value, String> {
+        let (lu, p, _) = self.lu_decompose()?;
+        let n = self.rows;
+        let cells = check_matrix_dims(n, n)?;
+        let mut inv_data = vec![0.0; cells];
+        for col in 0..n {
+            let mut e = vec![0.0; n];
+            e[col] = 1.0;
+            let x = solve_vec_lu(&lu, &p, &e);
+            for row in 0..n {
+                inv_data[row * n + col] = x[row];
+            }
+        }
+        Ok(Value::Matrix(new_ref(MatrixData {
+            rows: n,
+            cols: n,
+            data: inv_data,
+        })))
+    }
+
+    pub fn det(&self) -> Result<Value, String> {
+        if self.rows != self.cols {
+            return Err(format!(
+                "matrix det requires square matrix, got {}x{}",
+                self.rows, self.cols
+            ));
+        }
+        let n = self.rows;
+        if n == 0 {
+            return Ok(Value::Float(1.0));
+        }
+        if n == 1 {
+            return Ok(Value::Float(self.data[0]));
+        }
+
+        let mut lu = self.data.clone();
+        let mut sign = 1.0;
+
+        for k in 0..n {
+            let mut max_val = 0.0;
+            let mut pivot_row = k;
+            for i in k..n {
+                let val = lu[i * n + k].abs();
+                if val > max_val {
+                    max_val = val;
+                    pivot_row = i;
+                }
+            }
+
+            if max_val < 1e-15 {
+                return Ok(Value::Float(0.0));
+            }
+
+            if pivot_row != k {
+                for j in 0..n {
+                    lu.swap(k * n + j, pivot_row * n + j);
+                }
+                sign = -sign;
+            }
+
+            let pivot = lu[k * n + k];
+            for i in (k + 1)..n {
+                let factor = lu[i * n + k] / pivot;
+                lu[i * n + k] = factor;
+                for j in (k + 1)..n {
+                    lu[i * n + j] -= factor * lu[k * n + j];
+                }
+            }
+        }
+
+        let mut det = sign;
+        for i in 0..n {
+            det *= lu[i * n + i];
+        }
+        Ok(Value::Float(det))
+    }
+
+    pub fn eigen_sym(&self) -> Result<Value, String> {
+        if self.rows != self.cols {
+            return Err(format!(
+                "eigen_sym requires square matrix, got {}x{}",
+                self.rows, self.cols
+            ));
+        }
+        let n = self.rows;
+        if n == 0 {
+            let entries = vec![
+                (
+                    MapKey::Str("values".into()),
+                    Value::Vector(new_ref(VectorData { data: Vec::new() })),
+                ),
+                (
+                    MapKey::Str("vectors".into()),
+                    Value::Matrix(new_ref(MatrixData::new(0, 0, 0.0))),
+                ),
+            ];
+            return Ok(Value::Map(new_ref(MapData::from_entries(entries))));
+        }
+
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let diff = (self.data[i * n + j] - self.data[j * n + i]).abs();
+                let scale = 1.0 + self.data[i * n + j].abs() + self.data[j * n + i].abs();
+                if diff > 1e-9 * scale {
+                    return Err("eigen_sym requires a symmetric matrix".to_string());
+                }
+            }
+        }
+
+        let mut a = self.data.clone();
+        let mut v = vec![0.0; n * n];
+        for i in 0..n {
+            v[i * n + i] = 1.0;
+        }
+
+        let max_sweeps = 100;
+        for _ in 0..max_sweeps {
+            let mut off_diag_sum = 0.0;
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    off_diag_sum += a[i * n + j].abs();
+                }
+            }
+            if off_diag_sum < 1e-13 {
+                break;
+            }
+
+            for p in 0..n {
+                for q in (p + 1)..n {
+                    let apq = a[p * n + q];
+                    if apq.abs() < 1e-15 {
+                        continue;
+                    }
+                    let app = a[p * n + p];
+                    let aqq = a[q * n + q];
+                    let tau = (aqq - app) / (2.0 * apq);
+                    let t = if tau >= 0.0 {
+                        1.0 / (tau + (1.0 + tau * tau).sqrt())
+                    } else {
+                        -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                    };
+                    let c = 1.0 / (1.0 + t * t).sqrt();
+                    let s = t * c;
+
+                    a[p * n + p] = app - t * apq;
+                    a[q * n + q] = aqq + t * apq;
+                    a[p * n + q] = 0.0;
+                    a[q * n + p] = 0.0;
+
+                    for r in 0..n {
+                        if r != p && r != q {
+                            let arp = a[r * n + p];
+                            let arq = a[r * n + q];
+                            let new_arp = c * arp - s * arq;
+                            let new_arq = s * arp + c * arq;
+                            a[r * n + p] = new_arp;
+                            a[p * n + r] = new_arp;
+                            a[r * n + q] = new_arq;
+                            a[q * n + r] = new_arq;
+                        }
+                    }
+
+                    for r in 0..n {
+                        let vrp = v[r * n + p];
+                        let vrq = v[r * n + q];
+                        v[r * n + p] = c * vrp - s * vrq;
+                        v[r * n + q] = s * vrp + c * vrq;
+                    }
+                }
+            }
+        }
+
+        let eigenvalues: Vec<f64> = (0..n).map(|i| a[i * n + i]).collect();
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&i, &j| eigenvalues[i].total_cmp(&eigenvalues[j]));
+
+        let sorted_values: Vec<f64> = order.iter().map(|&i| eigenvalues[i]).collect();
+        let mut sorted_v = vec![0.0; n * n];
+        for (new_col, &old_col) in order.iter().enumerate() {
+            for r in 0..n {
+                sorted_v[r * n + new_col] = v[r * n + old_col];
+            }
+        }
+
+        let entries = vec![
+            (
+                MapKey::Str("values".into()),
+                Value::Vector(new_ref(VectorData {
+                    data: sorted_values,
+                })),
+            ),
+            (
+                MapKey::Str("vectors".into()),
+                Value::Matrix(new_ref(MatrixData {
+                    rows: n,
+                    cols: n,
+                    data: sorted_v,
+                })),
+            ),
+        ];
+        Ok(Value::Map(new_ref(MapData::from_entries(entries))))
     }
 
     pub fn method(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
@@ -998,19 +1915,74 @@ impl MatrixData {
                 let c = want_index(&args[0], "matrix.col")?;
                 self.col(c)
             }
-            "add" | "mul" => {
+            "to_list" => {
+                want(name, args, 0)?;
+                self.to_list()
+            }
+            "transpose" => {
+                want(name, args, 0)?;
+                self.transpose()
+            }
+            "scale" => {
+                want(name, args, 1)?;
+                let s = want_num(&args[0], "matrix.scale")?;
+                self.scale(s)
+            }
+            "add" | "mul" | "sub" | "hadamard" => {
                 want(name, args, 1)?;
                 let other = match &args[0] {
                     Value::Matrix(m) => m.lock().unwrap().clone(),
                     o => return Err(format!("expected a matrix, found {}", super::type_name(o))),
                 };
-                if name == "add" {
-                    self.add(&other)
-                } else {
-                    self.mul(&other)
+                match name {
+                    "add" => self.add(&other),
+                    "mul" => self.mul(&other),
+                    "sub" => self.sub(&other),
+                    "hadamard" => self.hadamard(&other),
+                    _ => unreachable!(),
                 }
             }
-            "clone" => {
+            "trace" => {
+                want(name, args, 0)?;
+                self.trace()
+            }
+            "sum" => {
+                if args.is_empty() || matches!(args[0], Value::Null) {
+                    self.sum(None)
+                } else if args.len() == 1 {
+                    let a = want_int(&args[0], "matrix.sum")?;
+                    self.sum(Some(a))
+                } else {
+                    Err(format!("matrix.sum expects 0 or 1 argument, got {}", args.len()))
+                }
+            }
+            "mean" => {
+                if args.is_empty() || matches!(args[0], Value::Null) {
+                    self.mean(None)
+                } else if args.len() == 1 {
+                    let a = want_int(&args[0], "matrix.mean")?;
+                    self.mean(Some(a))
+                } else {
+                    Err(format!("matrix.mean expects 0 or 1 argument, got {}", args.len()))
+                }
+            }
+            "solve" => {
+                want(name, args, 1)?;
+                self.solve(&args[0])
+            }
+            "inverse" => {
+                want(name, args, 0)?;
+                self.inverse()
+            }
+            "det" => {
+                want(name, args, 0)?;
+                self.det()
+            }
+            "eigen_sym" => {
+                want(name, args, 0)?;
+                self.eigen_sym()
+            }
+            "copy" | "clone" => {
                 want(name, args, 0)?;
                 Ok(Value::Matrix(new_ref(self.clone())))
             }

@@ -501,3 +501,260 @@ fn clone_is_a_deep_copy() {
     "#,
     );
 }
+
+// ---- vector & matrix linear algebra ---------------------------------------
+
+#[test]
+fn vector_constructor_and_indexing() {
+    expect_ok(
+        r#"
+        fn main() {
+            let v1 = vector(4, 2.5);
+            if v1.len() != 4 { return 1; }
+            if len(v1) != 4 { return 1; }
+            if v1[0] != 2.5 { return 1; }
+            if v1[3] != 2.5 { return 1; }
+            if v1[-1] != 2.5 { return 1; }
+            if v1[-4] != 2.5 { return 1; }
+
+            v1[1] = 7.0;
+            if v1[1] != 7.0 { return 1; }
+            v1[-1] = 9.0;
+            if v1[3] != 9.0 { return 1; }
+            if v1[-1] != 9.0 { return 1; }
+
+            let v2 = vector([1, 2, 3]);
+            if v2.len() != 3 { return 1; }
+            if v2[0] != 1.0 { return 1; }
+            if v2[1] != 2.0 { return 1; }
+            if v2[2] != 3.0 { return 1; }
+
+            let total = 0.0;
+            for x in v2 {
+                total = total + x;
+            }
+            if total != 6.0 { return 1; }
+
+            let sl = v2.slice(1, 3);
+            if sl.len() != 2 { return 1; }
+            if sl[0] != 2.0 or sl[1] != 3.0 { return 1; }
+
+            let lst = v2.to_list();
+            if lst.len() != 3 { return 1; }
+            if lst[0] != 1.0 or lst[2] != 3.0 { return 1; }
+
+            let c = v2.copy();
+            c.set(0, 42.0);
+            if v2[0] != 1.0 { return 1; }
+            if c[0] != 42.0 { return 1; }
+
+            v2.push(4.0);
+            if v2.len() != 4 { return 1; }
+            if v2[3] != 4.0 { return 1; }
+
+            return 0;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn vector_elementwise_and_reductions() {
+    expect_ok(
+        r#"
+        fn main() {
+            let a = vector([1.0, 2.0, 3.0]);
+            let b = vector([4.0, 5.0, 6.0]);
+
+            let c_add = a.add(b);
+            if c_add[0] != 5.0 or c_add[1] != 7.0 or c_add[2] != 9.0 { return 1; }
+            let s_add = a.add(10.0);
+            if s_add[0] != 11.0 or s_add[1] != 12.0 or s_add[2] != 13.0 { return 1; }
+
+            let c_sub = b.sub(a);
+            if c_sub[0] != 3.0 or c_sub[1] != 3.0 or c_sub[2] != 3.0 { return 1; }
+            let s_sub = b.sub(2.0);
+            if s_sub[0] != 2.0 or s_sub[1] != 3.0 or s_sub[2] != 4.0 { return 1; }
+
+            let c_mul = a.mul(b);
+            if c_mul[0] != 4.0 or c_mul[1] != 10.0 or c_mul[2] != 18.0 { return 1; }
+            let s_mul = a.mul(2.0);
+            if s_mul[0] != 2.0 or s_mul[1] != 4.0 or s_mul[2] != 6.0 { return 1; }
+
+            let c_div = b.div(a);
+            if c_div[0] != 4.0 or c_div[1] != 2.5 or c_div[2] != 2.0 { return 1; }
+            let s_div = b.div(2.0);
+            if s_div[0] != 2.0 or s_div[1] != 2.5 or s_div[2] != 3.0 { return 1; }
+
+            let v = vector([3.0, 1.0, 4.0, 1.0, 5.0]);
+            if v.sum() != 14.0 { return 1; }
+            if abs(v.mean() - 2.8) > 1e-9 { return 1; }
+            if abs(v.variance() - 2.56) > 1e-9 { return 1; }
+            if abs(v.std() - 1.6) > 1e-9 { return 1; }
+            if v.min() != 1.0 { return 1; }
+            if v.max() != 5.0 { return 1; }
+            if v.argmin() != 1 { return 1; }
+            if v.argmax() != 4 { return 1; }
+
+            let d = a.dot(b);
+            if d != 32.0 { return 1; }
+
+            let n_vec = vector([3.0, 4.0]);
+            if abs(n_vec.norm() - 5.0) > 1e-9 { return 1; }
+
+            let cs = a.cumsum();
+            if cs[0] != 1.0 or cs[1] != 3.0 or cs[2] != 6.0 { return 1; }
+
+            let df = vector([1.0, 4.0, 9.0]).diff();
+            if df.len() != 2 or df[0] != 3.0 or df[1] != 5.0 { return 1; }
+
+            let v_unsorted = vector([5.0, 2.0, 8.0, 1.0]);
+            let ord = v_unsorted.argsort();
+            if ord[0] != 3 or ord[1] != 1 or ord[2] != 0 or ord[3] != 2 { return 1; }
+
+            v_unsorted.sort();
+            if v_unsorted[0] != 1.0 or v_unsorted[1] != 2.0 or v_unsorted[2] != 5.0 or v_unsorted[3] != 8.0 { return 1; }
+
+            return 0;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn vector_errors_handled_cleanly() {
+    expect_err(
+        r#"
+        fn main() {
+            let v = vector(2);
+            let x = v[5];
+            return 0;
+        }
+    "#,
+        "out of bounds",
+    );
+    expect_err(
+        r#"
+        fn main() {
+            let v = vector(2);
+            let x = v[-3];
+            return 0;
+        }
+    "#,
+        "out of bounds",
+    );
+    expect_err(
+        r#"
+        fn main() {
+            let v = vector(2);
+            let s = v.div(0);
+            return 0;
+        }
+    "#,
+        "division by zero",
+    );
+}
+
+#[test]
+fn matrix_expanded_methods_and_solvers() {
+    expect_ok(
+        r#"
+        fn main() {
+            let m1 = matrix_from_list([[1.0, 2.0], [3.0, 4.0]]);
+            let m2 = matrix([[1.0, 2.0], [3.0, 4.0]]);
+            if m1.rows() != 2 or m1.cols() != 2 { return 1; }
+            if m1.get(0, 1) != 2.0 or m2.get(1, 0) != 3.0 { return 1; }
+
+            let lst = m1.to_list();
+            if lst.len() != 2 or lst[0][1] != 2.0 { return 1; }
+
+            let t = m1.transpose();
+            if t.get(0, 1) != 3.0 or t.get(1, 0) != 2.0 { return 1; }
+
+            let sc = m1.scale(3.0);
+            if sc.get(0, 0) != 3.0 or sc.get(1, 1) != 12.0 { return 1; }
+
+            let sb = sc.sub(m1);
+            if sb.get(0, 0) != 2.0 or sb.get(1, 1) != 8.0 { return 1; }
+
+            let hd = m1.hadamard(m1);
+            if hd.get(0, 1) != 4.0 or hd.get(1, 0) != 9.0 { return 1; }
+
+            if m1.trace() != 5.0 { return 1; }
+
+            let total_sum = m1.sum(null);
+            if total_sum != 10.0 { return 1; }
+            let sum_cols = m1.sum(0);
+            if sum_cols.len() != 2 or sum_cols[0] != 4.0 or sum_cols[1] != 6.0 { return 1; }
+            let sum_rows = m1.sum(1);
+            if sum_rows.len() != 2 or sum_rows[0] != 3.0 or sum_rows[1] != 7.0 { return 1; }
+
+            let total_mean = m1.mean(null);
+            if total_mean != 2.5 { return 1; }
+            let mean_cols = m1.mean(0);
+            if mean_cols.len() != 2 or mean_cols[0] != 2.0 or mean_cols[1] != 3.0 { return 1; }
+            let mean_rows = m1.mean(1);
+            if mean_rows.len() != 2 or mean_rows[0] != 1.5 or mean_rows[1] != 3.5 { return 1; }
+
+            // Det: det([[1, 2], [3, 4]]) = 4 - 6 = -2.0
+            if abs(m1.det() - (-2.0)) > 1e-9 { return 1; }
+
+            // Inverse:
+            let inv = m1.inverse();
+            let ident = m1.mul(inv);
+            if abs(ident.get(0, 0) - 1.0) > 1e-9 { return 1; }
+            if abs(ident.get(0, 1) - 0.0) > 1e-9 { return 1; }
+            if abs(ident.get(1, 0) - 0.0) > 1e-9 { return 1; }
+            if abs(ident.get(1, 1) - 1.0) > 1e-9 { return 1; }
+
+            // Solve:
+            // [1, 2] * [x1] = [5]
+            // [3, 4] * [x2]   [11]
+            // x1 = 1, x2 = 2
+            let b_vec = vector([5.0, 11.0]);
+            let x_vec = m1.solve(b_vec);
+            if abs(x_vec[0] - 1.0) > 1e-9 or abs(x_vec[1] - 2.0) > 1e-9 { return 1; }
+
+            // Symmetric Eigenvalues:
+            let sym = matrix([[2.0, 1.0], [1.0, 2.0]]);
+            let eig = sym.eigen_sym();
+            let vals = eig["values"];
+            let vecs = eig["vectors"];
+            // eigenvalues should be 1.0 and 3.0
+            if abs(vals[0] - 1.0) > 1e-9 or abs(vals[1] - 3.0) > 1e-9 { return 1; }
+            // Verify orthogonality: V^T * V = I
+            let vt = vecs.transpose();
+            let v_ident = vt.mul(vecs);
+            if abs(v_ident.get(0, 0) - 1.0) > 1e-9 or abs(v_ident.get(1, 1) - 1.0) > 1e-9 { return 1; }
+            if abs(v_ident.get(0, 1)) > 1e-9 or abs(v_ident.get(1, 0)) > 1e-9 { return 1; }
+
+            return 0;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn matrix_singular_returns_catchable_error() {
+    expect_err(
+        r#"
+        fn main() {
+            let m = matrix([[1.0, 2.0], [2.0, 4.0]]);
+            let inv = m.inverse();
+            return 0;
+        }
+    "#,
+        "matrix is singular",
+    );
+    expect_err(
+        r#"
+        fn main() {
+            let m = matrix([[1.0, 2.0], [2.0, 4.0]]);
+            let x = m.solve(vector([1.0, 2.0]));
+            return 0;
+        }
+    "#,
+        "matrix is singular",
+    );
+}
+

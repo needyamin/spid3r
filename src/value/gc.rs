@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use crate::value::collections::{
     BagData, BinTreeData, BstData, DequeData, GraphData, HashTableData, HeapData, ListData,
     MapData, MatrixData, PrioQueueData, QueueData, RefBoxData, RingData, SetData, StackData,
-    TrieData, VecData,
+    TrieData, VecData, VectorData,
 };
 use crate::value::{CompiledInstanceData, InstanceData, Value, VmInstanceData};
 
@@ -277,6 +277,13 @@ impl GcTrace for MatrixData {
     }
 }
 
+impl GcTrace for VectorData {
+    fn gc_trace(&self, _f: &mut dyn FnMut(&Value)) {}
+    fn gc_clear(&mut self) {
+        self.data.clear();
+    }
+}
+
 impl GcTrace for RingData {
     fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
         for v in &self.items {
@@ -412,6 +419,7 @@ fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
         Value::HashTable(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Trie(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Matrix(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Vector(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Ring(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Bag(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::RefBox(a) => f(Arc::as_ptr(a) as *const () as usize),

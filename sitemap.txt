@@ -24,8 +24,8 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 425 Rust tests green (396 core + 29 GUI/AOT; embed-API round 2026-10-20,
-stdlib expansion round 2026-10-20, per-suite evidence in docs/AUDIT_REPORT.md §11),
+State: 433 Rust tests green (404 core + 29 GUI/AOT; embed-API round 2026-10-20,
+stdlib expansion round 2026-10-20, vector & linalg round 2026-10-20, per-suite evidence in docs/AUDIT_REPORT.md §11),
 23/23 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
 
@@ -240,11 +240,11 @@ GaliLang/
   Constructors (value::collections::construct): list vec deque tuple ring_buffer
   stack queue priority_queue map set bag hash_table linked_list
   singly_linked_list doubly_linked_list binary_tree bst trie heap matrix graph
-  ref mutex channel some none ok err.
+  ref mutex channel some none ok err vector matrix_from_list.
 
 [7] TESTS (tests/) — one suite per area, all must pass
 --------------------------------------------------------------------------------
-  audit_regressions.rs   70 engine-parity + contract regressions from the 2026-10
+  audit_regressions.rs   73 engine-parity + contract regressions from the 2026-10
                          audits (closures, nested upvalues, local named fn,
                          finally on return/break/continue, cycle-safe containers,
                          self-argument collection methods, linked_list pop_back,

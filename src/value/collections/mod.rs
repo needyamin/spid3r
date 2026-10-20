@@ -20,7 +20,7 @@ pub use crate::value::{as_map_key, display_value, key_to_value, type_name, MapKe
 // Re-exported so `value` can name the structs directly.
 pub use misc::{
     BagData, GraphData, HashTableData, HeapData, MatrixData, PrioQueueData, RefBoxData, RingData,
-    TrieData,
+    TrieData, VectorData,
 };
 pub use nodes::{BinTreeData, BstData, ListData};
 pub use seq::{DequeData, MapData, QueueData, SetData, StackData, VecData};
@@ -49,6 +49,8 @@ pub fn is_constructor(name: &str) -> bool {
             | "hash_table"
             | "trie"
             | "matrix"
+            | "matrix_from_list"
+            | "vector"
             | "ring_buffer"
             | "bag"
             | "ref"
@@ -162,7 +164,95 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }
         "hash_table" => Ok(Value::HashTable(new_ref(misc::HashTableData::new()))),
         "trie" => Ok(Value::Trie(new_ref(misc::TrieData::new()))),
+        "vector" => {
+            if args.is_empty() {
+                Ok(Value::Vector(new_ref(misc::VectorData { data: Vec::new() })))
+            } else if args.len() == 1 {
+                match &args[0] {
+                    Value::List(l) | Value::VecDyn(l) => {
+                        let items = l.lock().unwrap().items.clone();
+                        if items.len() > misc::MAX_VECTOR_ELEMENTS {
+                            return Err(format!(
+                                "vector of {} elements is too large (max {})",
+                                items.len(),
+                                misc::MAX_VECTOR_ELEMENTS
+                            ));
+                        }
+                        let mut data = Vec::with_capacity(items.len());
+                        for it in &items {
+                            data.push(want_num(it, "vector")?);
+                        }
+                        Ok(Value::Vector(new_ref(misc::VectorData { data })))
+                    }
+                    Value::Tuple(t) => {
+                        let items = t.lock().unwrap().clone();
+                        if items.len() > misc::MAX_VECTOR_ELEMENTS {
+                            return Err(format!(
+                                "vector of {} elements is too large (max {})",
+                                items.len(),
+                                misc::MAX_VECTOR_ELEMENTS
+                            ));
+                        }
+                        let mut data = Vec::with_capacity(items.len());
+                        for it in &items {
+                            data.push(want_num(it, "vector")?);
+                        }
+                        Ok(Value::Vector(new_ref(misc::VectorData { data })))
+                    }
+                    Value::Vector(v) => {
+                        let data = v.lock().unwrap().data.clone();
+                        Ok(Value::Vector(new_ref(misc::VectorData { data })))
+                    }
+                    Value::Int(n) => {
+                        if *n < 0 {
+                            return Err("vector length must be non-negative".to_string());
+                        }
+                        let nu = *n as usize;
+                        if nu > misc::MAX_VECTOR_ELEMENTS {
+                            return Err(format!(
+                                "vector of {} elements is too large (max {})",
+                                nu,
+                                misc::MAX_VECTOR_ELEMENTS
+                            ));
+                        }
+                        Ok(Value::Vector(new_ref(misc::VectorData {
+                            data: vec![0.0; nu],
+                        })))
+                    }
+                    other => Err(format!(
+                        "vector expects an int length or list of numbers, found {}",
+                        super::type_name(other)
+                    )),
+                }
+            } else if args.len() == 2 {
+                let n = want_int(&args[0], "vector")?;
+                if n < 0 {
+                    return Err("vector length must be non-negative".to_string());
+                }
+                let nu = n as usize;
+                if nu > misc::MAX_VECTOR_ELEMENTS {
+                    return Err(format!(
+                        "vector of {} elements is too large (max {})",
+                        nu,
+                        misc::MAX_VECTOR_ELEMENTS
+                    ));
+                }
+                let fill = want_num(&args[1], "vector")?;
+                Ok(Value::Vector(new_ref(misc::VectorData {
+                    data: vec![fill; nu],
+                })))
+            } else {
+                Err(format!("vector expects at most 2 arguments, got {}", args.len()))
+            }
+        }
+        "matrix_from_list" => {
+            want("matrix_from_list", &args, 1)?;
+            misc::matrix_from_list_val(&args[0])
+        }
         "matrix" => {
+            if args.len() == 1 && matches!(&args[0], Value::List(_) | Value::VecDyn(_)) {
+                return misc::matrix_from_list_val(&args[0]);
+            }
             if args.len() < 2 || args.len() > 3 {
                 return Err(format!(
                     "matrix expects rows, cols, [fill]; got {} args",
@@ -353,7 +443,7 @@ pub fn call_method_host(
         Value::HashTable(d) => d.lock().unwrap().method(name, &args),
         Value::Trie(d) => d.lock().unwrap().method(name, &args),
         Value::Matrix(d) => {
-            if matches!(name, "add" | "mul") && args.len() == 1 {
+            if matches!(name, "add" | "mul" | "sub" | "hadamard" | "solve") && args.len() == 1 {
                 if let Value::Matrix(o) = &args[0] {
                     if std::sync::Arc::ptr_eq(d, o) {
                         let snap = {
@@ -368,6 +458,25 @@ pub fn call_method_host(
                             .lock()
                             .unwrap()
                             .method(name, &[Value::Matrix(new_ref(snap))]);
+                    }
+                }
+            }
+            d.lock().unwrap().method(name, &args)
+        }
+        Value::Vector(d) => {
+            if matches!(name, "add" | "sub" | "mul" | "div" | "dot") && args.len() == 1 {
+                if let Value::Vector(o) = &args[0] {
+                    if std::sync::Arc::ptr_eq(d, o) {
+                        let snap = {
+                            let v = d.lock().unwrap();
+                            misc::VectorData {
+                                data: v.data.clone(),
+                            }
+                        };
+                        return d
+                            .lock()
+                            .unwrap()
+                            .method(name, &[Value::Vector(new_ref(snap))]);
                     }
                 }
             }
@@ -1001,6 +1110,11 @@ pub fn index_get(obj: &Value, idx: &Value) -> Result<Value, String> {
                 )),
             }
         }
+        Value::Vector(v) => {
+            let v = v.lock().unwrap();
+            let i = misc::resolve_vector_index(idx, v.data.len(), "index")?;
+            Ok(Value::Float(v.data[i]))
+        }
         Value::HashTable(h) => {
             let h = h.lock().unwrap();
             let k = as_map_key(idx)?;
@@ -1054,6 +1168,13 @@ pub fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
                     m.rows * m.cols
                 )),
             }
+        }
+        Value::Vector(vec_ref) => {
+            let mut vec_guard = vec_ref.lock().unwrap();
+            let i = misc::resolve_vector_index(idx, vec_guard.data.len(), "index")?;
+            let n = want_num(&v, "vector index assignment")?;
+            vec_guard.data[i] = n;
+            Ok(())
         }
         Value::HashTable(h) => {
             let mut h = h.lock().unwrap();
@@ -1152,6 +1273,10 @@ pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
             let words = d.lock().unwrap().all_words();
             Ok(words.into_iter().map(|w| Value::Str(w.into())).collect())
         }
+        Value::Vector(d) => {
+            let items = d.lock().unwrap().data.clone();
+            Ok(items.into_iter().map(Value::Float).collect())
+        }
         Value::Bag(d) => {
             let counts = d.lock().unwrap().counts.clone();
             let mut out = Vec::new();
@@ -1199,6 +1324,7 @@ pub fn len_of(v: &Value) -> Result<usize, String> {
             let d = d.lock().unwrap();
             Ok(d.rows * d.cols)
         }
+        Value::Vector(d) => Ok(d.lock().unwrap().data.len()),
         Value::Bag(d) => Ok(d.lock().unwrap().counts.iter().map(|(_, n)| *n).sum()),
         Value::LinkedList(d) | Value::SinglyList(d) | Value::DoublyList(d) => {
             Ok(d.lock().unwrap().len)
