@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">447 tests · 25/25 examples agree</span>
+          <span class="badge">500 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -910,7 +910,7 @@ cargo build --release --no-default-features                  # zero-dependency c
           binary with <code>README.md</code>, <code>docs/</code>, <code>examples/</code>, and the web/native calculator
           demos.
           With the native backend it also ships <code>LLVM-C.dll</code>, <code>LLVM-C.lib</code>, and the
-          <code>spid3r.lib</code> runtime library that <code>spid3r build</code> links into programs; users need MSVC
+          <code>spid3r_lang.lib</code> runtime library that <code>spid3r build</code> links into programs; users need MSVC
           Build Tools with the Windows SDK to link. NSIS 3.x is taken from <code>packaging/nsis/nsis/nsis-3.10/</code>
           or <code>PATH</code>; without it the
           step is skipped with a warning. Set <code>SPID3R_NO_INSTALLER=1</code> to skip it.
@@ -2479,8 +2479,8 @@ rustup target add wasm32-unknown-unknown
 # 2. Compile zero-dependency WebAssembly release binary
 cargo build --target wasm32-unknown-unknown --release --lib --no-default-features
 
-# 3. Binary is generated at target/wasm32-unknown-unknown/release/spid3r.wasm (~1.3 MB)
-copy target/wasm32-unknown-unknown/release/spid3r.wasm web/spid3r.wasm
+# 3. Binary is generated at target/wasm32-unknown-unknown/release/spid3r_lang.wasm (~1.3 MB)
+copy target/wasm32-unknown-unknown/release/spid3r_lang.wasm web/spid3r.wasm
 
 # 4. (Optional) Generate embedded base64 dataset for offline file:// execution
 node tools/gen_wasm_data.js</code></pre>

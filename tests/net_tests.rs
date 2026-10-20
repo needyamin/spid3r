@@ -2,12 +2,12 @@
 //! and the pure-Spid3r HttpServer framework on both tree and VM engines.
 
 use std::sync::Arc;
-use spid3r::diagnostics::Diagnostic;
-use spid3r::interpreter::Interp;
-use spid3r::modules;
-use spid3r::parser;
-use spid3r::semantic;
-use spid3r::vm::Vm;
+use spid3r_lang::diagnostics::Diagnostic;
+use spid3r_lang::interpreter::Interp;
+use spid3r_lang::modules;
+use spid3r_lang::parser;
+use spid3r_lang::semantic;
+use spid3r_lang::vm::Vm;
 
 fn run_tree(src: &str) -> Result<i32, Diagnostic> {
     let program = parser::parse_file(src, Arc::from("net_test.matrix"))?;

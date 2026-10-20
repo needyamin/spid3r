@@ -15,11 +15,11 @@
 //! # Example (the whole host-side integration)
 //!
 //! ```
-//! use spid3r::embed::{conv, Engine};
+//! use spid3r_lang::embed::{conv, Engine};
 //!
 //! let engine = Engine::new()
 //!     .register("shout", |args| {
-//!         let s = conv::as_str(args.first().unwrap_or(&spid3r::Value::Null)).unwrap_or("");
+//!         let s = conv::as_str(args.first().unwrap_or(&spid3r_lang::Value::Null)).unwrap_or("");
 //!         Ok(conv::from_string(s.to_uppercase()))
 //!     })
 //!     .set_global("version", conv::from_string("1.0"));
@@ -124,7 +124,7 @@ impl Engine {
     /// previous registration) overrides it.
     ///
     /// ```
-    /// use spid3r::embed::{conv, Engine};
+    /// use spid3r_lang::embed::{conv, Engine};
     /// use std::sync::atomic::{AtomicI64, Ordering};
     /// use std::sync::Arc;
     ///

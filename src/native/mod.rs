@@ -27,7 +27,22 @@ use std::path::{Path, PathBuf};
 use crate::diagnostics::{Diagnostic, Phase};
 
 /// Platform-specific filename of the Spid3r native runtime static library.
+///
+/// The name follows the **lib target** (`spid3r_lang`), not the package or the
+/// CLI binary: the lib target was renamed so its `cdylib` artifact no longer
+/// collides with the binary's `spid3r.pdb` on MSVC (audit F2). Installs created
+/// before the rename still ship `spid3r.lib`, so the search below also tries the
+/// legacy name.
 pub const fn runtime_lib_name() -> &'static str {
+    if cfg!(windows) {
+        "spid3r_lang.lib"
+    } else {
+        "libspid3r_lang.a"
+    }
+}
+
+/// Filename the runtime static library had before the lib rename (2026-10-21).
+pub const fn legacy_runtime_lib_name() -> &'static str {
     if cfg!(windows) {
         "spid3r.lib"
     } else {
@@ -36,7 +51,7 @@ pub const fn runtime_lib_name() -> &'static str {
 }
 
 /// Build the ordered candidate paths searched for the native runtime library
-/// (`spid3r.lib` on Windows, `libspid3r.a` on Unix).
+/// (`spid3r_lang.lib` on Windows, `libspid3r_lang.a` on Unix).
 ///
 /// Search order:
 /// 1. `SPID3R_RUNTIME_LIB` (direct file path, or directory containing the library)
@@ -44,6 +59,9 @@ pub const fn runtime_lib_name() -> &'static str {
 /// 3. Relative to the running executable (`<exe_dir>`, `<exe_dir>/deps`,
 ///    `<exe_dir>/lib`, `<exe_dir>/..`, `<exe_dir>/../lib`, `<exe_dir>/../lib/spid3r`)
 /// 4. Relative to the working directory (`target/release` and `target/debug`)
+///
+/// Every location is probed for the current name first and the pre-rename name
+/// second, so a toolchain installed before the rename keeps working.
 pub fn staticlib_candidates(
     runtime_lib_env: Option<&Path>,
     lib_dir_env: Option<&Path>,
@@ -51,39 +69,58 @@ pub fn staticlib_candidates(
     current_exe: Option<&Path>,
     current_dir: Option<&Path>,
 ) -> Vec<PathBuf> {
-    let name = runtime_lib_name();
     let mut candidates: Vec<PathBuf> = Vec::new();
+    let legacy = legacy_runtime_lib_name();
+    let names = [runtime_lib_name(), legacy];
 
     if let Some(p) = runtime_lib_env {
         if !p.as_os_str().is_empty() {
             candidates.push(p.to_path_buf());
-            candidates.push(p.join(name));
-        }
-    }
-    for dir in [lib_dir_env, matrix_rlib_env].into_iter().flatten() {
-        if !dir.as_os_str().is_empty() {
-            candidates.push(dir.join(name));
-            candidates.push(dir.join("deps").join(name));
-            candidates.push(dir.join("lib").join(name));
-        }
-    }
-    if let Some(exe) = current_exe {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(name));
-            candidates.push(dir.join("deps").join(name));
-            candidates.push(dir.join("lib").join(name));
-            if let Some(parent) = dir.parent() {
-                candidates.push(parent.join(name));
-                candidates.push(parent.join("deps").join(name));
-                candidates.push(parent.join("lib").join(name));
-                candidates.push(parent.join("lib").join("spid3r").join(name));
+            for name in names {
+                candidates.push(p.join(name));
             }
         }
     }
+    let mut dirs: Vec<&Path> = Vec::new();
+    for dir in [lib_dir_env, matrix_rlib_env].into_iter().flatten() {
+        if !dir.as_os_str().is_empty() {
+            dirs.push(dir);
+        }
+    }
+    let mut exe_dirs: Vec<PathBuf> = Vec::new();
+    if let Some(exe) = current_exe {
+        if let Some(dir) = exe.parent() {
+            exe_dirs.push(dir.to_path_buf());
+            if let Some(parent) = dir.parent() {
+                exe_dirs.push(parent.to_path_buf());
+            }
+        }
+    }
+    let mut roots: Vec<PathBuf> = Vec::new();
     if let Some(cwd) = current_dir {
         for profile in ["release", "debug"] {
-            candidates.push(cwd.join("target").join(profile).join(name));
-            candidates.push(cwd.join("target").join(profile).join("deps").join(name));
+            roots.push(cwd.join("target").join(profile));
+        }
+    }
+    for dir in dirs {
+        for name in names {
+            candidates.push(dir.join(name));
+            candidates.push(dir.join("deps").join(name));
+            candidates.push(dir.join("lib").join(name));
+        }
+    }
+    for dir in &exe_dirs {
+        for name in names {
+            candidates.push(dir.join(name));
+            candidates.push(dir.join("deps").join(name));
+            candidates.push(dir.join("lib").join(name));
+            candidates.push(dir.join("lib").join("spid3r").join(name));
+        }
+    }
+    for dir in &roots {
+        for name in names {
+            candidates.push(dir.join(name));
+            candidates.push(dir.join("deps").join(name));
         }
     }
     candidates

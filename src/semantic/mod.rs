@@ -379,6 +379,36 @@ impl Checker {
                     if f.params.iter().any(|p| p.name == "self") {
                         return Err(self.err(&f.span, "self is only allowed in methods"));
                     }
+                    // A10: `main` is called with no arguments and its result is
+                    // the process exit code, so a signature the runtime cannot
+                    // honor must fail `check` instead of failing at startup.
+                    if self.is_main && name == "main" {
+                        if !f.params.is_empty() {
+                            return Err(self.err(
+                                &f.span,
+                                format!(
+                                    "fn main must take no parameters (found {}); the runtime \
+                                     calls it with none",
+                                    f.params.len()
+                                ),
+                            ));
+                        }
+                        if let Some(ret) = &f.ret {
+                            // Report an unknown type name the standard way
+                            // first ("str" vs "string"), then require int.
+                            self.check_type_name(&ret.name, &ret.span)?;
+                            if !ret.name.eq_ignore_ascii_case("int") {
+                                return Err(self.err(
+                                    &f.span,
+                                    format!(
+                                        "fn main must return int (the exit code) or nothing, \
+                                         not {}",
+                                        ret.name
+                                    ),
+                                ));
+                            }
+                        }
+                    }
                     self.funcs.insert(
                         name.clone(),
                         FuncInfo {
@@ -1516,8 +1546,37 @@ impl Checker {
             (Ty::Class(c), Ty::Class(p)) => c == p || self.is_subclass(c, p),
             (Ty::Class(c), Ty::Interface(i)) => self.implements(c, i),
             (Ty::Coll(a, _), Ty::Coll(b, _)) => a == b,
-            (Ty::Fn(_), Ty::Fn(_)) => true,
+            // A10: function types are compared by signature, not treated as
+            // interchangeable. `Ty::Fn(None)` is an unannotated function (fully
+            // dynamic under gradual typing) and stays permissive; when both
+            // sides carry a signature, arity must match, annotated parameters
+            // must agree, and the return type must be assignable.
+            (Ty::Fn(a), Ty::Fn(b)) => match (a.as_deref(), b.as_deref()) {
+                (Some(from), Some(to)) => self.fn_sig_assignable(from, to),
+                _ => true,
+            },
             _ => false,
+        }
+    }
+
+    /// Is a function with signature `from` usable where `to` is expected?
+    /// Parameters are compared invariantly (a caller may pass either type), and
+    /// only where both sides are annotated; the return type follows ordinary
+    /// assignability (widening allowed).
+    fn fn_sig_assignable(&self, from: &ty::FnSig, to: &ty::FnSig) -> bool {
+        if from.arity != to.arity {
+            return false;
+        }
+        for (a, b) in from.params.iter().zip(to.params.iter()) {
+            if let (Some(x), Some(y)) = (a, b) {
+                if !self.assignable(x, y) && !self.assignable(y, x) {
+                    return false;
+                }
+            }
+        }
+        match (&from.ret, &to.ret) {
+            (Some(x), Some(y)) => self.assignable(x, y),
+            _ => true,
         }
     }
 
@@ -1682,8 +1741,8 @@ impl Checker {
                                         format!(
                                             "type mismatch assigning to '{}': expected {}, got {}",
                                             name,
-                                            t.name(),
-                                            got.name()
+                                            t.detail_name(),
+                                            got.detail_name()
                                         ),
                                     ));
                                 }
@@ -1691,7 +1750,14 @@ impl Checker {
                         }
                         _ => {}
                     },
-                    Expr::Index { object, .. } => self.check_expr(object)?,
+                    // A10: the index expression is evaluated at run time
+                    // (`a[ghost()] = 1`), so it must be checked statically too.
+                    // This arm used to drop it, letting unknown names, arity
+                    // errors and privacy violations through `spid3r check`.
+                    Expr::Index { object, index, .. } => {
+                        self.check_expr(object)?;
+                        self.check_expr(index)?;
+                    }
                     Expr::Field { object, name, .. } => {
                         self.check_expr(object)?;
                         // F6: field writes are privacy-checked exactly like

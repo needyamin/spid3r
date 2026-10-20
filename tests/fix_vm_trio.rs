@@ -64,7 +64,7 @@ fn run_with_deadline(args: &[&str], limit: Duration) -> Result<(i32, String, Str
 fn circular_import_message_parity_with_tree() {
     // F9: one shared formatter for both engines; the tree rendered exactly
     // this "(chain: a -> b -> a)" shape before, the VM lacked the suffix.
-    let msg = spid3r::modules::circular_import_message(
+    let msg = spid3r_lang::modules::circular_import_message(
         &[PathBuf::from("a.matrix"), PathBuf::from("b.matrix")],
         "a.matrix",
     );
@@ -73,7 +73,7 @@ fn circular_import_message_parity_with_tree() {
         "circular import of 'a.matrix' (chain: a.matrix -> b.matrix -> a.matrix)"
     );
     // Empty in-progress chain still renders the offending path.
-    let msg0 = spid3r::modules::circular_import_message(&[], "self.matrix");
+    let msg0 = spid3r_lang::modules::circular_import_message(&[], "self.matrix");
     assert_eq!(
         msg0,
         "circular import of 'self.matrix' (chain: self.matrix)"

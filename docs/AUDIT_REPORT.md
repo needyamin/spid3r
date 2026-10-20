@@ -131,7 +131,7 @@ embedded table. (`src/modules/mod.rs`, `src/vm/mod.rs`, `src/vm/compiler.rs`)
 `src/gui/window.rs`, `src/pkg/mod.rs`, `src/cli.rs`, `src/sched/mod.rs`,
 `.github/workflows/ci.yml`, `fuzz/Cargo.toml`, `fuzz/fuzz_targets/fuzz_{lexer,parser,bytecode}.rs`,
 `docs/{STANDARD_LIBRARY,GRAMMAR,BYTECODE,ROADMAP}.md`, `doc.html`, `sitemap.txt`,
-`tests/audit_regressions.rs` (30 regression tests), and `tests/fuzz_tests.rs` (3 fuzz suites).
+`tests/audit_regressions.rs` (83 regression tests), and `tests/fuzz_tests.rs` (3 deterministic fuzz suites).
 
 ## 4. Test results
 
@@ -165,7 +165,7 @@ embedded table. (`src/modules/mod.rs`, `src/vm/mod.rs`, `src/vm/compiler.rs`)
 
 ## 7. Overall QA status
 
-**Production-ready within documented scope.** All confirmed critical, high, and medium bugs across the lexer, parser, semantic analyzer, tree-walk interpreter, bytecode compiler/deserializer/validator/optimizer/VM, value & collection layer, standard library, module loader, and package manager have been resolved at their root causes and pinned by 30 regression tests in `tests/audit_regressions.rs` and 3 deterministic fuzz suites in `tests/fuzz_tests.rs`. All 279 Rust tests and all 23 three-engine differential tests pass with zero clippy warnings.
+**Production-ready within documented scope.** All confirmed critical, high, and medium bugs across the lexer, parser, semantic analyzer, tree-walk interpreter, bytecode compiler/deserializer/validator/optimizer/VM, value & collection layer, standard library, module loader, and package manager have been resolved at their root causes and pinned by 83 regression tests in `tests/audit_regressions.rs` and 3 deterministic fuzz suites in `tests/fuzz_tests.rs`. All 500 Rust tests (484 core + 10 GUI + 6 AOT) and all 25 example files (24 programs + 1 shared module) pass the three-engine differential with zero clippy warnings.
 
 
 ---
@@ -215,6 +215,18 @@ Regressions: `tests/stage2_concurrency.rs` (process-level watchdog tests, both
 engines), `tests/sched_limits.rs` (isolated pools), the CAS unit tests in
 `src/value/collections/seq.rs`, and
 `tests/native_tests.rs::native_matches_tree_on_structured_task_errors`.
+
+Stage-4 (2026-10-21) finished the toolchain and docs pass — see
+`audit_notes/stage4_toolchain_docs.md`: `spid3r check` now validates the index
+expression of an index-assign target, the `main` signature, and function-type
+signatures (A-10); the lib target was renamed to `spid3r_lang` so its cdylib no
+longer collides with the binary's `spid3r.pdb` (F2); the tree is rustfmt-clean
+and CI gates `cargo fmt --check` (F1); `tools/count_tests.sh` is the canonical
+counter and every quoted number in README/doc.html/this file now comes from it
+(A-18/F3); `tools/bench_compare.py` no longer hardcodes a host path/name or
+deletes files it did not create; and the AOT runtime got atomic upvalue cells,
+bounds-checked environment slots and `catch_unwind` at its FFI boundary (A-12),
+with a nightly cargo-fuzz workflow that actually runs the three fuzz targets.
 
 Stage-3 (2026-10-21) then hardened the artifact and dependency paths — see
 `audit_notes/stage3_artifact_hardening.md`: `spid3r install` no longer accepts

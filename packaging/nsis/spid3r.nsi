@@ -25,7 +25,8 @@ Unicode true
 !define WITH_GUI 1
 !endif
 ; WITH_NATIVE=1 (the native LLVM backend) also needs LLVM_DLL, LLVM_LIB, and
-; RUNTIME_LIB: LLVM-C.dll, LLVM-C.lib, and the spid3r.lib runtime staticlib.
+; RUNTIME_LIB: LLVM-C.dll, LLVM-C.lib, and the spid3r_lang.lib runtime staticlib
+; (named after the lib target, so its cdylib does not collide with spid3r.pdb).
 !ifndef WITH_NATIVE
 !define WITH_NATIVE 1
 !endif
@@ -36,7 +37,7 @@ Unicode true
 !define LLVM_LIB "C:\Program Files\LLVM\lib\LLVM-C.lib"
 !endif
 !ifndef RUNTIME_LIB
-!define RUNTIME_LIB "..\..\target\release\spid3r.lib"
+!define RUNTIME_LIB "..\..\target\release\spid3r_lang.lib"
 !endif
 !ifndef APPVERSION
 !define APPVERSION     "1.0.0"
@@ -290,6 +291,7 @@ Section "Uninstall"
   Delete "$INSTDIR\spid3r.exe"
   Delete "$INSTDIR\LLVM-C.dll"
   Delete "$INSTDIR\LLVM-C.lib"
+  Delete "$INSTDIR\spid3r_lang.lib"
   Delete "$INSTDIR\spid3r.lib"
   Delete "$INSTDIR\spid3r.ico"
   Delete "$INSTDIR\README.md"

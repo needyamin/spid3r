@@ -86,7 +86,7 @@ when sources change.
 - The installer packs the binary plus `README.md`, `docs/`, `examples/`, and
   (with `gui`) the `calculator/` demo, straight from the repository.
 - With `native`, it also ships `LLVM-C.dll` (loaded by `spid3r.exe`),
-  `LLVM-C.lib`, and the `spid3r.lib` runtime staticlib, which `spid3r build`
+  `LLVM-C.lib`, and the `spid3r_lang.lib` runtime staticlib, which `spid3r build`
   links into every program. Users still need MSVC Build Tools with the
   Windows SDK to link; the programs they build have no LLVM dependency.
 - Set `SPID3R_NO_INSTALLER=1` to skip the installer step.
@@ -147,8 +147,9 @@ support there. Instead, `build.rs` links the LLVM C API itself:
 When *linking a compiled program*, `link.rs` additionally needs a system
 linker — MSVC `link.exe` plus the CRT/SDK import libraries on Windows,
 `clang`/`cc` elsewhere — and the runtime staticlib produced by the crate's
-`[lib] crate-type = ["rlib", "staticlib"]` (`libspid3r.a` / `spid3r.lib`,
-found next to the `spid3r` binary or under `target/{release,debug}/`). See
+`[lib] crate-type = ["rlib", "staticlib", "cdylib"]` (`libspid3r_lang.a` /
+`spid3r_lang.lib`, found next to the `spid3r` binary or under
+`target/{release,debug}/`). See
 [NATIVE.md](NATIVE.md) for what the linker passes and why (notably
 `-opt:ref`, which dead-strips the inkwell bindings so the shipped executable
 has **no** `LLVM-C.dll` dependency — verified by running built binaries from

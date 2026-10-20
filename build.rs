@@ -151,7 +151,7 @@ fn windows_installer() {
     let release_dir = nested_dir.join(&triple).join("release");
     let exe = release_dir.join("spid3r.exe");
     if native {
-        native_files.push(("RUNTIME_LIB", release_dir.join("spid3r.lib")));
+        native_files.push(("RUNTIME_LIB", release_dir.join("spid3r_lang.lib")));
     }
     let webview2 = if gui { webview2_bootstrapper(&nsis_dir) } else { None };
 

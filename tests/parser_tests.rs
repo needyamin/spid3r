@@ -1,8 +1,8 @@
 //! Phase 3 parser tests: precedence, nesting, every statement form, classes,
 //! interfaces, spawn, and malformed input.
 
-use spid3r::ast::*;
-use spid3r::parser::parse_file;
+use spid3r_lang::ast::*;
+use spid3r_lang::parser::parse_file;
 use std::sync::Arc;
 
 fn parse(src: &str) -> Program {

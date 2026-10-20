@@ -142,7 +142,8 @@ cargo build
 
 ### Testing
 ```bash
-# Run all core unit and integration tests (418+ tests)
+# Run all core unit and integration tests (484 tests; GUI 10 + AOT 6 more).
+# Canonical counts: bash tools/count_tests.sh
 cargo test --no-default-features
 
 # Differential engine verification (Tree vs VM vs Bytecode on all examples)
@@ -267,7 +268,7 @@ spid3r pack -o dist/my_project.tar
 | [Native LLVM Backend](docs/NATIVE.md) | Compiling `.matrix` directly to native executables |
 | [Webview GUI Guide](docs/GUI.md) | Building native desktop GUI apps |
 | [Garbage Collection](docs/GC.md) | Memory management and cycle collector architecture |
-| [Example Programs](examples/) | 20+ runnable sample programs |
+| [Example Programs](examples/) | 24 runnable sample programs (+1 shared library module) |
 | [Demos](demo_apps/) | Native Windows GUI Calculator & Web Calculator |
 
 ---

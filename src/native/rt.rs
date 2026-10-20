@@ -160,6 +160,43 @@ fn rt_throw_value(v: Value) -> *mut Value {
     leak(Value::Null)
 }
 
+/// Run `f` at an `extern "C"` boundary (audit A-12).
+///
+/// A Rust panic inside the native runtime is an internal bug, and unwinding into
+/// generated machine code is undefined; a non-unwinding ABI aborts instead, which
+/// loses the script-level diagnostic. Catching the panic here reports it through
+/// the runtime's normal error channel: `on_panic` turns it into a pending throw
+/// (so the generated `spid3r_threw` guard unwinds the script and the program
+/// exits 1 with a message), or supplies a safe sentinel for setup calls.
+fn ffi_guard<T>(
+    what: &str,
+    on_panic: impl FnOnce(String) -> T,
+    f: impl FnOnce() -> T,
+) -> T {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(v) => v,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            eprintln!("spid3r: internal error in the native runtime ({}): {}", what, detail);
+            on_panic(detail)
+        }
+    }
+}
+
+/// `ffi_guard` for a call that returns a value handle: a panic becomes a
+/// pending throw, so the script fails cleanly instead of aborting.
+fn ffi_value(what: &str, f: impl FnOnce() -> *mut Value) -> *mut Value {
+    ffi_guard(
+        what,
+        |detail| rt_throw(&format!("internal error in the native runtime: {}", detail)),
+        f,
+    )
+}
+
 /// Copy a C string from generated code.
 fn cstr(p: *const c_char) -> String {
     unsafe {
@@ -351,8 +388,14 @@ pub extern "C" fn spid3r_global_def(name: *const c_char, v: *mut Value) {
 
 #[no_mangle]
 pub extern "C" fn spid3r_global_exists(name: *const c_char) -> u8 {
-    let key = cstr(name);
-    globals().lock().unwrap().contains_key(&key) as u8
+    ffi_guard(
+        "global_exists",
+        |_| 0,
+        || {
+            let key = cstr(name);
+            globals().lock().unwrap().contains_key(&key) as u8
+        },
+    )
 }
 
 // ----------------------------------------------------------------------------
@@ -372,6 +415,10 @@ unsafe fn args_vec(argc: usize, argv: *const *mut Value) -> Vec<Value> {
 /// compiled class (construct an instance and run its constructor).
 #[no_mangle]
 pub extern "C" fn spid3r_call(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mut Value {
+    ffi_value("call", || spid3r_call_inner(f, argc, argv))
+}
+
+fn spid3r_call_inner(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mut Value {
     let callee = to_owned(f);
     match callee {
         Value::Cfn(c) => {
@@ -450,6 +497,19 @@ pub extern "C" fn spid3r_make_fn(
     code: *const c_void,
     env: *mut c_void,
 ) -> *mut Value {
+    ffi_guard(
+        "make_fn",
+        |_| std::ptr::null_mut(),
+        || make_fn_inner(name, arity, code, env),
+    )
+}
+
+fn make_fn_inner(
+    name: *const c_char,
+    arity: usize,
+    code: *const c_void,
+    env: *mut c_void,
+) -> *mut Value {
     let code: unsafe extern "C" fn(*mut c_void, usize, *const *mut Value) -> *mut Value =
         unsafe { std::mem::transmute(code) };
     let name = if name.is_null() {
@@ -484,6 +544,15 @@ pub extern "C" fn spid3r_construct(name: *const c_char, argc: usize, argv: *cons
 /// delegates to the shared collections layer (strings, lists, maps, ...).
 #[no_mangle]
 pub extern "C" fn spid3r_method(
+    obj: *mut Value,
+    name: *const c_char,
+    argc: usize,
+    argv: *const *mut Value,
+) -> *mut Value {
+    ffi_value("method", || spid3r_method_inner(obj, name, argc, argv))
+}
+
+fn spid3r_method_inner(
     obj: *mut Value,
     name: *const c_char,
     argc: usize,
@@ -722,9 +791,16 @@ pub extern "C" fn spid3r_forin_end(iter: *mut c_void) {
 
 /// A heap slot holding a `*mut Value`; captured variables live in one of these
 /// so closures share the exact same box the defining frame reads/writes.
+///
+/// The field is atomic (audit A-12): `spawn` puts a closure — and therefore its
+/// captured cells — on a worker thread, so two tasks can read and write the same
+/// cell concurrently. A plain `*mut Value` made that a data race (UB, torn
+/// pointer reads); load/store are `SeqCst` so a reader never observes a
+/// half-written pointer. Generated code never touches the field directly (it
+/// calls `spid3r_cell_get`/`spid3r_cell_set`), so the layout stays opaque.
 #[repr(C)]
 pub struct UpvalueSlot {
-    pub value: *mut Value,
+    pub value: std::sync::atomic::AtomicPtr<Value>,
 }
 
 #[no_mangle]
@@ -734,7 +810,9 @@ pub extern "C" fn spid3r_cell_new(initial: *mut Value) -> *mut UpvalueSlot {
     } else {
         initial
     };
-    Box::into_raw(Box::new(UpvalueSlot { value: v }))
+    Box::into_raw(Box::new(UpvalueSlot {
+        value: std::sync::atomic::AtomicPtr::new(v),
+    }))
 }
 
 #[no_mangle]
@@ -742,7 +820,11 @@ pub extern "C" fn spid3r_cell_get(cell: *mut UpvalueSlot) -> *mut Value {
     if cell.is_null() {
         abort("native runtime: null upvalue cell");
     }
-    unsafe { (*cell).value }
+    unsafe {
+        (*cell)
+            .value
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 #[no_mangle]
@@ -750,16 +832,30 @@ pub extern "C" fn spid3r_cell_set(cell: *mut UpvalueSlot, v: *mut Value) {
     if cell.is_null() {
         abort("native runtime: null upvalue cell");
     }
-    unsafe { (*cell).value = v };
+    unsafe {
+        (*cell)
+            .value
+            .store(v, std::sync::atomic::Ordering::SeqCst)
+    };
 }
 
-/// Allocate the captured-variable array of a closure environment: `count`
-/// null-initialized cell pointers. The layout is opaque to generated code;
-/// slots are read/written with `spid3r_env_slot`.
+/// Allocate the captured-variable array of a closure environment.
+///
+/// Layout (private to this module): slot 0 holds the element count as a raw
+/// integer, followed by `count` cell pointers. The header lets `spid3r_env_slot`
+/// bounds-check an index instead of trusting generated code (audit A-12).
 #[no_mangle]
 pub extern "C" fn spid3r_env_alloc(count: usize) -> *mut c_void {
-    let boxed = vec![std::ptr::null_mut::<UpvalueSlot>(); count].into_boxed_slice();
+    let mut boxed = vec![std::ptr::null_mut::<UpvalueSlot>(); count + 1].into_boxed_slice();
+    boxed[0] = count as *mut UpvalueSlot;
     Box::into_raw(boxed) as *mut c_void
+}
+
+/// Number of slots in an environment array (the header written by
+/// `spid3r_env_alloc`).
+unsafe fn env_len(env: *mut c_void) -> usize {
+    let arr = env as *const *mut UpvalueSlot;
+    *arr as usize
 }
 
 #[no_mangle]
@@ -768,8 +864,11 @@ pub extern "C" fn spid3r_env_slot(env: *mut c_void, index: usize) -> *mut Upvalu
         abort("native runtime: null closure environment");
     }
     unsafe {
+        if index >= env_len(env) {
+            abort("native runtime: closure environment index out of range");
+        }
         let arr = env as *mut *mut UpvalueSlot;
-        *arr.add(index)
+        *arr.add(index + 1)
     }
 }
 
@@ -783,8 +882,11 @@ pub extern "C" fn spid3r_env_set_slot(env: *mut c_void, index: usize, cell: *mut
         abort("native runtime: captured a null upvalue cell");
     }
     unsafe {
+        if index >= env_len(env) {
+            abort("native runtime: closure environment index out of range");
+        }
         let arr = env as *mut *mut UpvalueSlot;
-        *arr.add(index) = cell;
+        *arr.add(index + 1) = cell;
     }
 }
 
@@ -971,7 +1073,7 @@ pub extern "C" fn spid3r_eprintln(argc: usize, argv: *const *mut Value) {
 #[no_mangle]
 pub extern "C" fn spid3r_rt_start(entry: extern "C" fn() -> *mut Value) -> i32 {
     rt_init();
-    run_program(entry)
+    ffi_guard("rt_start", |_| 70, || run_program(entry))
 }
 
 /// Run the compiled entry (class registration + top-level statements) and then

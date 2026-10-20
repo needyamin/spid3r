@@ -1,10 +1,10 @@
 //! Interpreter tests (Phase 4-12): values, arithmetic rules, control flow,
 //! functions and closures, plus the standard library builtins.
 
-use spid3r::diagnostics::Diagnostic;
-use spid3r::interpreter::Interp;
-use spid3r::parser;
-use spid3r::semantic;
+use spid3r_lang::diagnostics::Diagnostic;
+use spid3r_lang::interpreter::Interp;
+use spid3r_lang::parser;
+use spid3r_lang::semantic;
 use std::sync::Arc;
 
 /// Run a program that must contain `fn main`; returns main's exit code.

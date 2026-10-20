@@ -38,7 +38,7 @@ The backend has two halves:
 
 - **Runtime** (`src/native/rt.rs`, always compiled, zero dependencies): the
   `extern "C"` trampolines plus `spid3r_rt_start`. These live inside the
-  `staticlib` the crate produces (`libspid3r.a` / `spid3r.lib`) and are what
+  `staticlib` the crate produces (`libspid3r_lang.a` / `spid3r_lang.lib`) and are what
   AOT-compiled binaries call into.
 - **Codegen** (`src/native/ir.rs` + `llvm.rs` + `link.rs`, behind the
   `native` feature): AST → LLVM IR → object file → linked executable.
@@ -57,7 +57,7 @@ hello.matrix ── lex / parse / semantic ──▶ AST
                                             │  llvm.rs (TargetMachine, PIC)
                                             ▼
                                     object file (.o)
-                                            │  link.rs  (+ libspid3r.a)
+                                            │  link.rs  (+ libspid3r_lang.a)
                                             ▼
                               standalone native executable
 ```

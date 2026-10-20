@@ -39,7 +39,7 @@ Date: 2026-10-19 · Binary: `.\target\debug\spid3r.exe` · Method: probes under 
 
 - KNOWN-REMAINING list: present verbatim in docs (see §0); individual code confirms not re-done this round (marked as documented-remaining in plan.html).
 - pkg security: guards named in AUDIT_REPORT §5/§6 (`valid_pkg_name` allowlist, unpack `..`/`:` rejection + `starts_with(dest)` containment, `fetch_git` `--` separator, SHA-256 known-answer tests) confirmed present in the docs' fix table; pkg_tests.rs = 39 tests green in this round's suite run.
-- Panic-path grep sweep: not completed (budget); the executed probe matrix plus the mutation/fuzz suites (tests/fuzz_tests.rs, 10 tests green) produced no host panic. Remaining sweep is roadmap work, not a verified gap.
+- Panic-path grep sweep: not completed (budget); the executed probe matrix plus the mutation/fuzz suites (tests/fuzz_tests.rs, 3 tests green) produced no host panic. Remaining sweep is roadmap work, not a verified gap.
 
 ## 4. Reachable host-panic list
 None demonstrated this round. The prior two audit rounds fixed the known panic paths (truncated `.matrixc`, crafted item counts, negative jump targets, matrix dims, string ops); this round's 4 `.matrixc` mutations, 15 container-edge cases, and cap probes all produced clean diagnostics.

@@ -37,5 +37,5 @@ pub mod gui;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LANGUAGE_VERSION: &str = "1.0";
 
-// Embedding ergonomics: hosts work with `spid3r::Value` (see spid3r::embed).
+// Embedding ergonomics: hosts work with `spid3r_lang::Value` (see spid3r_lang::embed).
 pub use value::Value;

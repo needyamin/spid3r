@@ -16,8 +16,8 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use spid3r::value::VmFunc;
-use spid3r::vm::bytecode::{
+use spid3r_lang::value::VmFunc;
+use spid3r_lang::vm::bytecode::{
     deserialize_vmfunc, serialize_vmfunc, validate_chunk, Chunk, OpCode, VmFuncProto,
 };
 
@@ -283,7 +283,7 @@ fn webview2_verification_fails_closed() {
     let file = dir.join("setup.exe");
     let payload = b"not-a-real-bootstrapper-but-stable";
     std::fs::write(&file, payload).expect("write");
-    let good = spid3r::pkg::sha256_hex(payload);
+    let good = spid3r_lang::pkg::sha256_hex(payload);
 
     let actual = webview2::verify_file(&file, &good, payload.len() as u64).expect("hash matches");
     assert_eq!(actual, good);
@@ -321,7 +321,7 @@ fn webview2_ensure_never_accepts_an_unverified_file() {
     // 2. A cached file that matches: reused without fetching.
     let payload = b"cached-bootstrapper";
     std::fs::write(&dest, payload).expect("write");
-    let hash = spid3r::pkg::sha256_hex(payload);
+    let hash = spid3r_lang::pkg::sha256_hex(payload);
     assert_eq!(
         webview2::ensure_with(&dir, false, Some(&hash), payload.len() as u64),
         Some(dest.clone())

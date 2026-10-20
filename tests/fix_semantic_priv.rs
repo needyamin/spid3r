@@ -22,10 +22,10 @@
 //! `run --engine tree` and `run --engine vm` alike; allowed programs are
 //! additionally smoke-run through the VM CLI to pin that.
 
-use spid3r::diagnostics::Diagnostic;
-use spid3r::interpreter::Interp;
-use spid3r::parser;
-use spid3r::semantic;
+use spid3r_lang::diagnostics::Diagnostic;
+use spid3r_lang::interpreter::Interp;
+use spid3r_lang::parser;
+use spid3r_lang::semantic;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -390,4 +390,99 @@ fn vm_engine_accepts_the_same_allowed_programs() {
     )
     .unwrap_or_else(|e| panic!("{}", e));
     assert!(out.contains("42"), "vm: {}", out);
+}
+
+// ------------------------------------------------ A10 (Stage 4): checker gaps
+
+/// A10: the index expression of an index-assignment target is evaluated at run
+/// time, so `check` must validate it. It used to be dropped entirely, letting
+/// unknown names / arity errors / privacy violations reach the interpreter.
+#[test]
+fn index_assignment_checks_its_index_expression() {
+    expect_check_err(
+        r#"fn main() { let a = [1, 2, 3]; a[ghost()] = 1; return 0; }"#,
+        "unknown name 'ghost'",
+    );
+    // Wrong arity inside the index position.
+    expect_check_err(
+        r#"fn two(x) { return x; } fn main() { let a = [1]; a[two(1, 2)] = 1; return 0; }"#,
+        "expects 1 argument",
+    );
+    // A private method call inside the index position.
+    expect_check_err(
+        r#"
+class Box {
+    private fn secret(self) -> int { return 0; }
+    public fn new() {}
+}
+fn main() { let b = new Box(); let a = [1]; a[b.secret()] = 1; return 0; }
+"#,
+        "private",
+    );
+    // The plain, well-typed form still passes.
+    expect_ok(r#"fn main() { let a = [1, 2]; let i = 0; a[i] = 7; return 0; }"#);
+}
+
+/// A10: `main` is called with no arguments and its result is the exit code, so
+/// a signature the runtime cannot honor must fail `check` rather than startup.
+#[test]
+fn main_signature_is_validated() {
+    expect_check_err(
+        r#"fn main(x) { return 0; }"#,
+        "fn main must take no parameters",
+    );
+    expect_check_err(
+        r#"fn main(x: int) { return 0; }"#,
+        "fn main must take no parameters",
+    );
+    expect_check_err(
+        r#"fn main() -> string { return "no"; }"#,
+        "fn main must return int",
+    );
+    // A bogus type name still reports as an unknown type.
+    expect_check_err(r#"fn main() -> str { return 0; }"#, "unknown type 'str'");
+    // Both legal shapes pass.
+    expect_ok(r#"fn main() { return 0; }"#);
+    expect_ok(r#"fn main() -> int { return 3; }"#);
+}
+
+/// A10: function types carry their signature; two different signatures are not
+/// interchangeable. Unannotated functions stay dynamic (gradual typing).
+#[test]
+fn function_types_compare_their_signatures() {
+    expect_check_err(
+        r#"fn main() {
+            let f = fn(x: int) -> int { return x; };
+            let g = fn(x: int) -> string { return "s"; };
+            f = g;
+            return 0;
+        }"#,
+        "expected fn(int) -> int, got fn(int) -> string",
+    );
+    expect_check_err(
+        r#"fn main() {
+            let f = fn(x: int) -> int { return x; };
+            let g = fn(s: string) -> int { return 0; };
+            f = g;
+            return 0;
+        }"#,
+        "type mismatch assigning to 'f'",
+    );
+    // Same signature: allowed. Unannotated: allowed (fully dynamic).
+    expect_ok(
+        r#"fn main() {
+            let f = fn(x: int) -> int { return x; };
+            let g = fn(x: int) -> int { return x + 1; };
+            f = g;
+            return 0;
+        }"#,
+    );
+    expect_ok(
+        r#"fn main() {
+            let f = fn(x) { return x; };
+            let g = fn(s) { return s; };
+            f = g;
+            return 0;
+        }"#,
+    );
 }

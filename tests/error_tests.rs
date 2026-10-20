@@ -2,10 +2,10 @@
 //! values, rethrow, catch binding, and runtime errors surfacing as Spid3r
 //! errors with spans instead of Rust panics.
 
-use spid3r::diagnostics::Diagnostic;
-use spid3r::interpreter::Interp;
-use spid3r::parser;
-use spid3r::semantic;
+use spid3r_lang::diagnostics::Diagnostic;
+use spid3r_lang::interpreter::Interp;
+use spid3r_lang::parser;
+use spid3r_lang::semantic;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -132,7 +132,7 @@ fn uncaught_throw_propagates_with_its_value() {
         d.message
     );
     match &d.thrown {
-        Some(v) => assert_eq!(spid3r::value::display_value(v), "kaboom"),
+        Some(v) => assert_eq!(spid3r_lang::value::display_value(v), "kaboom"),
         None => panic!("the thrown value should be attached"),
     }
 }

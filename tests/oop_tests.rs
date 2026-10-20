@@ -1,10 +1,10 @@
 //! OOP tests (Phases 4-12): classes, constructors, methods, `self`,
 //! single inheritance, privacy, interfaces, and polymorphic dispatch.
 
-use spid3r::diagnostics::Diagnostic;
-use spid3r::interpreter::Interp;
-use spid3r::parser;
-use spid3r::semantic;
+use spid3r_lang::diagnostics::Diagnostic;
+use spid3r_lang::interpreter::Interp;
+use spid3r_lang::parser;
+use spid3r_lang::semantic;
 use std::sync::Arc;
 
 fn run(src: &str) -> Result<i32, Diagnostic> {

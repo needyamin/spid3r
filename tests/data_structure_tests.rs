@@ -2,10 +2,10 @@
 //! documented operations, including the error cases the spec demands
 //! (duplicate BST keys, float map keys, missing keys, empty pops).
 
-use spid3r::diagnostics::Diagnostic;
-use spid3r::interpreter::Interp;
-use spid3r::parser;
-use spid3r::semantic;
+use spid3r_lang::diagnostics::Diagnostic;
+use spid3r_lang::interpreter::Interp;
+use spid3r_lang::parser;
+use spid3r_lang::semantic;
 use std::sync::Arc;
 
 fn run(src: &str) -> Result<i32, Diagnostic> {

@@ -92,5 +92,13 @@ jobs:
       - name: Build WebAssembly library (zero dependencies)
         run: cargo build --target wasm32-unknown-unknown --release --lib --no-default-features
 
+      # The cdylib artifact is named after the lib target (`spid3r_lang`); the
+      # deployed module is copied to `web/spid3r.wasm`. Assert the artifact so a
+      # crate-type/rename regression fails here instead of in a browser.
+      - name: Verify the wasm artifact
+        run: |
+          test -s target/wasm32-unknown-unknown/release/spid3r_lang.wasm
+          ls -l target/wasm32-unknown-unknown/release/spid3r_lang.wasm
+
       - name: Clippy WebAssembly target (zero warnings)
         run: cargo clippy --target wasm32-unknown-unknown --lib --no-default-features -- -D warnings

@@ -7,7 +7,7 @@ license = "MIT"
 default-run = "spid3r"
 
 [lib]
-name = "spid3r"
+name = "spid3r_lang"
 path = "src/lib.rs"
 crate-type = ["rlib", "staticlib", "cdylib"]
 

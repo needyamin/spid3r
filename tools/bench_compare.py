@@ -14,12 +14,32 @@ import json
 import shutil
 from pathlib import Path
 
-# Ensure PHP and Python are discoverable from updated Windows PATH if needed
-user_path = os.environ.get("Path", "")
-# Append potential PHP directory if winget installed it
-php_candidate = Path(r"C:\Program Files\PHP\v8.3")
-if php_candidate.exists() and str(php_candidate) not in user_path:
-    os.environ["Path"] = str(php_candidate) + ";" + user_path
+import platform
+
+
+def _ensure_php_on_path():
+    r"""Make `php` discoverable without hardcoding one machine's layout.
+
+    Order: an explicit `SPID3R_PHP_DIR`, then whatever is already on PATH, then
+    the usual Windows install locations. The old code baked in one host's
+    `C:\Program Files\PHP\v8.3`, which is a property of that machine, not of
+    the project (audit A-18).
+    """
+    explicit = os.environ.get("SPID3R_PHP_DIR")
+    if explicit and Path(explicit).is_dir():
+        os.environ["Path"] = explicit + os.pathsep + os.environ.get("Path", "")
+        return
+    if shutil.which("php"):
+        return
+    if platform.system() == "Windows":
+        for version in ("8.4", "8.3", "8.2", "8.1"):
+            candidate = Path(r"C:\Program Files\PHP") / f"v{version}"
+            if candidate.is_dir():
+                os.environ["Path"] = str(candidate) + os.pathsep + os.environ.get("Path", "")
+                return
+
+
+_ensure_php_on_path()
 
 BENCHMARKS = [
     {
@@ -251,11 +271,14 @@ def update_benchmarks_html(data, target_path=None):
     else:
         content = content.replace('</body>', f'{script_tag}\n</body>')
 
-    # Update runs in host environment spec card
-    runs = data.get("runs", 15)
+    # Update the host environment spec card with the *actual* host and the
+    # actual best-of count (the old code wrote a hardcoded "Microsoft Windows 11
+    # x64" string regardless of where it ran).
+    runs = data.get("runs", 3)
+    host = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
     content = re.sub(
         r'(<div class="spec-card">\s*<h4>Host Environment</h4>\s*<div class="val">)[^<]*(</div>)',
-        rf'\g<1>Microsoft Windows 11 x64 · Best-of-{runs} runs\g<2>',
+        rf'\g<1>{host} · Best-of-{runs} runs\g<2>',
         content
     )
 
@@ -267,13 +290,11 @@ def update_benchmarks_html(data, target_path=None):
         except OSError:
             pass
 
-    # Ensure no stray benchmarks.html at the repository root
+    # A stray benchmarks.html at the repository root used to be deleted here.
+    # That is someone else's file: report it and leave it alone.
     root_file = target_path.parent.parent.parent / "benchmarks.html"
     if root_file.exists():
-        try:
-            root_file.unlink()
-        except OSError:
-            pass
+        print(f"[WARN] {root_file} exists at the repository root; leaving it untouched.")
 
     target_path.write_text(content, encoding="utf-8")
 

@@ -63,4 +63,30 @@ impl Ty {
             Ty::Fn(_) => "function".to_string(),
         }
     }
+
+    /// Like [`Ty::name`], but a function type carries its signature
+    /// (`fn(int, string) -> int`). Used in diagnostics where "function" on both
+    /// sides of a mismatch would say nothing (audit A-10).
+    pub fn detail_name(&self) -> String {
+        match self {
+            Ty::Fn(Some(sig)) => {
+                let params: Vec<String> = sig
+                    .params
+                    .iter()
+                    .map(|p| {
+                        p.as_ref()
+                            .map(|t| t.name())
+                            .unwrap_or_else(|| "any".to_string())
+                    })
+                    .collect();
+                let ret = sig
+                    .ret
+                    .as_ref()
+                    .map(|t| t.name())
+                    .unwrap_or_else(|| "any".to_string());
+                format!("fn({}) -> {}", params.join(", "), ret)
+            }
+            other => other.name(),
+        }
+    }
 }

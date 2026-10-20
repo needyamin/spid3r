@@ -1,4 +1,4 @@
-//! Embedding API integration tests (spid3r::embed).
+//! Embedding API integration tests (spid3r_lang::embed).
 //!
 //! These complement the unit tests in src\embed.rs: module resolution from
 //! host-provided directories, engine reuse, exit-code propagation, stdlib
@@ -6,7 +6,7 @@
 //! capture isolation between concurrent engines, and the value conversion
 //! helpers.
 
-use spid3r::embed::{conv, Engine};
+use spid3r_lang::embed::{conv, Engine};
 
 #[test]
 fn run_returns_exit_code_and_captured_output() {
@@ -108,7 +108,7 @@ fn runtime_failure_carries_diagnostic_and_partial_output() {
             "fn main() { println(\"step1\"); assert(false, \"nope\"); return 0; }",
         )
         .unwrap_err();
-    assert_eq!(err.diagnostic.phase, spid3r::diagnostics::Phase::Runtime);
+    assert_eq!(err.diagnostic.phase, spid3r_lang::diagnostics::Phase::Runtime);
     assert!(err.output.contains("step1"), "{}", err.output);
     assert!(err.diagnostic.message.contains("nope"), "{}", err.diagnostic.message);
 }
@@ -117,10 +117,10 @@ fn runtime_failure_carries_diagnostic_and_partial_output() {
 fn check_failures_name_the_phase() {
     let engine = Engine::new();
     for (src, phase) in [
-        ("fn main( { return 0; }", spid3r::diagnostics::Phase::Parser),
+        ("fn main( { return 0; }", spid3r_lang::diagnostics::Phase::Parser),
         (
             "fn main() { return unknown_thing(); }",
-            spid3r::diagnostics::Phase::Semantic,
+            spid3r_lang::diagnostics::Phase::Semantic,
         ),
     ] {
         let err = engine.run("t", src).unwrap_err();
@@ -133,7 +133,7 @@ fn check_failures_name_the_phase() {
 fn value_conversions_round_trip() {
     // Host side: build values, run a script over them, read results back out
     // of the arguments of a host callback.
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<spid3r::Value>::new()));
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<spid3r_lang::Value>::new()));
     let s = seen.clone();
     let engine = Engine::new()
         .set_global(
@@ -147,7 +147,7 @@ fn value_conversions_round_trip() {
         )
         .register("observe", move |args| {
             s.lock().unwrap().extend(args.iter().cloned());
-            Ok(spid3r::Value::Null)
+            Ok(spid3r_lang::Value::Null)
         });
     let out = engine
         .run(

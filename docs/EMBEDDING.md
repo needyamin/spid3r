@@ -1,19 +1,19 @@
 # Embedding Spid3r in Rust applications (API v0)
 
-Spid3r's core is a zero-dependency Rust library. `spid3r::embed` is the
+Spid3r's core is a zero-dependency Rust library. `spid3r_lang::embed` is the
 supported surface for hosting it as a scripting layer — the same contract a
 host would use with Lua, sized for Rust. The API is semver-tracked from this
-document forward; breaking changes to `spid3r::embed` will bump the crate
+document forward; breaking changes to `spid3r_lang::embed` will bump the crate
 minor version.
 
 ## The whole host-side integration (~20 lines)
 
 ```rust
-use spid3r::embed::{conv, Engine};
+use spid3r_lang::embed::{conv, Engine};
 
 let engine = Engine::new()
     .register("shout", |args| {
-        let s = conv::as_str(args.first().unwrap_or(&spid3r::Value::Null)).unwrap_or("");
+        let s = conv::as_str(args.first().unwrap_or(&spid3r_lang::Value::Null)).unwrap_or("");
         Ok(conv::from_string(s.to_uppercase()))
     })
     .set_global("version", conv::from_string("1.0"));

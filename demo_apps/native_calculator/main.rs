@@ -27,5 +27,5 @@ fn main() {
         }
     };
 
-    let _ = spid3r::gui::cmd_gui(&[target]);
+    let _ = spid3r_lang::gui::cmd_gui(&[target]);
 }

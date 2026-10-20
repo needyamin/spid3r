@@ -7,8 +7,8 @@
 //! for the real CLI (GC gate, stall warning) is covered end-to-end in
 //! `tests/stage2_concurrency.rs`.
 
-use spid3r::sched::{Scheduler, TaskOutcome};
-use spid3r::value::Value;
+use spid3r_lang::sched::{Scheduler, TaskOutcome};
+use spid3r_lang::value::Value;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

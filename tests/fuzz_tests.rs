@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use spid3r::lexer;
-use spid3r::parser;
-use spid3r::semantic;
-use spid3r::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc, validate_chunk, FORMAT_MAGIC, FORMAT_VERSION};
-use spid3r::vm::compile_program;
+use spid3r_lang::lexer;
+use spid3r_lang::parser;
+use spid3r_lang::semantic;
+use spid3r_lang::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc, validate_chunk, FORMAT_MAGIC, FORMAT_VERSION};
+use spid3r_lang::vm::compile_program;
 
 struct Rng(u64);
 

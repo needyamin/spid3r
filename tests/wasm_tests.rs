@@ -1,4 +1,4 @@
-use spid3r::wasm::{spid3r_check_json, spid3r_eval_json, spid3r_format_json, spid3r_version_json};
+use spid3r_lang::wasm::{spid3r_check_json, spid3r_eval_json, spid3r_format_json, spid3r_version_json};
 
 #[test]
 fn test_wasm_version() {

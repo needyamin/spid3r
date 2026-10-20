@@ -1,9 +1,9 @@
 //! Phase 2 lexer tests. Covers every keyword, identifiers vs keywords, numbers,
 //! strings and escapes, comments, bad tokens, spans, and keyword-in-string.
 
-use spid3r::diagnostics::{Phase, Span};
-use spid3r::lexer::token::{Keyword, TokenKind};
-use spid3r::lexer::Lexer;
+use spid3r_lang::diagnostics::{Phase, Span};
+use spid3r_lang::lexer::token::{Keyword, TokenKind};
+use spid3r_lang::lexer::Lexer;
 use std::sync::Arc;
 
 fn kinds(src: &str) -> Vec<TokenKind> {
@@ -16,12 +16,12 @@ fn kinds(src: &str) -> Vec<TokenKind> {
         .collect()
 }
 
-fn lex(src: &str) -> Vec<spid3r::lexer::token::Token> {
+fn lex(src: &str) -> Vec<spid3r_lang::lexer::token::Token> {
     let file: Arc<str> = Arc::from("t.matrix");
     Lexer::new(src, file).tokenize().unwrap()
 }
 
-fn lex_err(src: &str) -> spid3r::diagnostics::Diagnostic {
+fn lex_err(src: &str) -> spid3r_lang::diagnostics::Diagnostic {
     let file: Arc<str> = Arc::from("t.matrix");
     Lexer::new(src, file).tokenize().unwrap_err()
 }

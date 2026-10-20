@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 496 Rust tests green (481 core incl. 2 doc-tests + 10 GUI + 5 AOT;
+State: 500 Rust tests green (484 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -37,7 +37,12 @@ crate version 1.0.0.
 GaliLang/
   Cargo.toml          crate config; features: native (inkwell/LLVM 18.1+),
                       gui (wry+tao); profile.dev has incremental=false
-                      (REQUIRED: OneDrive corrupts cargo's incremental cache)
+                      (REQUIRED: OneDrive corrupts cargo's incremental cache).
+                      Package + bin are `spid3r`; the LIB target is `spid3r_lang`
+                      (`use spid3r_lang::...`) so its cdylib artifact no longer
+                      collides with the binary's spid3r.pdb on MSVC (audit F2).
+                      Staticlib = spid3r_lang.lib / libspid3r_lang.a (the
+                      pre-rename name is still searched for old installs).
   Cargo.lock          committed (binary application)
   build.rs            links LLVM C API only when feature "native" is on; stages
                       and builds Windows installer in release mode (nested
@@ -57,7 +62,8 @@ GaliLang/
   src/                the compiler, interpreters, VM, stdlib, tooling (see [4])
   tests/              integration + differential + fuzz tests (see [7])
   fuzz/               cargo-fuzz targets (fuzz_lexer, fuzz_parser, fuzz_bytecode)
-  examples/           23 .matrix programs + gui/counter (see [8])
+  examples/           25 .matrix files: 24 runnable programs + 1 shared
+                      library module (math_util), plus gui/web assets (see [8])
   demo_apps/          web & native calculator demo applications (shipped in Windows installer)
   benchmarks/         .matrix benchmarks for `spid3r bench`
   docs/               deep-dive .md documents + AUDIT_REPORT.md (see [9])
@@ -65,7 +71,8 @@ GaliLang/
                       (opt-in + SHA-256 + fail closed), `#[path]`-included by
                       build.rs and by tests/artifact_hardening.rs
   tools/              gate.sh (full CI gate), difftest.sh (3-engine diff),
-                      native_diff.sh (AOT vs interpreter)
+                      native_diff.sh (AOT vs interpreter), count_tests.sh
+                      (canonical test/example/fuzz counts — quote these numbers)
   packaging/nsis/     Windows installer (see [10])
   target/             cargo build output (git-ignored)
 
@@ -73,7 +80,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 496 tests (481 with --no-default-features + 15 gui/aot), must stay green
+  cargo test                  FULL suite, 500 tests (484 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -211,7 +218,12 @@ GaliLang/
                        gui_eval, gui_on, gui_emit; page -> window.spid3r.emit;
                        --dry-run headless replay
   native/{ir,llvm,link,rt,modules}.rs   LLVM AOT backend (feature "native");
-                       rejects class-in-fn with a clear diagnostic
+                       rejects class-in-fn with a clear diagnostic. A-12:
+                       upvalue cells are AtomicPtr (spawned tasks share captured
+                       variables), env arrays carry a length header and
+                       bounds-check their index, and the FFI entry points run
+                       under catch_unwind so an internal panic becomes a script
+                       error (or a clean sentinel) instead of an abort.
 
 [5] ARCHITECTURE INVARIANTS — DO NOT BREAK
 --------------------------------------------------------------------------------
@@ -294,7 +306,7 @@ GaliLang/
 
 [7] TESTS (tests/) — one suite per area, all must pass
 --------------------------------------------------------------------------------
-  audit_regressions.rs   78 engine-parity + contract regressions from the 2026-10
+  audit_regressions.rs   83 engine-parity + contract regressions from the 2026-10
                          audits (closures, nested upvalues, local named fn,
                          finally on return/break/continue, cycle-safe containers,
                          self-argument collection methods, linked_list pop_back,
@@ -352,7 +364,7 @@ GaliLang/
                          opt_tests.rs, debug_tests.rs (scripted debugger),
                          fmt_tests.rs, pkg_tests.rs (39: manifest/install/tar/
                          sha256/registry), net_tests.rs (4), wasm_tests.rs (6),
-                         bundle_tests.rs (4), gui_tests.rs (10) + native_tests.rs
+                         bundle_tests.rs (4), gui_tests.rs (10) + native_tests.rs (6)
 
 [8] EXAMPLES (examples/) — all must pass the 3-engine differential
 --------------------------------------------------------------------------------

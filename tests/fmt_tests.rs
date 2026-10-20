@@ -5,10 +5,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use spid3r::fmt::format_source;
-use spid3r::lexer::Lexer;
+use spid3r_lang::fmt::format_source;
+use spid3r_lang::lexer::Lexer;
 
-fn tokens_of(src: &str) -> Vec<spid3r::lexer::token::TokenKind> {
+fn tokens_of(src: &str) -> Vec<spid3r_lang::lexer::token::TokenKind> {
     let file: Arc<str> = Arc::from("<fmt-test>");
     Lexer::new(src, file)
         .tokenize()

@@ -3,18 +3,18 @@
 //! Run with: `cargo run --example embed_hello`
 //! Full API reference: docs/EMBEDDING.md
 
-use spid3r::embed::{conv, Engine};
+use spid3r_lang::embed::{conv, Engine};
 
 fn main() {
     // 1. Configure the engine: host functions + host globals.
     let engine = Engine::new()
         .register("shout", |args| {
-            let s = conv::as_str(args.first().unwrap_or(&spid3r::Value::Null)).unwrap_or("");
+            let s = conv::as_str(args.first().unwrap_or(&spid3r_lang::Value::Null)).unwrap_or("");
             Ok(conv::from_string(s.to_uppercase()))
         })
         .register("add", |args| {
-            let a = conv::as_i64(args.first().unwrap_or(&spid3r::Value::Null)).unwrap_or(0);
-            let b = conv::as_i64(args.get(1).unwrap_or(&spid3r::Value::Null)).unwrap_or(0);
+            let a = conv::as_i64(args.first().unwrap_or(&spid3r_lang::Value::Null)).unwrap_or(0);
+            let b = conv::as_i64(args.get(1).unwrap_or(&spid3r_lang::Value::Null)).unwrap_or(0);
             Ok(conv::from_i64(a + b))
         })
         .register("host_time_ms", |_args| {

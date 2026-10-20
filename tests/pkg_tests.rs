@@ -368,26 +368,26 @@ fn add_git_dep(base: &Path, name: &str, version: &str, body: &str) -> PathBuf {
 
 #[test]
 fn parses_git_dependencies() {
-    let m = spid3r::pkg::parse_manifest(
+    let m = spid3r_lang::pkg::parse_manifest(
         "[package]\nname = \"app\"\n\n[dependencies]\nmathlib = { git = \"https://example.com/mathlib\", rev = \"main\" }\nutil = { git = \"https://example.com/util\" }\n",
     )
     .expect("parse");
     assert_eq!(
         m.deps[0].source,
-        spid3r::pkg::DepSource::Git {
+        spid3r_lang::pkg::DepSource::Git {
             url: "https://example.com/mathlib".to_string(),
             rev: Some("main".to_string())
         }
     );
     assert_eq!(
         m.deps[1].source,
-        spid3r::pkg::DepSource::Git {
+        spid3r_lang::pkg::DepSource::Git {
             url: "https://example.com/util".to_string(),
             rev: None
         }
     );
     // Both keys at once is rejected.
-    assert!(spid3r::pkg::parse_manifest(
+    assert!(spid3r_lang::pkg::parse_manifest(
         "[package]\nname = \"a\"\n\n[dependencies]\nx = { path = \"../x\", git = \"u\" }\n"
     )
     .is_err());
@@ -512,7 +512,7 @@ fn a_git_dependency_that_is_not_a_repository_fails_clearly() {
 
 #[test]
 fn version_constraints_match_as_documented() {
-    use spid3r::pkg::{Constraint, Version};
+    use spid3r_lang::pkg::{Constraint, Version};
     let v = |s| Version::parse(s).expect("parse");
     // ^1.2.3: same major, at least 1.2.3.
     let caret = Constraint::parse("^1.2.3").expect("parse");
@@ -830,14 +830,14 @@ fn the_same_dependency_name_from_two_sources_is_a_workspace_error() {
 
 #[test]
 fn a_workspace_only_root_parses_without_a_package() {
-    let m = spid3r::pkg::parse_manifest(
+    let m = spid3r_lang::pkg::parse_manifest(
         "[workspace]\nmembers = [\"a\", \"b\"]\n",
     )
     .expect("parse");
     assert!(m.package.is_none());
     assert_eq!(m.members, vec!["a".to_string(), "b".to_string()]);
     // A manifest with neither package nor workspace is still an error.
-    assert!(spid3r::pkg::parse_manifest("").is_err());
+    assert!(spid3r_lang::pkg::parse_manifest("").is_err());
 }
 
 // ------------------------------------------------- assert builtins + workspace test
@@ -954,13 +954,13 @@ fn tar_round_trips_entries_exactly() {
             vec![b'x'; 5000], // spans multiple 512-byte blocks
         ),
     ];
-    let data = spid3r::pkg::write_tar(&entries);
-    let back = spid3r::pkg::read_tar(&data).expect("read_tar");
+    let data = spid3r_lang::pkg::write_tar(&entries);
+    let back = spid3r_lang::pkg::read_tar(&data).expect("read_tar");
     assert_eq!(back, entries, "tar round-trip must be exact");
     // The archive is 512-byte aligned overall (plus the 1024-byte terminator).
     assert_eq!(data.len() % 512, 0);
     // Deterministic: same input, same bytes.
-    assert_eq!(spid3r::pkg::write_tar(&entries), data);
+    assert_eq!(spid3r_lang::pkg::write_tar(&entries), data);
 }
 
 #[test]
@@ -1094,7 +1094,7 @@ fn workspace_pack_archives_every_member() {
 
     // Each archive is a valid tar of its member: unpack and check contents.
     let data = std::fs::read(ws.join("dist/core-0.5.0.tar")).expect("read");
-    let entries = spid3r::pkg::read_tar(&data).expect("parse");
+    let entries = spid3r_lang::pkg::read_tar(&data).expect("parse");
     assert!(
         entries.iter().any(|(n, _)| n == "src/lib.matrix"),
         "core entries: {:?}",
@@ -1182,13 +1182,13 @@ fn tar_supports_ustar_prefix_and_longlink_and_verifies_checksum() {
         (ustar_path.clone(), b"public fn a() { return 1; }\n".to_vec()),
         (longlink_path.clone(), b"public fn b() { return 2; }\n".to_vec()),
     ];
-    let mut archive = spid3r::pkg::write_tar(&entries);
-    let decoded = spid3r::pkg::read_tar(&archive).expect("read_tar with long names");
+    let mut archive = spid3r_lang::pkg::write_tar(&entries);
+    let decoded = spid3r_lang::pkg::read_tar(&archive).expect("read_tar with long names");
     assert_eq!(decoded, entries, "long paths must round-trip without truncation");
 
     // 3. Corrupt a byte in the first header and verify checksum rejection.
     archive[0] ^= 0xff;
-    let err = spid3r::pkg::read_tar(&archive).expect_err("corrupted header must fail checksum");
+    let err = spid3r_lang::pkg::read_tar(&archive).expect_err("corrupted header must fail checksum");
     assert!(
         err.contains("checksum mismatch"),
         "expected checksum mismatch error, got: {}",
@@ -1432,11 +1432,11 @@ fn non_matrix_and_binary_assets_are_vendored_and_hashed() {
     assert_eq!(p.run(&["install"]).0, 0);
     assert!(p.exists("vendor/withdata/table.txt"), "data asset not vendored");
     assert!(p.exists("vendor/withdata/blob.bin"), "binary asset not vendored");
-    let hash_before = spid3r::pkg::tree_hash(&dep).expect("tree hash");
+    let hash_before = spid3r_lang::pkg::tree_hash(&dep).expect("tree hash");
 
     // A different non-UTF-8 payload must change the hash.
     std::fs::write(dep.join("src/blob.bin"), [0x90u8, 0x91, 0x92]).expect("write");
-    let hash_after = spid3r::pkg::tree_hash(&dep).expect("tree hash");
+    let hash_after = spid3r_lang::pkg::tree_hash(&dep).expect("tree hash");
     assert_ne!(
         hash_before, hash_after,
         "binary content must be hashed as raw bytes, not lossily decoded"
@@ -1444,7 +1444,7 @@ fn non_matrix_and_binary_assets_are_vendored_and_hashed() {
 
     // Changing only the data asset must change the hash too.
     std::fs::write(dep.join("src/table.txt"), "4,5,6\n").expect("write");
-    let hash_asset = spid3r::pkg::tree_hash(&dep).expect("tree hash");
+    let hash_asset = spid3r_lang::pkg::tree_hash(&dep).expect("tree hash");
     assert_ne!(hash_after, hash_asset, "a data asset must be covered by the hash");
 }
 
@@ -1452,7 +1452,7 @@ fn non_matrix_and_binary_assets_are_vendored_and_hashed() {
 /// with no opt-in environment variables set.
 #[test]
 fn the_git_transport_policy_accepts_only_network_transports_by_default() {
-    use spid3r::pkg::validate_git_url;
+    use spid3r_lang::pkg::validate_git_url;
     let ok = [
         "https://github.com/acme/lib.git",
         "https://example.com/a/b?x=1",

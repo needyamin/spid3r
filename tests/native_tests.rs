@@ -372,3 +372,79 @@ fn main() {
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&exe);
 }
+
+#[test]
+fn native_matches_tree_on_captured_state_and_spawned_tasks() {
+    // Audit A-12: upvalue cells are now atomic and environment arrays carry a
+    // length header, so closures and spawned tasks that share captured state
+    // must still behave exactly like the tree engine.
+    if !native_available() {
+        eprintln!("skip: LLVM-C.dll not found");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let src_path = dir.join("spid3r_nat_captures.matrix");
+    let src = r#"fn counter() {
+    let n = 0;
+    return fn() {
+        n = n + 1;
+        return n;
+    };
+}
+
+async fn wait(t) {
+    return await t;
+}
+
+fn main() {
+    let a = counter();
+    println(a());
+    println(a());
+    let b = counter();
+    println(b());
+    let hits = 0;
+    let ts = list();
+    let i = 0;
+    while (i < 8) {
+        ts.push(spawn fn() {
+            hits = hits + 1;
+        });
+        i = i + 1;
+    }
+    let j = 0;
+    while (j < 8) {
+        wait(ts[j]);
+        j = j + 1;
+    }
+    println(hits >= 1);
+    println(hits <= 8);
+    return 0;
+}
+"#;
+    std::fs::write(&src_path, src).expect("write scratch");
+    let src_path = src_path.to_str().unwrap().to_string();
+
+    let tree = out(&["run", "--engine", "tree", &src_path])
+        .unwrap_or_else(|e| panic!("tree run failed:/n{}", e));
+
+    let exe = dir.join(if cfg!(windows) {
+        "spid3r_nat_captures.exe"
+    } else {
+        "spid3r_nat_captures"
+    });
+    let exe = exe.to_str().unwrap().to_string();
+    out(&["build", &src_path, "-o", &exe])
+        .unwrap_or_else(|e| panic!("native build failed:/n{}", e));
+    let native = run_exe(&exe).unwrap_or_else(|e| panic!("native run failed:/n{}", e));
+    assert_eq!(
+        tree, native,
+        "tree vs native stdout differ for captured state / spawned tasks"
+    );
+    assert!(
+        tree.starts_with("1\n2\n1\n"),
+        "closure counter output drifted: {}",
+        tree
+    );
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe);
+}

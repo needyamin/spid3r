@@ -123,7 +123,7 @@ pub struct NativeCtx {
 
 /// A host-registered closure (embedding API): like [`NativeFn`], but carrying
 /// Rust state, so a host application can expose its own functionality with
-/// captured data. Registered through `spid3r::embed::Engine::register`.
+/// captured data. Registered through `spid3r_lang::embed::Engine::register`.
 #[derive(Clone)]
 pub struct NativeClosureData {
     pub name: String,

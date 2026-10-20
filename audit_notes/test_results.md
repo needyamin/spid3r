@@ -44,7 +44,7 @@ Counts map to targets by positional pairing with cargo's fixed target order; the
 | `difftest.rs` | 3 (verified standalone) | | `pkg_tests.rs` | 39 (verified standalone) |
 | `error_tests.rs` | 3 | | `sched_tests.rs` | 9 |
 | `fmt_tests.rs` | 11 | | `vm_dispatch_tests.rs` | 5 |
-| `fuzz_tests.rs` | 10 | | `wasm_tests.rs` | 6 |
+| `fuzz_tests.rs` | 3 | | `wasm_tests.rs` | 6 |
 | `gradual_typing_tests.rs` | 3 | | `weak_tests.rs` | 6 |
 | `gui_tests.rs` | 0 (feature-gated; 10 with default features) | | Doc-tests | 0 |
 

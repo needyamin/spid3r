@@ -604,21 +604,21 @@ fn lexer_bom_crlf_comments_float_overflow_and_multiline_escape_span() {
 
     // Overflowing float literal is rejected at lex time.
     let overflow_float = format!("fn main() {{ let x = {}.0; return 0; }}", "9".repeat(310));
-    assert!(spid3r::lexer::Lexer::new(&overflow_float, std::sync::Arc::from("<test>")).tokenize().is_err());
+    assert!(spid3r_lang::lexer::Lexer::new(&overflow_float, std::sync::Arc::from("<test>")).tokenize().is_err());
 
     // Backslash followed by newline in string literal does not underflow column.
     let bs_newline = "fn main() { let s = \"\\\n\"; return 0; }";
-    assert!(spid3r::lexer::Lexer::new(bs_newline, std::sync::Arc::from("<test>")).tokenize().is_err());
+    assert!(spid3r_lang::lexer::Lexer::new(bs_newline, std::sync::Arc::from("<test>")).tokenize().is_err());
 
     // Unexpected multi-byte UTF-8 character reports the full character.
-    let err = spid3r::lexer::Lexer::new("€", std::sync::Arc::from("<test>")).tokenize().unwrap_err();
+    let err = spid3r_lang::lexer::Lexer::new("€", std::sync::Arc::from("<test>")).tokenize().unwrap_err();
     assert!(err.message.contains("'€'"), "got: {}", err.message);
 }
 
 #[test]
 fn parser_deep_nesting_returns_diagnostic_instead_of_stack_overflow() {
     let deep_parens = format!("fn main() {{ let x = {}1{}; return 0; }}", "(".repeat(300), ")".repeat(300));
-    let err = spid3r::parser::parse_file(&deep_parens, std::sync::Arc::from("<test>")).unwrap_err();
+    let err = spid3r_lang::parser::parse_file(&deep_parens, std::sync::Arc::from("<test>")).unwrap_err();
     assert!(
         err.message.contains("nesting deeper than"),
         "unexpected error: {}",
@@ -628,8 +628,8 @@ fn parser_deep_nesting_returns_diagnostic_instead_of_stack_overflow() {
 
 #[test]
 fn bytecode_deserializer_rejects_truncated_constants_huge_counts_and_negative_jumps() {
-    use spid3r::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc, validate_chunk, Chunk, OpCode};
-    use spid3r::value::{Value, VmFunc};
+    use spid3r_lang::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc, validate_chunk, Chunk, OpCode};
+    use spid3r_lang::value::{Value, VmFunc};
     use std::sync::Arc;
 
     // 1. Huge constant count in header must fail immediately without OOM.
@@ -718,10 +718,10 @@ fn main() {
 
 #[test]
 fn vm_stack_trace_preserves_exact_line_numbers_across_calls_and_throws() {
-    use spid3r::parser;
-    use spid3r::semantic;
-    use spid3r::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc};
-    use spid3r::vm::{compile_program, Vm};
+    use spid3r_lang::parser;
+    use spid3r_lang::semantic;
+    use spid3r_lang::vm::bytecode::{deserialize_vmfunc, serialize_vmfunc};
+    use spid3r_lang::vm::{compile_program, Vm};
     use std::sync::Arc;
 
     // Line 1: fn leaf(a, b) {
@@ -781,7 +781,7 @@ fn vm_stack_trace_preserves_exact_line_numbers_across_calls_and_throws() {
 
 #[test]
 fn native_staticlib_discovery_supports_env_overrides_and_sysroot_layouts() {
-    use spid3r::native::{runtime_lib_name, staticlib_candidates};
+    use spid3r_lang::native::{runtime_lib_name, staticlib_candidates};
     use std::path::Path;
 
     let name = runtime_lib_name();
@@ -958,7 +958,7 @@ fn crafted_matrixc_overflowing_string_length_is_rejected() {
     bytes.extend_from_slice(&1u16.to_le_bytes()); // format version
     bytes.push(1); // opt_str tag: Some
     bytes.extend_from_slice(&u64::MAX.to_le_bytes()); // string length
-    let crafted_err = match spid3r::vm::bytecode::deserialize_vmfunc(&bytes) {
+    let crafted_err = match spid3r_lang::vm::bytecode::deserialize_vmfunc(&bytes) {
         Err(e) => e,
         Ok(_) => panic!("crafted header must be rejected"),
     };
