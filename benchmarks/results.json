@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-10-20 10:27:39",
-  "runs": 15,
+  "timestamp": "2026-10-20 22:38:14",
+  "runs": 1,
   "versions": {
     "spid3r": "spid3r 1.0.0 (language 1.0)\nRust host, no runtime dependencies.",
     "python": "Python 3.15.0",
@@ -12,88 +12,88 @@
       "name": "Arithmetic & Loop",
       "desc": "Tight loop of 2M iterations accumulating integer additions (tests loop & ALU throughput)",
       "expected": "1999999000000",
-      "spid3r_vm_ms": 43.5075000004872,
-      "spid3r_exec_ms": 43.21479999998701,
-      "spid3r_tree_ms": 367.1162999999069,
-      "python_ms": 55.620099999941885,
-      "php_ms": 41.076800000155345
+      "spid3r_vm_ms": 45.86550000385614,
+      "spid3r_exec_ms": 46.17270000017015,
+      "spid3r_tree_ms": 376.18620000284864,
+      "python_ms": 61.063900000590365,
+      "php_ms": 43.52760000620037
     },
     {
       "id": "list",
       "name": "List Churn",
       "desc": "Push 100K elements to dynamic array then pop all elements summing their values",
       "expected": "4999950000",
-      "spid3r_vm_ms": 32.10709999984829,
-      "spid3r_exec_ms": 31.89600000041537,
-      "spid3r_tree_ms": 53.77860000044166,
-      "python_ms": 21.219400000518363,
-      "php_ms": 25.577700000212644
+      "spid3r_vm_ms": 35.43649999483023,
+      "spid3r_exec_ms": 33.44739999738522,
+      "spid3r_tree_ms": 56.6259999977774,
+      "python_ms": 26.831899995158892,
+      "php_ms": 29.278800000611227
     },
     {
       "id": "map",
       "name": "Map / Dict Operations",
       "desc": "Insert 20K key-value pairs into a hash table and look up all keys",
       "expected": "199990000",
-      "spid3r_vm_ms": 26.369100000010803,
-      "spid3r_exec_ms": 25.877399999444606,
-      "spid3r_tree_ms": 37.42820000024949,
-      "python_ms": 19.65829999971902,
-      "php_ms": 24.37129999998433
+      "spid3r_vm_ms": 28.608200002054218,
+      "spid3r_exec_ms": 26.765800001157913,
+      "spid3r_tree_ms": 40.398700002697296,
+      "python_ms": 24.704399998881854,
+      "php_ms": 26.78860000014538
     },
     {
       "id": "strings",
       "name": "String Concatenation",
       "desc": "Sequential concatenation building a 30,000-character string in a loop",
       "expected": "30000",
-      "spid3r_vm_ms": 12.781700000232377,
-      "spid3r_exec_ms": 12.857200000325975,
-      "spid3r_tree_ms": 33.652400000391935,
-      "python_ms": 16.93740000064281,
-      "php_ms": 25.799400000323658
+      "spid3r_vm_ms": 14.951800003473181,
+      "spid3r_exec_ms": 14.170899994496722,
+      "spid3r_tree_ms": 35.70610000315355,
+      "python_ms": 19.908999995095655,
+      "php_ms": 27.694900003552902
     },
     {
       "id": "closures",
       "name": "Closure Creation & Calls",
       "desc": "Create and invoke 20,000 heap-allocated closures capturing lexical environments",
       "expected": "399980000",
-      "spid3r_vm_ms": 18.124100000022736,
-      "spid3r_exec_ms": 18.249699999614677,
-      "spid3r_tree_ms": 39.05480000048556,
-      "python_ms": 17.52649999980349,
-      "php_ms": 23.856099999647995
+      "spid3r_vm_ms": 20.692500002041925,
+      "spid3r_exec_ms": 19.991399996797554,
+      "spid3r_tree_ms": 40.4398000027868,
+      "python_ms": 21.792600004118867,
+      "php_ms": 33.34549999999581
     },
     {
       "id": "methods",
       "name": "Class Method Dispatch",
       "desc": "Instantiate an object and invoke an incrementing instance method 200,000 times",
       "expected": "200000",
-      "spid3r_vm_ms": 64.21000000045751,
-      "spid3r_exec_ms": 62.86290000025474,
-      "spid3r_tree_ms": 123.50799999967421,
-      "python_ms": 20.954300000084913,
-      "php_ms": 30.53040000031615
+      "spid3r_vm_ms": 64.3934999970952,
+      "spid3r_exec_ms": 63.96119999408256,
+      "spid3r_tree_ms": 125.14650000230176,
+      "python_ms": 27.397199999541044,
+      "php_ms": 33.099300002504606
     },
     {
       "id": "json",
       "name": "JSON Parse & Stringify",
       "desc": "Serialize 2,000 structured nested maps/lists to JSON strings and parse them back",
       "expected": "1999000",
-      "spid3r_vm_ms": 18.36159999947995,
-      "spid3r_exec_ms": 18.10699999987264,
-      "spid3r_tree_ms": 20.561999999699765,
-      "python_ms": 30.757200000152807,
-      "php_ms": 24.003699999411765
+      "spid3r_vm_ms": 20.708099997136742,
+      "spid3r_exec_ms": 19.936099997721612,
+      "spid3r_tree_ms": 22.662600000330713,
+      "python_ms": 34.655299998121336,
+      "php_ms": 25.795900000957772
     },
     {
       "id": "tasks",
       "name": "Concurrency / Channels",
       "desc": "Producer-consumer message passing across tasks/threads transmitting 2,000 messages",
       "expected": "3998000",
-      "spid3r_vm_ms": 13.062500000160071,
-      "spid3r_exec_ms": 12.803200000234938,
-      "spid3r_tree_ms": 14.305400000012014,
-      "python_ms": 22.989200000665733,
-      "php_ms": 22.061499999836087
+      "spid3r_vm_ms": 15.18930000020191,
+      "spid3r_exec_ms": 14.431399999011774,
+      "spid3r_tree_ms": 16.91469999786932,
+      "python_ms": 25.96619999530958,
+      "php_ms": 24.147700001776684
     }
   ]
 }

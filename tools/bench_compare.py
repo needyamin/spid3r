@@ -2,11 +2,12 @@
 """
 tools/bench_compare.py - Multi-language benchmark runner and comparative analyzer.
 Compares Spid3r (Tree-walk, Bytecode VM, and Compiled .matrixc) against Python 3 and PHP.
-Generates both terminal output and a beautiful interactive benchmarks.html report.
+Generates terminal output and updates the official docs/html/benchmarks.html interactive report.
 """
 
 import sys
 import os
+import re
 import time
 import subprocess
 import json
@@ -226,256 +227,55 @@ def main():
     with open("benchmarks/results.json", "w") as f:
         json.dump(report_data, f, indent=2)
 
-    # Generate raw HTML report artifact at repository root
-    generate_html_report(report_data, "benchmarks.html")
-    print(f"\n[OK] Benchmark run complete! Results written to benchmarks.html and benchmarks/results.json")
+    # Update official interactive HTML report in docs/html/benchmarks.html
+    update_benchmarks_html(report_data)
+    print(f"\n[OK] Benchmark run complete! Results written to docs/html/benchmarks.html and benchmarks/results.json")
 
-def generate_html_report(data, out_path):
-    benchmarks = data["benchmarks"]
-    rows = []
-    
-    # Calculate geometric means / speedups
-    for b in benchmarks:
-        svm = b["spid3r_vm_ms"]
-        sexec = b["spid3r_exec_ms"]
-        stree = b["spid3r_tree_ms"]
-        py = b["python_ms"]
-        php = b["php_ms"]
+def update_benchmarks_html(data, target_path=None):
+    if target_path is None:
+        target_path = Path(__file__).resolve().parent.parent / "docs" / "html" / "benchmarks.html"
+    else:
+        target_path = Path(target_path)
 
-        # Comparison ratio: how many times faster/slower relative to Python (py / time)
-        # e.g., > 1.0 means faster than Python, < 1.0 means slower
-        speedup_vm_vs_py = py / svm if svm > 0 else 0
-        speedup_php_vs_py = (py / php) if php and php > 0 else 0
+    if not target_path.exists():
+        print(f"[WARN] {target_path} not found. Skipping HTML update.")
+        return
 
-        rows.append(f"""
-        <tr>
-          <td><strong>{b['name']}</strong><br><small class="desc">{b['desc']}</small></td>
-          <td class="num font-mono"><strong>{svm:.1f} ms</strong></td>
-          <td class="num font-mono">{sexec:.1f} ms</td>
-          <td class="num font-mono">{stree:.1f} ms</td>
-          <td class="num font-mono">{py:.1f} ms</td>
-          <td class="num font-mono">{f"{php:.1f} ms" if php else "N/A"}</td>
-          <td class="num font-mono highlight">{f"{speedup_vm_vs_py:.2f}x" if speedup_vm_vs_py >= 1 else f"{speedup_vm_vs_py:.2f}x"}</td>
-          <td class="num font-mono">{f"{speedup_php_vs_py:.2f}x" if php else "N/A"}</td>
-        </tr>
-        """)
+    content = target_path.read_text(encoding="utf-8")
 
-    table_rows = "\n".join(rows)
+    # Embed or update the JSON data in <script id="benchmark-data" type="application/json">
+    json_str = json.dumps(data, indent=2)
+    script_tag = f'<script id="benchmark-data" type="application/json">\n{json_str}\n</script>'
+    if '<script id="benchmark-data"' in content:
+        content = re.sub(r'<script id="benchmark-data"[^>]*>.*?</script>', script_tag, content, flags=re.DOTALL)
+    else:
+        content = content.replace('</body>', f'{script_tag}\n</body>')
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Spid3r vs Python vs PHP Benchmark Report</title>
-<style>
-  :root {{
-    --bg: #0f141c;
-    --card: #18202c;
-    --card-border: #283548;
-    --text: #e2e8f0;
-    --text-muted: #94a3b8;
-    --accent: #38bdf8;
-    --accent-glow: rgba(56, 189, 248, 0.15);
-    --green: #4ade80;
-    --amber: #fbbf24;
-    --table-stripe: #131b26;
-  }}
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    line-height: 1.6;
-    padding: 2.5rem 1.5rem;
-  }}
-  .container {{
-    max-width: 1100px;
-    margin: 0 auto;
-  }}
-  header {{
-    margin-bottom: 2.5rem;
-    padding-bottom: 1.5rem;
-    border-bottom: 1px solid var(--card-border);
-  }}
-  h1 {{
-    font-size: 2.2rem;
-    font-weight: 700;
-    color: #fff;
-    margin-bottom: 0.5rem;
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-  }}
-  h1 .badge {{
-    font-size: 0.85rem;
-    padding: 0.2rem 0.6rem;
-    border-radius: 999px;
-    background: var(--accent-glow);
-    color: var(--accent);
-    border: 1px solid var(--accent);
-    vertical-align: middle;
-  }}
-  .subtitle {{
-    color: var(--text-muted);
-    font-size: 1.05rem;
-  }}
-  .meta-grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 1rem;
-    margin: 1.5rem 0 2.5rem 0;
-  }}
-  .meta-card {{
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: 10px;
-    padding: 1.25rem;
-  }}
-  .meta-card h3 {{
-    font-size: 0.9rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    margin-bottom: 0.5rem;
-  }}
-  .meta-card .val {{
-    font-size: 1.15rem;
-    font-weight: 600;
-    color: #fff;
-  }}
-  .table-wrap {{
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: 12px;
-    overflow-x: auto;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.3);
-  }}
-  table {{
-    width: 100%;
-    border-collapse: collapse;
-    text-align: left;
-    font-size: 0.95rem;
-  }}
-  th {{
-    background: #1e293b;
-    color: #cbd5e1;
-    font-weight: 600;
-    padding: 1rem 1.2rem;
-    border-bottom: 2px solid var(--card-border);
-    white-space: nowrap;
-  }}
-  td {{
-    padding: 1rem 1.2rem;
-    border-bottom: 1px solid var(--card-border);
-    vertical-align: middle;
-  }}
-  tr:nth-child(even) {{ background: var(--table-stripe); }}
-  tr:hover {{ background: rgba(56, 189, 248, 0.06); }}
-  .num {{ text-align: right; }}
-  .font-mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }}
-  .desc {{ color: var(--text-muted); font-size: 0.8rem; display: block; margin-top: 0.2rem; }}
-  .highlight {{ color: var(--green); font-weight: 700; }}
-  .takeaway-grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 1.25rem;
-    margin-top: 2.5rem;
-  }}
-  .takeaway-card {{
-    background: var(--card);
-    border: 1px solid var(--card-border);
-    border-radius: 10px;
-    padding: 1.5rem;
-  }}
-  .takeaway-card h3 {{
-    color: var(--accent);
-    margin-bottom: 0.6rem;
-    font-size: 1.1rem;
-  }}
-  .takeaway-card p {{
-    color: var(--text-muted);
-    font-size: 0.92rem;
-  }}
-  footer {{
-    margin-top: 3.5rem;
-    text-align: center;
-    color: var(--text-muted);
-    font-size: 0.85rem;
-    border-top: 1px solid var(--card-border);
-    padding-top: 1.5rem;
-  }}
-</style>
-</head>
-<body>
-<div class="container">
-  <header>
-    <h1>Spid3r vs Python vs PHP <span class="badge">Benchmark Suite</span></h1>
-    <p class="subtitle">Fair, identical-workload comparison across all language runtimes with checksum validation.</p>
-  </header>
+    # Update runs in host environment spec card
+    runs = data.get("runs", 15)
+    content = re.sub(
+        r'(<div class="spec-card">\s*<h4>Host Environment</h4>\s*<div class="val">)[^<]*(</div>)',
+        rf'\g<1>Microsoft Windows 11 x64 · Best-of-{runs} runs\g<2>',
+        content
+    )
 
-  <div class="meta-grid">
-    <div class="meta-card">
-      <h3>Spid3r Toolchain</h3>
-      <div class="val">{data['versions']['spid3r']}</div>
-      <small style="color:var(--text-muted)">Rust-powered VM & Bytecode Compiler</small>
-    </div>
-    <div class="meta-card">
-      <h3>Python Version</h3>
-      <div class="val">{data['versions']['python']}</div>
-      <small style="color:var(--text-muted)">CPython 64-bit</small>
-    </div>
-    <div class="meta-card">
-      <h3>PHP Version</h3>
-      <div class="val">{data['versions']['php']}</div>
-      <small style="color:var(--text-muted)">Zend Engine 64-bit CLI</small>
-    </div>
-  </div>
+    # Clean up benchmark compiled bytecode
+    bench_dir = target_path.parent.parent.parent / "benchmarks"
+    for mc in bench_dir.glob("*.matrixc"):
+        try:
+            mc.unlink()
+        except OSError:
+            pass
 
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Benchmark Workload</th>
-          <th class="num">Spid3r (VM)</th>
-          <th class="num">Spid3r (.matrixc)</th>
-          <th class="num">Spid3r (Tree)</th>
-          <th class="num">Python 3</th>
-          <th class="num">PHP 8</th>
-          <th class="num">Spid3r vs Py</th>
-          <th class="num">PHP vs Py</th>
-        </tr>
-      </thead>
-      <tbody>
-        {table_rows}
-      </tbody>
-    </table>
-  </div>
+    # Ensure no stray benchmarks.html at the repository root
+    root_file = target_path.parent.parent.parent / "benchmarks.html"
+    if root_file.exists():
+        try:
+            root_file.unlink()
+        except OSError:
+            pass
 
-  <div class="takeaway-grid">
-    <div class="takeaway-card">
-      <h3>⚡ Spid3r VM vs Python 3</h3>
-      <p>Spid3r's bytecode VM with upvalues and stack-based operand caching executes object method dispatch and tight arithmetic with competitive efficiency to standard CPython, while compiling instantly without JIT startup pauses.</p>
-    </div>
-    <div class="takeaway-card">
-      <h3>📦 Bytecode (.matrixc) Precompilation</h3>
-      <p>Directly executing standalone <code>.matrixc</code> bytecode eliminates AST parsing and semantic analysis overhead, delivering faster cold-start execution times.</p>
-    </div>
-    <div class="takeaway-card">
-      <h3>🐘 PHP 8 Zend Engine</h3>
-      <p>PHP 8's highly tuned opcode engine performs very well in array churn and string manipulations, providing a strong reference baseline for dynamic language optimization.</p>
-    </div>
-  </div>
-
-  <footer>
-    Generated on {data['timestamp']} · Best-of-{data['runs']} runs · Self-contained report
-  </footer>
-</div>
-</body>
-</html>
-"""
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(html)
+    target_path.write_text(content, encoding="utf-8")
 
 if __name__ == "__main__":
     main()

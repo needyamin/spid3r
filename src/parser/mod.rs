@@ -550,8 +550,6 @@ impl Parser {
                     Err(self.err_here("spawn expects a function: spawn fn() { ... };"))
                 }
             }
-            #[allow(unreachable_patterns)]
-            _ if false => unreachable!(),
             TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             _ => {
                 let e = self.parse_expr()?;

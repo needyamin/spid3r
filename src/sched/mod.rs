@@ -144,9 +144,10 @@ impl TaskHandle {
 
 type Job = Box<dyn FnOnce() -> Result<Value, String> + Send + 'static>;
 
-#[allow(dead_code)]
 struct SchedInner {
+    #[cfg(not(target_arch = "wasm32"))]
     queue: Mutex<VecDeque<Job>>,
+    #[cfg(not(target_arch = "wasm32"))]
     cv: Condvar,
     next_id: Mutex<usize>,
     live: Mutex<usize>,
@@ -172,7 +173,9 @@ impl Scheduler {
 
     fn start() -> Arc<Scheduler> {
         let inner = Arc::new(SchedInner {
+            #[cfg(not(target_arch = "wasm32"))]
             queue: Mutex::new(VecDeque::new()),
+            #[cfg(not(target_arch = "wasm32"))]
             cv: Condvar::new(),
             next_id: Mutex::new(1),
             live: Mutex::new(0),

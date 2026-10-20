@@ -9,6 +9,8 @@
 # --- Spid3r compile/link artifacts -------------------------------------------
 # Bytecode produced by `spid3r compile` (regenerable from the .matrix source).
 *.matrixc
+# NumPy serialization dumps (.npy)
+*.npy
 # Native AOT link intermediates and debug info next to built programs.
 *.obj
 *.o

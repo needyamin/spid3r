@@ -19,7 +19,7 @@ use crate::value::{FunctionData, InstanceData, Value};
 /// limit - not the OS stack size - is what stops runaway recursion.
 pub const MAX_CALL_DEPTH: usize = 1_000;
 
-#[allow(dead_code)]
+#[cfg(not(target_arch = "wasm32"))]
 const RUN_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 /// Stack size for REPL evaluation threads (same rationale as RUN_STACK_BYTES).
