@@ -1,8 +1,11 @@
 # Stage 2 — concurrency semantics (AUDIT_2026-10-20 §6)
 
-Date: 2026-10-20 · Scope: A-3, A-4, A-7, A-9 + Stage-2 regression tests + full gates.  
-Every claim below is backed by an executed program or test; the "before" column  
-was produced by building commit `d292be2` in a separate `git worktree` and running  
+Date: 2026-10-20 · Scope: A-3, A-4, A-7, A-9 + Stage-2 regression tests + full gates.
+  
+Every claim below is backed by an executed program or test; the "before" column
+  
+was produced by building commit `d292be2` in a separate `git worktree` and running
+  
 the same probes against it.
 
 ## 1. What was fixed
@@ -17,10 +20,13 @@ the same probes against it.
 
 Supporting hygiene:
 
-- `same_slot()` (`src/value/mod.rs`): identity/scalar check used to commit an    
-  index resolved on a snapshot, so a concurrent mutation yields a clean    
+- `same_slot()` (`src/value/mod.rs`): identity/scalar check used to commit an
+    
+  index resolved on a snapshot, so a concurrent mutation yields a clean
+    
   "changed concurrently; retry" error instead of removing the wrong element.
-- `clear_error_thrown()` at method-dispatch entry: a stashed thrown value can    
+- `clear_error_thrown()` at method-dispatch entry: a stashed thrown value can
+    
   never attach itself to an unrelated later error on the same thread.
 - `bag.remove` guards against `usize` underflow (host panic from script input).
 - `task_finished()` uses `saturating_sub` so the live-task counter cannot wrap.
@@ -50,14 +56,18 @@ throw {code:17} comparator        catch gets string   catch gets map
 throw "plain" across await        "task failed: plain" "plain"
 ```
 
-Probes: `audit_notes/probes/stage2_probe.py` (21 hang families) and  
-`audit_notes/probes/stage2_semantics.py` (8 semantic cases), each run per engine  
+Probes: `audit_notes/probes/stage2_probe.py` (21 hang families) and
+  
+`audit_notes/probes/stage2_semantics.py` (8 semantic cases), each run per engine
+  
 with a watchdog. Final sweep: **0 hangs**.
 
 ## 3. Regression tests added
 
-`tests/stage2_concurrency.rs` — 6 tests, every one runs a real `spid3r run` child  
-process under a watchdog and kills it on timeout, so a reintroduced hang fails  
+`tests/stage2_concurrency.rs` — 6 tests, every one runs a real `spid3r run` child
+  
+process under a watchdog and kills it on timeout, so a reintroduced hang fails
+  
 the suite instead of blocking CI:
 
 - `self_referential_container_methods_terminate` — 16 families × both engines
@@ -71,20 +81,28 @@ the suite instead of blocking CI:
 - `concurrent_set_adds_do_not_duplicate` / `concurrent_bag_adds_keep_an_exact_count`
 - `a_stalled_pool_is_reported_instead_of_hanging_silently` — watchdog message at the ceiling
 
-`tests/sched_limits.rs` (7, isolated pools): the queue cap parks the producer  
-(and does not lose work), 500-job burst under a cap of 4, shutdown joins every  
-worker, shutdown is idempotent, shutdown does not block on a stuck task, and the  
+`tests/sched_limits.rs` (7, isolated pools): the queue cap parks the producer
+  
+(and does not lose work), 500-job burst under a cap of 4, shutdown joins every
+  
+worker, shutdown is idempotent, shutdown does not block on a stuck task, and the
+  
 singleton restarts after a stop.
 
-`src/value/collections/seq.rs` unit tests (4): a *stale snapshot* add/remove must  
-report `CONFLICT` rather than duplicate or remove a shifted element — the  
+`src/value/collections/seq.rs` unit tests (4): a *stale snapshot* add/remove must
+  
+report `CONFLICT` rather than duplicate or remove a shifted element — the
+  
 deterministic version of the concurrent cases.
 
-`tests/native_tests.rs::native_matches_tree_on_structured_task_errors` — the AOT  
+`tests/native_tests.rs::native_matches_tree_on_structured_task_errors` — the AOT
+  
 backend's `await` and `task.join()` seams must match the tree engine.
 
-Validation of the tests themselves: copied into the pre-fix worktree they **all  
-fail** (`timed out (possible deadlock)` / wrong output); in the fixed tree they  
+Validation of the tests themselves: copied into the pre-fix worktree they **all
+  
+fail** (`timed out (possible deadlock)` / wrong output); in the fixed tree they
+  
 all pass. A test that cannot fail was not accepted as evidence.
 
 ## 4. Gates (executed, this working tree, 2026-10-21)
@@ -100,18 +118,24 @@ all pass. A test that cannot fail was not accepted as evidence.
 | `spid3r test` (tree == vm == exec)                                                  | 25 ok, 0 failed                                                                          |
 | `spid3r fmt --check`                                                                | all unchanged, exit 0                                                                    |
 | `cargo build --target wasm32-unknown-unknown --release --lib --no-default-features` | OK                                                                                       |
-| `cargo fmt --check`                                                                 | still fails repo-wide — pre-existing F1 (§3 row 8 of the audit), unchanged by this round |
+| `cargo fmt --check`                                                                 | failed repo-wide at the time (pre-existing F1) — fixed in the Stage-4 rustfmt normalization, and now gated in CI |
 
-**Testing caveat (observed while validating this round):** two `cargo` commands  
-must not run against this `target/` concurrently. The bin/lib `spid3r.pdb`  
-output collision (audit F2) lets a second build overwrite `target/debug/spid3r.exe`  
-while a test is spawning it, which produced spurious `difftest` /  
-`native_matches_tree_on_supported_examples` failures that disappear when the  
+**Testing caveat (observed while validating this round):** two `cargo` commands
+  
+must not run against this `target/` concurrently. The bin/lib `spid3r.pdb`
+  
+output collision (audit F2) lets a second build overwrite `target/debug/spid3r.exe`
+  
+while a test is spawning it, which produced spurious `difftest` /
+  
+`native_matches_tree_on_supported_examples` failures that disappear when the
+  
 gates run sequentially. All numbers above are from sequential runs.
 
 ## 5. Limits from round 1 — resolved 2026-10-21
 
-Round 1 shipped four honest limits. All four were then fixed for real; each  
+Round 1 shipped four honest limits. All four were then fixed for real; each
+  
 entry states the mechanism, the evidence, and what (if anything) still remains.
 
 
@@ -125,23 +149,39 @@ entry states the mechanism, the evidence, and what (if anything) still remains.
 
 ### What genuinely remains
 
-- **Removing the worker ceiling entirely needs M:N scheduling.** A task that    
-  blocks on `recv`/`join`/`mutex` occupies an OS thread, because the tree    
-  interpreter and the VM cannot suspend mid-frame without a continuation    
-  mechanism (stackful coroutines or a rewritten state machine). Until then the    
-  ceiling is a real capacity limit; it is now configurable and its stalls are    
+- **Removing the worker ceiling entirely needs M:N scheduling.** A task that
+    
+  blocks on `recv`/`join`/`mutex` occupies an OS thread, because the tree
+    
+  interpreter and the VM cannot suspend mid-frame without a continuation
+    
+  mechanism (stackful coroutines or a rewritten state machine). Until then the
+    
+  ceiling is a real capacity limit; it is now configurable and its stalls are
+    
   reported with a fix, instead of being silent.
-- **Hosts that drive the interpreter below `run_program` are not counted.** The    
-  GC gate counts threads that entered through `run_program`,    
-  `run_program_inline`, `Vm::run_compiled`, an AOT `main`, or a spawned job. A    
-  host calling `Interp::call_function` directly is treated as a single-threaded    
-  caller; if it runs several such threads, it must call `sched::enter_active`    
+- **Hosts that drive the interpreter below `run_program` are not counted.** The
+    
+  GC gate counts threads that entered through `run_program`,
+    
+  `run_program_inline`, `Vm::run_compiled`, an AOT `main`, or a spawned job. A
+    
+  host calling `Interp::call_function` directly is treated as a single-threaded
+    
+  caller; if it runs several such threads, it must call `sched::enter_active`
+    
   itself.
-- **Blocking I/O is conservatively *active*.** A thread inside `http_fetch` or    
-  `exec_capture` is not marked parked (it can call back into Spid3r code via    
-  callbacks), so it keeps `gc_collect()` from running on another thread. This    
-  errs on the safe side: it can only refuse a collection, never allow an unsafe    
+- **Blocking I/O is conservatively *active*.** A thread inside `http_fetch` or
+    
+  `exec_capture` is not marked parked (it can call back into Spid3r code via
+    
+  callbacks), so it keeps `gc_collect()` from running on another thread. This
+    
+  errs on the safe side: it can only refuse a collection, never allow an unsafe
+    
   one.
-- **Collection methods are linearizable per operation, not per sequence.** Two    
-  separate calls from the same task can interleave with another task's calls;    
+- **Collection methods are linearizable per operation, not per sequence.** Two
+    
+  separate calls from the same task can interleave with another task's calls;
+    
   there is no transaction/atomic-block construct.

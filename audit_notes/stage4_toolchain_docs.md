@@ -77,9 +77,10 @@ example files (24 programs + 1 shared module), 3 fuzz targets.
   checked-in module was rebuilt). The alternative — renaming the CLI binary —
   would break every user script; the audit allowed either. The old staticlib name
   is still searched so an installed toolchain keeps working.
-* **`cargo fmt` runs as its own commit.** Formatting 70 files in the same commit
+* **`cargo fmt` runs as its own commit.** Formatting 66 files in the same commit
   as behavioural changes would make review impossible, so the Stage-4 changes are
-  committed first and the normalization is a separate, diff-only commit.
+  committed first (`48de40c`) and the normalization is a separate, diff-only
+  commit (`735e08c`) that also adds the CI gate.
 * **`cargo fmt --check` is now gated in CI.** The tree is formatted, so the gate
   is cheap; without it the drift simply returns.
 * **A-13…A-17 are not in this stage's numbered plan** (closure/environment cycle
