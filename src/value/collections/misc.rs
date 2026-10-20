@@ -2286,6 +2286,13 @@ pub fn bytes_from_hex(s: &str) -> Result<Vec<u8>, String> {
     if !s.len().is_multiple_of(2) {
         return Err("hex string must have an even length".to_string());
     }
+    if !s.is_ascii() {
+        // Hex digits are ASCII by definition. Rejecting non-ASCII up front
+        // also guarantees the byte-offset slicing below can never split a
+        // multi-byte UTF-8 character (which would panic the host on inputs
+        // like "a⚡", whose even byte length hides the mid-character cut).
+        return Err("hex string must contain only ASCII characters".to_string());
+    }
     let mut bytes = Vec::with_capacity(s.len() / 2);
     for i in (0..s.len()).step_by(2) {
         let byte = u8::from_str_radix(&s[i..i + 2], 16)

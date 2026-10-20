@@ -177,7 +177,7 @@ impl VecData {
                         "cannot sort: values are not all numbers or all strings".to_string()
                     );
                 }
-                vals.sort_by(|a, b| value_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal));
+                vals.sort_by(natural_cmp);
                 self.items = vals;
                 Ok(Value::Null)
             }
@@ -252,7 +252,7 @@ impl VecData {
                         "cannot sort: values are not all numbers or all strings".to_string()
                     );
                 }
-                vals.sort_by(|a, b| value_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal));
+                vals.sort_by(natural_cmp);
                 Ok(Value::List(new_ref(VecData { items: vals })))
             }
             "reversed" => {
@@ -946,6 +946,58 @@ pub fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
+/// A *total* order over the values `sort`/`sorted`/`argsort` accept (all
+/// numbers, or all strings). [`value_cmp`] answers `None` for NaN and its
+/// callers folded that into `Equal`, which is not a valid sort comparator:
+/// NaN equal to everything (and huge ints rounding onto the same f64 as a
+/// neighboring float) breaks the transitivity Rust's sort relies on, and it
+/// panics the host. Here NaN gets a deterministic slot (after every number),
+/// and Int↔Float comparisons are exact in i128.
+pub fn natural_cmp(a: &Value, b: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Float(x), Value::Float(y)) => match (x.is_nan(), y.is_nan()) {
+            (true, true) => Equal,
+            (true, false) => Greater,
+            (false, true) => Less,
+            (false, false) => x.partial_cmp(y).unwrap_or(Equal), // only ±0.0
+        },
+        (Value::Int(x), Value::Float(y)) => int_vs_float_total(*x, *y),
+        (Value::Float(x), Value::Int(y)) => int_vs_float_total(*y, *x).reverse(),
+        (Value::Str(x), Value::Str(y)) => x.cmp(y),
+        // Unreachable: every caller pre-checks all-numbers or all-strings.
+        _ => Equal,
+    }
+}
+
+/// Exact total ordering between an integer and a float: NaN sorts last,
+/// infinities compare by sign, integral floats compare in i128 (never
+/// rounding the integer through f64), and non-integral floats — which always
+/// have |y| < 2^52 — compare sign-exactly via `x as f64`.
+fn int_vs_float_total(x: i64, y: f64) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    if y.is_nan() {
+        return Less; // NaN sorts after every number
+    }
+    if !y.is_finite() {
+        return if y > 0.0 { Less } else { Greater };
+    }
+    if y >= 9_223_372_036_854_775_808.0 {
+        return Less; // y ≥ 2^63 > every i64
+    }
+    if y < -9_223_372_036_854_775_808.0 {
+        return Greater; // y < -2^63 ≤ every i64
+    }
+    let yi = y.trunc();
+    if yi != y {
+        // Non-integral y: an integer-valued float never equals a fractional
+        // one, so the comparison is Some and sign-exact.
+        return (x as f64).partial_cmp(&y).unwrap_or(Equal);
+    }
+    (x as i128).cmp(&(yi as i128))
+}
+
 pub fn heap_less(a: &Value, b: &Value) -> Result<bool, String> {
     match value_cmp(a, b) {
         Some(o) => Ok(o == std::cmp::Ordering::Less),
@@ -1052,9 +1104,10 @@ pub fn argsort_indices(items: &[Value]) -> Result<Vec<usize>, String> {
     }
     let mut order: Vec<usize> = (0..items.len()).collect();
     let mut scratch = vec![0usize; items.len()];
-    // Unreachable in practice: the pre-check above guarantees comparability.
+    // The pre-check above guarantees the all-numbers/all-strings domain, where
+    // `natural_cmp` is a total order (including NaN and huge int/float mixes).
     merge_sort_indices(&mut order, &mut scratch, &mut |i, j| {
-        Ok(value_cmp(&items[i], &items[j]).unwrap_or(std::cmp::Ordering::Equal))
+        Ok(natural_cmp(&items[i], &items[j]))
     })?;
     Ok(order)
 }

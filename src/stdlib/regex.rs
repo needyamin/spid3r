@@ -19,9 +19,15 @@ enum RegexNode {
     Empty,
 }
 
+/// Maximum nested-group depth for a regex pattern (mirrors the JSON parser's
+/// recursion guard). Without it, a pathological `((((…` pattern recurses the
+/// pattern parser without bound and overflows the call stack.
+const MAX_REGEX_DEPTH: u32 = 512;
+
 struct Parser<'a> {
     chars: Vec<char>,
     pos: usize,
+    depth: u32,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
@@ -30,6 +36,7 @@ impl<'a> Parser<'a> {
         Self {
             chars: pattern.chars().collect(),
             pos: 0,
+            depth: 0,
             _marker: std::marker::PhantomData,
         }
     }
@@ -109,7 +116,14 @@ impl<'a> Parser<'a> {
             Some('$') => Ok(RegexNode::AnchorEnd),
             Some('.') => Ok(RegexNode::Any),
             Some('(') => {
+                self.depth += 1;
+                if self.depth > MAX_REGEX_DEPTH {
+                    return Err(format!(
+                        "regex nesting too deep (max {MAX_REGEX_DEPTH} groups)"
+                    ));
+                }
                 let inner = self.parse_alt()?;
+                self.depth -= 1;
                 if self.next() != Some(')') {
                     return Err("unclosed parenthesis in regex".to_string());
                 }
@@ -489,47 +503,58 @@ impl Nfa {
         matched_end
     }
 
+    /// Epsilon-closure of `start` at input position `cur_idx`, computed with an
+    /// explicit stack. A pathological `a|b|c…` pattern chains one Split state
+    /// per branch, so a recursive closure would overflow the call stack and
+    /// abort the host; iteration has no depth limit. The visit order is exactly
+    /// the former recursive preorder (next1 subtree before next2), so `active`
+    /// and `matched_end` come out identical.
     fn add_state(
         &self,
-        s_idx: usize,
+        start: usize,
         cur_idx: usize,
         total_len: usize,
         active: &mut Vec<usize>,
         visited: &mut [bool],
         matched_end: &mut Option<usize>,
     ) {
-        if visited[s_idx] {
-            return;
-        }
-        visited[s_idx] = true;
-        match &self.states[s_idx].kind {
-            StateKind::Split => {
-                if let Some(n1) = self.states[s_idx].next1 {
-                    self.add_state(n1, cur_idx, total_len, active, visited, matched_end);
-                }
-                if let Some(n2) = self.states[s_idx].next2 {
-                    self.add_state(n2, cur_idx, total_len, active, visited, matched_end);
-                }
+        let mut stack = vec![start];
+        while let Some(s_idx) = stack.pop() {
+            if visited[s_idx] {
+                continue;
             }
-            StateKind::AnchorStart => {
-                if cur_idx == 0 {
+            visited[s_idx] = true;
+            match &self.states[s_idx].kind {
+                StateKind::Split => {
+                    // Push next2 first so next1 is popped (and its whole
+                    // epsilon subtree explored) first, as the recursion did.
+                    if let Some(n2) = self.states[s_idx].next2 {
+                        stack.push(n2);
+                    }
                     if let Some(n1) = self.states[s_idx].next1 {
-                        self.add_state(n1, cur_idx, total_len, active, visited, matched_end);
+                        stack.push(n1);
                     }
                 }
-            }
-            StateKind::AnchorEnd => {
-                if cur_idx == total_len {
-                    if let Some(n1) = self.states[s_idx].next1 {
-                        self.add_state(n1, cur_idx, total_len, active, visited, matched_end);
+                StateKind::AnchorStart => {
+                    if cur_idx == 0 {
+                        if let Some(n1) = self.states[s_idx].next1 {
+                            stack.push(n1);
+                        }
                     }
                 }
-            }
-            StateKind::Match => {
-                *matched_end = Some(cur_idx);
-            }
-            _ => {
-                active.push(s_idx);
+                StateKind::AnchorEnd => {
+                    if cur_idx == total_len {
+                        if let Some(n1) = self.states[s_idx].next1 {
+                            stack.push(n1);
+                        }
+                    }
+                }
+                StateKind::Match => {
+                    *matched_end = Some(cur_idx);
+                }
+                _ => {
+                    active.push(s_idx);
+                }
             }
         }
     }
