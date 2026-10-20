@@ -612,6 +612,29 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
     values_equal_inner(a, b, &mut seen)
 }
 
+/// Is `a` the same slot value as `b`, decided **without locking any container**?
+/// True when both are the same reference (same cell) or equal scalars.
+///
+/// The detached collection methods (audit A-7) resolve an index on a snapshot
+/// taken with the receiver's mutex released, then commit under the lock. They
+/// use this to confirm the slot still holds the snapshot's element: re-running
+/// `values_equal` there could re-lock the receiver and hang.
+pub fn same_slot(a: &Value, b: &Value) -> bool {
+    if let (Some(x), Some(y)) = (ref_id(a), ref_id(b)) {
+        return x == y;
+    }
+    match (a, b) {
+        (Value::Null, Value::Null) => true,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (Value::Int(x), Value::Float(y)) => (*x as f64) == *y,
+        (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
+        (Value::Str(x), Value::Str(y)) => x == y,
+        _ => false,
+    }
+}
+
 fn values_equal_inner(
     a: &Value,
     b: &Value,
@@ -1291,8 +1314,21 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
             Value::PrioQueue(new_ref(nd))
         }
         Value::Graph(d) => {
-            let g = d.lock().unwrap().deep_clone();
-            Value::Graph(new_ref(g))
+            // Snapshot the node list and adjacency under the lock, then recurse
+            // with the lock released (audit A-7): a node value can be the graph
+            // itself, and `GraphData::deep_clone` re-locks the same mutex the
+            // caller already holds — a non-reentrant `std::sync::Mutex`, so it
+            // hung forever on `g.add_node(g); g.clone()` / `g.nodes()`.
+            // The shared `seen` set keeps a self-referential graph finite.
+            let (directed, nodes, adj) = {
+                let g = d.lock().unwrap();
+                (g.directed, g.nodes.clone(), g.adj.clone())
+            };
+            Value::Graph(new_ref(c::GraphData {
+                directed,
+                nodes: nodes.iter().map(|n| deep_clone_inner(n, seen)).collect(),
+                adj,
+            }))
         }
         Value::HashTable(d) => {
             let (buckets, size) = {

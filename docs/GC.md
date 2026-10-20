@@ -6,7 +6,8 @@
 > `hash_table`, `trie`, `matrix`, `ring_buffer`, `bag`, `ref`, `option`/`result`,
 > and class instances) are tracked and cycle-collected automatically through
 > `value::new_ref`. `gc_collect()` / `gc_live_cells()` are builtins on both
-> engines; automatic collection at statement boundaries is **on by default**
+> engines; `gc_collect()` refuses to run while spawned tasks are live (audit
+> A-4); automatic collection at statement boundaries is **on by default**
 > (`SPID3R_GC=0` disables it).
 
 ## The problem
@@ -126,9 +127,12 @@ automatically inside `value::new_ref`, plus `Option`/`Result` inline box
 peeling and `ListData` drop-time node-cycle breaking). Builtins `gc_collect()` /
 `gc_live_cells()` work on both engines. Auto-collection at interpreter statement
 boundaries is **on by default** (`SPID3R_GC=0` disables it), throttled every 4096
-statements and skipped while the scheduler has live tasks. A safety valve prunes
-dead and duplicate handles so the registry stays bounded even where collection
-never runs (the native runtime).
+statements and skipped while the scheduler has live tasks. **`gc_collect()` is
+gated the same way**: while any spawned task is running it fails with a clean
+`gc_collect: tasks are still running; join them (or let them finish) before
+collecting` error instead of sweeping cells a task may be mutating (audit A-4).
+A safety valve prunes dead and duplicate handles so the registry stays bounded
+even where collection never runs (the native runtime).
 
 Verified: all 23 examples produce byte-identical output with the collector on vs
 off (it never frees live data); `tests/cycle_tests.rs` proves cycles across all

@@ -932,6 +932,15 @@ fn n_type_of(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 /// `gc_collect()` — run one cycle-collection pass; returns the cells swept.
 fn n_gc_collect(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    // Same guard as the automatic collector (gc::maybe_collect): sweeping
+    // while a task runs can race its allocations and clear live containers
+    // (audit A-4). Refuse with a clear error instead of corrupting.
+    if crate::sched::Scheduler::shared().live_tasks() > 0 {
+        return Err(
+            "gc_collect: tasks are still running; join them (or let them finish) before collecting"
+                .to_string(),
+        );
+    }
     Ok(Value::Int(crate::value::gc::collect() as i64))
 }
 

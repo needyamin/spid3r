@@ -886,6 +886,28 @@ impl BinTreeData {
     }
 }
 
+/// Detached traversals (audit A-7): node values are deep-cloned OUTSIDE the
+/// container's Mutex — a node value can be the tree itself, and deep_clone
+/// would re-lock the mutex the dispatcher holds. The traversal itself only
+/// takes the per-node mutexes (statement-scoped), so it may run under the
+/// container lock; the deep clone must not.
+pub fn bintree_traverse_detached(
+    d: &crate::value::Ref<BinTreeData>,
+    name: &str,
+) -> Result<Value, String> {
+    let vals: Vec<Value> = {
+        let t = d.lock().unwrap();
+        match name {
+            "inorder" => t.inorder(),
+            "preorder" => t.preorder(),
+            "postorder" => t.postorder(),
+            "level_order" => t.level_order(),
+            _ => return Err(unknown(name, "binary_tree")),
+        }
+    };
+    Ok(make_list(vals.iter().map(deep_clone).collect()))
+}
+
 /// Build a `string` list value (used by trie word output).
 pub fn join_words(words: &[String]) -> Value {
     make_list(words.iter().map(|w| Value::Str(w.clone().into())).collect())

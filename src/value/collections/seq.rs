@@ -266,6 +266,147 @@ impl VecData {
     }
 }
 
+// ------------------------------------------------- detached list operations
+
+/// Detached list/vec operations (audit A-7): `contains`/`index_of`/`remove`/
+/// `slice` compare or deep-clone item values, and an item can be (or reach)
+/// the receiver itself — running them under the receiver's Mutex would
+/// re-lock it and hang. The dispatcher snapshots `items` with the lock
+/// released before calling here; `d` is only re-locked for the tiny
+/// structural commit of `remove` (no value traversal under the lock).
+pub fn vec_detached(
+    d: &crate::value::Ref<VecData>,
+    items: &[Value],
+    name: &str,
+    args: &[Value],
+) -> Result<Value, String> {
+    match name {
+        "contains" => {
+            want(name, args, 1)?;
+            Ok(Value::Bool(items.iter().any(|v| values_equal(v, &args[0]))))
+        }
+        "index_of" => {
+            want(name, args, 1)?;
+            let pos = items.iter().position(|v| values_equal(v, &args[0]));
+            Ok(Value::Int(pos.map(|p| p as i64).unwrap_or(-1)))
+        }
+        "remove" => {
+            want(name, args, 1)?;
+            let pos = items.iter().position(|v| values_equal(v, &args[0]));
+            match pos {
+                Some(i) => {
+                    let mut g = d.lock().unwrap();
+                    // Confirm the slot still holds the element the snapshot
+                    // matched (identity/scalar check — no locking), so a
+                    // concurrent mutation cannot make us remove a different
+                    // element.
+                    match g.items.get(i) {
+                        Some(cur) if crate::value::same_slot(cur, &items[i]) => {
+                            Ok(g.items.remove(i))
+                        }
+                        _ => Err("remove: the list changed concurrently; retry".to_string()),
+                    }
+                }
+                None => Err("value not in list".to_string()),
+            }
+        }
+        "slice" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(format!(
+                    "slice expects 1 or 2 arguments, got {}",
+                    args.len()
+                ));
+            }
+            let a = want_index(&args[0], "list.slice")?;
+            let b = if args.len() == 2 {
+                want_index(&args[1], "list.slice")?
+            } else {
+                items.len()
+            };
+            if a > b || b > items.len() {
+                return Err(format!("slice range {}..{} out of bounds", a, b));
+            }
+            Ok(Value::List(new_ref(VecData {
+                items: items[a..b].iter().map(deep_clone).collect(),
+            })))
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Detached `contains`/`to_list` shared by stack, queue, deque, and ring
+/// buffer (audit A-7, same rationale as [`vec_detached`]).
+pub fn seq_detached(items: &[Value], name: &str, args: &[Value]) -> Result<Value, String> {
+    match name {
+        "contains" => {
+            want(name, args, 1)?;
+            Ok(Value::Bool(items.iter().any(|v| values_equal(v, &args[0]))))
+        }
+        "to_list" => {
+            want(name, args, 0)?;
+            Ok(items_to_list_detached(items))
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Deep-clone a value snapshot into a plain list with no container lock held
+/// (audit A-7): an item can be (or reach) the source container.
+pub fn items_to_list_detached(items: &[Value]) -> Value {
+    Value::List(new_ref(VecData {
+        items: items.iter().map(deep_clone).collect(),
+    }))
+}
+
+/// Detached set operations (audit A-7, same rationale as [`vec_detached`]).
+pub fn set_detached(
+    d: &crate::value::Ref<SetData>,
+    items: Vec<Value>,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, String> {
+    match name {
+        "push" | "add" => {
+            want(name, args, 1)?;
+            if items.iter().any(|x| values_equal(x, &args[0])) {
+                return Ok(Value::Null);
+            }
+            // Commit with the lock held but no value traversal: a re-check
+            // with values_equal could re-lock the receiver. The snapshot
+            // check above is exact unless another task mutated the set in
+            // between, which the v1 scheduler does not promise atomicity for.
+            d.lock().unwrap().items.push(args[0].clone());
+            Ok(Value::Null)
+        }
+        "remove" => {
+            want(name, args, 1)?;
+            match items.iter().position(|x| values_equal(x, &args[0])) {
+                Some(i) => {
+                    let mut g = d.lock().unwrap();
+                    // Same-slot re-check as `vec_detached` (no locking).
+                    match g.items.get(i) {
+                        Some(cur) if crate::value::same_slot(cur, &items[i]) => {
+                            g.items.remove(i);
+                            Ok(Value::Null)
+                        }
+                        _ => Err("remove: the set changed concurrently; retry".to_string()),
+                    }
+                }
+                None => Err("value not in set".to_string()),
+            }
+        }
+        "contains" => {
+            want(name, args, 1)?;
+            Ok(Value::Bool(items.iter().any(|x| values_equal(x, &args[0]))))
+        }
+        "to_list" => {
+            want(name, args, 0)?;
+            Ok(items_to_list_detached(&items))
+        }
+        _ => unreachable!(),
+    }
+}
+
 // ------------------------------------------------------------------- stack
 
 #[derive(Debug, Default)]

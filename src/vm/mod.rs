@@ -272,28 +272,34 @@ impl Vm {
             }
         }
         validate_chunk(&script.chunk)?;
-        self.call_vfunc_frame(script, Vec::new())
-            .map_err(|e| e.to_diag())?;
-        let _ = self.run().map_err(|e| e.to_diag())?;
-        let main = self.globals.lock().unwrap().get("main").cloned();
-        match main {
-            Some(Value::VFunc(f)) => {
-                self.call_vfunc_frame(f, Vec::new()).map_err(|e| e.to_diag())?;
-                let ret = self.run().map_err(|e| e.to_diag())?;
-                match ret {
-                    Value::Int(i) => Ok(i as i32),
-                    _ => Ok(0),
+        let result = (|| {
+            self.call_vfunc_frame(script, Vec::new())
+                .map_err(|e| e.to_diag())?;
+            let _ = self.run().map_err(|e| e.to_diag())?;
+            let main = self.globals.lock().unwrap().get("main").cloned();
+            match main {
+                Some(Value::VFunc(f)) => {
+                    self.call_vfunc_frame(f, Vec::new()).map_err(|e| e.to_diag())?;
+                    let ret = self.run().map_err(|e| e.to_diag())?;
+                    match ret {
+                        Value::Int(i) => Ok(i as i32),
+                        _ => Ok(0),
+                    }
                 }
+                Some(_) => Err(Diagnostic::new(
+                    Phase::Semantic,
+                    "main must be a function: fn main() { ... }",
+                )),
+                None => Err(Diagnostic::new(
+                    Phase::Semantic,
+                    "this program has no fn main; add one to run it as a program",
+                )),
             }
-            Some(_) => Err(Diagnostic::new(
-                Phase::Semantic,
-                "main must be a function: fn main() { ... }",
-            )),
-            None => Err(Diagnostic::new(
-                Phase::Semantic,
-                "this program has no fn main; add one to run it as a program",
-            )),
-        }
+        })();
+        // Join-on-exit (audit A-3): the VM runs on the caller thread, so wait
+        // for tasks `main` left running before reporting the exit code.
+        crate::sched::join_tasks_at_exit();
+        result
     }
 
     /// Run a module: top-level statements only, then collect its public names.
@@ -1253,7 +1259,22 @@ impl Vm {
                     }
                     match collections::call_method(&obj, &name, args) {
                         Ok(v) => self.frames[nf].slots.push(v),
-                        Err(msg) => self.fail(msg),
+                        Err(msg) => {
+                            // Callbacks and `task.join()` stash the thrown
+                            // user value behind their String error; rebind it
+                            // here so `catch` sees the original value
+                            // (audit A-9).
+                            let mut err = VmError {
+                                thrown: None,
+                                message: msg,
+                                span: self.cur_span(),
+                                trace: Vec::new(),
+                            };
+                            if let Some(v) = crate::sched::take_error_thrown() {
+                                err.thrown = Some(v);
+                            }
+                            self.error = Some(err);
+                        }
                     }
                 }
                 OpCode::IndexGet => {
@@ -1566,7 +1587,21 @@ impl Vm {
                     match v {
                         Value::Task(t) => match t.join() {
                             Ok(val) => self.frames[nf].slots.push(val),
-                            Err(msg) => self.fail(format!("task failed: {}", msg)),
+                            Err(msg) => {
+                                // A task that threw a user value rethrows it
+                                // structurally so `catch` rebinds the original
+                                // value, not a string (audit A-9).
+                                let mut err = VmError {
+                                    thrown: None,
+                                    message: format!("task failed: {}", msg),
+                                    span: self.cur_span(),
+                                    trace: Vec::new(),
+                                };
+                                if let Some(v) = t.thrown_value() {
+                                    err.thrown = Some(v);
+                                }
+                                self.error = Some(err);
+                            }
                         },
                         Value::Channel(c) => {
                             let val = c.recv();
@@ -1608,7 +1643,19 @@ impl Vm {
                             file,
                             module_dirs,
                         );
-                        vm.run_function(fd, Vec::new()).map_err(|e| e.task_error_string())
+                        // Carry the thrown value across the task boundary so
+                        // `join`/`await` rethrow is structural: `catch` on the
+                        // joining side rebinds the original value (audit A-9).
+                        match vm.run_function(fd, Vec::new()) {
+                            Ok(v) => crate::sched::TaskOutcome {
+                                result: Ok(v),
+                                thrown: None,
+                            },
+                            Err(e) => crate::sched::TaskOutcome {
+                                thrown: e.thrown.clone(),
+                                result: Err(e.task_error_string()),
+                            },
+                        }
                     }));
                     self.frames[nf].slots.push(Value::Task(handle));
                 }
@@ -2349,10 +2396,15 @@ impl Vm {
             fn call_callback(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, String> {
                 // Same rule as the tree engine and as the task boundary:
                 // surface the user's thrown value rather than the generic
-                // "uncaught throw" message.
-                self.vm.call_value_sync(f, args).map_err(|e| match &e.thrown {
-                    Some(v) => crate::value::display_value(v),
-                    None => e.message,
+                // "uncaught throw" message. The String-only error channel
+                // loses the value itself, so stash it for the CallMethod seam
+                // to rebind in `catch` (audit A-9).
+                self.vm.call_value_sync(f, args).map_err(|e| {
+                    crate::sched::stash_error_thrown(e.thrown.clone());
+                    match &e.thrown {
+                        Some(v) => crate::value::display_value(v),
+                        None => e.message,
+                    }
                 })
             }
         }
@@ -2364,11 +2416,19 @@ impl Vm {
             name,
             &args,
         )
-        .map_err(|msg| VmError {
-            thrown: None,
-            message: msg,
-            span: self.cur_span(),
-            trace: Vec::new(),
+        .map_err(|msg| {
+            // Rebind a thrown user value stashed by the callback host so
+            // `catch` sees the original value, not a string (audit A-9).
+            let mut err = VmError {
+                thrown: None,
+                message: msg,
+                span: self.cur_span(),
+                trace: Vec::new(),
+            };
+            if let Some(v) = crate::sched::take_error_thrown() {
+                err.thrown = Some(v);
+            }
+            err
         })
     }
 

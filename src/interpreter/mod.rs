@@ -83,10 +83,17 @@ impl crate::value::collections::CallbackHost for InterpCallbackHost<'_> {
     fn call_callback(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, String> {
         match self.interp.call_value(f.clone(), args, &self.span) {
             Ok(v) => Ok(v),
-            Err(Flow::Error(d)) => Err(match &d.thrown {
-                Some(v) => crate::value::display_value(v),
-                None => d.message.clone(),
-            }),
+            Err(Flow::Error(d)) => {
+                // This seam only carries a String, so stash the user-thrown
+                // value for the engine's method-call seam to rebind in
+                // `catch` (audit A-9) — otherwise `l.map(f)` where `f` throws
+                // an object degrades the payload to its display string.
+                crate::sched::stash_error_thrown(d.thrown.clone());
+                Err(match &d.thrown {
+                    Some(v) => crate::value::display_value(v),
+                    None => d.message.clone(),
+                })
+            }
             Err(Flow::Return(v)) => Ok(v),
             Err(_) => Err("invalid control flow in a callback".to_string()),
         }
@@ -186,7 +193,7 @@ impl Interp {
     pub fn run_program(&self, program: &Program) -> Result<i32, Diagnostic> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            std::thread::scope(|s| {
+            let result = std::thread::scope(|s| {
                 let handle = std::thread::Builder::new()
                     .stack_size(RUN_STACK_BYTES)
                     .spawn_scoped(s, || self.run_program_inner(program))
@@ -198,7 +205,12 @@ impl Interp {
                         "the program thread panicked; this is a bug in spid3r",
                     )),
                 }
-            })
+            });
+            // Join-on-exit (audit A-3): wait for tasks `main` left running so
+            // their output is not lost to process teardown — also on the error
+            // path, where a failing program may still have live tasks.
+            crate::sched::join_tasks_at_exit();
+            result
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -209,7 +221,12 @@ impl Interp {
     /// Run program inline on the current thread without spawning a new OS thread.
     /// Used by WebAssembly and embedded/in-memory callers.
     pub fn run_program_inline(&self, program: &Program) -> Result<i32, Diagnostic> {
-        self.run_program_inner(program)
+        let result = self.run_program_inner(program);
+        // Same join-on-exit contract as `run_program` (audit A-3), so an
+        // embedding host does not lose output written by spawned tasks.
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::sched::join_tasks_at_exit();
+        result
     }
 
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
@@ -610,18 +627,27 @@ impl Interp {
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let interp = Interp::shared(globals, sched, modules, file, module_dirs);
-                    let out: Result<Value, String> =
-                        match interp.call_function(&fd, Vec::new(), &span2) {
-                            Ok(v) => Ok(v),
-                            // Surface the user-thrown value across the task
-                            // boundary so `join`/`await` rethrow is useful.
-                            Err(Flow::Error(d)) => Err(match &d.thrown {
+                    // Surface the user-thrown value across the task boundary
+                    // so `join`/`await` rethrow is structural: `catch` on the
+                    // joining side rebinds the original value, not its display
+                    // string (audit A-9).
+                    match interp.call_function(&fd, Vec::new(), &span2) {
+                        Ok(v) => crate::sched::TaskOutcome {
+                            result: Ok(v),
+                            thrown: None,
+                        },
+                        Err(Flow::Error(d)) => crate::sched::TaskOutcome {
+                            thrown: d.thrown.clone(),
+                            result: Err(match &d.thrown {
                                 Some(v) => crate::value::display_value(v),
                                 None => d.message.clone(),
                             }),
-                            Err(_) => Err("invalid control flow in task".to_string()),
-                        };
-                    out
+                        },
+                        Err(_) => crate::sched::TaskOutcome {
+                            result: Err("invalid control flow in task".to_string()),
+                            thrown: None,
+                        },
+                    }
                 }));
                 Flow::Value(Value::Task(handle))
             }
@@ -854,8 +880,20 @@ impl Interp {
                     vals.push(self.eval(a, env)?);
                 }
                 let mut host = InterpCallbackHost { interp: self, span: span.clone() };
-                collections::call_method_host(&mut host, &obj, name, vals)
-                    .map_err(|msg| self.rt(span, msg))
+                match collections::call_method_host(&mut host, &obj, name, vals) {
+                    Ok(v) => Ok(v),
+                    Err(msg) => {
+                        // Callbacks and `task.join()` stash the user-thrown
+                        // value behind their String error; rebind it here so
+                        // `catch` sees the original value (audit A-9).
+                        let mut d = Diagnostic::at(Phase::Runtime, span.clone(), msg)
+                            .with_trace(self.trace_frames(span));
+                        if let Some(v) = crate::sched::take_error_thrown() {
+                            d.thrown = Some(v);
+                        }
+                        Err(Flow::Error(d))
+                    }
+                }
             }
             Expr::Index {
                 object,
@@ -904,27 +942,51 @@ impl Interp {
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let interp = Interp::shared(globals, sched, modules, file, module_dirs);
-                    let out: Result<Value, String> =
-                        match interp.call_function(&fd, Vec::new(), &span2) {
-                            Ok(v) => Ok(v),
-                            // Surface the user-thrown value across the task
-                            // boundary so `join`/`await` rethrow is useful.
-                            Err(Flow::Error(d)) => Err(match &d.thrown {
+                    // Surface the user-thrown value across the task boundary
+                    // so `join`/`await` rethrow is structural: `catch` on the
+                    // joining side rebinds the original value, not its display
+                    // string (audit A-9).
+                    match interp.call_function(&fd, Vec::new(), &span2) {
+                        Ok(v) => crate::sched::TaskOutcome {
+                            result: Ok(v),
+                            thrown: None,
+                        },
+                        Err(Flow::Error(d)) => crate::sched::TaskOutcome {
+                            thrown: d.thrown.clone(),
+                            result: Err(match &d.thrown {
                                 Some(v) => crate::value::display_value(v),
                                 None => d.message.clone(),
                             }),
-                            Err(_) => Err("invalid control flow in task".to_string()),
-                        };
-                    out
+                        },
+                        Err(_) => crate::sched::TaskOutcome {
+                            result: Err("invalid control flow in task".to_string()),
+                            thrown: None,
+                        },
+                    }
                 }));
                 Ok(Value::Task(handle))
             }
             Expr::Await(inner, span) => {
                 let v = self.eval(inner, env)?;
                 match v {
-                    Value::Task(t) => t
-                        .join()
-                        .map_err(|msg| self.rt(span, format!("task failed: {}", msg))),
+                    Value::Task(t) => match t.join() {
+                        Ok(v) => Ok(v),
+                        Err(msg) => {
+                            // A task that threw a user value rethrows it
+                            // structurally so `catch` rebinds the original
+                            // value, not a string (audit A-9).
+                            let mut d = Diagnostic::at(
+                                Phase::Runtime,
+                                span.clone(),
+                                format!("task failed: {}", msg),
+                            )
+                            .with_trace(self.trace_frames(span));
+                            if let Some(v) = t.thrown_value() {
+                                d.thrown = Some(v);
+                            }
+                            Err(Flow::Error(d))
+                        }
+                    },
                     Value::Channel(c) => Ok(c.recv()),
                     other => Err(self.rt(
                         span,

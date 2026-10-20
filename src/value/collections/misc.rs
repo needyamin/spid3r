@@ -290,7 +290,7 @@ pub struct Edge {
 
 /// Directed or undirected graph on an adjacency list. Node ids are map keys
 /// (null, bool, int, string). `bfs` and `dfs` return visit order.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct GraphData {
     pub directed: bool,
     pub nodes: Vec<Value>,
@@ -2586,3 +2586,144 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
     }
 }
 
+
+// ------------------------------------------------------- detached operations
+
+/// Detached bag operations (audit A-7): `add`/`remove`/`count_of`/`contains`
+/// compare item values with values_equal, and an item can be (or reach) the
+/// bag itself — running them under the receiver's Mutex would re-lock it and
+/// hang. The dispatcher snapshots `counts` with the lock released before
+/// calling here; `d` is only re-locked for the tiny structural commit (no
+/// value traversal under the lock).
+pub fn bag_detached(
+    d: &crate::value::Ref<BagData>,
+    counts: Vec<(Value, usize)>,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, String> {
+    match name {
+        "push" | "add" => {
+            want(name, args, 1)?;
+            match counts.iter().position(|(v, _)| values_equal(v, &args[0])) {
+                Some(i) => {
+                    let mut g = d.lock().unwrap();
+                    if i < g.counts.len() {
+                        g.counts[i].1 += 1;
+                    } else {
+                        g.counts.push((args[0].clone(), 1));
+                    }
+                    Ok(Value::Null)
+                }
+                None => {
+                    d.lock().unwrap().counts.push((args[0].clone(), 1));
+                    Ok(Value::Null)
+                }
+            }
+        }
+        "remove" => {
+            want(name, args, 1)?;
+            match counts.iter().position(|(v, _)| values_equal(v, &args[0])) {
+                Some(i) => {
+                    let mut g = d.lock().unwrap();
+                    // Defensive: a zero count would underflow the usize
+                    // (a host panic from script input). Mirrors the
+                    // original `*n > 0` guard in `BagData::method`. The
+                    // same-slot check (no locking) keeps a concurrent
+                    // mutation from decrementing a different item.
+                    match g.counts.get(i) {
+                        Some((cur, n)) if *n > 0 && crate::value::same_slot(cur, &counts[i].0) => {
+                            g.counts[i].1 -= 1;
+                            if g.counts[i].1 == 0 {
+                                g.counts.remove(i);
+                            }
+                            Ok(Value::Null)
+                        }
+                        _ => Err("item not in bag".to_string()),
+                    }
+                }
+                None => Err("item not in bag".to_string()),
+            }
+        }
+        "count_of" => {
+            want(name, args, 1)?;
+            let n = counts
+                .iter()
+                .find(|(v, _)| values_equal(v, &args[0]))
+                .map(|(_, n)| *n)
+                .unwrap_or(0);
+            Ok(Value::Int(n as i64))
+        }
+        "contains" => {
+            want(name, args, 1)?;
+            let has = counts
+                .iter()
+                .any(|(v, n)| *n > 0 && values_equal(v, &args[0]));
+            Ok(Value::Bool(has))
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Detached graph operations (audit A-7): node resolution is values_equal
+/// over node values, which can be (or reach) the graph itself — running it
+/// under the receiver's Mutex would re-lock it and hang. Reads run on a
+/// shallow clone with no lock held; mutations resolve indices on the
+/// snapshot, then commit by index under the lock (no value traversal).
+pub fn graph_detached(
+    d: &crate::value::Ref<GraphData>,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, String> {
+    match name {
+        "add_node" => {
+            want(name, args, 1)?;
+            let exists = {
+                let g = d.lock().unwrap().clone();
+                g.index_of(&args[0]).is_some()
+            };
+            if exists {
+                return Err(format!("node already exists: {}", short(&args[0])));
+            }
+            let mut g = d.lock().unwrap();
+            g.nodes.push(args[0].clone());
+            g.adj.push(Vec::new());
+            Ok(Value::Null)
+        }
+        "add_edge" => {
+            if args.len() < 2 || args.len() > 3 {
+                return Err(format!(
+                    "add_edge expects 2 or 3 arguments, got {}",
+                    args.len()
+                ));
+            }
+            let w = if args.len() == 3 {
+                want_num(&args[2], "add_edge")?
+            } else {
+                1.0
+            };
+            let (ia, ib) = {
+                let g = d.lock().unwrap().clone();
+                (g.index_of(&args[0]), g.index_of(&args[1]))
+            };
+            let ia = ia
+                .ok_or_else(|| format!("edge endpoint is not a node: {}", short(&args[0])))?;
+            let ib = ib
+                .ok_or_else(|| format!("edge endpoint is not a node: {}", short(&args[1])))?;
+            let mut g = d.lock().unwrap();
+            if ia >= g.adj.len() || ib >= g.nodes.len() {
+                return Err("edge endpoint is not a node".to_string());
+            }
+            g.adj[ia].push(Edge { to: ib, weight: w });
+            if !g.directed {
+                g.adj[ib].push(Edge { to: ia, weight: w });
+            }
+            Ok(Value::Null)
+        }
+        // Pure reads: the snapshot shares node Values by Arc, and with the
+        // receiver's Mutex released, values_equal may re-lock it freely.
+        other => {
+            let mut g = d.lock().unwrap().clone();
+            g.method(other, args)
+        }
+    }
+}

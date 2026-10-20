@@ -24,9 +24,10 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 447 Rust tests green (418 core + 29 GUI/AOT; embed-API round 2026-10-20,
-stdlib expansion round 2026-10-20, bytes & CSV & regex & datetime round 2026-10-20,
-master audit & non-regression sweep completed 2026-10-20),
+State: 464 Rust tests green (449 core incl. 2 doc-tests + 10 GUI + 5 AOT;
+embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
+regex & datetime round 2026-10-20, master audit & non-regression sweep
+completed 2026-10-20, Stage-2 concurrency round 2026-10-20),
 25/25 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
 
@@ -62,7 +63,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 425 tests (396 with --no-default-features + 29 gui/aot), must stay green
+  cargo test                  FULL suite, 464 tests (449 with --no-default-features + 15 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -159,9 +160,15 @@ GaliLang/
                        detection prints the chain); public_names_of() for the
                        semantic pass; default_module_dirs(): importer dir,
                        SPID3R_PATH, vendor/ walk-up, ./stdlib
-  sched/mod.rs         Scheduler (OS thread pool, OnceLock singleton), TaskHandle
-                       {is_done, status()->"running"/"done"/"failed", join()
-                       (repeatable, clone not take)}, channel data
+  sched/mod.rs         Scheduler (OS thread pool, OnceLock singleton, grow on
+                       demand up to MAX_WORKERS=256 so blocked tasks never
+                       starve queued work; grown workers retire after 10 s idle),
+                       TaskHandle {is_done, status()->"running"/"done"/"failed",
+                       join() (repeatable, clone not take), thrown_value()},
+                       TaskOutcome{result, thrown} (structured errors across the
+                       task boundary), join_tasks_at_exit() (program exit waits
+                       up to SPID3R_TASK_DRAIN_MS, default 2000, then warns),
+                       channel data
   environment/mod.rs   lexical envs: Arc<Mutex<EnvironmentData>>; consts set for
                        const enforcement; assign walks parent chain
   diagnostics/mod.rs   Span{file,line,col,len}, Phase (Lexer/Parser/Semantic/
@@ -235,8 +242,9 @@ GaliLang/
   json_parse (objects->map deduplicating keys, arrays->list, \uXXXX + surrogate
   pairs, strict number grammar, depth cap 512), json_write (round-trips;
   non-finite float = error; keys escaped; depth cap 512; self-referential
-  container = clean error), len, type_of, assert/assert_eq, gc_collect,
-  gc_live_cells, weak/deref.
+  container = clean error), len, type_of, assert/assert_eq, gc_collect (REFUSES
+  with a clean error while any spawned task is live — same gate as the automatic
+  collector; join the tasks first), gc_live_cells, weak/deref.
   binary & csv & npy: read_bytes(path) -> ok(bytes)/err(msg), write_bytes(path, b)
   -> ok(null)/err(msg), load_npy(path) -> ok(vector|matrix)/err(msg),
   read_csv(path[, delim]) -> ok(list of maps)/err(msg), parse_csv(str[, delim])
@@ -301,8 +309,14 @@ GaliLang/
                          ring_buffer, trees, graph, matrix, vector linear
                          algebra, bytes, and GC interaction), oop_tests.rs,
                          const_module_tests.rs
-  cycle_tests.rs (GC), weak_tests.rs, sched_tests.rs (tasks/channels; includes
-                         spawn_process result contract), vm_dispatch_tests.rs,
+  cycle_tests.rs (GC), weak_tests.rs,   sched_tests.rs (tasks/channels; includes
+                         spawn_process result contract),
+                         stage2_concurrency.rs (6 process-level watchdog tests
+                         from AUDIT_2026-10-20 Stage 2, both engines: A-7
+                         self-referential container methods, A-3 grow-on-demand
+                         + exit drain, A-4 gc_collect gate, A-9 structured
+                         thrown values across await/join/callback seams),
+                         vm_dispatch_tests.rs,
                          opt_tests.rs, debug_tests.rs (scripted debugger),
                          fmt_tests.rs, pkg_tests.rs (39: manifest/install/tar/
                          sha256/registry), net_tests.rs (4), wasm_tests.rs (6),
@@ -392,6 +406,15 @@ GaliLang/
     an out-of-f64-range literal is a clean lexer error;
     -9223372036854775808 literal is unrepresentable before unary negation.
   - GC traces all 20+ container and instance types automatically via value::new_ref.
+  - Concurrency contract (Stage 2, 2026-10-20):
+    * gc_collect() is a clean error while any spawned task is live; join tasks
+      first (the automatic collector is skipped under the same condition).
+    * the pool grows on demand so blocked tasks (recv/join/mutex/sleep) never
+      starve queued work, up to MAX_WORKERS=256 concurrently blocked tasks.
+    * program exit waits up to SPID3R_TASK_DRAIN_MS (default 2000) for tasks
+      main left running, then prints a stderr warning and exits 0.
+    * a thrown value crosses spawn/await/task.join()/callback seams as the
+      value itself, so catch rebinds maps/objects (both engines + AOT).
   - tar supports POSIX ustar prefix (<= 255 bytes), GNU @LongLink (> 255 bytes),
     and header checksum verification.
   - int overflow wraps silently; int/int truncates toward zero; err(...) is
@@ -407,6 +430,13 @@ GaliLang/
     fix_f3_hangs.rs). Deep nested list/map/set chains also tear down
     iteratively now (deep builds verified to 4M levels; tests/fix_f4_gc.rs).
     See docs/AUDIT_REPORT.md section 10 and plan.html.
+  - The remaining re-entry families were fixed 2026-10-20 (audit A-7, Stage 2;
+    tests/stage2_concurrency.rs): list.slice / list.contains / index_of /
+    remove, stack|queue|deque|ring to_list+contains, set add/remove/to_list,
+    bag add/remove/count_of/contains, binary_tree traversals, and graph
+    nodes()/clone()/bfs/dfs/neighbors/path_exists/find_path/add_edge.
+    RULE: never call values_equal/deep_clone while holding the receiver's
+    Mutex — snapshot under the lock, then recurse without it.
 
 [13] STYLE / CONVENTIONS
 --------------------------------------------------------------------------------

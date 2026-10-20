@@ -299,3 +299,76 @@ fn unsupported_features_are_rejected_with_clear_diagnostics() {
         let _ = std::fs::remove_file(&exe);
     }
 }
+
+#[test]
+fn native_matches_tree_on_structured_task_errors() {
+    // Audit A-9 on the AOT backend: a task that throws a structured value must
+    // hand the value (not its display string) to `catch`, both through `await`
+    // and through the `task.join()` method. `spid3r_await` rethrows the stored
+    // value; `spid3r_method` must do the same instead of throwing the String
+    // error the shared collections layer reports.
+    if !native_available() {
+        eprintln!("skip: LLVM-C.dll not found");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let src_path = dir.join("spid3r_nat_task_errors.matrix");
+    let src = r#"async fn joiner(t) {
+    return await t;
+}
+fn main() {
+    let a = spawn fn() {
+        let o = map();
+        o.set("code", 7);
+        throw o;
+    };
+    try {
+        let v = joiner(a);
+        println("no-throw");
+    } catch(e) {
+        println(type_of(e));
+        println(e["code"]);
+    }
+    let b = spawn fn() {
+        let o = map();
+        o.set("code", 9);
+        throw o;
+    };
+    sleep_ms(50);
+    try {
+        let v = b.join();
+        println("no-throw");
+    } catch(e) {
+        println(type_of(e));
+        println(e["code"]);
+    }
+    return 0;
+}
+"#;
+    std::fs::write(&src_path, src).expect("write scratch");
+    let src_path = src_path.to_str().unwrap().to_string();
+
+    let tree = out(&["run", "--engine", "tree", &src_path])
+        .unwrap_or_else(|e| panic!("tree run failed:/n{}", e));
+
+    let exe = dir.join(if cfg!(windows) {
+        "spid3r_nat_task_errors.exe"
+    } else {
+        "spid3r_nat_task_errors"
+    });
+    let exe = exe.to_str().unwrap().to_string();
+    out(&["build", &src_path, "-o", &exe])
+        .unwrap_or_else(|e| panic!("native build failed:/n{}", e));
+    let native = run_exe(&exe).unwrap_or_else(|e| panic!("native run failed:/n{}", e));
+    assert_eq!(
+        tree, native,
+        "tree vs native stdout differ for structured task errors"
+    );
+    assert_eq!(
+        tree,
+        concat!("map\n", "7\n", "map\n", "9\n"),
+        "structured thrown values did not survive the task boundary",
+    );
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe);
+}

@@ -196,7 +196,19 @@ that failed before and passes now, plus 10 new regression tests
 
 Verification (2026-10-19, post-fix): `cargo test --no-default-features` **298 passed, 0 failed**; GUI **10/10**; `cargo clippy --no-default-features --all-targets -- -D warnings` **0 warnings**; `spid3r fmt --check` **31 files unchanged**; 3-engine differential **23 ok, 0 failed**; deadlock/matrix/argc/locals/jump/crafted-bytecode/module-path/http_fetch repros all now produce clean, catchable diagnostics; post-fix `spid3r bench --engine vm --runs 3` consistent with `benchmarks/results.json` (no regression).
 
-Known-remaining (documented, not fixed here): field type annotations are not enforced on external `obj.field = v` assignments (checked on `self.field`); diagnostic columns are byte-based (shift on lines with multi-byte chars); module loading has a check-then-act race across concurrent tasks; a panic while holding a user mutex leaves it locked (no Drop guard); GC does not trace closures/environments (cycles through them leak); auto-GC is gated on `live_tasks()==0`; `join()` can starve the worker pool; worker threads are killed mid-flight at process exit; net hardening P3s (no default read timeout for raw `http_read_request`, handle-table lifecycle, wasm FFI `catch_unwind`); `error[runtime]` vs `error[vm]` phase label divergence; cargo bin/lib `spid3r.pdb` output-collision warning (cargo #6313).
+Known-remaining (documented, not fixed here): field type annotations are not enforced on external `obj.field = v` assignments (checked on `self.field`); diagnostic columns are byte-based (shift on lines with multi-byte chars); module loading has a check-then-act race across concurrent tasks; a panic while holding a user mutex leaves it locked (no Drop guard); GC does not trace closures/environments (cycles through them leak); net hardening P3s (no default read timeout for raw `http_read_request`, handle-table lifecycle, wasm FFI `catch_unwind`); `error[runtime]` vs `error[vm]` phase label divergence; cargo bin/lib `spid3r.pdb` output-collision warning (cargo #6313).
+
+Stage-2 (2026-10-20) closed three items from that list — see
+`assessment/AUDIT_2026-10-20.md` §6 and the concurrency contract in
+`sitemap.txt` §12: the automatic collector's `live_tasks()==0` gate is now
+mirrored by `gc_collect()` (audit A-4); `join()`/`recv`/mutex waits no longer
+starve the pool because it grows on demand up to `MAX_WORKERS` (A-3); and
+program exit drains outstanding tasks (bounded by `SPID3R_TASK_DRAIN_MS`)
+instead of killing workers mid-flight (A-3). Structured thrown values also
+cross task/callback seams on both engines and the AOT backend (A-9), and the
+remaining self-referential container methods no longer re-lock the receiver
+(A-7). Regressions: `tests/stage2_concurrency.rs` (process-level watchdog
+tests, both engines) + `tests/native_tests.rs::native_matches_tree_on_structured_task_errors`.
 
 ---
 

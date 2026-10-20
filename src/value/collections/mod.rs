@@ -435,6 +435,10 @@ pub fn call_method_host(
     name: &str,
     args: Vec<Value>,
 ) -> Result<Value, String> {
+    // A thrown value stashed by an earlier operation on this thread whose
+    // String error was handled outside an engine seam must never attach itself
+    // to this call's error (audit A-9 hygiene).
+    crate::sched::clear_error_thrown();
     // clone() is universal: deep copy for collections, identity for functions.
     if name == "clone" {
         return Ok(deep_clone(obj));
@@ -458,11 +462,37 @@ pub fn call_method_host(
                     }
                 }
             }
+            if matches!(name, "contains" | "index_of" | "remove" | "slice") {
+                // Audit A-7: these compare or deep-clone item values, and an
+                // item can be (or reach) the receiver — running them under
+                // the receiver's Mutex would re-lock it and hang. Snapshot
+                // with the lock released, then operate on the snapshot.
+                let items = d.lock().unwrap().items.clone();
+                return seq::vec_detached(d, &items, name, &args);
+            }
             d.lock().unwrap().method(name, &args)
         }
-        Value::Stack(d) => d.lock().unwrap().method(name, &args),
-        Value::Queue(d) => d.lock().unwrap().method(name, &args),
-        Value::Deque(d) => d.lock().unwrap().method(name, &args),
+        Value::Stack(d) => {
+            if matches!(name, "contains" | "to_list") {
+                let items = d.lock().unwrap().items.clone();
+                return seq::seq_detached(&items, name, &args);
+            }
+            d.lock().unwrap().method(name, &args)
+        }
+        Value::Queue(d) => {
+            if matches!(name, "contains" | "to_list") {
+                let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
+                return seq::seq_detached(&items, name, &args);
+            }
+            d.lock().unwrap().method(name, &args)
+        }
+        Value::Deque(d) => {
+            if matches!(name, "contains" | "to_list") {
+                let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
+                return seq::seq_detached(&items, name, &args);
+            }
+            d.lock().unwrap().method(name, &args)
+        }
         Value::LinkedList(d) | Value::SinglyList(d) | Value::DoublyList(d) => {
             if name == "to_list" && args.is_empty() {
                 // Snapshot the node values under the list's lock, then
@@ -523,13 +553,43 @@ pub fn call_method_host(
                     return seq::set_op(name, self_items, other_items);
                 }
             }
+            if matches!(name, "push" | "add" | "remove" | "contains" | "to_list") {
+                // Audit A-7: snapshot-then-operate, see the list arm above.
+                let items = d.lock().unwrap().items.clone();
+                return seq::set_detached(d, items, name, &args);
+            }
             d.lock().unwrap().method(name, &args)
         }
-        Value::BinTree(d) => d.lock().unwrap().method(name, &args),
+        Value::BinTree(d) => {
+            if matches!(name, "inorder" | "preorder" | "postorder" | "level_order") {
+                // Audit A-7: traversals deep-clone node values, which can be
+                // the tree itself; deep-clone with the container lock off.
+                return nodes::bintree_traverse_detached(d, name);
+            }
+            d.lock().unwrap().method(name, &args)
+        }
         Value::Bst(d) => d.lock().unwrap().method(name, &args),
         Value::Heap(d) => d.lock().unwrap().method(name, &args),
         Value::PrioQueue(d) => d.lock().unwrap().method(name, &args),
-        Value::Graph(d) => d.lock().unwrap().method(name, &args),
+        Value::Graph(d) => {
+            if matches!(
+                name,
+                "has_node"
+                    | "neighbors"
+                    | "path_exists"
+                    | "find_path"
+                    | "bfs"
+                    | "dfs"
+                    | "nodes"
+                    | "add_node"
+                    | "add_edge"
+            ) {
+                // Audit A-7: node resolution is values_equal over node values,
+                // which can be (or reach) the graph itself.
+                return misc::graph_detached(d, name, &args);
+            }
+            d.lock().unwrap().method(name, &args)
+        }
         Value::HashTable(d) => d.lock().unwrap().method(name, &args),
         Value::Trie(d) => d.lock().unwrap().method(name, &args),
         Value::Matrix(d) => {
@@ -573,8 +633,22 @@ pub fn call_method_host(
             d.lock().unwrap().method(name, &args)
         }
         Value::Bytes(d) => misc::bytes_method(d, name, &args),
-        Value::Ring(d) => d.lock().unwrap().method(name, &args),
-        Value::Bag(d) => d.lock().unwrap().method(name, &args),
+        Value::Ring(d) => {
+            if name == "contains" {
+                // Audit A-7: snapshot-then-operate, see the list arm above.
+                let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
+                return seq::seq_detached(&items, name, &args);
+            }
+            d.lock().unwrap().method(name, &args)
+        }
+        Value::Bag(d) => {
+            if matches!(name, "push" | "add" | "remove" | "count_of" | "contains") {
+                // Audit A-7: snapshot-then-operate, see the list arm above.
+                let counts = d.lock().unwrap().counts.clone();
+                return misc::bag_detached(d, counts, name, &args);
+            }
+            d.lock().unwrap().method(name, &args)
+        }
         Value::RefBox(d) => d.lock().unwrap().method(name, &args),
         Value::Str(s) => string_method(s, name, &args),
         Value::Tuple(t) => misc::tuple_method(&t.lock().unwrap(), name, &args),
@@ -1094,8 +1168,17 @@ fn task_method(t: &crate::sched::TaskHandle, name: &str, args: &[Value]) -> Resu
         "join" => {
             want(name, args, 0)?;
             // Same contract as `await`: returns the task's value; a failed
-            // task raises its error to the caller.
-            t.join()
+            // task raises its error to the caller. A task that failed by
+            // throwing a user value stashes it here so the engine's
+            // method-call seam can rebind the original value in `catch`
+            // (audit A-9).
+            match t.join() {
+                Ok(v) => Ok(v),
+                Err(msg) => {
+                    crate::sched::stash_error_thrown(t.thrown_value());
+                    Err(msg)
+                }
+            }
         }
         _ => Err(unknown(name, "task")),
     }

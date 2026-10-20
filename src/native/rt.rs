@@ -153,6 +153,13 @@ fn rt_throw(msg: &str) -> *mut Value {
     leak(Value::Null)
 }
 
+/// Raise a thrown user value (not just its display string) as the pending
+/// exception, so an enclosing `try` rebinds the original value (audit A-9).
+fn rt_throw_value(v: Value) -> *mut Value {
+    THROWN.with(|t| *t.borrow_mut() = Some(leak(v)));
+    leak(Value::Null)
+}
+
 /// Copy a C string from generated code.
 fn cstr(p: *const c_char) -> String {
     unsafe {
@@ -506,7 +513,13 @@ pub extern "C" fn spid3r_method(
     }
     match collections::call_method_host(&mut NativeCallbackHost, &object, &name, args) {
         Ok(v) => leak(v),
-        Err(msg) => rt_throw(&msg),
+        Err(msg) => match crate::sched::take_error_thrown() {
+            // `task.join()` (and callback hosts) report a String error but
+            // stash the user-thrown value; rethrow the value so an enclosing
+            // `try` rebinds it (audit A-9).
+            Some(v) => rt_throw_value(v),
+            None => rt_throw(&msg),
+        },
     }
 }
 
@@ -998,6 +1011,10 @@ fn run_program(entry: extern "C" fn() -> *mut Value) -> i32 {
             1
         }
     };
+    // Join-on-exit (audit A-3): match the tree/VM engines — wait for tasks
+    // `main` left running so their output is not lost when the process exits.
+    // (`join_tasks_at_exit` prints its own warning when the deadline expires.)
+    let _ = crate::sched::join_tasks_at_exit();
     // This is a C-style `main`: Rust's stdout flush-on-exit never runs, so
     // flush explicitly before handing the exit code back.
     let _ = std::io::stdout().flush();
@@ -1045,12 +1062,25 @@ pub extern "C" fn spid3r_spawn(f: *mut Value) -> *mut Value {
                 if spid3r_threw() != 0 {
                     let thrown = spid3r_take_thrown();
                     if thrown.is_null() {
-                        Err("task threw".to_string())
+                        crate::sched::TaskOutcome {
+                            result: Err("task threw".to_string()),
+                            thrown: None,
+                        }
                     } else {
-                        Err(crate::value::display_value(deref(thrown)))
+                        // Carry the thrown user value across the task
+                        // boundary so `await` rethrows it structurally
+                        // (audit A-9).
+                        let v = to_owned(deref(thrown));
+                        crate::sched::TaskOutcome {
+                            thrown: Some(v.clone()),
+                            result: Err(crate::value::display_value(&v)),
+                        }
                     }
                 } else {
-                    Ok(to_owned(r))
+                    crate::sched::TaskOutcome {
+                        result: Ok(to_owned(r)),
+                        thrown: None,
+                    }
                 }
             }));
             leak(Value::Task(handle))
@@ -1069,7 +1099,12 @@ pub extern "C" fn spid3r_await(v: *mut Value) -> *mut Value {
     match to_owned(v) {
         Value::Task(t) => match t.join() {
             Ok(val) => leak(val),
-            Err(msg) => rt_throw(&format!("task failed: {}", msg)),
+            Err(msg) => match t.thrown_value() {
+                // Rethrow the task's thrown user value structurally so `try`
+                // rebinds the original value, not a string (audit A-9).
+                Some(v) => rt_throw_value(v),
+                None => rt_throw(&format!("task failed: {}", msg)),
+            },
         },
         Value::Channel(c) => leak(c.recv()),
         other => rt_throw(&format!(
