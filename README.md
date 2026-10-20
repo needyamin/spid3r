@@ -30,6 +30,7 @@ Hello, Spid3r!
 - [Command-line reference](#command-line-reference)
 - [Projects and dependencies](#projects-and-dependencies)
 - [Backends](#backends)
+- [Embedding from Rust](#embedding-from-rust)
 - [Developer workflow & testing](#developer-workflow--testing)
 - [Repository layout](#repository-layout)
 - [Documentation](#documentation)
@@ -51,6 +52,7 @@ Hello, Spid3r!
 - **Modules** with explicit `public` exports, and a package manager with lockfiles and POSIX `ustar` archiving.
 - **Tooling**: formatter, REPL, line debugger, benchmark runner, and differential tester.
 - **Backends & Packaging**: WebAssembly in-browser execution, cross-platform bundler (`spid3r bundle` for WASM, Desktop, and Android), desktop webview GUI, and an LLVM ahead-of-time compiler for native executables.
+- **Embeddable from Rust**: host applications register Rust closures as script functions, bind globals, and run scripts with captured output through the zero-dependency `spid3r::embed` API.
 
 ## Getting started
 
@@ -420,12 +422,42 @@ cargo build --release --no-default-features                  # core toolchain on
   - `--target desktop`: Precompiled `.matrixc` bytecode with native launcher scripts (`run.bat` and `run.sh`).
   - `--target android`: Ready-to-build Android Studio WebView application project scaffold.
 
+## Embedding from Rust
+
+Spid3r's core is a zero-dependency Rust library, so a Rust application can host it as a
+scripting layer through `spid3r::embed`:
+
+```rust
+use spid3r::embed::{conv, Engine};
+
+let engine = Engine::new()
+    .register("shout", |args| {
+        let s = conv::as_str(args.first().unwrap_or(&spid3r::Value::Null)).unwrap_or("");
+        Ok(conv::from_string(s.to_uppercase()))
+    })
+    .set_global("version", conv::from_string("1.0"));
+
+let out = engine
+    .run("demo", r#"fn main() { println(shout("hi") + " " + version); return 0; }"#)
+    .expect("script failed");
+assert_eq!(out.output, "HI 1.0\n");
+```
+
+- **Host functions** are stateful Rust closures; an `Err(String)` return becomes a catchable
+  Spid3r runtime error, and host functions work as collection callbacks (`xs.map(host_fn)`).
+- **Host globals** are dynamic values; `add_module_dir` extends the import search path.
+- **Runs** execute on a dedicated big-stack worker and capture `print`/`println`/`eprint` output;
+  `main`'s integer return is the exit code.
+
+A runnable demo ships as `cargo run --example embed_hello`. Full API reference:
+[`docs/EMBEDDING.md`](docs/EMBEDDING.md).
+
 ## Developer workflow & testing
 
-Correctness in Spid3r means *the engines agree*. All **308 Rust tests** (**298** core tests including WASM & Bundler suites + **10** headless GUI bridge tests) and **23/23 differential example programs** can be run locally without LLVM:
+Correctness in Spid3r means *the engines agree*. All **358 Rust tests** (**348** core tests including WASM & Bundler suites + **10** headless GUI bridge tests) and **23/23 differential example programs** can be run locally without LLVM:
 
 ```sh
-# 1. Run all 298 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
+# 1. Run all 348 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
 cargo test --no-default-features
 
 # 2. Run the 10 headless GUI bridge tests
@@ -463,6 +495,7 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 | `src/wasm.rs`, `web/`, `docs/html/playground.html` | WebAssembly zero-dependency C-ABI runtime, browser JS SDK, and live interactive playground |
 | `src/pkg`, `src/fmt.rs`, `src/repl`, `src/cli.rs` | Package manager (`spider.toml`, `ustar` archiver), canonical formatter, REPL, and CLI |
 | `src/native`, `src/gui` | Optional LLVM 18.1+ AOT backend (`native`) and desktop webview bridge (`gui`) |
+| `src/embed.rs`, `examples_rust/` | Embedding API for Rust hosts (`spid3r::embed::Engine`) and the runnable demo |
 | `examples/`, `benchmarks/`, `stdlib/` | 23 runnable example programs/libraries, 8 benchmarks, and standard library modules |
 | `demo_apps/` | Native GUI Calculator (`demo_apps/native_calculator/`) and Web Calculator (`demo_apps/web_calculator/`) |
 | `tests/`, `fuzz/`, `tools/` | Integration, differential, cycle-GC, packaging, audit-regression, wasm, and fuzz suites, plus `tools/difftest.sh` |
@@ -486,6 +519,7 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 | [`docs/NATIVE.md`](docs/NATIVE.md) · [`docs/BUILDING.md`](docs/BUILDING.md) | LLVM backend and build setup |
 | [`docs/GUI.md`](docs/GUI.md) | Webview GUI layer |
 | [`docs/REGISTRY.md`](docs/REGISTRY.md) | Local dependency registry |
+| [`docs/EMBEDDING.md`](docs/EMBEDDING.md) | Embedding API for Rust hosts |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Roadmap and limitations |
 | [`docs/AUDIT_REPORT.md`](docs/AUDIT_REPORT.md) | Codebase audit report and regression summary |
 

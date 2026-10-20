@@ -383,6 +383,16 @@ pub extern "C" fn spid3r_call(f: *mut Value, argc: usize, argv: *const *mut Valu
                 Err(msg) => rt_throw(&msg),
             }
         }
+        Value::NativeClosure(n) => {
+            let args = unsafe { args_vec(argc, argv) };
+            let ctx = NativeCtx {
+                sched: Scheduler::shared(),
+            };
+            match (n.func)(&ctx, args) {
+                Ok(v) => leak(v),
+                Err(msg) => rt_throw(&msg),
+            }
+        }
         Value::CClass(c) => construct_cinstance(c, unsafe { args_vec(argc, argv) }),
         other => abort(&format!("{} is not callable", crate::value::type_name(&other))),
     }
@@ -527,6 +537,12 @@ impl collections::CallbackHost for NativeCallbackHost {
                 Ok(to_owned(r))
             }
             Value::Native(n) => {
+                let ctx = crate::value::NativeCtx {
+                    sched: crate::sched::Scheduler::shared(),
+                };
+                (n.func)(&ctx, args)
+            }
+            Value::NativeClosure(n) => {
                 let ctx = crate::value::NativeCtx {
                     sched: crate::sched::Scheduler::shared(),
                 };

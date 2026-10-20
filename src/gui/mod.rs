@@ -154,7 +154,7 @@ fn want_str(name: &str, v: &Value) -> Result<String, String> {
 fn is_callable(v: &Value) -> bool {
     matches!(
         v,
-        Value::Function(_) | Value::Native(_) | Value::Class(_)
+        Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::Class(_)
     )
 }
 

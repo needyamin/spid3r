@@ -273,3 +273,36 @@ outside list/vec/map/set keep recursive drops; F8/F10 lack behavioral
 crafted-bytecode tests (construction seam follow-up); the mutex-on-panic
 guard, module-load race, and GC tracing of closures/environments remain on
 the documented roadmap (R16).
+
+---
+
+## 11. 2026-10-20 — Embedding API v0 (`spid3r::embed`, roadmap R7)
+
+A host-facing scripting surface: `Engine::register/set_global/add_module_dir/
+set_script_args` + `Engine::run` (parse -> check -> execute on a 512 MiB
+worker, main-thread output captured) + `conv` value conversions. Core
+additions: `Value::NativeClosure` (stateful host callbacks — the tree
+interpreter, VM, AOT runtime, GUI callback list, and collection callback host
+all dispatch them), `semantic::check_file_with` + `Externals` (host names are
+dynamic `Any` bindings; `module_dirs` extend the import search path via the
+new `modules::public_names_of_in`), and `Interp::run_program_inline` reuse for
+thread-correct capture. API reference: `docs/EMBEDDING.md`; runnable demo:
+`cargo run --example embed_hello` (new `examples_rust/` example target).
+
+Verification (2026-10-20, per-suite): `tests/embed_tests.rs` **10 passed,
+0 failed**; `--lib` **41 passed, 0 failed** (incl. 6 new embed unit tests);
+3-engine differential **23 ok, 0 failed**; clippy `-D warnings` **0 warnings**;
+GUI **10/10**; `cargo run --example embed_hello` produces the expected host
+demo output. The consolidated full-suite re-run was blocked part-way by the
+machine's **Windows Application Control policy** ("An Application Control
+policy has blocked this file", os error 4551, on freshly-built unsigned test
+binaries) — several suites re-verified green under the block
+(audit_regressions 41, bundle 4, const_module 5, cycle 5) before it widened;
+the blocked suites are unchanged by this round except additively. Re-run
+`cargo test --no-default-features` after adding a policy exclusion for
+`target\` to consolidate.
+
+Known residuals (plan.html R7 follow-ups): VM/bytecode embedding path;
+per-run script args (args() is process-global); native closures in the AOT
+runtime's install path; Smart-App-Control interaction is environmental, not a
+crate defect.

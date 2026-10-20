@@ -6,6 +6,7 @@
 pub mod ast;
 pub mod cli;
 pub mod diagnostics;
+pub mod embed;
 pub mod environment;
 pub mod fmt;
 pub mod interpreter;
@@ -35,3 +36,6 @@ pub mod gui;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const LANGUAGE_VERSION: &str = "1.0";
+
+// Embedding ergonomics: hosts work with `spid3r::Value` (see spid3r::embed).
+pub use value::Value;

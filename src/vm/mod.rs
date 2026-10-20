@@ -370,6 +370,17 @@ impl Vm {
                     trace: Vec::new(),
                 })
             }
+            Value::NativeClosure(n) => {
+                let ctx = crate::value::NativeCtx {
+                    sched: self.sched.clone(),
+                };
+                (n.func)(&ctx, args).map_err(|m| VmError {
+                    thrown: None,
+                    message: m,
+                    span: self.cur_span(),
+                    trace: Vec::new(),
+                })
+            }
             other => Err(VmError {
                 thrown: None,
                 message: format!("{} is not callable", type_name(other)),
@@ -968,6 +979,15 @@ impl Vm {
                             }
                         }
                         Value::Native(n) => {
+                            let ctx = NativeCtx {
+                                sched: self.sched.clone(),
+                            };
+                            match (n.func)(&ctx, args) {
+                                Ok(v) => self.frames[nf].slots.push(v),
+                                Err(msg) => self.fail(msg),
+                            }
+                        }
+                        Value::NativeClosure(n) => {
                             let ctx = NativeCtx {
                                 sched: self.sched.clone(),
                             };

@@ -70,6 +70,11 @@ struct Checker {
     /// source order, so the import handler uses this set to tell a later-in-
     /// this-chunk local fn from an earlier one (REPL `known` names).
     predeclared: HashSet<String>,
+    /// Externally-bound names (embedding API): host-registered natives and
+    /// globals. They resolve as dynamic (`Any`) bindings — known but unchecked.
+    externals: HashSet<String>,
+    /// Extra module search roots for embedded runs (host `add_module_dir`).
+    module_dirs: Vec<std::path::PathBuf>,
 }
 
 pub fn check(program: &Program, is_main: bool) -> SpidResult<()> {
@@ -77,7 +82,35 @@ pub fn check(program: &Program, is_main: bool) -> SpidResult<()> {
 }
 
 pub fn check_file(program: &Program, is_main: bool, source_file: &str) -> SpidResult<()> {
+    check_file_with(program, is_main, source_file, &Externals::default())
+}
+
+/// Externally-visible configuration for embedded runs: host-bound names
+/// (dynamic, unchecked) and extra module search roots.
+#[derive(Default, Clone)]
+pub struct Externals {
+    /// Host-registered natives and globals (embedding API).
+    pub names: HashSet<String>,
+    /// Module search roots appended after the standard ones.
+    pub module_dirs: Vec<std::path::PathBuf>,
+}
+
+/// Like [`check_file`], but with EXTERNALLY-BOUND names (embedding API):
+/// host-registered natives and globals. They resolve as dynamically typed
+/// (`Any`) bindings — callable, assignable, unchecked — exactly like the
+/// stdlib natives the checker treats as builtin functions. Scripts may
+/// shadow them with `let` (which overwrites the host binding at runtime).
+/// `externals.module_dirs` extends the import search path so scripts can
+/// import modules the host ships alongside it.
+pub fn check_file_with(
+    program: &Program,
+    is_main: bool,
+    source_file: &str,
+    externals: &Externals,
+) -> SpidResult<()> {
     let mut c = Checker::new(is_main, source_file);
+    c.externals = externals.names.clone();
+    c.module_dirs = externals.module_dirs.clone();
     c.check_program(program)
 }
 
@@ -141,6 +174,8 @@ impl Checker {
             is_main,
             source_file: source_file.to_string(),
             predeclared: HashSet::new(),
+            externals: HashSet::new(),
+            module_dirs: Vec::new(),
         }
     }
 }
@@ -498,7 +533,9 @@ impl Checker {
     }
 
     fn known(&self, name: &str) -> bool {
-        self.lookup(name).is_some()
+        // Host-registered names (embedding API) resolve dynamically.
+        self.externals.contains(name)
+            || self.lookup(name).is_some()
             || self.funcs.contains_key(name)
             || self.classes.contains_key(name)
             || self.interfaces.contains_key(name)
@@ -573,7 +610,12 @@ impl Checker {
     fn check_stmt(&mut self, s: &Stmt) -> SpidResult<()> {
         match s {
             Stmt::Import { path, span } => {
-                let names = crate::modules::public_names_of(path, &self.source_file, span)?;
+                let names = crate::modules::public_names_of_in(
+                    path,
+                    &self.source_file,
+                    span,
+                    &self.module_dirs,
+                )?;
                 for (n, is_const) in names {
                     // Collision detection against a same-named LOCAL binding
                     // in this scope. An existing IMPORT binding may be

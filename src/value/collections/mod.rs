@@ -403,7 +403,7 @@ pub fn list_callback_method(
         }
         let f = &args[n - 1];
         match f {
-            Value::Function(_) | Value::Native(_) | Value::VFunc(_) | Value::Cfn(_) => Ok(f),
+            Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::VFunc(_) | Value::Cfn(_) => Ok(f),
             other => Err(format!(
                 "{} expects a function, found {}",
                 meth,

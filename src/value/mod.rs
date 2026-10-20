@@ -121,6 +121,20 @@ pub struct NativeCtx {
     pub sched: Arc<crate::sched::Scheduler>,
 }
 
+/// A host-registered closure (embedding API): like [`NativeFn`], but carrying
+/// Rust state, so a host application can expose its own functionality with
+/// captured data. Registered through `spid3r::embed::Engine::register`.
+#[derive(Clone)]
+pub struct NativeClosureData {
+    pub name: String,
+    pub func: Arc<NativeClosureFn>,
+}
+
+/// The closure signature behind [`NativeClosureData`] (factored out so host
+/// APIs can name it without a clippy type-complexity complaint).
+pub type NativeClosureFn =
+    dyn Fn(&NativeCtx, Vec<Value>) -> Result<Value, String> + Send + Sync;
+
 pub struct ClassData {
     pub name: String,
     pub parent: Option<Arc<ClassData>>,
@@ -208,6 +222,8 @@ pub enum Value {
 
     Function(Arc<FunctionData>),
     Native(Arc<NativeFn>),
+    /// A host-registered closure with captured Rust state (embedding API).
+    NativeClosure(Arc<NativeClosureData>),
 
     /// A function compiled to bytecode (the VM's closure representation).
     VFunc(Arc<VmFunc>),
@@ -462,6 +478,7 @@ fn ref_id(v: &Value) -> Option<u64> {
         Value::MutexVal(r) => ref_id_of!(r),
         Value::Function(f) => ref_id_of!(f),
         Value::Native(f) => ref_id_of!(f),
+        Value::NativeClosure(f) => ref_id_of!(f),
         Value::VFunc(f) => ref_id_of!(f),
         Value::VClass(c) => ref_id_of!(c),
         Value::Class(c) => ref_id_of!(c),
@@ -729,6 +746,7 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::Result(_) => "result",
         Value::Function(_) => "function",
         Value::Native(_) => "function",
+        Value::NativeClosure(_) => "function",
         Value::VFunc(_) => "function",
         Value::Class(_) => "class",
         Value::VClass(_) => "class",
@@ -994,6 +1012,7 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
             None => "<vfn>".to_string(),
         },
         Value::Native(n) => format!("<native {}>", n.name),
+        Value::NativeClosure(n) => format!("<native {}>", n.name),
         Value::Class(c) => format!("<class {}>", c.name),
         Value::VClass(c) => format!("<vclass {}>", c.name),
         Value::Instance(i) => {
@@ -1313,6 +1332,7 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
         // identity types: the clone aliases, matching reference semantics
         Value::Function(_)
         | Value::Native(_)
+        | Value::NativeClosure(_)
         | Value::VFunc(_)
         | Value::Class(_)
         | Value::VClass(_)

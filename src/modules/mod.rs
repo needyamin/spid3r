@@ -279,9 +279,21 @@ pub fn public_names_of(
     importer_file: &str,
     span: &Span,
 ) -> Result<Vec<(String, bool)>, Diagnostic> {
+    public_names_of_in(path, importer_file, span, &[])
+}
+
+/// Like [`public_names_of`], with extra module search roots appended after
+/// the defaults (embedding API: the host's `add_module_dir` directories).
+pub fn public_names_of_in(
+    path: &str,
+    importer_file: &str,
+    span: &Span,
+    extra_dirs: &[std::path::PathBuf],
+) -> Result<Vec<(String, bool)>, Diagnostic> {
     check_import_path(path)?;
     let base = PathBuf::from(importer_file);
     let mut dirs = default_module_dirs();
+    dirs.extend(extra_dirs.iter().cloned());
     if let Some(dir) = base.parent() {
         dirs.insert(0, dir.to_path_buf());
     }

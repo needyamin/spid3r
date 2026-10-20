@@ -24,7 +24,8 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 350 Rust tests green (340 core + 10 GUI),
+State: 358 Rust tests green (348 core + 10 GUI; embed-API round 2026-10-20,
+per-suite evidence in docs/AUDIT_REPORT.md §11),
 23/23 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
 
@@ -39,7 +40,7 @@ GaliLang/
                       and builds Windows installer in release mode
   .github/workflows/ci.yml  GitHub Actions CI matrix (Windows/Linux/macOS, core + GUI)
   README.md           human-facing overview
-  doc.html            self-contained developer documentation, 25 sections
+  doc.html            self-contained developer documentation, 26 sections
   install.sh          POSIX one-line installer script
   .gitignore          target/, *.matrixc, vendor/, .spid3r/, dist/, fuzz/{target,corpus,artifacts}/,
                       packaging/nsis/{nsis,nsis.zip,payload,redist}, Spid3r-Setup-*.exe,
@@ -60,7 +61,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 350 tests (340 with --no-default-features + 10 gui), must stay green
+  cargo test                  FULL suite, 358 tests (348 with --no-default-features + 10 gui), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -87,6 +88,12 @@ GaliLang/
                        cmd_run accepts positional args after the file -> they
                        become args() (set_script_args). cmd_exec/cmd_test set
                        empty args. ~1100 lines.
+  embed.rs             HOST EMBEDDING API v0 (docs/EMBEDDING.md): Engine builder
+                       (register/set_global/add_module_dir/set_script_args),
+                       run() on a 512 MiB worker with per-thread output capture,
+                       conv value conversions. Host natives are
+                       Value::NativeClosure (stateful closures, new 2026-10-20);
+                       checker accepts them via semantic::Externals.
   lexer/mod.rs         hand-written byte lexer. Skips leading UTF-8 BOM, trims
                        CRLF comments, rejects overflowing float literals, and
                        decodes full UTF-8 code points on unexpected characters.
@@ -235,6 +242,12 @@ GaliLang/
                          (2026-10-19: deadlock paths, GC amortization + deep
                          teardown, VM const/return hardening, REPL/fmt, privacy
                          + import shadowing + signature call checking)
+  embed_tests.rs         10 embedding-API integration tests (+6 unit tests in
+                         src/embed.rs; docs/EMBEDDING.md). 2026-10-20: this
+                         machine's Application Control policy began blocking
+                         freshly-built unsigned test binaries (os error 4551);
+                         per-suite verification evidence is in
+                         docs/AUDIT_REPORT.md §11 until an exclusion is added.
   difftest.rs            every examples/*.matrix through tree, vm, compile+exec
   lexer_tests.rs         token/spans; parser_tests.rs; semantic/gradual_typing
   interpreter_tests.rs, integration_tests.rs, error_tests.rs
@@ -288,6 +301,12 @@ GaliLang/
     src/stdlib/mod.rs: write fn n_name(ctx,args)->Result<Value,String>;
     register in native_defs(); update docs/STANDARD_LIBRARY.md + doc.html + the
     stdlib section of this file; add tests.
+  Embed Spid3r in a Rust host:
+    use spid3r::embed::Engine; register host fns with Engine::register (they
+    become Value::NativeClosure), set globals with set_global, run(src) ->
+    exit code + captured output. Host names reach the checker via
+    semantic::Externals (Engine does it); module roots via add_module_dir.
+    See docs/EMBEDDING.md and examples_rust/embed_hello.rs.
   Add a collection method:
     find the type's `method()` impl in value/collections/{seq,nodes,misc}.rs;
     if both engines must see it, it is automatic (shared layer). Wrong-type args
@@ -349,7 +368,7 @@ GaliLang/
     but paths in code use PathBuf (never string concat with \ ).
   - OneDrive caveat: profile.dev incremental is already false — do not re-enable.
   - When editing docs (README/doc.html/docs/*), keep them consistent with the
-    ACTUAL behavior; doc.html §23 cites the test counts (308 / 23 ok) — update
+    ACTUAL behavior; doc.html cites the test counts (358 / 23 ok) — update
     together with test-count changes.
 ================================================================================
 END OF SITEMAP — for questions the authoritative sources are: the code (src/),

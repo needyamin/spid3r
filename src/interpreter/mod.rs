@@ -94,6 +94,12 @@ impl crate::value::collections::CallbackHost for InterpCallbackHost<'_> {
                 };
                 (n.func)(&ctx, args)
             }
+            Value::NativeClosure(n) => {
+                let ctx = crate::value::NativeCtx {
+                    sched: self.interp.sched.clone(),
+                };
+                (n.func)(&ctx, args)
+            }
             other => Err(format!(
                 "{} is not callable",
                 crate::value::type_name(other)
@@ -1120,6 +1126,12 @@ impl Interp {
         match f {
             Value::Function(fd) => self.call_function(&fd, args, span),
             Value::Native(n) => {
+                let ctx = crate::value::NativeCtx {
+                    sched: self.sched.clone(),
+                };
+                (n.func)(&ctx, args).map_err(|msg| self.rt(span, msg))
+            }
+            Value::NativeClosure(n) => {
                 let ctx = crate::value::NativeCtx {
                     sched: self.sched.clone(),
                 };

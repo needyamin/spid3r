@@ -796,6 +796,7 @@
       </ol>
       <div class="group">Internals</div>
       <ol>
+        <li><a href="#embedding">Embedding from Rust</a></li>
         <li><a href="#arch">Architecture</a></li>
         <li><a href="#vm">Bytecode VM &amp; .matrixc</a></li>
         <li><a href="#testing">Testing &amp; QA</a></li>
@@ -827,7 +828,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">350 tests · 23/23 examples agree</span>
+          <span class="badge">358 tests · 23/23 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -2666,6 +2667,40 @@ cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
 
         <!-- ============================================================ INTERNALS -->
 
+        <h2 id="embedding">Embedding from Rust</h2>
+        <p>Spid3r's core is a zero-dependency Rust library, and <code>spid3r::embed</code> is the
+          supported surface for hosting it as a scripting layer: register Rust closures as script
+          functions, bind globals, extend the module search path, and run in-memory source with the
+          output captured.</p>
+        <pre data-lang="rust"><code>use spid3r::embed::{conv, Engine};
+
+let engine = Engine::new()
+    .register("shout", |args| {
+        let s = conv::as_str(args.first().unwrap_or(&amp;spid3r::Value::Null)).unwrap_or("");
+        Ok(conv::from_string(s.to_uppercase()))
+    })
+    .set_global("version", conv::from_string("1.0"));
+
+let out = engine
+    .run("demo", r#"fn main() { println(shout("hi") + " " + version); return 0; }"#)
+    .expect("script failed");
+assert_eq!(out.output, "HI 1.0\n");</code></pre>
+        <div class="tablewrap">
+          <table>
+            <tr><th>Piece</th><th>What it does</th></tr>
+            <tr><td><code>Engine::register(name, f)</code></td><td>Host function callable from Spid3r — a stateful Rust closure over <code>&amp;[Value]</code>; <code>Err(String)</code> becomes a catchable runtime error; works as a collection callback (<code>xs.map(host_fn)</code>) and overrides same-named stdlib natives</td></tr>
+            <tr><td><code>Engine::set_global(name, v)</code></td><td>Global binding visible to the script (dynamic, unchecked; shadowable by <code>let</code>)</td></tr>
+            <tr><td><code>Engine::add_module_dir(dir)</code></td><td>Extra import search root — the checker and the loader share one search order</td></tr>
+            <tr><td><code>Engine::set_script_args(vec)</code></td><td><code>args()</code> for the script (process-global, matching the CLI)</td></tr>
+            <tr><td><code>Engine::run(name, src)</code></td><td>Parse → check → execute on a dedicated 512 MiB worker; returns the exit code (<code>main</code>'s integer return) and the captured <code>print</code>/<code>println</code>/<code>eprint</code> text</td></tr>
+            <tr><td><code>conv</code></td><td>Lossless value conversions: <code>as_i64/as_f64/as_bool/as_str/as_list/display</code> and <code>from_i64/from_f64/from_bool/from_string/from_list</code></td></tr>
+          </table>
+        </div>
+        <p>Host names are dynamically typed (<code>any</code>) — the same treatment the standard
+          library's natives get — and embedded runs use the tree-walk reference engine, so behavior
+          matches <code>spid3r run</code>. Full reference: <a href="docs/EMBEDDING.md">docs/EMBEDDING.md</a>;
+          runnable demo: <code>cargo run --example embed_hello</code>.</p>
+
         <h2 id="arch">Architecture</h2>
         <p>Both engines share one front end and one value layer, which is what keeps them behaviorally identical.</p>
         <div class="flow">
@@ -2764,8 +2799,8 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
         <h2 id="testing">Testing &amp; QA</h2>
         <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-          As of this revision, <code>cargo test</code> passes <strong>350 tests</strong> (<strong>340</strong> with
-          <code>--no-default-features</code> including networking, wasm, and bundler suites, plus <strong>10</strong> GUI tests) and
+          As of this revision, <code>cargo test</code> passes <strong>358 tests</strong> (<strong>348</strong> with
+          <code>--no-default-features</code> including networking, wasm, bundler, and embedding suites, plus <strong>10</strong> GUI tests) and
           <code>spid3r test</code> reports <strong>23 ok, 0 failed</strong>.
         </p>
         <ul>

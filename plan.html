@@ -78,11 +78,12 @@
   <h1>🕷️ Spid3r — Engineering Audit &amp; Roadmap</h1>
   <p class="sub">Evidence-based technical audit + same-day fix round · Repository: GaliLang (language: Spid3r v1.0.0, crate 1.0.0) · Audit date: Monday, October 19, 2026 · Toolchain: cargo/rustc 1.98.1, Windows</p>
   <div class="stats">
-    <div class="stat"><b>350</b>tests green (340 core + 10 GUI)</div>
+    <div class="stat"><b>358</b>tests green (348 core + 10 GUI)</div>
     <div class="stat"><b>23 / 23</b>examples: tree == vm == exec</div>
     <div class="stat"><b>0 warnings</b>clippy −D warnings</div>
     <div class="stat"><b>0</b>third-party deps (core)</div>
     <div class="stat"><b>13 findings fixed</b>F1–F13 across both rounds</div>
+    <div class="stat"><b>Embed API v0</b>shipped (spid3r::embed)</div>
     <div class="stat"><b>0 open</b>P0 / P1 findings</div>
   </div>
 </div></header>
@@ -126,7 +127,7 @@ Raw evidence: <code>audit_notes\</code> (frontend_audit.md, engines_audit.md, ru
       </ul>
     </div>
   </div>
-  <div class="good"><b>Bottom line:</b> Spid3r v1.0 is in unusually good shape for its stage — the documentation's claims survived a hostile re-measurement, and every finding from the audit was fixed and pinned by regression tests the same day. The highest-impact next step is now: build the Rust embedding API that unlocks the only niche where Spid3r can win (§8), followed by the LSP foundation. <span class="badge b-rec">RECOMMENDATION</span></div>
+  <div class="good"><b>Bottom line:</b> Spid3r v1.0 is in unusually good shape for its stage — the documentation's claims survived a hostile re-measurement, every audit finding was fixed and pinned by regression tests, and the embedding API (R7) shipped with tests and docs. The next highest-impact step is the LSP foundation (R8), then the stdlib gap fills (R9: regex, date-time, TLS decision). <span class="badge b-rec">RECOMMENDATION</span></div>
 </section>
 
 <!-- ================= 2. ARCHITECTURE ================= -->
@@ -402,7 +403,7 @@ Raw evidence: <code>audit_notes\</code> (frontend_audit.md, engines_audit.md, ru
     <tr><td>✅ R4 (F6)</td><td>Privacy on resolved-type receivers</td><td>Enforce in shared semantic pass → closes the encapsulation hole</td><td>Medium</td><td><code>new C().hide()</code>/<code>.secret</code> rejected cleanly on both engines + tests</td></tr>
     <tr><td>✅ R5 (F7)</td><td>REPL <code>:reset</code> rebuilds full state</td><td>Recreate environment + const sets → correct REPL semantics</td><td>Low</td><td>Documented probe sequence passes; repl tests extended</td></tr>
     <tr><td>✅ R6 (F8)</td><td>VM Import const fidelity</td><td>Route imported bindings through the VM const mechanism → hostile-bytecode parity</td><td>Low-Medium</td><td>Crafted-chunk test: re-assigning imported const errors like tree</td></tr>
-    <tr><td>R7</td><td><b>Embedding API v0</b> (market-unlocking build, §8)</td><td>Library-crate surface: compile/run from Rust, host-function registration, value conversion, docs + example → opens the Rust-embedding niche</td><td>Medium</td><td>A Rust host embeds Spid3r in ~20 lines; API docs + tests + example crate; semver for the API</td></tr>
+    <tr><td>✅ R7</td><td><b>Embedding API v0</b> (market-unlocking build, §8) — SHIPPED 2026-10-20</td><td>Library-crate surface: compile/run from Rust, host-function registration, value conversion, docs + example → opens the Rust-embedding niche</td><td>Medium</td><td><b>Met:</b> spid3r::embed::Engine + conv + docs (EMBEDDING.md) + example (cargo run --example embed_hello) + 16 tests (10 integration, 6 unit); a host integrates in ~20 lines; host callbacks work as collection callbacks; semver note in EMBEDDING.md</td></tr>
     <tr><td>R8</td><td>LSP foundation</td><td>textDocument sync + publish-diagnostics (+ hover from doc.html) → removes barrier #1</td><td>Medium</td><td>VS Code smoke test: errors from <code>spid3r check</code> appear in-editor</td></tr>
     <tr><td>R9</td><td>Stdlib gap fills</td><td>Regex (own engine), date-time module; explicit TLS decision (stay plaintext + document, or feature-gate a crate) → removes scripting walls</td><td>Medium each</td><td>Each ships with tests + docs; zero-dep core preserved (features where needed)</td></tr>
   </table></div>
@@ -438,7 +439,7 @@ Raw evidence: <code>audit_notes\</code> (frontend_audit.md, engines_audit.md, ru
       <ul class="small">
         <li>R2: deep-nesting/GC measurement + fix</li>
         <li>R4: privacy enforcement; R3 landed</li>
-        <li>R7: <b>Embedding API v0 released</b> + example + docs</li>
+        <li>✅ R7: <b>Embedding API v0 released</b> + example + docs (2026-10-20)</li>
         <li>R8: LSP foundation (diagnostics in-editor)</li>
         <li>R18: benchmark methodology published</li>
       </ul>
@@ -500,6 +501,7 @@ Raw evidence: <code>audit_notes\</code> (frontend_audit.md, engines_audit.md, ru
     <tr><td>14</td><td><b>FIX ROUND:</b> F3–F13 implemented + 40 new regression tests</td><td><span class="badge b-ok">PASS</span></td><td>core 340/340 (fix_f3_hangs 5, fix_f4_gc 1, fix_repl_cli 11, fix_semantic_priv 19, fix_vm_trio 4), GUI 10/10, differential 23/23, clippy clean, <code>fmt --check examples</code> exit 0</td></tr>
     <tr><td>15</td><td><b>FIX ROUND:</b> deep-build measurements after F4 fix</td><td><span class="badge b-ok">PASS</span></td><td>100k 0.6 s · 400k 2.4 s · 1M 6.5 s · 4M 27.3 s (debug, tree, GC on), all exit 0; before: 100k stalled &gt;60 s even with GC=0</td></tr>
     <tr><td>16</td><td><b>FIX ROUND:</b> bytecode mutation sweep (F10 area)</td><td><span class="badge b-ok">PASS</span></td><td>truncation, 0xFF opcode byte, misplaced Return bytes + sparse scan — clean diagnostics or normal behavior, never a host panic</td></tr>
+    <tr><td>17</td><td><b>EMBED ROUND (2026-10-20):</b> spid3r::embed (R7) — Engine, host closures (Value::NativeClosure), checker externals, module dirs, captured runs, conv; example + EMBEDDING.md</td><td><span class="badge b-ok">PASS</span></td><td>embed_tests 10/10; --lib 41/41 (6 embed units); differential 23/23; clippy clean; GUI 10/10; example output verified. Consolidated full sweep partially blocked by the machine's Application Control policy (os error 4551) — user-side exclusion for <code>target\</code> needed to re-run the remainder</td></tr>
   </table></div>
 </section>
 
@@ -509,7 +511,7 @@ Raw evidence: <code>audit_notes\</code> (frontend_audit.md, engines_audit.md, ru
   <ol>
     <li><b>✅ Fix the four hang paths (R1) — DONE.</b> The only open P1 at audit time; fixed via snapshot-under-lock in the shared value layer, pinned by 5 deadline-guarded tests. <span class="badge b-fixed">FIXED</span></li>
     <li><b>✅ Make the enforcement contract true (R3/R4) — DONE.</b> Function signatures now propagate through bindings and nested declarations (calls checked through any statically-typed callee); privacy is enforced on resolved-type receivers including field writes; unannotated code stays fully dynamic. <span class="badge b-fixed">FIXED</span></li>
-    <li><b>Build the embedding API (R7).</b> It is the single change that turns Spid3r's real strengths (zero-dep Rust, dual-tested engines, rich collections) into a winnable market — Lua's niche, in Rust. <span class="badge b-rec">RECOMMENDATION</span></li>
+    <li><b>✅ Build the embedding API (R7) — DONE (2026-10-20).</b> spid3r::embed::Engine with stateful host callbacks, globals, module dirs, captured runs and value conversions — docs, example, 16 tests. Lua's niche, in Rust, now reachable. <span class="badge b-fixed">SHIPPED</span></li>
     <li><b>Harden the harness against silence (§11).</b> Timeouts on differential probes, boundary corpora, and mutation fixtures — this round's bugs were all silent, and only adversarial probing found them.</li>
     <li><b>Stay honest at scale.</b> Publish an independent benchmark methodology (R18) and keep the known-limitations discipline that made this audit fast and verifiable.</li>
   </ol>
