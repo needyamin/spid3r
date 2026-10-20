@@ -129,6 +129,73 @@ fn native_matches_tree_on_supported_examples() {
 }
 
 #[test]
+fn native_matches_tree_on_new_stdlib_builtins() {
+    // The 2026-10 stdlib expansion: the AOT runtime installs the same
+    // `native_defs()` table as the interpreters, so a builtin added to the
+    // stdlib must answer identically from generated machine code.
+    if !native_available() {
+        eprintln!("skip: LLVM-C.dll not found");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let src_path = dir.join("spid3r_nat_stdlib.matrix");
+    let src = r#"fn main() {
+    println(floor(3.7) + ceil(3.2) + trunc(-3.9) + sign(-4.0));
+    println(round(2.5) + ln(1.0) + log2(8.0) + log10(1000.0) + exp(0.0));
+    println(sin(0.0) + cos(0.0) + tan(0.0) + asin(1.0) + acos(1.0) + atan(1.0));
+    println(atan2(1.0, 1.0) + hypot(3.0, 4.0));
+    println(clamp(15.0, 0.0, 10.0) + float_or("2.25", 1.5) + float_or("nope", 1.5));
+    // Booleans are not addable in Spid3r, so the predicates go through int().
+    println(int(is_nan(nan())) + int(is_inf(inf())));
+    println(1.5e3 + 1e-5 * 100000.0 + 2E+4 / 4.0);
+    println(sha256("abc"));
+    println(sha256(""));
+    println(hmac_sha256("key", "The quick brown fox jumps over the lazy dog"));
+    return 0;
+}
+"#;
+    std::fs::write(&src_path, src).expect("write scratch");
+    let src_path = src_path.to_str().unwrap().to_string();
+
+    let tree = out(&["run", "--engine", "tree", &src_path])
+        .unwrap_or_else(|e| panic!("tree run failed:\n{}", e));
+
+    let exe = dir.join(if cfg!(windows) {
+        "spid3r_nat_stdlib.exe"
+    } else {
+        "spid3r_nat_stdlib"
+    });
+    let exe = exe.to_str().unwrap().to_string();
+    out(&["build", &src_path, "-o", &exe])
+        .unwrap_or_else(|e| panic!("native build failed:\n{}", e));
+    let native = run_exe(&exe).unwrap_or_else(|e| panic!("native run failed:\n{}", e));
+    assert_eq!(
+        tree, native,
+        "tree vs native stdout differ for the expanded stdlib"
+    );
+
+    // The expected values, independently of any engine.
+    assert_eq!(
+        tree,
+        concat!(
+            "3.0\n",
+            "10.0\n",
+            "3.356194490192345\n",
+            "5.785398163397448\n",
+            "13.75\n",
+            "2\n",
+            "6501.0\n",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n",
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\n",
+        ),
+        "tree output drifted from the expected values",
+    );
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe);
+}
+
+#[test]
 fn unsupported_features_are_rejected_with_clear_diagnostics() {
     if !native_available() {
         eprintln!("skip: LLVM-C.dll not found");

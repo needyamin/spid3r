@@ -1063,3 +1063,435 @@ fn vm_rejects_more_than_255_element_list_literals() {
         vm
     );
 }
+
+// ===========================================================================
+// 2026-10-20: standard-library expansion (math, crypto, exec_capture) and
+// scientific-notation float literals. Every program below must produce the
+// same stdout on the tree engine and on the bytecode VM.
+// ===========================================================================
+
+#[test]
+fn scalar_math_builtins_match_on_both_engines() {
+    // Rounding modes, sign, the exponential/log family, trigonometry and the
+    // inverse trig family. Values are printed with the same float formatter
+    // both engines use, so an engine that folded a constant differently (or
+    // routed a builtin to a different implementation) would diverge here.
+    assert_both_engines(
+        "math_rounding",
+        r#"fn main() {
+    println(floor(3.7) + floor(-3.2) + floor(0.0));
+    println(ceil(3.2) + ceil(-3.7));
+    println(round(2.5) + round(-2.5) + round(0.4));
+    println(trunc(-3.9) + trunc(3.9));
+    println(sign(-4.0) + sign(0.0) + sign(9.0));
+    println(sign(-0.0) < 0.0);
+    return 0;
+}
+"#,
+        "-1.0\n1.0\n0.0\n0.0\n0.0\nfalse\n",
+    );
+}
+#[test]
+fn math_log_and_trig_builtins_match_on_both_engines() {
+    assert_both_engines(
+        "math_log_trig",
+        r#"fn main() {
+    println(exp(0.0));
+    println(ln(1.0));
+    println(log10(1000.0));
+    println(log2(8.0));
+    println(sin(0.0) + cos(0.0) + tan(0.0));
+    println(asin(1.0));
+    println(acos(1.0));
+    println(atan(1.0));
+    println(atan2(1.0, 1.0));
+    println(atan2(0.0, -1.0));
+    println(hypot(3.0, 4.0));
+    return 0;
+}
+"#,
+        "1.0\n0.0\n3.0\n3.0\n1.0\n1.5707963267948966\n0.0\n0.7853981633974483\n0.7853981633974483\n3.141592653589793\n5.0\n",
+    );
+}
+
+#[test]
+fn math_predicate_and_extremes_match_on_both_engines() {
+    // `nan()`, `inf()`, and the predicates: a builtin that turned a NaN into
+    // an error (or silently normalized it) would break these lines.
+    assert_both_engines(
+        "math_pred",
+        r#"fn main() {
+    println(is_nan(nan()));
+    println(is_nan(0.0));
+    println(is_inf(inf()));
+    println(is_inf(-1.0));
+    println(is_nan(sqrt(-1.0)));
+    println(is_inf(exp(1000.0)));
+    println(sign(nan()) == sign(nan()));
+    return 0;
+}
+"#,
+        "true\nfalse\ntrue\nfalse\ntrue\ntrue\nfalse\n",
+    );
+}
+
+#[test]
+fn clamp_and_float_or_match_on_both_engines() {
+    assert_both_engines(
+        "math_clamp_float_or",
+        r#"fn main() {
+    println(clamp(15.0, 0.0, 10.0));
+    println(clamp(-15.0, 0.0, 10.0));
+    println(clamp(5.0, 0.0, 10.0));
+    println(clamp(-15, 0, 10));
+    println(float_or("abc", 1.5));
+    println(float_or("2.25", 1.5));
+    println(float_or("", 0.5));
+    println(float_or(" 7 ", 1.0));
+    println(float_or(3, 1.0));
+    return 0;
+}
+"#,
+        "10.0\n0.0\n5.0\n0.0\n1.5\n2.25\n0.5\n7.0\n3.0\n",
+    );
+}
+
+#[test]
+fn nan_and_inf_constants_are_finite_safe() {
+    // A bare `nan()`/`inf()` literal must print and compare without the host
+    // panicking on a non-finite float.
+    assert_both_engines(
+        "math_consts",
+        r#"fn main() {
+    println(is_nan(nan()));
+    println(is_inf(inf()));
+    println(inf() > 1e308);
+    println(nan() == nan());
+    return 0;
+}
+"#,
+        "true\ntrue\ntrue\nfalse\n",
+    );
+}
+
+#[test]
+fn scalar_math_arity_and_type_errors_are_clean() {
+    // Wrong arity / wrong type must be a catchable Spid3r error, never a host
+    // panic (the VM decodes native calls through the same table).
+    let bad_arity = "fn main() { floor(1.0, 2.0); return 0; }";
+    let bad_type = "fn main() { floor(\"x\"); return 0; }";
+    let clamp_range = "fn main() { clamp(1.0, 10.0, 0.0); return 0; }";
+    for (name, src, needle) in [
+        ("math_arity", bad_arity, "floor expects 1 argument"),
+        ("math_type", bad_type, "floor expects a number"),
+        ("clamp_range", clamp_range, "not below or equal"),
+    ] {
+        for engine in ["tree", "vm"] {
+            // run_src reports a non-zero exit as Err, so the diagnostic is
+            // expected here: misuse must fail cleanly, never panic the host.
+            let err = run_src(engine, name, src).expect_err("argument misuse must fail");
+            assert!(
+                err.contains(needle),
+                "[{} {}] expected {:?}, got: {}",
+                engine,
+                name,
+                needle,
+                err
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------- crypto
+
+#[test]
+fn sha256_and_hmac_sha256_match_reference_vectors() {
+    // FIPS 180-4 / RFC 2104 test vectors, checked against an independent
+    // implementation. `sha256`/`hmac_sha256` share the package layer's
+    // FIPS 180-4 code, so a drift in either one shows up here.
+    assert_both_engines(
+        "sha256_vectors",
+        r#"fn main() {
+    println(sha256(""));
+    println(sha256("abc"));
+    println(sha256(string("a").repeat(1000)));
+    println(hmac_sha256("key", "The quick brown fox jumps over the lazy dog"));
+    // A key longer than the 64-byte block must be pre-hashed, not rejected.
+    println(hmac_sha256(string("K").repeat(200), "msg"));
+    println(hmac_sha256("", ""));
+    return 0;
+}
+"#,
+        concat!(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n",
+            "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3\n",
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\n",
+            "9b10789f99ca41174b211d7ef1b98d78053cfda1ba9cd12c6e4e459ed03bbc13\n",
+            "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad\n",
+        ),
+    );
+}
+
+#[test]
+fn sha256_hex_digest_is_lowercase_and_fixed_width() {
+    // The digest must be exactly 64 lowercase hex characters: uppercase or a
+    // padded/short form would break a manifest hash.
+    assert_both_engines(
+        "sha256_shape",
+        r#"fn main() {
+    let d = sha256("hello");
+    println(len(d));
+    println(d == d.lower());
+    println(d == string("hello"));
+    println(len(hmac_sha256("k", "m")));
+    return 0;
+}
+"#,
+        "64\ntrue\nfalse\n64\n",
+    );
+}
+
+// ---------------------------------------------------------- exec_capture
+
+/// Escape a Rust string into a Spid3r string literal body. Only `\`, `"` and
+/// the three named escapes are meaningful in Spid3r, so everything else is
+/// passed through verbatim.
+fn spid3r_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[test]
+fn exec_capture_pipes_stdin_and_collects_stdout() {
+    // The child is the interpreter under test running a script that echoes
+    // its stdin, so the test needs no OS-specific helper binary: stdin is
+    // written, stdout is captured, and the exit code is reported. Brackets
+    // mark the exact captured text so a stray trailing newline is visible.
+    let child_script = std::env::temp_dir().join("spid3r_audit_echo_stdin.matrix");
+    std::fs::write(
+        &child_script,
+        "fn main() {\n    let s = read_line();\n    print(\"got:\" + string(s));\n    return 0;\n}\n",
+    )
+    .unwrap();
+    let bin = spid3r_string(bin().to_str().unwrap());
+    let script = spid3r_string(child_script.to_str().unwrap());
+    let src = format!(
+        r#"fn main() {{
+    let child = "{bin}";
+    let r = exec_capture(child, ["run", "{script}"], "hello from the parent");
+    if not r.is_ok() {{ println("SPAWN " + r.unwrap_err()); return 1; }}
+    let m = r.unwrap();
+    println(m["code"]);
+    println("[" + m["stdout"] + "]");
+    println("(" + m["stderr"] + ")");
+    let empty = exec_capture(child, ["run", "{script}"], null);
+    if not empty.is_ok() {{ println("SPAWN2 " + empty.unwrap_err()); return 1; }}
+    let m2 = empty.unwrap();
+    println(m2["code"]);
+    println("[" + m2["stdout"] + "]");
+    return 0;
+}}
+"#
+    );
+    assert_both_engines(
+        "exec_capture_stdin",
+        &src,
+        "0\n[got:hello from the parent]\n()\n0\n[got:null]\n",
+    );
+}
+
+#[test]
+fn exec_capture_reports_child_exit_code_and_stderr() {
+    // A missing script is a usage error, not a spawn failure: the child runs,
+    // exits 2, and writes its diagnostic to stderr (never stdout). Both fields
+    // of the result map have to be wired correctly for this to hold.
+    let missing = std::env::temp_dir().join("spid3r_audit_missing_script.matrix");
+    let _ = std::fs::remove_file(&missing);
+    let bin = spid3r_string(bin().to_str().unwrap());
+    let target = spid3r_string(missing.to_str().unwrap());
+    let src = format!(
+        r#"fn main() {{
+    let r = exec_capture("{bin}", ["run", "{target}"], null);
+    if not r.is_ok() {{ println("SPAWN " + r.unwrap_err()); return 1; }}
+    let m = r.unwrap();
+    println(m["code"]);
+    println("[" + m["stdout"] + "]");
+    println(m["stderr"].contains("is not a file"));
+    return 0;
+}}
+"#
+    );
+    assert_both_engines("exec_capture_stderr", &src, "2\n[]\ntrue\n");
+}
+
+#[test]
+fn exec_capture_reports_a_failed_spawn_as_an_error() {
+    // Documented contract: a process that cannot be spawned yields
+    // `err(msg)`, not a thrown runtime error.
+    assert_both_engines(
+        "exec_capture_spawn_err",
+        r#"fn main() {
+    let r = exec_capture("definitely-not-a-real-spid3r-binary-xyz", [], null);
+    if not r.is_err() { return 1; }
+    let msg = r.unwrap_err();
+    if not msg.contains("definitely-not-a-real-spid3r-binary-xyz") { return 1; }
+    println("spawn failure yields err");
+    return 0;
+}
+"#,
+        "spawn failure yields err\n",
+    );
+}
+
+#[test]
+fn exec_capture_arity_and_type_errors_are_clean() {
+    for (name, src, needle) in [
+        ("exec_arity", "fn main() { exec_capture(\"x\", list()); return 0; }", "exec_capture expects 3 arguments"),
+        ("exec_cmd_type", "fn main() { exec_capture(1, list(), null); return 0; }", "exec_capture expects a string"),
+        ("exec_argv_type", "fn main() { exec_capture(\"x\", \"not-a-list\", null); return 0; }", "expects a list of arguments"),
+        ("exec_stdin_type", "fn main() { exec_capture(\"x\", list(), 5); return 0; }", "expects a string or null for stdin"),
+    ] {
+        for engine in ["tree", "vm"] {
+            // run_src reports a non-zero exit as Err, so the diagnostic is
+            // expected here: misuse must fail cleanly, never panic the host.
+            let err = run_src(engine, name, src).expect_err("argument misuse must fail");
+            assert!(
+                err.contains(needle),
+                "[{} {}] expected {:?}, got: {}",
+                engine,
+                name,
+                needle,
+                err
+            );
+        }
+    }
+}
+
+// ------------------------------------------------ scientific float literals
+
+#[test]
+fn scientific_notation_float_literals_lex_as_single_floats() {
+    // `1.5e3`, `1e-5` and `2E+4` must each be ONE float token: if the lexer
+    // split `1.5e3` into `1.5` followed by the ident `e3`, this program would
+    // fail to parse instead of printing 1501.0.
+    assert_both_engines(
+        "sci_notation",
+        r#"fn main() {
+    println(1.5e3 + 1.0);
+    println(1e-5 * 100000.0);
+    println(2E+4 / 4.0);
+    println(0.5e1 + 5e0 + 1.0E2);
+    let a = 1.5e3;
+    let b = 2E-1;
+    println(a * b);
+    return 0;
+}
+"#,
+        "1501.0\n1.0\n5000.0\n110.0\n300.0\n",
+    );
+}
+
+#[test]
+fn scientific_notation_does_not_swallow_identifiers() {
+    // The exponent marker must be followed by a digit, so `1emit` stays the
+    // int `1` plus the identifier `emit`. Without that lookahead the lexer
+    // would consume `1emit` and fail to make a float of it.
+    let src = "fn emit() { return 7; }\nfn main() { println(1emit()); return 0; }";
+    for engine in ["tree", "vm"] {
+        let err = run_src(engine, "sci_ident", src).expect_err("no operator before the call");
+        assert!(
+            err.contains("expected"),
+            "[{}] expected a parse error, got: {}",
+            engine,
+            err
+        );
+    }
+}
+
+#[test]
+fn overflowing_scientific_float_literal_is_a_clean_lexer_error() {
+    // `1e400` overflows f64. It must be a lexer diagnostic naming the literal,
+    // never an infinity, a host panic, or a silently truncated value.
+    for engine in ["tree", "vm"] {
+        let err = run_src(engine, "sci_overflow", "fn main() { println(1e400); return 0; }")
+            .expect_err("an overflowing float literal must be rejected");
+        assert!(
+            err.contains("out of f64 range"),
+            "[{}] expected an out-of-range diagnostic, got: {}",
+            engine,
+            err
+        );
+        assert!(
+            err.contains("1e400"),
+            "[{}] the diagnostic should name the offending literal, got: {}",
+            engine,
+            err
+        );
+    }
+}
+
+// -------------------------------------------------- matrix indexing docs
+
+#[test]
+fn matrix_indexing_is_flat_row_major_and_2d_uses_get_set() {
+    // Pins the documented contract stated in docs/DATA_STRUCTURES.md and
+    // README.md: `m[i]` is a FLAT row-major cell index answering a float, and
+    // 2-D addressing goes through `get`/`set`.
+    assert_both_engines(
+        "matrix_indexing",
+        r#"fn main() {
+    let mx = matrix(2, 3, 0.0);
+    mx[0] = 1.0;
+    mx[1] = 2.0;
+    mx[2] = 3.0;
+    mx[3] = 4.0;
+    println(mx[3]);
+    println(mx.get(1, 0));
+    println(mx.get(0, 0));
+    mx.set(1, 2, 7.5);
+    println(mx[5]);
+    println(len(mx));
+    println(mx.rows());
+    println(mx.cols());
+    println(mx.row(0));
+    println(mx.col(0));
+    println(mx.get(1, 0) == mx[1 * mx.cols() + 0]);
+    return 0;
+}
+"#,
+        "4.0\n4.0\n1.0\n7.5\n6\n2\n3\n[1.0, 2.0, 3.0]\n[1.0, 4.0]\ntrue\n",
+    );
+}
+
+#[test]
+fn matrix_flat_index_out_of_bounds_throws() {
+    // The flat buffer has rows*cols cells, so index 6 on a 2x3 matrix is out
+    // of range even though 6 is twice its column count.
+    let src = r#"fn main() {
+    let mx = matrix(2, 3, 0.0);
+    println(mx[6]);
+    return 0;
+}
+"#;
+    for engine in ["tree", "vm"] {
+        let err = run_src(engine, "matrix_oob", src).expect_err("index 6 is out of bounds");
+        assert!(
+            err.contains("out of bounds"),
+            "[{}] expected an out-of-bounds error, got: {}",
+            engine,
+            err
+        );
+    }
+}
+

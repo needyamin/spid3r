@@ -8,6 +8,7 @@ use std::cell::Cell;
 use std::sync::Arc;
 
 use crate::environment::{self, Env};
+use crate::pkg::sha256_bytes;
 use crate::sched::Scheduler;
 use crate::value::collections;
 use crate::value::{display_value, truthy, values_equal, NativeCtx, NativeFn, Value};
@@ -38,6 +39,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("env", n_env),
         ("args", n_args),
         ("spawn_process", n_spawn_process),
+        ("exec_capture", n_exec_capture),
         ("yield", n_yield),
         ("task_count", n_task_count),
         ("len", n_len),
@@ -46,6 +48,33 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("pow", n_pow),
         ("min", n_min),
         ("max", n_max),
+        ("clamp", n_clamp),
+        ("floor", n_floor),
+        ("ceil", n_ceil),
+        ("round", n_round),
+        ("trunc", n_trunc),
+        ("sign", n_sign),
+        ("exp", n_exp),
+        ("ln", n_ln),
+        ("log10", n_log10),
+        ("log2", n_log2),
+        ("sin", n_sin),
+        ("cos", n_cos),
+        ("tan", n_tan),
+        ("asin", n_asin),
+        ("acos", n_acos),
+        ("atan", n_atan),
+        ("is_nan", n_is_nan),
+        ("is_inf", n_is_inf),
+        ("atan2", n_atan2),
+        ("hypot", n_hypot),
+        ("float_or", n_float_or),
+        ("nan", n_nan),
+        ("inf", n_inf),
+        ("random_float", n_random_float),
+        ("random_normal", n_random_normal),
+        ("sha256", n_sha256),
+        ("hmac_sha256", n_hmac_sha256),
         ("int", n_int),
         ("float", n_float),
         ("string", n_string),
@@ -343,6 +372,27 @@ fn n_args(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
 
 // ---------------------------------------------------------------- process
 
+/// Extract a list/vec of strings. Process argument vectors must be strings:
+/// a number in the list would otherwise be silently stringified differently
+/// by each engine.
+fn argv_list(v: &Value, who: &str) -> Result<Vec<String>, String> {
+    match v {
+        Value::List(d) | Value::VecDyn(d) => {
+            let d = d.lock().unwrap();
+            let mut out = Vec::with_capacity(d.items.len());
+            for item in &d.items {
+                out.push(want_str(item, who)?);
+            }
+            Ok(out)
+        }
+        other => Err(format!(
+            "{} expects a list of arguments, found {}",
+            who,
+            crate::value::type_name(other)
+        )),
+    }
+}
+
 fn n_spawn_process(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 2 {
         return Err(format!(
@@ -351,22 +401,7 @@ fn n_spawn_process(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
         ));
     }
     let cmd = want_str(&args[0], "spawn_process")?;
-    let argv = match &args[1] {
-        Value::List(d) | Value::VecDyn(d) => {
-            let d = d.lock().unwrap();
-            let mut out = Vec::new();
-            for v in &d.items {
-                out.push(want_str(v, "spawn_process")?);
-            }
-            out
-        }
-        other => {
-            return Err(format!(
-                "spawn_process expects a list of arguments, found {}",
-                crate::value::type_name(other)
-            ))
-        }
-    };
+    let argv = argv_list(&args[1], "spawn_process")?;
     // Documented contract (docs/STANDARD_LIBRARY.md notes): process
     // operations that can fail return a `result` instead of throwing.
     match std::process::Command::new(&cmd).args(&argv).status() {
@@ -378,6 +413,143 @@ fn n_spawn_process(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
             "err",
             vec![Value::Str(format!("spawn_process '{}': {}", cmd, e).into())],
         ),
+    }
+}
+
+/// Hard cap on the bytes read from a child's stdout or stderr. A program that
+/// talks to a noisy (or hostile) child must not be able to exhaust memory, so
+/// the streams are truncated at this bound rather than read to EOF.
+const EXEC_CAPTURE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Run a child process with all three pipes connected and collect its output.
+///
+/// The child is spawned with piped stdin/stdout/stderr. Writing stdin on this
+/// thread while reading stdout here would deadlock the moment the child filled
+/// a pipe buffer, so stdin is consumed and both output pipes are drained on
+/// worker threads before the child is reaped.
+fn run_capture(
+    cmd: &str,
+    argv: &[String],
+    stdin_text: Option<&str>,
+) -> Result<(i64, String, String), String> {
+    let mut child = match std::process::Command::new(cmd)
+        .args(argv)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Err(format!("exec_capture '{}': {}", cmd, e)),
+    };
+
+    // Dropping the handle closes the child's stdin, which is how a program
+    // like `cat` learns the input is finished.
+    let stdin_writer = match (child.stdin.take(), stdin_text) {
+        (Some(mut stdin), Some(text)) => {
+            let text = text.to_string();
+            Some(std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = stdin.write_all(text.as_bytes());
+                let _ = stdin.flush();
+            }))
+        }
+        (Some(_), None) => None,
+        (None, Some(_)) => None,
+        (None, None) => None,
+    };
+
+    let stdout_reader = child.stdout.take().map(|out| {
+        std::thread::spawn(move || read_pipe_capped(out).map_err(|e| format!("stdout: {}", e)))
+    });
+    let stderr_reader = child.stderr.take().map(|out| {
+        std::thread::spawn(move || read_pipe_capped(out).map_err(|e| format!("stderr: {}", e)))
+    });
+
+    let stdout = join_reader(stdout_reader);
+    let stderr = join_reader(stderr_reader);
+    if let Some(h) = stdin_writer {
+        let _ = h.join();
+    }
+    // Reap the child no matter what: skipping wait() leaves a zombie, and a
+    // read error must not leak one either.
+    let waited = child.wait();
+    let stdout = stdout?;
+    let stderr = stderr?;
+    match waited {
+        Ok(status) => Ok((status.code().unwrap_or(-1) as i64, stdout, stderr)),
+        Err(e) => Err(format!("exec_capture '{}': waiting failed: {}", cmd, e)),
+    }
+}
+
+/// Join a reader thread, turning a panic inside it into a clean error string.
+fn join_reader(h: Option<std::thread::JoinHandle<Result<String, String>>>) -> Result<String, String> {
+    match h {
+        Some(h) => match h.join() {
+            Ok(r) => r,
+            Err(_) => Err("exec_capture: child output reader failed".to_string()),
+        },
+        None => Ok(String::new()),
+    }
+}
+
+/// Read a child pipe up to `EXEC_CAPTURE_MAX_BYTES` and decode it as UTF-8.
+/// Truncation is silent (documented); non-UTF-8 output is an error, because
+/// lossy decoding would hand the program different bytes than the child wrote.
+fn read_pipe_capped<R: std::io::Read>(r: R) -> Result<String, String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    let mut limited = r.take(EXEC_CAPTURE_MAX_BYTES);
+    limited
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("exec_capture: reading child output failed: {}", e))?;
+    String::from_utf8(buf)
+        .map_err(|_| "exec_capture: child output is not valid UTF-8".to_string())
+}
+
+/// `exec_capture(cmd, args, stdin_text) -> result` — run a process and capture
+/// its output. `stdin_text` is written to the child's stdin before waiting
+/// (`null` closes stdin immediately). On success the payload is a map with
+/// `"code"` (int exit status), `"stdout"` and `"stderr"` (strings, each capped
+/// at 64 MiB). A process that cannot be spawned — or that writes output which
+/// is not valid UTF-8 — yields `err(msg)` instead of throwing.
+fn n_exec_capture(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "exec_capture expects 3 arguments, got {}",
+            args.len()
+        ));
+    }
+    let cmd = want_str(&args[0], "exec_capture")?;
+    let argv = argv_list(&args[1], "exec_capture")?;
+    let stdin_text = match &args[2] {
+        Value::Null => None,
+        Value::Str(s) => Some(s.to_string()),
+        other => {
+            return Err(format!(
+                "exec_capture expects a string or null for stdin, found {}",
+                crate::value::type_name(other)
+            ))
+        }
+    };
+    // Documented contract: a failed spawn is a `result`, not a throw, so
+    // scripts can branch on it without a try block.
+    match run_capture(&cmd, &argv, stdin_text.as_deref()) {
+        Ok((code, stdout, stderr)) => collections::construct(
+            "ok",
+            vec![collections::construct(
+                "map",
+                vec![
+                    Value::Str("code".into()),
+                    Value::Int(code),
+                    Value::Str("stdout".into()),
+                    Value::Str(stdout.into()),
+                    Value::Str("stderr".into()),
+                    Value::Str(stderr.into()),
+                ],
+            )?],
+        ),
+        Err(msg) => collections::construct("err", vec![Value::Str(msg.into())]),
     }
 }
 
@@ -464,6 +636,213 @@ fn n_max(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         }
     }
     Ok(best)
+}
+
+// ------------------------------------------------- scalar math & utility
+
+/// One-argument float builtin. Each of the 17 scalar functions is a thin
+/// wrapper so the builtin's own name appears in arity/type diagnostics; a
+/// macro keeps the wrappers from being copy-paste boilerplate.
+macro_rules! math1 {
+    ($fname:ident, $builtin:literal, $body:expr) => {
+        fn $fname(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+            let x = want_num(&one($builtin, &args)?, $builtin)?;
+            Ok($body(x))
+        }
+    };
+}
+
+math1!(n_floor, "floor", |x: f64| Value::Float(x.floor()));
+math1!(n_ceil, "ceil", |x: f64| Value::Float(x.ceil()));
+math1!(n_round, "round", |x: f64| Value::Float(x.round()));
+math1!(n_trunc, "trunc", |x: f64| Value::Float(x.trunc()));
+math1!(n_sign, "sign", |x: f64| Value::Float(if x.is_nan() {
+    f64::NAN
+} else if x > 0.0 {
+    1.0
+} else if x < 0.0 {
+    -1.0
+} else {
+    x // keeps -0.0 negative and 0.0 positive
+}));
+math1!(n_exp, "exp", |x: f64| Value::Float(x.exp()));
+math1!(n_ln, "ln", |x: f64| Value::Float(x.ln()));
+math1!(n_log10, "log10", |x: f64| Value::Float(x.log10()));
+math1!(n_log2, "log2", |x: f64| Value::Float(x.log2()));
+math1!(n_sin, "sin", |x: f64| Value::Float(x.sin()));
+math1!(n_cos, "cos", |x: f64| Value::Float(x.cos()));
+math1!(n_tan, "tan", |x: f64| Value::Float(x.tan()));
+math1!(n_asin, "asin", |x: f64| Value::Float(x.asin()));
+math1!(n_acos, "acos", |x: f64| Value::Float(x.acos()));
+math1!(n_atan, "atan", |x: f64| Value::Float(x.atan()));
+math1!(n_is_nan, "is_nan", |x: f64| Value::Bool(x.is_nan()));
+math1!(n_is_inf, "is_inf", |x: f64| Value::Bool(x.is_infinite()));
+
+fn n_atan2(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("atan2 expects 2 arguments, got {}", args.len()));
+    }
+    // Note the argument order: atan2(y, x) is the conventional (and C-library)
+    // order, so `atan2(a, b)` is the angle of the vector (a, b).
+    let y = want_num(&args[0], "atan2")?;
+    let x = want_num(&args[1], "atan2")?;
+    Ok(Value::Float(y.atan2(x)))
+}
+
+fn n_hypot(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("hypot expects 2 arguments, got {}", args.len()));
+    }
+    let x = want_num(&args[0], "hypot")?;
+    let y = want_num(&args[1], "hypot")?;
+    // `hypot` rather than `sqrt(x*x + y*y)`: the naive form overflows for
+    // large-but-representable operands (1e200 each).
+    Ok(Value::Float(x.hypot(y)))
+}
+
+/// `float_or(str, default)` — parse a string as a float, falling back to
+/// `default` when the text is not a number. Numbers pass through unchanged,
+/// so a value already in numeric form needs no guard at the call site.
+fn n_float_or(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "float_or expects 2 arguments, got {}",
+            args.len()
+        ));
+    }
+    let fallback = want_num(&args[1], "float_or")?;
+    match &args[0] {
+        Value::Str(s) => Ok(Value::Float(s.trim().parse::<f64>().unwrap_or(fallback))),
+        Value::Int(i) => Ok(Value::Float(*i as f64)),
+        Value::Float(f) => Ok(Value::Float(*f)),
+        other => Err(format!(
+            "float_or expects a string or number, found {}",
+            crate::value::type_name(other)
+        )),
+    }
+}
+
+/// `clamp(x, lo, hi)` — `x` limited to the closed range `[lo, hi]`.
+fn n_clamp(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!("clamp expects 3 arguments, got {}", args.len()));
+    }
+    let x = want_num(&args[0], "clamp")?;
+    let lo = want_num(&args[1], "clamp")?;
+    let hi = want_num(&args[2], "clamp")?;
+    // `f64::clamp` panics when lo > hi or a bound is NaN, so the range is
+    // validated here and reported as an ordinary (catchable) error.
+    // `partial_cmp` answers `None` for a NaN bound, which must be rejected
+    // too — otherwise `clamp` would panic the host on user input.
+    if matches!(
+        lo.partial_cmp(&hi),
+        None | Some(std::cmp::Ordering::Greater)
+    ) {
+        return Err(format!(
+            "clamp: low bound {} is not below or equal to the high bound {}",
+            lo, hi
+        ));
+    }
+    Ok(Value::Float(x.clamp(lo, hi)))
+}
+
+fn n_nan(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    no_args("nan", &args)?;
+    Ok(Value::Float(f64::NAN))
+}
+
+fn n_inf(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    no_args("inf", &args)?;
+    Ok(Value::Float(f64::INFINITY))
+}
+
+/// Shared arity guard for the zero-argument constants/generators.
+fn no_args(name: &str, args: &[Value]) -> Result<(), String> {
+    if args.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("{} expects 0 arguments, got {}", name, args.len()))
+    }
+}
+
+/// Uniform f64 in `[0.0, 1.0)`. 53 of the xorshift output's bits become the
+/// mantissa: using all 64 would round the top half of the range up to exactly
+/// 1.0, which is outside the promised interval.
+fn random_unit() -> f64 {
+    (next_random() >> 11) as f64 * RANDOM_UNIT_SCALE
+}
+
+/// 2^-53, the scale that maps a 53-bit integer onto `[0.0, 1.0)`.
+const RANDOM_UNIT_SCALE: f64 = 1.0 / 9_007_199_254_740_992.0;
+
+fn n_random_float(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    no_args("random_float", &args)?;
+    Ok(Value::Float(random_unit()))
+}
+
+/// `random_normal()` — one sample from the standard normal distribution,
+/// via the Box-Muller transform of two uniform draws. `1.0 - u` keeps the
+/// logarithm's argument in `(0, 1]`, so the transform can never emit an
+/// infinity even in the (2^-53-probability) zero case.
+fn n_random_normal(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    no_args("random_normal", &args)?;
+    let u = random_unit();
+    let v = random_unit();
+    let r = (-2.0 * (1.0 - u).ln()).sqrt();
+    let theta = 2.0 * std::f64::consts::PI * v;
+    Ok(Value::Float(r * theta.cos()))
+}
+
+// ------------------------------------------------------------------ crypto
+
+/// `sha256(s)` — FIPS 180-4 SHA-256 of the UTF-8 bytes of `s`, lowercase hex.
+/// Same implementation the package layer uses to verify dependencies, so
+/// program-computed and tool-computed digests agree bit for bit.
+fn n_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let s = want_str(&one("sha256", &args)?, "sha256")?;
+    Ok(Value::Str(crate::pkg::hex_encode(&sha256_bytes(s.as_bytes())).into()))
+}
+
+/// `hmac_sha256(key, msg)` — RFC 2104 HMAC-SHA256 of the UTF-8 bytes of
+/// `msg` under the UTF-8 bytes of `key`, lowercase hex. Keys longer than the
+/// 64-byte block are pre-hashed, as the construction requires.
+fn n_hmac_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "hmac_sha256 expects 2 arguments, got {}",
+            args.len()
+        ));
+    }
+    let key = want_str(&args[0], "hmac_sha256")?;
+    let msg = want_str(&args[1], "hmac_sha256")?;
+    Ok(Value::Str(
+        crate::pkg::hex_encode(&hmac_sha256_bytes(key.as_bytes(), msg.as_bytes())).into(),
+    ))
+}
+
+/// HMAC-SHA256 (RFC 2104) over a 64-byte block.
+fn hmac_sha256_bytes(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    const BLOCK: usize = 64;
+    let mut k = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        k[..32].copy_from_slice(&sha256_bytes(key));
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; BLOCK];
+    let mut opad = [0x5cu8; BLOCK];
+    for i in 0..BLOCK {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+    let mut inner = Vec::with_capacity(BLOCK + msg.len());
+    inner.extend_from_slice(&ipad);
+    inner.extend_from_slice(msg);
+    let inner_hash = sha256_bytes(&inner);
+    let mut outer = Vec::with_capacity(BLOCK + 32);
+    outer.extend_from_slice(&opad);
+    outer.extend_from_slice(&inner_hash);
+    sha256_bytes(&outer)
 }
 
 // ------------------------------------------------------------- conversions

@@ -128,6 +128,11 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
 - Index assignment targets `list`, `vec`, `matrix`, `hash_table`, and `map`
   (`m[k] = v` is an alias for `m.set(k, v)`). The semantic pass rejects it on
   every other type.
+- A float literal may carry an exponent: `1.5e3`, `1e-5` and `2E+4` all lex
+  as one float token. The `e`/`E` must be followed (after an optional `+` or
+  `-`) by at least one digit, so `1e` is the int `1` followed by the
+  identifier `e`, and `1elif` is `1` then `elif`. A float literal too large
+  for an `f64` is a lexer error, never an infinity or a panic.
 - String literal escapes are `\n`, `\r`, `\t`, `\\`, and `\"`; identifiers are ASCII
   (`[A-Za-z_][A-Za-z0-9_]*`).
 - A `public`/`private` prefix is accepted before any top-level declaration

@@ -107,6 +107,85 @@ fn number_then_dot_is_int_then_dot() {
 }
 
 #[test]
+fn scientific_notation_floats_are_single_tokens() {
+    // `1.5e3` must be ONE Float(1500.0), not Int(1) + Dot + Float(.5) + Ident("e3").
+    let ks = kinds("1.5e3");
+    assert_eq!(ks.len(), 2); // value + Eof
+    assert_eq!(ks[0], TokenKind::Float(1500.0));
+
+    assert_eq!(kinds("1e-5")[0], TokenKind::Float(0.00001));
+    assert_eq!(kinds("2E+4")[0], TokenKind::Float(20000.0));
+    assert_eq!(kinds("0.5e1")[0], TokenKind::Float(5.0));
+    assert_eq!(kinds("5e0")[0], TokenKind::Float(5.0));
+    assert_eq!(kinds("1.0E2")[0], TokenKind::Float(100.0));
+    assert_eq!(kinds("1E2")[0], TokenKind::Float(100.0));
+    // A float with an exponent is still a float, never an integer token.
+    assert!(matches!(kinds("9e0")[0], TokenKind::Float(_)));
+    // The exponent marker needs a digit after it: `1e` stays Int(1) + Ident("e").
+    assert_eq!(kinds("1e")[0], TokenKind::Int(1));
+    assert_eq!(kinds("1e")[1], TokenKind::Ident("e".into()));
+    // ... and `1emit` stays Int(1) + Ident("emit") (a decimal point is not
+    // required, and the marker must not swallow the following identifier).
+    let ks = kinds("1emit");
+    assert_eq!(ks[0], TokenKind::Int(1));
+    assert_eq!(ks[1], TokenKind::Ident("emit".into()));
+    // `5e` followed by a digit is still taken as an exponent.
+    assert_eq!(kinds("5e1")[0], TokenKind::Float(50.0));
+    // Plain decimals and integers are unchanged (a value that is not an
+    // approximation of a well-known constant, to keep Clippy quiet).
+    assert_eq!(kinds("42")[0], TokenKind::Int(42));
+    assert_eq!(kinds("1.25")[0], TokenKind::Float(1.25));
+    assert_eq!(kinds("0.5")[0], TokenKind::Float(0.5));
+    // Parsing through the value is what matters: `1.5e3` must equal 1500,
+    // not the concatenation of two numbers.
+    assert_eq!(kinds("1.5e3")[0], TokenKind::Float(1500.0));
+    assert_eq!(kinds("2E+4")[0], TokenKind::Float(20000.0));
+    // A bare exponent sign with no digits is not an exponent.
+    let ks = kinds("1e+x");
+    assert_eq!(ks[0], TokenKind::Int(1));
+    assert_eq!(ks[1], TokenKind::Ident("e".into()));
+    assert_eq!(ks[2], TokenKind::Plus);
+    // Underflow to zero is representable and stays a float.
+    assert_eq!(kinds("1e-400")[0], TokenKind::Float(0.0));
+}
+
+#[test]
+fn scientific_notation_with_a_sign_after_the_marker() {
+    assert_eq!(kinds("1.5e+3")[0], TokenKind::Float(1500.0));
+    assert_eq!(kinds("1.5e-3")[0], TokenKind::Float(0.0015));
+    // A sign with no exponent digits is not an exponent: `1e+x` is Int(1),
+    // Ident("e"), Plus, Ident("x").
+    let ks = kinds("1e+x");
+    assert_eq!(ks[0], TokenKind::Int(1));
+    assert_eq!(ks[1], TokenKind::Ident("e".into()));
+    assert_eq!(ks[2], TokenKind::Plus);
+}
+
+#[test]
+fn scientific_notation_overflow_is_a_lexer_error() {
+    // `1e400` overflows f64: the lexer must reject it with a diagnostic naming
+    // the literal rather than emitting an infinity or panicking.
+    let e = lex_err("1e400");
+    assert_eq!(e.phase, Phase::Lexer);
+    assert!(e.message.contains("out of f64 range"), "{}", e.message);
+    assert!(e.message.contains("1e400"), "{}", e.message);
+    // Underflow to zero is representable and stays a float.
+    assert_eq!(kinds("1e-400")[0], TokenKind::Float(0.0));
+}
+
+#[test]
+fn scientific_notation_spans_cover_the_whole_literal() {
+    // The diagnostic span must cover the entire literal, not just its first
+    // character, or a caret would point at the wrong place.
+    let toks = lex("x = 1.5e-3;");
+    assert_eq!(toks[0].kind, TokenKind::Ident("x".into()));
+    let f = &toks[2];
+    assert_eq!(f.kind, TokenKind::Float(0.0015));
+    // "1.5e-3" is six characters; the span must cover all of them.
+    assert_eq!(f.span.len, 6, "span should cover 1.5e-3, got {}", f.span.len);
+}
+
+#[test]
 fn string_escapes() {
     let ks = kinds(r#""a\nb\tc\\d\"e""#);
     assert_eq!(ks[0], TokenKind::Str("a\nb\tc\\d\"e".to_string()));

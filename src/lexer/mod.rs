@@ -273,6 +273,26 @@ impl<'a> Lexer<'a> {
                 self.bump();
             }
         }
+        // Exponent: `e`/`E`, an optional `+`/`-`, then at least one digit.
+        // The lookahead matters twice over: `1elif` must stay the int `1`
+        // followed by the ident `elif`, and a bare `1e` (nothing numeric
+        // after the marker) is not a valid float literal either.
+        if matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            let mut after_marker = self.pos + 1;
+            if matches!(self.src.get(after_marker), Some(b'+') | Some(b'-')) {
+                after_marker += 1;
+            }
+            if matches!(self.src.get(after_marker), Some(c) if c.is_ascii_digit()) {
+                is_float = true;
+                self.bump(); // the e/E
+                if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+                    self.bump();
+                }
+                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                    self.bump();
+                }
+            }
+        }
         let text = std::str::from_utf8(&self.src[begin..self.pos]).unwrap();
         let span = Span::new(self.file.clone(), line, col, (self.pos - begin) as u32);
         let kind = if is_float {

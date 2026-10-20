@@ -24,8 +24,8 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 358 Rust tests green (348 core + 10 GUI; embed-API round 2026-10-20,
-per-suite evidence in docs/AUDIT_REPORT.md §11),
+State: 412 Rust tests green (384 core + 28 GUI/AOT; embed-API round 2026-10-20,
+stdlib expansion round 2026-10-20, per-suite evidence in docs/AUDIT_REPORT.md §11),
 23/23 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
 
@@ -61,7 +61,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 358 tests (348 with --no-default-features + 10 gui), must stay green
+  cargo test                  FULL suite, 412 tests (384 with --no-default-features + 28 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -95,8 +95,9 @@ GaliLang/
                        Value::NativeClosure (stateful closures, new 2026-10-20);
                        checker accepts them via semantic::Externals.
   lexer/mod.rs         hand-written byte lexer. Skips leading UTF-8 BOM, trims
-                       CRLF comments, rejects overflowing float literals, and
-                       decodes full UTF-8 code points on unexpected characters.
+                       CRLF comments, rejects overflowing float literals (incl.
+                       scientific notation like 1e400), and decodes full UTF-8
+                       code points on unexpected characters.
   lexer/token.rs       Token, TokenKind, Keyword enum (35 keywords)
   parser/mod.rs        recursive-descent Pratt parser; parse_program ->
                        parse_declaration (top level, visibility prefixes) vs
@@ -162,9 +163,10 @@ GaliLang/
                        allowlist + containment assert before remove_dir_all),
                        fetch_git (url/rev validated, `--` separator), local
                        registry ($SPID3R_REGISTRY), spider.lock, SHA-256 impl
-                       (FIPS 180-4, tested), tar write/read (no ustar prefix),
-                       pack (prints archive hash AND sha256(tree)), unpack
-                       (rejects `..` and `:`, starts_with(dest) check)
+                       (FIPS 180-4, tested) exposing `sha256_bytes(&[u8]) ->
+                       [u8;32]` plus `hex_encode` and `sha256_hex`, tar write/read
+                       (no ustar prefix), pack (prints archive hash AND
+                       sha256(tree)), unpack (rejects `..` and `:`, starts_with(dest) check)
   gui/{mod,bridge,window}.rs   webview GUI (feature "gui"); natives gui_set_html,
                        gui_eval, gui_on, gui_emit; page -> window.spid3r.emit;
                        --dry-run headless replay
@@ -207,8 +209,18 @@ GaliLang/
   env(name) -> option, args() -> list of post-script-path argv,
   sleep_ms, now() -> monotonic ms since first call (typed int),
   spawn_process(cmd,args-list) -> ok(exit_code)/err(msg) (synchronous, no shell),
-  yield, task_count, abs/sqrt/pow/min/max, random_int(lo,hi) inclusive
-  (entropy-seeded, full i64 range safe), int/float/string/bool conversions (int
+  exec_capture(cmd,args,stdin-or-null) -> ok(map("code","stdout","stderr"))/err(msg)
+  (piped stdin+stdout+stderr, drains on worker threads to avoid pipe deadlock,
+  64 MiB per-stream cap, non-UTF-8 child output is an error),
+  abs/sqrt/pow/min/max, plus the scalar family floor ceil round trunc sign exp ln
+  log10 log2 sin cos tan asin acos atan is_nan is_inf (1-arg), atan2(y,x) hypot
+  float_or(str,default) (2-arg), clamp(x,lo,hi) (3-arg; rejects lo>hi and NaN
+  bounds instead of panicking), nan()/inf() constants, random_float() uniform
+  [0.0,1.0), random_normal() (Box-Muller),
+  sha256(s) / hmac_sha256(key,msg) -> lowercase hex (RFC 2104, 64-byte block,
+  keys > 64 bytes pre-hashed); both share pkg's FIPS 180-4 code,
+  yield, task_count, random_int(lo,hi) inclusive (entropy-seeded, full i64
+  range safe), int/float/string/bool conversions (int
   truncates toward zero, errors on garbage strings), bool() = truthiness table,
   json_parse (objects->map deduplicating keys, arrays->list, \uXXXX + surrogate
   pairs, strict number grammar, depth cap 512), json_write (round-trips;
@@ -225,7 +237,7 @@ GaliLang/
 
 [7] TESTS (tests/) — one suite per area, all must pass
 --------------------------------------------------------------------------------
-  audit_regressions.rs   41 engine-parity + contract regressions from the 2026-10
+  audit_regressions.rs   58 engine-parity + contract regressions from the 2026-10
                          audits (closures, nested upvalues, local named fn,
                          finally on return/break/continue, cycle-safe containers,
                          self-argument collection methods, linked_list pop_back,
@@ -234,7 +246,11 @@ GaliLang/
                          float-overflow/escape-span, parser depth limit, bytecode
                          validation/deserialization, map index assign, file
                          results, task API, JSON, RNG, VM exact trace spans,
-                         standalone staticlib discovery).
+                         standalone staticlib discovery) plus the 2026-10-20
+                         stdlib expansion round: every new math builtin,
+                         sha256/hmac_sha256 reference vectors, exec_capture
+                         (stdin/stdout/stderr/exit code/failed spawn), and
+                         scientific-notation float literals.
   fuzz_tests.rs          deterministic mutation/fuzzing suite for lexer, parser,
                          and bytecode deserializer/validator.
   fix_f3_hangs.rs, fix_f4_gc.rs, fix_vm_trio.rs, fix_repl_cli.rs,
@@ -339,7 +355,8 @@ GaliLang/
 
 [12] KNOWN QUIRKS / OPEN ISSUES (do not "fix" blindly; see docs/AUDIT_REPORT.md §8)
 --------------------------------------------------------------------------------
-  - Lexer: no scientific-notation float literals (1.5e3 is not a float token);
+  - Lexer: float literals support scientific notation (1.5e3, 1e-5, 2E+4) and
+    an out-of-f64-range literal is a clean lexer error;
     -9223372036854775808 literal is unrepresentable before unary negation.
   - GC traces all 20+ container and instance types automatically via value::new_ref.
   - tar supports POSIX ustar prefix (<= 255 bytes), GNU @LongLink (> 255 bytes),

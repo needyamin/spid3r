@@ -228,6 +228,7 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "env",
     "args",
     "spawn_process",
+    "exec_capture",
     "yield",
     "task_count",
     "len",
@@ -236,6 +237,33 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "pow",
     "min",
     "max",
+    "clamp",
+    "floor",
+    "ceil",
+    "round",
+    "trunc",
+    "sign",
+    "exp",
+    "ln",
+    "log10",
+    "log2",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "is_nan",
+    "is_inf",
+    "atan2",
+    "hypot",
+    "float_or",
+    "nan",
+    "inf",
+    "random_float",
+    "random_normal",
+    "sha256",
+    "hmac_sha256",
     "int",
     "float",
     "string",
@@ -291,8 +319,16 @@ pub fn gui_builtins() -> &'static [&'static str] {
 fn builtin_return_type(name: &str) -> Option<Ty> {
     Some(match name {
         "int" | "len" | "abs" | "random_int" | "now" => Ty::Int,
-        "float" | "sqrt" | "pow" => Ty::Float,
+        // Every 1-arg scalar math builtin (plus the 2-/3-arg float helpers
+        // and the random float generators) answers with a float.
+        "float" | "sqrt" | "pow" | "clamp" | "floor" | "ceil" | "round" | "trunc" | "sign"
+        | "exp" | "ln" | "log10" | "log2" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
+        | "atan2" | "hypot" | "float_or" | "nan" | "inf" | "random_float" | "random_normal" => {
+            Ty::Float
+        }
+        "is_nan" | "is_inf" => Ty::Bool,
         "string" => Ty::Str,
+        "sha256" | "hmac_sha256" => Ty::Str,
         "bool" => Ty::Bool,
         "type_of" => Ty::Str,
         _ => return None,

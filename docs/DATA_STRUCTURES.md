@@ -89,7 +89,50 @@ Strings are immutable values with a method suite (dot syntax):
 
 | Type | Notes |
 |---|---|
-| `matrix(rows, cols, fill)` | 2-D grid, element addressable by `m[i][j]` (matrix supports index assignment). |
+| `matrix(rows, cols, fill)` | 2-D grid of floats. `fill` defaults to `0.0`. Indexing is described below. |
+
+### Matrix indexing: `m[i]` is a *flat* index, not a row
+
+A `matrix` stores its cells in one contiguous row-major buffer, and `m[i]`
+addresses that buffer directly — `i` counts cells from the top-left, *not*
+rows. So on a 2x3 matrix:
+
+```
+let mx = matrix(2, 3, 0.0);
+
+mx[0] = 1.0;          // flat cell 0  == (row 0, col 0)
+mx[1] = 2.0;          // flat cell 1  == (row 0, col 1)
+mx[2] = 3.0;          // flat cell 2  == (row 0, col 2)
+mx[3] = 4.0;          // flat cell 3  == (row 1, col 0)
+
+println(mx[3]);       // 4  — a float, read from the flat buffer
+mx[4] = 9.0;          // flat cell 4  == (row 1, col 1): index assignment works
+mx[7] = 0.0;          // throws: 7 is out of bounds for 6 cells
+len(mx);              // 6  == rows * cols
+```
+
+`m[i]` returns a `float` and never a list, so `m[i][j]` is a type error —
+there is no second dimension behind a flat index. For 2-D addressing use
+`get`/`set`, which take `(row, col)` and bounds-check both:
+
+| Method | Meaning |
+|---|---|
+| `m.get(r, c)` | the `float` at row `r`, column `c` |
+| `m.set(r, c, v)` | write `v` into row `r`, column `c` |
+| `m.row(r)` | row `r` as a new `list` of floats |
+| `m.col(c)` | column `c` as a new `list` of floats |
+| `m.rows()` / `m.cols()` | dimensions as `int` |
+| `m.add(other)` / `m.mul(other)` | new `matrix` (sum / product) |
+| `m.is_empty()` | `true` when `rows == 0` or `cols == 0` |
+| `m.clone()` | an independent copy |
+
+The cell count is `len(m)` (`rows * cols`); the `matrix` type has no `push`
+or `pop`, and `m[i] = v` writes a cell rather than appending one.
+
+`m.get`/`m.set` and the flat index agree by construction: for a matrix with
+`cols` columns, `mx[r * mx.cols + c]` and `mx.get(r, c)` are the same cell.
+A single matrix may hold at most 16,777,216 cells; larger dimensions throw a
+catchable error instead of attempting the allocation.
 
 ## Graphs
 

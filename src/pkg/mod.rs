@@ -748,9 +748,13 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-/// SHA-256 of `data`, lowercase hex. Used for dependency content hashes in
-/// `spider.lock`.
-pub fn sha256_hex(data: &[u8]) -> String {
+/// SHA-256 of `data` as the raw 32-byte digest (FIPS 180-4). This is the
+/// primitive; the hex form used by `spider.lock` and the local registry is
+/// `sha256_bytes` plus a lowercase hex encode. The standard library exposes
+/// the same function to Spid3r programs as `sha256` / `hmac_sha256`, so the
+/// hashes a program computes are bit-identical to the ones the package layer
+/// verifies.
+pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
@@ -813,11 +817,26 @@ pub fn sha256_hex(data: &[u8]) -> String {
         h[7] = h[7].wrapping_add(hh);
     }
 
-    let mut out = String::with_capacity(64);
-    for word in h {
-        out.push_str(&format!("{:08x}", word));
+    let mut out = [0u8; 32];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
     }
     out
+}
+
+/// Lowercase-hex encode of a byte slice.
+pub fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
+
+/// SHA-256 of `data`, lowercase hex. Used for dependency content hashes in
+/// `spider.lock`.
+pub fn sha256_hex(data: &[u8]) -> String {
+    hex_encode(&sha256_bytes(data))
 }
 
 // ---------------------------------------------------------------- install
@@ -1317,6 +1336,46 @@ mod tests {
             sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
+    }
+
+    #[test]
+    fn sha256_bytes_matches_the_hex_form() {
+        // The stdlib exposes the raw digest; the two entry points must agree
+        // byte for byte, or `spid3r sha256(...)` and the toolchain's own
+        // manifest hashes would diverge.
+        let digest = sha256_bytes(b"abc");
+        assert_eq!(digest.len(), 32);
+        assert_eq!(
+            hex_encode(&digest),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            hex_encode(&sha256_bytes(b"")),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        // Multi-block message: padding and the length field must be right.
+        assert_eq!(
+            hex_encode(&sha256_bytes(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        // Exactly one full block (63 bytes of data forces a second, padding-only
+        // block) — a classic off-by-one in the padding loop.
+        let exactly_63 = [b'a'; 63];
+        let exactly_64 = [b'a'; 64];
+        assert_eq!(
+            hex_encode(&sha256_bytes(&exactly_63)),
+            "7d3e74a05d7db15bce4ad9ec0658ea98e3f06eeecf16b4c6fff2da457ddc2f34"
+        );
+        assert_eq!(
+            hex_encode(&sha256_bytes(&exactly_64)),
+            "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
+        );
+    }
+
+    #[test]
+    fn hex_encode_is_lowercase_and_fixed_width() {
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0xff]), "000fff");
+        assert_eq!(hex_encode(&[]), "");
     }
 
     #[test]

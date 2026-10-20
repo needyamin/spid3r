@@ -284,20 +284,34 @@ For the complete grammar, see [`docs/GRAMMAR.md`](docs/GRAMMAR.md).
 | **Stacks, queues & heaps** | `stack(…)`, `queue()`, `heap("min"\|"max")`, `priority_queue(["min"\|"max"])` | `push`, `pop`, `peek`, `len`, `is_empty`, `to_list` |
 | **Associative** | `map(k, v, …)`, `set(…)`, `bag()`, `hash_table()` | `m[k]`, `m[k] = v`, `get`, `set`, `remove`, `has`, `keys`, `values`, `items`, `union`, `intersection`, `difference`, `count_of` |
 | **Trees, graphs & grids** | `binary_tree()`, `bst()`, `trie()`, `graph("directed"\|"undirected")`, `matrix(rows, cols[, fill])` | `insert`, `contains`, `inorder`, `bfs`, `dfs`, `add_node`, `add_edge`, `find_path`, `row`, `col`, `add`, `mul` |
+
+> **Grid indexing.** A `matrix` is one flat row-major buffer of floats:
+> `m[i]` reads (or assigns) cell `i` counted from the top-left and answers
+> with a `float`, *not* a row — so `m[i][j]` is invalid. Use `m.get(r, c)` /
+> `m.set(r, c, v)` for two-dimensional addressing, `m.row(r)` / `m.col(c)`
+> for whole rows and columns, and `len(m)` for the cell count
+> (`rows * cols`). See [`docs/DATA_STRUCTURES.md`](docs/DATA_STRUCTURES.md).
 | **Concurrency & refs** | `channel()`, `mutex(v)`, `ref(v)`, `weak(v)` | `send`, `recv`, `try_recv`, `lock`, `unlock`, `get`, `set`, `deref(w)` |
 
 ### Global standard library functions
 
 | Category | Functions |
 |---|---|
-| **Console & I/O** | `print(…)`, `println(…)`, `eprint(…)`, `read_line()` |
+| **Console & I/O** | `print(…)`, `println(…)`, `eprint(…)`, `read_line()`, `exec_capture(cmd, args[, stdin])` |
 | **Files, env & OS** | `read_file(path)`, `write_file(path, text)`, `file_exists(path)`, `env(name)`, `args()`, `spawn_process(cmd, args)` |
 | **Networking & HTTP** | `tcp_listen(addr)`, `tcp_accept(id)`, `tcp_connect(addr)`, `tcp_read(id, n)`, `tcp_write(id, s)`, `tcp_close(h)`, `tcp_local_addr(h)`, `tcp_peer_addr(id)`, `tcp_set_timeout(id, ms)`, `http_read_request(id)`, `http_write_response(id, st, h, b)`, `http_fetch(m, u[, h, b])`, `url_decode(s)`, `url_encode(s)` |
-| **Math & random** | `abs(x)`, `sqrt(x)`, `pow(b, e)`, `min(a, b, …)`, `max(a, b, …)`, `random_int(lo, hi)` |
+| **Math & random** | `abs(x)`, `sqrt(x)`, `pow(b, e)`, `min(a, b, …)`, `max(a, b, …)`, `clamp(x, lo, hi)`, `floor(x)`, `ceil(x)`, `round(x)`, `trunc(x)`, `sign(x)`, `exp(x)`, `ln(x)`, `log10(x)`, `log2(x)`, `sin(x)`, `cos(x)`, `tan(x)`, `asin(x)`, `acos(x)`, `atan(x)`, `atan2(y, x)`, `hypot(x, y)`, `is_nan(x)`, `is_inf(x)`, `float_or(s, default)`, `nan()`, `inf()`, `random_int(lo, hi)`, `random_float()`, `random_normal()` |
+| **Crypto** | `sha256(s)`, `hmac_sha256(key, msg)` — lowercase hex digests |
 | **Types & conversion** | `int(x)`, `float(x)`, `string(x)`, `bool(x)`, `type_of(x)`, `len(x)` |
 | **Option & result** | `some(v)`, `none`, `ok(v)`, `err(e)` |
 | **JSON & testing** | `json_parse(s)`, `json_write(v)`, `assert(cond[, msg])`, `assert_eq(a, b[, msg])` |
 | **Time, tasks & GC** | `now()`, `sleep_ms(n)`, `yield()`, `task_count()`, `gc_collect()`, `gc_live_cells()` |
+
+`exec_capture(cmd, args, stdin_text)` spawns a process with piped stdin,
+stdout and stderr, writes `stdin_text` (`null` closes stdin at once), and
+returns `ok(map("code", exit, "stdout", …, "stderr", …))` or `err(msg)` when
+the process cannot be spawned or writes non-UTF-8 output. Each pipe is capped
+at 64 MiB.
 
 ## Execution model
 
@@ -454,10 +468,10 @@ A runnable demo ships as `cargo run --example embed_hello`. Full API reference:
 
 ## Developer workflow & testing
 
-Correctness in Spid3r means *the engines agree*. All **358 Rust tests** (**348** core tests including WASM & Bundler suites + **10** headless GUI bridge tests) and **23/23 differential example programs** can be run locally without LLVM:
+Correctness in Spid3r means *the engines agree*. All **412 Rust tests** (**384** core tests including WASM & Bundler suites + **28** GUI/AOT-headless tests) and **23/23 differential example programs** can be run locally without LLVM:
 
 ```sh
-# 1. Run all 348 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
+# 1. Run all 384 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
 cargo test --no-default-features
 
 # 2. Run the 10 headless GUI bridge tests
@@ -475,7 +489,9 @@ cargo clippy --no-default-features --all-targets -- -D warnings
 ```
 
 - `tests/audit_regressions.rs` pins engine parity across closures, loop bindings, `finally`
-  on early exits, cycle-safe containers, task errors, and stdlib edge cases.
+  on early exits, cycle-safe containers, task errors, and stdlib edge cases — including the
+  math, crypto, `exec_capture`, and scientific-notation regressions added in the 2026-10
+  standard-library expansion.
 - `tests/fuzz_tests.rs` and `fuzz/` test lexer, parser, semantic checker, formatter, and
   bytecode verifier resilience against arbitrary and mutated inputs.
 - `spid3r bench --compare` benchmarks `benchmarks/*.matrix` while asserting identical output

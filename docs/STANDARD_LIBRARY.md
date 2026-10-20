@@ -34,18 +34,47 @@ Global functions available in every program. These are ordinary global values
 | `sleep_ms(n)` | Sleep for `n` milliseconds (yields the task). |
 | `now()` | Millisecond timestamp, monotonic from the process's first `now()` call. |
 | `spawn_process(cmd, args)` | Run an external command to completion (synchronous, argv passed directly, no shell); returns `ok(exit_code)` / `err(msg)`. |
+| `exec_capture(cmd, args, stdin_text)` | Run a command and capture its output. `stdin_text` is a string written to the child's stdin before waiting (`null` closes stdin immediately). Returns `ok(map("code", exit_code, "stdout", stdout_str, "stderr", stderr_str))`, or `err(msg)` if the process cannot be spawned or its output is not valid UTF-8. Each pipe is capped at 64 MiB. |
 | `yield()` | Cooperatively yield the current task to the scheduler. |
 | `task_count()` | Number of live scheduler tasks. |
 
 ## Math & numbers
+
+Every math builtin accepts an `int` or a `float` and answers with a `float`
+(except the two boolean predicates). Values outside the domain of a function
+produce the usual float result (`nan()`, `inf()`, or a negative argument to
+`sqrt`/`ln`), never an error.
 
 | Function | Description |
 |---|---|
 | `abs(x)` | Absolute value. |
 | `sqrt(x)` | Square root. |
 | `pow(base, exp)` | Exponentiation. |
+| `clamp(x, lo, hi)` | `x` limited to the closed range `[lo, hi]`; throws when `lo > hi` or a bound is not a number. |
+| `floor(x)` / `ceil(x)` / `trunc(x)` / `round(x)` | Round toward −∞, toward +∞, toward zero, half away from zero. |
+| `sign(x)` | `-1.0`, `0.0` or `1.0` (preserving the sign of zero); `nan()` for `nan()`. |
+| `exp(x)` / `ln(x)` / `log10(x)` / `log2(x)` | Exponentials and logarithms. |
+| `sin(x)` / `cos(x)` / `tan(x)` | Trigonometric functions, radians. |
+| `asin(x)` / `acos(x)` / `atan(x)` / `atan2(y, x)` | Inverse trigonometric functions, radians. `atan2` takes the conventional `(y, x)` order and answers with the angle of the vector `(y, x)`. |
+| `hypot(x, y)` | `sqrt(x² + y²)` without intermediate overflow or underflow. |
+| `is_nan(x)` / `is_inf(x)` | `true` for a NaN / an infinite argument. |
+| `float_or(text, default)` | Parse `text` as a float, falling back to `default` when it is not a number. A numeric argument passes through unchanged. |
+| `nan()` / `inf()` | The float constants NaN and +∞. |
 | `min(a, b)` / `max(a, b)` | Minimum / maximum. |
 | `random_int(lo, hi)` | Random integer in `[lo, hi]` (seeded per thread from real entropy; differs across runs). |
+| `random_float()` | Uniform float in `[0.0, 1.0)`. |
+| `random_normal()` | One sample from the standard normal distribution (Box–Muller). |
+
+Float literals may use scientific notation: `1.5e3`, `1e-5`, `2E+4` are all
+single float tokens. A literal too large for `f64` is a clean lexer error
+rather than an infinity or a panic.
+
+## Crypto
+
+| Function | Description |
+|---|---|
+| `sha256(s)` | SHA-256 (FIPS 180-4) of the UTF-8 bytes of `s`, lowercase hex — the same implementation the package layer uses to verify dependencies. |
+| `hmac_sha256(key, msg)` | RFC 2104 HMAC-SHA256 of `msg` under `key`, lowercase hex, over the standard 64-byte block. |
 
 ## Conversions
 

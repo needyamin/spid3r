@@ -146,6 +146,19 @@ fn strings_and_float_literals_are_untouched() {
 }
 
 #[test]
+fn scientific_notation_literals_survive_formatting() {
+    // The formatter re-lexes to prove the round trip is byte-identical, so a
+    // scientific-notation literal must lex to the same float before and after.
+    let src = "fn main() {\n    let a = 1.5e3;\n    let b = 1e-5;\n    let c = 2E+4;\n    println(a + b + c);\n    return 0;\n}\n";
+    let file: Arc<str> = Arc::from("<fmt-test>");
+    let out = format_source(src, &file).expect("fmt");
+    for lit in ["1.5e3", "1e-5", "2E+4"] {
+        assert!(out.contains(lit), "exponent form must be preserved: {}", out);
+    }
+    check_roundtrip("scientific-notation", src);
+}
+
+#[test]
 fn long_argument_lists_are_wrapped_one_per_line() {
     let src = "fn main() {\n    let config = map(\"name\", \"spid3r\", \"version\", \"0.1.0\", \"author\", \"someone\", \"license\", \"MIT\", \"extra\", 1);\n    return 0;\n}\n";
     let file: Arc<str> = Arc::from("<fmt-test>");
