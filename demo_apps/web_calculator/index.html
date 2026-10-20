@@ -515,7 +515,7 @@
       <button class="key key-fn" onclick="toggleSign()">±</button>
       <button class="key" onclick="inputDigit('0')">0</button>
       <button class="key" onclick="inputDot()">.</button>
-      <button class="key key-eq" onclick="evaluate()">=</button>
+      <button class="key key-eq" id="btnEqual" onclick="calculate()">=</button>
     </div>
   </div>
 
@@ -583,7 +583,8 @@
   }
 
   function inputDigit(d) {
-    if (shouldReset) {
+    mainDisplay.classList.remove("error");
+    if (shouldReset || currentVal === "Error" || currentVal.startsWith("Error")) {
       currentVal = d;
       shouldReset = false;
     } else {
@@ -597,7 +598,8 @@
   }
 
   function inputDot() {
-    if (shouldReset) {
+    mainDisplay.classList.remove("error");
+    if (shouldReset || currentVal === "Error" || currentVal.startsWith("Error")) {
       currentVal = "0.";
       shouldReset = false;
     } else if (!currentVal.includes(".")) {
@@ -607,9 +609,10 @@
   }
 
   function inputOp(op) {
+    mainDisplay.classList.remove("error");
     const symbolMap = { '+': '+', '-': '−', '*': '×', '/': '÷', '%': '%' };
-    if (exprHistory && !shouldReset) {
-      evaluate(false);
+    if (exprHistory && !shouldReset && !exprHistory.includes("=")) {
+      calculate(false);
     }
     exprHistory = currentVal + " " + (symbolMap[op] || op);
     shouldReset = true;
@@ -680,10 +683,12 @@
     updateDisplay();
   }
 
-  function evaluate(isFinal = true) {
+  function calculate(isFinal = true) {
     if (!exprHistory) return;
+    if (exprHistory.includes("=")) return;
 
     let parts = exprHistory.trim().split(" ");
+    if (parts.length < 2) return;
     let a = parseFloat(parts[0]);
     let op = parts[1];
     let b = parseFloat(currentVal);
@@ -700,6 +705,8 @@
         if (b === 0) {
           currentVal = "Error: Division by 0";
           mainDisplay.classList.add("error");
+          exprHistory = "";
+          shouldReset = true;
           updateDisplay();
           return;
         }
@@ -719,6 +726,10 @@
       currentVal = finalRes;
     }
     updateDisplay();
+  }
+
+  function evaluate(isFinal = true) {
+    calculate(isFinal);
   }
 
   function addHistory(expr, res) {
@@ -761,7 +772,7 @@
     else if (e.key === "*") inputOp("*");
     else if (e.key === "/") { e.preventDefault(); inputOp("/"); }
     else if (e.key === "%") inputOp("%");
-    else if (e.key === "Enter" || e.key === "=") evaluate();
+    else if (e.key === "Enter" || e.key === "=") { e.preventDefault(); calculate(); }
     else if (e.key === "Backspace") backspace();
     else if (e.key === "Escape") clearAll();
   });

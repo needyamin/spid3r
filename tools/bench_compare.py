@@ -226,12 +226,9 @@ def main():
     with open("benchmarks/results.json", "w") as f:
         json.dump(report_data, f, indent=2)
 
-    # Generate HTML report
+    # Generate raw HTML report artifact at repository root
     generate_html_report(report_data, "benchmarks.html")
-    docs_html = Path("docs/html/benchmarks.html")
-    if docs_html.parent.exists():
-        generate_html_report(report_data, str(docs_html))
-    print(f"\n[OK] Benchmark run complete! Results written to benchmarks.html, docs/html/benchmarks.html, and benchmarks/results.json")
+    print(f"\n[OK] Benchmark run complete! Results written to benchmarks.html and benchmarks/results.json")
 
 def generate_html_report(data, out_path):
     benchmarks = data["benchmarks"]
