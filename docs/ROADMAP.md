@@ -122,16 +122,16 @@ suite (unit, integration, and the tree == vm == exec differential run).
 Baseline + current numbers from `spid3r bench` (release build, engine vm, best
 of 3, iters/sec — each "iter" is one full body of the benchmark file):
 
-| benchmark | baseline (2026-10-16) | after map index + Arc chunks |
-|---|---|---|
-| arith | 8.06M | 8.10M |
-| closures | 528k | 557k |
-| json | 28.5k | 28.1k |
-| list | 1.94M | 2.01M |
-| map | 103k | **474k (4.6x)** |
-| methods | 1.27M | 1.30M |
-| strings | 317k | 328k |
-| tasks | 30.6k | 30.2k |
+| benchmark | baseline (2026-10-16) | after map index + Arc chunks | current release (best of 5) |
+|---|---|---|---|
+| arith | 8.06M | 8.10M | **46.42M (5.7x)** |
+| closures | 528k | 557k | **2.31M (4.1x)** |
+| json | 28.5k | 28.1k | **113.7k (4.0x)** |
+| list | 1.94M | 2.01M | **6.59M (3.3x)** |
+| map | 103k | 474k (4.6x) | **1.60M (3.4x)** |
+| methods | 1.27M | 1.30M | **3.25M (2.5x)** |
+| strings | 317k | 328k | **2.60M (7.9x)** |
+| tasks | 30.6k | 30.2k | **165.2k (5.5x)** |
 
 Changes so far: `MapData` got an O(1) side hash index (was a linear scan per
 get/set — quadratic overall), nested function prototypes / bytecode chunks are
