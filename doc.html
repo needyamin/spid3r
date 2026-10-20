@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">425 tests · 23/23 examples agree</span>
+          <span class="badge">447 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -989,8 +989,8 @@ fn main() {
             <code>.is_ok()</code>, <code>.unwrap()</code>, <code>.unwrap_or(default)</code>
           </div>
           <div class="card"><span class="t">Collections (20+ built-in)</span>
-            <code>[1, 2]</code> / <code>list()</code>, <code>vec()</code>, <code>tuple(1, 2)</code><br>
-            <code>map("k", v)</code>, <code>set(1, 2)</code>, <code>hash_table()</code>, <code>bag()</code><br>
+            <code>[1, 2]</code> / <code>list()</code>, <code>vec()</code>, <code>vector(n, 0.0)</code>, <code>bytes()</code><br>
+            <code>map("k", v)</code>, <code>set(1, 2)</code>, <code>tuple(1, 2)</code>, <code>hash_table()</code>, <code>bag()</code><br>
             <code>stack()</code>, <code>queue()</code>, <code>deque()</code>, <code>ring_buffer(n)</code><br>
             <code>heap("min")</code>, <code>priority_queue()</code>, <code>bst()</code>, <code>trie()</code>,
             <code>graph("directed")</code>, <code>matrix(r, c, 0.0)</code>
@@ -1192,10 +1192,14 @@ class interface new self public private spawn async await extends implements</co
             <th>Yields</th>
           </tr>
           <tr>
-            <td class="wrap"><code>list</code>, <code>vec</code>, <code>tuple</code>, <code>deque</code>,
+            <td class="wrap"><code>list</code>, <code>vec</code>, <code>vector</code>, <code>tuple</code>, <code>deque</code>,
               <code>queue</code>, linked lists
             </td>
             <td>elements, front to back</td>
+          </tr>
+          <tr>
+            <td><code>bytes</code></td>
+            <td>integer bytes (<code>0..255</code>)</td>
           </tr>
           <tr>
             <td><code>stack</code></td>
@@ -1966,6 +1970,26 @@ fn main() {
             <td>Runs to completion; <code>ok(exit_code)</code> / <code>err(msg)</code>. Arguments are passed directly;
               there is no shell and no injection surface.</td>
           </tr>
+          <tr>
+            <td><code>exec_capture(cmd, args, stdin)</code></td>
+            <td><code>result</code></td>
+            <td>Spawns command, writes optional <code>stdin</code> text, captures stdout/stderr; returns <code>ok(map("code", code, "stdout", out, "stderr", err))</code>.</td>
+          </tr>
+          <tr>
+            <td><code>read_bytes(path)</code> · <code>write_bytes(path, b)</code></td>
+            <td><code>result</code></td>
+            <td>Binary file read/write for raw <code>bytes</code> buffers.</td>
+          </tr>
+          <tr>
+            <td><code>load_npy(path)</code> · <code>save_npy(path, v)</code></td>
+            <td><code>result</code></td>
+            <td>NumPy <code>.npy</code> v1.0 serialization and deserialization for <code>vector</code> and <code>matrix</code>.</td>
+          </tr>
+          <tr>
+            <td><code>parse_csv(t[, opts])</code> · <code>read_csv(p)</code> · <code>write_csv(p, h, r)</code></td>
+            <td><code>result</code></td>
+            <td>RFC-4180 CSV parser with automatic type inference, header handling, and safe quoted formatting.</td>
+          </tr>
         </table>
         <h3>Time &amp; scheduling</h3>
         <table>
@@ -2011,15 +2035,44 @@ fn main() {
             </td>
           </tr>
           <tr>
+            <td><code>floor(x)</code> · <code>ceil(x)</code> · <code>round(x)</code> · <code>trunc(x)</code> · <code>sign(x)</code></td>
+            <td>float</td>
+            <td>IEEE 754 rounding operations and signum extraction.</td>
+          </tr>
+          <tr>
+            <td><code>clamp(x, lo, hi)</code></td>
+            <td>number</td>
+            <td>Clamps <code>x</code> to <code>[lo, hi]</code>; throws if <code>lo &gt; hi</code>.</td>
+          </tr>
+          <tr>
+            <td><code>exp(x)</code> · <code>ln(x)</code> · <code>log10(x)</code> · <code>log2(x)</code> · <code>hypot(x, y)</code></td>
+            <td>float</td>
+            <td>Exponential, natural/base-10/base-2 logarithms, and hypotenuse without overflow.</td>
+          </tr>
+          <tr>
+            <td><code>sin(x)</code> · <code>cos(x)</code> · <code>tan(x)</code> · <code>asin(x)</code> · <code>acos(x)</code> · <code>atan(x)</code> · <code>atan2(y, x)</code></td>
+            <td>float</td>
+            <td>Trigonometric and inverse trigonometric functions in radians.</td>
+          </tr>
+          <tr>
+            <td><code>is_nan(x)</code> · <code>is_inf(x)</code> · <code>nan()</code> · <code>inf()</code></td>
+            <td>bool / float</td>
+            <td>Float predicates and IEEE 754 special constants.</td>
+          </tr>
+          <tr>
+            <td><code>float_or(text, default)</code></td>
+            <td>float</td>
+            <td>Parses float string safely, returning <code>default</code> on parse failure.</td>
+          </tr>
+          <tr>
             <td><code>min(a, b, …)</code> · <code>max(a, b, …)</code></td>
             <td>number</td>
             <td>Two or more numbers; mixed int/float compare numerically; ties keep the first argument.</td>
           </tr>
           <tr>
-            <td><code>random_int(lo, hi)</code></td>
-            <td>int</td>
-            <td>Inclusive range, seeded per thread from real entropy (differs across runs); the full i64 range is safe.
-            </td>
+            <td><code>random_int(lo, hi)</code> · <code>random_float()</code> · <code>random_normal()</code></td>
+            <td>int / float</td>
+            <td>Entropy-seeded uniform integers, uniform [0.0, 1.0) floats, and standard normal (Box-Muller) samples.</td>
           </tr>
           <tr>
             <td class="wrap"><code>int(x)</code> · <code>float(x)</code> · <code>string(x)</code> · <code>bool(x)</code>
@@ -2038,8 +2091,46 @@ fn main() {
             <td><code>type_of(x)</code></td>
             <td>string</td>
             <td><code>int</code>, <code>float</code>, <code>string</code>, <code>list</code>, <code>vec</code>,
-              <code>map</code>, <code>option</code>, <code>result</code>, <code>task</code>, <code>mutex</code>, …
+              <code>vector</code>, <code>bytes</code>, <code>matrix</code>, <code>map</code>, <code>option</code>, <code>result</code>, …
             </td>
+          </tr>
+        </table>
+        <h3>Crypto, Regex &amp; DateTime</h3>
+        <table>
+          <tr>
+            <th>Function</th>
+            <th>Returns</th>
+            <th>Notes</th>
+          </tr>
+          <tr>
+            <td><code>sha256(str)</code> · <code>hmac_sha256(key, msg)</code></td>
+            <td>string</td>
+            <td>FIPS 180-4 SHA-256 and RFC 2104 HMAC-SHA256 lowercase hex strings. Zero dependencies.</td>
+          </tr>
+          <tr>
+            <td><code>regex_match(pat, text)</code> · <code>regex_find(pat, text)</code></td>
+            <td>bool / option</td>
+            <td>Thompson NFA regex engine. Linear-time execution with full protection against catastrophic backtracking.</td>
+          </tr>
+          <tr>
+            <td><code>regex_find_all(pat, text)</code> · <code>regex_replace(pat, text, repl)</code></td>
+            <td>list / string</td>
+            <td>Returns list of matched strings or replaces all occurrences.</td>
+          </tr>
+          <tr>
+            <td><code>unix_time()</code> · <code>unix_ms()</code></td>
+            <td>int</td>
+            <td>Current Unix epoch timestamp in seconds or milliseconds.</td>
+          </tr>
+          <tr>
+            <td><code>datetime_parts(sec)</code> · <code>datetime_from_parts(y, m, d, h, min, s)</code></td>
+            <td>map / int</td>
+            <td>Howard Hinnant civil calendar algorithm; accurately handles negative timestamps and leap years.</td>
+          </tr>
+          <tr>
+            <td><code>format_datetime(sec, fmt)</code></td>
+            <td>string</td>
+            <td>Strftime-style formatting (<code>%Y</code>, <code>%m</code>, <code>%d</code>, <code>%H</code>, <code>%M</code>, <code>%S</code>, <code>%w</code>, <code>%F</code>, <code>%T</code>, <code>%%</code>).</td>
           </tr>
         </table>
         <h3>JSON, testing &amp; memory</h3>

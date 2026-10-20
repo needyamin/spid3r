@@ -307,3 +307,67 @@ fn main() {
     assert!(out_tree.contains("cm_tp:2"));
     let _ = std::fs::remove_file(path);
 }
+
+#[test]
+fn test_all_four_stdlib_modules_differential_three_engines() {
+    let src = r#"
+import "web" as web;
+import "dataframe" as df;
+import "stats" as stats;
+import "ml" as ml;
+
+fn main() {
+    let q = web.parse_query("page=2&sort=desc");
+    println("web:" + q["page"] + ":" + q["sort"]);
+    let esc = web.escape_html("<data>");
+    println("web_esc:" + esc);
+
+    let nums = list(10.0, 20.0, 30.0, 40.0, 50.0);
+    println("stats_mean:" + string(stats.mean(nums)));
+    println("stats_median:" + string(stats.median(nums)));
+
+    let table = df.from_records(list(
+        map("id", 1, "score", 85.0),
+        map("id", 2, "score", 95.0)
+    ));
+    println("df_rows:" + string(table.num_rows));
+    let s_first = table.get_row(0);
+    println("df_first_score:" + string(s_first["score"]));
+
+    let X = matrix(3, 1);
+    X.set(0, 0, 1.0);
+    X.set(1, 0, 2.0);
+    X.set(2, 0, 3.0);
+    let y = vector(list(2.0, 4.0, 6.0));
+    let model = ml.linear_regression_fit(X, y);
+    let preds = ml.linear_regression_predict(model, X);
+    println("ml_pred0:" + string(round(preds[0])));
+    println("ml_pred2:" + string(round(preds[2])));
+
+    return 0;
+}
+"#;
+    let path = write_tmp("test_stdlib_all_four.matrix", src);
+    let out_tree = run_engine("tree", &path).expect("tree run all four");
+    let out_vm = run_engine("vm", &path).expect("vm run all four");
+    assert_eq!(out_tree, out_vm, "tree and vm outputs differ");
+
+    let comp_path = std::env::temp_dir().join("test_stdlib_all_four.matrixc");
+    let comp = Command::new(bin())
+        .args(["compile", &path, "-o", comp_path.to_str().unwrap()])
+        .output()
+        .expect("compile all four");
+    assert!(comp.status.success(), "compile failed: {}", String::from_utf8_lossy(&comp.stderr));
+
+    let exec = Command::new(bin())
+        .args(["exec", comp_path.to_str().unwrap()])
+        .output()
+        .expect("exec all four");
+    assert!(exec.status.success(), "exec failed: {}", String::from_utf8_lossy(&exec.stderr));
+    let out_exec = String::from_utf8_lossy(&exec.stdout).to_string();
+    assert_eq!(out_tree, out_exec, "compile+exec differed from tree/vm");
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&comp_path);
+}
+

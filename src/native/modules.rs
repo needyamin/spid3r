@@ -44,7 +44,7 @@ fn flatten_stmts(
             if alias.is_some() {
                 return Err(Diagnostic::new(
                     Phase::Semantic,
-                    format!("'import as alias' is not supported by the native backend yet; run it with --engine vm"),
+                    "'import as alias' is not supported by the native backend yet; run it with --engine vm".to_string(),
                 ));
             }
             let resolved = resolve_module(importer_file, path)?;

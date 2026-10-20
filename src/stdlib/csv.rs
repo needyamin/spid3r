@@ -38,11 +38,17 @@ pub fn parse_csv_text(
             if chars.peek() == Some(&'\n') {
                 chars.next();
             }
+            if cur_row.is_empty() && cur_field.is_empty() {
+                continue;
+            }
             cur_row.push(cur_field);
             raw_rows.push(cur_row);
             cur_row = Vec::new();
             cur_field = String::new();
         } else if ch == '\n' {
+            if cur_row.is_empty() && cur_field.is_empty() {
+                continue;
+            }
             cur_row.push(cur_field);
             raw_rows.push(cur_row);
             cur_row = Vec::new();

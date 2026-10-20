@@ -7,7 +7,7 @@ this document without guessing.
 ```
 program        = { import } { declaration } ;
 
-import         = "import" string ";" ;
+import         = "import" string [ "as" ident ] ";" ;
 
 declaration    = fnDecl | classDecl | interfaceDecl | statement ;
 

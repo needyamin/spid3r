@@ -60,7 +60,7 @@ public fn http_redirect(location) {
 public fn http_body_json(req) {
     try {
         return ok(json_parse(req["body"]));
-    } catch (e) {
+    } catch(e) {
         return err("invalid JSON body: " + string(e));
     }
 }
@@ -141,18 +141,24 @@ public class HttpServer {
     fn new() {
         self.routes = list();
         self.middleware = list();
-        self.listener = -1;
+        self.listener =-1;
         self.logging = true;
     }
 
     /// Register `handler` for `method` ("GET", "POST", ..., or "*" for any).
     public fn route(self, method, pattern, handler) {
-        self.routes.push(map(
-            "method", method.upper(),
-            "pattern", pattern,
-            "parts", split_path(pattern),
-            "handler", handler
-        ));
+        self.routes.push(
+            map(
+                "method",
+                method.upper(),
+                "pattern",
+                pattern,
+                "parts",
+                split_path(pattern),
+                "handler",
+                handler
+            )
+        );
         return self;
     }
 
@@ -202,7 +208,7 @@ public class HttpServer {
             if m.is_some() {
                 path_matched = true;
                 let rm = r["method"];
-                if rm == "*" or rm == method or (rm == "GET" and method == "HEAD") {
+                if rm == "*" or rm == method or(rm == "GET" and method == "HEAD") {
                     req["params"] = m.unwrap();
                     let h = r["handler"];
                     return to_response(h(req));
@@ -270,7 +276,7 @@ public class HttpServer {
     public fn close(self) {
         if self.listener >= 0 {
             tcp_close(self.listener);
-            self.listener = -1;
+            self.listener =-1;
         }
         return null;
     }
@@ -298,8 +304,10 @@ fn handle_connection(app, conn) {
     let res = null;
     try {
         res = app.dispatch(req);
-    } catch (e) {
-        eprint("[http] handler error on " + req["method"] + " " + req["path"] + ": " + string(e) + "\n");
+    } catch(e) {
+        eprint(
+            "[http] handler error on " + req["method"] + " " + req["path"] + ": " + string(e) + "\n"
+        );
         res = http_text(500, "500 Internal Server Error");
     }
     let body = res["body"];
@@ -309,7 +317,9 @@ fn handle_connection(app, conn) {
     http_write_response(conn, res["status"], res["headers"], body);
     tcp_close(conn);
     if app.logging {
-        println("[http] " + req["method"] + " " + req["path"] + " -> " + string(res["status"]) + " (" + string(now() - start) + " ms)");
+        println(
+            "[http] " + req["method"] + " " + req["path"] + " -> " + string(res["status"]) + " (" + string(now() - start) + " ms)"
+        );
     }
     return null;
 }

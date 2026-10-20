@@ -1028,7 +1028,13 @@ impl VectorData {
             }
             "sum" => {
                 want(name, args, 0)?;
-                let sum: f64 = self.data.iter().sum();
+                let mut sum: f64 = 0.0;
+                for &x in &self.data {
+                    sum += x;
+                }
+                if sum == 0.0 {
+                    sum = 0.0; // eliminate -0.0
+                }
                 Ok(Value::Float(sum))
             }
             "mean" => {

@@ -198,6 +198,20 @@ fn main() {
     assert_eq!(out_tree, out_vm);
     assert_eq!(out_tree, "15\n25\n3\n4\n");
 
+    let tc = dir.join("main.matrixc");
+    let comp = Command::new(bin())
+        .args(["compile", main.to_str().unwrap(), "-o", tc.to_str().unwrap()])
+        .output()
+        .expect("compile");
+    assert!(comp.status.success(), "compile failed: {}", String::from_utf8_lossy(&comp.stderr));
+    let exec = Command::new(bin())
+        .args(["exec", tc.to_str().unwrap()])
+        .output()
+        .expect("exec");
+    assert!(exec.status.success(), "exec failed: {}", String::from_utf8_lossy(&exec.stderr));
+    let out_exec = String::from_utf8_lossy(&exec.stdout).to_string();
+    assert_eq!(out_tree, out_exec);
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

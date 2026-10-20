@@ -1648,8 +1648,8 @@ fn n_datetime_from_parts(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
         ));
     }
     let y = want_int(&args[0], "datetime_from_parts")?;
-    let m = want_int(&args[1], "datetime_from_parts")? as u32;
-    let d = want_int(&args[2], "datetime_from_parts")? as u32;
+    let m = want_int(&args[1], "datetime_from_parts")?;
+    let d = want_int(&args[2], "datetime_from_parts")?;
     let h = want_int(&args[3], "datetime_from_parts")?;
     let min = want_int(&args[4], "datetime_from_parts")?;
     let s = want_int(&args[5], "datetime_from_parts")?;

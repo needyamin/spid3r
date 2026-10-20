@@ -120,6 +120,46 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 | `len(x)` | Length of a collection or string. |
 | `type_of(x)` | The type name of a value (`int`, `list`, …). |
 
+## Binary I/O & NumPy `.npy`
+
+| Function | Description |
+|---|---|
+| `read_bytes(path)` | Read binary file into `ok(bytes)` / `err(msg)`. |
+| `write_bytes(path, bytes)` | Write `bytes` buffer into binary file; returns `ok(null)` / `err(msg)`. |
+| `save_npy(path, matrix_or_vector)` | Save a `matrix` (2D) or `vector` (1D) into NumPy `.npy` v1.0 little-endian format. |
+| `load_npy(path)` | Load NumPy `.npy` file into `ok(vector)` (1D) or `ok(matrix)` (2D). |
+
+## RFC-4180 CSV
+
+| Function | Description |
+|---|---|
+| `parse_csv(text, opts?)` | Parse CSV string into `ok(map("headers", list, "rows", list_of_lists))` with automatic type inference. `opts` supports `"delimiter"` and `"has_header"`. |
+| `read_csv(path, opts?)` | Read and parse CSV file at `path`. |
+| `write_csv(path, headers, rows)` | Write RFC-4180 formatted CSV data to `path`. |
+
+## Regular Expressions (Thompson NFA)
+
+Zero-dependency linear-time regex matching. Supports `.`, `*`, `+`, `?`, `^`, `$`, character classes `[...]`/`[^...]`, `\d`, `\w`, `\s`, `\D`, `\W`, `\S`, alternation `|`, and grouping `()`.
+
+| Function | Description |
+|---|---|
+| `regex_match(pattern, text)` | Test if `pattern` matches `text`; returns `bool`. Malformed pattern returns `err(msg)`. |
+| `regex_find(pattern, text)` | Find first match; returns `some(matched_str)` or `none`. |
+| `regex_find_all(pattern, text)` | Find all non-overlapping matches; returns `list` of matching strings. |
+| `regex_replace(pattern, text, repl)` | Replace all occurrences of `pattern` with `repl`. |
+
+## Date & Time (Howard Hinnant Civil Calendar)
+
+Monotonic and epoch time conversion with high-precision civil calendar math.
+
+| Function | Description |
+|---|---|
+| `unix_time()` | Current Unix epoch timestamp in whole seconds (`int`). |
+| `unix_ms()` | Current Unix epoch timestamp in milliseconds (`int`). |
+| `datetime_parts(epoch_sec)` | Decompose Unix timestamp into map (`year`, `month`, `day`, `hour`, `minute`, `second`, `weekday`). Supports negative and leap-year timestamps. |
+| `datetime_from_parts(y, m, d, h, min, s)` | Convert civil date-time components into epoch seconds (`int`). |
+| `format_datetime(epoch_sec, fmt_str)` | Strftime-style formatting (`%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%w`, `%F`, `%T`, `%%`). |
+
 ---
 
 # First-Party Standard Library Modules (`./stdlib/`)

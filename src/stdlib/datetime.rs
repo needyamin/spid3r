@@ -11,7 +11,7 @@ pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;
     let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
     let doe = (z - era * 146097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1020 + doe / 1461 - doe / 146096) / 365; // [0, 399]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
     let y = (yoe as i64) + era * 400;
     let doy = (doe - (365 * yoe + yoe / 4 - yoe / 100)) as u32; // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
@@ -64,12 +64,15 @@ pub fn datetime_parts(epoch_sec: i64) -> (i64, u32, u32, i64, i64, i64, i64) {
 /// Convert civil parts (year, month 1..12, day 1..31, hour, minute, second) to epoch seconds.
 pub fn datetime_from_parts(
     year: i64,
-    month: u32,
-    day: u32,
+    month: i64,
+    day: i64,
     hour: i64,
     minute: i64,
     second: i64,
 ) -> Result<i64, String> {
+    if !(-100_000_000..=100_000_000).contains(&year) {
+        return Err(format!("year out of range, got {}", year));
+    }
     if !(1..=12).contains(&month) {
         return Err(format!("month must be between 1 and 12, got {}", month));
     }
@@ -85,8 +88,12 @@ pub fn datetime_from_parts(
     if !(0..=60).contains(&second) {
         return Err(format!("second must be between 0 and 60, got {}", second));
     }
-    let days = days_from_civil(year, month, day);
-    Ok(days * 86400 + hour * 3600 + minute * 60 + second)
+    let days = days_from_civil(year, month as u32, day as u32);
+    let sec = days
+        .checked_mul(86400)
+        .and_then(|s| s.checked_add(hour * 3600 + minute * 60 + second))
+        .ok_or_else(|| "datetime_from_parts: timestamp overflow".to_string())?;
+    Ok(sec)
 }
 
 /// Format an epoch timestamp with strftime-like specifiers:
@@ -146,7 +153,7 @@ mod tests {
     fn test_round_trip() {
         let ts = 1761000000; // 2025-10-20
         let (y, m, d, h, min, s, _) = datetime_parts(ts);
-        let back = datetime_from_parts(y, m, d, h, min, s).unwrap();
+        let back = datetime_from_parts(y, m as i64, d as i64, h, min, s).unwrap();
         assert_eq!(ts, back);
     }
 

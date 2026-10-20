@@ -2215,4 +2215,192 @@ fn main() {
     );
 }
 
+#[test]
+fn csv_edge_cases_differential_both_engines() {
+    assert_both_engines(
+        "csv_edge_cases",
+        r#"fn main() {
+    let malformed = "name,age\n\"Alice,30\n";
+    let r1 = parse_csv(malformed, null);
+    println(r1.is_err());
+    
+    let text = "col1,col2,col3,col4\r\n10,NA,true,\r\n\r\n20,null,NULL,\r\n";
+    let r2 = parse_csv(text, null).unwrap();
+    let rows = r2["rows"];
+    println(rows.len());
+    println(rows[0][0]);
+    println(rows[0][1] == null);
+    println(rows[0][2]);
+    println(rows[0][3] == null);
+    println(rows[1][0]);
+    println(rows[1][1] == null);
+    println(rows[1][2] == null);
+    println(rows[1][3] == null);
+    return 0;
+}
+"#,
+        "true\n2\n10\ntrue\ntrue\ntrue\n20\ntrue\ntrue\ntrue\n",
+    );
+}
+
+#[test]
+fn regex_invalid_patterns_differential_both_engines() {
+    assert_both_engines(
+        "regex_invalid_patterns",
+        r#"fn main() {
+    try {
+        regex_match("[abc", "a");
+        println("fail1");
+    } catch (e) {
+        println("caught unclosed bracket");
+    }
+
+    try {
+        regex_find("(abc", "abc");
+        println("fail2");
+    } catch (e) {
+        println("caught unclosed paren");
+    }
+
+    try {
+        regex_find_all("+abc", "abc");
+        println("fail3");
+    } catch (e) {
+        println("caught stray quantifier");
+    }
+
+    try {
+        regex_replace("\\", "abc", "x");
+        println("fail4");
+    } catch (e) {
+        println("caught trailing backslash");
+    }
+    return 0;
+}
+"#,
+        "caught unclosed bracket\ncaught unclosed paren\ncaught stray quantifier\ncaught trailing backslash\n",
+    );
+}
+
+#[test]
+fn datetime_edge_cases_differential_both_engines() {
+    assert_both_engines(
+        "datetime_edge_cases",
+        r#"fn main() {
+    let p_neg = datetime_parts(-86400);
+    println(p_neg["year"]);
+    println(p_neg["month"]);
+    println(p_neg["day"]);
+    println(p_neg["hour"]);
+    println(p_neg["minute"]);
+    println(p_neg["second"]);
+    println(p_neg["weekday"]);
+
+    let ts_leap = datetime_from_parts(2024, 2, 29, 12, 0, 0);
+    let p_leap = datetime_parts(ts_leap);
+    println(p_leap["year"]);
+    println(p_leap["month"]);
+    println(p_leap["day"]);
+
+    let ts_2000 = datetime_from_parts(2000, 2, 29, 0, 0, 0);
+    let p_2000 = datetime_parts(ts_2000);
+    println(p_2000["day"]);
+
+    try {
+        datetime_from_parts(2024, 13, 1, 0, 0, 0);
+        println("fail month");
+    } catch (e) {
+        println("caught invalid month");
+    }
+    try {
+        datetime_from_parts(2024, 1, 32, 0, 0, 0);
+        println("fail day");
+    } catch (e) {
+        println("caught invalid day");
+    }
+    try {
+        datetime_from_parts(2024, 1, 1, 24, 0, 0);
+        println("fail hour");
+    } catch (e) {
+        println("caught invalid hour");
+    }
+    return 0;
+}
+"#,
+        "1969\n12\n31\n0\n0\n0\n3\n2024\n2\n29\n29\ncaught invalid month\ncaught invalid day\ncaught invalid hour\n",
+    );
+}
+
+#[test]
+fn phase3_collections_and_linear_algebra_edge_cases() {
+    assert_both_engines(
+        "phase3_edge_cases",
+        r#"fn main() {
+    println("{:.2}".format(nan()));
+    println("{:.2}".format(inf()));
+    println("{:.2}".format(-inf()));
+    println("{:.2}".format(-42.5));
+
+    let v0 = vector([]);
+    println(v0.sum());
+    try { v0.mean(); println("fail mean"); } catch (e) { println("caught empty mean"); }
+    try { v0.min(); println("fail min"); } catch (e) { println("caught empty min"); }
+    try { v0.max(); println("fail max"); } catch (e) { println("caught empty max"); }
+    try { v0.argmin(); println("fail argmin"); } catch (e) { println("caught empty argmin"); }
+    try { v0.argmax(); println("fail argmax"); } catch (e) { println("caught empty argmax"); }
+
+    let v1 = vector([1.0, 2.0]);
+    let v2 = vector([1.0]);
+    try { v1.add(v2); println("fail add"); } catch (e) { println("caught add mismatch"); }
+    try { v1.dot(v2); println("fail dot"); } catch (e) { println("caught dot mismatch"); }
+    try { v1.div(0.0); println("fail div"); } catch (e) { println("caught div zero"); }
+
+    let rect = matrix([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]);
+    try { rect.inverse(); println("fail inv"); } catch (e) { println("caught non-square inv"); }
+    try { rect.det(); println("fail det"); } catch (e) { println("caught non-square det"); }
+    try { rect.trace(); println("fail trace"); } catch (e) { println("caught non-square trace"); }
+    try { rect.eigen_sym(); println("fail eigen"); } catch (e) { println("caught non-square eigen"); }
+
+    let a3 = matrix([[2.0, 1.0, -1.0], [-3.0, -1.0, 2.0], [-2.0, 1.0, 2.0]]);
+    let b3 = vector([1.0, 1.0, 6.0]);
+    let x3 = a3.solve(b3);
+    println(abs(x3[0] - 1.0) < 1e-9);
+    println(abs(x3[1] - 2.0) < 1e-9);
+    println(abs(x3[2] - 3.0) < 1e-9);
+
+    write_file("target/corrupt.npy", "not_a_valid_npy_file");
+    let load_res = load_npy("target/corrupt.npy");
+    println(load_res.is_err());
+
+    return 0;
+}
+"#,
+        concat!(
+            "NaN\n",
+            "inf\n",
+            "-inf\n",
+            "-42.50\n",
+            "0.0\n",
+            "caught empty mean\n",
+            "caught empty min\n",
+            "caught empty max\n",
+            "caught empty argmin\n",
+            "caught empty argmax\n",
+            "caught add mismatch\n",
+            "caught dot mismatch\n",
+            "caught div zero\n",
+            "caught non-square inv\n",
+            "caught non-square det\n",
+            "caught non-square trace\n",
+            "caught non-square eigen\n",
+            "true\n",
+            "true\n",
+            "true\n",
+            "true\n",
+        ),
+    );
+}
+
+
+
 

@@ -510,10 +510,10 @@ A runnable demo ships as `cargo run --example embed_hello`. Full API reference:
 
 ## Developer workflow & testing
 
-Correctness in Spid3r means *the engines agree*. All **444 Rust tests** (**415** core tests including WASM & Bundler suites + **29** GUI/AOT-headless tests) and **23/23 differential example programs** can be run locally without LLVM:
+Correctness in Spid3r means *the engines agree*. All **447 Rust tests** (**418** core tests including WASM & Bundler suites + **29** GUI/AOT-headless tests) and **25/25 differential example programs** can be run locally without LLVM:
 
 ```sh
-# 1. Run all 415 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
+# 1. Run all 418 core unit, integration, networking, wasm, bundler, regression, and fuzz tests
 cargo test --no-default-features
 
 # 2. Run the 10 headless GUI bridge tests
