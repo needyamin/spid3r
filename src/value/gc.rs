@@ -564,13 +564,17 @@ fn auto_enabled() -> bool {
 /// Called at interpreter statement boundaries. Collects once at least
 /// `NEXT_GC` tracked cells have been allocated since the last collection
 /// (1024 at first, then the previous pass's surviving cell count — amortized
-/// exponential backoff, see F-4), and only while the scheduler has no live
-/// tasks (a worker could clone a cell concurrently, racing the strong counts).
+/// exponential backoff, see F-4), and only while this thread is the only one
+/// executing Spid3r code (`sched::gc_quiescent`): a thread that is running or
+/// allocating can move a tracked value between the strong-count read and the
+/// mark phase, which could sweep live memory. Threads parked in
+/// recv/join/mutex/sleep are *not* running and hold their values on their own
+/// stacks, so they do not block a collection (audit A-4).
 #[inline]
 pub fn maybe_collect() {
     if ALLOCS.load(Ordering::Relaxed) >= NEXT_GC.load(Ordering::Relaxed)
         && auto_enabled()
-        && crate::sched::Scheduler::shared().live_tasks() == 0
+        && crate::sched::gc_quiescent()
     {
         collect();
     }

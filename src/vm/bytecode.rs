@@ -370,6 +370,12 @@ impl Chunk {
     }
 
     /// Span for the instruction containing byte offset `ip`.
+    ///
+    /// Defensive by construction: `inst_spans` is indexed through `get` and
+    /// falls back to `pending_span`. A crafted `.matrixc` can carry an
+    /// `inst_offsets` table longer than `inst_spans` (the deserializer reads the
+    /// two counts independently), and the old blind `inst_spans[lo - 1]` index
+    /// panicked the host on exactly that file (audit A-8).
     pub fn span_at(&self, ip: usize) -> Span {
         // `inst_offsets` is sorted; find the greatest start <= ip.
         let mut lo = 0usize;
@@ -385,7 +391,10 @@ impl Chunk {
         if lo == 0 {
             return self.pending_span.clone();
         }
-        self.inst_spans[lo - 1].clone()
+        self.inst_spans
+            .get(lo - 1)
+            .cloned()
+            .unwrap_or_else(|| self.pending_span.clone())
     }
 }
 
@@ -704,11 +713,23 @@ pub fn serialize_vmfunc(func: &VmFunc) -> Vec<u8> {
 struct Reader<'a> {
     b: &'a [u8],
     p: usize,
+    /// Nesting depth of `get_chunk` (functions, class methods, embedded
+    /// modules). A crafted file can nest without bound, which would recurse
+    /// until the host's stack overflowed (an uncatchable abort); the limit is
+    /// far above anything the compiler can emit (parser depth is 96).
+    depth: usize,
 }
+
+/// Deepest function/module nesting accepted while deserializing a `.matrixc`.
+const MAX_DESERIALIZE_DEPTH: usize = 128;
 
 impl<'a> Reader<'a> {
     fn new(b: &'a [u8]) -> Self {
-        Reader { b, p: 0 }
+        Reader {
+            b,
+            p: 0,
+            depth: 0,
+        }
     }
 
     fn u8(&mut self) -> SpidResult<u8> {
@@ -827,6 +848,22 @@ impl<'a> Reader<'a> {
 }
 
 fn get_chunk(r: &mut Reader) -> SpidResult<Chunk> {
+    if r.depth >= MAX_DESERIALIZE_DEPTH {
+        return Err(err(
+            Phase::Vm,
+            format!(
+                "invalid file format: function/module nesting exceeds the depth limit ({})",
+                MAX_DESERIALIZE_DEPTH
+            ),
+        ));
+    }
+    r.depth += 1;
+    let out = get_chunk_body(r);
+    r.depth -= 1;
+    out
+}
+
+fn get_chunk_body(r: &mut Reader) -> SpidResult<Chunk> {
     let code_len = r.usize()?;
     if code_len > r.b.len().saturating_sub(r.p) {
         return Err(err(Phase::Vm, "invalid file format: code length exceeds file"));
@@ -991,7 +1028,20 @@ pub fn deserialize_vmfunc(b: &[u8]) -> SpidResult<VmFunc> {
             ),
         ));
     }
-    get_vmfunc(&mut r)
+    let func = get_vmfunc(&mut r)?;
+    // Trailing-byte rejection (audit A-8): a file whose declared structures do
+    // not consume the whole buffer is malformed. Accepting it silently let an
+    // attacker append data that a later reader might interpret differently.
+    if r.p != b.len() {
+        return Err(err(
+            Phase::Vm,
+            format!(
+                "invalid file format: {} trailing byte(s) after the last structure",
+                b.len() - r.p
+            ),
+        ));
+    }
+    Ok(func)
 }
 
 // ----------------------------------------------------------------- validate
@@ -1009,6 +1059,46 @@ pub fn validate_chunk(chunk: &Chunk) -> SpidResult<()> {
 fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
     let code = &chunk.code;
     let len = code.len();
+    if len == 0 {
+        return Err(err(
+            Phase::Vm,
+            format!("empty code section in {} (a chunk must end with a return)", where_),
+        ));
+    }
+    // Instruction metadata must line up with the code: `span_at` maps an
+    // offset through `inst_offsets` into `inst_spans`, and the deserializer
+    // reads the two tables with independent counts. A crafted file could ship
+    // more offsets than spans (host panic in `span_at`) or offsets past the
+    // code (audit A-8).
+    if chunk.inst_offsets.len() != chunk.inst_spans.len() {
+        return Err(err(
+            Phase::Vm,
+            format!(
+                "instruction tables disagree: {} offset(s) but {} span(s) in {}",
+                chunk.inst_offsets.len(),
+                chunk.inst_spans.len(),
+                where_
+            ),
+        ));
+    }
+    if !chunk.inst_offsets.windows(2).all(|w| w[0] < w[1]) {
+        return Err(err(
+            Phase::Vm,
+            format!("instruction offsets are not strictly increasing in {}", where_),
+        ));
+    }
+    if let Some(&last) = chunk.inst_offsets.last() {
+        if last >= len {
+            return Err(err(
+                Phase::Vm,
+                format!(
+                    "instruction offset {} is outside the code section ({} bytes) in {}",
+                    last, len, where_
+                ),
+            ));
+        }
+    }
+
     let mut ip = 0usize;
     // Offsets at which a real instruction begins; jump targets must land here.
     let mut starts: Vec<usize> = Vec::new();
@@ -1113,8 +1203,33 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
         ip += 1 + oplen;
     }
 
+    // Terminator rule (audit A-8): the VM advances `ip` past the last
+    // instruction when control falls through, and `code[ip]` would then be out
+    // of range. Every chunk the compiler emits ends with `Return`, so require
+    // an instruction that cannot fall through. A `Jump` here is safe: its
+    // target was just validated to be inside the code and on an instruction
+    // boundary (a forward jump from the last instruction cannot be in range).
+    if let Some(&last_start) = starts.last() {
+        let op = OpCode::from_u8(code[last_start]).unwrap_or(OpCode::Return);
+        if !matches!(op, OpCode::Return | OpCode::Throw | OpCode::Jump) {
+            return Err(err(
+                Phase::Vm,
+                format!(
+                    "chunk ends with a fall-through instruction {:?} at offset {} in {} \
+                     (a chunk must end with return, throw, or jump)",
+                    op, last_start, where_
+                ),
+            ));
+        }
+    }
+
     for (src, target) in jumps {
-        if target < 0 || (target as usize) >= len || !starts.contains(&(target as usize)) {
+        // `starts` is sorted: binary search instead of `contains`, which made
+        // validation quadratic (a 10 MB file with many jumps took ~10^13
+        // comparisons — a CPU DoS at every `exec` entry; audit A-8).
+        let in_range = target >= 0 && (target as usize) < len;
+        let on_boundary = in_range && starts.binary_search(&(target as usize)).is_ok();
+        if !on_boundary {
             return Err(err(
                 Phase::Vm,
                 format!("invalid jump target {} from offset {} in {}", target, src, where_),

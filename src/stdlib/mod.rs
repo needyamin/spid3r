@@ -932,14 +932,16 @@ fn n_type_of(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 /// `gc_collect()` — run one cycle-collection pass; returns the cells swept.
 fn n_gc_collect(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
-    // Same guard as the automatic collector (gc::maybe_collect): sweeping
-    // while a task runs can race its allocations and clear live containers
-    // (audit A-4). Refuse with a clear error instead of corrupting.
-    if crate::sched::Scheduler::shared().live_tasks() > 0 {
-        return Err(
-            "gc_collect: tasks are still running; join them (or let them finish) before collecting"
-                .to_string(),
-        );
+    // A mark-sweep reads each cell's strong count and then walks its children;
+    // another thread that is *running* can move a value between those steps and
+    // make a live cell look like garbage (audit A-4). Collect only when the
+    // caller is the only thread executing Spid3r code: tasks parked in
+    // recv/join/mutex/sleep cannot mutate anything, so they do not block it.
+    if !crate::sched::gc_quiescent() {
+        return Err(format!(
+            "gc_collect: {} other thread(s) are running; join or finish them before collecting",
+            crate::sched::active_threads().saturating_sub(1)
+        ));
     }
     Ok(Value::Int(crate::value::gc::collect() as i64))
 }

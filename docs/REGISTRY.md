@@ -52,6 +52,14 @@ $SPID3R_REGISTRY/
   compares it against the SHA-256 of the vendored `src/` tree and fails on
   mismatch. `spid3r pack` prints the hash you can paste here.
 
+  The hash covers **every file** under `src/` (not just `*.matrix`) and is taken
+  over the **raw bytes**: for each file in sorted order,
+  `relative/path` `0x00` contents `0x00`, concatenated and hashed once. Paths use
+  `/` separators on every platform. (Before 2026-10-21 the hash skipped
+  non-`.matrix` files and decoded contents lossily as UTF-8, so a changed binary
+  asset could hash the same — regenerate any `sha256.txt` you published with the
+  old code by re-running `spid3r pack`.)
+
 ### Named sub-registries
 
 `registry = "internal"` looks under `$SPID3R_REGISTRY/internal/<name>/…`,

@@ -24,7 +24,18 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+/// WebView2 bootstrapper acquisition: opt-in, checksum-verified, fail-closed
+/// (audit A-11). Kept in its own file so `tests/artifact_hardening.rs` can
+/// exercise the exact logic the build runs.
+#[path = "build_support/webview2.rs"]
+mod webview2;
+
 fn main() {
+    // Files this script `#[path]`-includes are build inputs too: without these
+    // directives a change to the hash implementation or the WebView2 policy
+    // would not rerun the build script.
+    println!("cargo:rerun-if-changed=build_support/webview2.rs");
+    println!("cargo:rerun-if-changed=src/pkg/sha256.rs");
     if env::var_os("CARGO_FEATURE_NATIVE").is_some() {
         native_llvm();
     }
@@ -176,31 +187,14 @@ fn windows_installer() {
     }
 }
 
-/// Microsoft's Evergreen WebView2 bootstrapper (redistributable, ~2 MB), which
-/// the installer runs only when the runtime is missing. Cached in
-/// `packaging/nsis/redist/`; fetched once with the system `curl.exe`.
+/// Microsoft's Evergreen WebView2 bootstrapper, bundled only when the operator
+/// opts in and the download verifies (see `build_support/webview2.rs`). A plain
+/// release build performs **no** network access; a partial or tampered download
+/// is discarded instead of being cached as usable (audit A-11).
 fn webview2_bootstrapper(nsis_dir: &std::path::Path) -> Option<PathBuf> {
-    const URL: &str = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
-    let setup = nsis_dir.join("redist").join("MicrosoftEdgeWebview2Setup.exe");
-    let usable = |p: &PathBuf| p.metadata().map(|m| m.len() > 0).unwrap_or(false);
-    if !usable(&setup) {
-        let _ = fs::create_dir_all(setup.parent()?);
-        let _ = Command::new("curl.exe")
-            .args(["-fsSL", "--retry", "2", "-o"])
-            .arg(&setup)
-            .arg(URL)
-            .status();
-    }
-    if usable(&setup) {
-        Some(setup)
-    } else {
-        let _ = fs::remove_file(&setup);
-        println!(
-            "cargo:warning=WebView2 bootstrapper unavailable (download failed); the \
-             installer will not install the WebView2 runtime automatically"
-        );
-        None
-    }
+    println!("cargo:rerun-if-env-changed=SPID3R_FETCH_WEBVIEW2");
+    println!("cargo:rerun-if-env-changed=SPID3R_WEBVIEW2_SHA256");
+    webview2::ensure(nsis_dir)
 }
 
 fn find_on_path(exe: &str) -> Option<PathBuf> {

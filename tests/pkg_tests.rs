@@ -52,10 +52,16 @@ impl Project {
     }
 
     /// Run a command with the project root as the working directory.
+    ///
+    /// The tests create git dependencies as local repositories, so they opt into
+    /// the local-transport allowance the URL whitelist requires
+    /// (`SPID3R_ALLOW_LOCAL_GIT_DEPS`, audit A-5). `ext::` stays rejected even
+    /// with this set.
     fn run(&self, args: &[&str]) -> (i32, String, String) {
         let out = Command::new(bin())
             .args(args)
             .current_dir(&self.root)
+            .env("SPID3R_ALLOW_LOCAL_GIT_DEPS", "1")
             .output()
             .expect("spawn");
         (
@@ -68,7 +74,9 @@ impl Project {
     /// Run with extra environment variables (e.g. `SPID3R_REGISTRY`).
     fn run_env(&self, args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
         let mut cmd = Command::new(bin());
-        cmd.args(args).current_dir(&self.root);
+        cmd.args(args)
+            .current_dir(&self.root)
+            .env("SPID3R_ALLOW_LOCAL_GIT_DEPS", "1");
         for (k, v) in envs {
             cmd.env(k, v);
         }
@@ -1276,3 +1284,213 @@ fn transitive_version_constraint_mismatch_fails_install() {
     );
 }
 
+
+// -------------------------------------------------- A-5 / A-13 (Stage 3)
+
+/// `ext::` is git's "run this command" transport (the CVE-2022-25912 class).
+/// A dependency manifest is attacker-controlled input, so it is rejected
+/// outright — before any clone runs.
+#[test]
+fn the_ext_git_transport_is_rejected_before_any_command_runs() {
+    let p = Project::new("gitext");
+    // Relative marker: the manifest parser rejects Windows backslashes inside
+    // quoted values, and the command (if it ever ran) would run in the project.
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n\
+         [dependencies]\nbad = { git = \"ext::sh -c 'touch pwned.txt'\" }\n",
+    );
+    p.write("src/main.matrix", "fn main() {\n    return 0;\n}\n");
+    let (code, _, err) = p.run(&["install"]);
+    assert_ne!(code, 0, "an ext:: url must fail the install");
+    assert!(
+        err.contains("ext::"),
+        "the error must name the rejected transport: {}",
+        err
+    );
+    assert!(
+        !p.exists("pwned.txt"),
+        "the ext:: command must never have run"
+    );
+    assert!(
+        !p.exists(".spid3r/git/bad"),
+        "nothing may be cloned for a rejected url"
+    );
+}
+
+/// Plaintext `http://`/`git://` has no integrity protection; it needs the
+/// explicit `SPID3R_ALLOW_INSECURE_GIT=1` opt-in.
+#[test]
+fn a_plaintext_git_url_needs_the_insecure_opt_in() {
+    let p = Project::new("githttp");
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n\
+         [dependencies]\nplain = { git = \"http://example.invalid/lib\" }\n",
+    );
+    p.write("src/main.matrix", "fn main() {\n    return 0;\n}\n");
+    let (code, _, err) = p.run(&["install"]);
+    assert_ne!(code, 0, "http must be rejected by default");
+    assert!(
+        err.contains("SPID3R_ALLOW_INSECURE_GIT"),
+        "the error must name the opt-in: {}",
+        err
+    );
+    // An unknown scheme is rejected too (no fallback to a local path).
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n\
+         [dependencies]\nplain = { git = \"ftp://example.invalid/lib\" }\n",
+    );
+    let (code, _, err) = p.run(&["install"]);
+    assert_ne!(code, 0, "an unknown scheme must be rejected");
+    assert!(err.contains("scheme"), "expected a scheme error: {}", err);
+}
+
+/// A re-install must reproduce the commit recorded in `spider.lock` instead of
+/// tracking a moving branch; `install --update` is the explicit way to move.
+#[test]
+fn a_reinstall_honors_the_locked_commit_and_update_moves_it() {
+    let p = Project::new("gitlock");
+    let repo = add_git_dep(&p.base, "moving", "1.0.0", DEP_BODY);
+    let url = repo.to_string_lossy().replace('\\', "/");
+    p.write(
+        "spider.toml",
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n\
+             [dependencies]\nmoving = {{ git = \"{}\" }}\n",
+            url
+        ),
+    );
+    p.write("src/main.matrix", "fn main() {\n    return 0;\n}\n");
+    assert_eq!(p.run(&["install"]).0, 0);
+    let first_lock = p.read("spider.lock");
+    assert!(p.read("vendor/moving/lib.matrix").contains("x * x"));
+
+    // Upstream moves on (no rev in the manifest: the branch tip changed).
+    std::fs::write(
+        repo.join("src/lib.matrix"),
+        "public fn square(x) {\n    return x * x * x;\n}\n",
+    )
+    .expect("write");
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--quiet",
+            "-m",
+            "second",
+        ],
+    );
+
+    // Re-install: the locked commit wins, so the vendored tree is unchanged.
+    assert_eq!(p.run(&["install"]).0, 0);
+    assert!(
+        p.read("vendor/moving/lib.matrix").contains("x * x"),
+        "a re-install must reproduce the locked commit, not the new tip"
+    );
+    assert_eq!(p.read("spider.lock"), first_lock, "the lock must stay stable");
+
+    // --update re-resolves and vendors the new tip.
+    let (code, out, err) = p.run(&["install", "--update"]);
+    assert_eq!(code, 0, "install --update failed: {}{}", out, err);
+    assert!(
+        p.read("vendor/moving/lib.matrix").contains("x * x * x"),
+        "--update must move to the new upstream commit"
+    );
+    assert_ne!(p.read("spider.lock"), first_lock, "the lock must record the new commit");
+}
+
+/// Everything under `src/` is vendored and covered by the lockfile hash, with
+/// raw bytes: a non-`.matrix` asset and non-UTF-8 bytes must both be detected.
+#[test]
+fn non_matrix_and_binary_assets_are_vendored_and_hashed() {
+    let p = Project::new("assets");
+    let dep = p.base.join("withdata");
+    std::fs::create_dir_all(dep.join("src")).expect("mkdir");
+    std::fs::write(
+        dep.join("spider.toml"),
+        "[package]\nname = \"withdata\"\nversion = \"1.0.0\"\n",
+    )
+    .expect("write");
+    std::fs::write(dep.join("src/lib.matrix"), DEP_BODY).expect("write");
+    std::fs::write(dep.join("src/table.txt"), "1,2,3\n").expect("write");
+    // Invalid UTF-8: `from_utf8_lossy` maps every bad byte to U+FFFD, so two
+    // different payloads used to hash identically.
+    std::fs::write(dep.join("src/blob.bin"), [0x80u8, 0x81, 0x82]).expect("write");
+    p.write(
+        "spider.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n\
+         [dependencies]\nwithdata = { path = \"../withdata\" }\n",
+    );
+    p.write("src/main.matrix", "fn main() {\n    return 0;\n}\n");
+    assert_eq!(p.run(&["install"]).0, 0);
+    assert!(p.exists("vendor/withdata/table.txt"), "data asset not vendored");
+    assert!(p.exists("vendor/withdata/blob.bin"), "binary asset not vendored");
+    let hash_before = spid3r::pkg::tree_hash(&dep).expect("tree hash");
+
+    // A different non-UTF-8 payload must change the hash.
+    std::fs::write(dep.join("src/blob.bin"), [0x90u8, 0x91, 0x92]).expect("write");
+    let hash_after = spid3r::pkg::tree_hash(&dep).expect("tree hash");
+    assert_ne!(
+        hash_before, hash_after,
+        "binary content must be hashed as raw bytes, not lossily decoded"
+    );
+
+    // Changing only the data asset must change the hash too.
+    std::fs::write(dep.join("src/table.txt"), "4,5,6\n").expect("write");
+    let hash_asset = spid3r::pkg::tree_hash(&dep).expect("tree hash");
+    assert_ne!(hash_after, hash_asset, "a data asset must be covered by the hash");
+}
+
+/// The transport policy itself (audit A-5): what a manifest may point git at,
+/// with no opt-in environment variables set.
+#[test]
+fn the_git_transport_policy_accepts_only_network_transports_by_default() {
+    use spid3r::pkg::validate_git_url;
+    let ok = [
+        "https://github.com/acme/lib.git",
+        "https://example.com/a/b?x=1",
+        "ssh://git@example.com/acme/lib.git",
+        "ssh://example.com:2222/acme/lib.git",
+        "git@github.com:acme/lib.git",
+        "https://[::1]/acme/lib.git",
+        "https://example.com/ext::not-a-transport",
+    ];
+    for url in ok {
+        assert!(
+            validate_git_url("dep", url).is_ok(),
+            "should accept {}: {:?}",
+            url,
+            validate_git_url("dep", url)
+        );
+    }
+    let bad = [
+        "ext::sh -c id",
+        "EXT::sh -c id",
+        "ext::/bin/sh",
+        "http://example.com/lib.git",
+        "git://example.com/lib.git",
+        "file:///etc/repo",
+        "ftp://example.com/lib.git",
+        "-oProxyCommand=calc",
+        "ssh://-oProxyCommand=calc/repo",
+        "git@-oProxyCommand=calc:repo",
+        "/tmp/local-repo",
+        "C:/repo",
+        "",
+        "https://example.com/a b",
+    ];
+    for url in bad {
+        assert!(
+            validate_git_url("dep", url).is_err(),
+            "should reject {:?}",
+            url
+        );
+    }
+}

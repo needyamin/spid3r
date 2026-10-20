@@ -425,6 +425,26 @@ pub fn is_callback_method(name: &str) -> bool {
     )
 }
 
+/// How many times a detached mutator retries when the container changed
+/// between its snapshot and the commit (bounded so a hot loop of concurrent
+/// mutations fails cleanly instead of spinning; 32 consecutive losses on a
+/// small container is effectively unreachable for real programs).
+const SNAPSHOT_RETRIES: usize = 32;
+
+/// Run a snapshot-then-commit operation with bounded retries. `attempt` must
+/// take a *fresh* snapshot each time; it returns [`seq::CONFLICT`] when the
+/// container changed underneath it (audit A-7: mutators stay linearizable
+/// without holding the receiver's lock across a value comparison).
+fn with_snapshot_retry<T>(mut attempt: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    for _ in 0..SNAPSHOT_RETRIES {
+        match attempt() {
+            Err(e) if e == seq::CONFLICT => continue,
+            other => return other,
+        }
+    }
+    Err("the container is being mutated concurrently; retry".to_string())
+}
+
 pub fn call_method(obj: &Value, name: &str, args: Vec<Value>) -> Result<Value, String> {
     call_method_host(&mut NoCallbacks, obj, name, args)
 }
@@ -466,9 +486,12 @@ pub fn call_method_host(
                 // Audit A-7: these compare or deep-clone item values, and an
                 // item can be (or reach) the receiver — running them under
                 // the receiver's Mutex would re-lock it and hang. Snapshot
-                // with the lock released, then operate on the snapshot.
-                let items = d.lock().unwrap().items.clone();
-                return seq::vec_detached(d, &items, name, &args);
+                // with the lock released, then operate on the snapshot;
+                // `remove` retries if the list moved underneath it.
+                return with_snapshot_retry(|| {
+                    let items = d.lock().unwrap().items.clone();
+                    seq::vec_detached(d, &items, name, &args)
+                });
             }
             d.lock().unwrap().method(name, &args)
         }
@@ -555,8 +578,12 @@ pub fn call_method_host(
             }
             if matches!(name, "push" | "add" | "remove" | "contains" | "to_list") {
                 // Audit A-7: snapshot-then-operate, see the list arm above.
-                let items = d.lock().unwrap().items.clone();
-                return seq::set_detached(d, items, name, &args);
+                // `add`/`remove` verify the snapshot before committing and
+                // retry, so concurrent adds cannot duplicate an element.
+                return with_snapshot_retry(|| {
+                    let items = d.lock().unwrap().items.clone();
+                    seq::set_detached(d, items, name, &args)
+                });
             }
             d.lock().unwrap().method(name, &args)
         }
@@ -643,9 +670,13 @@ pub fn call_method_host(
         }
         Value::Bag(d) => {
             if matches!(name, "push" | "add" | "remove" | "count_of" | "contains") {
-                // Audit A-7: snapshot-then-operate, see the list arm above.
-                let counts = d.lock().unwrap().counts.clone();
-                return misc::bag_detached(d, counts, name, &args);
+                // Audit A-7: snapshot-then-operate, see the list arm above;
+                // `add` verifies the snapshot before committing so two tasks
+                // adding an equal value cannot create two entries for it.
+                return with_snapshot_retry(|| {
+                    let counts = d.lock().unwrap().counts.clone();
+                    misc::bag_detached(d, counts, name, &args)
+                });
             }
             d.lock().unwrap().method(name, &args)
         }

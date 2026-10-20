@@ -268,6 +268,22 @@ impl VecData {
 
 // ------------------------------------------------- detached list operations
 
+/// Marker returned by a detached mutator when the container changed between the
+/// snapshot it resolved against and the commit. The dispatcher retries with a
+/// fresh snapshot (bounded); this never reaches user code.
+pub const CONFLICT: &str = "spid3r-internal: container changed during commit";
+
+/// Did `cur` keep exactly the elements `snapshot` had, in the same slots?
+/// Identity/scalar comparison only — never locks a value, so it is safe to run
+/// while holding the container's mutex (see [`crate::value::same_slot`]).
+pub fn slots_unchanged(cur: &[Value], snapshot: &[Value]) -> bool {
+    cur.len() == snapshot.len()
+        && cur
+            .iter()
+            .zip(snapshot)
+            .all(|(a, b)| crate::value::same_slot(a, b))
+}
+
 /// Detached list/vec operations (audit A-7): `contains`/`index_of`/`remove`/
 /// `slice` compare or deep-clone item values, and an item can be (or reach)
 /// the receiver itself — running them under the receiver's Mutex would
@@ -299,12 +315,12 @@ pub fn vec_detached(
                     // Confirm the slot still holds the element the snapshot
                     // matched (identity/scalar check — no locking), so a
                     // concurrent mutation cannot make us remove a different
-                    // element.
+                    // element. If it moved, the dispatcher retries.
                     match g.items.get(i) {
                         Some(cur) if crate::value::same_slot(cur, &items[i]) => {
                             Ok(g.items.remove(i))
                         }
-                        _ => Err("remove: the list changed concurrently; retry".to_string()),
+                        _ => Err(CONFLICT.to_string()),
                     }
                 }
                 None => Err("value not in list".to_string()),
@@ -371,11 +387,15 @@ pub fn set_detached(
             if items.iter().any(|x| values_equal(x, &args[0])) {
                 return Ok(Value::Null);
             }
-            // Commit with the lock held but no value traversal: a re-check
-            // with values_equal could re-lock the receiver. The snapshot
-            // check above is exact unless another task mutated the set in
-            // between, which the v1 scheduler does not promise atomicity for.
-            d.lock().unwrap().items.push(args[0].clone());
+            let mut g = d.lock().unwrap();
+            // Verified commit (compare-and-swap): the snapshot said "not
+            // present", so re-check that the set still matches the snapshot
+            // before inserting — otherwise two tasks adding the same value
+            // concurrently could both see "absent" and push duplicates.
+            if !slots_unchanged(&g.items, &items) {
+                return Err(CONFLICT.to_string());
+            }
+            g.items.push(args[0].clone());
             Ok(Value::Null)
         }
         "remove" => {
@@ -383,13 +403,15 @@ pub fn set_detached(
             match items.iter().position(|x| values_equal(x, &args[0])) {
                 Some(i) => {
                     let mut g = d.lock().unwrap();
-                    // Same-slot re-check as `vec_detached` (no locking).
+                    // Same-slot re-check as `vec_detached` (no locking): if a
+                    // concurrent mutation shifted the slot, retry on a fresh
+                    // snapshot instead of removing a different element.
                     match g.items.get(i) {
                         Some(cur) if crate::value::same_slot(cur, &items[i]) => {
                             g.items.remove(i);
                             Ok(Value::Null)
                         }
-                        _ => Err("remove: the set changed concurrently; retry".to_string()),
+                        _ => Err(CONFLICT.to_string()),
                     }
                 }
                 None => Err("value not in set".to_string()),
@@ -1271,4 +1293,69 @@ pub fn vec_items(v: &Value) -> Result<Vec<Value>, String> {
 
 pub fn make_list(items: Vec<Value>) -> Value {
     Value::List(new_ref(VecData { items }))
+}
+
+#[cfg(test)]
+mod tests {
+    //! Deterministic checks for the snapshot/commit guard (audit A-7): the
+    //! concurrent-race versions of these cases live in
+    //! `tests/stage2_concurrency.rs`, but those are probabilistic. These drive
+    //! the guard directly with a stale snapshot, which is exactly the state a
+    //! racing task would produce.
+
+    use super::*;
+
+    fn s(v: &str) -> Value {
+        Value::Str(v.into())
+    }
+
+    #[test]
+    fn set_add_with_a_stale_snapshot_reports_conflict_instead_of_duplicating() {
+        let set = new_ref(SetData { items: Vec::new() });
+        // Snapshot taken by "task A" while the set was empty.
+        let stale = set.lock().unwrap().items.clone();
+        // "Task B" adds the value first.
+        set.lock().unwrap().items.push(s("x"));
+        // Task A now tries to commit against its stale snapshot.
+        let r = set_detached(&set, stale, "add", &[s("x")]);
+        assert!(matches!(r, Err(ref e) if e == CONFLICT), "got {:?}", r);
+        assert_eq!(set.lock().unwrap().items.len(), 1, "no duplicate");
+    }
+
+    #[test]
+    fn set_add_commits_when_the_snapshot_is_still_current() {
+        let set = new_ref(SetData { items: Vec::new() });
+        let snapshot = set.lock().unwrap().items.clone();
+        let r = set_detached(&set, snapshot, "add", &[s("x")]);
+        assert!(r.is_ok(), "uncontended add must succeed: {:?}", r);
+        assert_eq!(set.lock().unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn set_remove_with_a_shifted_slot_reports_conflict() {
+        let set = new_ref(SetData { items: vec![s("a"), s("b")] });
+        let stale = set.lock().unwrap().items.clone();
+        // A concurrent remove shifts "b" into slot 0.
+        set.lock().unwrap().items.remove(0);
+        let r = set_detached(&set, stale, "remove", &[s("b")]);
+        assert!(
+            matches!(r, Err(ref e) if e == CONFLICT),
+            "must not remove a different element, got {:?}",
+            r
+        );
+        assert_eq!(set.lock().unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn list_remove_with_a_shifted_slot_reports_conflict() {
+        let list = new_ref(VecData {
+            items: vec![s("a"), s("b")],
+        });
+        let stale = list.lock().unwrap().items.clone();
+        list.lock().unwrap().items.insert(0, s("z"));
+        let r = vec_detached(&list, &stale, "remove", &[s("b")]);
+        assert!(matches!(r, Err(ref e) if e == CONFLICT), "got {:?}", r);
+        // The original element is still there, untouched.
+        assert_eq!(list.lock().unwrap().items.len(), 3);
+    }
 }

@@ -91,6 +91,26 @@ when sources change.
   Windows SDK to link; the programs they build have no LLVM dependency.
 - Set `SPID3R_NO_INSTALLER=1` to skip the installer step.
 
+#### WebView2 bootstrapper (opt-in, verified)
+
+The installer can bundle Microsoft's evergreen WebView2 bootstrapper so a machine
+without the runtime can install it. That download is **opt-in**: a plain
+`cargo build --release` performs no network access.
+
+```bash
+# 1. Fetch and bundle it (needs the hash of the file you verified).
+SPID3R_FETCH_WEBVIEW2=1 cargo build --release
+
+# 2. If Microsoft rotated the bootstrapper, pin the new hash explicitly.
+SPID3R_FETCH_WEBVIEW2=1 SPID3R_WEBVIEW2_SHA256=<64-hex> cargo build --release
+```
+
+The file is downloaded to `packaging/nsis/redist/*.part`, verified against the
+pinned SHA-256 (`build_support/webview2.rs`) **and** a minimum size, and only then
+renamed into place. A partial or tampered download is deleted and the installer is
+built without the bootstrapper (`!ifdef WEBVIEW2_SETUP` in `spid3r.nsi`) — it is
+never bundled unverified.
+
 GUI programs can be run headlessly with `spid3r gui --dry-run <file>`, which
 replays the whole native↔JS bridge (script flushes and event dispatch) without
 opening a window — useful for CI and for verifying handler wiring. See

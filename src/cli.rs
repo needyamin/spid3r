@@ -47,9 +47,11 @@ COMMANDS:
                                            dist/<name>-<version>.tar
     unpack <archive> [dir]                 Extract a packed project
     init [dir]                             Create spider.toml + src/main.matrix
-    install                                Vendor path/git dependencies into
+    install [--update]                     Vendor path/git dependencies into
                                            vendor/, write spider.lock (commit
-                                           pinned, SHA-256 per dep)
+                                           pinned, SHA-256 per dep); --update
+                                           re-resolves instead of honoring the
+                                           locked commits
     dist [-o out] [--no-opt]               Compile the project entry (spider.toml)
                                            into target/<package>.matrixc
     test                                   Run every examples/*.matrix file
@@ -100,11 +102,21 @@ pub fn run(args: Vec<String>) -> i32 {
         .spawn(move || dispatch(cmd_for_thread, rest_clone));
     match spawned {
         Ok(handle) => match handle.join() {
-            Ok(outcome) => outcome_code(outcome),
+            Ok(outcome) => {
+                // Deterministic teardown (audit A-3): every program has already
+                // drained its tasks; stop the pool and join the worker threads
+                // instead of letting process exit kill them mid-write.
+                crate::sched::shutdown();
+                outcome_code(outcome)
+            }
             Err(panic) => std::panic::resume_unwind(panic),
         },
         // Thread creation failed (extremely unlikely): run inline as before.
-        Err(_) => outcome_code(dispatch(cmd, rest)),
+        Err(_) => {
+            let outcome = dispatch(cmd, rest);
+            crate::sched::shutdown();
+            outcome_code(outcome)
+        }
     }
 }
 
@@ -973,11 +985,15 @@ fn cmd_project_build(args: &[String]) -> Result<i32, Diagnostic> {
 
 /// `spid3r install` — resolve `[dependencies]` into `vendor/` and lock them.
 fn cmd_install(args: &[String]) -> Result<i32, Diagnostic> {
-    if !args.is_empty() {
-        return Err(usage("install takes no arguments"));
+    let mut update = false;
+    for a in args {
+        match a.as_str() {
+            "--update" | "-u" => update = true,
+            other => return Err(usage(&format!("install: unknown argument '{}'", other))),
+        }
     }
     let root = std::env::current_dir().map_err(|e| usage(&format!("cannot read cwd: {}", e)))?;
-    let report = crate::pkg::install(&root).map_err(|e| usage(&e))?;
+    let report = crate::pkg::install_with(&root, update).map_err(|e| usage(&e))?;
     if report.deps.is_empty() {
         println!("no dependencies in spider.toml");
     } else {

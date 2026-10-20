@@ -607,9 +607,50 @@ fn collect_all_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
+/// Every file under `dir`, recursively (any extension).
+///
+/// Vendoring and hashing must cover the *whole* `src/` tree, not just
+/// `*.matrix`: a dependency can ship data files or binary assets that the
+/// program reads, and anything that lands in `vendor/` must be covered by the
+/// lockfile hash (audit A-13: the old filter hashed only `.matrix` files, so a
+/// non-`.matrix` payload was neither copied nor verified).
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
+    for e in entries {
+        let p = e.map_err(|e| format!("cannot read {}: {}", dir.display(), e))?.path();
+        if p.is_dir() {
+            collect_files(&p, out)?;
+        } else {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+/// Hash a file list the way [`vendor_dep`] does: for each file in sorted order,
+/// `relative/path` (bytes, `/` separators) `0x00` raw contents `0x00`, hashed as
+/// one byte stream.
+///
+/// Raw bytes, not a lossy `String`: the old construction pushed
+/// `String::from_utf8_lossy(contents)`, so two different binary payloads (and
+/// any non-UTF-8 source) hashed identically, and the lockfile could not detect
+/// a changed asset (audit A-13).
+fn hash_files(src_dir: &Path, files: &[PathBuf]) -> Result<String, String> {
+    let mut input: Vec<u8> = Vec::new();
+    for f in files {
+        let rel = f.strip_prefix(src_dir).unwrap_or(f);
+        input.extend_from_slice(rel.to_string_lossy().replace('\\', "/").as_bytes());
+        input.push(0);
+        let bytes = std::fs::read(f).map_err(|e| format!("cannot read {}: {}", f.display(), e))?;
+        input.extend_from_slice(&bytes);
+        input.push(0);
+    }
+    Ok(sha256_hex(&input))
+}
+
 /// SHA-256 over a package's `src/` tree using the exact construction the
 /// installer hashes vendored trees with (`path\0contents\0` per file, paths
-/// normalized to `/`). This is the hash `sha256.txt` must contain.
+/// normalized to `/`, raw bytes). This is the hash `sha256.txt` must contain.
 pub fn tree_hash(root: &Path) -> Result<String, String> {
     let src_dir = root.join("src");
     if !src_dir.is_dir() {
@@ -618,16 +659,7 @@ pub fn tree_hash(root: &Path) -> Result<String, String> {
     let mut files: Vec<PathBuf> = Vec::new();
     collect_files(&src_dir, &mut files)?;
     files.sort();
-    let mut hash_input = String::new();
-    for f in &files {
-        let rel = f.strip_prefix(&src_dir).unwrap_or(f).to_path_buf();
-        let bytes = std::fs::read(f).map_err(|e| format!("cannot read {}: {}", f.display(), e))?;
-        hash_input.push_str(&rel.to_string_lossy().replace('\\', "/"));
-        hash_input.push('\0');
-        hash_input.push_str(&String::from_utf8_lossy(&bytes));
-        hash_input.push('\0');
-    }
-    Ok(sha256_hex(hash_input.as_bytes()))
+    hash_files(&src_dir, &files)
 }
 
 /// `spid3r pack`: write `dist/<name>-<version>.tar` and return
@@ -736,108 +768,13 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<Vec<String>, String> {
 }
 
 // ------------------------------------------------------------------ sha256
+//
+// Implementation lives in `sha256.rs` because `build.rs` includes the same file
+// (a build script cannot depend on the crate it builds).
 
-const K: [u32; 64] = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-];
-
-/// SHA-256 of `data` as the raw 32-byte digest (FIPS 180-4). This is the
-/// primitive; the hex form used by `spider.lock` and the local registry is
-/// `sha256_bytes` plus a lowercase hex encode. The standard library exposes
-/// the same function to Spid3r programs as `sha256` / `hmac_sha256`, so the
-/// hashes a program computes are bit-identical to the ones the package layer
-/// verifies.
-pub fn sha256_bytes(data: &[u8]) -> [u8; 32] {
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-    let mut msg = data.to_vec();
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
-
-    for chunk in msg.as_chunks::<64>().0 {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let t1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
-        }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
-    }
-
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    out
-}
-
-/// Lowercase-hex encode of a byte slice.
-pub fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
-}
-
-/// SHA-256 of `data`, lowercase hex. Used for dependency content hashes in
-/// `spider.lock`.
-pub fn sha256_hex(data: &[u8]) -> String {
-    hex_encode(&sha256_bytes(data))
-}
+#[path = "sha256.rs"]
+mod sha256;
+pub use sha256::{hex_encode, sha256_bytes, sha256_hex};
 
 // ---------------------------------------------------------------- install
 
@@ -898,7 +835,6 @@ fn vendor_dep(root: &Path, name: &str, dep_dir: &Path) -> Result<(usize, String)
     collect_files(&src_dir, &mut files)?;
     files.sort();
 
-    let mut hash_input = String::new();
     for f in &files {
         let rel = f.strip_prefix(&src_dir).unwrap_or(f).to_path_buf();
         let target = dest.join(&rel);
@@ -909,13 +845,10 @@ fn vendor_dep(root: &Path, name: &str, dep_dir: &Path) -> Result<(usize, String)
         let bytes = std::fs::read(f).map_err(|e| format!("cannot read {}: {}", f.display(), e))?;
         std::fs::write(&target, &bytes)
             .map_err(|e| format!("cannot write {}: {}", target.display(), e))?;
-        // Deterministic hash input: relative path + NUL + contents + NUL.
-        hash_input.push_str(&rel.to_string_lossy().replace('\\', "/"));
-        hash_input.push('\0');
-        hash_input.push_str(&String::from_utf8_lossy(&bytes));
-        hash_input.push('\0');
     }
-    Ok((files.len(), sha256_hex(hash_input.as_bytes())))
+    // Deterministic hash input: relative path + NUL + raw contents + NUL.
+    let hash = hash_files(&src_dir, &files)?;
+    Ok((files.len(), hash))
 }
 
 /// Vendor a dependency and, for a registry package that ships a `sha256.txt`
@@ -945,12 +878,15 @@ fn vendor_dep_checked(
 /// Resolve a dependency's source to its on-disk directory, returning
 /// `(dep_dir, origin)` where `origin` is the string recorded in `spider.lock`.
 /// `base_dir` is what `path`/`git` deps resolve relative to (the project root,
-/// or a workspace member's directory).
+/// or a workspace member's directory). `locked` is the previous lockfile and
+/// `update` drops its git pins (re-resolve the upstream tip).
 fn resolve_source(
     root: &Path,
     base_dir: &Path,
     name: &str,
     source: &DepSource,
+    locked: &BTreeMap<String, String>,
+    update: bool,
 ) -> Result<(PathBuf, String), String> {
     match source {
         DepSource::Path(rel) => {
@@ -961,7 +897,12 @@ fn resolve_source(
             Ok((dir, format!("path+{}", rel)))
         }
         DepSource::Git { url, rev } => {
-            let (dir, commit) = fetch_git(root, name, url, rev.as_deref())?;
+            let pin = if update {
+                None
+            } else {
+                locked_commit(locked, name, url)
+            };
+            let (dir, commit) = fetch_git(root, name, url, rev.as_deref(), pin.as_deref())?;
             Ok((dir, format!("git+{}#{}", url, commit)))
         }
         DepSource::Registry { version, registry } => {
@@ -1036,35 +977,179 @@ fn resolve_registry(name: &str, version: &str, registry: Option<&str>) -> Result
     }
 }
 
-fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?;
-    for e in entries {
-        let p = e.map_err(|e| format!("cannot read {}: {}", dir.display(), e))?.path();
-        if p.is_dir() {
-            collect_files(&p, out)?;
-        } else if p.extension().map(|x| x == "matrix").unwrap_or(false) {
-            out.push(p);
+/// Allowed git transports for a manifest-controlled URL (audit A-5).
+///
+/// `git clone` treats some URLs as *commands*: `ext::<cmd>` runs `<cmd>` through
+/// the shell (the CVE-2022-25912 class), and a leading `-` can smuggle options
+/// such as `--upload-pack=<cmd>`. A dependency URL is attacker-controlled input
+/// (it arrives with a cloned repository), so only real network transports are
+/// accepted by default:
+///
+/// * `https://` and `ssh://` — authenticated, integrity-protected
+/// * scp-like `user@host:path` — the usual git-over-ssh form
+///
+/// Opt-in escapes, for local development only:
+/// * `SPID3R_ALLOW_LOCAL_GIT_DEPS=1` — bare paths and `file://` URLs
+/// * `SPID3R_ALLOW_INSECURE_GIT=1` — `http://` and `git://` (no integrity)
+///
+/// `ext::` is rejected **unconditionally**, including under those variables:
+/// no legitimate package URL runs a shell command, and the opt-in would have to
+/// be set by the very developer who is about to clone the hostile manifest.
+pub fn validate_git_url(name: &str, url: &str) -> Result<(), String> {
+    let reject = |why: &str| {
+        Err(format!(
+            "git dependency '{}': {} ('{}'). Allowed: https:// and ssh:// (scp-like \
+             user@host:path); local paths need SPID3R_ALLOW_LOCAL_GIT_DEPS=1, plain \
+             http/git need SPID3R_ALLOW_INSECURE_GIT=1",
+            name, why, url
+        ))
+    };
+    if url.is_empty() {
+        return reject("empty url");
+    }
+    if url.starts_with('-') {
+        return reject("url may not start with '-'");
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return reject("url contains whitespace or control characters");
+    }
+    let lower = url.to_ascii_lowercase();
+    // git's "external command" transport. Only a *leading* `ext::` is a
+    // transport prefix — `https://host/ext::x` is an ordinary https URL, and
+    // IPv6 literals (`https://[::1]/repo`) legitimately contain `::`.
+    if lower.starts_with("ext::") {
+        return Err(format!(
+            "git dependency '{}': refusing the ext:: transport, which runs an arbitrary \
+             command during install ('{}')",
+            name, url
+        ));
+    }
+    if lower.starts_with("https://") {
+        return Ok(());
+    }
+    if lower.starts_with("ssh://") {
+        // A host beginning with '-' would be read by OpenSSH as an option
+        // (CVE-2017-1000117 class), so it is not a host at all.
+        let authority = url.get(6..).unwrap_or("").split('/').next().unwrap_or("");
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        if host.starts_with('-') || host.is_empty() {
+            return reject("ssh host is missing or starts with '-'");
+        }
+        return Ok(());
+    }
+    if lower.starts_with("http://") || lower.starts_with("git://") {
+        return if env_flag("SPID3R_ALLOW_INSECURE_GIT") {
+            Ok(())
+        } else {
+            reject("plaintext transport has no integrity protection")
+        };
+    }
+    if lower.starts_with("file://") {
+        return if env_flag("SPID3R_ALLOW_LOCAL_GIT_DEPS") {
+            Ok(())
+        } else {
+            reject("file:// reads the local filesystem")
+        };
+    }
+    if lower.contains("://") {
+        return reject("unsupported url scheme");
+    }
+    // Windows drive path (C:\repo or C:/repo) is a local path, not scp syntax.
+    let bytes = url.as_bytes();
+    let is_drive = bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic();
+    let is_scp_like = !is_drive
+        && url
+            .split_once(':')
+            .map(|(host, path)| {
+                !host.is_empty()
+                    && !host.contains('/')
+                    && !host.contains('\\')
+                    && !path.is_empty()
+                    // `user@-host:path` would hand OpenSSH an option.
+                    && !host.rsplit('@').next().unwrap_or(host).starts_with('-')
+            })
+            .unwrap_or(false);
+    if is_scp_like {
+        return Ok(());
+    }
+    // Anything left is a bare local path (absolute, relative, or drive letter).
+    if env_flag("SPID3R_ALLOW_LOCAL_GIT_DEPS") {
+        Ok(())
+    } else {
+        reject("local path")
+    }
+}
+
+/// Is the named opt-in environment variable set to an affirmative value?
+fn env_flag(key: &str) -> bool {
+    matches!(
+        std::env::var(key)
+            .map(|v| v.trim().to_ascii_lowercase())
+            .ok()
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+/// The commit a previous install recorded for `name`, when the manifest still
+/// points at the same URL. `spider.lock` is the reproducibility contract: a
+/// re-install must reproduce the locked tree instead of tracking a moving
+/// branch or tag (audit A-13).
+fn locked_commit(
+    locked: &BTreeMap<String, String>,
+    name: &str,
+    url: &str,
+) -> Option<String> {
+    let source = locked.get(name)?;
+    let rest = source.strip_prefix("git+")?;
+    let (locked_url, commit) = rest.rsplit_once('#')?;
+    if locked_url != url {
+        return None;
+    }
+    let commit = commit.trim();
+    let ok = commit.len() == 40 && commit.chars().all(|c| c.is_ascii_hexdigit());
+    ok.then(|| commit.to_ascii_lowercase())
+}
+
+/// Parse the `[[package]]` blocks of `spider.lock` into `name -> source`.
+fn read_locked_sources(root: &Path) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Ok(text) = std::fs::read_to_string(root.join("spider.lock")) else {
+        return out;
+    };
+    let mut name: Option<String> = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            name = None;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name = ") {
+            name = Some(rest.trim().trim_matches('"').to_string());
+        } else if let Some(rest) = line.strip_prefix("source = ") {
+            if let Some(n) = name.take() {
+                out.insert(n, rest.trim().trim_matches('"').to_string());
+            }
         }
     }
-    Ok(())
+    out
 }
 
 /// Clone (or update) a git dependency into `.spid3r/git/<name>` and return
-/// (checkout dir, full commit hash). The commit is recorded in the lockfile so
-/// later installs are reproducible; the checkout is refreshed on every run so
-/// a moving branch still tracks its tip.
+/// (checkout dir, full commit hash).
+///
+/// The URL must pass [`validate_git_url`]. When `locked` holds a commit, that
+/// exact commit is checked out (and verified) so a re-install reproduces the
+/// tree recorded in `spider.lock`; `--update` drops the pin and re-resolves.
 fn fetch_git(
     root: &Path,
     name: &str,
     url: &str,
     rev: Option<&str>,
+    locked: Option<&str>,
 ) -> Result<(PathBuf, String), String> {
     valid_pkg_name(name)?;
-    // git parses a leading `-` as an option: a manifest-controlled url/rev
-    // must never be able to smuggle flags (e.g. --upload-pack=<cmd>).
-    if url.starts_with('-') {
-        return Err(format!("git dependency '{}': url may not start with '-'", name));
-    }
+    validate_git_url(name, url)?;
     if let Some(r) = rev {
         let safe = !r.is_empty()
             && !r.starts_with('-')
@@ -1087,18 +1172,61 @@ fn fetch_git(
         }
         run_git(&["clone", "--quiet", "--", url, &path_str(&dir)])?;
     }
-    if let Some(rev) = rev {
+    if let Some(commit) = locked {
+        run_git(&["-C", &path_str(&dir), "checkout", "--quiet", commit]).map_err(|e| {
+            format!(
+                "git dependency '{}': the commit {} recorded in spider.lock is not \
+                 available ({}). If upstream rewrote its history, run \
+                 `spid3r install --update` to re-resolve it.",
+                name, commit, e
+            )
+        })?;
+    } else if let Some(rev) = rev {
         run_git(&["-C", &path_str(&dir), "checkout", "--quiet", rev])?;
-    } else if dir.join(".git").is_dir() {
-        // Default branch tip (the clone already has it; a refresh needs a pull).
-        let _ = run_git(&["-C", &path_str(&dir), "pull", "--quiet", "--ff-only"]);
+    } else {
+        // Default-branch tip. A previous pinned install left HEAD detached at
+        // the locked commit, so a bare `pull` would stay there: move to the
+        // fetched remote tip explicitly (`install --update` and first installs
+        // both take this path).
+        let target = remote_default_branch(&dir)
+            .map(|b| format!("origin/{}", b))
+            .unwrap_or_else(|| "origin/HEAD".to_string());
+        if run_git(&["-C", &path_str(&dir), "checkout", "--quiet", "--detach", &target]).is_err() {
+            // Very old/odd clone: fall back to a fast-forward pull.
+            let _ = run_git(&["-C", &path_str(&dir), "pull", "--quiet", "--ff-only"]);
+        }
     }
     let out = run_git(&["-C", &path_str(&dir), "rev-parse", "HEAD"])?;
-    Ok((dir, out.trim().to_string()))
+    let head = out.trim().to_ascii_lowercase();
+    if let Some(commit) = locked {
+        if head != commit {
+            return Err(format!(
+                "git dependency '{}': checked out {} but spider.lock pins {}; refusing to \
+                 vendor a different tree (run `spid3r install --update` to re-resolve)",
+                name, head, commit
+            ));
+        }
+    }
+    Ok((dir, head))
 }
 
 fn path_str(p: &Path) -> String {
     p.to_string_lossy().to_string()
+}
+
+/// The remote's default branch name (`main`, `master`, ...), from
+/// `refs/remotes/origin/HEAD`.
+fn remote_default_branch(dir: &Path) -> Option<String> {
+    let out = run_git(&[
+        "-C",
+        &path_str(dir),
+        "symbolic-ref",
+        "--short",
+        "refs/remotes/origin/HEAD",
+    ])
+    .ok()?;
+    let name = out.trim().strip_prefix("origin/")?.trim().to_string();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Run `git <args>`; on failure include git's stderr in the message.
@@ -1122,7 +1250,12 @@ fn run_git(args: &[&str]) -> Result<String, String> {
 /// the workspace root, with one lockfile. Dependencies resolve relative to the
 /// member that declares them. Two members vendoring the same dependency name
 /// from different sources is an error.
-fn install_workspace(root: &Path, manifest: &Manifest) -> Result<InstallReport, String> {
+fn install_workspace(
+    root: &Path,
+    manifest: &Manifest,
+    update: bool,
+) -> Result<InstallReport, String> {
+    let locked = read_locked_sources(root);
     let mut report = InstallReport::default();
     let mut lock = String::from("# generated by spid3r install; do not edit\n");
     lock.push_str("# workspace\n");
@@ -1173,7 +1306,8 @@ fn install_workspace(root: &Path, manifest: &Manifest) -> Result<InstallReport, 
                 ));
             }
 
-            let (dep_dir, origin) = resolve_source(root, &item.base_dir, name, &item.dep.source)?;
+            let (dep_dir, origin) =
+                resolve_source(root, &item.base_dir, name, &item.dep.source, &locked, update)?;
 
             if let Some((prev_origin, prev_version)) = seen.get(name) {
                 if prev_origin != &origin {
@@ -1257,6 +1391,13 @@ fn install_workspace(root: &Path, manifest: &Manifest) -> Result<InstallReport, 
 
 /// Resolve and vendor every dependency, then write `spider.lock`.
 pub fn install(root: &Path) -> Result<InstallReport, String> {
+    install_with(root, false)
+}
+
+/// `spid3r install`: resolve and vendor every dependency, then write
+/// `spider.lock`. `update` ignores the commits recorded there and re-resolves
+/// git dependencies to their current `rev`/default-branch tip.
+pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> {
     let Some(manifest) = Manifest::load(root)? else {
         return Err(format!(
             "no spider.toml in {} — run `spid3r init` first",
@@ -1264,8 +1405,9 @@ pub fn install(root: &Path) -> Result<InstallReport, String> {
         ));
     };
     if !manifest.members.is_empty() {
-        return install_workspace(root, &manifest);
+        return install_workspace(root, &manifest, update);
     }
+    let locked = read_locked_sources(root);
     let mut report = InstallReport::default();
     let mut lock = String::from("# generated by spid3r install; do not edit\n");
     lock.push_str(&format!("# package {} {}\n", manifest.name(), manifest.version()));
@@ -1298,7 +1440,8 @@ pub fn install(root: &Path) -> Result<InstallReport, String> {
             ));
         }
 
-        let (dep_dir, origin) = resolve_source(root, &item.base_dir, name, &item.dep.source)?;
+        let (dep_dir, origin) =
+            resolve_source(root, &item.base_dir, name, &item.dep.source, &locked, update)?;
 
         if let Some((prev_origin, prev_version)) = seen.get(name) {
             if prev_origin != &origin {

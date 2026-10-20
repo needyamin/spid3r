@@ -106,13 +106,24 @@ prototypes and embedded module chunks) recursively and rejects:
 - truncated instructions (operand bytes running past the end of `code`),
 - constant/function/class pool references out of range,
 - negative or out-of-bounds jump targets and targets that do not land on an
-  instruction boundary.
+  instruction boundary (checked with a binary search over the instruction
+  starts, so validation stays `O(n log n)` — a 10 MB file with many jumps used to
+  take ~10¹³ comparisons),
+- an empty code section, or a chunk whose last instruction can fall through
+  (`return`, `throw`, or `jump` is required) — the VM advances `ip` past the end
+  of a fall-through chunk,
+- instruction metadata that does not line up with the code:
+  `inst_offsets.len() != inst_spans.len()`, non-increasing offsets, or an offset
+  past the code section. `span_at` indexes through `inst_spans` with `get`, so a
+  crafted file cannot panic the host even if validation were skipped.
 
 Additionally, `deserialize_vmfunc` validates every serialized item count against
-the remaining byte slice before allocating vectors, preventing out-of-memory
-allocation aborts on crafted `.matrixc` headers. The opcode decoder itself is a
-safe `OpCode::from_u8` table (no `mem::transmute`), and every pool read / jump
-target is bounds-checked at run time as well.
+the remaining byte slice before allocating vectors, caps function/module nesting
+at `MAX_DESERIALIZE_DEPTH` (128 — the parser's own limit is 96), and rejects
+**trailing bytes** after the last structure. The opcode decoder itself is a safe
+`OpCode::from_u8` table (no `mem::transmute`), the VM's instruction fetch is
+bounds-checked (`ip` outside the code section is a clean VM error, not an index
+panic), and every pool read / jump target is bounds-checked at run time as well.
 
 ## Concurrency model
 

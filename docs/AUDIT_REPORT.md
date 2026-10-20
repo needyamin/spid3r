@@ -200,15 +200,32 @@ Known-remaining (documented, not fixed here): field type annotations are not enf
 
 Stage-2 (2026-10-20) closed three items from that list — see
 `assessment/AUDIT_2026-10-20.md` §6 and the concurrency contract in
-`sitemap.txt` §12: the automatic collector's `live_tasks()==0` gate is now
-mirrored by `gc_collect()` (audit A-4); `join()`/`recv`/mutex waits no longer
-starve the pool because it grows on demand up to `MAX_WORKERS` (A-3); and
-program exit drains outstanding tasks (bounded by `SPID3R_TASK_DRAIN_MS`)
-instead of killing workers mid-flight (A-3). Structured thrown values also
-cross task/callback seams on both engines and the AOT backend (A-9), and the
-remaining self-referential container methods no longer re-lock the receiver
-(A-7). Regressions: `tests/stage2_concurrency.rs` (process-level watchdog
-tests, both engines) + `tests/native_tests.rs::native_matches_tree_on_structured_task_errors`.
+`sitemap.txt` §12: the automatic collector's quiescence gate is now mirrored by
+`gc_collect()` (audit A-4); `join()`/`recv`/mutex waits no longer starve the
+pool because it grows on demand (A-3); and program exit drains outstanding tasks
+(bounded by `SPID3R_TASK_DRAIN_MS`) instead of killing workers mid-flight (A-3).
+Structured thrown values also cross task/callback seams on both engines and the
+AOT backend (A-9), and the remaining self-referential container methods no longer
+re-lock the receiver (A-7). The 2026-10-21 limits round then bounded the ready
+queue with producer backpressure, added a stall watchdog at the worker ceiling,
+made `shutdown()` join the worker threads at exit (CLI + AOT), replaced the
+blanket "no live tasks" GC gate with the precise "no other *running* thread"
+gate, and made concurrent `set`/`bag` adds commit through a verified snapshot.
+Regressions: `tests/stage2_concurrency.rs` (process-level watchdog tests, both
+engines), `tests/sched_limits.rs` (isolated pools), the CAS unit tests in
+`src/value/collections/seq.rs`, and
+`tests/native_tests.rs::native_matches_tree_on_structured_task_errors`.
+
+Stage-3 (2026-10-21) then hardened the artifact and dependency paths — see
+`audit_notes/stage3_artifact_hardening.md`: `spid3r install` no longer accepts
+git's `ext::` command transport (only https/ssh/scp by default, A-5), the
+lockfile's git commits are enforced on re-install (`install --update` to move)
+and vendor hashes now cover every file under `src/` as raw bytes (A-13); a
+crafted `.matrixc` is rejected by the validator instead of panicking the VM
+(terminator rule, instruction-table consistency, trailing bytes, nesting depth,
+linear-time jump checks, bounds-checked `ip`, A-8); and the installer's WebView2
+bootstrapper is an opt-in, SHA-256-verified download that fails closed, so a
+plain `cargo build --release` performs no network access (A-11).
 
 ---
 

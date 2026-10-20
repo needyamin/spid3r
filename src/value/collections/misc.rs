@@ -2589,6 +2589,17 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
 
 // ------------------------------------------------------- detached operations
 
+/// Did the bag keep exactly the entries `snapshot` had, with the same counts?
+/// Identity/scalar comparison only — never locks a value, so it is safe under
+/// the bag's mutex (see [`crate::value::same_slot`]).
+fn bag_counts_unchanged(cur: &[(Value, usize)], snapshot: &[(Value, usize)]) -> bool {
+    cur.len() == snapshot.len()
+        && cur
+            .iter()
+            .zip(snapshot)
+            .all(|((a, n), (b, m))| n == m && crate::value::same_slot(a, b))
+}
+
 /// Detached bag operations (audit A-7): `add`/`remove`/`count_of`/`contains`
 /// compare item values with values_equal, and an item can be (or reach) the
 /// bag itself — running them under the receiver's Mutex would re-lock it and
@@ -2604,18 +2615,29 @@ pub fn bag_detached(
     match name {
         "push" | "add" => {
             want(name, args, 1)?;
-            match counts.iter().position(|(v, _)| values_equal(v, &args[0])) {
-                Some(i) => {
-                    let mut g = d.lock().unwrap();
-                    if i < g.counts.len() {
+            let pos = counts.iter().position(|(v, _)| values_equal(v, &args[0]));
+            let mut g = d.lock().unwrap();
+            match pos {
+                // Existing entry: only *that* entry has to be unchanged, so
+                // concurrent adds of other values do not force a retry.
+                Some(i) => match g.counts.get(i) {
+                    Some((cur, n))
+                        if *n == counts[i].1 && crate::value::same_slot(cur, &counts[i].0) =>
+                    {
                         g.counts[i].1 += 1;
-                    } else {
-                        g.counts.push((args[0].clone(), 1));
+                        Ok(Value::Null)
                     }
-                    Ok(Value::Null)
-                }
+                    // The entry moved, vanished, or was re-counted underneath
+                    // us: retry on a fresh snapshot (audit A-7).
+                    Some(_) | None => Err(super::seq::CONFLICT.to_string()),
+                },
+                // New entry: the snapshot said "absent", so verify the whole
+                // entry list is still what we searched before inserting.
                 None => {
-                    d.lock().unwrap().counts.push((args[0].clone(), 1));
+                    if !bag_counts_unchanged(&g.counts, &counts) {
+                        return Err(super::seq::CONFLICT.to_string());
+                    }
+                    g.counts.push((args[0].clone(), 1));
                     Ok(Value::Null)
                 }
             }
@@ -2638,7 +2660,10 @@ pub fn bag_detached(
                             }
                             Ok(Value::Null)
                         }
-                        _ => Err("item not in bag".to_string()),
+                        // A concurrent mutation moved or emptied the entry:
+                        // let the dispatcher retry on a fresh snapshot.
+                        Some(_) => Err(super::seq::CONFLICT.to_string()),
+                        None => Err("item not in bag".to_string()),
                     }
                 }
                 None => Err("item not in bag".to_string()),

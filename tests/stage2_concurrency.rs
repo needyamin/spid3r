@@ -486,33 +486,87 @@ fn main() {
 
 // --------------------------------------------------------------------- A-4
 
-/// `gc_collect()` must refuse to sweep while tasks are live (the automatic
-/// collector is already gated on `live_tasks() == 0`). Before the fix it swept
-/// concurrently and could clear containers a task still held.
+/// The GC gate is *precise*, not a blanket "no tasks" rule: a collection is
+/// refused only while another thread is actually executing Spid3r code, because
+/// that is when it could move a value between the strong-count read and the mark
+/// phase. A task parked in `recv`/`sleep`/`join`/`mutex` cannot mutate anything,
+/// so it must not block the collector (it holds its values on its own stack, and
+/// those are external references the sweep treats as roots).
 #[test]
-fn gc_collect_refuses_while_tasks_are_live() {
+fn gc_collect_runs_while_tasks_are_parked_and_refuses_while_they_run() {
+    let src = r#"
+async fn wait(t) {
+    return await t;
+}
+fn main() {
+    // 1. A task parked in recv: collecting is safe.
+    let ch = channel();
+    let blocked = spawn fn() {
+        ch.recv();
+        return 1;
+    };
+    sleep_ms(150);
+    try {
+        println(gc_collect() >= 0);
+    } catch(e) {
+        println("refused-while-parked");
+    }
+    ch.send(1);
+    let v = wait(blocked);
+
+    // 2. A task actively running: collecting would race it. The task stays
+    //    busy on the clock, not on an iteration count, so this holds in debug
+    //    and release builds alike.
+    let busy = spawn fn() {
+        let t0 = now();
+        while (now() - t0 < 1500) {
+        }
+        return 1;
+    };
+    sleep_ms(100);
+    try {
+        gc_collect();
+        println("swept-while-running");
+    } catch(e) {
+        println("refused-while-running");
+        println(e.contains("gc_collect"));
+    }
+    let w = wait(busy);
+
+    // 3. Nothing running: collecting works again.
+    println(gc_collect() >= 0);
+    return 0;
+}
+"#;
+    assert_both_engines(
+        "gc gate",
+        src,
+        &["true", "refused-while-running", "true", "true"],
+    );
+}
+
+/// A task must be able to collect while every other thread is parked: the old
+/// rule (`live_tasks() == 0`) made `gc_collect()` fail inside every task, even
+/// when it was the only thread running.
+#[test]
+fn a_task_can_collect_when_no_other_thread_is_running() {
     let src = r#"
 async fn wait(t) {
     return await t;
 }
 fn main() {
     let t = spawn fn() {
-        sleep_ms(400);
-        return 1;
+        let i = 0;
+        while (i < 100) {
+            i = i + 1;
+        }
+        return gc_collect() >= 0;
     };
-    try {
-        gc_collect();
-        println("swept-while-live");
-    } catch(e) {
-        println("refused");
-        println(e.contains("gc_collect"));
-    }
-    let v = wait(t);
-    println(gc_collect() >= 0);
+    println(wait(t));
     return 0;
 }
 "#;
-    assert_both_engines("gc gate", src, &["refused", "true", "true"]);
+    assert_both_engines("gc from task", src, &["true"]);
 }
 
 // --------------------------------------------------------------------- A-9
@@ -662,5 +716,143 @@ fn main() {
 
     for (name, src, expected) in cases {
         assert_both_engines(name, src, expected);
+    }
+}
+
+// ------------------------------------------------ scheduler limits (A-3/A-7)
+
+/// The ready queue is bounded: a spawn storm is paced by backpressure instead of
+/// growing memory without limit, and every task still runs exactly once. The cap
+/// is lowered through the environment so the pressure is real, not theoretical.
+#[test]
+fn bounded_queue_paces_a_spawn_storm_without_losing_work() {
+    let src = r#"
+async fn joiner(t) {
+    return await t;
+}
+fn main() {
+    let ts = list();
+    let i = 0;
+    while (i < 400) {
+        ts.push(spawn fn() {
+            return 1;
+        });
+        i = i + 1;
+    }
+    let sum = 0;
+    let j = 0;
+    while (j < 400) {
+        sum = sum + joiner(ts[j]);
+        j = j + 1;
+    }
+    println(sum);
+    return 0;
+}
+"#;
+    for engine in ["tree", "vm"] {
+        let out = run_with(src, engine, DEFAULT_TIMEOUT, &[("SPID3R_QUEUE_CAP", "4")]);
+        assert!(!out.timed_out, "[{}] bounded queue deadlocked", engine);
+        assert_eq!(out.code, Some(0), "[{}] stderr: {}", engine, out.stderr);
+        assert_eq!(out.stdout_lines(), vec!["400"], "[{}]", engine);
+    }
+}
+
+/// Concurrent `set.add` of the same value must leave one element: the
+/// snapshot-then-commit is a verified compare-and-swap, so two tasks cannot both
+/// observe "absent" and push duplicates.
+#[test]
+fn concurrent_set_adds_do_not_duplicate() {
+    let src = r#"
+fn main() {
+    let s = set();
+    let i = 0;
+    while (i < 8) {
+        spawn fn() {
+            let j = 0;
+            while (j < 200) {
+                s.add("x");
+                j = j + 1;
+            }
+        };
+        i = i + 1;
+    }
+    sleep_ms(800);
+    println(s.len());
+    return 0;
+}
+"#;
+    assert_both_engines("set add race", src, &["1"]);
+}
+
+/// Concurrent `bag.add` of the same value must count every add exactly once:
+/// the per-entry commit is verified against the snapshot, so no add is lost and
+/// no duplicate entry is created.
+#[test]
+fn concurrent_bag_adds_keep_an_exact_count() {
+    let src = r#"
+fn main() {
+    let b = bag();
+    let i = 0;
+    while (i < 4) {
+        spawn fn() {
+            let j = 0;
+            while (j < 50) {
+                b.add("x");
+                j = j + 1;
+            }
+        };
+        i = i + 1;
+    }
+    sleep_ms(800);
+    println(b.count_of("x"));
+    println(b.len());
+    return 0;
+}
+"#;
+    assert_both_engines("bag add race", src, &["200", "200"]);
+}
+
+/// At the worker ceiling, queued work whose workers are all parked can never
+/// run. Instead of hanging silently the watchdog reports it on stderr with an
+/// actionable message; the program still completes once the tasks are released.
+#[test]
+fn a_stalled_pool_is_reported_instead_of_hanging_silently() {
+    let src = r#"
+fn main() {
+    let ch = channel();
+    let i = 0;
+    while (i < 3) {
+        spawn fn() {
+            ch.recv();
+        };
+        i = i + 1;
+    }
+    sleep_ms(4200);
+    let j = 0;
+    while (j < 3) {
+        ch.send(0);
+        j = j + 1;
+    }
+    println("released");
+    return 0;
+}
+"#;
+    for engine in ["tree", "vm"] {
+        let out = run_with(src, engine, DEFAULT_TIMEOUT, &[("SPID3R_MAX_WORKERS", "2")]);
+        assert!(!out.timed_out, "[{}] stall test timed out", engine);
+        assert_eq!(out.code, Some(0), "[{}] stderr: {}", engine, out.stderr);
+        assert_eq!(out.stdout_lines(), vec!["released"], "[{}]", engine);
+        assert!(
+            out.stderr.contains("queued but all"),
+            "[{}] expected a stall warning, got {:?}",
+            engine,
+            out.stderr
+        );
+        assert!(
+            out.stderr.contains("SPID3R_MAX_WORKERS"),
+            "[{}] the stall warning must say how to fix it, got {:?}",
+            engine,
+            out.stderr
+        );
     }
 }

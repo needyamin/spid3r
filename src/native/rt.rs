@@ -980,6 +980,8 @@ pub extern "C" fn spid3r_rt_start(entry: extern "C" fn() -> *mut Value) -> i32 {
 /// uncaught throw from `main` leaves the pending flag set, which is reported
 /// here like the tree/VM top level before returning a non-zero exit code.
 fn run_program(entry: extern "C" fn() -> *mut Value) -> i32 {
+    // Count this thread as executing Spid3r code (see `sched::gc_quiescent`).
+    let _active = crate::sched::enter_active();
     entry();
     let main = {
         let g = globals().lock().unwrap();
@@ -1015,6 +1017,9 @@ fn run_program(entry: extern "C" fn() -> *mut Value) -> i32 {
     // `main` left running so their output is not lost when the process exits.
     // (`join_tasks_at_exit` prints its own warning when the deadline expires.)
     let _ = crate::sched::join_tasks_at_exit();
+    // Deterministic teardown, like the CLI: stop the pool and join the workers
+    // instead of letting process exit kill them mid-write.
+    crate::sched::shutdown();
     // This is a C-style `main`: Rust's stdout flush-on-exit never runs, so
     // flush explicitly before handing the exit code back.
     let _ = std::io::stdout().flush();

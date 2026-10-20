@@ -6,9 +6,9 @@
 > `hash_table`, `trie`, `matrix`, `ring_buffer`, `bag`, `ref`, `option`/`result`,
 > and class instances) are tracked and cycle-collected automatically through
 > `value::new_ref`. `gc_collect()` / `gc_live_cells()` are builtins on both
-> engines; `gc_collect()` refuses to run while spawned tasks are live (audit
-> A-4); automatic collection at statement boundaries is **on by default**
-> (`SPID3R_GC=0` disables it).
+> engines; `gc_collect()` refuses to run only while another thread is executing
+> Spid3r code (audit A-4); automatic collection at statement boundaries is **on
+> by default** (`SPID3R_GC=0` disables it).
 
 ## The problem
 
@@ -127,12 +127,18 @@ automatically inside `value::new_ref`, plus `Option`/`Result` inline box
 peeling and `ListData` drop-time node-cycle breaking). Builtins `gc_collect()` /
 `gc_live_cells()` work on both engines. Auto-collection at interpreter statement
 boundaries is **on by default** (`SPID3R_GC=0` disables it), throttled every 4096
-statements and skipped while the scheduler has live tasks. **`gc_collect()` is
-gated the same way**: while any spawned task is running it fails with a clean
-`gc_collect: tasks are still running; join them (or let them finish) before
-collecting` error instead of sweeping cells a task may be mutating (audit A-4).
-A safety valve prunes dead and duplicate handles so the registry stays bounded
-even where collection never runs (the native runtime).
+statements and skipped while another thread is running Spid3r code.
+**`gc_collect()` uses the same precise gate**: a mark-sweep reads each cell's
+strong count and then walks its children, so it is race-free exactly when no
+*other* thread is executing (`sched::gc_quiescent`, which counts threads that are
+not parked in `recv`/`join`/`mutex.lock`/`sleep`). Tasks parked in a blocking
+wait hold their values on their own stacks — those are external references, i.e.
+roots — so they do not block a collection and do not get swept. While another
+thread *is* running, `gc_collect()` fails with a clean
+`gc_collect: N other thread(s) are running; join or finish them before
+collecting` error instead of corrupting memory (audit A-4). A safety valve prunes
+dead and duplicate handles so the registry stays bounded even where collection
+never runs (the native runtime).
 
 Verified: all 23 examples produce byte-identical output with the collector on vs
 off (it never frees live data); `tests/cycle_tests.rs` proves cycles across all

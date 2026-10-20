@@ -230,6 +230,9 @@ impl Interp {
     }
 
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
+        // Count this thread as executing Spid3r code: the GC gate allows a
+        // collection only when the caller is the only active thread (audit A-4).
+        let _active = crate::sched::enter_active();
         let env = self.globals.clone();
         for stmt in &program.stmts {
             match self.exec_stmt(stmt, &env) {

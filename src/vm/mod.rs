@@ -263,6 +263,9 @@ impl Vm {
     /// Run a script function that has already been compiled (e.g. loaded from a
     /// `.matrixc` file by `exec`). Mirrors the tail of `run_program`.
     pub fn run_compiled(&mut self, script: Arc<VmFunc>) -> Result<i32, Diagnostic> {
+        // Count this thread as executing Spid3r code: the GC gate allows a
+        // collection only when the caller is the only active thread (audit A-4).
+        let _active = crate::sched::enter_active();
         // Populate the embedded-module table so `import` inside the program can
         // resolve from the self-contained `.matrixc` without re-reading source.
         {
@@ -436,7 +439,21 @@ impl Vm {
             }
             let ip = self.frames[nf].ip;
             self.frames[nf].inst_ip = ip;
-            let b = self.frames[nf].func.chunk.code[ip];
+            // Bounds-checked fetch (audit A-8): `validate_chunk` rejects chunks
+            // that can fall off the end, but a corrupt `.matrixc` (or a future
+            // opcode whose length changes) must still fail as a clean VM error
+            // instead of panicking the host on `code[ip]`.
+            let b = match self.frames[nf].func.chunk.code.get(ip) {
+                Some(&b) => b,
+                None => {
+                    let len = self.frames[nf].func.chunk.code.len();
+                    self.fail(format!(
+                        "instruction pointer {} is outside the code section ({} bytes)",
+                        ip, len
+                    ));
+                    continue;
+                }
+            };
             let op: OpCode = match OpCode::from_u8(b) {
                 Some(o) => o,
                 None => {

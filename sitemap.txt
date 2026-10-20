@@ -24,10 +24,11 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 464 Rust tests green (449 core incl. 2 doc-tests + 10 GUI + 5 AOT;
+State: 496 Rust tests green (481 core incl. 2 doc-tests + 10 GUI + 5 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
-completed 2026-10-20, Stage-2 concurrency round 2026-10-20),
+completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
+round 2026-10-21),
 25/25 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
 
@@ -39,7 +40,13 @@ GaliLang/
                       (REQUIRED: OneDrive corrupts cargo's incremental cache)
   Cargo.lock          committed (binary application)
   build.rs            links LLVM C API only when feature "native" is on; stages
-                      and builds Windows installer in release mode
+                      and builds Windows installer in release mode (nested
+                      release build; SPID3R_NO_INSTALLER=1 skips it). The
+                      WebView2 bootstrapper is OPT-IN (SPID3R_FETCH_WEBVIEW2=1)
+                      and checksum-verified via build_support/webview2.rs, so a
+                      plain release build performs no network access (A-11).
+                      `#[path]`-includes build_support/webview2.rs and
+                      src/pkg/sha256.rs (one SHA-256 implementation for both).
   .github/workflows/ci.yml  GitHub Actions CI matrix (Windows/Linux/macOS, core + GUI)
   README.md           human-facing overview
   doc.html            self-contained developer documentation, 26 sections
@@ -54,6 +61,9 @@ GaliLang/
   demo_apps/          web & native calculator demo applications (shipped in Windows installer)
   benchmarks/         .matrix benchmarks for `spid3r bench`
   docs/               deep-dive .md documents + AUDIT_REPORT.md (see [9])
+  build_support/      webview2.rs: the installer's WebView2 fetch policy
+                      (opt-in + SHA-256 + fail closed), `#[path]`-included by
+                      build.rs and by tests/artifact_hardening.rs
   tools/              gate.sh (full CI gate), difftest.sh (3-engine diff),
                       native_diff.sh (AOT vs interpreter)
   packaging/nsis/     Windows installer (see [10])
@@ -63,7 +73,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 464 tests (449 with --no-default-features + 15 gui/aot), must stay green
+  cargo test                  FULL suite, 496 tests (481 with --no-default-features + 15 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -75,7 +85,7 @@ GaliLang/
   .\target\debug\spid3r.exe fmt [--check] [files...]
   .\target\debug\spid3r.exe bench [--engine tree|vm] [--runs N] [--compare]
   .\target\debug\spid3r.exe debug <f> [--break L[,L..]] [--commands FILE]
-  .\target\debug\spid3r.exe init [dir] | install | dist | pack | unpack
+  .\target\debug\spid3r.exe init [dir] | install [--update] | dist | pack | unpack
   .\target\debug\spid3r.exe repl | version | help
   Exit codes: 0 ok, 1 user-program error, 2 usage error.
   NOTE: the exec-tool shell has a MINIMAL environment (e.g. $env:LOCALAPPDATA
@@ -160,15 +170,20 @@ GaliLang/
                        detection prints the chain); public_names_of() for the
                        semantic pass; default_module_dirs(): importer dir,
                        SPID3R_PATH, vendor/ walk-up, ./stdlib
-  sched/mod.rs         Scheduler (OS thread pool, OnceLock singleton, grow on
-                       demand up to MAX_WORKERS=256 so blocked tasks never
-                       starve queued work; grown workers retire after 10 s idle),
-                       TaskHandle {is_done, status()->"running"/"done"/"failed",
-                       join() (repeatable, clone not take), thrown_value()},
-                       TaskOutcome{result, thrown} (structured errors across the
-                       task boundary), join_tasks_at_exit() (program exit waits
-                       up to SPID3R_TASK_DRAIN_MS, default 2000, then warns),
-                       channel data
+  sched/mod.rs         Scheduler (OS thread pool, OnceLock singleton that
+                       restarts after shutdown). Grow-on-demand workers
+                       (SPID3R_MAX_WORKERS, default 256) with retire-after-idle;
+                       BOUNDED ready queue (SPID3R_QUEUE_CAP, default 65536) with
+                       producer backpressure; stall watchdog (warns on stderr
+                       when queued work cannot run at the ceiling); shutdown()
+                       joins workers (CLI + AOT call it at exit);
+                       join_tasks_at_exit() drains tasks (SPID3R_TASK_DRAIN_MS,
+                       default 2000); TaskHandle {is_done, status, join,
+                       thrown_value}, TaskOutcome{result, thrown} (structured
+                       errors across the task boundary); enter_active /
+                       enter_blocked / gc_quiescent (GC gate: collection is safe
+                       only when the caller is the sole *running* thread);
+                       isolated(workers, cap) for tests; channel data
   environment/mod.rs   lexical envs: Arc<Mutex<EnvironmentData>>; consts set for
                        const enforcement; assign walks parent chain
   diagnostics/mod.rs   Span{file,line,col,len}, Phase (Lexer/Parser/Semantic/
@@ -178,12 +193,20 @@ GaliLang/
   repl/mod.rs          REPL (:help/:reset/:quit)
   pkg/mod.rs           manifest (spider.toml), install/vendor (valid_pkg_name
                        allowlist + containment assert before remove_dir_all),
-                       fetch_git (url/rev validated, `--` separator), local
-                       registry ($SPID3R_REGISTRY), spider.lock, SHA-256 impl
-                       (FIPS 180-4, tested) exposing `sha256_bytes(&[u8]) ->
-                       [u8;32]` plus `hex_encode` and `sha256_hex`, tar write/read
-                       (no ustar prefix), pack (prints archive hash AND
-                       sha256(tree)), unpack (rejects `..` and `:`, starts_with(dest) check)
+                       fetch_git: validate_git_url whitelist (https/ssh/scp
+                       only; http/git need SPID3R_ALLOW_INSECURE_GIT=1, local
+                       paths and file:// need SPID3R_ALLOW_LOCAL_GIT_DEPS=1,
+                       ext:: rejected unconditionally) + locked-commit
+                       checkout, so a re-install reproduces spider.lock
+                       (`install --update` re-resolves), local registry
+                       ($SPID3R_REGISTRY), spider.lock, SHA-256 in
+                       pkg/sha256.rs (FIPS 180-4, tested; shared with
+                       build.rs) exposing sha256_bytes(&[u8]) -> [u8;32] plus
+                       hex_encode and sha256_hex, tar write/read (no ustar
+                       prefix), pack (prints archive hash AND sha256(tree)),
+                       unpack (rejects `..` and `:`, starts_with(dest) check).
+                       Vendor hashes cover EVERY file under src/ as RAW BYTES
+                       (path NUL contents NUL).
   gui/{mod,bridge,window}.rs   webview GUI (feature "gui"); natives gui_set_html,
                        gui_eval, gui_on, gui_emit; page -> window.spid3r.emit;
                        --dry-run headless replay
@@ -242,9 +265,10 @@ GaliLang/
   json_parse (objects->map deduplicating keys, arrays->list, \uXXXX + surrogate
   pairs, strict number grammar, depth cap 512), json_write (round-trips;
   non-finite float = error; keys escaped; depth cap 512; self-referential
-  container = clean error), len, type_of, assert/assert_eq, gc_collect (REFUSES
-  with a clean error while any spawned task is live — same gate as the automatic
-  collector; join the tasks first), gc_live_cells, weak/deref.
+  container = clean error), len, type_of, assert/assert_eq, gc_collect (refuses
+  with a clean error while another thread is *running* Spid3r code — tasks
+  parked in recv/join/mutex/sleep do not block it; join them if they are busy),
+  gc_live_cells, weak/deref.
   binary & csv & npy: read_bytes(path) -> ok(bytes)/err(msg), write_bytes(path, b)
   -> ok(null)/err(msg), load_npy(path) -> ok(vector|matrix)/err(msg),
   read_csv(path[, delim]) -> ok(list of maps)/err(msg), parse_csv(str[, delim])
@@ -311,11 +335,19 @@ GaliLang/
                          const_module_tests.rs
   cycle_tests.rs (GC), weak_tests.rs,   sched_tests.rs (tasks/channels; includes
                          spawn_process result contract),
-                         stage2_concurrency.rs (6 process-level watchdog tests
+                         stage2_concurrency.rs (11 process-level watchdog tests
                          from AUDIT_2026-10-20 Stage 2, both engines: A-7
                          self-referential container methods, A-3 grow-on-demand
-                         + exit drain, A-4 gc_collect gate, A-9 structured
-                         thrown values across await/join/callback seams),
+                         + exit drain + bounded queue + stall report, A-4 precise
+                         GC gate, A-9 structured thrown values across
+                         await/join/callback seams, concurrent set/bag add),
+                         artifact_hardening.rs (11: A-8 crafted `.matrixc` —
+                         trailing bytes, instruction-table mismatch, fall-through
+                         end, nesting depth, non-quadratic jumps, `exec` on a
+                         corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         sched_limits.rs (7: isolated pools — queue cap parks the
+                         producer, shutdown joins workers, shutdown is idempotent
+                         and does not block on a stuck task, singleton restarts),
                          vm_dispatch_tests.rs,
                          opt_tests.rs, debug_tests.rs (scripted debugger),
                          fmt_tests.rs, pkg_tests.rs (39: manifest/install/tar/
@@ -406,15 +438,39 @@ GaliLang/
     an out-of-f64-range literal is a clean lexer error;
     -9223372036854775808 literal is unrepresentable before unary negation.
   - GC traces all 20+ container and instance types automatically via value::new_ref.
-  - Concurrency contract (Stage 2, 2026-10-20):
-    * gc_collect() is a clean error while any spawned task is live; join tasks
-      first (the automatic collector is skipped under the same condition).
+  - Concurrency contract (Stage 2 + limits round, 2026-10-20/21):
+    * gc_collect() is refused only while another thread is *running* Spid3r
+      code (the mark-sweep precondition). Tasks parked in recv/join/mutex/sleep
+      do not block it; the automatic collector uses the same gate.
     * the pool grows on demand so blocked tasks (recv/join/mutex/sleep) never
-      starve queued work, up to MAX_WORKERS=256 concurrently blocked tasks.
-    * program exit waits up to SPID3R_TASK_DRAIN_MS (default 2000) for tasks
-      main left running, then prints a stderr warning and exits 0.
+      starve queued work, up to SPID3R_MAX_WORKERS (default 256). At that
+      ceiling a stall is reported on stderr by the watchdog instead of hanging
+      silently.
+    * the ready queue is bounded (SPID3R_QUEUE_CAP, default 65536); spawn grows
+      the pool first and then parks the producer, so a spawn storm cannot grow
+      memory without limit and no task is dropped.
+    * program exit drains tasks (SPID3R_TASK_DRAIN_MS, default 2000) and the
+      CLI/AOT then call Scheduler::shutdown(), which stops and joins the worker
+      threads; the singleton restarts if something spawns afterwards (REPL/embed).
     * a thrown value crosses spawn/await/task.join()/callback seams as the
       value itself, so catch rebinds maps/objects (both engines + AOT).
+    * detached collection mutators (list/set/bag remove+add) commit with a
+      verified snapshot and retry on conflict (bounded, 32) — concurrent adds
+      cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Artifact and dependency hardening (Stage 3, 2026-10-21):
+    * git dependencies accept only https://, ssh://, and scp-like URLs. Plain
+      http/git need SPID3R_ALLOW_INSECURE_GIT=1; local paths and file:// need
+      SPID3R_ALLOW_LOCAL_GIT_DEPS=1; `ext::` (git's run-a-command transport) is
+      rejected unconditionally.
+    * spider.lock pins git commits: a re-install checks out the recorded commit
+      and verifies HEAD; `spid3r install --update` is the only way to move.
+    * vendor hashes cover every file under src/ as raw bytes (path NUL contents
+      NUL). sha256.txt files generated before 2026-10-21 must be regenerated.
+    * a .matrixc must end in return/throw/jump, have inst_offsets and inst_spans
+      agree, contain no trailing bytes, and nest < 128 levels; the VM's
+      instruction fetch is bounds-checked.
+    * a release build never downloads: the WebView2 bootstrapper is opt-in
+      (SPID3R_FETCH_WEBVIEW2=1) and SHA-256-verified before use.
   - tar supports POSIX ustar prefix (<= 255 bytes), GNU @LongLink (> 255 bytes),
     and header checksum verification.
   - int overflow wraps silently; int/int truncates toward zero; err(...) is
