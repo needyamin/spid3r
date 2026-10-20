@@ -673,6 +673,25 @@ impl MapData {
     }
 }
 
+pub fn is_builtin_map_method(name: &str) -> bool {
+    matches!(
+        name,
+        "get"
+            | "set"
+            | "remove"
+            | "delete"
+            | "has"
+            | "items"
+            | "contains"
+            | "keys"
+            | "values"
+            | "clone"
+            | "len"
+            | "is_empty"
+            | "clear"
+    )
+}
+
 /// `map.values()` list built from an entries snapshot. Method dispatch used to
 /// run this `deep_clone` loop while the map's mutex was held; a map containing
 /// itself as a value re-locked it and hung (audit F3/p05). Callers snapshot

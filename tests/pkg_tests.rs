@@ -1188,3 +1188,91 @@ fn tar_supports_ustar_prefix_and_longlink_and_verifies_checksum() {
     );
 }
 
+#[test]
+fn transitive_dependencies_are_resolved_and_vendored() {
+    let p = Project::new("transitive_ok");
+    p.add_dep("c", "1.0.0", "public fn c_val() { return 100; }\n");
+
+    // b depends on c:
+    p.write_sibling(
+        "b/spider.toml",
+        "[package]\nname = \"b\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n\n[dependencies]\nc = { path = \"../c\" }\n",
+    );
+    p.write_sibling(
+        "b/src/lib.matrix",
+        "import \"c/lib\" as c;\npublic fn b_val() { return c.c_val() + 20; }\n",
+    );
+
+    // app depends on b:
+    p.add_app(
+        &[("b", "../b")],
+        "import \"b/lib\" as b;\nfn main() {\n    println(b.b_val());\n    return 0;\n}\n",
+    );
+
+    let (code, out, err) = p.run(&["install"]);
+    assert_eq!(code, 0, "install failed: {}{}", out, err);
+
+    assert!(p.exists("vendor/b/lib.matrix"), "vendor/b missing");
+    assert!(p.exists("vendor/c/lib.matrix"), "vendor/c missing");
+
+    let lock = p.read("spider.lock");
+    assert!(lock.contains("name = \"b\""), "lock missing b: {}", lock);
+    assert!(lock.contains("name = \"c\""), "lock missing c: {}", lock);
+
+    let (t_code, t_out, t_err) = p.run(&["run", "--engine", "tree"]);
+    assert_eq!(t_code, 0, "tree run failed: {}{}", t_out, t_err);
+    assert_eq!(t_out.trim(), "120");
+
+    let (v_code, v_out, v_err) = p.run(&["run", "--engine", "vm"]);
+    assert_eq!(v_code, 0, "vm run failed: {}{}", v_out, v_err);
+    assert_eq!(v_out.trim(), "120");
+}
+
+#[test]
+fn circular_dependencies_are_detected_in_pkg_install() {
+    let p = Project::new("transitive_cycle");
+    p.write_sibling(
+        "b/spider.toml",
+        "[package]\nname = \"b\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n\n[dependencies]\nc = { path = \"../c\" }\n",
+    );
+    p.write_sibling("b/src/lib.matrix", "public fn b() { return 1; }\n");
+
+    p.write_sibling(
+        "c/spider.toml",
+        "[package]\nname = \"c\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n\n[dependencies]\nb = { path = \"../b\" }\n",
+    );
+    p.write_sibling("c/src/lib.matrix", "public fn c() { return 2; }\n");
+
+    p.add_app(&[("b", "../b")], "fn main() { return 0; }\n");
+
+    let (code, _, err) = p.run(&["install"]);
+    assert_ne!(code, 0, "circular dependency should fail install");
+    assert!(
+        err.contains("circular dependency"),
+        "expected circular dependency error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn transitive_version_constraint_mismatch_fails_install() {
+    let p = Project::new("transitive_ver_err");
+    p.add_dep("c", "1.0.0", "public fn c() { return 1; }\n");
+
+    p.write_sibling(
+        "b/spider.toml",
+        "[package]\nname = \"b\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n\n[dependencies]\nc = { path = \"../c\", version = \"^2.0\" }\n",
+    );
+    p.write_sibling("b/src/lib.matrix", "public fn b() { return 1; }\n");
+
+    p.add_app(&[("b", "../b")], "fn main() { return 0; }\n");
+
+    let (code, _, err) = p.run(&["install"]);
+    assert_ne!(code, 0, "version mismatch should fail install");
+    assert!(
+        err.contains("requires version ^2.0") && err.contains("1.0.0"),
+        "expected version mismatch error, got: {}",
+        err
+    );
+}
+

@@ -241,3 +241,9 @@ fn cli_fmt_check_accepts_crlf_line_endings() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn namespaced_import_formatting_roundtrip() {
+    let src = "import \"math/stats\" as stats;\nimport \"util\" as u;\nimport \"flat\";\n\nfn main() {\n    return stats.mean(u.data());\n}\n";
+    check_roundtrip("namespaced-import", src);
+}
+

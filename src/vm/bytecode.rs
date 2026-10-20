@@ -167,6 +167,7 @@ pub enum OpCode {
     /// re-captures a fresh cell (matching the tree interpreter's fresh
     /// binding per iteration). No-op when the slot is not currently captured.
     Uncapture = 53,
+    ImportAs = 54,
 }
 
 impl OpCode {
@@ -232,6 +233,7 @@ impl OpCode {
             51 => Some(OpCode::Dup2),
             52 => Some(OpCode::CaptureSync),
             53 => Some(OpCode::Uncapture),
+            54 => Some(OpCode::ImportAs),
             _ => None,
         }
     }
@@ -288,6 +290,13 @@ impl Chunk {
         self.emit_opcode(op);
         self.code.extend_from_slice(&a.to_le_bytes());
         self.code.push(b);
+    }
+
+    /// Emit one opcode followed by two `u16` operands (e.g. `ImportAs`).
+    pub fn emit_u16_u16(&mut self, op: OpCode, a: u16, b: u16) {
+        self.emit_opcode(op);
+        self.code.extend_from_slice(&a.to_le_bytes());
+        self.code.extend_from_slice(&b.to_le_bytes());
     }
 
     /// Emit one opcode followed by two `u8` operands (e.g. `CaptureSync`).
@@ -473,6 +482,12 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
                 let (c, no) = read_u16(&chunk.code, o);
                 o = no;
                 out.push_str(&format!("{:?} {}", op, c));
+            }
+            OpCode::ImportAs => {
+                let (c1, no) = read_u16(&chunk.code, o);
+                let (c2, no2) = read_u16(&chunk.code, no);
+                o = no2;
+                out.push_str(&format!("{:?} {} alias {}", op, c1, c2));
             }
             OpCode::Construct | OpCode::Invoke => {
                 let (c, no) = read_u16(&chunk.code, o);
@@ -1044,6 +1059,30 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
                 let idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
                 check_pool("constant", chunk.constants.len(), idx, where_)?;
             }
+            OpCode::ImportAs => {
+                let p_idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
+                let a_idx = u16::from_le_bytes([code[ip + 3], code[ip + 4]]) as usize;
+                check_pool("constant", chunk.constants.len(), p_idx, where_)?;
+                check_pool("constant", chunk.constants.len(), a_idx, where_)?;
+                if !matches!(chunk.constants.get(p_idx), Some(Value::Str(_))) {
+                    return Err(err(
+                        Phase::Vm,
+                        format!(
+                            "ImportAs path operand at index {} is not a string in {}",
+                            p_idx, where_
+                        ),
+                    ));
+                }
+                if !matches!(chunk.constants.get(a_idx), Some(Value::Str(_))) {
+                    return Err(err(
+                        Phase::Vm,
+                        format!(
+                            "ImportAs alias operand at index {} is not a string in {}",
+                            a_idx, where_
+                        ),
+                    ));
+                }
+            }
             OpCode::Construct | OpCode::Invoke => {
                 let idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
                 check_pool("constant", chunk.constants.len(), idx, where_)?;
@@ -1140,6 +1179,7 @@ pub(crate) fn operand_len(op: OpCode) -> usize {
         | OpCode::Import
         | OpCode::Class => 2,
         OpCode::Construct | OpCode::Invoke => 3,
+        OpCode::ImportAs => 4,
         OpCode::CaptureSync => 2,
         OpCode::Uncapture => 1,
         OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue | OpCode::Loop => 2,
@@ -1169,8 +1209,8 @@ mod tests {
 
     #[test]
     fn from_u8_rejects_garbage_without_ub() {
-        // Any byte outside 0..=53 must decode to None (no transmute / UB).
-        for b in 54u16..=255 {
+        // Any byte outside 0..=54 must decode to None (no transmute / UB).
+        for b in 55u16..=255 {
             assert!(OpCode::from_u8(b as u8).is_none(), "byte {} decoded", b);
         }
         // A handful of real opcodes round-trip.
@@ -1181,6 +1221,7 @@ mod tests {
         assert_eq!(OpCode::from_u8(51), Some(OpCode::Dup2));
         assert_eq!(OpCode::from_u8(52), Some(OpCode::CaptureSync));
         assert_eq!(OpCode::from_u8(53), Some(OpCode::Uncapture));
+        assert_eq!(OpCode::from_u8(54), Some(OpCode::ImportAs));
     }
 
     #[test]

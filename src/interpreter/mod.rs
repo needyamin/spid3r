@@ -81,37 +81,14 @@ struct InterpCallbackHost<'a> {
 
 impl crate::value::collections::CallbackHost for InterpCallbackHost<'_> {
     fn call_callback(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, String> {
-        match f {
-            Value::Function(fd) => match self.interp.call_function(fd, args, &self.span) {
-                Ok(v) => Ok(v),
-                // A callback's throw becomes the method's error. The user's
-                // value is preferred over the generic "uncaught throw"
-                // message, the same rule `join`/`await` use across the task
-                // boundary, so `try { xs.sort_by(...) } catch (e)` sees what
-                // the comparator threw.
-                Err(Flow::Error(d)) => Err(match &d.thrown {
-                    Some(v) => crate::value::display_value(v),
-                    None => d.message.clone(),
-                }),
-                Err(Flow::Return(v)) => Ok(v),
-                Err(_) => Err("invalid control flow in a callback".to_string()),
-            },
-            Value::Native(n) => {
-                let ctx = crate::value::NativeCtx {
-                    sched: self.interp.sched.clone(),
-                };
-                (n.func)(&ctx, args)
-            }
-            Value::NativeClosure(n) => {
-                let ctx = crate::value::NativeCtx {
-                    sched: self.interp.sched.clone(),
-                };
-                (n.func)(&ctx, args)
-            }
-            other => Err(format!(
-                "{} is not callable",
-                crate::value::type_name(other)
-            )),
+        match self.interp.call_value(f.clone(), args, &self.span) {
+            Ok(v) => Ok(v),
+            Err(Flow::Error(d)) => Err(match &d.thrown {
+                Some(v) => crate::value::display_value(v),
+                None => d.message.clone(),
+            }),
+            Err(Flow::Return(v)) => Ok(v),
+            Err(_) => Err("invalid control flow in a callback".to_string()),
         }
     }
 }
@@ -344,13 +321,24 @@ impl Interp {
 
     pub fn exec_stmt(&self, s: &Stmt, env: &Env) -> Flow {
         match s {
-            Stmt::Import { path, span } => match crate::modules::load(self, path, span) {
+            Stmt::Import { path, alias, span } => match crate::modules::load(self, path, span) {
                 Ok(names) => {
-                    for (name, value, is_const) in names {
-                        if is_const {
-                            environment::define_const(env, &name, value);
-                        } else {
-                            environment::define(env, &name, value);
+                    if let Some(alias_name) = alias {
+                        let mut entries = Vec::new();
+                        for (name, value, _) in names {
+                            entries.push((crate::value::MapKey::Str(name.into()), value));
+                        }
+                        let map_val = Value::Map(crate::value::new_ref(
+                            crate::value::collections::MapData::from_entries(entries),
+                        ));
+                        environment::define_const(env, alias_name, map_val);
+                    } else {
+                        for (name, value, is_const) in names {
+                            if is_const {
+                                environment::define_const(env, &name, value);
+                            } else {
+                                environment::define(env, &name, value);
+                            }
                         }
                     }
                     Flow::Value(Value::Null)
@@ -1097,6 +1085,14 @@ impl Interp {
                         span,
                         format!("instance of {} has no field '{}'", ib.class.name, name),
                     )),
+                }
+            }
+            Value::Map(m) => {
+                let key = crate::value::MapKey::Str(name.into());
+                let guard = m.lock().unwrap();
+                match guard.find(&key) {
+                    Some(i) => Ok(guard.entries[i].1.clone()),
+                    None => Err(self.rt(span, format!("missing key '{}'", name))),
                 }
             }
             other => Err(self.rt(

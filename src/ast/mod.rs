@@ -88,6 +88,7 @@ pub struct CatchClause {
 pub enum Stmt {
     Import {
         path: String,
+        alias: Option<String>,
         span: Span,
     },
     Fn(FnProto),

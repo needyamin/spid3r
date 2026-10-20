@@ -42,6 +42,7 @@ text, not a keyword (`"class"` is the six characters `class`, nothing more).
 | Await | `await` |
 | Extends | `extends` |
 | Implements | `implements` |
+| Import alias | `as` |
 
 Rules that come with the registry:
 

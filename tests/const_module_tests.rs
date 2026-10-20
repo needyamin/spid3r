@@ -156,3 +156,88 @@ fn spid3r_path_is_searched_for_imports() {
     assert!(t.contains("42"), "expected 42, got: {}", t);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn namespaced_import_parity_and_methods_both_engines() {
+    let dir = std::env::temp_dir().join(format!("spid3r_modns_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+
+    let a_path = dir.join("stat_a.matrix");
+    let b_path = dir.join("stat_b.matrix");
+    std::fs::write(
+        &a_path,
+        "public fn mean(x) { return x + 10; }\npublic const PI = 3;\n",
+    )
+    .expect("write a");
+    std::fs::write(
+        &b_path,
+        "public fn mean(x) { return x + 20; }\npublic const PI = 4;\n",
+    )
+    .expect("write b");
+
+    let main = dir.join("main.matrix");
+    std::fs::write(
+        &main,
+        r#"import "stat_a" as a;
+import "stat_b" as b;
+
+fn main() {
+    println(a.mean(5));
+    println(b.mean(5));
+    println(a.PI);
+    println(b.PI);
+    return 0;
+}
+"#,
+    )
+    .expect("write main");
+
+    let out_tree = out(&["run", "--engine", "tree", main.to_str().unwrap()]).expect("run tree");
+    let out_vm = out(&["run", "--engine", "vm", main.to_str().unwrap()]).expect("run vm");
+    assert_eq!(out_tree, out_vm);
+    assert_eq!(out_tree, "15\n25\n3\n4\n");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn flat_import_collision_is_detected_by_semantic_checker() {
+    let dir = std::env::temp_dir().join(format!("spid3r_modcol_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+
+    let a_path = dir.join("mod_a.matrix");
+    let b_path = dir.join("mod_b.matrix");
+    std::fs::write(&a_path, "public fn common() { return 1; }\n").expect("write a");
+    std::fs::write(&b_path, "public fn common() { return 2; }\n").expect("write b");
+
+    let main = dir.join("main.matrix");
+    std::fs::write(
+        &main,
+        r#"import "mod_a";
+import "mod_b";
+
+fn main() {
+    return common();
+}
+"#,
+    )
+    .expect("write main");
+
+    let err_tree = out(&["run", "--engine", "tree", main.to_str().unwrap()]).expect_err("must error");
+    assert!(
+        err_tree.contains("import collision") || err_tree.contains("common"),
+        "expected collision error, got: {}",
+        err_tree
+    );
+
+    let err_vm = out(&["run", "--engine", "vm", main.to_str().unwrap()]).expect_err("must error");
+    assert!(
+        err_vm.contains("import collision") || err_vm.contains("common"),
+        "vm: expected collision error, got: {}",
+        err_vm
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

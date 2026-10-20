@@ -259,6 +259,21 @@ impl std::fmt::Debug for Value {
     }
 }
 
+/// Returns true if the value can be invoked like a function.
+pub fn is_callable(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Function(_)
+            | Value::VFunc(_)
+            | Value::Native(_)
+            | Value::NativeClosure(_)
+            | Value::Class(_)
+            | Value::VClass(_)
+            | Value::Cfn(_)
+            | Value::CClass(_)
+    )
+}
+
 /// Stable pointer identity for reference types (used by `==`).
 pub fn ptr_id<T>(rc: &Arc<Mutex<T>>) -> u64 {
     Arc::as_ptr(rc) as usize as u64

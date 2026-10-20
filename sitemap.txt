@@ -98,7 +98,7 @@ GaliLang/
                        CRLF comments, rejects overflowing float literals (incl.
                        scientific notation like 1e400), and decodes full UTF-8
                        code points on unexpected characters.
-  lexer/token.rs       Token, TokenKind, Keyword enum (35 keywords)
+  lexer/token.rs       Token, TokenKind, Keyword enum (36 keywords)
   parser/mod.rs        recursive-descent Pratt parser; parse_program ->
                        parse_declaration (top level, visibility prefixes) vs
                        parse_statement (blocks, including local named `fn` /
@@ -117,7 +117,7 @@ GaliLang/
                        capture syncs; imports pre-resolved -> Import ops carry
                        the RESOLVED canonical path; only the top-level compile
                        claims the embedded module table (top:bool param).
-  vm/bytecode.rs       Chunk, OpCode (u8, from_u8 safe decode; Uncapture=53),
+  vm/bytecode.rs       Chunk, OpCode (u8, from_u8 safe decode; Uncapture=53, ImportAs=54),
                        serialize/deserialize (.matrixc), validate_chunk,
                        disassembler. Value serialization tags: 0=int 1=float
                        2=string (panic on other constant kinds).
@@ -365,7 +365,7 @@ GaliLang/
     rules if const-able), construct() entry, method impl, iter_values entry if
     iterable, index_get/set if indexable, GC tracing if it can form cycles.
   Add an opcode:
-    src/vm/bytecode.rs: OpCode enum (next free byte; current max 53=Uncapture),
+    src/vm/bytecode.rs: OpCode enum (next free byte; current max 54=ImportAs),
     from_u8, operand_width (validate_chunk uses it), disassembler arm, from_u8
     unit test. Then vm/compiler.rs emit + vm/mod.rs execute. Bytecode version
     compatibility is not promised across releases.

@@ -1100,6 +1100,73 @@ impl Vm {
                                     } else {
                                         self.frames[nf].slots.push(key);
                                     }
+                                } else if !collections::seq::is_builtin_map_method(mname) {
+                                    let key = crate::value::MapKey::Str(name.clone());
+                                    let found = if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
+                                        let guard = m.lock().unwrap();
+                                        guard.find(&key).map(|i| guard.entries[i].1.clone())
+                                    } else {
+                                        None
+                                    };
+                                    match found {
+                                        Some(callee) => {
+                                            let mut call_args = self.alloc_slots(argc);
+                                            call_args.extend(self.frames[nf].slots.drain((recv_idx + 1)..));
+                                            self.frames[nf].slots.pop();
+                                            match callee {
+                                                Value::VFunc(fd) => {
+                                                    if let Err(e) = self.call_vfunc_frame(fd, call_args) {
+                                                        self.error = Some(e);
+                                                        continue;
+                                                    }
+                                                }
+                                                Value::Native(n) => {
+                                                    let ctx = NativeCtx {
+                                                        sched: self.sched.clone(),
+                                                    };
+                                                    match (n.func)(&ctx, call_args) {
+                                                        Ok(v) => self.frames[nf].slots.push(v),
+                                                        Err(msg) => self.fail(msg),
+                                                    }
+                                                }
+                                                Value::NativeClosure(n) => {
+                                                    let ctx = NativeCtx {
+                                                        sched: self.sched.clone(),
+                                                    };
+                                                    match (n.func)(&ctx, call_args) {
+                                                        Ok(v) => self.frames[nf].slots.push(v),
+                                                        Err(msg) => self.fail(msg),
+                                                    }
+                                                }
+                                                Value::VClass(c) => {
+                                                    if let Err(e) = self.new_instance_vm(c, call_args) {
+                                                        self.error = Some(e);
+                                                        continue;
+                                                    }
+                                                }
+                                                Value::Class(cd) => {
+                                                    let vc = tree_class_to_vclass(&cd);
+                                                    if let Err(e) = self.new_instance_vm(vc, call_args) {
+                                                        self.error = Some(e);
+                                                        continue;
+                                                    }
+                                                }
+                                                other => {
+                                                    self.fail(format!(
+                                                        "'{}' is not callable (found {})",
+                                                        name,
+                                                        type_name(&other)
+                                                    ));
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                        None => {
+                                            self.frames[nf].slots.truncate(recv_idx);
+                                            self.fail(format!("map has no method or function '{}'", name));
+                                            continue;
+                                        }
+                                    }
                                 }
                             }
                             Value::Str(s) if name.as_ref() == "len" && argc == 0 => {
@@ -1214,15 +1281,15 @@ impl Vm {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
                     let obj = self.pop_top();
+                    let name = match self.frames[nf].func.chunk.constants.get(idx) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => {
+                            self.fail("field name is not a string");
+                            continue;
+                        }
+                    };
                     match obj {
                         Value::VInstance(inst) => {
-                            let name = match self.frames[nf].func.chunk.constants.get(idx) {
-                                Some(Value::Str(s)) => s,
-                                _ => {
-                                    self.fail("field name is not a string");
-                                    continue;
-                                }
-                            };
                             let ib = inst.lock().unwrap();
                             match ib.fields.get(name.as_ref()) {
                                 Some(v) => {
@@ -1237,6 +1304,21 @@ impl Vm {
                                     );
                                     drop(ib);
                                     self.fail(err);
+                                }
+                            }
+                        }
+                        Value::Map(m) => {
+                            let mb = m.lock().unwrap();
+                            let mk = crate::value::MapKey::Str(name.clone());
+                            match mb.find(&mk) {
+                                Some(i) => {
+                                    let val = mb.entries[i].1.clone();
+                                    drop(mb);
+                                    self.frames[nf].slots.push(val);
+                                }
+                                None => {
+                                    drop(mb);
+                                    self.fail(format!("missing key '{}'", name));
                                 }
                             }
                         }
@@ -1557,6 +1639,47 @@ impl Vm {
                             for (n, v, _is_const) in exports {
                                 g.insert(n, v);
                             }
+                            self.frames[nf].slots.push(Value::Null);
+                        }
+                        Err(e) => {
+                            self.error = Some(e);
+                            continue;
+                        }
+                    }
+                }
+                OpCode::ImportAs => {
+                    let path_idx = self.code_u16(nf, ip + 1) as usize;
+                    let alias_idx = self.code_u16(nf, ip + 3) as usize;
+                    self.frames[nf].ip = ip + 5;
+                    let path = match self.const_at(nf, path_idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("import path is not a string");
+                            continue;
+                        }
+                    };
+                    let alias = match self.const_at(nf, alias_idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("import alias is not a string");
+                            continue;
+                        }
+                    };
+                    match self.import_module(&path) {
+                        Ok(exports) => {
+                            let mut entries = Vec::new();
+                            for (name, value, _) in exports {
+                                entries.push((crate::value::MapKey::Str(name.into()), value));
+                            }
+                            let map_val = Value::Map(new_ref(
+                                collections::MapData::from_entries(entries),
+                            ));
+                            {
+                                let mut consts = self.global_consts.lock().unwrap();
+                                consts.insert(alias.to_string());
+                            }
+                            let mut g = self.globals.lock().unwrap();
+                            g.insert(alias.to_string(), map_val);
                             self.frames[nf].slots.push(Value::Null);
                         }
                         Err(e) => {

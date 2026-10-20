@@ -668,42 +668,78 @@ impl Checker {
 
     fn check_stmt(&mut self, s: &Stmt) -> SpidResult<()> {
         match s {
-            Stmt::Import { path, span } => {
+            Stmt::Import { path, alias, span } => {
                 let names = crate::modules::public_names_of_in(
                     path,
                     &self.source_file,
                     span,
                     &self.module_dirs,
                 )?;
-                for (n, is_const) in names {
-                    // Collision detection against a same-named LOCAL binding
-                    // in this scope. An existing IMPORT binding may be
-                    // overwritten (re-import: last import wins). A top-level
-                    // `fn` of this chunk is pre-declared by pass 1 before any
-                    // import runs, so a raw entry that matches `predeclared`
-                    // belongs to a fn that comes LATER in source order; the
-                    // collision is reported at that fn statement instead.
+                if let Some(alias_name) = alias {
                     let local_here = self
                         .scopes
                         .last()
-                        .and_then(|s| s.get(&n))
+                        .and_then(|s| s.get(alias_name))
                         .map(|v| !v.is_import)
                         .unwrap_or(false);
-                    if local_here && !self.predeclared.contains(&n) {
+                    if local_here && !self.predeclared.contains(alias_name) {
                         return Err(
-                            self.err(span, format!("import '{}' shadows a local binding", n))
+                            self.err(span, format!("import '{}' shadows a local binding", alias_name))
                         );
+                    }
+                    if let Some(v) = self.scopes.last().and_then(|s| s.get(alias_name)) {
+                        if v.is_import {
+                            return Err(self.err(
+                                span,
+                                format!("import collision: '{}' is imported multiple times", alias_name),
+                            ));
+                        }
                     }
                     let scope = self.scopes.last_mut().unwrap();
                     scope.insert(
-                        n,
+                        alias_name.clone(),
                         VarInfo {
-                            is_const,
+                            is_const: true,
                             class: None,
                             ty: None,
                             is_import: true,
                         },
                     );
+                } else {
+                    for (n, is_const) in names {
+                        // Collision detection against a same-named LOCAL binding
+                        // in this scope.
+                        let local_here = self
+                            .scopes
+                            .last()
+                            .and_then(|s| s.get(&n))
+                            .map(|v| !v.is_import)
+                            .unwrap_or(false);
+                        if local_here && !self.predeclared.contains(&n) {
+                            return Err(
+                                self.err(span, format!("import '{}' shadows a local binding", n))
+                            );
+                        }
+                        // Collision detection against an existing IMPORT binding in this scope.
+                        if let Some(v) = self.scopes.last().and_then(|s| s.get(&n)) {
+                            if v.is_import {
+                                return Err(self.err(
+                                    span,
+                                    format!("import collision: '{}' is imported by multiple modules", n),
+                                ));
+                            }
+                        }
+                        let scope = self.scopes.last_mut().unwrap();
+                        scope.insert(
+                            n,
+                            VarInfo {
+                                is_const,
+                                class: None,
+                                ty: None,
+                                is_import: true,
+                            },
+                        );
+                    }
                 }
                 Ok(())
             }

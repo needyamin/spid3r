@@ -276,7 +276,7 @@ fn compile_one(
     // resolved path so every spelling of the same module shares one entry.
     let mut import_keys: HashMap<String, String> = HashMap::new();
     for stmt in &program.stmts {
-        if let Stmt::Import { path, span } = stmt {
+        if let Stmt::Import { path, span, .. } = stmt {
             if import_keys.contains_key(path) {
                 continue;
             }
@@ -556,7 +556,7 @@ fn compile_stmt(
             compilers[ci].chunk.emit(OpCode::Spawn);
             compilers[ci].chunk.emit(OpCode::Pop);
         }
-        Stmt::Import { path, .. } => {
+        Stmt::Import { path, alias, .. } => {
             // Emit the resolved module path (the embedded table's key), so
             // two spellings of one module share a single entry and instance.
             let key = compilers[ci]
@@ -564,8 +564,13 @@ fn compile_stmt(
                 .get(path)
                 .cloned()
                 .unwrap_or_else(|| path.clone());
-            let idx = compilers[ci].chunk.emit_str_const(&key);
-            compilers[ci].chunk.emit_u16(OpCode::Import, idx);
+            let path_idx = compilers[ci].chunk.emit_str_const(&key);
+            if let Some(alias_name) = alias {
+                let alias_idx = compilers[ci].chunk.emit_str_const(alias_name);
+                compilers[ci].chunk.emit_u16_u16(OpCode::ImportAs, path_idx, alias_idx);
+            } else {
+                compilers[ci].chunk.emit_u16(OpCode::Import, path_idx);
+            }
         }
     }
     Ok(())

@@ -153,8 +153,14 @@ impl Parser {
                     .err_here("import expects a quoted module path, e.g. import \"math_util\";"))
             }
         };
+        let alias = if self.eat_kw(Keyword::As) {
+            let (name, _) = self.expect_ident()?;
+            Some(name)
+        } else {
+            None
+        };
         self.expect(&TokenKind::Semi, "';' after import")?;
-        Ok(Stmt::Import { path, span: sp })
+        Ok(Stmt::Import { path, alias, span: sp })
     }
 
     fn parse_declaration(&mut self) -> SpidResult<Stmt> {

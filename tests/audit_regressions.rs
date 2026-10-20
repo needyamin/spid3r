@@ -2181,4 +2181,38 @@ fn datetime_differential_all_three_engines() {
     );
 }
 
+#[test]
+fn callable_map_fields_differential_both_engines() {
+    assert_both_engines(
+        "callable_map_fields",
+        r#"fn add(a, b) {
+    return a + b;
+}
+
+fn main() {
+    let m = map(
+        "compute", add,
+        "mul", fn(x, y) { return x * y; },
+        "val", 42
+    );
+    println(m.compute(3, 4));
+    println(m.mul(5, 6));
+    println(m.val);
+    try {
+        m.val(1);
+    } catch (e) {
+        println("not callable caught");
+    }
+    try {
+        m.nonexistent(1);
+    } catch (e) {
+        println("missing method caught");
+    }
+    return 0;
+}
+"#,
+        "7\n30\n42\nnot callable caught\nmissing method caught\n",
+    );
+}
+
 

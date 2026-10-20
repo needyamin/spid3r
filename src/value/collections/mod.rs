@@ -483,7 +483,29 @@ pub fn call_method_host(
                 let entries = d.lock().unwrap().entries.clone();
                 return Ok(seq::map_values_out(&entries));
             }
-            d.lock().unwrap().method(name, &args)
+            if seq::is_builtin_map_method(name) {
+                d.lock().unwrap().method(name, &args)
+            } else {
+                let key = crate::value::MapKey::Str(name.into());
+                let callable = {
+                    let guard = d.lock().unwrap();
+                    guard.find(&key).map(|i| guard.entries[i].1.clone())
+                };
+                match callable {
+                    Some(f) => {
+                        if crate::value::is_callable(&f) {
+                            host.call_callback(&f, args)
+                        } else {
+                            Err(format!(
+                                "'{}' is not callable (found {})",
+                                name,
+                                super::type_name(&f)
+                            ))
+                        }
+                    }
+                    None => Err(format!("map has no method or function '{}'", name)),
+                }
+            }
         }
         Value::Set(d) => {
             if matches!(name, "union" | "intersection" | "intersect" | "difference")
