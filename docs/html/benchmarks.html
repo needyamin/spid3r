@@ -748,19 +748,19 @@
     <div class="kpi-card">
       <div class="kpi-label">
         <span>Concurrency / Tasks</span>
-        <span class="badge-speed">1.60x vs Py</span>
+        <span class="badge-speed">1.76x vs Py</span>
       </div>
-      <div class="kpi-val">13.7 ms</div>
-      <div class="kpi-sub">vs Python 21.9 ms · PHP 22.3 ms</div>
+      <div class="kpi-val">13.1 ms</div>
+      <div class="kpi-sub">vs Python 23.0 ms · PHP 22.1 ms</div>
     </div>
 
     <div class="kpi-card green">
       <div class="kpi-label">
         <span>JSON Serialization</span>
-        <span class="badge-speed">1.58x vs Py</span>
+        <span class="badge-speed">1.68x vs Py</span>
       </div>
-      <div class="kpi-val">18.3 ms</div>
-      <div class="kpi-sub">vs Python 28.9 ms · PHP 23.6 ms</div>
+      <div class="kpi-val">18.4 ms</div>
+      <div class="kpi-sub">vs Python 30.8 ms · PHP 24.0 ms</div>
     </div>
 
     <div class="kpi-card purple">
@@ -768,8 +768,8 @@
         <span>String Concatenation</span>
         <span class="badge-speed">2.02x vs PHP</span>
       </div>
-      <div class="kpi-val">12.5 ms</div>
-      <div class="kpi-sub">vs Python 16.2 ms · PHP 25.3 ms</div>
+      <div class="kpi-val">12.8 ms</div>
+      <div class="kpi-sub">vs Python 16.9 ms · PHP 25.8 ms</div>
     </div>
 
     <div class="kpi-card amber">
@@ -831,13 +831,13 @@
             <div class="workload-title">Arithmetic & Loop</div>
             <div class="desc">Tight loop of 2M iterations accumulating integer additions (loop & ALU throughput)</div>
           </td>
-          <td class="num font-mono"><strong>44.6 ms</strong></td>
-          <td class="num font-mono">43.9 ms</td>
-          <td class="num font-mono">364.5 ms</td>
-          <td class="num font-mono">53.9 ms</td>
-          <td class="num font-mono">41.0 ms</td>
-          <td class="num"><span class="speed-chip win">1.21x</span></td>
-          <td class="num"><span class="speed-chip neutral">0.92x</span></td>
+          <td class="num font-mono"><strong>43.5 ms</strong></td>
+          <td class="num font-mono">43.2 ms</td>
+          <td class="num font-mono">367.1 ms</td>
+          <td class="num font-mono">55.6 ms</td>
+          <td class="num font-mono">41.1 ms</td>
+          <td class="num"><span class="speed-chip win">1.28x</span></td>
+          <td class="num"><span class="speed-chip neutral">0.94x</span></td>
           <td><span class="chk-badge">✓ OK</span></td>
           <td><button class="btn-code" onclick="toggleCode('code-arith')">Code</button></td>
         </tr>
@@ -864,13 +864,13 @@ fn main() {
             <div class="workload-title">List Churn</div>
             <div class="desc">Push 100K elements to dynamic array then pop all elements summing values</div>
           </td>
-          <td class="num font-mono"><strong>31.8 ms</strong></td>
-          <td class="num font-mono">31.5 ms</td>
-          <td class="num font-mono">53.3 ms</td>
-          <td class="num font-mono">20.7 ms</td>
-          <td class="num font-mono">25.7 ms</td>
-          <td class="num"><span class="speed-chip loss">0.65x</span></td>
-          <td class="num"><span class="speed-chip loss">0.81x</span></td>
+          <td class="num font-mono"><strong>32.1 ms</strong></td>
+          <td class="num font-mono">31.9 ms</td>
+          <td class="num font-mono">53.8 ms</td>
+          <td class="num font-mono">21.2 ms</td>
+          <td class="num font-mono">25.6 ms</td>
+          <td class="num"><span class="speed-chip loss">0.66x</span></td>
+          <td class="num"><span class="speed-chip loss">0.80x</span></td>
           <td><span class="chk-badge">✓ OK</span></td>
           <td><button class="btn-code" onclick="toggleCode('code-list')">Code</button></td>
         </tr>
@@ -902,12 +902,12 @@ fn main() {
             <div class="desc">Insert 20K key-value pairs into a hash table and look up all keys</div>
           </td>
           <td class="num font-mono"><strong>26.4 ms</strong></td>
-          <td class="num font-mono">25.7 ms</td>
-          <td class="num font-mono">37.0 ms</td>
-          <td class="num font-mono">18.8 ms</td>
-          <td class="num font-mono">24.0 ms</td>
-          <td class="num"><span class="speed-chip loss">0.71x</span></td>
-          <td class="num"><span class="speed-chip neutral">0.91x</span></td>
+          <td class="num font-mono">25.9 ms</td>
+          <td class="num font-mono">37.4 ms</td>
+          <td class="num font-mono">19.7 ms</td>
+          <td class="num font-mono">24.4 ms</td>
+          <td class="num"><span class="speed-chip loss">0.75x</span></td>
+          <td class="num"><span class="speed-chip neutral">0.92x</span></td>
           <td><span class="chk-badge">✓ OK</span></td>
           <td><button class="btn-code" onclick="toggleCode('code-map')">Code</button></td>
         </tr>
@@ -940,12 +940,12 @@ fn main() {
             <div class="workload-title">String Concatenation</div>
             <div class="desc">Sequential concatenation building a 30,000-character string in a loop</div>
           </td>
-          <td class="num font-mono"><strong>12.5 ms</strong></td>
-          <td class="num font-mono">12.3 ms</td>
-          <td class="num font-mono">32.4 ms</td>
-          <td class="num font-mono">16.2 ms</td>
-          <td class="num font-mono">25.3 ms</td>
-          <td class="num"><span class="speed-chip win">1.30x</span></td>
+          <td class="num font-mono"><strong>12.8 ms</strong></td>
+          <td class="num font-mono">12.9 ms</td>
+          <td class="num font-mono">33.7 ms</td>
+          <td class="num font-mono">16.9 ms</td>
+          <td class="num font-mono">25.8 ms</td>
+          <td class="num"><span class="speed-chip win">1.33x</span></td>
           <td class="num"><span class="speed-chip win">2.02x</span></td>
           <td><span class="chk-badge">✓ OK</span></td>
           <td><button class="btn-code" onclick="toggleCode('code-strings')">Code</button></td>
@@ -973,13 +973,13 @@ fn main() {
             <div class="workload-title">Closure Creation & Calls</div>
             <div class="desc">Create and invoke 20,000 heap-allocated closures capturing lexical environments</div>
           </td>
-          <td class="num font-mono"><strong>18.4 ms</strong></td>
-          <td class="num font-mono">17.9 ms</td>
-          <td class="num font-mono">38.3 ms</td>
-          <td class="num font-mono">17.0 ms</td>
-          <td class="num font-mono">23.2 ms</td>
-          <td class="num"><span class="speed-chip neutral">0.92x</span></td>
-          <td class="num"><span class="speed-chip win">1.26x</span></td>
+          <td class="num font-mono"><strong>18.1 ms</strong></td>
+          <td class="num font-mono">18.2 ms</td>
+          <td class="num font-mono">39.1 ms</td>
+          <td class="num font-mono">17.5 ms</td>
+          <td class="num font-mono">23.9 ms</td>
+          <td class="num"><span class="speed-chip neutral">0.97x</span></td>
+          <td class="num"><span class="speed-chip win">1.32x</span></td>
           <td><span class="chk-badge">✓ OK</span></td>
           <td><button class="btn-code" onclick="toggleCode('code-closures')">Code</button></td>
         </tr>
@@ -1009,12 +1009,12 @@ fn main() {
             <div class="workload-title">Class Method Dispatch</div>
             <div class="desc">Instantiate an object and invoke an incrementing instance method 200,000 times</div>
           </td>
-          <td class="num font-mono"><strong>62.3 ms</strong></td>
-          <td class="num font-mono">61.4 ms</td>
-          <td class="num font-mono">121.4 ms</td>
-          <td class="num font-mono">21.1 ms</td>
-          <td class="num font-mono">29.9 ms</td>
-          <td class="num"><span class="speed-chip loss">0.34x</span></td>
+          <td class="num font-mono"><strong>64.2 ms</strong></td>
+          <td class="num font-mono">62.9 ms</td>
+          <td class="num font-mono">123.5 ms</td>
+          <td class="num font-mono">21.0 ms</td>
+          <td class="num font-mono">30.5 ms</td>
+          <td class="num"><span class="speed-chip loss">0.33x</span></td>
           <td class="num"><span class="speed-chip loss">0.48x</span></td>
           <td><span class="chk-badge">✓ OK</span></td>
           <td><button class="btn-code" onclick="toggleCode('code-methods')">Code</button></td>
@@ -1054,13 +1054,13 @@ fn main() {
             <div class="workload-title">JSON Parse & Stringify</div>
             <div class="desc">Serialize 2,000 structured nested maps/lists to JSON strings and parse them back</div>
           </td>
-          <td class="num font-mono"><strong>18.3 ms</strong></td>
+          <td class="num font-mono"><strong>18.4 ms</strong></td>
           <td class="num font-mono">18.1 ms</td>
-          <td class="num font-mono">20.5 ms</td>
-          <td class="num font-mono">28.9 ms</td>
-          <td class="num font-mono">23.6 ms</td>
-          <td class="num"><span class="speed-chip win">1.58x</span></td>
-          <td class="num"><span class="speed-chip win">1.29x</span></td>
+          <td class="num font-mono">20.6 ms</td>
+          <td class="num font-mono">30.8 ms</td>
+          <td class="num font-mono">24.0 ms</td>
+          <td class="num"><span class="speed-chip win">1.68x</span></td>
+          <td class="num"><span class="speed-chip win">1.31x</span></td>
           <td><span class="chk-badge">✓ OK</span></td>
           <td><button class="btn-code" onclick="toggleCode('code-json')">Code</button></td>
         </tr>
@@ -1093,13 +1093,13 @@ fn main() {
             <div class="workload-title">Concurrency / Channels</div>
             <div class="desc">Producer-consumer message passing across tasks/threads transmitting 2,000 messages</div>
           </td>
-          <td class="num font-mono"><strong>13.7 ms</strong></td>
-          <td class="num font-mono">13.2 ms</td>
-          <td class="num font-mono">15.0 ms</td>
-          <td class="num font-mono">21.9 ms</td>
-          <td class="num font-mono">22.3 ms</td>
-          <td class="num"><span class="speed-chip win">1.60x</span></td>
-          <td class="num"><span class="speed-chip win">1.63x</span></td>
+          <td class="num font-mono"><strong>13.1 ms</strong></td>
+          <td class="num font-mono">12.8 ms</td>
+          <td class="num font-mono">14.3 ms</td>
+          <td class="num font-mono">23.0 ms</td>
+          <td class="num font-mono">22.1 ms</td>
+          <td class="num"><span class="speed-chip win">1.76x</span></td>
+          <td class="num"><span class="speed-chip win">1.69x</span></td>
           <td><span class="chk-badge">✓ OK</span></td>
           <td><button class="btn-code" onclick="toggleCode('code-tasks')">Code</button></td>
         </tr>
@@ -1142,30 +1142,30 @@ fn main() {
       <div class="chart-header">
         <div>
           <h3>Concurrency / Channels (2,000 messages)</h3>
-          <p class="desc">Lower is faster · Spid3r VM leads by 1.60x over Python</p>
+          <p class="desc">Lower is faster · Spid3r VM leads by 1.76x over Python</p>
         </div>
-        <span class="speed-chip win">1.60x Faster</span>
+        <span class="speed-chip win">1.76x Faster</span>
       </div>
       <div class="chart-bars">
         <div class="bar-row">
           <div class="bar-label">Spid3r VM</div>
-          <div class="bar-track"><div class="bar-fill bar-spid3r" style="width: 61%">13.7 ms</div></div>
-          <div class="bar-val">13.7 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-spid3r" style="width: 57%">13.1 ms</div></div>
+          <div class="bar-val">13.1 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">Spid3r (.matrixc)</div>
-          <div class="bar-track"><div class="bar-fill bar-exec" style="width: 59%">13.2 ms</div></div>
-          <div class="bar-val">13.2 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-exec" style="width: 56%">12.8 ms</div></div>
+          <div class="bar-val">12.8 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">Python 3.15</div>
-          <div class="bar-track"><div class="bar-fill bar-py" style="width: 98%">21.9 ms</div></div>
-          <div class="bar-val">21.9 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-py" style="width: 100%">23.0 ms</div></div>
+          <div class="bar-val">23.0 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">PHP 8.3</div>
-          <div class="bar-track"><div class="bar-fill bar-php" style="width: 100%">22.3 ms</div></div>
-          <div class="bar-val">22.3 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-php" style="width: 96%">22.1 ms</div></div>
+          <div class="bar-val">22.1 ms</div>
         </div>
       </div>
     </div>
@@ -1175,25 +1175,25 @@ fn main() {
       <div class="chart-header">
         <div>
           <h3>JSON Parse & Stringify (2,000 round-trips)</h3>
-          <p class="desc">Lower is faster · Spid3r VM leads by 1.58x over Python</p>
+          <p class="desc">Lower is faster · Spid3r VM leads by 1.68x over Python</p>
         </div>
-        <span class="speed-chip win">1.58x Faster</span>
+        <span class="speed-chip win">1.68x Faster</span>
       </div>
       <div class="chart-bars">
         <div class="bar-row">
           <div class="bar-label">Spid3r VM</div>
-          <div class="bar-track"><div class="bar-fill bar-spid3r" style="width: 63%">18.3 ms</div></div>
-          <div class="bar-val">18.3 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-spid3r" style="width: 60%">18.4 ms</div></div>
+          <div class="bar-val">18.4 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">Python 3.15</div>
-          <div class="bar-track"><div class="bar-fill bar-py" style="width: 100%">28.9 ms</div></div>
-          <div class="bar-val">28.9 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-py" style="width: 100%">30.8 ms</div></div>
+          <div class="bar-val">30.8 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">PHP 8.3</div>
-          <div class="bar-track"><div class="bar-fill bar-php" style="width: 82%">23.6 ms</div></div>
-          <div class="bar-val">23.6 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-php" style="width: 78%">24.0 ms</div></div>
+          <div class="bar-val">24.0 ms</div>
         </div>
       </div>
     </div>
@@ -1203,25 +1203,25 @@ fn main() {
       <div class="chart-header">
         <div>
           <h3>String Concatenation (30,000 chars)</h3>
-          <p class="desc">Lower is faster · Spid3r VM leads by 1.30x over Python and 2.02x over PHP</p>
+          <p class="desc">Lower is faster · Spid3r VM leads by 1.33x over Python and 2.02x over PHP</p>
         </div>
-        <span class="speed-chip win">1.30x Faster</span>
+        <span class="speed-chip win">1.33x Faster</span>
       </div>
       <div class="chart-bars">
         <div class="bar-row">
           <div class="bar-label">Spid3r VM</div>
-          <div class="bar-track"><div class="bar-fill bar-spid3r" style="width: 49%">12.5 ms</div></div>
-          <div class="bar-val">12.5 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-spid3r" style="width: 50%">12.8 ms</div></div>
+          <div class="bar-val">12.8 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">Python 3.15</div>
-          <div class="bar-track"><div class="bar-fill bar-py" style="width: 64%">16.2 ms</div></div>
-          <div class="bar-val">16.2 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-py" style="width: 66%">16.9 ms</div></div>
+          <div class="bar-val">16.9 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">PHP 8.3</div>
-          <div class="bar-track"><div class="bar-fill bar-php" style="width: 100%">25.3 ms</div></div>
-          <div class="bar-val">25.3 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-php" style="width: 100%">25.8 ms</div></div>
+          <div class="bar-val">25.8 ms</div>
         </div>
       </div>
     </div>
@@ -1231,25 +1231,25 @@ fn main() {
       <div class="chart-header">
         <div>
           <h3>Arithmetic & Loop (2M additions)</h3>
-          <p class="desc">Lower is faster · Spid3r VM is 1.21x faster than Python</p>
+          <p class="desc">Lower is faster · Spid3r VM is 1.28x faster than Python</p>
         </div>
-        <span class="speed-chip win">1.21x Faster</span>
+        <span class="speed-chip win">1.28x Faster</span>
       </div>
       <div class="chart-bars">
         <div class="bar-row">
           <div class="bar-label">Spid3r VM</div>
-          <div class="bar-track"><div class="bar-fill bar-spid3r" style="width: 83%">44.6 ms</div></div>
-          <div class="bar-val">44.6 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-spid3r" style="width: 78%">43.5 ms</div></div>
+          <div class="bar-val">43.5 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">Python 3.15</div>
-          <div class="bar-track"><div class="bar-fill bar-py" style="width: 100%">53.9 ms</div></div>
-          <div class="bar-val">53.9 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-py" style="width: 100%">55.6 ms</div></div>
+          <div class="bar-val">55.6 ms</div>
         </div>
         <div class="bar-row">
           <div class="bar-label">PHP 8.3</div>
-          <div class="bar-track"><div class="bar-fill bar-php" style="width: 76%">41.0 ms</div></div>
-          <div class="bar-val">41.0 ms</div>
+          <div class="bar-track"><div class="bar-fill bar-php" style="width: 74%">41.1 ms</div></div>
+          <div class="bar-val">41.1 ms</div>
         </div>
       </div>
     </div>
@@ -1259,7 +1259,7 @@ fn main() {
   <div class="takeaway-grid">
     <div class="takeaway-card">
       <h3>⚡ Concurrency Without GIL Overhead</h3>
-      <p>Spid3r's channel-based task scheduler executes asynchronous message passing in <strong>13.7 ms</strong>, outperforming Python 3.15 (21.9 ms) and PHP 8.3 (22.3 ms). Lightweight task primitives avoid OS thread thrashing and global interpreter locking.</p>
+      <p>Spid3r's channel-based task scheduler executes asynchronous message passing in <strong>13.1 ms</strong>, outperforming Python 3.15 (23.0 ms) and PHP 8.3 (22.1 ms). Lightweight task primitives avoid OS thread thrashing and global interpreter locking.</p>
     </div>
     <div class="takeaway-card">
       <h3>📦 Instant Cold-Starts via Bytecode Exec</h3>
@@ -1287,7 +1287,7 @@ fn main() {
     </div>
     <div class="spec-card">
       <h4>Host Environment</h4>
-      <div class="val">Microsoft Windows 11 x64 · Best-of-10 runs</div>
+      <div class="val">Microsoft Windows 11 x64 · Best-of-15 runs</div>
     </div>
   </div>
 
@@ -1296,7 +1296,7 @@ fn main() {
     <div>
       <div style="font-size:0.75rem;text-transform:uppercase;color:var(--text-dim);font-weight:700;margin-bottom:0.25rem;">Reproduce Authentically</div>
       <div class="repro-cmd">
-        <span>$</span> python tools/bench_compare.py 10
+        <span>$</span> python tools/bench_compare.py 15
       </div>
     </div>
     <button class="btn" onclick="copyCommand()">Copy Command</button>
@@ -1418,8 +1418,8 @@ fn main() {
   }
 
   function copyCommand() {
-    navigator.clipboard.writeText("python tools/bench_compare.py 3").then(() => {
-      showToast("Command copied: python tools/bench_compare.py 3");
+    navigator.clipboard.writeText("python tools/bench_compare.py 15").then(() => {
+      showToast("Command copied: python tools/bench_compare.py 15");
     });
   }
 
@@ -1432,7 +1432,7 @@ fn main() {
         });
       })
       .catch(() => {
-        navigator.clipboard.writeText("python tools/bench_compare.py 3");
+        navigator.clipboard.writeText("python tools/bench_compare.py 15");
         showToast("JSON copied!");
       });
   }
