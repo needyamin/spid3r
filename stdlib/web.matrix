@@ -1,0 +1,443 @@
+// stdlib/web.matrix - Modern web application framework for Spid3r.
+//
+// Features:
+//   - web_app() router creation (get, post, put, delete, use, listen)
+//   - URL parameter extraction (:param, *)
+//   - query string parser (parse_query)
+//   - form body parser (parse_form)
+//   - response helpers (json_response, html_response, text_response, redirect_response)
+//   - template engine with HTML escaping (escape_html, render_template)
+//   - cookie parser and setter (parse_cookies, set_cookie)
+//   - JWT sign and verify (jwt_sign, jwt_verify) using HMAC-SHA256 and base64
+
+// ------------------------------------------------------------ response helpers
+
+public fn json_response(status, data) {
+    let headers = map("content-type", "application/json; charset=utf-8");
+    return map(
+        "__http_response",
+        true,
+        "status",
+        status,
+        "headers",
+        headers,
+        "body",
+        json_write(data)
+    );
+}
+
+public fn html_response(status, html_content) {
+    let headers = map("content-type", "text/html; charset=utf-8");
+    return map(
+        "__http_response",
+        true,
+        "status",
+        status,
+        "headers",
+        headers,
+        "body",
+        string(html_content)
+    );
+}
+
+public fn text_response(status, text_content) {
+    let headers = map("content-type", "text/plain; charset=utf-8");
+    return map(
+        "__http_response",
+        true,
+        "status",
+        status,
+        "headers",
+        headers,
+        "body",
+        string(text_content)
+    );
+}
+
+public fn redirect_response(location) {
+    let headers = map("location", string(location));
+    return map("__http_response", true, "status", 302, "headers", headers, "body", "");
+}
+
+fn to_response(value) {
+    if value == null {
+        return map("__http_response", true, "status", 204, "headers", map(), "body", "");
+    }
+    let t = type_of(value);
+    if t == "map" {
+        if value.has("__http_response") {
+            return value;
+        }
+        return json_response(200, value);
+    }
+    if t == "string" {
+        return html_response(200, value);
+    }
+    if t == "list" {
+        return json_response(200, value);
+    }
+    return json_response(200, value);
+}
+
+// ------------------------------------------------------------ HTML templating
+
+public fn escape_html(s) {
+    let text = string(s);
+    return text
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace("\"", "&quot;")
+    .replace("'", "&#39;");
+}
+
+public fn render_template(tpl, ctx_map) {
+    let out = string(tpl);
+    if ctx_map == null or type_of(ctx_map) != "map" {
+        return out;
+    }
+    for k in ctx_map.keys() {
+        let raw_val = string(ctx_map[k]);
+        let esc_val = escape_html(raw_val);
+
+        // Unescaped triple braces {{{ key }}}
+        let rtag1 = "{{{ " + k + " }}}";
+        let rtag2 = "{{{" + k + "}}}";
+        out = out.replace(rtag1, raw_val).replace(rtag2, raw_val);
+
+        // Escaped double braces {{ key }}
+        let tag1 = "{{ " + k + " }}";
+        let tag2 = "{{" + k + "}}";
+        out = out.replace(tag1, esc_val).replace(tag2, esc_val);
+    }
+    return out;
+}
+
+// ------------------------------------------------------------ query & form parsing
+
+public fn parse_query(qs) {
+    let out = map();
+    if qs == null or qs == "" {
+        return out;
+    }
+    let query_str = string(qs);
+    if query_str.starts_with("?") {
+        query_str = query_str.slice(1);
+    }
+    for pair in query_str.split("&") {
+        if pair != "" {
+            let eq = pair.index_of("=");
+            if eq >= 0 {
+                let k = url_decode(pair.slice(0, eq));
+                let v = url_decode(pair.slice(eq + 1));
+                out.set(k, v);
+            } else {
+                let k = url_decode(pair);
+                out.set(k, "");
+            }
+        }
+    }
+    return out;
+}
+
+public fn parse_form(body) {
+    if body == null or body == "" {
+        return map();
+    }
+    let norm = string(body).replace("+", " ");
+    return parse_query(norm);
+}
+
+// ------------------------------------------------------------ cookies
+
+public fn parse_cookies(req_or_header) {
+    let out = map();
+    let header_val = "";
+    let t = type_of(req_or_header);
+    if t == "map" {
+        if req_or_header.has("headers") {
+            let h = req_or_header["headers"];
+            if h.has("cookie") {
+                header_val = h["cookie"];
+            } elif h.has("Cookie") {
+                header_val = h["Cookie"];
+            }
+        } elif req_or_header.has("cookie") {
+            header_val = req_or_header["cookie"];
+        }
+    } elif t == "string" {
+        header_val = req_or_header;
+    }
+    if header_val == "" {
+        return out;
+    }
+    for item in header_val.split(";") {
+        let trimmed = item.trim();
+        if trimmed != "" {
+            let eq = trimmed.index_of("=");
+            if eq >= 0 {
+                let k = trimmed.slice(0, eq).trim();
+                let v = trimmed.slice(eq + 1).trim();
+                out.set(k, v);
+            }
+        }
+    }
+    return out;
+}
+
+public fn set_cookie(res, name, value, opts) {
+    let cookie_str = name + "=" + string(value);
+    if opts != null and type_of(opts) == "map" {
+        if opts.has("path") {
+            cookie_str = cookie_str + "; Path=" + string(opts["path"]);
+        }
+        if opts.has("max_age") {
+            cookie_str = cookie_str + "; Max-Age=" + string(opts["max_age"]);
+        }
+        if opts.has("same_site") {
+            cookie_str = cookie_str + "; SameSite=" + string(opts["same_site"]);
+        }
+        if opts.has("http_only") and opts["http_only"] {
+            cookie_str = cookie_str + "; HttpOnly";
+        }
+        if opts.has("secure") and opts["secure"] {
+            cookie_str = cookie_str + "; Secure";
+        }
+    }
+    if not res.has("headers") {
+        res.set("headers", map());
+    }
+    res["headers"].set("set-cookie", cookie_str);
+    return res;
+}
+
+// ------------------------------------------------------------ JWT (HS256)
+
+fn b64url_encode_str(s) {
+    let b = bytes(s);
+    return b.to_base64().replace("+", "-").replace("/", "_").replace("=", "");
+}
+
+fn b64url_encode_bytes(b) {
+    return b.to_base64().replace("+", "-").replace("/", "_").replace("=", "");
+}
+
+fn b64url_decode_str(s) {
+    let res = s.replace("-", "+").replace("_", "/");
+    let rem = res.len() % 4;
+    if rem == 2 {
+        res = res + "==";
+    } elif rem == 3 {
+        res = res + "=";
+    } elif rem == 1 {
+        res = res + "===";
+    }
+    let b = bytes().from_base64(res);
+    let r = b.to_string();
+    return r.unwrap();
+}
+
+public fn jwt_sign(payload_map, secret) {
+    let header = map("alg", "HS256", "typ", "JWT");
+    let h_b64 = b64url_encode_str(json_write(header));
+    let p_b64 = b64url_encode_str(json_write(payload_map));
+    let signing_input = h_b64 + "." + p_b64;
+    let hex_sig = hmac_sha256(secret, signing_input);
+    let sig_bytes = bytes().from_hex(hex_sig);
+    let sig_b64 = b64url_encode_bytes(sig_bytes);
+    return signing_input + "." + sig_b64;
+}
+
+public fn jwt_verify(token, secret) {
+    let parts = token.split(".");
+    if parts.len() != 3 {
+        return err("invalid JWT: expected 3 dot-separated parts");
+    }
+    let signing_input = parts[0] + "." + parts[1];
+    let hex_sig = hmac_sha256(secret, signing_input);
+    let sig_bytes = bytes().from_hex(hex_sig);
+    let expected_sig = b64url_encode_bytes(sig_bytes);
+    if parts[2] != expected_sig {
+        return err("invalid JWT signature");
+    }
+    try {
+        let payload_json = b64url_decode_str(parts[1]);
+        return ok(json_parse(payload_json));
+    } catch(e) {
+        return err("failed to decode JWT payload: " + string(e));
+    }
+}
+
+// ------------------------------------------------------------ WebApp router
+
+fn match_route(pattern_parts, path_parts) {
+    let params = map();
+    let pat_len = pattern_parts.len();
+    let path_len = path_parts.len();
+
+    let i = 0;
+    while i < pat_len {
+        let pat = pattern_parts[i];
+        if pat == "*" {
+            let rest = list();
+            while i < path_len {
+                rest.push(path_parts[i]);
+                i = i + 1;
+            }
+            params.set("*", rest.join("/"));
+            return some(params);
+        }
+        if i >= path_len {
+            return none;
+        }
+        let seg = path_parts[i];
+        if pat.starts_with(":") {
+            let param_name = pat.slice(1);
+            params.set(param_name, seg);
+        } elif pat != seg {
+            return none;
+        }
+        i = i + 1;
+    }
+    if i < path_len {
+        return none;
+    }
+    return some(params);
+}
+
+public class WebApp {
+    public let routes;
+    public let middlewares;
+
+    public fn new() {
+        self.routes = list();
+        self.middlewares = list();
+    }
+
+    public fn route(self, method, path, handler) {
+        let parts = list();
+        for p in path.split("/") {
+            if p != "" {
+                parts.push(p);
+            }
+        }
+        self.routes.push(
+            map(
+                "method",
+                method.upper(),
+                "raw_path",
+                path,
+                "parts",
+                parts,
+                "handler",
+                handler
+            )
+        );
+    }
+
+    public fn get(self, path, handler) {
+        self.route("GET", path, handler);
+    }
+
+    public fn post(self, path, handler) {
+        self.route("POST", path, handler);
+    }
+
+    public fn put(self, path, handler) {
+        self.route("PUT", path, handler);
+    }
+
+    public fn delete(self, path, handler) {
+        self.route("DELETE", path, handler);
+    }
+
+    public fn use(self, middleware) {
+        self.middlewares.push(middleware);
+    }
+
+    public fn handle(self, req) {
+        if not req.has("params") {
+            req.set("params", map());
+        }
+        if req.has("raw_query") and not req.has("query") {
+            req.set("query", parse_query(req["raw_query"]));
+        }
+        if not req.has("cookies") {
+            req.set("cookies", parse_cookies(req));
+        }
+
+        // Run middlewares
+        for mw in self.middlewares {
+            let m_res = mw(req);
+            if m_res != null {
+                return to_response(m_res);
+            }
+        }
+
+        let req_method = "GET";
+        if req.has("method") {
+            req_method = req["method"].upper();
+        }
+        let req_path = "/";
+        if req.has("path") {
+            req_path = req["path"];
+        }
+        let path_parts = list();
+        for p in req_path.split("/") {
+            if p != "" {
+                path_parts.push(p);
+            }
+        }
+
+        for r in self.routes {
+            if r["method"] == req_method {
+                let match_res = match_route(r["parts"], path_parts);
+                if match_res.is_some() {
+                    let params = match_res.unwrap();
+                    for k in params.keys() {
+                        req["params"].set(k, params[k]);
+                    }
+                    let handler = r["handler"];
+                    let res = handler(req);
+                    return to_response(res);
+                }
+            }
+        }
+
+        return json_response(404, map("error", "Not Found", "path", req_path));
+    }
+
+    public fn listen(self, addr) {
+        let listener = tcp_listen(addr);
+        if listener.is_err() {
+            return listener;
+        }
+        let l = listener.unwrap();
+        println("Spid3r web_app listening on http://" + addr);
+        while true {
+            let conn = tcp_accept(l);
+            if conn.is_err() {
+                continue;
+            }
+            let s = conn.unwrap();
+            let app = self;
+            spawn fn() {
+                let req_res = http_read_request(s);
+                if req_res.is_ok() {
+                    let req = req_res.unwrap();
+                    let res = app.handle(req);
+                    let status = res["status"];
+                    let headers = res["headers"];
+                    let body = res["body"];
+                    http_write_response(s, status, headers, body);
+                }
+                tcp_close(s);
+            };
+        }
+        return ok(null);
+    }
+}
+
+public fn web_app() {
+    return new WebApp();
+}

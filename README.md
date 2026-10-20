@@ -342,6 +342,19 @@ returns `ok(map("code", exit, "stdout", …, "stderr", …))` or `err(msg)` when
 the process cannot be spawned or writes non-UTF-8 output. Each pipe is capped
 at 64 MiB.
 
+### First-party standard library modules (`./stdlib/`)
+
+Spid3r ships with four production-grade, zero-dependency first-party standard libraries located in `./stdlib/`. These are automatically discovered by the module resolver and support both flat and namespaced imports (`import "name" as alias;`):
+
+| Module | Focus & Features | Key APIs |
+|---|---|---|
+| **`stdlib/web.matrix`** | **Express / PHP Alternative**<br/>Router, middlewares, parameter extraction, forms, templates, cookies, JWT auth | `web_app()`, `app.get/post/put/delete`, `parse_query(qs)`, `parse_form(b)`, `json_response(st, d)`, `html_response(st, h)`, `escape_html(s)`, `render_template(t, ctx)`, `parse_cookies(req)`, `set_cookie(res, k, v, opts)`, `jwt_sign(payload, secret)`, `jwt_verify(token, secret)` |
+| **`stdlib/dataframe.matrix`** | **Pandas Alternative**<br/>Columnar table backed by native `vector` (numeric) and `list` (categorical) | `from_records(recs)`, `from_csv(path)`, `to_csv(df, path)`, `select(cols)`, `filter(pred)`, `sort_by(col, desc)`, `group_by(key, aggs)`, `inner_join(df2, on)`, `drop_na(col)`, `fill_na(col, val)`, `head(n)`, `describe()`, `print_table()` |
+| **`stdlib/stats.matrix`** | **SciPy Stats Alternative**<br/>Statistical reductions, distributions, correlation, hypothesis testing | `mean(x)`, `median(x)`, `mode(x)`, `variance(x, ddof)`, `std(x, ddof)`, `percentile(x, p)`, `quantile(x, q)`, `iqr(x)`, `covariance(x, y)`, `pearson(x, y)`, `spearman(x, y)`, `zscore(x)`, `normal_pdf(x, mu, s)`, `normal_cdf(x, mu, s)`, `t_test_ind(a, b)`, `chi_square(obs, exp)`, `train_test_split(X, y, ratio, seed)` |
+| **`stdlib/ml.matrix`** | **Scikit-Learn Alternative**<br/>Regression, classification, clustering, PCA decomposition, evaluation metrics | `linear_regression_fit(X, y)` & `predict`, `logistic_regression_fit(X, y, lr, epochs)` & `predict`, `knn_predict(X_tr, y_tr, X_te, k)`, `kmeans_fit(X, k, iters)`, `pca_fit_transform(X, n_comps)`, `accuracy`, `precision`, `recall`, `f1_score`, `confusion_matrix`, `mse`, `rmse`, `r2_score` |
+
+See [`docs/STANDARD_LIBRARY.md`](docs/STANDARD_LIBRARY.md) for full module API signatures and examples.
+
 ## Execution model
 
 ```mermaid

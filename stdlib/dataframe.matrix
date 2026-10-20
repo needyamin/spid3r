@@ -1,0 +1,615 @@
+// stdlib/dataframe.matrix - Fast, columnar data table module for Spid3r.
+//
+// Features:
+//   - Columnar table backed by native vector (numeric) and list (strings/mixed)
+//   - from_csv, to_csv, from_records, create_df
+//   - select, filter, sort_by, group_by (mean, sum, count, min, max)
+//   - inner_join, drop_na, fill_na, head, describe, print_table
+
+// ------------------------------------------------------------ DataFrame Class
+
+public class DataFrame {
+    public let col_names;
+    public let col_data;
+    public let num_rows;
+
+    public fn new(names, data, nrows) {
+        self.col_names = names;
+        self.col_data = data;
+        self.num_rows = nrows;
+    }
+
+    public fn columns(self) {
+        return self.col_names;
+    }
+
+    public fn shape(self) {
+        return list(self.num_rows, self.col_names.len());
+    }
+
+    public fn len(self) {
+        return self.num_rows;
+    }
+
+    public fn get_col(self, name) {
+        return self.col_data[name];
+    }
+
+    public fn get_row(self, i) {
+        let r = map();
+        for name in self.col_names {
+            r.set(name, self.col_data[name][i]);
+        }
+        return r;
+    }
+
+    public fn select(self, cols) {
+        return select(self, cols);
+    }
+
+    public fn filter(self, predicate_fn) {
+        return filter(self, predicate_fn);
+    }
+
+    public fn sort_by(self, col, desc) {
+        return sort_by(self, col, desc);
+    }
+
+    public fn group_by(self, key_col, agg_spec) {
+        return group_by(self, key_col, agg_spec);
+    }
+
+    public fn drop_na(self, col) {
+        return drop_na(self, col);
+    }
+
+    public fn fill_na(self, col, val) {
+        return fill_na(self, col, val);
+    }
+
+    public fn head(self, n) {
+        return head(self, n);
+    }
+
+    public fn describe(self) {
+        return describe(self);
+    }
+
+    public fn print_table(self) {
+        print_table(self);
+    }
+
+    public fn to_csv(self, path) {
+        return to_csv(self, path);
+    }
+
+    public fn to_records(self) {
+        let recs = list();
+        for let i = 0; i < self.num_rows; i = i + 1 {
+            recs.push(self.get_row(i));
+        }
+        return recs;
+    }
+}
+
+// ------------------------------------------------------------ Constructors
+
+public fn create_df(cols_map) {
+    let names = cols_map.keys();
+    let nrows = 0;
+    if names.len() > 0 {
+        nrows = cols_map[names[0]].len();
+    }
+    return new DataFrame(names, cols_map, nrows);
+}
+
+public fn from_records(list_of_maps) {
+    if list_of_maps == null or list_of_maps.len() == 0 {
+        return new DataFrame(list(), map(), 0);
+    }
+    let names = list_of_maps[0].keys();
+    let n = list_of_maps.len();
+    let data = map();
+
+    for name in names {
+        let vals = list();
+        let all_numeric = true;
+        for let r = 0; r < n; r = r + 1 {
+            let v = null;
+            if list_of_maps[r].has(name) {
+                v = list_of_maps[r][name];
+            }
+            vals.push(v);
+            if v == null or(type_of(v) != "int" and type_of(v) != "float") {
+                all_numeric = false;
+            }
+        }
+        if all_numeric and n > 0 {
+            data.set(name, vector(vals));
+        } else {
+            data.set(name, vals);
+        }
+    }
+    return new DataFrame(names, data, n);
+}
+
+public fn from_csv(path) {
+    let res = read_csv(path);
+    if res.is_err() {
+        return res;
+    }
+    let parsed = res.unwrap();
+    let headers = parsed["headers"];
+    let raw_rows = parsed["rows"];
+    let n = raw_rows.len();
+    let col_data = map();
+
+    for let c = 0; c < headers.len(); c = c + 1 {
+        let col_name = headers[c];
+        let vals = list();
+        let all_numeric = true;
+        for let r = 0; r < n; r = r + 1 {
+            let v = raw_rows[r][c];
+            vals.push(v);
+            if v == null or(type_of(v) != "int" and type_of(v) != "float") {
+                all_numeric = false;
+            }
+        }
+        if all_numeric and n > 0 {
+            col_data.set(col_name, vector(vals));
+        } else {
+            col_data.set(col_name, vals);
+        }
+    }
+    return ok(new DataFrame(headers, col_data, n));
+}
+
+public fn to_csv(df, path) {
+    let rows = list();
+    for let i = 0; i < df.num_rows; i = i + 1 {
+        let r = list();
+        for col in df.col_names {
+            r.push(df.col_data[col][i]);
+        }
+        rows.push(r);
+    }
+    return write_csv(path, df.col_names, rows);
+}
+
+// ------------------------------------------------------------ Table Operations
+
+public fn select(df, cols) {
+    let new_data = map();
+    for c in cols {
+        if df.col_data.has(c) {
+            new_data.set(c, df.col_data[c]);
+        }
+    }
+    return new DataFrame(cols, new_data, df.num_rows);
+}
+
+public fn filter(df, predicate_fn) {
+    let kept_indices = list();
+    for let i = 0; i < df.num_rows; i = i + 1 {
+        let row = df.get_row(i);
+        if predicate_fn(row) {
+            kept_indices.push(i);
+        }
+    }
+    let new_n = kept_indices.len();
+    let new_data = map();
+
+    for col in df.col_names {
+        let old_col = df.col_data[col];
+        if type_of(old_col) == "vector" {
+            let v = vector(new_n);
+            for let j = 0; j < new_n; j = j + 1 {
+                v[j] = old_col[kept_indices[j]];
+            }
+            new_data.set(col, v);
+        } else {
+            let l = list();
+            for let j = 0; j < new_n; j = j + 1 {
+                l.push(old_col[kept_indices[j]]);
+            }
+            new_data.set(col, l);
+        }
+    }
+    return new DataFrame(df.col_names, new_data, new_n);
+}
+
+public fn sort_by(df, col, desc) {
+    let n = df.num_rows;
+    let indices = list();
+    for let i = 0; i < n; i = i + 1 {
+        indices.push(i);
+    }
+    let col_vals = df.col_data[col];
+
+    // Simple, reliable insertion sort for indices
+    for let i = 1; i < n; i = i + 1 {
+        let cur_idx = indices[i];
+        let cur_val = col_vals[cur_idx];
+        let j = i - 1;
+        while j >= 0 {
+            let prev_idx = indices[j];
+            let prev_val = col_vals[prev_idx];
+            let should_swap = false;
+            if desc {
+                if prev_val < cur_val {
+                    should_swap = true;
+                }
+            } else {
+                if prev_val > cur_val {
+                    should_swap = true;
+                }
+            }
+            if should_swap {
+                indices[j + 1] = indices[j];
+                j = j - 1;
+            } else {
+                break;
+            }
+        }
+        indices[j + 1] = cur_idx;
+    }
+
+    let new_data = map();
+    for c in df.col_names {
+        let old_col = df.col_data[c];
+        if type_of(old_col) == "vector" {
+            let v = vector(n);
+            for let j = 0; j < n; j = j + 1 {
+                v[j] = old_col[indices[j]];
+            }
+            new_data.set(c, v);
+        } else {
+            let l = list();
+            for let j = 0; j < n; j = j + 1 {
+                l.push(old_col[indices[j]]);
+            }
+            new_data.set(c, l);
+        }
+    }
+    return new DataFrame(df.col_names, new_data, n);
+}
+
+public fn group_by(df, key_col, agg_spec) {
+    let groups = map();
+    let n = df.num_rows;
+    for let i = 0; i < n; i = i + 1 {
+        let k = string(df.col_data[key_col][i]);
+        if not groups.has(k) {
+            groups.set(k, list());
+        }
+        groups[k].push(i);
+    }
+
+    let agg_cols = agg_spec.keys();
+    let result_records = list();
+
+    for grp_k in groups.keys() {
+        let rec = map(key_col, grp_k);
+        let idxs = groups[grp_k];
+        let grp_size = idxs.len();
+
+        for target in agg_cols {
+            let op = agg_spec[target];
+            let out_col_name = target + "_" + op;
+            let target_col = df.col_data[target];
+
+            if op == "count" {
+                rec.set(out_col_name, grp_size);
+            } elif op == "sum" {
+                let s = 0.0;
+                for idx in idxs {
+                    let v = target_col[idx];
+                    if v != null {
+                        s = s + float(v);
+                    }
+                }
+                rec.set(out_col_name, s);
+            } elif op == "mean" {
+                let s = 0.0;
+                let cnt = 0;
+                for idx in idxs {
+                    let v = target_col[idx];
+                    if v != null {
+                        s = s + float(v);
+                        cnt = cnt + 1;
+                    }
+                }
+                if cnt > 0 {
+                    rec.set(out_col_name, s / float(cnt));
+                } else {
+                    rec.set(out_col_name, 0.0);
+                }
+            } elif op == "min" {
+                let min_val = null;
+                for idx in idxs {
+                    let v = target_col[idx];
+                    if v != null {
+                        if min_val == null or v < min_val {
+                            min_val = v;
+                        }
+                    }
+                }
+                rec.set(out_col_name, min_val);
+            } elif op == "max" {
+                let max_val = null;
+                for idx in idxs {
+                    let v = target_col[idx];
+                    if v != null {
+                        if max_val == null or v > max_val {
+                            max_val = v;
+                        }
+                    }
+                }
+                rec.set(out_col_name, max_val);
+            }
+        }
+        result_records.push(rec);
+    }
+    return from_records(result_records);
+}
+
+public fn inner_join(df1, df2, on_col) {
+    let lookup = map();
+    for let j = 0; j < df2.num_rows; j = j + 1 {
+        let key = string(df2.col_data[on_col][j]);
+        if not lookup.has(key) {
+            lookup.set(key, list());
+        }
+        lookup[key].push(j);
+    }
+
+    let joined_records = list();
+    for let i = 0; i < df1.num_rows; i = i + 1 {
+        let key = string(df1.col_data[on_col][i]);
+        if lookup.has(key) {
+            let row1 = df1.get_row(i);
+            for j in lookup[key] {
+                let row2 = df2.get_row(j);
+                let merged = map();
+                for c in row1.keys() {
+                    merged.set(c, row1[c]);
+                }
+                for c in row2.keys() {
+                    if c != on_col {
+                        let final_name = c;
+                        if merged.has(c) {
+                            final_name = c + "_right";
+                        }
+                        merged.set(final_name, row2[c]);
+                    }
+                }
+                joined_records.push(merged);
+            }
+        }
+    }
+    return from_records(joined_records);
+}
+
+public fn drop_na(df, col) {
+    let kept_indices = list();
+    for let i = 0; i < df.num_rows; i = i + 1 {
+        let keep = true;
+        if col != null {
+            if df.col_data[col][i] == null {
+                keep = false;
+            }
+        } else {
+            for c in df.col_names {
+                if df.col_data[c][i] == null {
+                    keep = false;
+                    break;
+                }
+            }
+        }
+        if keep {
+            kept_indices.push(i);
+        }
+    }
+
+    let new_n = kept_indices.len();
+    let new_data = map();
+    for c in df.col_names {
+        let old_col = df.col_data[c];
+        if type_of(old_col) == "vector" {
+            let v = vector(new_n);
+            for let j = 0; j < new_n; j = j + 1 {
+                v[j] = old_col[kept_indices[j]];
+            }
+            new_data.set(c, v);
+        } else {
+            let l = list();
+            for let j = 0; j < new_n; j = j + 1 {
+                l.push(old_col[kept_indices[j]]);
+            }
+            new_data.set(c, l);
+        }
+    }
+    return new DataFrame(df.col_names, new_data, new_n);
+}
+
+public fn fill_na(df, col, val) {
+    let new_data = map();
+    for c in df.col_names {
+        let old_col = df.col_data[c];
+        if c == col {
+            let l = list();
+            for let i = 0; i < df.num_rows; i = i + 1 {
+                let v = old_col[i];
+                if v == null {
+                    l.push(val);
+                } else {
+                    l.push(v);
+                }
+            }
+            // Check if can be vector
+            let all_num = true;
+            for x in l {
+                if type_of(x) != "int" and type_of(x) != "float" {
+                    all_num = false;
+                    break;
+                }
+            }
+            if all_num and l.len() > 0 {
+                new_data.set(c, vector(l));
+            } else {
+                new_data.set(c, l);
+            }
+        } else {
+            new_data.set(c, old_col);
+        }
+    }
+    return new DataFrame(df.col_names, new_data, df.num_rows);
+}
+
+public fn head(df, n) {
+    let limit = n;
+    if limit > df.num_rows {
+        limit = df.num_rows;
+    }
+    let new_data = map();
+    for c in df.col_names {
+        let old_col = df.col_data[c];
+        if type_of(old_col) == "vector" {
+            new_data.set(c, old_col.slice(0, limit));
+        } else {
+            let l = list();
+            for let i = 0; i < limit; i = i + 1 {
+                l.push(old_col[i]);
+            }
+            new_data.set(c, l);
+        }
+    }
+    return new DataFrame(df.col_names, new_data, limit);
+}
+
+public fn describe(df) {
+    let summary_records = list();
+    for c in df.col_names {
+        let col = df.col_data[c];
+        let is_num =(type_of(col) == "vector");
+        if not is_num and df.num_rows > 0 {
+            let first_val = col[0];
+            if type_of(first_val) == "int" or type_of(first_val) == "float" {
+                is_num = true;
+            }
+        }
+        if is_num and df.num_rows > 0 {
+            let sum_val = 0.0;
+            let min_val = float(col[0]);
+            let max_val = float(col[0]);
+            let count_val = 0;
+            let num_list = list();
+
+            for let i = 0; i < df.num_rows; i = i + 1 {
+                let v = col[i];
+                if v != null {
+                    let f = float(v);
+                    sum_val = sum_val + f;
+                    count_val = count_val + 1;
+                    if f < min_val {
+                        min_val = f;
+                    }
+                    if f > max_val {
+                        max_val = f;
+                    }
+                    num_list.push(f);
+                }
+            }
+            let mean_val = 0.0;
+            let std_val = 0.0;
+            if count_val > 0 {
+                mean_val = sum_val / float(count_val);
+                let sq_diff_sum = 0.0;
+                for x in num_list {
+                    let diff = x - mean_val;
+                    sq_diff_sum = sq_diff_sum + diff * diff;
+                }
+                std_val = sqrt(sq_diff_sum / float(count_val));
+            }
+
+            summary_records.push(
+                map(
+                    "column",
+                    c,
+                    "count",
+                    count_val,
+                    "mean",
+                    mean_val,
+                    "std",
+                    std_val,
+                    "min",
+                    min_val,
+                    "max",
+                    max_val
+                )
+            );
+        }
+    }
+    return from_records(summary_records);
+}
+
+public fn print_table(df) {
+    if df.num_rows == 0 {
+        println("(empty DataFrame)");
+        return;
+    }
+    let widths = map();
+    for c in df.col_names {
+        let max_w = c.len();
+        let show_rows = 15;
+        if show_rows > df.num_rows {
+            show_rows = df.num_rows;
+        }
+        for let i = 0; i < show_rows; i = i + 1 {
+            let s = string(df.col_data[c][i]);
+            if s.len() > max_w {
+                max_w = s.len();
+            }
+        }
+        widths.set(c, max_w);
+    }
+
+    let header_line = "| ";
+    let sep_line = "|-";
+    for c in df.col_names {
+        let w = widths[c];
+        let col_pad = c;
+        while col_pad.len() < w {
+            col_pad = col_pad + " ";
+        }
+        header_line = header_line + col_pad + " | ";
+
+        let sep_pad = "";
+        while sep_pad.len() < w {
+            sep_pad = sep_pad + "-";
+        }
+        sep_line = sep_line + sep_pad + "-|-";
+    }
+    println(header_line);
+    println(sep_line);
+
+    let display_rows = 15;
+    if display_rows > df.num_rows {
+        display_rows = df.num_rows;
+    }
+    for let i = 0; i < display_rows; i = i + 1 {
+        let row_line = "| ";
+        for c in df.col_names {
+            let w = widths[c];
+            let val_str = string(df.col_data[c][i]);
+            while val_str.len() < w {
+                val_str = val_str + " ";
+            }
+            row_line = row_line + val_str + " | ";
+        }
+        println(row_line);
+    }
+    if df.num_rows > display_rows {
+        println("... (" + string(df.num_rows - display_rows) + " more rows)");
+    }
+}

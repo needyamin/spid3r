@@ -40,7 +40,13 @@ fn flatten_stmts(
     in_progress: &mut HashSet<PathBuf>,
 ) -> Result<(), Diagnostic> {
     for s in stmts {
-        if let Stmt::Import { path, .. } = s {
+        if let Stmt::Import { path, alias, .. } = s {
+            if alias.is_some() {
+                return Err(Diagnostic::new(
+                    Phase::Semantic,
+                    format!("'import as alias' is not supported by the native backend yet; run it with --engine vm"),
+                ));
+            }
             let resolved = resolve_module(importer_file, path)?;
             let canon = crate::modules::canonical_key(&resolved);
             if done.contains(&canon) {

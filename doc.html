@@ -782,6 +782,7 @@
       <div class="group">Runtime</div>
       <ol>
         <li><a href="#stdlib">Standard library</a></li>
+        <li><a href="#first-party-stdlib">First-party standard libraries</a></li>
         <li><a href="#networking">Networking &amp; HTTP</a></li>
         <li><a href="#wasm">WebAssembly &amp; Browser</a></li>
         <li><a href="#gc">Memory model &amp; GC</a></li>
@@ -2184,8 +2185,104 @@ fn main() {
             </table>
           </div>
 
-          <p class="lead">GUI builtins (<code>gui_*</code>) exist only in builds with the <code>gui</code>
-            feature; see <a href="#tooling">Developer tools</a>.</p>
+          <h2 id="first-party-stdlib">First-Party Standard Libraries (<code>./stdlib/</code>)</h2>
+          <p class="lead">Spid3r ships with four zero-dependency first-party standard libraries in <code>./stdlib/</code>
+            (automatically searched by the module loader). Every module runs with 100% feature parity across both
+            the tree-walking interpreter and the bytecode VM.
+          </p>
+
+          <div class="callout good"><b>Zero External Dependencies</b>
+            All four standard libraries are built entirely on native Spid3r primitives, matrices, vectors, networking kernels,
+            and cryptographic algorithms. They require zero external packages.
+          </div>
+
+          <h3>1. <code>stdlib/web.matrix</code> — Express / PHP Alternative</h3>
+          <p>Production-ready web framework with router, URL parameter extraction, query/form parsing, cookie handling, HTML template rendering with XSS escaping, and HMAC-SHA256 JWT tokens:</p>
+          <pre data-lang="spid3r"><code>import "web" as w;
+
+fn main() {
+    let app = w.web_app();
+
+    // Route with URL parameter
+    app.get("/api/users/:id", fn(req) {
+        return w.json_response(200, map("user_id", req.params["id"], "active", true));
+    });
+
+    // Template rendering with automatic HTML escaping
+    app.get("/welcome", fn(req) {
+        let tpl = "&lt;h1&gt;Welcome, {{ user }}!&lt;/h1&gt;";
+        let html = w.render_template(tpl, map("user", "Alice"));
+        return w.html_response(200, html);
+    });
+
+    // JWT sign and verify
+    let token = w.jwt_sign(map("sub", "usr_101", "role", "admin"), "secret-key");
+    let verified = w.jwt_verify(token, "secret-key"); // ok(payload)
+}</code></pre>
+
+          <h3>2. <code>stdlib/dataframe.matrix</code> — Pandas Alternative</h3>
+          <p>High-performance columnar DataFrame backed by native contiguous <code>vector</code> (for numeric columns) and dynamic lists (for categorical/mixed data):</p>
+          <pre data-lang="spid3r"><code>import "dataframe" as df;
+
+fn main() {
+    let records = list(
+        map("name", "Alice", "dept", "Eng", "salary", 120.0),
+        map("name", "Bob", "dept", "Eng", "salary", 110.0),
+        map("name", "Charlie", "dept", "Sales", "salary", 95.0)
+    );
+    let table = df.from_records(records);
+
+    // Filter, group by, and describe
+    let eng = table.filter(fn(r) { return r["dept"] == "Eng"; });
+    let stats = table.group_by("dept", map("salary", "mean"));
+    let summary = table.describe();
+    table.print_table();
+}</code></pre>
+
+          <h3>3. <code>stdlib/stats.matrix</code> — SciPy Stats Alternative</h3>
+          <p>Complete statistical computing suite built directly on native vector reductions:</p>
+          <pre data-lang="spid3r"><code>import "stats" as st;
+
+fn main() {
+    let x = list(1.0, 2.0, 3.0, 4.0, 5.0);
+    let y = list(2.0, 4.0, 6.0, 8.0, 10.0);
+
+    let m = st.mean(x);
+    let med = st.median(x);
+    let iqr_val = st.iqr(x);
+    let r = st.pearson(x, y); // 1.0
+    let z = st.zscore(x);
+
+    // Probability distributions &amp; hypothesis testing
+    let p_norm = st.normal_cdf(0.0, 0.0, 1.0); // 0.5
+    let t_test = st.t_test_ind(x, y); // map("statistic", ..., "df", ..., "pvalue", ...)
+    let split = st.train_test_split(x, y, 0.25, 42);
+}</code></pre>
+
+          <h3>4. <code>stdlib/ml.matrix</code> — Scikit-Learn Alternative</h3>
+          <p>Classical machine learning models and metrics leveraging native matrix decomposition (<code>solve</code>, <code>transpose</code>, <code>mul</code>, <code>eigen_sym</code>):</p>
+          <pre data-lang="spid3r"><code>import "ml" as ml;
+
+fn main() {
+    // Linear regression with normal equations &amp; Ridge fallback
+    let X = matrix(4, 1);
+    X.set(0, 0, 1.0); X.set(1, 0, 2.0); X.set(2, 0, 3.0); X.set(3, 0, 4.0);
+    let y = vector(list(3.0, 5.0, 7.0, 9.0));
+
+    let lin = ml.linear_regression_fit(X, y);
+    let preds = ml.linear_regression_predict(lin, X);
+    let r2 = ml.r2_score(y, preds); // 1.0
+
+    // Logistic regression, k-NN, k-Means, and PCA
+    let log_model = ml.logistic_regression_fit(X, vector(list(0.0, 0.0, 1.0, 1.0)), 0.1, 200);
+    let km = ml.kmeans_fit(X, 2, 50);
+    let pca = ml.pca_fit_transform(X, 1);
+
+    // Evaluation metrics
+    let acc = ml.accuracy(y, preds);
+    let f1 = ml.f1_score(y, preds);
+    let mse_val = ml.mse(y, preds);
+}</code></pre>
 
           <h2 id="networking">Networking &amp; HTTP Web Servers</h2>
           <p>Spid3r ships with a production-grade TCP networking layer in the core toolchain (built on Rust's

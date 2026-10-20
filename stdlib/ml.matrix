@@ -1,0 +1,623 @@
+// ============================================================
+// stdlib/ml.matrix - First-party Machine Learning Module for Spid3r
+// Built on native vector and matrix (solve, transpose, mul, eigen_sym).
+// Scikit-Learn alternative.
+// ============================================================
+
+// ------------------------------------------------------------ Internal Helpers
+
+fn to_vec(x) {
+    if x == null {
+        return vector(0);
+    }
+    let t = type_of(x);
+    if t == "vector" {
+        return x;
+    } elif t == "list" {
+        let n = x.len();
+        let v = vector(n);
+        for let i = 0; i < n; i = i + 1 {
+            v[i] = float(x[i]);
+        }
+        return v;
+    } elif t == "int" or t == "float" {
+        let v = vector(1);
+        v[0] = float(x);
+        return v;
+    }
+    return vector(0);
+}
+
+fn to_mat(x) {
+    if x == null {
+        return matrix(0, 0);
+    }
+    let t = type_of(x);
+    if t == "matrix" {
+        return x;
+    } elif t == "list" {
+        let r = x.len();
+        if r == 0 {
+            return matrix(0, 0);
+        }
+        let c = x[0].len();
+        let m = matrix(r, c);
+        for let i = 0; i < r; i = i + 1 {
+            let row = x[i];
+            for let j = 0; j < c; j = j + 1 {
+                m.set(i, j, float(row[j]));
+            }
+        }
+        return m;
+    }
+    return matrix(0, 0);
+}
+
+fn sigmoid(z) {
+    if z <-40.0 {
+        return 0.0;
+    }
+    if z > 40.0 {
+        return 1.0;
+    }
+    return 1.0 /(1.0 + exp(-z));
+}
+
+// ------------------------------------------------------------ Linear Regression
+
+public fn linear_regression_fit(X_in, y_in) {
+    let X = to_mat(X_in);
+    let y = to_vec(y_in);
+    let n = X.rows();
+    let d = X.cols();
+
+    // Augment X with intercept column of 1s: shape n x (d + 1)
+    let X_ext = matrix(n, d + 1);
+    for let i = 0; i < n; i = i + 1 {
+        X_ext.set(i, 0, 1.0);
+        for let j = 0; j < d; j = j + 1 {
+            X_ext.set(i, j + 1, X.get(i, j));
+        }
+    }
+
+    // Normal equations: (X_ext^T * X_ext) * beta = X_ext^T * y
+    let Xt = X_ext.transpose();
+    let A = Xt.mul(X_ext);
+
+    // Compute b = Xt * y
+    let b = vector(d + 1);
+    for let j = 0; j <= d; j = j + 1 {
+        let sum = 0.0;
+        for let i = 0; i < n; i = i + 1 {
+            sum = sum + X_ext.get(i, j) * y[i];
+        }
+        b[j] = sum;
+    }
+
+    // Solve for beta; fallback to Ridge regularization if singular
+    let beta = null;
+    try {
+        beta = A.solve(b);
+    } catch(e) {
+        // Ridge regularization: add lambda * I
+        let ridge_lambda = 0.0001;
+        for let j = 0; j <= d; j = j + 1 {
+            A.set(j, j, A.get(j, j) + ridge_lambda);
+        }
+        beta = A.solve(b);
+    }
+
+    return map(
+        "model_type",
+        "linear_regression",
+        "weights",
+        beta,
+        "n_features",
+        d,
+        "has_intercept",
+        true
+    );
+}
+
+public fn linear_regression_predict(model, X_in) {
+    let X = to_mat(X_in);
+    let n = X.rows();
+    let d = X.cols();
+    let weights = model["weights"];
+    let preds = vector(n);
+
+    for let i = 0; i < n; i = i + 1 {
+        let val = weights[0];
+        for let j = 0; j < d; j = j + 1 {
+            val = val + X.get(i, j) * weights[j + 1];
+        }
+        preds[i] = val;
+    }
+    return preds;
+}
+
+// ------------------------------------------------------------ Logistic Regression
+
+public fn logistic_regression_fit(X_in, y_in, lr_in, epochs_in) {
+    let X = to_mat(X_in);
+    let y = to_vec(y_in);
+    let n = X.rows();
+    let d = X.cols();
+
+    let lr = 0.1;
+    if lr_in != null {
+        lr = float(lr_in);
+    }
+    let epochs = 100;
+    if epochs_in != null {
+        epochs = int(epochs_in);
+    }
+
+    // Weights vector: [intercept, w1, w2, ..., wd]
+    let w = vector(d + 1);
+
+    for let ep = 0; ep < epochs; ep = ep + 1 {
+        // Compute predictions and errors
+        let errors = vector(n);
+        for let i = 0; i < n; i = i + 1 {
+            let z = w[0];
+            for let j = 0; j < d; j = j + 1 {
+                z = z + X.get(i, j) * w[j + 1];
+            }
+            let p = sigmoid(z);
+            errors[i] = p - y[i];
+        }
+
+        // Compute gradients
+        let g0 = errors.mean();
+        w[0] = w[0] - lr * g0;
+
+        for let j = 0; j < d; j = j + 1 {
+            let gj = 0.0;
+            for let i = 0; i < n; i = i + 1 {
+                gj = gj + errors[i] * X.get(i, j);
+            }
+            gj = gj / float(n);
+            w[j + 1] = w[j + 1] - lr * gj;
+        }
+    }
+
+    return map(
+        "model_type",
+        "logistic_regression",
+        "weights",
+        w,
+        "n_features",
+        d
+    );
+}
+
+public fn logistic_regression_predict_proba(model, X_in) {
+    let X = to_mat(X_in);
+    let n = X.rows();
+    let d = X.cols();
+    let w = model["weights"];
+    let probas = vector(n);
+
+    for let i = 0; i < n; i = i + 1 {
+        let z = w[0];
+        for let j = 0; j < d; j = j + 1 {
+            z = z + X.get(i, j) * w[j + 1];
+        }
+        probas[i] = sigmoid(z);
+    }
+    return probas;
+}
+
+public fn logistic_regression_predict(model, X_in) {
+    let probas = logistic_regression_predict_proba(model, X_in);
+    let n = probas.len();
+    let preds = vector(n);
+    for let i = 0; i < n; i = i + 1 {
+        if probas[i] >= 0.5 {
+            preds[i] = 1.0;
+        } else {
+            preds[i] = 0.0;
+        }
+    }
+    return preds;
+}
+
+// ------------------------------------------------------------ k-Nearest Neighbors
+
+public fn knn_predict(X_train_in, y_train_in, X_test_in, k_in) {
+    let X_tr = to_mat(X_train_in);
+    let y_tr = to_vec(y_train_in);
+    let X_te = to_mat(X_test_in);
+
+    let n_train = X_tr.rows();
+    let n_test = X_te.rows();
+    let d = X_tr.cols();
+
+    let k = 3;
+    if k_in != null {
+        k = int(k_in);
+    }
+    if k > n_train {
+        k = n_train;
+    }
+    if k < 1 {
+        k = 1;
+    }
+
+    let preds = vector(n_test);
+
+    for let i = 0; i < n_test; i = i + 1 {
+        // Compute Euclidean distances to all train points
+        let dists = vector(n_train);
+        for let r = 0; r < n_train; r = r + 1 {
+            let sum_sq = 0.0;
+            for let c = 0; c < d; c = c + 1 {
+                let diff = X_te.get(i, c) - X_tr.get(r, c);
+                sum_sq = sum_sq + diff * diff;
+            }
+            dists[r] = sqrt(sum_sq);
+        }
+
+        // Sort indices by distance
+        let order = dists.argsort();
+
+        // Majority vote among top k neighbors
+        let votes = map();
+        let max_cnt = 0;
+        let best_lbl = y_tr[order[0]];
+
+        for let ki = 0; ki < k; ki = ki + 1 {
+            let lbl = y_tr[order[ki]];
+            let key = string(lbl);
+            let cnt = 1;
+            if votes.has(key) {
+                cnt = votes[key] + 1;
+            }
+            votes.set(key, cnt);
+            if cnt > max_cnt {
+                max_cnt = cnt;
+                best_lbl = lbl;
+            }
+        }
+        preds[i] = best_lbl;
+    }
+    return preds;
+}
+
+// ------------------------------------------------------------ k-Means Clustering
+
+public fn kmeans_fit(X_in, k_in, max_iter_in) {
+    let X = to_mat(X_in);
+    let n = X.rows();
+    let d = X.cols();
+
+    let k = 2;
+    if k_in != null {
+        k = int(k_in);
+    }
+    if k > n {
+        k = n;
+    }
+    let max_iter = 100;
+    if max_iter_in != null {
+        max_iter = int(max_iter_in);
+    }
+
+    // Initialize centroids evenly spaced across rows
+    let centroids = matrix(k, d);
+    let step = n / k;
+    if step < 1 {
+        step = 1;
+    }
+    for let ci = 0; ci < k; ci = ci + 1 {
+        let r =(ci * step) % n;
+        for let j = 0; j < d; j = j + 1 {
+            centroids.set(ci, j, X.get(r, j));
+        }
+    }
+
+    let labels = vector(n);
+
+    for let iter = 0; iter < max_iter; iter = iter + 1 {
+        // 1. Assign points to nearest centroid
+        for let i = 0; i < n; i = i + 1 {
+            let min_dist = 1.0e30;
+            let best_c = 0;
+            for let ci = 0; ci < k; ci = ci + 1 {
+                let dist = 0.0;
+                for let j = 0; j < d; j = j + 1 {
+                    let diff = X.get(i, j) - centroids.get(ci, j);
+                    dist = dist + diff * diff;
+                }
+                if dist < min_dist {
+                    min_dist = dist;
+                    best_c = ci;
+                }
+            }
+            labels[i] = float(best_c);
+        }
+
+        // 2. Recompute centroids
+        let new_centroids = matrix(k, d);
+        let counts = vector(k);
+
+        for let i = 0; i < n; i = i + 1 {
+            let ci = int(labels[i]);
+            counts[ci] = counts[ci] + 1.0;
+            for let j = 0; j < d; j = j + 1 {
+                new_centroids.set(ci, j, new_centroids.get(ci, j) + X.get(i, j));
+            }
+        }
+
+        let max_shift = 0.0;
+        for let ci = 0; ci < k; ci = ci + 1 {
+            let cnt = counts[ci];
+            if cnt > 0.0 {
+                for let j = 0; j < d; j = j + 1 {
+                    let avg = new_centroids.get(ci, j) / cnt;
+                    let diff = abs(avg - centroids.get(ci, j));
+                    if diff > max_shift {
+                        max_shift = diff;
+                    }
+                    centroids.set(ci, j, avg);
+                }
+            }
+        }
+
+        if max_shift < 1.0e-5 {
+            break;
+        }
+    }
+
+    // Compute inertia: sum of squared distances to closest centroid
+    let inertia = 0.0;
+    for let i = 0; i < n; i = i + 1 {
+        let ci = int(labels[i]);
+        for let j = 0; j < d; j = j + 1 {
+            let diff = X.get(i, j) - centroids.get(ci, j);
+            inertia = inertia + diff * diff;
+        }
+    }
+
+    return map(
+        "model_type",
+        "kmeans",
+        "centroids",
+        centroids,
+        "labels",
+        labels,
+        "inertia",
+        inertia,
+        "k",
+        k
+    );
+}
+
+public fn kmeans_predict(model, X_in) {
+    let X = to_mat(X_in);
+    let centroids = model["centroids"];
+    let k = model["k"];
+    let n = X.rows();
+    let d = X.cols();
+    let preds = vector(n);
+
+    for let i = 0; i < n; i = i + 1 {
+        let min_dist = 1.0e30;
+        let best_c = 0;
+        for let ci = 0; ci < k; ci = ci + 1 {
+            let dist = 0.0;
+            for let j = 0; j < d; j = j + 1 {
+                let diff = X.get(i, j) - centroids.get(ci, j);
+                dist = dist + diff * diff;
+            }
+            if dist < min_dist {
+                min_dist = dist;
+                best_c = ci;
+            }
+        }
+        preds[i] = float(best_c);
+    }
+    return preds;
+}
+
+// ------------------------------------------------------------ Principal Component Analysis (PCA)
+
+public fn pca_fit_transform(X_in, n_components_in) {
+    let X = to_mat(X_in);
+    let n = X.rows();
+    let d = X.cols();
+
+    let k = 2;
+    if n_components_in != null {
+        k = int(n_components_in);
+    }
+    if k > d {
+        k = d;
+    }
+    if k < 1 {
+        k = 1;
+    }
+
+    // 1. Center the data (subtract column means)
+    let col_means = vector(d);
+    for let j = 0; j < d; j = j + 1 {
+        let sum = 0.0;
+        for let i = 0; i < n; i = i + 1 {
+            sum = sum + X.get(i, j);
+        }
+        col_means[j] = sum / float(n);
+    }
+
+    let X_centered = matrix(n, d);
+    for let i = 0; i < n; i = i + 1 {
+        for let j = 0; j < d; j = j + 1 {
+            X_centered.set(i, j, X.get(i, j) - col_means[j]);
+        }
+    }
+
+    // 2. Covariance matrix: C = (1 / (n - 1)) * X_centered^T * X_centered
+    let Xt = X_centered.transpose();
+    let cov = Xt.mul(X_centered);
+    let denom = float(n - 1);
+    if denom <= 0.0 {
+        denom = 1.0;
+    }
+    let C = cov.scale(1.0 / denom);
+
+    // 3. Symmetric eigen-decomposition (values sorted ascending)
+    let eig = C.eigen_sym();
+    let eig_vals = eig["values"];
+    let eig_vecs = eig["vectors"];
+
+    // 4. Extract top k components (last k columns from ascending order)
+    let components = matrix(d, k);
+    let top_eigenvals = vector(k);
+
+    for let comp = 0; comp < k; comp = comp + 1 {
+        let col_idx = d - 1 - comp;
+        top_eigenvals[comp] = eig_vals[col_idx];
+        for let r = 0; r < d; r = r + 1 {
+            components.set(r, comp, eig_vecs.get(r, col_idx));
+        }
+    }
+
+    // 5. Transform: X_pca = X_centered * components
+    let X_pca = X_centered.mul(components);
+
+    return map(
+        "transformed",
+        X_pca,
+        "components",
+        components,
+        "mean",
+        col_means,
+        "eigenvalues",
+        top_eigenvals
+    );
+}
+
+// ------------------------------------------------------------ Evaluation Metrics
+
+public fn accuracy(y_true_in, y_pred_in) {
+    let yt = to_vec(y_true_in);
+    let yp = to_vec(y_pred_in);
+    let n = yt.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let correct = 0;
+    for let i = 0; i < n; i = i + 1 {
+        if yt[i] == yp[i] {
+            correct = correct + 1;
+        }
+    }
+    return float(correct) / float(n);
+}
+
+public fn confusion_matrix(y_true_in, y_pred_in) {
+    let yt = to_vec(y_true_in);
+    let yp = to_vec(y_pred_in);
+    let n = yt.len();
+
+    let tp = 0;
+    let fp = 0;
+    let tn = 0;
+    let fn_cnt = 0;
+
+    for let i = 0; i < n; i = i + 1 {
+        let t = yt[i];
+        let p = yp[i];
+        if t == 1.0 and p == 1.0 {
+            tp = tp + 1;
+        } elif t == 0.0 and p == 1.0 {
+            fp = fp + 1;
+        } elif t == 0.0 and p == 0.0 {
+            tn = tn + 1;
+        } elif t == 1.0 and p == 0.0 {
+            fn_cnt = fn_cnt + 1;
+        }
+    }
+
+    return map(
+        "tp",
+        tp,
+        "fp",
+        fp,
+        "tn",
+        tn,
+        "fn",
+        fn_cnt
+    );
+}
+
+public fn precision(y_true_in, y_pred_in) {
+    let cm = confusion_matrix(y_true_in, y_pred_in);
+    let denom = cm["tp"] + cm["fp"];
+    if denom == 0 {
+        return 0.0;
+    }
+    return float(cm["tp"]) / float(denom);
+}
+
+public fn recall(y_true_in, y_pred_in) {
+    let cm = confusion_matrix(y_true_in, y_pred_in);
+    let denom = cm["tp"] + cm["fn"];
+    if denom == 0 {
+        return 0.0;
+    }
+    return float(cm["tp"]) / float(denom);
+}
+
+public fn f1_score(y_true_in, y_pred_in) {
+    let p = precision(y_true_in, y_pred_in);
+    let r = recall(y_true_in, y_pred_in);
+    let denom = p + r;
+    if denom == 0.0 {
+        return 0.0;
+    }
+    return 2.0 *(p * r) / denom;
+}
+
+public fn mse(y_true_in, y_pred_in) {
+    let yt = to_vec(y_true_in);
+    let yp = to_vec(y_pred_in);
+    let n = yt.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let sum = 0.0;
+    for let i = 0; i < n; i = i + 1 {
+        let diff = yt[i] - yp[i];
+        sum = sum + diff * diff;
+    }
+    return sum / float(n);
+}
+
+public fn rmse(y_true_in, y_pred_in) {
+    return sqrt(mse(y_true_in, y_pred_in));
+}
+
+public fn r2_score(y_true_in, y_pred_in) {
+    let yt = to_vec(y_true_in);
+    let yp = to_vec(y_pred_in);
+    let n = yt.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let m = yt.mean();
+    let ss_res = 0.0;
+    let ss_tot = 0.0;
+
+    for let i = 0; i < n; i = i + 1 {
+        let diff_res = yt[i] - yp[i];
+        ss_res = ss_res + diff_res * diff_res;
+        let diff_tot = yt[i] - m;
+        ss_tot = ss_tot + diff_tot * diff_tot;
+    }
+
+    if ss_tot == 0.0 {
+        return 1.0;
+    }
+    return 1.0 -(ss_res / ss_tot);
+}

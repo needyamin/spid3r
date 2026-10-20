@@ -1116,7 +1116,12 @@ impl<'ctx> Ir<'ctx> {
                     let slot = self.temp_slot(next);
                     self.declare(var, VarLoc::Local(slot));
                 }
+                self.loops.push(LoopFrame {
+                    break_bb: end_bb,
+                    continue_bb: head_bb,
+                });
                 self.compile_block(&body.stmts)?;
+                self.loops.pop();
                 self.pop_scope();
                 self.br_to(head_bb);
 

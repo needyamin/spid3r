@@ -1,0 +1,520 @@
+// ============================================================
+// stdlib/stats.matrix - First-party Statistics Module for Spid3r
+// Built on native vector reductions and math kernels.
+// SciPy Stats alternative.
+// ============================================================
+
+public const PI = 3.141592653589793;
+public const SQRT_2PI = 2.5066282746310005;
+public const SQRT_2 = 1.4142135623730951;
+
+// ------------------------------------------------------------ Internal Helpers
+
+fn to_vector(x) {
+    if x == null {
+        return vector(0);
+    }
+    let t = type_of(x);
+    if t == "vector" {
+        return x;
+    } elif t == "list" {
+        let v = vector(x.len());
+        for let i = 0; i < x.len(); i = i + 1 {
+            v[i] = float(x[i]);
+        }
+        return v;
+    } elif t == "int" or t == "float" {
+        let v = vector(1);
+        v[0] = float(x);
+        return v;
+    }
+    return vector(0);
+}
+
+fn math_erf(z) {
+    let sign = 1.0;
+    let x = z;
+    if x < 0.0 {
+        sign =-1.0;
+        x =-x;
+    }
+    // Abramowitz and Stegun 7.1.26
+    let p = 0.3275911;
+    let a1 = 0.254829592;
+    let a2 =-0.284496736;
+    let a3 = 1.421413741;
+    let a4 =-1.453152027;
+    let a5 = 1.061405429;
+
+    let t = 1.0 /(1.0 + p * x);
+    let poly = t *(a1 + t *(a2 + t *(a3 + t *(a4 + t * a5))));
+    let val = 1.0 - poly * exp(-x * x);
+    return sign * val;
+}
+
+fn rank_data(v) {
+    let n = v.len();
+    if n == 0 {
+        return vector(0);
+    }
+    let order = v.argsort();
+    let ranks = vector(n);
+
+    let i = 0;
+    while i < n {
+        let j = i;
+        while j < n - 1 and v[order[j]] == v[order[j + 1]] {
+            j = j + 1;
+        }
+        // Fractional rank average for ties
+        let avg_rank = float(i + j + 2) / 2.0;
+        for let k = i; k <= j; k = k + 1 {
+            ranks[order[k]] = avg_rank;
+        }
+        i = j + 1;
+    }
+    return ranks;
+}
+
+// ------------------------------------------------------------ Summary Statistics
+
+public fn mean(x) {
+    let v = to_vector(x);
+    if v.len() == 0 {
+        return 0.0;
+    }
+    return v.mean();
+}
+
+public fn median(x) {
+    let v = to_vector(x);
+    let n = v.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let s = v.copy();
+    s.sort();
+    let mid = n / 2;
+    if n % 2 == 1 {
+        return s[mid];
+    } else {
+        return(s[mid - 1] + s[mid]) / 2.0;
+    }
+}
+
+public fn mode(x) {
+    let v = to_vector(x);
+    let n = v.len();
+    if n == 0 {
+        return null;
+    }
+    let counts = map();
+    let best_val = v[0];
+    let best_cnt = 0;
+
+    for let i = 0; i < n; i = i + 1 {
+        let item = v[i];
+        let key = string(item);
+        let cur = 1;
+        if counts.has(key) {
+            cur = counts[key] + 1;
+        }
+        counts.set(key, cur);
+        if cur > best_cnt {
+            best_cnt = cur;
+            best_val = item;
+        }
+    }
+    return best_val;
+}
+
+public fn variance(x, ddof) {
+    let v = to_vector(x);
+    let n = v.len();
+    if n == 0 {
+        return 0.0;
+    }
+    let d = 0;
+    if ddof != null {
+        d = ddof;
+    }
+    if d == 0 {
+        return v.variance();
+    }
+    if n <= d {
+        return 0.0;
+    }
+    let m = v.mean();
+    let s = 0.0;
+    for let i = 0; i < n; i = i + 1 {
+        let diff = v[i] - m;
+        s = s + diff * diff;
+    }
+    return s / float(n - d);
+}
+
+public fn std(x, ddof) {
+    return sqrt(variance(x, ddof));
+}
+
+public fn percentile(x, p) {
+    let v = to_vector(x);
+    let n = v.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return v[0];
+    }
+    let s = v.copy();
+    s.sort();
+
+    let pf = float(p);
+    if pf <= 0.0 {
+        return s[0];
+    }
+    if pf >= 100.0 {
+        return s[n - 1];
+    }
+
+    let idx_f =(pf / 100.0) * float(n - 1);
+    let i_low = int(floor(idx_f));
+    let i_high = int(ceil(idx_f));
+    let weight = idx_f - float(i_low);
+    return s[i_low] *(1.0 - weight) + s[i_high] * weight;
+}
+
+public fn quantile(x, q) {
+    return percentile(x, float(q) * 100.0);
+}
+
+public fn iqr(x) {
+    return percentile(x, 75.0) - percentile(x, 25.0);
+}
+
+// ------------------------------------------------------------ Correlation & Covariance
+
+public fn covariance(x, y) {
+    let vx = to_vector(x);
+    let vy = to_vector(y);
+    let n = vx.len();
+    if n != vy.len() or n < 2 {
+        return 0.0;
+    }
+    let mx = vx.mean();
+    let my = vy.mean();
+    let cov_sum = 0.0;
+    for let i = 0; i < n; i = i + 1 {
+        cov_sum = cov_sum +(vx[i] - mx) *(vy[i] - my);
+    }
+    return cov_sum / float(n - 1);
+}
+
+public fn pearson(x, y) {
+    let vx = to_vector(x);
+    let vy = to_vector(y);
+    let n = vx.len();
+    if n != vy.len() or n < 2 {
+        return 0.0;
+    }
+    let mx = vx.mean();
+    let my = vy.mean();
+    let num = 0.0;
+    let den_x = 0.0;
+    let den_y = 0.0;
+    for let i = 0; i < n; i = i + 1 {
+        let dx = vx[i] - mx;
+        let dy = vy[i] - my;
+        num = num + dx * dy;
+        den_x = den_x + dx * dx;
+        den_y = den_y + dy * dy;
+    }
+    let denom = sqrt(den_x * den_y);
+    if denom == 0.0 {
+        return 0.0;
+    }
+    return num / denom;
+}
+
+public fn spearman(x, y) {
+    let vx = to_vector(x);
+    let vy = to_vector(y);
+    let n = vx.len();
+    if n != vy.len() or n < 2 {
+        return 0.0;
+    }
+    let rx = rank_data(vx);
+    let ry = rank_data(vy);
+    return pearson(rx, ry);
+}
+
+public fn zscore(x) {
+    let v = to_vector(x);
+    let n = v.len();
+    if n == 0 {
+        return vector(0);
+    }
+    let m = v.mean();
+    let s = v.std();
+    if s == 0.0 {
+        return vector(n);
+    }
+    let out = vector(n);
+    for let i = 0; i < n; i = i + 1 {
+        out[i] =(v[i] - m) / s;
+    }
+    return out;
+}
+
+// ------------------------------------------------------------ Distributions & Inference
+
+public fn normal_pdf(x, mu, sigma) {
+    let m = 0.0;
+    let s = 1.0;
+    if mu != null {
+        m = float(mu);
+    }
+    if sigma != null {
+        s = float(sigma);
+    }
+    if s <= 0.0 {
+        return 0.0;
+    }
+    let z =(float(x) - m) / s;
+    let factor = 1.0 /(s * SQRT_2PI);
+    return factor * exp(-0.5 * z * z);
+}
+
+public fn normal_cdf(x, mu, sigma) {
+    let m = 0.0;
+    let s = 1.0;
+    if mu != null {
+        m = float(mu);
+    }
+    if sigma != null {
+        s = float(sigma);
+    }
+    if s <= 0.0 {
+        if float(x) < m {
+            return 0.0;
+        }
+        return 1.0;
+    }
+    let z =(float(x) - m) /(s * SQRT_2);
+    return 0.5 *(1.0 + math_erf(z));
+}
+
+public fn t_test_ind(a, b) {
+    let va = to_vector(a);
+    let vb = to_vector(b);
+    let na = float(va.len());
+    let nb = float(vb.len());
+    if na < 2.0 or nb < 2.0 {
+        return map("statistic", 0.0, "df", 0.0, "pvalue", 1.0);
+    }
+    let ma = va.mean();
+    let mb = vb.mean();
+    let vara = variance(va, 1);
+    let varb = variance(vb, 1);
+
+    let se = sqrt(vara / na + varb / nb);
+    let t_stat = 0.0;
+    if se > 0.0 {
+        t_stat =(ma - mb) / se;
+    }
+
+    let num_df =(vara / na + varb / nb) *(vara / na + varb / nb);
+    let den_df =(vara / na) *(vara / na) /(na - 1.0) +(varb / nb) *(varb / nb) /(nb - 1.0);
+    let df = na + nb - 2.0;
+    if den_df > 0.0 {
+        df = num_df / den_df;
+    }
+
+    let t2 = t_stat * t_stat;
+    let z = sqrt(df * ln(1.0 + t2 / df));
+    if t_stat < 0.0 {
+        z =-z;
+    }
+    let p_val = 2.0 *(1.0 - normal_cdf(abs(z), 0.0, 1.0));
+    if p_val > 1.0 {
+        p_val = 1.0;
+    }
+    return map("statistic", t_stat, "df", df, "pvalue", p_val);
+}
+
+public fn chi_square(observed, expected) {
+    let o_vec = to_vector(observed);
+    let k = o_vec.len();
+    if k < 2 {
+        return map("statistic", 0.0, "df", 0, "pvalue", 1.0);
+    }
+    let e_vec = vector(k);
+    if expected == null {
+        let total_obs = o_vec.sum();
+        let uniform_exp = total_obs / float(k);
+        for let i = 0; i < k; i = i + 1 {
+            e_vec[i] = uniform_exp;
+        }
+    } else {
+        e_vec = to_vector(expected);
+    }
+
+    let stat = 0.0;
+    for let i = 0; i < k; i = i + 1 {
+        let e_val = e_vec[i];
+        if e_val > 0.0 {
+            let diff = o_vec[i] - e_val;
+            stat = stat +(diff * diff) / e_val;
+        }
+    }
+    let df = k - 1;
+
+    let p_val = 1.0;
+    if stat > 0.0 and df > 0 {
+        let ratio = stat / float(df);
+        let cube_root = pow(ratio, 0.3333333333333333);
+        let mean_trans = 1.0 - 2.0 /(9.0 * float(df));
+        let std_trans = sqrt(2.0 /(9.0 * float(df)));
+        let z =(cube_root - mean_trans) / std_trans;
+        p_val = 1.0 - normal_cdf(z, 0.0, 1.0);
+        if p_val < 0.0 {
+            p_val = 0.0;
+        }
+        if p_val > 1.0 {
+            p_val = 1.0;
+        }
+    }
+
+    return map("statistic", stat, "df", df, "pvalue", p_val);
+}
+
+// ------------------------------------------------------------ Data Splitting
+
+public fn train_test_split(X, y, test_ratio, seed) {
+    let ratio = 0.25;
+    if test_ratio != null {
+        ratio = float(test_ratio);
+    }
+
+    let n = 0;
+    let x_type = type_of(X);
+    if x_type == "matrix" {
+        n = X.rows();
+    } elif x_type == "instance" and X.num_rows != null {
+        n = X.num_rows;
+    } elif x_type == "list" or x_type == "vector" {
+        n = X.len();
+    } elif y != null {
+        n = y.len();
+    }
+
+    let indices = list();
+    for let i = 0; i < n; i = i + 1 {
+        indices.push(i);
+    }
+
+    let rng_state = 123456789;
+    if seed != null {
+        rng_state = int(seed);
+    }
+    for let i = n - 1; i > 0; i = i - 1 {
+        rng_state =(rng_state * 1103515245 + 12345) % 2147483648;
+        if rng_state < 0 {
+            rng_state =-rng_state;
+        }
+        let j = rng_state %(i + 1);
+        let tmp = indices[i];
+        indices[i] = indices[j];
+        indices[j] = tmp;
+    }
+
+    let test_count = int(round(float(n) * ratio));
+    if test_count < 1 and n > 1 {
+        test_count = 1;
+    }
+    let train_count = n - test_count;
+
+    let train_idx = list();
+    let test_idx = list();
+    for let i = 0; i < train_count; i = i + 1 {
+        train_idx.push(indices[i]);
+    }
+    for let i = train_count; i < n; i = i + 1 {
+        test_idx.push(indices[i]);
+    }
+
+    let x_train = null;
+    let x_test = null;
+    if x_type == "matrix" {
+        let cols = X.cols();
+        let m_train = matrix(train_count, cols);
+        for let r = 0; r < train_count; r = r + 1 {
+            let orig_r = train_idx[r];
+            for let c = 0; c < cols; c = c + 1 {
+                m_train.set(r, c, X.get(orig_r, c));
+            }
+        }
+        let m_test = matrix(test_count, cols);
+        for let r = 0; r < test_count; r = r + 1 {
+            let orig_r = test_idx[r];
+            for let c = 0; c < cols; c = c + 1 {
+                m_test.set(r, c, X.get(orig_r, c));
+            }
+        }
+        x_train = m_train;
+        x_test = m_test;
+    } elif x_type == "vector" {
+        let v_train = vector(train_count);
+        for let i = 0; i < train_count; i = i + 1 {
+            v_train[i] = X[train_idx[i]];
+        }
+        let v_test = vector(test_count);
+        for let i = 0; i < test_count; i = i + 1 {
+            v_test[i] = X[test_idx[i]];
+        }
+        x_train = v_train;
+        x_test = v_test;
+    } else {
+        let l_train = list();
+        for let i = 0; i < train_count; i = i + 1 {
+            l_train.push(X[train_idx[i]]);
+        }
+        let l_test = list();
+        for let i = 0; i < test_count; i = i + 1 {
+            l_test.push(X[test_idx[i]]);
+        }
+        x_train = l_train;
+        x_test = l_test;
+    }
+
+    let y_train = null;
+    let y_test = null;
+    if y != null {
+        let y_type = type_of(y);
+        if y_type == "vector" {
+            let v_train = vector(train_count);
+            for let i = 0; i < train_count; i = i + 1 {
+                v_train[i] = y[train_idx[i]];
+            }
+            let v_test = vector(test_count);
+            for let i = 0; i < test_count; i = i + 1 {
+                v_test[i] = y[test_idx[i]];
+            }
+            y_train = v_train;
+            y_test = v_test;
+        } else {
+            let l_train = list();
+            for let i = 0; i < train_count; i = i + 1 {
+                l_train.push(y[train_idx[i]]);
+            }
+            let l_test = list();
+            for let i = 0; i < test_count; i = i + 1 {
+                l_test.push(y[test_idx[i]]);
+            }
+            y_train = l_train;
+            y_test = l_test;
+        }
+    }
+
+    return map("X_train", x_train, "X_test", x_test, "y_train", y_train, "y_test", y_test);
+}
