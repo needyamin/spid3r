@@ -91,3 +91,33 @@ example files (24 programs + 1 shared module), 3 fuzz targets.
 * **Fuzz targets are not run locally.** No nightly toolchain / cargo-fuzz on this
   machine (the audit noted the same), so the job is CI-only; the targets were
   updated for the lib rename but have not been executed here.
+
+## 6. CI follow-up (2026-10-21): every job red on Rust 1.99
+
+After Stage 4 was pushed, **all 7 CI jobs failed at the Clippy step** (run
+`39484446401`, commit `e49a3da`) while the same command was green locally. The
+cause was a toolchain skew, not a lint in the new code:
+
+* local `rustc` was **1.98.1**, CI installs `dtolnay/rust-toolchain@stable` =
+  **1.99.1**;
+* 1.99 renamed `AtomicUsize::fetch_update` to `try_update` and deprecated the old
+  name; `-D warnings` promotes a deprecation to an error, so
+  `src/sched/mod.rs::enter_blocked` broke the *library* — which every job
+  compiles (core, GUI, wasm).
+
+Fix and prevention:
+
+1. `enter_blocked` now uses a `compare_exchange_weak` loop, which is spelled the
+   same in every stable release (no deprecated API either side of the rename).
+2. `rust-toolchain.toml` pins **1.99.1** (+ clippy, rustfmt, wasm32), so local
+   and CI compile with the same compiler; `fuzz/rust-toolchain.toml` pins
+   nightly for cargo-fuzz (libfuzzer needs it).
+3. CI installs the pinned version explicitly (`dtolnay/rust-toolchain@master` +
+   `toolchain: "1.99.1"`); upgrading is a deliberate two-file change.
+4. `Cargo.toml` records `rust-version = "1.99"`.
+5. `actions/checkout@v4` → `@v7` and `actions/upload-artifact@v4` → `@v7`
+   (the v4 actions run on the deprecated Node 20 runtime).
+
+Verified with the pinned toolchain, in CI order: core clippy 0 warnings, rustfmt
+clean, 484 core tests, differential 25/25, `spid3r fmt --check` clean, GUI clippy
++ 10/10, wasm build + clippy + artifact, native clippy + 6/6.

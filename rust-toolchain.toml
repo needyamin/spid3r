@@ -1,0 +1,15 @@
+# Pinned Rust toolchain — keep this in sync with .github/workflows/ci.yml.
+#
+# Why pin: CI installs "latest stable" for the -D warnings lint gate. Rust 1.99
+# renamed `AtomicUsize::fetch_update` to `try_update` and deprecated the old
+# name, which turned every CI job red while the local 1.98 toolchain was still
+# green. A pinned channel makes "works on my machine" and CI the same compiler;
+# upgrades become a deliberate change (bump here + in ci.yml, run the gates).
+#
+# rustup honours this file automatically for `cargo`/`rustc` in this directory.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+# The wasm32 target is part of the gate (WebAssembly Runtime CI job).
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

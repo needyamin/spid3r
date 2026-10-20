@@ -16,7 +16,14 @@ Everything below assumes the repository root as the working directory.
 
 ## Prerequisites
 
-- **Rust** — any recent stable (edition 2021).
+- **Rust** — **1.99.1**, pinned in `rust-toolchain.toml` (rustup installs it
+  automatically on the first `cargo` invocation in this directory). The version
+  is pinned because CI lints with `-D warnings`: a new stable can deprecate an
+  API and turn the whole matrix red overnight (Rust 1.99 renamed
+  `AtomicUsize::fetch_update` to `try_update`, which is exactly what happened).
+  To upgrade: bump `rust-toolchain.toml` **and** the `toolchain:` inputs in
+  `.github/workflows/ci.yml`, then run the gates. Edition 2021; `rust-version`
+  in `Cargo.toml` records the MSRV.
 - **A C toolchain / linker** — only needed for the `native` feature:
   - Windows: MSVC (`link.exe`) from Visual Studio Build Tools **and** the
     Windows 10/11 SDK.

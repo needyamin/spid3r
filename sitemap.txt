@@ -44,6 +44,9 @@ GaliLang/
                       Staticlib = spid3r_lang.lib / libspid3r_lang.a (the
                       pre-rename name is still searched for old installs).
   Cargo.lock          committed (binary application)
+  rust-toolchain.toml pinned Rust 1.99.1 + clippy/rustfmt + wasm32 (keep in sync
+                      with the `toolchain:` inputs in .github/workflows/ci.yml;
+                      `fuzz/rust-toolchain.toml` pins nightly for cargo-fuzz)
   build.rs            links LLVM C API only when feature "native" is on; stages
                       and builds Windows installer in release mode (nested
                       release build; SPID3R_NO_INSTALLER=1 skips it). The

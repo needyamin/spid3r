@@ -93,10 +93,19 @@ impl Drop for BlockedGuard {
 /// re-counts the thread when the wait returns. A no-op on a thread that never
 /// entered through an engine entry point (never underflows).
 pub fn enter_blocked() -> BlockedGuard {
-    let counted = ACTIVE
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-        .is_ok();
-    BlockedGuard { counted }
+    // A compare-exchange loop rather than `fetch_update`/`try_update`: the
+    // latter was renamed in Rust 1.99 (deprecated old name), and this crate
+    // must build without deprecation warnings on both sides of that change.
+    let mut current = ACTIVE.load(Ordering::SeqCst);
+    loop {
+        let Some(next) = current.checked_sub(1) else {
+            return BlockedGuard { counted: false };
+        };
+        match ACTIVE.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return BlockedGuard { counted: true },
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 /// Number of threads currently executing Spid3r code (see [`ACTIVE`]).

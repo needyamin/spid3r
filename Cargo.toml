@@ -2,6 +2,8 @@
 name = "spid3r"
 version = "1.0.0"
 edition = "2021"
+# MSRV: the toolchain is pinned in rust-toolchain.toml and ci.yml.
+rust-version = "1.99"
 description = "Spid3r - A professional programming language. The compiler and VM are written in Rust."
 license = "MIT"
 default-run = "spid3r"

@@ -1,0 +1,5 @@
+# cargo-fuzz needs the nightly compiler (libfuzzer + sanitizer flags). This file
+# is nearer than the repository root's rust-toolchain.toml, so rustup uses
+# nightly for everything under fuzz/ and the pinned stable elsewhere.
+[toolchain]
+channel = "nightly"

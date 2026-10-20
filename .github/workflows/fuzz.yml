@@ -36,7 +36,7 @@ jobs:
         target: [fuzz_lexer, fuzz_parser, fuzz_bytecode]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@nightly
@@ -59,7 +59,7 @@ jobs:
       # A crash leaves the reproducer under fuzz/artifacts/<target>/.
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/

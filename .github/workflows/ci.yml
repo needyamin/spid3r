@@ -19,11 +19,15 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Pinned to rust-toolchain.toml: `-D warnings` makes a new stable's lints
+      # a hard CI break (Rust 1.99 deprecated `fetch_update` and turned every job
+      # red while the local 1.98 toolchain was green). Bump both together.
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           components: clippy, rustfmt
 
       - name: Clippy (core, zero warnings)
@@ -52,7 +56,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install Linux WebView dependencies
         if: runner.os == 'Linux'
@@ -65,9 +69,10 @@ jobs:
             librsvg2-dev \
             xvfb
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           components: clippy
 
       - name: Clippy (GUI feature, zero warnings)
@@ -86,11 +91,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Install Rust toolchain with wasm32 target
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain with wasm32 target (pinned)
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.1"
           targets: wasm32-unknown-unknown
           components: clippy
 
