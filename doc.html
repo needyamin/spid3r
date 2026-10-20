@@ -871,8 +871,11 @@
         </div>
 
         <h2 id="install">Installation</h2>
-        <p>Spid3r builds from source with a recent stable Rust toolchain (edition 2021) and, for the
-          default build, LLVM 18.1+. From the repository root:</p>
+        <p>Spid3r builds from source with Rust <strong>1.99.1</strong>, pinned in
+          <code>rust-toolchain.toml</code> (rustup installs it automatically on the first <code>cargo</code>
+          command in the repository), and, for the default build, LLVM 18.1+. The pin exists because CI lints
+          with <code>-D warnings</code>: a new stable that deprecates an API would otherwise turn the whole
+          matrix red. From the repository root:</p>
         <pre data-lang="sh"><code>cargo build                 # debug binary     -> target/debug/spid3r(.exe)
 cargo build --release       # optimized binary -> target/release/spid3r(.exe)
 cargo test                  # unit, integration, and differential tests</code></pre>
@@ -915,6 +918,10 @@ cargo build --release --no-default-features                  # zero-dependency c
           or <code>PATH</code>; without it the
           step is skipped with a warning. Set <code>SPID3R_NO_INSTALLER=1</code> to skip it.
         </p>
+        <p>The WebView2 bootstrapper is <strong>not</strong> downloaded by default — a release build performs no
+          network access. Opt in with <code>SPID3R_FETCH_WEBVIEW2=1</code>; the download is verified against a
+          pinned SHA-256 (override with <code>SPID3R_WEBVIEW2_SHA256</code>) and a partial or tampered file is
+          discarded, so the installer is built without it rather than with something unverified.</p>
 
         <h2 id="quickstart">Quick start</h2>
         <p>Create <code>hello.matrix</code>:</p>
@@ -1797,8 +1804,9 @@ fn main() {
           </tr>
           <tr>
             <td><code>t.join()</code></td>
-            <td>Block until finished and return the value (or re-raise the error). Repeatable: joining twice returns the
-              same value.</td>
+            <td>Block until finished and return the value, or re-raise the failure. A thrown value crosses the
+              boundary <em>as the value</em>, so <code>catch</code> rebinds the original map/object rather than a
+              string. Repeatable: joining twice returns the same value.</td>
           </tr>
           <tr>
             <td><code>t.status()</code></td>
@@ -1862,6 +1870,40 @@ fn main() {
           <code>yield()</code>, and <code>spawn_process(cmd, args)</code> (synchronous; see the
           <a href="#stdlib">standard library</a>).
         </p>
+        <h3>Scheduler &amp; resource limits</h3>
+        <p>Tasks run on a process-wide pool that starts at the machine's CPU count and grows on demand, so a task
+          parked in <code>recv</code>, <code>join</code>, <code>mutex.lock</code>, or <code>sleep_ms</code> never
+          starves work that is waiting behind it.</p>
+        <table>
+          <tr>
+            <th>Aspect</th>
+            <th>Behavior</th>
+          </tr>
+          <tr>
+            <td>Workers</td>
+            <td class="wrap">One worker per outstanding task, up to <code>SPID3R_MAX_WORKERS</code> (default
+              <code>256</code>); extra workers retire after 10&nbsp;s idle. At the ceiling a stall is reported on
+              stderr with the variable to raise instead of hanging silently.</td>
+          </tr>
+          <tr>
+            <td>Ready queue</td>
+            <td class="wrap">Bounded by <code>SPID3R_QUEUE_CAP</code> (default <code>65536</code> jobs).
+              <code>spawn</code> grows the pool first and then blocks the producer until a worker takes a job, so a
+              spawn storm cannot exhaust memory and no task is dropped.</td>
+          </tr>
+          <tr>
+            <td>Program exit</td>
+            <td class="wrap">Waits up to <code>SPID3R_TASK_DRAIN_MS</code> (default <code>2000</code> ms) for tasks
+              <code>main</code> left running — their output is not lost — then reports what is still running and
+              exits <code>0</code>. The worker threads are then joined, not killed mid-write.</td>
+          </tr>
+          <tr>
+            <td><code>gc_collect()</code></td>
+            <td class="wrap">Runs only when no <em>other</em> thread is executing Spid3r code; tasks parked in a
+              blocking wait hold their values on their own stacks and do not block a collection. While another
+              thread is genuinely running it fails with a clean, catchable error.</td>
+          </tr>
+        </table>
 
         <h2 id="typing">Gradual typing</h2>
         <p>Annotations are optional everywhere, and unannotated code stays fully dynamic. When present,
@@ -2165,7 +2207,8 @@ fn main() {
           <tr>
             <td><code>gc_collect()</code> · <code>gc_live_cells()</code></td>
             <td>int</td>
-            <td>Force a cycle-collection pass; count live tracked cells (see <a href="#gc">Memory model</a>).</td>
+            <td>Force a cycle-collection pass (refused with a clean error while another thread is
+              <em>running</em> Spid3r code); count live tracked cells (see <a href="#gc">Memory model</a>).</td>
           </tr>
           <tr>
             <td><code>weak(v)</code> · <code>deref(w)</code></td>
@@ -2206,6 +2249,7 @@ fn main() {
               <td><code>4.0</code> (floats keep a decimal point)</td>
             </tr>
           </table>
+        </div>
           <h3>Networking &amp; HTTP</h3>
           <p>Built-in TCP socket primitives and HTTP/1.1 framing with zero external dependencies (see <a
               href="#networking">Networking &amp; HTTP guide</a> below):</p>
@@ -2525,7 +2569,9 @@ console.log(formatted.code);  // "let a = 1 + 2;\nprintln(a);\n"</code></pre>
             <code>bst</code>, <code>heap</code>, <code>priority_queue</code>, <code>graph</code>,
             <code>trie</code>, <code>matrix</code>, <code>ref</code>, <code>option</code>/<code>result</code>
             wrappers, and class instances). It runs <strong>automatically at statement boundaries</strong> (on
-            by default; set <code>SPID3R_GC=0</code> to disable). <code>gc_collect()</code> forces a pass,
+            by default; set <code>SPID3R_GC=0</code> to disable). <code>gc_collect()</code> forces a pass (it
+            refuses with a clean error while another thread is <em>running</em> Spid3r code — parked tasks hold
+            their values on their own stacks and do not count),
             <code>gc_live_cells()</code> inspects the tracked heap, and <code>weak(v)</code> / <code>deref(w)</code>
             provide explicit non-owning references when desired. Design notes: <a href="docs/GC.md">docs/GC.md</a>.
           </div>
@@ -2637,9 +2683,11 @@ console.log(formatted.code);  // "let a = 1 + 2;\nprintln(a);\n"</code></pre>
                 package is named after the directory, and existing files are never overwritten.</td>
             </tr>
             <tr>
-              <td><code>install</code></td>
+              <td><code>install [--update]</code></td>
               <td>Vendor dependencies into <code>vendor/</code> and write <code>spider.lock</code> (git commits pinned,
-                SHA-256 per dependency); verifies a registry package's <code>dist/sha256.txt</code> when present.</td>
+                SHA-256 per dependency); verifies a registry package's <code>dist/sha256.txt</code> when present.
+                A re-install reproduces the locked commits; <code>--update</code> re-resolves them to the current
+                <code>rev</code>/branch tip.</td>
             </tr>
             <tr>
               <td><code>dist [-o out] [--no-opt]</code></td>
@@ -2684,9 +2732,19 @@ extras  = { git = "https://example/extras", rev = "main" }   # git dependency
 serde   = { version = "^1.0" }                               # local registry ($SPID3R_REGISTRY)</code></pre>
           <ul>
             <li><strong>Install:</strong> <code>spid3r install</code> vendors each dependency's sources into
-              <code>vendor/&lt;name&gt;/</code> and writes a deterministic <code>spider.lock</code>. Git
-              dependencies are pinned to the resolved commit, and every vendored tree has a SHA-256 hash.
+              <code>vendor/&lt;name&gt;/</code> and writes a deterministic <code>spider.lock</code>. A re-install
+              <em>reproduces</em> the commit recorded there, so a moving branch cannot drift under you;
+              <code>spid3r install --update</code> is the explicit way to move to a newer upstream commit. Every
+              vendored tree is hashed over <strong>every file</strong> under <code>src/</code> as raw bytes
+              (<code>path</code> NUL <code>contents</code> NUL, sorted, <code>/</code> separators).
               Re-running is idempotent; a tampered or stale <code>vendor/</code> tree is re-synced.
+            </li>
+            <li><strong>Git transports:</strong> a manifest may point at <code>https://</code>,
+              <code>ssh://</code>, or scp-like <code>user@host:path</code> URLs. Local paths and
+              <code>file://</code> require <code>SPID3R_ALLOW_LOCAL_GIT_DEPS=1</code>; plaintext
+              <code>http://</code>/<code>git://</code> require <code>SPID3R_ALLOW_INSECURE_GIT=1</code>; git's
+              <code>ext::</code> "run this command" transport is rejected outright, because a dependency
+              manifest must never be able to execute a command during <code>install</code>.
             </li>
             <li><strong>Version constraints:</strong> <code>^1.0</code> (same major), <code>&gt;=1.2</code>,
               <code>=1.2.3</code>, or an exact version, checked against the dependency's own manifest.
@@ -2694,7 +2752,10 @@ serde   = { version = "^1.0" }                               # local registry ($
             <li><strong>Local registry:</strong> <code>{ version = "…" }</code> resolves from
               <code>$SPID3R_REGISTRY</code>, an offline directory of <code>&lt;name&gt;/&lt;version&gt;/</code>
               packages. A package may ship <code>dist/sha256.txt</code>; <code>install</code> verifies the
-              vendored tree against it, and <code>spid3r pack</code> prints the matching line.
+              vendored tree against it, and <code>spid3r pack</code> prints the matching line. The hash covers
+              every file under <code>src/</code> as raw bytes (regenerate a <code>sha256.txt</code> produced
+              before 2026-10-21: the older construction skipped non-<code>.matrix</code> files and decoded
+              contents lossily).
             </li>
             <li><strong>Workspaces:</strong> <code>[workspace] members = […]</code> share one
               <code>vendor/</code> and lockfile, with name-conflict detection.
@@ -2889,6 +2950,28 @@ cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
               <td><code>SPID3R_GC</code></td>
               <td><code>0</code> disables automatic cycle collection; <code>gc_collect()</code> still works.</td>
             </tr>
+            <tr>
+              <td><code>SPID3R_MAX_WORKERS</code></td>
+              <td>Ceiling for grow-on-demand task workers (default <code>256</code>). Raise it for programs with
+                more than that many tasks parked in a blocking wait at once.</td>
+            </tr>
+            <tr>
+              <td><code>SPID3R_QUEUE_CAP</code></td>
+              <td>Maximum queued tasks before <code>spawn</code> applies backpressure (default <code>65536</code>).</td>
+            </tr>
+            <tr>
+              <td><code>SPID3R_TASK_DRAIN_MS</code></td>
+              <td>How long program exit waits for tasks <code>main</code> left running (default <code>2000</code>;
+                <code>0</code> exits immediately, losing their output).</td>
+            </tr>
+            <tr>
+              <td><code>SPID3R_ALLOW_LOCAL_GIT_DEPS</code></td>
+              <td><code>1</code> allows bare local paths and <code>file://</code> as git dependency URLs.</td>
+            </tr>
+            <tr>
+              <td><code>SPID3R_ALLOW_INSECURE_GIT</code></td>
+              <td><code>1</code> allows plaintext <code>http://</code>/<code>git://</code> git dependency URLs.</td>
+            </tr>
           </table>
           <h3>Build-time variables <span class="pill">native feature</span></h3>
           <table>
@@ -2909,6 +2992,20 @@ cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
               <td>Windows: directory containing <code>LLVM-C.dll</code>, copied next to the built binaries so
                 <code>cargo run</code>/<code>cargo test</code> work.
               </td>
+            </tr>
+            <tr>
+              <td><code>SPID3R_NO_INSTALLER</code></td>
+              <td><code>1</code> skips the Windows installer step of a release build.</td>
+            </tr>
+            <tr>
+              <td><code>SPID3R_FETCH_WEBVIEW2</code></td>
+              <td><code>1</code> opts in to downloading the WebView2 bootstrapper for the installer (no network
+                access otherwise).</td>
+            </tr>
+            <tr>
+              <td><code>SPID3R_WEBVIEW2_SHA256</code></td>
+              <td>Expected SHA-256 of the bootstrapper (64 hex chars); overrides the pinned value when Microsoft
+                rotates the download.</td>
             </tr>
           </table>
           <h3>Exit codes</h3>
@@ -2944,15 +3041,20 @@ cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
           <!-- ============================================================ INTERNALS -->
 
           <h2 id="embedding">Embedding from Rust</h2>
-          <p>Spid3r's core is a zero-dependency Rust library, and <code>spid3r::embed</code> is the
+          <p>Spid3r's core is a zero-dependency Rust library, and <code>spid3r_lang::embed</code> is the
             supported surface for hosting it as a scripting layer: register Rust closures as script
             functions, bind globals, extend the module search path, and run in-memory source with the
             output captured.</p>
-          <pre data-lang="rust"><code>use spid3r::embed::{conv, Engine};
+          <div class="callout info"><b>Crate name</b>The package and the <code>spid3r</code> binary keep their
+            names, but the <em>library target</em> is <code>spid3r_lang</code> — its <code>cdylib</code> artifact
+            would otherwise collide with the binary's <code>spid3r.pdb</code> on Windows. Depend on the package as
+            usual and import <code>spid3r_lang</code>; the runtime staticlib the AOT backend links is
+            <code>spid3r_lang.lib</code> / <code>libspid3r_lang.a</code>.</div>
+          <pre data-lang="rust"><code>use spid3r_lang::embed::{conv, Engine};
 
 let engine = Engine::new()
     .register("shout", |args| {
-        let s = conv::as_str(args.first().unwrap_or(&amp;spid3r::Value::Null)).unwrap_or("");
+        let s = conv::as_str(args.first().unwrap_or(&amp;spid3r_lang::Value::Null)).unwrap_or("");
         Ok(conv::from_string(s.to_uppercase()))
     })
     .set_global("version", conv::from_string("1.0"));
@@ -3087,9 +3189,15 @@ Chunk          ::= code:bytes
 EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
           <div class="callout good"><b>Safety</b>Before a chunk runs, it is validated. Opcodes are decoded
             through a safe lookup (no <code>mem::transmute</code>), and the validator rejects invalid opcodes,
-            truncated instructions, out-of-range constant/function/class references, and jump targets that miss
-            an instruction boundary. Pool reads and jumps are also bounds-checked at run time, so bad bytecode
-            becomes a runtime error, never a panic.</div>
+            truncated instructions, out-of-range constant/function/class references, jump targets that miss an
+            instruction boundary (found by binary search, so validation stays <code>O(n log n)</code>), an empty
+            code section, a chunk that can fall through its last instruction (it must end in
+            <code>return</code>/<code>throw</code>/<code>jump</code>), and instruction metadata that disagrees with
+            the code (<code>inst_offsets</code> and <code>inst_spans</code> must have equal length, increase
+            strictly, and stay inside the code). The deserializer additionally rejects <strong>trailing
+            bytes</strong> and caps function/module nesting at 128. Pool reads, jump targets, and the VM's
+            instruction fetch are bounds-checked at run time, so bad bytecode becomes a runtime error, never a
+            panic.</div>
           <h3>Optimizer</h3>
           <p>On by default (<code>--no-opt</code> disables it):</p>
           <ul>
@@ -3103,10 +3211,12 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>425 tests</strong> (<strong>396</strong> with
-            <code>--no-default-features</code> including networking, wasm, bundler, and embedding suites, plus
-            <strong>28</strong> GUI/AOT tests) and
-            <code>spid3r test</code> reports <strong>23 ok, 0 failed</strong>.
+            As of this revision, <code>cargo test</code> passes <strong>500 tests</strong> (<strong>484</strong> with
+            <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
+            <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
+            <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from
+            <code>tools/count_tests.sh</code>, which asks cargo rather than grepping, so the documentation cannot
+            drift from reality.
           </p>
           <ul>
             <li><strong><code>spid3r test</code></strong> classifies each <code>examples/*.matrix</code> by its
@@ -3128,18 +3238,22 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               comparison.
             </li>
             <li><strong>Bytecode safety &amp; fuzzing</strong> are tested automatically: invalid opcodes, truncation,
-              huge count headers, out-of-range pool references, negative jumps, and off-boundary jumps are
-              all rejected cleanly, backed by deterministic mutation tests (<code>tests/fuzz_tests.rs</code>)
-              and <code>cargo-fuzz</code> targets (<code>fuzz/</code>).</li>
+              huge count headers, out-of-range pool references, negative jumps, off-boundary jumps, trailing
+              bytes, mismatched instruction tables, fall-through chunk ends and over-deep nesting are all rejected
+              cleanly (<code>tests/artifact_hardening.rs</code>), backed by deterministic mutation tests
+              (<code>tests/fuzz_tests.rs</code>) and three <code>cargo-fuzz</code> targets (<code>fuzz/</code>)
+              that a nightly CI workflow actually runs.</li>
             <li><strong>GUI</strong> is tested headlessly: IPC decoding, JSON escaping and round-trips, event
               ordering, unknown-event dropping, payload fidelity, and queued JS (bridge unit tests plus the
               <code>spid3r gui --dry-run</code> replay). The native window itself is exercised manually.
             </li>
             <li><strong>2026-10 audit &amp; CI.</strong> A full-repository audit probed edge semantics across all
-              engines
-              and hardened the lexer, parser, semantic checker, bytecode format, VM closure/finally semantics,
-              collections, cycle GC, and packaging security, enforced in cross-platform GitHub Actions CI
-              (<code>.github/workflows/ci.yml</code>). See <a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a>.</li>
+              engines and hardened the lexer, parser, semantic checker, bytecode format, VM closure/finally
+              semantics, collections, cycle GC, concurrency (scheduler growth, bounded queue, exit drain,
+              precise GC gate, structured thrown values), and packaging security (git transport whitelist,
+              locked commits, raw-byte hashes). Enforced in cross-platform GitHub Actions CI
+              (<code>.github/workflows/ci.yml</code>, pinned toolchain) plus a nightly fuzz workflow
+              (<code>.github/workflows/fuzz.yml</code>). See <a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a>.</li>
           </ul>
 
           <!-- ============================================================ REFERENCE -->
@@ -3168,15 +3282,24 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
           <h2 id="limits">Limitations &amp; roadmap</h2>
           <h3>Known limitations</h3>
           <ul>
-            <li><strong>Lexer:</strong> float literals use decimal syntax (<code>1.5</code>, not scientific
-              notation <code>1.5e3</code>), and <code>-9223372036854775808</code> cannot be written as a
-              positive integer literal before unary negation.</li>
-            <li><strong>Native backend:</strong> a class declared inside a function is rejected, and higher-order
-              collection methods (<code>list.map(f)</code> etc.) require <code>--engine vm</code> or
-              <code>--engine tree</code>.
-            </li>
+            <li><strong>Lexer:</strong> float literals accept scientific notation (<code>1.5e3</code>,
+              <code>2E+4</code>); <code>-9223372036854775808</code> cannot be written as a positive integer
+              literal before unary negation.</li>
+            <li><strong>Native backend:</strong> a class declared inside a function is rejected with a clean
+              diagnostic; everything else, including higher-order collection methods
+              (<code>list.map(f)</code>), compiles.</li>
+            <li><strong>Concurrency:</strong> a task blocked in <code>recv</code>/<code>join</code>/<code>mutex</code>
+              occupies a worker, so more than <code>SPID3R_MAX_WORKERS</code> (256) such tasks at once can still
+              stall — the watchdog reports it with the variable to raise — and the ready queue is capped at
+              <code>SPID3R_QUEUE_CAP</code> (65536) with producer backpressure. Removing the ceiling entirely
+              needs M:N scheduling with continuations.</li>
             <li><strong>Dependencies:</strong> local only (path, git, or offline registry); no transitive
               resolution of registry packages.</li>
+            <li><strong>Known open (tracked in <a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a>):</strong>
+              closure/environment cycles are not collected (value containers and class instances are), cloning a
+              <em>cyclic</em> value aliases the original into the copy, the regex engine restarts its NFA at each
+              input index (<code>O(n²·states)</code>), <code>net.rs</code> buffers grow without compaction on a
+              hostile chunked response, and deeply recursive containers abort while dropping.</li>
             <li><strong>Documented design choices:</strong> integer overflow wraps silently, <code>int / int</code>
               truncates, <code>err(…)</code> is truthy, comparison chains are left-associative, and
               assignments are legal in <code>if</code>/<code>while</code> conditions.</li>
