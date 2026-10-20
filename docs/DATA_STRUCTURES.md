@@ -33,6 +33,7 @@ let okv  = ok(1);  let errv = err("bad");   // result
 | `vec()` | Resizable array. `push_back`, `push_front`, `pop_back`, `pop_front`, `get`, `set`, `contains`, `len`. |
 | `deque()` | Double-ended queue. `push_front`/`push_back`, `pop_front`/`pop_back`, `peek_front`, `len`. |
 | `tuple(a, b, …)` | Fixed, immutable-length grouping; indexable by `t[i]`. |
+| `bytes(...)` | Contiguous 8-bit byte buffer (`0..255`). Indexable by `b[i]`. Methods: `len`, `get`, `set`, `push`, `slice`, `to_list`, `to_string`, `to_hex`, `from_hex`, `to_base64`, `from_base64`, `copy`. |
 | `ring_buffer(n)` | Fixed-capacity circular queue; overwrites the oldest when full. |
 
 ## Sorting with a comparator
@@ -297,6 +298,70 @@ and `inverse` throw catchable runtime errors (`"matrix is singular"`).
 |---|---|
 | `option` | `some(v)` / `none`. `is_some`, `is_none`, `unwrap`, `unwrap_or(d)`. |
 | `result` | `ok(v)` / `err(e)`. `is_ok`, `is_err`, `unwrap`, `unwrap_or(d)`, `unwrap_err`. |
+
+## Binary `bytes` & Serialization
+
+### `bytes`
+
+A contiguous buffer of 8-bit unsigned integers (`u8`), capped at 16,777,216 bytes.
+
+| Constructor | Meaning |
+|---|---|
+| `bytes()` | Empty byte buffer. |
+| `bytes(n, fill_byte=0)` | `n` bytes filled with `fill_byte` (0..255). |
+| `bytes(list_of_ints)` | From a list/tuple of integer byte values (0..255). |
+| `bytes(utf8_string)` | Converts a UTF-8 string into its byte representation. |
+
+- **Indexing**: `b[i]` gets or sets an integer `0..255`. Supports negative indexing (e.g. `b[-1]`).
+- **Iteration**: `for byte in b` yields each byte as an integer `0..255`.
+- **Methods**:
+  - `b.len()` / `len(b)`: Number of bytes (`int`).
+  - `b.get(i)` / `b.set(i, val)`: Element access (0..255).
+  - `b.push(val)`: Appends a byte.
+  - `b.slice(start, end)`: Returns a new sub-buffer.
+  - `b.to_list()`: Returns a `list` of integer bytes.
+  - `b.to_string()`: Returns `ok(utf8_str)` or `err(msg)`.
+  - `b.to_hex()`: Hex string (`"48656c6c6f"`).
+  - `b.from_hex(hex_str)`: Decodes hex string into new `bytes`.
+  - `b.to_base64()`: Base64 encoded string (`"SGVsbG8="`).
+  - `b.from_base64(b64_str)`: Decodes base64 string into new `bytes`.
+
+### Binary File I/O & NumPy `.npy`
+
+- `read_bytes(path)`: Reads binary file into `ok(bytes)` or `err(msg)`.
+- `write_bytes(path, bytes_val)`: Writes `bytes` into file; returns `ok(null)` or `err(msg)`.
+- `v.save_npy(path)` / `m.save_npy(path)`: Saves `vector` or `matrix` into NumPy v1.0 little-endian `<f8` format.
+- `save_npy(path, matrix_or_vector)`: Builtin equivalent of `save_npy`.
+- `load_npy(path)`: Loads `.npy` file, returning `ok(vector)` (for 1D) or `ok(matrix)` (for 2D).
+
+## Native RFC-4180 CSV
+
+- `parse_csv(text, opts)`: Parses CSV string into `ok(map("headers", list_of_str, "rows", list_of_lists))`.
+  - Supports quoted fields, escaped quotes (`""`), embedded newlines, and automatic type inference (`int`, `float`, `bool`, `null` for `""`/`"NA"`/`"null"`, or `string`).
+  - `opts` map may contain `"delimiter"` (default `","`) and `"has_header"` (default `true`).
+- `read_csv(path, opts)`: Reads and parses CSV file from `path`.
+- `write_csv(path, headers, rows)`: Formats and writes CSV data with proper RFC-4180 quoting to `path`.
+
+## Regex & DateTime
+
+### Thompson NFA Regex (`regex_*`)
+
+Lightweight linear-time regex engine supporting `.`, `*`, `+`, `?`, `^`, `$`, `[abc]`, `[a-z]`, `[^...]`, `\d`, `\w`, `\s`, `\D`, `\W`, `\S`, `|`, and `()`.
+
+- `regex_match(pattern, text) -> bool`: Tests if `pattern` matches `text`.
+- `regex_find(pattern, text) -> option`: Finds first match as `some(matched_str)` or `none`.
+- `regex_find_all(pattern, text) -> list`: Returns `list` of all matching substrings.
+- `regex_replace(pattern, text, replacement) -> string`: Replaces all occurrences.
+
+### DateTime (`datetime_*`, `unix_*`)
+
+High-precision civil calendar math based on Howard Hinnant's algorithm.
+
+- `unix_time() -> int`: Current Unix timestamp in seconds.
+- `unix_ms() -> int`: Current Unix timestamp in milliseconds.
+- `datetime_parts(epoch_sec) -> map`: Decomposes timestamp into `year`, `month` (1..12), `day` (1..31), `hour` (0..23), `minute` (0..59), `second` (0..59), and `weekday` (0..6 where 0=Sunday).
+- `datetime_from_parts(y, m, d, h, min, s) -> int`: Converts civil parts to epoch seconds.
+- `format_datetime(epoch_sec, fmt_str) -> string`: Strftime formatting with `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%w`, `%F`, `%T`, `%%`.
 
 ## Errors
 

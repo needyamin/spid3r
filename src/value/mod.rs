@@ -215,6 +215,7 @@ pub enum Value {
     Trie(Ref<crate::value::collections::TrieData>),
     Matrix(Ref<crate::value::collections::MatrixData>),
     Vector(Ref<crate::value::collections::VectorData>),
+    Bytes(Ref<Vec<u8>>),
     Ring(Ref<crate::value::collections::RingData>),
     Bag(Ref<crate::value::collections::BagData>),
     RefBox(Ref<crate::value::collections::RefBoxData>),
@@ -295,6 +296,7 @@ pub enum WeakKind {
     Trie,
     Matrix,
     Vector,
+    Bytes,
     Ring,
     Bag,
     RefBox,
@@ -347,6 +349,7 @@ pub fn make_weak(v: &Value) -> Result<Value, String> {
         Value::Trie(r) => (Trie, Arc::downgrade(&erase(r))),
         Value::Matrix(r) => (Matrix, Arc::downgrade(&erase(r))),
         Value::Vector(r) => (Vector, Arc::downgrade(&erase(r))),
+        Value::Bytes(r) => (Bytes, Arc::downgrade(&erase(r))),
         Value::Ring(r) => (Ring, Arc::downgrade(&erase(r))),
         Value::Bag(r) => (Bag, Arc::downgrade(&erase(r))),
         Value::RefBox(r) => (RefBox, Arc::downgrade(&erase(r))),
@@ -411,6 +414,7 @@ pub fn weak_upgrade(v: &Value) -> Result<Option<Value>, String> {
         Trie => Value::Trie(downcast_cell::<crate::value::collections::TrieData>(&any)?),
         Matrix => Value::Matrix(downcast_cell::<crate::value::collections::MatrixData>(&any)?),
         Vector => Value::Vector(downcast_cell::<crate::value::collections::VectorData>(&any)?),
+        Bytes => Value::Bytes(downcast_cell::<Vec<u8>>(&any)?),
         Ring => Value::Ring(downcast_cell::<crate::value::collections::RingData>(&any)?),
         Bag => Value::Bag(downcast_cell::<crate::value::collections::BagData>(&any)?),
         RefBox => Value::RefBox(downcast_cell::<crate::value::collections::RefBoxData>(&any)?),
@@ -474,6 +478,7 @@ fn ref_id(v: &Value) -> Option<u64> {
         Value::Trie(r) => ref_id_of!(r),
         Value::Matrix(r) => ref_id_of!(r),
         Value::Vector(r) => ref_id_of!(r),
+        Value::Bytes(r) => ref_id_of!(r),
         Value::Ring(r) => ref_id_of!(r),
         Value::Bag(r) => ref_id_of!(r),
         Value::RefBox(r) => ref_id_of!(r),
@@ -570,6 +575,10 @@ pub fn hash_value(v: &Value) -> u64 {
         }
         Value::Vector(d) => {
             18u8.hash(&mut h);
+            ptr_id(d).hash(&mut h);
+        }
+        Value::Bytes(d) => {
+            19u8.hash(&mut h);
             ptr_id(d).hash(&mut h);
         }
         _ => {
@@ -697,6 +706,11 @@ fn values_equal_inner(
             let yi = y.lock().unwrap().data.clone();
             xi == yi
         }
+        (Bytes(x), Bytes(y)) => {
+            let xi = x.lock().unwrap().clone();
+            let yi = y.lock().unwrap().clone();
+            xi == yi
+        }
         (Matrix(x), Matrix(y)) => {
             let x = x.lock().unwrap();
             let y = y.lock().unwrap();
@@ -759,6 +773,7 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::Trie(_) => "trie",
         Value::Matrix(_) => "matrix",
         Value::Vector(_) => "vector",
+        Value::Bytes(_) => "bytes",
         Value::Ring(_) => "ring_buffer",
         Value::Bag(_) => "bag",
         Value::RefBox(_) => "ref",
@@ -998,6 +1013,10 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
                 .map(|v| display_value_inner(&Value::Float(*v), seen))
                 .collect();
             format!("vector[{}]", items.join(", "))
+        }
+        Value::Bytes(d) => {
+            let len = d.lock().unwrap().len();
+            format!("<bytes len={}>", len)
         }
         Value::Ring(d) => {
             let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
@@ -1298,6 +1317,10 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
             Value::Vector(new_ref(c::VectorData {
                 data: d.data.clone(),
             }))
+        }
+        Value::Bytes(d) => {
+            let data = d.lock().unwrap().clone();
+            Value::Bytes(new_ref(data))
         }
         Value::Ring(d) => {
             let (cap, items) = {

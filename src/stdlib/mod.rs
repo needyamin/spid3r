@@ -2,7 +2,10 @@
 //! networking (`net`: TCP sockets + HTTP framing). Every call that touches
 //! the operating system is explicit; there is no implicit shell.
 
+pub mod csv;
+pub mod datetime;
 pub mod net;
+pub mod regex;
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -11,7 +14,9 @@ use crate::environment::{self, Env};
 use crate::pkg::sha256_bytes;
 use crate::sched::Scheduler;
 use crate::value::collections;
-use crate::value::{display_value, truthy, values_equal, NativeCtx, NativeFn, Value};
+use crate::value::{
+    display_value, new_ref, truthy, values_equal, MapKey, NativeCtx, NativeFn, Value,
+};
 
 /// Signature of a native builtin.
 pub type NativeDef = (
@@ -85,6 +90,22 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("type_of", n_type_of),
         ("gc_collect", n_gc_collect),
         ("gc_live_cells", n_gc_live_cells),
+        ("read_bytes", n_read_bytes),
+        ("write_bytes", n_write_bytes),
+        ("save_npy", n_save_npy),
+        ("load_npy", n_load_npy),
+        ("read_csv", n_read_csv),
+        ("parse_csv", n_parse_csv),
+        ("write_csv", n_write_csv),
+        ("regex_match", n_regex_match),
+        ("regex_find", n_regex_find),
+        ("regex_find_all", n_regex_find_all),
+        ("regex_replace", n_regex_replace),
+        ("unix_time", n_unix_time),
+        ("unix_ms", n_unix_ms),
+        ("datetime_parts", n_datetime_parts),
+        ("datetime_from_parts", n_datetime_from_parts),
+        ("format_datetime", n_format_datetime),
     ];
     defs.extend(net::native_defs());
     defs
@@ -123,6 +144,17 @@ fn want_str(v: &Value, who: &str) -> Result<String, String> {
         Value::Str(s) => Ok(s.to_string()),
         other => Err(format!(
             "{} expects a string, found {}",
+            who,
+            crate::value::type_name(other)
+        )),
+    }
+}
+
+fn want_int(v: &Value, who: &str) -> Result<i64, String> {
+    match v {
+        Value::Int(i) => Ok(*i),
+        other => Err(format!(
+            "{} expects an int, found {}",
             who,
             crate::value::type_name(other)
         )),
@@ -1355,4 +1387,281 @@ fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+// ------------------------------------------------------------------ binary bytes & npy
+
+fn n_read_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let path = want_str(&one("read_bytes", &args)?, "read_bytes")?;
+    match std::fs::read(&path) {
+        Ok(data) => Ok(Value::Result(Ok(Box::new(Value::Bytes(new_ref(data)))))),
+        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(
+            format!("cannot read '{}': {}", path, e).into(),
+        ))))),
+    }
+}
+
+fn n_write_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "write_bytes expects 2 arguments (path, bytes), got {}",
+            args.len()
+        ));
+    }
+    let path = want_str(&args[0], "write_bytes")?;
+    match &args[1] {
+        Value::Bytes(b) => {
+            let data = b.lock().unwrap().clone();
+            match std::fs::write(&path, data) {
+                Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Null)))),
+                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(
+                    format!("cannot write to '{}': {}", path, e).into(),
+                ))))),
+            }
+        }
+        other => Err(format!(
+            "write_bytes expects a bytes value, found {}",
+            crate::value::type_name(other)
+        )),
+    }
+}
+
+fn n_save_npy(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "save_npy expects 2 arguments (path, matrix_or_vector), got {}",
+            args.len()
+        ));
+    }
+    let path = want_str(&args[0], "save_npy")?;
+    match &args[1] {
+        Value::Vector(v) => {
+            let v = v.lock().unwrap();
+            match collections::misc::save_npy_file(&path, &[v.data.len()], &v.data) {
+                Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Null)))),
+                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+            }
+        }
+        Value::Matrix(m) => {
+            let m = m.lock().unwrap();
+            match collections::misc::save_npy_file(&path, &[m.rows, m.cols], &m.data) {
+                Ok(()) => Ok(Value::Result(Ok(Box::new(Value::Null)))),
+                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+            }
+        }
+        other => Err(format!(
+            "save_npy expects a matrix or vector, found {}",
+            crate::value::type_name(other)
+        )),
+    }
+}
+
+fn n_load_npy(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let path = want_str(&one("load_npy", &args)?, "load_npy")?;
+    match collections::misc::load_npy_data(&path) {
+        Ok(collections::misc::NpyLoaded::Vector(data)) => Ok(Value::Result(Ok(Box::new(
+            Value::Vector(new_ref(collections::misc::VectorData { data })),
+        )))),
+        Ok(collections::misc::NpyLoaded::Matrix { rows, cols, data }) => Ok(Value::Result(Ok(
+            Box::new(Value::Matrix(new_ref(collections::misc::MatrixData {
+                rows,
+                cols,
+                data,
+            }))),
+        ))),
+        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+    }
+}
+
+// ------------------------------------------------------------------ csv
+
+fn n_parse_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(format!("parse_csv expects 1 or 2 arguments, got {}", args.len()));
+    }
+    let text = want_str(&args[0], "parse_csv")?;
+    let mut delimiter = ',';
+    let mut has_header = true;
+    if args.len() == 2 && !matches!(args[1], Value::Null) {
+        match &args[1] {
+            Value::Map(m) => {
+                let m = m.lock().unwrap();
+                if let Some(i) = m.find(&MapKey::Str("delimiter".into())) {
+                    if let Value::Str(s) = &m.entries[i].1 {
+                        if let Some(ch) = s.chars().next() {
+                            delimiter = ch;
+                        }
+                    }
+                }
+                if let Some(i) = m.find(&MapKey::Str("has_header".into())) {
+                    if let Value::Bool(b) = &m.entries[i].1 {
+                        has_header = *b;
+                    }
+                }
+            }
+            other => {
+                return Err(format!(
+                    "parse_csv options must be a map or null, found {}",
+                    crate::value::type_name(other)
+                ));
+            }
+        }
+    }
+    match csv::parse_csv_text(&text, delimiter, has_header) {
+        Ok(v) => Ok(v),
+        Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(e.into()))))),
+    }
+}
+
+fn n_read_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(format!("read_csv expects 1 or 2 arguments, got {}", args.len()));
+    }
+    let path = want_str(&args[0], "read_csv")?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(Value::Result(Err(Box::new(Value::Str(
+                format!("cannot read '{}': {}", path, e).into(),
+            )))));
+        }
+    };
+    let mut parse_args = vec![Value::Str(text.into())];
+    if args.len() == 2 {
+        parse_args.push(args[1].clone());
+    }
+    n_parse_csv(_ctx, parse_args)
+}
+
+fn n_write_csv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "write_csv expects 3 arguments (path, headers, rows), got {}",
+            args.len()
+        ));
+    }
+    let path = want_str(&args[0], "write_csv")?;
+    let headers = match &args[1] {
+        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+        Value::Tuple(t) => t.lock().unwrap().clone(),
+        other => {
+            return Err(format!(
+                "write_csv headers expects a list, found {}",
+                crate::value::type_name(other)
+            ));
+        }
+    };
+    let rows = match &args[2] {
+        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+        Value::Tuple(t) => t.lock().unwrap().clone(),
+        other => {
+            return Err(format!(
+                "write_csv rows expects a list, found {}",
+                crate::value::type_name(other)
+            ));
+        }
+    };
+    csv::write_csv_file(&path, &headers, &rows)
+}
+
+// ------------------------------------------------------------------ regex
+
+fn n_regex_match(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("regex_match expects 2 arguments, got {}", args.len()));
+    }
+    let pat = want_str(&args[0], "regex_match")?;
+    let text = want_str(&args[1], "regex_match")?;
+    let m = regex::regex_match(&pat, &text)?;
+    Ok(Value::Bool(m))
+}
+
+fn n_regex_find(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("regex_find expects 2 arguments, got {}", args.len()));
+    }
+    let pat = want_str(&args[0], "regex_find")?;
+    let text = want_str(&args[1], "regex_find")?;
+    let found = regex::regex_find(&pat, &text)?;
+    Ok(Value::Option(found.map(|s| Box::new(Value::Str(s.into())))))
+}
+
+fn n_regex_find_all(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("regex_find_all expects 2 arguments, got {}", args.len()));
+    }
+    let pat = want_str(&args[0], "regex_find_all")?;
+    let text = want_str(&args[1], "regex_find_all")?;
+    let items = regex::regex_find_all(&pat, &text)?;
+    Ok(collections::make_list(
+        items.into_iter().map(|s| Value::Str(s.into())).collect(),
+    ))
+}
+
+fn n_regex_replace(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!("regex_replace expects 3 arguments, got {}", args.len()));
+    }
+    let pat = want_str(&args[0], "regex_replace")?;
+    let text = want_str(&args[1], "regex_replace")?;
+    let rep = want_str(&args[2], "regex_replace")?;
+    let res = regex::regex_replace(&pat, &text, &rep)?;
+    Ok(Value::Str(res.into()))
+}
+
+// ------------------------------------------------------------------ datetime
+
+fn n_unix_time(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!("unix_time takes 0 arguments, got {}", args.len()));
+    }
+    Ok(Value::Int(datetime::unix_time()))
+}
+
+fn n_unix_ms(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!("unix_ms takes 0 arguments, got {}", args.len()));
+    }
+    Ok(Value::Int(datetime::unix_ms()))
+}
+
+fn n_datetime_parts(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let sec = want_int(&one("datetime_parts", &args)?, "datetime_parts")?;
+    let (year, month, day, hour, minute, second, weekday) = datetime::datetime_parts(sec);
+    let entries = vec![
+        (MapKey::Str("year".into()), Value::Int(year)),
+        (MapKey::Str("month".into()), Value::Int(month as i64)),
+        (MapKey::Str("day".into()), Value::Int(day as i64)),
+        (MapKey::Str("hour".into()), Value::Int(hour)),
+        (MapKey::Str("minute".into()), Value::Int(minute)),
+        (MapKey::Str("second".into()), Value::Int(second)),
+        (MapKey::Str("weekday".into()), Value::Int(weekday)),
+    ];
+    Ok(Value::Map(new_ref(collections::MapData::from_entries(entries))))
+}
+
+fn n_datetime_from_parts(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 6 {
+        return Err(format!(
+            "datetime_from_parts expects 6 arguments (year, month, day, hour, minute, second), got {}",
+            args.len()
+        ));
+    }
+    let y = want_int(&args[0], "datetime_from_parts")?;
+    let m = want_int(&args[1], "datetime_from_parts")? as u32;
+    let d = want_int(&args[2], "datetime_from_parts")? as u32;
+    let h = want_int(&args[3], "datetime_from_parts")?;
+    let min = want_int(&args[4], "datetime_from_parts")?;
+    let s = want_int(&args[5], "datetime_from_parts")?;
+    let ts = datetime::datetime_from_parts(y, m, d, h, min, s)?;
+    Ok(Value::Int(ts))
+}
+
+fn n_format_datetime(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("format_datetime expects 2 arguments, got {}", args.len()));
+    }
+    let sec = want_int(&args[0], "format_datetime")?;
+    let fmt = want_str(&args[1], "format_datetime")?;
+    Ok(Value::Str(datetime::format_datetime(sec, &fmt).into()))
 }

@@ -758,3 +758,201 @@ fn matrix_singular_returns_catchable_error() {
     );
 }
 
+#[test]
+fn bytes_constructor_methods_and_indexing() {
+    expect_ok(
+        r#"
+        fn main() {
+            let b = bytes("hello");
+            if b.len() != 5 { return 1; }
+            if len(b) != 5 { return 2; }
+            if b[0] != 104 { return 3; }
+            if b[-1] != 111 { return 4; }
+            b[0] = 72; // 'H'
+            if b[0] != 72 { return 5; }
+
+            let s = 0;
+            for byte in b {
+                s = s + byte;
+            }
+            if s <= 0 { return 6; }
+
+            let sl = b.slice(1, 4);
+            if sl.len() != 3 { return 7; }
+            if sl.to_string().unwrap() != "ell" { return 8; }
+
+            let b2 = bytes([65, 66, 67]);
+            if b2.to_hex() != "414243" { return 9; }
+            if b2.to_base64() != "QUJD" { return 10; }
+
+            let b3 = bytes().from_hex("414243");
+            if b3.to_string().unwrap() != "ABC" { return 11; }
+
+            let b4 = bytes().from_base64("QUJD");
+            if b4.to_string().unwrap() != "ABC" { return 12; }
+
+            let b_filled = bytes(4, 255);
+            if b_filled[0] != 255 or b_filled[3] != 255 { return 13; }
+
+            return 0;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn bytes_errors_handled_cleanly() {
+    expect_err(
+        r#"
+        fn main() {
+            let b = bytes("abc");
+            let x = b[5];
+            return 0;
+        }
+    "#,
+        "out of bounds",
+    );
+    expect_err(
+        r#"
+        fn main() {
+            let b = bytes("abc");
+            b[0] = 300;
+            return 0;
+        }
+    "#,
+        "between 0 and 255",
+    );
+    expect_err(
+        r#"
+        fn main() {
+            let b = bytes().from_hex("GG");
+            return 0;
+        }
+    "#,
+        "invalid hex",
+    );
+}
+
+#[test]
+fn npy_and_binary_io_tests() {
+    expect_ok(
+        r#"
+        fn main() {
+            let b = bytes("spid3r binary test");
+            let p = "target/test_tmp.bin";
+            write_bytes(p, b).unwrap();
+            let b_read = read_bytes(p).unwrap();
+            if b_read.to_string().unwrap() != "spid3r binary test" { return 1; }
+
+            let v = vector([1.5, 2.5, 3.5]);
+            let p_vec = "target/test_vec.npy";
+            v.save_npy(p_vec).unwrap();
+            let v_loaded = load_npy(p_vec).unwrap();
+            if v_loaded.len() != 3 { return 2; }
+            if abs(v_loaded[0] - 1.5) > 1e-9 { return 3; }
+            if abs(v_loaded[2] - 3.5) > 1e-9 { return 4; }
+
+            let m = matrix([[1.0, 2.0], [3.0, 4.0]]);
+            let p_mat = "target/test_mat.npy";
+            m.save_npy(p_mat).unwrap();
+            let m_loaded = load_npy(p_mat).unwrap();
+            if m_loaded.rows() != 2 or m_loaded.cols() != 2 { return 5; }
+            if abs(m_loaded.get(0, 1) - 2.0) > 1e-9 { return 6; }
+            if abs(m_loaded.get(1, 0) - 3.0) > 1e-9 { return 7; }
+
+            return 0;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn csv_parser_and_writer_tests() {
+    expect_ok(
+        r#"
+        fn main() {
+            let raw = "id,name,val,active\n1,\"Doe, John\",42.5,true\n2,Jane,null,false\n";
+            let parsed = parse_csv(raw, null).unwrap();
+            let headers = parsed["headers"];
+            let rows = parsed["rows"];
+            if headers.len() != 4 { return 1; }
+            if headers[0] != "id" or headers[1] != "name" { return 2; }
+            if rows.len() != 2 { return 3; }
+            let r0 = rows[0];
+            if r0[0] != 1 { return 4; }
+            if r0[1] != "Doe, John" { return 5; }
+            if abs(r0[2] - 42.5) > 1e-9 { return 6; }
+            if r0[3] != true { return 7; }
+
+            let r1 = rows[1];
+            if r1[0] != 2 { return 8; }
+            if r1[2] != null { return 9; }
+            if r1[3] != false { return 10; }
+
+            let csv_path = "target/test_out.csv";
+            write_csv(csv_path, headers, rows).unwrap();
+            let read_back = read_csv(csv_path, null).unwrap();
+            if read_back["rows"].len() != 2 { return 11; }
+            return 0;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn regex_builtin_tests() {
+    expect_ok(
+        r#"
+        fn main() {
+            if regex_match("\\d+", "abc123xyz") != true { return 1; }
+            if regex_match("^\\d+$", "abc123xyz") != false { return 2; }
+            if regex_match("^\\d+$", "12345") != true { return 3; }
+
+            let f = regex_find("[a-z]+", "123 apple 456");
+            if f.unwrap() != "apple" { return 4; }
+
+            let all = regex_find_all("\\d+", "one 1 two 22 three 333");
+            if all.len() != 3 { return 5; }
+            if all[0] != "1" or all[1] != "22" or all[2] != "333" { return 6; }
+
+            let rep = regex_replace("[0-9]+", "id123_val456", "X");
+            if rep != "idX_valX" { return 7; }
+
+            return 0;
+        }
+    "#,
+    );
+}
+
+#[test]
+fn datetime_builtin_tests() {
+    expect_ok(
+        r#"
+        fn main() {
+            let now_sec = unix_time();
+            if now_sec < 1700000000 { return 1; }
+            let now_millis = unix_ms();
+            if now_millis < 1700000000000 { return 2; }
+
+            let p = datetime_parts(0);
+            if p["year"] != 1970 { return 3; }
+            if p["month"] != 1 { return 4; }
+            if p["day"] != 1 { return 5; }
+            if p["hour"] != 0 or p["minute"] != 0 or p["second"] != 0 { return 6; }
+            if p["weekday"] != 4 { return 7; } // Thursday
+
+            let ts = datetime_from_parts(2026, 10, 20, 15, 30, 45);
+            let p2 = datetime_parts(ts);
+            if p2["year"] != 2026 or p2["month"] != 10 or p2["day"] != 20 { return 8; }
+            if p2["hour"] != 15 or p2["minute"] != 30 or p2["second"] != 45 { return 9; }
+
+            let formatted = format_datetime(0, "%Y-%m-%d %H:%M:%S");
+            if formatted != "1970-01-01 00:00:00" { return 10; }
+
+            return 0;
+        }
+    "#,
+    );
+}
+
+

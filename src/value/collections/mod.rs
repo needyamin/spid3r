@@ -51,6 +51,7 @@ pub fn is_constructor(name: &str) -> bool {
             | "matrix"
             | "matrix_from_list"
             | "vector"
+            | "bytes"
             | "ring_buffer"
             | "bag"
             | "ref"
@@ -243,6 +244,73 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                 })))
             } else {
                 Err(format!("vector expects at most 2 arguments, got {}", args.len()))
+            }
+        }
+        "bytes" => {
+            if args.is_empty() {
+                Ok(Value::Bytes(new_ref(Vec::new())))
+            } else if args.len() == 1 {
+                match &args[0] {
+                    Value::Int(n) => {
+                        if *n < 0 {
+                            return Err("bytes length must be non-negative".to_string());
+                        }
+                        let nu = *n as usize;
+                        if nu > 16_777_216 {
+                            return Err(format!("bytes size {} is too large (max 16777216)", nu));
+                        }
+                        Ok(Value::Bytes(new_ref(vec![0u8; nu])))
+                    }
+                    Value::List(l) | Value::VecDyn(l) => {
+                        let items = l.lock().unwrap().items.clone();
+                        let mut data = Vec::with_capacity(items.len());
+                        for it in items {
+                            let b = want_int(&it, "bytes")?;
+                            if !(0..=255).contains(&b) {
+                                return Err(format!("byte value must be between 0 and 255, got {}", b));
+                            }
+                            data.push(b as u8);
+                        }
+                        Ok(Value::Bytes(new_ref(data)))
+                    }
+                    Value::Tuple(t) => {
+                        let items = t.lock().unwrap().clone();
+                        let mut data = Vec::with_capacity(items.len());
+                        for it in items {
+                            let b = want_int(&it, "bytes")?;
+                            if !(0..=255).contains(&b) {
+                                return Err(format!("byte value must be between 0 and 255, got {}", b));
+                            }
+                            data.push(b as u8);
+                        }
+                        Ok(Value::Bytes(new_ref(data)))
+                    }
+                    Value::Str(s) => Ok(Value::Bytes(new_ref(s.as_bytes().to_vec()))),
+                    Value::Bytes(b) => {
+                        let data = b.lock().unwrap().clone();
+                        Ok(Value::Bytes(new_ref(data)))
+                    }
+                    other => Err(format!(
+                        "bytes expects an integer size, list of byte ints, string, or bytes; found {}",
+                        super::type_name(other)
+                    )),
+                }
+            } else if args.len() == 2 {
+                let n = want_int(&args[0], "bytes")?;
+                if n < 0 {
+                    return Err("bytes length must be non-negative".to_string());
+                }
+                let nu = n as usize;
+                if nu > 16_777_216 {
+                    return Err(format!("bytes size {} is too large (max 16777216)", nu));
+                }
+                let fill = want_int(&args[1], "bytes")?;
+                if !(0..=255).contains(&fill) {
+                    return Err(format!("byte value must be between 0 and 255, got {}", fill));
+                }
+                Ok(Value::Bytes(new_ref(vec![fill as u8; nu])))
+            } else {
+                Err(format!("bytes expects at most 2 arguments, got {}", args.len()))
             }
         }
         "matrix_from_list" => {
@@ -482,6 +550,7 @@ pub fn call_method_host(
             }
             d.lock().unwrap().method(name, &args)
         }
+        Value::Bytes(d) => misc::bytes_method(d, name, &args),
         Value::Ring(d) => d.lock().unwrap().method(name, &args),
         Value::Bag(d) => d.lock().unwrap().method(name, &args),
         Value::RefBox(d) => d.lock().unwrap().method(name, &args),
@@ -1115,6 +1184,11 @@ pub fn index_get(obj: &Value, idx: &Value) -> Result<Value, String> {
             let i = misc::resolve_vector_index(idx, v.data.len(), "index")?;
             Ok(Value::Float(v.data[i]))
         }
+        Value::Bytes(b) => {
+            let b = b.lock().unwrap();
+            let i = misc::resolve_bytes_index(idx, b.len(), "bytes index")?;
+            Ok(Value::Int(b[i] as i64))
+        }
         Value::HashTable(h) => {
             let h = h.lock().unwrap();
             let k = as_map_key(idx)?;
@@ -1174,6 +1248,16 @@ pub fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
             let i = misc::resolve_vector_index(idx, vec_guard.data.len(), "index")?;
             let n = want_num(&v, "vector index assignment")?;
             vec_guard.data[i] = n;
+            Ok(())
+        }
+        Value::Bytes(b) => {
+            let mut b = b.lock().unwrap();
+            let i = misc::resolve_bytes_index(idx, b.len(), "bytes index")?;
+            let val = want_int(&v, "bytes index assignment")?;
+            if !(0..=255).contains(&val) {
+                return Err(format!("byte value must be between 0 and 255, got {}", val));
+            }
+            b[i] = val as u8;
             Ok(())
         }
         Value::HashTable(h) => {
@@ -1277,6 +1361,10 @@ pub fn iter_values(v: &Value) -> Result<Vec<Value>, String> {
             let items = d.lock().unwrap().data.clone();
             Ok(items.into_iter().map(Value::Float).collect())
         }
+        Value::Bytes(d) => {
+            let items = d.lock().unwrap().clone();
+            Ok(items.into_iter().map(|b| Value::Int(b as i64)).collect())
+        }
         Value::Bag(d) => {
             let counts = d.lock().unwrap().counts.clone();
             let mut out = Vec::new();
@@ -1325,6 +1413,7 @@ pub fn len_of(v: &Value) -> Result<usize, String> {
             Ok(d.rows * d.cols)
         }
         Value::Vector(d) => Ok(d.lock().unwrap().data.len()),
+        Value::Bytes(d) => Ok(d.lock().unwrap().len()),
         Value::Bag(d) => Ok(d.lock().unwrap().counts.iter().map(|(_, n)| *n).sum()),
         Value::LinkedList(d) | Value::SinglyList(d) | Value::DoublyList(d) => {
             Ok(d.lock().unwrap().len)

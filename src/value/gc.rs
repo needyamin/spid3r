@@ -284,6 +284,13 @@ impl GcTrace for VectorData {
     }
 }
 
+impl GcTrace for Vec<u8> {
+    fn gc_trace(&self, _f: &mut dyn FnMut(&Value)) {}
+    fn gc_clear(&mut self) {
+        self.clear();
+    }
+}
+
 impl GcTrace for RingData {
     fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
         for v in &self.items {
@@ -420,6 +427,7 @@ fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
         Value::Trie(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Matrix(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Vector(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Bytes(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Ring(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Bag(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::RefBox(a) => f(Arc::as_ptr(a) as *const () as usize),

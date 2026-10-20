@@ -8,6 +8,7 @@ use super::nodes::join_words;
 use super::seq::{
     make_list, unknown, value_cmp, want, want_index, want_int, want_num, want_str, MapData,
 };
+use crate::value::Ref;
 use super::{deep_clone, key_to_value, new_ref, values_equal, MapKey, Value};
 
 // -------------------------------------------------------------------- heap
@@ -1179,6 +1180,12 @@ impl VectorData {
                     indices.into_iter().map(|i| Value::Int(i as i64)).collect(),
                 ))
             }
+            "save_npy" => {
+                want(name, args, 1)?;
+                let path = want_str(&args[0], "vector.save_npy")?;
+                save_npy_file(&path, &[self.data.len()], &self.data)?;
+                Ok(Value::Result(Ok(Box::new(Value::Null))))
+            }
             _ => Err(unknown(name, "vector")),
         }
     }
@@ -1986,6 +1993,12 @@ impl MatrixData {
                 want(name, args, 0)?;
                 Ok(Value::Matrix(new_ref(self.clone())))
             }
+            "save_npy" => {
+                want(name, args, 1)?;
+                let path = want_str(&args[0], "matrix.save_npy")?;
+                save_npy_file(&path, &[self.rows, self.cols], &self.data)?;
+                Ok(Value::Result(Ok(Box::new(Value::Null))))
+            }
             _ => Err(unknown(name, "matrix")),
         }
     }
@@ -2231,3 +2244,332 @@ pub fn parse_direction(s: &str) -> Result<bool, String> {
         other => Err(format!("expected \"min\" or \"max\", found \"{}\"", other)),
     }
 }
+
+// ------------------------------------------------------------------ bytes helpers
+
+pub fn resolve_bytes_index(idx: &Value, len: usize, who: &str) -> Result<usize, String> {
+    let i = want_int(idx, who)?;
+    if i >= 0 {
+        let u = i as usize;
+        if u < len {
+            Ok(u)
+        } else {
+            Err(format!("index {} out of bounds for length {}", i, len))
+        }
+    } else {
+        let neg = i.unsigned_abs() as usize;
+        if neg <= len {
+            Ok(len - neg)
+        } else {
+            Err(format!("index {} out of bounds for length {}", i, len))
+        }
+    }
+}
+
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write;
+        let _ = write!(out, "{:02x}", b);
+    }
+    out
+}
+
+pub fn bytes_from_hex(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        return Err("hex string must have an even length".to_string());
+    }
+    let mut bytes = Vec::with_capacity(s.len() / 2);
+    for i in (0..s.len()).step_by(2) {
+        let byte = u8::from_str_radix(&s[i..i + 2], 16)
+            .map_err(|_| format!("invalid hex sequence '{}'", &s[i..i + 2]))?;
+        bytes.push(byte);
+    }
+    Ok(bytes)
+}
+
+const B64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+pub fn bytes_to_base64(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b0 = bytes[i];
+        let b1 = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+        let b2 = if i + 2 < bytes.len() { bytes[i + 2] } else { 0 };
+
+        let idx0 = (b0 >> 2) as usize;
+        let idx1 = (((b0 & 0x03) << 4) | (b1 >> 4)) as usize;
+        let idx2 = (((b1 & 0x0f) << 2) | (b2 >> 6)) as usize;
+        let idx3 = (b2 & 0x3f) as usize;
+
+        out.push(B64_CHARS[idx0] as char);
+        out.push(B64_CHARS[idx1] as char);
+        if i + 1 < bytes.len() {
+            out.push(B64_CHARS[idx2] as char);
+        } else {
+            out.push('=');
+        }
+        if i + 2 < bytes.len() {
+            out.push(B64_CHARS[idx3] as char);
+        } else {
+            out.push('=');
+        }
+        i += 3;
+    }
+    out
+}
+
+pub fn bytes_from_base64(s: &str) -> Result<Vec<u8>, String> {
+    fn b64_val(c: u8) -> Result<u8, String> {
+        match c {
+            b'A'..=b'Z' => Ok(c - b'A'),
+            b'a'..=b'z' => Ok(c - b'a' + 26),
+            b'0'..=b'9' => Ok(c - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            _ => Err(format!("invalid base64 character '{}'", c as char)),
+        }
+    }
+    let clean: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if clean.is_empty() {
+        return Ok(Vec::new());
+    }
+    if clean.len() % 4 != 0 {
+        return Err("invalid base64 length (must be a multiple of 4)".to_string());
+    }
+    let mut out = Vec::with_capacity((clean.len() / 4) * 3);
+    for chunk in clean.chunks_exact(4) {
+        let v0 = b64_val(chunk[0])?;
+        let v1 = b64_val(chunk[1])?;
+        let v2 = if chunk[2] == b'=' { 0 } else { b64_val(chunk[2])? };
+        let v3 = if chunk[3] == b'=' { 0 } else { b64_val(chunk[3])? };
+
+        let b0 = (v0 << 2) | (v1 >> 4);
+        out.push(b0);
+
+        if chunk[2] != b'=' {
+            let b1 = ((v1 & 0x0f) << 4) | (v2 >> 2);
+            out.push(b1);
+        } else if chunk[3] != b'=' {
+            return Err("invalid base64 padding".to_string());
+        }
+
+        if chunk[3] != b'=' {
+            let b2 = ((v2 & 0x03) << 6) | v3;
+            out.push(b2);
+        }
+    }
+    Ok(out)
+}
+
+pub fn bytes_method(cell: &Ref<Vec<u8>>, name: &str, args: &[Value]) -> Result<Value, String> {
+    match name {
+        "len" => {
+            want(name, args, 0)?;
+            Ok(Value::Int(cell.lock().unwrap().len() as i64))
+        }
+        "is_empty" => {
+            want(name, args, 0)?;
+            Ok(Value::Bool(cell.lock().unwrap().is_empty()))
+        }
+        "get" => {
+            want(name, args, 1)?;
+            let b = cell.lock().unwrap();
+            let i = resolve_bytes_index(&args[0], b.len(), "bytes.get")?;
+            Ok(Value::Int(b[i] as i64))
+        }
+        "set" => {
+            want(name, args, 2)?;
+            let mut b = cell.lock().unwrap();
+            let i = resolve_bytes_index(&args[0], b.len(), "bytes.set")?;
+            let val = want_int(&args[1], "bytes.set")?;
+            if !(0..=255).contains(&val) {
+                return Err(format!("byte value must be between 0 and 255, got {}", val));
+            }
+            b[i] = val as u8;
+            Ok(Value::Null)
+        }
+        "push" => {
+            want(name, args, 1)?;
+            let mut b = cell.lock().unwrap();
+            let val = want_int(&args[0], "bytes.push")?;
+            if !(0..=255).contains(&val) {
+                return Err(format!("byte value must be between 0 and 255, got {}", val));
+            }
+            b.push(val as u8);
+            Ok(Value::Null)
+        }
+        "slice" => {
+            if args.is_empty() || args.len() > 2 {
+                return Err(format!("bytes.slice expects 1 or 2 arguments, got {}", args.len()));
+            }
+            let b = cell.lock().unwrap();
+            let len = b.len();
+            let s = resolve_slice_bound(&args[0], len, "bytes.slice")?;
+            let e = if args.len() == 2 {
+                resolve_slice_bound(&args[1], len, "bytes.slice")?
+            } else {
+                len
+            };
+            let sub = if s < e { b[s..e].to_vec() } else { Vec::new() };
+            Ok(Value::Bytes(new_ref(sub)))
+        }
+        "to_list" => {
+            want(name, args, 0)?;
+            let b = cell.lock().unwrap();
+            let items: Vec<Value> = b.iter().map(|&x| Value::Int(x as i64)).collect();
+            Ok(make_list(items))
+        }
+        "to_string" => {
+            want(name, args, 0)?;
+            let b = cell.lock().unwrap();
+            match std::str::from_utf8(&b) {
+                Ok(s) => Ok(Value::Result(Ok(Box::new(Value::Str(s.into()))))),
+                Err(e) => Ok(Value::Result(Err(Box::new(Value::Str(format!("utf-8 error: {}", e).into()))))),
+            }
+        }
+        "to_hex" => {
+            want(name, args, 0)?;
+            let b = cell.lock().unwrap();
+            Ok(Value::Str(bytes_to_hex(&b).into()))
+        }
+        "from_hex" => {
+            want(name, args, 1)?;
+            let s = want_str(&args[0], "bytes.from_hex")?;
+            let data = bytes_from_hex(&s)?;
+            Ok(Value::Bytes(new_ref(data)))
+        }
+        "to_base64" => {
+            want(name, args, 0)?;
+            let b = cell.lock().unwrap();
+            Ok(Value::Str(bytes_to_base64(&b).into()))
+        }
+        "from_base64" => {
+            want(name, args, 1)?;
+            let s = want_str(&args[0], "bytes.from_base64")?;
+            let data = bytes_from_base64(&s)?;
+            Ok(Value::Bytes(new_ref(data)))
+        }
+        "copy" | "clone" => {
+            want(name, args, 0)?;
+            let data = cell.lock().unwrap().clone();
+            Ok(Value::Bytes(new_ref(data)))
+        }
+        _ => Err(unknown(name, "bytes")),
+    }
+}
+
+// ------------------------------------------------------------------ npy format
+
+pub enum NpyLoaded {
+    Vector(Vec<f64>),
+    Matrix { rows: usize, cols: usize, data: Vec<f64> },
+}
+
+pub fn save_npy_file(path: &str, shape: &[usize], data: &[f64]) -> Result<(), String> {
+    let shape_str = if shape.len() == 1 {
+        format!("({},), ", shape[0])
+    } else if shape.len() == 2 {
+        format!("({}, {}), ", shape[0], shape[1])
+    } else {
+        return Err("npy save only supports 1D and 2D arrays".to_string());
+    };
+
+    let dict = format!("{{'descr': '<f8', 'fortran_order': False, 'shape': {}}}", shape_str);
+    let unpadded_len = 10 + dict.len() + 1; // +1 for trailing '\n'
+    let pad = (64 - (unpadded_len % 64)) % 64;
+    let mut header = dict;
+    header.push_str(&" ".repeat(pad));
+    header.push('\n');
+
+    let h_len = header.len();
+    if h_len > u16::MAX as usize {
+        return Err("npy header too large".to_string());
+    }
+
+    let mut out = Vec::with_capacity(10 + h_len + data.len() * 8);
+    out.extend_from_slice(b"\x93NUMPY\x01\x00");
+    out.extend_from_slice(&(h_len as u16).to_le_bytes());
+    out.extend_from_slice(header.as_bytes());
+    for &val in data {
+        out.extend_from_slice(&val.to_le_bytes());
+    }
+
+    std::fs::write(path, out).map_err(|e| format!("cannot write npy file '{}': {}", path, e))
+}
+
+pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read npy file '{}': {}", path, e))?;
+    if bytes.len() < 10 {
+        return Err("npy file is too short (truncated header)".to_string());
+    }
+    if &bytes[0..6] != b"\x93NUMPY" {
+        return Err("invalid npy file (bad magic number)".to_string());
+    }
+    if bytes[6] != 1 || bytes[7] != 0 {
+        return Err(format!("unsupported npy version {}.{}", bytes[6], bytes[7]));
+    }
+    let h_len = u16::from_le_bytes([bytes[8], bytes[9]]) as usize;
+    if 10 + h_len > bytes.len() {
+        return Err("truncated npy header".to_string());
+    }
+    let h_str = std::str::from_utf8(&bytes[10..10 + h_len])
+        .map_err(|_| "npy header is not valid utf-8/ascii".to_string())?;
+
+    if !h_str.contains("'<f8'") && !h_str.contains("\"<f8\"") && !h_str.contains("'|f8'") && !h_str.contains("\"|f8\"") {
+        return Err(format!("unsupported npy dtype in header: {}", h_str));
+    }
+
+    let open_paren = h_str.find('(').ok_or_else(|| "missing shape in npy header".to_string())?;
+    let close_paren = h_str[open_paren..]
+        .find(')')
+        .ok_or_else(|| "unterminated shape in npy header".to_string())?
+        + open_paren;
+    let shape_str = &h_str[open_paren + 1..close_paren];
+    let dims: Vec<usize> = shape_str
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.parse::<usize>().map_err(|_| format!("invalid dimension '{}'", s)))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let payload = &bytes[10 + h_len..];
+    if dims.len() == 1 {
+        let n = dims[0];
+        if payload.len() != n * 8 {
+            return Err(format!(
+                "npy payload size mismatch: expected {} bytes, got {}",
+                n * 8,
+                payload.len()
+            ));
+        }
+        let mut data = Vec::with_capacity(n);
+        for chunk in payload.chunks_exact(8) {
+            data.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        Ok(NpyLoaded::Vector(data))
+    } else if dims.len() == 2 {
+        let (rows, cols) = (dims[0], dims[1]);
+        let total = rows * cols;
+        if payload.len() != total * 8 {
+            return Err(format!(
+                "npy payload size mismatch: expected {} bytes, got {}",
+                total * 8,
+                payload.len()
+            ));
+        }
+        let mut data = Vec::with_capacity(total);
+        for chunk in payload.chunks_exact(8) {
+            data.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+        }
+        Ok(NpyLoaded::Matrix { rows, cols, data })
+    } else {
+        Err(format!(
+            "only 1D vector and 2D matrix npy files are supported, found {}D shape",
+            dims.len()
+        ))
+    }
+}
+

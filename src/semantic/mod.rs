@@ -202,6 +202,7 @@ const BUILTIN_CONSTRUCTORS: &[&str] = &[
     "matrix",
     "matrix_from_list",
     "vector",
+    "bytes",
     "ring_buffer",
     "bag",
     "ref",
@@ -291,6 +292,26 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "http_fetch",
     "url_decode",
     "url_encode",
+    // binary I/O and npy
+    "read_bytes",
+    "write_bytes",
+    "save_npy",
+    "load_npy",
+    // csv
+    "read_csv",
+    "parse_csv",
+    "write_csv",
+    // regex
+    "regex_match",
+    "regex_find",
+    "regex_find_all",
+    "regex_replace",
+    // datetime
+    "unix_time",
+    "unix_ms",
+    "datetime_parts",
+    "datetime_from_parts",
+    "format_datetime",
 ];
 
 /// GUI natives (`spid3r gui`). Only known when the toolchain is built with the
@@ -1166,7 +1187,7 @@ impl Checker {
             "list" | "vec" | "stack" | "queue" | "deque" | "linked_list"
             | "singly_linked_list" | "doubly_linked_list" | "map" | "set" | "tuple"
             | "binary_tree" | "bst" | "heap" | "priority_queue" | "graph" | "hash_table"
-            | "trie" | "matrix" | "vector" | "ring_buffer" | "bag" | "ref" | "option" | "result"
+            | "trie" | "matrix" | "vector" | "bytes" | "ring_buffer" | "bag" | "ref" | "option" | "result"
             | "task" | "channel" | "mutex" | "some" | "none" | "ok" | "err" => {
                 let elem = t.arg.as_ref().map(|a| Box::new(self.resolve_type(a)));
                 Ty::Coll(lower, elem)
@@ -1524,6 +1545,7 @@ impl Checker {
             "trie",
             "matrix",
             "vector",
+            "bytes",
             "ring_buffer",
             "bag",
             "ref",

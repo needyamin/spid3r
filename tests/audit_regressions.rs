@@ -2050,3 +2050,135 @@ fn matrix_singular_differential_catch() {
     );
 }
 
+#[test]
+fn bytes_differential_all_three_engines() {
+    assert_three_engines(
+        "bytes_diff",
+        r#"fn main() {
+    let b = bytes("hello");
+    println(b.len());
+    println(b[0]);
+    println(b[-1]);
+    b[0] = 72;
+    println(b.to_string().unwrap());
+    let hex = b.to_hex();
+    println(hex);
+    let from_h = bytes().from_hex(hex);
+    println(from_h == b);
+    let b64 = b.to_base64();
+    println(b64);
+    let from_b = bytes().from_base64(b64);
+    println(from_b == b);
+    let sl = b.slice(1, 4);
+    println(sl.to_string().unwrap());
+    let list_b = b.to_list();
+    println(list_b.len());
+    return 0;
+}
+"#,
+        "5\n104\n111\nHello\n48656c6c6f\ntrue\nSGVsbG8=\ntrue\nell\n5\n",
+    );
+}
+
+#[test]
+fn npy_roundtrip_differential_all_three_engines() {
+    assert_three_engines(
+        "npy_diff",
+        r#"fn main() {
+    let v = vector([10.5, 20.25, 30.125]);
+    v.save_npy("target/difftest_vec.npy").unwrap();
+    let v2 = load_npy("target/difftest_vec.npy").unwrap();
+    println(v == v2);
+
+    let m = matrix([[1.0, 2.5], [3.25, 4.125]]);
+    m.save_npy("target/difftest_mat.npy").unwrap();
+    let m2 = load_npy("target/difftest_mat.npy").unwrap();
+    println(m == m2);
+
+    return 0;
+}
+"#,
+        "true\ntrue\n",
+    );
+}
+
+#[test]
+fn csv_differential_all_three_engines() {
+    assert_three_engines(
+        "csv_diff",
+        r#"fn main() {
+    let text = "name,age,active,score\n\"Doe, John\",35,true,98.5\nJane,28,false,NA\n";
+    let res = parse_csv(text, null).unwrap();
+    let h = res["headers"];
+    let rows = res["rows"];
+    println(h.len());
+    println(rows.len());
+    println(rows[0][0]);
+    println(rows[0][1]);
+    println(rows[0][2]);
+    println(rows[0][3]);
+    println(rows[1][2]);
+    println(rows[1][3] == null);
+    return 0;
+}
+"#,
+        "4\n2\nDoe, John\n35\ntrue\n98.5\nfalse\ntrue\n",
+    );
+}
+
+#[test]
+fn regex_differential_all_three_engines() {
+    assert_three_engines(
+        "regex_diff",
+        r#"fn main() {
+    println(regex_match("\\d+", "abc123xyz"));
+    println(regex_match("^\\d+$", "abc123xyz"));
+    println(regex_match("^\\d+$", "987654"));
+
+    let f = regex_find("[a-z]+", "123 orange 456");
+    println(f.unwrap());
+
+    let all = regex_find_all("\\d+", "a10 b20 c30");
+    println(all.len());
+    println(all[0]);
+    println(all[1]);
+    println(all[2]);
+
+    let rep = regex_replace("\\d+", "num1_num2_num3", "X");
+    println(rep);
+    return 0;
+}
+"#,
+        "true\nfalse\ntrue\norange\n3\n10\n20\n30\nnumX_numX_numX\n",
+    );
+}
+
+#[test]
+fn datetime_differential_all_three_engines() {
+    assert_three_engines(
+        "datetime_diff",
+        r#"fn main() {
+    let p = datetime_parts(0);
+    println(p["year"]);
+    println(p["month"]);
+    println(p["day"]);
+    println(p["hour"]);
+    println(p["minute"]);
+    println(p["second"]);
+    println(p["weekday"]);
+
+    let ts = datetime_from_parts(2026, 10, 20, 16, 45, 30);
+    let p2 = datetime_parts(ts);
+    println(p2["year"] == 2026 and p2["month"] == 10 and p2["day"] == 20);
+    println(p2["hour"] == 16 and p2["minute"] == 45 and p2["second"] == 30);
+
+    let fmt = format_datetime(0, "%Y-%m-%d %H:%M:%S");
+    println(fmt);
+    return 0;
+}
+"#,
+        "1970\n1\n1\n0\n0\n0\n4\ntrue\ntrue\n1970-01-01 00:00:00\n",
+    );
+}
+
+
