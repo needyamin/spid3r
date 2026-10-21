@@ -20,14 +20,14 @@
 //! handle's `Mutex`, and the connection is opened with SQLITE_OPEN_FULLMUTEX,
 //! so the raw pointer inside `DbData` is sound to move across threads.
 
-use crate::value::{NativeCtx, Value};
-use std::ffi::c_void;
-#[cfg(not(target_arch = "wasm32"))]
-use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::ffi::CString;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::value::new_ref;
+use crate::value::{NativeCtx, Value};
+#[cfg(not(target_arch = "wasm32"))]
+use std::collections::HashMap;
+use std::ffi::c_void;
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::CString;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
