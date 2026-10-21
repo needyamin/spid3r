@@ -177,7 +177,21 @@ fn shared_scheduler_restarts_after_shutdown() {
         .expect("job must succeed");
     assert_eq!(done.load(Ordering::SeqCst), 1);
 
-    assert!(first.shutdown());
+    // `join()` returns as soon as the result is published; the pool's task
+    // record may take a moment longer to settle, during which `shutdown()`
+    // legitimately reports "a task could not be joined". Retry until it can
+    // (shutdown is documented as safe to repeat) — on a loaded CI runner the
+    // gap is wide enough to observe.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut shut = first.shutdown();
+    while !shut && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        shut = first.shutdown();
+    }
+    assert!(
+        shut,
+        "shutdown must join every worker once the task finished"
+    );
     assert!(first.is_stopped());
 
     let second = Scheduler::shared();
@@ -191,7 +205,13 @@ fn shared_scheduler_restarts_after_shutdown() {
         .join()
         .expect("job must succeed on the restarted pool");
     assert_eq!(done2.load(Ordering::SeqCst), 1);
-    assert!(second.shutdown());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut shut = second.shutdown();
+    while !shut && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        shut = second.shutdown();
+    }
+    assert!(shut, "the restarted pool must shut down cleanly");
 }
 
 /// A stopped pool must not queue work no thread will ever run: `spawn_job`

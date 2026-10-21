@@ -20,7 +20,13 @@ use crate::value::{FunctionData, InstanceData, Value};
 pub const MAX_CALL_DEPTH: usize = 1_000;
 
 #[cfg(not(target_arch = "wasm32"))]
-const RUN_STACK_BYTES: usize = 64 * 1024 * 1024;
+// The program thread's stack. `MAX_CALL_DEPTH` (1000) is a documented
+// language guarantee, and an interpreter frame costs tens of KB (the large
+// `Diagnostic` sits in every `Result` on the call path), so 1000 levels need
+// ~60 MB. 64 MiB left no margin: the depth-guard test passed locally but
+// aborted with a stack overflow on macOS CI (different frame layout). 256 MiB
+// is a virtual reservation, committed only as used.
+const RUN_STACK_BYTES: usize = 256 * 1024 * 1024;
 
 /// Stack size for REPL evaluation threads (same rationale as RUN_STACK_BYTES).
 pub const REPL_STACK_BYTES: usize = 64 * 1024 * 1024;
