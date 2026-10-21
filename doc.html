@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">676 tests · 25/25 examples agree</span>
+          <span class="badge">680 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -2407,6 +2407,38 @@ fn main() {
             </tr>
           </table>
         </div>
+          <h3>SQLite database</h3>
+          <p><code>db_open(path)</code> opens (or creates) a real SQLite database by loading the SQLite C
+            library at runtime — no crates, nothing downloaded at build time. The loader looks for
+            <code>sqlite3.dll</code> / <code>libsqlite3.so</code> / <code>libsqlite3.dylib</code> in the
+            <code>SPID3R_SQLITE_PATH</code> environment variable, next to the running executable, then the
+            system search paths. Connections default to WAL journaling and <code>foreign_keys=ON</code>.
+            Statements are parameterized (<code>?</code> placeholders — injection-safe); column types map
+            TEXT→string, INTEGER→int, REAL→float, BLOB→bytes, NULL→null:</p>
+          <pre data-lang="spid3r"><code>fn main() {
+    let db = db_open("app.db");
+
+    // DDL (multi-statement)
+    db.exec("CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY, name TEXT, score REAL)");
+
+    // INSERT with parameters -> {changes, last_id}
+    let r = db.run("INSERT INTO users(name, score) VALUES (?, ?)", ["ada", 9.5]);
+    println(r["last_id"]); // 1
+
+    // SELECT -> a list of row maps
+    let rows = db.query("SELECT id, name FROM users WHERE score &gt; ?", [9.0]);
+    for row in rows {
+        println(row["name"]);
+    }
+
+    db.close();
+}</code></pre>
+          <p>Errors (bad SQL, constraint violations) are catchable strings carrying the SQLite message;
+            using a closed handle raises <code>database is closed</code>. Not available on WebAssembly. See
+            <a href="#first-party-stdlib">First-Party Standard Libraries</a> for the web framework that
+            pairs with it.</p>
+
           <h3>Networking &amp; HTTP</h3>
           <p>Built-in TCP socket primitives and HTTP/1.1 framing with zero external dependencies (see <a
               href="#networking">Networking &amp; HTTP guide</a> below):</p>
@@ -2510,6 +2542,36 @@ fn main() {
     // JWT sign and verify
     let token = w.jwt_sign(map("sub", "usr_101", "role", "admin"), "secret-key");
     let verified = w.jwt_verify(token, "secret-key"); // ok(payload)
+
+    // Static files: ./public/style.css served at /static/style.css
+    // (content-type detection, binary bodies, ".." traversal -> 403)
+    app.static_files("./public", "/static");
+}</code></pre>
+          <p>Cookies and sessions: a handler's response map may carry a <code>cookies</code> map — each
+            entry becomes its own <code>Set-Cookie</code> header (<code>w.cookie(name, value, opts)</code>
+            builds one; opts: <code>path</code>, <code>max_age</code>, <code>expires</code>,
+            <code>http_only</code>, <code>secure</code>). <code>SessionStore</code> provides stateless
+            signed-cookie sessions over JWTs — the data is authenticated (a client cannot forge it) but
+            readable by the client:</p>
+          <pre data-lang="spid3r"><code>import "web";
+
+fn main() {
+    let app = web_app();
+    let store = new SessionStore("secret-key", null);
+
+    app.get("/login", fn(req) {
+        let set_cookie = store.start(map("user", "ada")); // one-day JWT cookie
+        return map("__http_response", true, "status", 200, "headers", map(),
+                   "body", "welcome", "cookies", map("spid3r_session", set_cookie));
+    });
+
+    app.get("/profile", fn(req) {
+        let session = store.read(req); // verified data map, or null
+        if session == null { return json_response(401, map("error", "no session")); }
+        return json_response(200, map("user", session["user"]));
+    });
+
+    app.listen("127.0.0.1:8080");
 }</code></pre>
 
           <h3>2. <code>stdlib/dataframe.matrix</code> — Pandas Alternative</h3>
@@ -3432,7 +3494,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>676 tests</strong> (<strong>660</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>680 tests</strong> (<strong>664</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

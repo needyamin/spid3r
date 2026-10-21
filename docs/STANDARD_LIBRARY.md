@@ -298,6 +298,49 @@ Machine learning models and evaluation metrics built on native `matrix` (`solve`
   `unwrap`. Argument/type errors still throw.
 
 
+## SQLite database (`db_open`)
+
+`db_open(path)` opens (or creates) a SQLite database by loading the real
+SQLite C library at runtime — **zero crate dependencies**. The loader looks
+for `sqlite3.dll` / `libsqlite3.so` / `libsqlite3.dylib` in this order: the
+`SPID3R_SQLITE_PATH` environment variable, the running executable's
+directory, then the OS default search paths. A failed load is a catchable
+error that names every location tried.
+
+Connections default to WAL journaling and `foreign_keys=ON`. All statements
+are parameterized (`?` placeholders — injection-safe). Column types map
+TEXT→string, INTEGER→int, REAL→float, BLOB→bytes, NULL→null; parameters
+accept null/int/float/string/bytes.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `db.exec(sql)` | `{changes, last_id}` | Multi-statement DDL (`CREATE TABLE …`) |
+| `db.run(sql, params?)` | `{changes, last_id}` | INSERT/UPDATE/DELETE |
+| `db.query(sql, params?)` | list of row maps | SELECT; one map per row |
+| `db.close()` | null | Use afterwards → `database is closed` error |
+
+Not available on WebAssembly (no OS file system). On Windows, drop
+`sqlite3.dll` next to the `spid3r` executable.
+
+## WebApp framework extras
+
+Built on `stdlib/web.matrix` (the `web_app()` router):
+
+- **`app.static_files(dir, url_prefix)`** — serve files from `dir` under
+  `url_prefix` with content-type detection (html/css/js/json/png/jpg/svg/
+  ico/wasm/txt) and verbatim binary bodies. `..` traversal → 403; misses →
+  404.
+- **Cookies** — a handler's response map may carry a `cookies` map
+  (`cookie(name, value, opts)` builds one; opts: `path`, `max_age`,
+  `expires`, `http_only`, `secure`). Each entry becomes its own `Set-Cookie`
+  header. `http_write_response` accepts a `bytes` body for binary responses.
+- **Sessions** — `new SessionStore(secret, cookie_name?)`: stateless
+  signed-cookie sessions. `store.start(data_map)` returns the Set-Cookie
+  value (JWT, one day); `store.read(req)` returns the verified data map or
+  `null` (absent/tampered/expired); `store.clear()` returns the logout
+  cookie. The data is authenticated but not encrypted — the client can read
+  it, never forge it.
+
 ## Container methods (the complete matrix)
 
 Every container is constructed by its builtin (`list(…)`, `stack()`, `map(…)`,

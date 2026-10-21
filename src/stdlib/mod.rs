@@ -4,6 +4,7 @@
 
 pub mod csv;
 pub mod datetime;
+pub mod db;
 pub mod net;
 pub mod regex;
 
@@ -114,6 +115,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("format_datetime", n_format_datetime),
     ];
     defs.extend(net::native_defs());
+    defs.extend(db::native_defs());
     defs
 }
 

@@ -187,6 +187,44 @@ fn header_pairs(v: &Value, who: &str) -> Result<Vec<(String, String)>, String> {
             }
             Ok(out)
         }
+        // A list of `{name, value}` maps: needed when the same header name
+        // must appear more than once (multiple Set-Cookie headers).
+        Value::List(l) => {
+            let items = l.lock().unwrap().items.clone();
+            let mut out = Vec::with_capacity(items.len());
+            for item in &items {
+                let m = match item {
+                    Value::Map(m) => m.lock().unwrap(),
+                    other => {
+                        return Err(format!(
+                            "{} expects a list of {{name, value}} maps, found {}",
+                            who,
+                            crate::value::type_name(other)
+                        ))
+                    }
+                };
+                let name = m
+                    .entries
+                    .iter()
+                    .find(|(k, _)| k.display() == "name")
+                    .map(|(_, v)| display_value(v))
+                    .unwrap_or_default();
+                let value = m
+                    .entries
+                    .iter()
+                    .find(|(k, _)| k.display() == "value")
+                    .map(|(_, v)| display_value(v))
+                    .unwrap_or_default();
+                if name.contains(['\r', '\n']) || value.contains(['\r', '\n']) {
+                    return Err(format!("{}: header '{}' contains a line break", who, name));
+                }
+                if name.trim().is_empty() {
+                    return Err(format!("{}: empty header name", who));
+                }
+                out.push((name, value));
+            }
+            Ok(out)
+        }
         other => Err(format!(
             "{} expects a map of headers, found {}",
             who,
@@ -811,11 +849,15 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
         return Err(format!("{}: status {} is out of range", WHO, status));
     }
     let headers = header_pairs(&args[2], WHO)?;
-    let body = match &args[3] {
-        Value::Str(s) => s.to_string(),
-        Value::Null => String::new(),
-        other => display_value(other),
+    // A `bytes` body is written verbatim (binary responses: images, wasm,
+    // any pre-encoded payload); everything else renders as text.
+    let (body_text, body_raw): (String, Option<Vec<u8>>) = match &args[3] {
+        Value::Str(s) => (s.to_string(), None),
+        Value::Null => (String::new(), None),
+        Value::Bytes(b) => (String::new(), Some(b.lock().unwrap().clone())),
+        other => (display_value(other), None),
     };
+    let body_len = body_raw.as_ref().map_or(body_text.len(), |b| b.len());
     let stream = get_stream(id, WHO)?;
 
     let mut out = format!("HTTP/1.1 {} {}\r\n", status, reason_phrase(status));
@@ -833,10 +875,13 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
     }
     out.push_str(&format!(
         "content-length: {}\r\nconnection: close\r\nserver: spid3r\r\n\r\n",
-        body.len()
+        body_len
     ));
     let mut bytes = out.into_bytes();
-    bytes.extend_from_slice(body.as_bytes());
+    match body_raw {
+        Some(raw) => bytes.extend_from_slice(&raw),
+        None => bytes.extend_from_slice(body_text.as_bytes()),
+    }
     match (&*stream)
         .write_all(&bytes)
         .and_then(|_| (&*stream).flush())

@@ -840,6 +840,7 @@ pub fn call_method_host(
         Value::Task(t) => task_method(t, name, &args),
         Value::Channel(c) => channel_method(c, name, args),
         Value::MutexVal(m) => mutex_method(m, name, &args),
+        Value::Database(d) => crate::stdlib::db::database_method(d, name, &args),
         other => Err(format!(
             "{} values have no methods",
             crate::value::type_name(other)

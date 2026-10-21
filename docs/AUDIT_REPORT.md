@@ -576,3 +576,57 @@ Implemented in this round (details above and in the sections that follow):
   malformed separators; `tests/literal_syntax.rs` (6 tests).
 - ~~Container-method docs~~ — the full matrix is in
   STANDARD_LIBRARY.md ("Container methods").
+
+---
+
+## 15. 2026-10-21 addendum 3 — persistence + web framework (the CMS/ERP blockers)
+
+The audit report identified the absence of **any database connectivity** as
+the single blocker standing between the language and CMS/ERP-class
+applications. Implemented in this round:
+
+### SQLite driver (`src/stdlib/db.rs`, new)
+
+`db_open(path)` loads the real SQLite C library at runtime through the OS
+loader (`LoadLibraryW` on Windows, `dlopen` on POSIX) — **zero crate
+dependencies, nothing downloaded at build time**; the wasm target compiles
+without it. New `Value::Database` handle variant (modeled on `MutexVal`;
+touches `ref_id`/equality/`type_name`/`display`/`deep_clone` plus a
+`call_method_host` arm). Parameterized statements only (injection-safe);
+WAL + foreign_keys ON by default; TEXT/INTEGER/REAL/BLOB/NULL map to
+string/int/float/bytes/null in both directions. Errors are catchable
+strings carrying `sqlite3_errmsg`.
+
+**Defect found and fixed while building it**: the SQLite build shipped with
+CPython on Windows (3.53.1) **faults when `sqlite3_open` triggers lazy
+auto-initialization** inside a host process. The driver now calls
+`sqlite3_initialize()` explicitly after loading — documented as always safe
+and idempotent. Found by bisecting: `sqlite3_libversion()` worked,
+`sqlite3_open` access-violated, `initialize` + `open` worked.
+
+Tests: inline Rust test (loader + open/close + statement round trip),
+`tests/db_tests.rs` — full CRUD lifecycle (create/insert/query/update/error
+handling/close-then-use) on **tree, VM, and the compiled artifact**. Every
+db test **skips cleanly when no SQLite library is installed**, so CI runners
+without one never fail.
+
+### WebApp framework upgrades (`stdlib/web.matrix` + `src/stdlib/net.rs`)
+
+- `app.static_files(dir, url_prefix)` — content-typed static serving with
+  binary bodies (`http_write_response` now writes `Value::Bytes` verbatim),
+  `..` traversal → 403, misses → 404.
+- Cookies — response `cookies` map → individual `Set-Cookie` headers
+  (`header_pairs` accepts a list of `{name, value}` maps so several
+  Set-Cookie headers can coexist); `cookie(name, value, opts)` builder.
+- `SessionStore` — stateless signed-cookie sessions over
+  `jwt_sign`/`jwt_verify`.
+
+Tests: `tests/web_framework_tests.rs` — the full round trip (route, login
+sets HttpOnly signed cookie, the cookie authenticates a profile route,
+static content-type + binary body, 403/404/401) on both engines.
+
+### Verification
+
+Core suite green (664 tests at the time of writing), differential 25/25,
+clippy `-D warnings` clean on core and gui, rustfmt clean, native + wasm
+builds compile. CI gates unchanged (no new crates, no downloads).

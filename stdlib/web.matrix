@@ -59,6 +59,52 @@ public fn redirect_response(location) {
     return map("__http_response", true, "status", 302, "headers", headers, "body", "");
 }
 
+// ------------------------------------------------------------------ cookies
+
+/// Build a `Set-Cookie` header value. `opts` is a map with any of:
+/// `path` (default `"/"`), `max_age`, `expires`, `http_only`, `secure`.
+public fn cookie(name, value, opts) {
+    let c = string(name) + "=" + string(value);
+    if opts.has("path") {
+        c = c + "; Path=" + string(opts["path"]);
+    } else {
+        c = c + "; Path=/";
+    }
+    if opts.has("max_age") {
+        c = c + "; Max-Age=" + string(opts["max_age"]);
+    }
+    if opts.has("expires") {
+        c = c + "; Expires=" + string(opts["expires"]);
+    }
+    if opts.has("http_only") and opts["http_only"] {
+        c = c + "; HttpOnly";
+    }
+    if opts.has("secure") and opts["secure"] {
+        c = c + "; Secure";
+    }
+    return c;
+}
+
+/// Move a response map's `cookies` map into its headers (as a list of
+/// `{name, value}` pairs, so several Set-Cookie headers can coexist).
+fn with_cookies(res) {
+    if not res.has("cookies") {
+        return res;
+    }
+    let cookies = res["cookies"];
+    let headers = list();
+    let base = res["headers"];
+    for k in base.keys() {
+        headers.push(map("name", k, "value", base[k]));
+    }
+    for name in cookies.keys() {
+        headers.push(map("name", "set-cookie", "value", cookies[name]));
+    }
+    res.set("headers", headers);
+    res.delete("cookies");
+    return res;
+}
+
 fn to_response(value) {
     if value == null {
         return map("__http_response", true, "status", 204, "headers", map(), "body", "");
@@ -66,7 +112,7 @@ fn to_response(value) {
     let t = type_of(value);
     if t == "map" {
         if value.has("__http_response") {
-            return value;
+            return with_cookies(value);
         }
         return json_response(200, value);
     }
@@ -407,6 +453,84 @@ public class WebApp {
         return json_response(404, map("error", "Not Found", "path", req_path));
     }
 
+    /// Serve files from `dir` under `url_prefix` (e.g. `app.static_files(
+    /// "./public", "/static")` serves `./public/style.css` at
+    /// `/static/style.css`). Binary content is served verbatim; `..`
+    /// traversal is rejected with 403 and misses return 404.
+    public fn static_files(self, dir, url_prefix) {
+        let root = string(dir);
+        let prefix = string(url_prefix);
+        if prefix.ends_with("/") {
+            prefix = prefix.slice(0, prefix.len() - 1);
+        }
+        let handler = fn(req) {
+            let rest = "";
+            if req.has("params") and req["params"].has("*") {
+                rest = req["params"]["*"];
+            }
+            if rest.contains("..") {
+                return map(
+                    "__http_response",
+                    true,
+                    "status",
+                    403,
+                    "headers",
+                    map(),
+                    "body",
+                    "forbidden"
+                );
+            }
+            let path = root + "/" + rest;
+            let content = read_bytes(path);
+            if content.is_err() {
+                return map(
+                    "__http_response",
+                    true,
+                    "status",
+                    404,
+                    "headers",
+                    map(),
+                    "body",
+                    "not found"
+                );
+            }
+            let ctype = "application/octet-stream";
+            let lower = path.lower();
+            if lower.ends_with(".html") or lower.ends_with(".htm") {
+                ctype = "text/html; charset=utf-8";
+            } elif lower.ends_with(".css") {
+                ctype = "text/css; charset=utf-8";
+            } elif lower.ends_with(".js") or lower.ends_with(".mjs") {
+                ctype = "text/javascript; charset=utf-8";
+            } elif lower.ends_with(".json") {
+                ctype = "application/json";
+            } elif lower.ends_with(".png") {
+                ctype = "image/png";
+            } elif lower.ends_with(".jpg") or lower.ends_with(".jpeg") {
+                ctype = "image/jpeg";
+            } elif lower.ends_with(".svg") {
+                ctype = "image/svg+xml";
+            } elif lower.ends_with(".ico") {
+                ctype = "image/x-icon";
+            } elif lower.ends_with(".wasm") {
+                ctype = "application/wasm";
+            } elif lower.ends_with(".txt") {
+                ctype = "text/plain; charset=utf-8";
+            }
+            return map(
+                "__http_response",
+                true,
+                "status",
+                200,
+                "headers",
+                map("content-type", ctype),
+                "body",
+                content.unwrap()
+            );
+        };
+        self.route("GET", prefix + "/*", handler);
+    }
+
     public fn listen(self, addr) {
         let listener = tcp_listen(addr);
         if listener.is_err() {
@@ -440,4 +564,61 @@ public class WebApp {
 
 public fn web_app() {
     return new WebApp();
+}
+
+// ------------------------------------------------------------------ sessions
+
+/// Stateless signed-cookie sessions. The session data lives in the cookie
+/// itself, authenticated with `jwt_sign`/`jwt_verify` under `secret` — no
+/// server-side storage. Trust the data only as much as the signature (the
+/// client can read it; it cannot forge it).
+public class SessionStore {
+    public let secret;
+    public let cookie_name;
+
+    public fn new(secret, cookie_name) {
+        self.secret = secret;
+        self.cookie_name = "spid3r_session";
+        if cookie_name != null {
+            self.cookie_name = cookie_name;
+        }
+    }
+
+    /// Build the Set-Cookie header value that starts a session carrying
+    /// `data` (a map) for one day.
+    public fn start(self, data) {
+        let payload = map("data", data, "exp", unix_time() + 86400);
+        let token = jwt_sign(payload, self.secret);
+        return cookie(self.cookie_name, token, map("http_only", true, "path", "/"));
+    }
+
+    /// The session data for a request, or `null` when absent, invalid,
+    /// tampered with, or expired.
+    public fn read(self, req) {
+        if not req.has("cookies") {
+            return null;
+        }
+        if not req["cookies"].has(self.cookie_name) {
+            return null;
+        }
+        let token = req["cookies"][self.cookie_name];
+        let verified = jwt_verify(token, self.secret);
+        if verified.is_err() {
+            return null;
+        }
+        let payload = verified.unwrap();
+        if payload.has("exp") and payload["exp"] < unix_time() {
+            return null;
+        }
+        return payload["data"];
+    }
+
+    /// The Set-Cookie header value that ends the session.
+    public fn clear(self) {
+        return cookie(
+            self.cookie_name,
+            "",
+            map("http_only", true, "path", "/", "max_age", 0)
+        );
+    }
 }

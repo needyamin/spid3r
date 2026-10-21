@@ -383,6 +383,8 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "datetime_parts",
     "datetime_from_parts",
     "format_datetime",
+    // sqlite database (src/stdlib/db.rs)
+    "db_open",
 ];
 
 /// GUI natives (`spid3r gui`). Only known when the toolchain is built with the
