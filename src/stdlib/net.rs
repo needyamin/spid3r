@@ -202,9 +202,51 @@ fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
 fn io_msg(who: &str, e: &std::io::Error) -> String {
     match e.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-            format!("{}: timed out", who)
+            format!(
+                "{}: timed out (SPID3R_NET_TIMEOUT_MS sets the limit, \
+                 tcp_set_timeout overrides it per connection)",
+                who
+            )
         }
         _ => format!("{}: {}", who, e),
+    }
+}
+
+/// Default read/write timeout for HTTP framing: `SPID3R_NET_TIMEOUT_MS`
+/// (default 30 000; `0` disables).
+///
+/// Audit A-16: `read_head` had no deadline, so a client that dribbles one byte
+/// per minute (slowloris) held a server worker forever. Raw `tcp_*` connections
+/// keep whatever timeout the program sets; the default is applied when a
+/// connection enters HTTP framing, which is the unbounded wait a hostile peer
+/// controls.
+fn default_io_timeout() -> Option<Duration> {
+    let ms = std::env::var("SPID3R_NET_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(30_000);
+    if ms == 0 {
+        None
+    } else {
+        Some(Duration::from_millis(ms))
+    }
+}
+
+/// Give `stream` the default timeout unless the program already set one.
+///
+/// A timeout the program chose with `tcp_set_timeout` always wins: silently
+/// shortening it would break a deliberately patient connection.
+fn ensure_io_timeout(stream: &TcpStream) -> Result<(), String> {
+    match stream.read_timeout() {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => match default_io_timeout() {
+            Some(t) => stream
+                .set_read_timeout(Some(t))
+                .and_then(|_| stream.set_write_timeout(Some(t)))
+                .map_err(|e| io_msg("net", &e)),
+            None => Ok(()),
+        },
+        Err(e) => Err(io_msg("net", &e)),
     }
 }
 
@@ -415,7 +457,12 @@ fn read_head(mut stream: &TcpStream, who: &str) -> Result<Head, String> {
                 who, MAX_HEAD_BYTES
             ));
         }
-        let n = stream.read(&mut chunk).map_err(|e| io_msg(who, &e))?;
+        // Never read past the cap: a peer that streams headers forever would
+        // otherwise overshoot by a whole chunk on every iteration (A-16).
+        let room = (MAX_HEAD_BYTES + 1 - buf.len()).min(chunk.len());
+        let n = stream
+            .read(&mut chunk[..room])
+            .map_err(|e| io_msg(who, &e))?;
         if n == 0 {
             return Err(if buf.is_empty() {
                 format!("{}: connection closed before any data", who)
@@ -551,11 +598,25 @@ impl ChunkReader<'_> {
         Ok(())
     }
 
+    /// Drop the consumed prefix once it dominates the buffer.
+    ///
+    /// A-16: `pos` advanced but `buf` was never compacted, so a long chunked
+    /// body kept every byte it had ever read (roughly doubling peak memory for
+    /// an 8 MB body, and making every `take` copy from a steadily growing
+    /// vector).
+    fn compact(&mut self) {
+        if self.pos >= 8192 && self.pos * 2 >= self.buf.len() {
+            self.buf.drain(..self.pos);
+            self.pos = 0;
+        }
+    }
+
     fn line(&mut self) -> Result<String, String> {
         loop {
             if let Some(i) = find_subslice(&self.buf[self.pos..], b"\r\n") {
                 let s = String::from_utf8_lossy(&self.buf[self.pos..self.pos + i]).into_owned();
                 self.pos += i + 2;
+                self.compact();
                 return Ok(s);
             }
             if self.buf.len() - self.pos > MAX_HEAD_BYTES {
@@ -571,6 +632,7 @@ impl ChunkReader<'_> {
         }
         let out = self.buf[self.pos..self.pos + n].to_vec();
         self.pos += n;
+        self.compact();
         Ok(out)
     }
 }
@@ -654,6 +716,8 @@ fn n_http_read_request(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Stri
 
 fn read_request(stream: &TcpStream) -> Result<Value, String> {
     const WHO: &str = "http_read_request";
+    // A-16: bound the header phase unless the program set its own timeout.
+    ensure_io_timeout(stream)?;
     let head = read_head(stream, WHO)?;
     let parts: Vec<&str> = head.start_line.split_whitespace().collect();
     if parts.len() != 3 || !parts[2].starts_with("HTTP/") {
