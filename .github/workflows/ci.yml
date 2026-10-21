@@ -51,6 +51,14 @@ jobs:
           echo "### Failing tests (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
           grep -E "FAILED|panicked at|test result:" cargo_test_output.txt >> "$GITHUB_STEP_SUMMARY" || true
           tail -n 80 cargo_test_output.txt >> "$GITHUB_STEP_SUMMARY"
+          # Annotations are readable from the check-runs API, unlike the step
+          # summary; emit the failing test names and panic messages as errors.
+          grep -E "FAILED$|panicked at" cargo_test_output.txt | head -8 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done || true
+          if [ -f cargo_test_output.txt ]; then
+            echo "::error::tail: $(tail -n 3 cargo_test_output.txt | tr '\n' ' ' | cut -c1-400)"
+          fi
 
       - name: Run 3-engine differential example suite (tree == vm == exec)
         run: cargo run --bin spid3r --no-default-features -- test
