@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 520 Rust tests green (504 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 523 Rust tests green (507 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -83,7 +83,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 520 tests (504 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 523 tests (507 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -199,6 +199,14 @@ GaliLang/
   diagnostics/mod.rs   Span{file,line,col,len}, Phase (Lexer/Parser/Semantic/
                        Runtime/Vm/Usage), Diagnostic{phase,message,span,thrown,
                        trace}, TraceFrame; Spid3r errors NEVER panic the host
+  lower/mod.rs         AST lowering: the single seam between the parser and the
+                       three backends. Identity today (returns Cow::Borrowed, so
+                       no clone); a syntax feature is meant to be written here as
+                       a desugaring instead of three times as an engine feature.
+                       Contract: idempotent (the VM compiles module programs
+                       through the same entry), span-preserving,
+                       behaviour-preserving (tests/engine_matrix.rs proves it).
+                       `spid3r check FILE --dump-lowered` prints the result.
   fmt.rs               formatter; invariants: re-lex equality + idempotence
   repl/mod.rs          REPL (:help/:reset/:quit)
   pkg/mod.rs           manifest (spider.toml), install/vendor (valid_pkg_name
@@ -360,6 +368,11 @@ GaliLang/
                          trailing bytes, instruction-table mismatch, fall-through
                          end, nesting depth, non-quadratic jumps, `exec` on a
                          corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         engine_matrix.rs (4: the three-engine conformance
+                         matrix — every Stmt/Expr form on tree+vm against the
+                         EXPECTED text, identical stderr phase/message, an AOT
+                         subset under --features native, an import case, and the
+                         lowering pass being identity + idempotent),
                          deep_drop.rs (5: A-17 deep/mixed container and instance
                          chains torn down in a child process; 200k and 1M deep),
                          regex_scaling.rs (4: A-15 single-pass search — a failing
@@ -483,6 +496,18 @@ GaliLang/
     * detached collection mutators (list/set/bag remove+add) commit with a
       verified snapshot and retry on conflict (bounded, 32) — concurrent adds
       cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Pipeline seam (Stage 1, 2026-10-21):
+    * every backend executes the LOWERED AST (`crate::lower`): the interpreter
+      lowers in run_program_inner, modules::load lowers an imported module, the
+      VM lowers in compile_program_unoptimized, the AOT backend in
+      build_module. The pass is the identity today; the seam exists so a
+      syntax feature is written once.
+    * a VM failure while EXECUTING reports `error[runtime]`, not `error[vm]`
+      (Phase::Vm is reserved for malformed bytecode / compile failures). The
+      same program used to report a different phase per engine; the matrix
+      caught it because `spid3r test` compares stdout only.
+    * `tests/engine_matrix.rs` asserts EXPECTED output, not just engine
+      agreement, so two engines cannot agree on the wrong answer.
   - Correctness round (Stage 0, 2026-10-21):
     * every flat container AND instance type tears down through one iterative
       worklist (collections::drop_iteratively); a 1M-deep chain is fine, and a

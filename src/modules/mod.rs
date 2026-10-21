@@ -167,6 +167,10 @@ pub fn load(
     // (the default) would break that for any module that imports another
     // module from a different working directory.
     semantic::check_file(&program, false, &resolved.to_string_lossy())?;
+    // A module is a program too: it goes through the same lowering seam as the
+    // entry file, so a desugaring rule applies inside imported code as well.
+    let lowered = crate::lower::lower(&program);
+    let program = lowered.as_ref();
 
     interp
         .modules

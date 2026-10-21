@@ -2532,6 +2532,9 @@ pub fn build_module(
     program: &Program,
     module_name: &str,
 ) -> IrResult<inkwell::module::Module<'static>> {
+    // Same seam as the interpreters: the AOT backend lowers before codegen.
+    let lowered = crate::lower::lower(program);
+    let program = lowered.as_ref();
     let ctx = Box::leak(Box::new(Context::create()));
     let mut ir = Ir::new(ctx, module_name);
     // top-level functions are globals holding closure values

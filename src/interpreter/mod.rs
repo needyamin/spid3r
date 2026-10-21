@@ -230,6 +230,11 @@ impl Interp {
     }
 
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
+        // Every backend executes the *lowered* AST, never the parser's output
+        // directly (see `crate::lower`). The pass is the identity today, so this
+        // borrows rather than clones.
+        let lowered = crate::lower::lower(program);
+        let program = lowered.as_ref();
         // Count this thread as executing Spid3r code: the GC gate allows a
         // collection only when the caller is the only active thread (audit A-4).
         let _active = crate::sched::enter_active();

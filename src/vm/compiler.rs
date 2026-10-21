@@ -245,6 +245,9 @@ pub fn compile_program_unoptimized(
     importer_file: &str,
     module_dirs: &[PathBuf],
 ) -> Result<(crate::value::VmFunc, HashSet<String>), Diagnostic> {
+    // The compiler consumes the lowered AST, like every other backend.
+    let lowered = crate::lower::lower(program);
+    let program = lowered.as_ref();
     let mut embedded: Vec<EmbeddedModule> = Vec::new();
     let mut keys: HashSet<String> = HashSet::new();
     let mut in_progress: HashSet<String> = HashSet::new();

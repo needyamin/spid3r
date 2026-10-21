@@ -57,7 +57,13 @@ struct VmError {
 impl VmError {
     fn to_diag(&self) -> Diagnostic {
         Diagnostic {
-            phase: Phase::Vm,
+            // A `VmError` is only ever raised while *executing* (compile-time
+            // failures return a `Diagnostic` directly), so it is a runtime error
+            // and must read `error[runtime]` — the same as the tree interpreter.
+            // `Phase::Vm` stays reserved for malformed bytecode (validator /
+            // deserialize). Before this, the same program reported a different
+            // phase depending on `--engine`; tests/engine_matrix.rs caught it.
+            phase: Phase::Runtime,
             message: self.message.clone(),
             span: Some(self.span.clone()),
             thrown: self.thrown.clone(),

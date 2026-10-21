@@ -307,7 +307,16 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
 }
 
 fn cmd_check(args: &[String]) -> Result<i32, Diagnostic> {
-    let file = single_file(args, "check")?;
+    // `--dump-lowered` prints what the backends actually receive. With an
+    // identity lowering pass that is the same tree, but it is the only way to
+    // see a desugaring rule's output without reading engine code.
+    let dump = args.iter().any(|a| a == "--dump-lowered");
+    let positional: Vec<String> = args
+        .iter()
+        .filter(|a| a.as_str() != "--dump-lowered")
+        .cloned()
+        .collect();
+    let file = single_file(&positional, "check")?;
     let (src, file_name) = read_source(&file)?;
     let program = parser::parse_file(&src, file_name)?;
     // a file without fn main is a library module: checked without the main rule
@@ -316,6 +325,10 @@ fn cmd_check(args: &[String]) -> Result<i32, Diagnostic> {
         _ => false,
     });
     semantic::check_file(&program, has_main, &file)?;
+    if dump {
+        let lowered = crate::lower::lower(&program);
+        println!("{:#?}", lowered.as_ref());
+    }
     println!("{}: ok", file);
     Ok(EXIT_OK)
 }
