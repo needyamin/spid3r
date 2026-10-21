@@ -111,6 +111,37 @@ const CASES: &[Case] = &[
         err: None,
         aot: true,
     },
+    // -------------------------------------------------------------- syntax (2)
+    Case {
+        name: "string_interp",
+        src: "class User {\n    public let name;\n    public let age;\n    fn new(name, age) {\n        self.name = name;\n        self.age = age;\n    }\n}\nfn main() {\n    let name = \"ada\";\n    let n = 36;\n    let u = new User(\"bob\", 7);\n    println(\"hi {name}\");\n    println(\"hi {name}, {n} years\");\n    println(\"user: {u.name} ({u.age})\");\n    println(\"{name}{name}\");\n    println(\"{{ user }} template stays literal\");\n    println(\"{not a hole}\");\n    return 0;\n}\n",
+        // A hole is `{ident(.ident)*}` with no spaces; everything else is text,
+        // so the stdlib template syntax `"{{ user }}"` is untouched.
+        out: "hi ada\nhi ada, 36 years\nuser: bob (7)\nadaada\n{{ user }} template stays literal\n{not a hole}",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "bitwise",
+        src: "fn main() {\n    println(12 & 10);\n    println(12 | 10);\n    println(12 ^ 10);\n    println(1 << 4);\n    println(256 >> 3);\n    println(-8 >> 1);\n    println((1 | 2) & 3);\n    println(1 << 2 + 1);\n    println((6 & 3) == 2);\n    println(1 | 2 ^ 3 & 4);\n    return 0;\n}\n",
+        // C precedence: `<<` binds tighter than `+`? No — `1 << 2 + 1` is
+        // `1 << 3`. `==` binds tighter than `&`, `&` tighter than `^` than `|`.
+        out: "8\n14\n6\n16\n32\n-4\n3\n8\ntrue\n3",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "err_bitwise_bool",
+        src: "fn main() {\n    println(6 & 3 == 2);\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        // `==` binds tighter than `&`, so this is `6 & (3 == 2)` — a bool
+        // operand, rejected by the one implementation.
+        err: Some("error[runtime]: bit_and expects int operands, found bool"),
+        aot: false,
+    },
     // ---------------------------------------------------------------- operators
     Case {
         name: "arith",

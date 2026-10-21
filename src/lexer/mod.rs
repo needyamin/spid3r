@@ -224,8 +224,27 @@ impl<'a> Lexer<'a> {
                     ));
                 }
             }
-            b'<' => self.two(b'=', TokenKind::Le, TokenKind::Lt),
-            b'>' => self.two(b'=', TokenKind::Ge, TokenKind::Gt),
+            // `<<` / `>>` before the single-character forms, so `1 << 2` is a
+            // shift rather than two comparisons.
+            b'<' => {
+                if self.peek() == Some(b'<') {
+                    self.bump();
+                    TokenKind::Shl
+                } else {
+                    self.two(b'=', TokenKind::Le, TokenKind::Lt)
+                }
+            }
+            b'>' => {
+                if self.peek() == Some(b'>') {
+                    self.bump();
+                    TokenKind::Shr
+                } else {
+                    self.two(b'=', TokenKind::Ge, TokenKind::Gt)
+                }
+            }
+            b'&' => TokenKind::Amp,
+            b'|' => TokenKind::Pipe,
+            b'^' => TokenKind::Caret,
             b'(' => TokenKind::LParen,
             b')' => TokenKind::RParen,
             b'{' => TokenKind::LBrace,
@@ -344,9 +363,45 @@ impl<'a> Lexer<'a> {
         String::from_utf8(self.src[begin..self.pos].to_vec()).unwrap()
     }
 
+    /// Try to read `ident(.ident)*}` starting at the character after `{`.
+    /// Rewinds and returns `None` if the text is not exactly that shape, so the
+    /// caller can emit a literal `{`.
+    fn try_interp_path(&mut self) -> Option<Vec<String>> {
+        let (pos, line, col) = (self.pos, self.line, self.col);
+        let mut segments = Vec::new();
+        loop {
+            let start = self.pos;
+            match self.peek() {
+                Some(c) if c == b'_' || c.is_ascii_alphabetic() => {}
+                _ => break,
+            }
+            while matches!(self.peek(), Some(c) if c == b'_' || c.is_ascii_alphanumeric()) {
+                self.bump();
+            }
+            segments.push(String::from_utf8_lossy(&self.src[start..self.pos]).into_owned());
+            if self.peek() == Some(b'.') {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        let ok = !segments.is_empty() && self.peek() == Some(b'}');
+        if !ok || self.pos == pos {
+            // Not a hole: restore and let the caller treat `{` as text.
+            self.pos = pos;
+            self.line = line;
+            self.col = col;
+            return None;
+        }
+        self.bump(); // the closing `}`
+        Some(segments)
+    }
+
     fn lex_string(&mut self, line: u32, col: u32, start_pos: usize) -> SpidResult<Token> {
         self.bump(); // opening quote
         let mut s = String::new();
+        // Interpolation holes seen so far; empty means a plain string literal.
+        let mut pieces: Vec<crate::lexer::token::InterpPiece> = Vec::new();
         loop {
             let c = match self.peek() {
                 Some(c) => c,
@@ -363,11 +418,35 @@ impl<'a> Lexer<'a> {
             match c {
                 b'"' => {
                     let len = (self.pos - start_pos) as u32;
+                    let kind = if pieces.is_empty() {
+                        TokenKind::Str(s)
+                    } else {
+                        if !s.is_empty() {
+                            pieces.push(crate::lexer::token::InterpPiece::Lit(s));
+                        }
+                        TokenKind::InterpStr(pieces)
+                    };
                     return Ok(Token {
-                        kind: TokenKind::Str(s),
+                        kind,
                         span: Span::new(self.file.clone(), line, col, len),
                     });
                 }
+                // `{name}` is an interpolation hole. Anything else starting with
+                // `{` is literal text, which is what keeps the template syntax
+                // `"{{ user }}"` (used by stdlib/web.matrix) untouched: `{` is
+                // followed by `{` or a space there, and a hole requires an
+                // identifier immediately after the brace.
+                b'{' => match self.try_interp_path() {
+                    Some(path) => {
+                        if !s.is_empty() {
+                            pieces.push(crate::lexer::token::InterpPiece::Lit(std::mem::take(
+                                &mut s,
+                            )));
+                        }
+                        pieces.push(crate::lexer::token::InterpPiece::Path(path));
+                    }
+                    None => s.push('{'),
+                },
                 b'\\' => {
                     let e = match self.peek() {
                         Some(e) => e,

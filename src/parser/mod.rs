@@ -825,10 +825,10 @@ impl Parser {
     }
 
     fn parse_and(&mut self) -> SpidResult<Expr> {
-        let mut left = self.parse_cmp()?;
+        let mut left = self.parse_bit_or()?;
         while self.at_kw(Keyword::And) {
             self.pos += 1;
-            let right = self.parse_cmp()?;
+            let right = self.parse_bit_or()?;
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Logical {
                 op: LogOp::And,
@@ -840,8 +840,57 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_cmp(&mut self) -> SpidResult<Expr> {
+    // Bitwise operators follow C precedence: `|` < `^` < `&` < comparison <
+    // `<<`/`>>` < additive. Each level is a stdlib call, not a new opcode, so
+    // there is exactly one implementation for all three engines.
+
+    fn parse_bit_or(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_bit_xor()?;
+        while matches!(self.kind(), TokenKind::Pipe) {
+            self.pos += 1;
+            let right = self.parse_bit_xor()?;
+            left = bit_call("bit_or", left, right);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_xor(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_bit_and()?;
+        while matches!(self.kind(), TokenKind::Caret) {
+            self.pos += 1;
+            let right = self.parse_bit_and()?;
+            left = bit_call("bit_xor", left, right);
+        }
+        Ok(left)
+    }
+
+    fn parse_bit_and(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_cmp()?;
+        while matches!(self.kind(), TokenKind::Amp) {
+            self.pos += 1;
+            let right = self.parse_cmp()?;
+            left = bit_call("bit_and", left, right);
+        }
+        Ok(left)
+    }
+
+    fn parse_shift(&mut self) -> SpidResult<Expr> {
         let mut left = self.parse_add()?;
+        loop {
+            let name = match self.kind() {
+                TokenKind::Shl => "shl",
+                TokenKind::Shr => "shr",
+                _ => break,
+            };
+            self.pos += 1;
+            let right = self.parse_add()?;
+            left = bit_call(name, left, right);
+        }
+        Ok(left)
+    }
+
+    fn parse_cmp(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_shift()?;
         loop {
             let op = match self.kind() {
                 TokenKind::EqEq => BinOp::Eq,
@@ -853,7 +902,7 @@ impl Parser {
                 _ => break,
             };
             self.pos += 1;
-            let right = self.parse_add()?;
+            let right = self.parse_shift()?;
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Binary {
                 op,
@@ -1046,6 +1095,10 @@ impl Parser {
                 self.pos += 1;
                 Ok(Expr::Str(s, sp))
             }
+            TokenKind::InterpStr(pieces) => {
+                self.pos += 1;
+                Ok(interp_to_expr(&pieces, sp))
+            }
             TokenKind::Kw(Keyword::True) => {
                 self.pos += 1;
                 Ok(Expr::Bool(true, sp))
@@ -1122,6 +1175,76 @@ fn describe(k: &TokenKind) -> String {
         TokenKind::LBrace => "'{'".to_string(),
         other => format!("{:?}", other),
     }
+}
+
+/// Desugar a bitwise operator into a call of the stdlib native.
+///
+/// Keeping these as calls rather than new opcodes means one implementation
+/// serves the interpreter, the VM and the AOT backend, and the type/range
+/// errors come from one place.
+fn bit_call(name: &str, l: Expr, r: Expr) -> Expr {
+    let span = join(l.span().clone(), r.span().clone());
+    Expr::Call {
+        callee: Box::new(Expr::Ident(name.to_string(), span.clone())),
+        args: vec![l, r],
+        span,
+    }
+}
+
+/// Desugar an interpolated literal into a concatenation.
+///
+/// `"hi {name} and {user.age}"` becomes
+/// `"hi " + string(name) + " and " + string(user.age)`.
+///
+/// Doing it here rather than in `crate::lower` is deliberate: the rewrite needs
+/// no scope information, and expanding it into ordinary `Ident`/`Field` nodes
+/// means the semantic checker reports `unknown name 'name'` and the type of a
+/// mistyped hole for free — no new AST node, no engine work.
+///
+/// Every hole is wrapped in `string(...)` so an `int` or `bool` interpolates
+/// without an explicit conversion (`string` is idempotent on strings).
+fn interp_to_expr(pieces: &[crate::lexer::token::InterpPiece], sp: Span) -> Expr {
+    use crate::lexer::token::InterpPiece;
+    let mut parts: Vec<Expr> = Vec::new();
+    for piece in pieces {
+        match piece {
+            InterpPiece::Lit(text) => {
+                if !text.is_empty() {
+                    parts.push(Expr::Str(text.clone(), sp.clone()));
+                }
+            }
+            InterpPiece::Path(segments) => {
+                let mut path = Expr::Ident(segments[0].clone(), sp.clone());
+                for seg in &segments[1..] {
+                    path = Expr::Field {
+                        object: Box::new(path),
+                        name: seg.clone(),
+                        span: sp.clone(),
+                    };
+                }
+                parts.push(Expr::Call {
+                    callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
+                    args: vec![path],
+                    span: sp.clone(),
+                });
+            }
+        }
+    }
+    // An interpolated literal always has at least one hole, but stay total.
+    if parts.is_empty() {
+        return Expr::Str(String::new(), sp);
+    }
+    let mut iter = parts.into_iter();
+    let mut acc = iter.next().expect("non-empty");
+    for next in iter {
+        acc = Expr::Binary {
+            op: BinOp::Add,
+            l: Box::new(acc),
+            r: Box::new(next),
+            span: sp.clone(),
+        };
+    }
+    acc
 }
 
 fn join(a: Span, b: Span) -> Span {

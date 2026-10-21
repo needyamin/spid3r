@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 523 Rust tests green (507 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 533 Rust tests green (517 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -83,7 +83,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 523 tests (507 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 533 tests (517 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -368,6 +368,10 @@ GaliLang/
                          trailing bytes, instruction-table mismatch, fall-through
                          end, nesting depth, non-quadratic jumps, `exec` on a
                          corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         stage2_syntax.rs (10: string interpolation — holes,
+                         field paths, template-brace compatibility, unknown name
+                         in a hole; bitwise values, C precedence, non-int
+                         operand, out-of-range shift, the natives themselves),
                          engine_matrix.rs (4: the three-engine conformance
                          matrix — every Stmt/Expr form on tree+vm against the
                          EXPECTED text, identical stderr phase/message, an AOT
@@ -496,6 +500,16 @@ GaliLang/
     * detached collection mutators (list/set/bag remove+add) commit with a
       verified snapshot and retry on conflict (bounded, 32) — concurrent adds
       cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Syntax batch (Stage 2, 2026-10-21):
+    * string interpolation: `{name}` / `{obj.field}` (no whitespace inside the
+      braces) desugars in the PARSER to `+ string(...)` calls, so the checker
+      reports unknown names for free and no engine changed. A hole requires an
+      identifier immediately after `{`, so `"{{ user }}"`, `"{ x }"`, `"{}"` and
+      `"{0}"` stay literal — the stdlib template engine depends on that.
+    * bitwise `& | ^ << >>` with C precedence, desugared to the natives
+      `bit_and`/`bit_or`/`bit_xor`/`shl`/`shr` (one implementation, all three
+      engines). `^` is xor, NOT exponentiation (doc.html said otherwise until
+      now). A shift amount outside 0..=63 is a clean error.
   - Pipeline seam (Stage 1, 2026-10-21):
     * every backend executes the LOWERED AST (`crate::lower`): the interpreter
       lowers in run_program_inner, modules::load lowers an imported module, the

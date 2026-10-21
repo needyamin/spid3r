@@ -271,6 +271,12 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "float",
     "string",
     "bool",
+    // desugaring targets for the bitwise operators
+    "bit_and",
+    "bit_or",
+    "bit_xor",
+    "shl",
+    "shr",
     "random_int",
     "json_parse",
     "json_write",
@@ -351,6 +357,7 @@ fn builtin_return_type(name: &str) -> Option<Ty> {
         }
         "is_nan" | "is_inf" => Ty::Bool,
         "string" => Ty::Str,
+        "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" => Ty::Int,
         "sha256" | "hmac_sha256" => Ty::Str,
         "bool" => Ty::Bool,
         "type_of" => Ty::Str,

@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">523 tests · 25/25 examples agree</span>
+          <span class="badge">533 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -1134,6 +1134,10 @@ class interface new self public private spawn async await extends implements</co
             <p><code>==  !=  &lt;  &lt;=  &gt;  &gt;=</code></p>
             <p class="tag">Logical</p>
             <p><code>and  or  not</code> (<code>and</code>/<code>or</code> short-circuit)</p>
+            <p class="tag">Bitwise</p>
+            <p><code>&amp;  |  ^  &lt;&lt;  &gt;&gt;</code> — <code>int</code> operands only; C precedence
+              (<code>&amp;</code> tighter than <code>^</code> tighter than <code>|</code>, all looser than a
+              comparison). A shift amount outside <code>0..=63</code> is an error.</p>
             <p class="tag">Unary</p>
             <p><code>-x</code> · <code>not x</code> · <code>await x</code> · <code>spawn fn(){…}</code></p>
           </div>
@@ -1147,14 +1151,16 @@ class interface new self public private spawn async await extends implements</co
             <p class="tag">Construction</p>
             <p><code>new Class(…)</code> · <code>[a, b]</code> · <code>list(…)</code> · <code>fn(x){…}</code></p>
             <p class="tag">Not available</p>
-            <p>No <code>!</code>, <code>++</code>, or <code>**</code>/<code>^</code>. Use <code>not</code>,
-              <code>x += 1</code>, and <code>pow(b, e)</code>.
+            <p>No <code>!</code>, <code>++</code>, <code>~</code>, or <code>**</code>. Use <code>not</code>,
+              <code>x += 1</code>, and <code>pow(b, e)</code>. <code>^</code> is bitwise xor, not
+              exponentiation.
             </p>
           </div>
         </div>
         <p><strong>Precedence</strong>, tightest first: postfix (call, index, field, method) → unary
           <code>not</code> / <code>-</code> / <code>await</code> / <code>spawn</code> → <code>* / %</code> →
-          <code>+ -</code> → comparisons → <code>and</code> → <code>or</code> → assignment. Comparison chains
+          <code>+ -</code> → <code>&lt;&lt; &gt;&gt;</code> → comparisons → <code>&amp;</code> →
+          <code>^</code> → <code>|</code> → <code>and</code> → <code>or</code> → assignment. Comparison chains
           are left-associative (<code>a &lt; b &lt; c</code> parses as <code>(a &lt; b) &lt; c</code>), so write
           <code>a &lt; b and b &lt; c</code> instead.
         </p>
@@ -1421,6 +1427,16 @@ fn main() {
           convert other values with <code>string(x)</code> or use <code>format</code>
           (<code>"a" + 1</code> throws <code>cannot add string and int</code>).
         </p>
+        <p><strong>Interpolation.</strong> A literal may contain <code>{name}</code> or
+          <code>{obj.field}</code> holes — no whitespace inside the braces. Each hole is converted with
+          <code>string(...)</code>, so no explicit conversion is needed:</p>
+        <pre data-lang="spid3r"><code>let name = "ada";
+let n = 36;
+println("hi {name}, {n} years");   // hi ada, 36 years</code></pre>
+        <p>Anything else starting with <code>{</code> is literal text, so <code>"{{ user }}"</code>,
+          <code>"{ x }"</code>, <code>"{}"</code> and <code>"{0}"</code> stay exactly as written — the
+          stdlib template engine relies on that. A hole is recognised only when <code>{</code> is
+          followed immediately by an identifier.</p>
         <table>
           <tr>
             <th>Group</th>
@@ -3218,7 +3234,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>523 tests</strong> (<strong>507</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>533 tests</strong> (<strong>517</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

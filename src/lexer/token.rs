@@ -128,6 +128,13 @@ pub enum TokenKind {
     Int(i64),
     Float(f64),
     Str(String),
+    /// A string literal containing `{name}` interpolation holes.
+    ///
+    /// Only `{` + identifier path + `}` with **no whitespace** is a hole, which
+    /// keeps existing text untouched: the stdlib template engine writes
+    /// `"{{ user }}"`, and that stays a literal because `{` is followed by `{`
+    /// or a space. There is no `{{` escape for the same reason.
+    InterpStr(Vec<InterpPiece>),
     Ident(String),
     Kw(Keyword),
 
@@ -163,6 +170,16 @@ pub enum TokenKind {
     Semi,
     Dot,
     Arrow,
+    /// `&` — bitwise and (desugared to `bit_and(a, b)`).
+    Amp,
+    /// `|` — bitwise or (desugared to `bit_or(a, b)`).
+    Pipe,
+    /// `^` — bitwise xor (desugared to `bit_xor(a, b)`).
+    Caret,
+    /// `<<` — shift left (desugared to `shl(a, b)`).
+    Shl,
+    /// `>>` — shift right (desugared to `shr(a, b)`).
+    Shr,
 
     Eof,
 }
@@ -171,4 +188,13 @@ pub enum TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub span: crate::diagnostics::Span,
+}
+
+/// One piece of an interpolated string literal.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InterpPiece {
+    /// Literal text between holes.
+    Lit(String),
+    /// `{a.b.c}`: the first segment is a variable, the rest are field accesses.
+    Path(Vec<String>),
 }

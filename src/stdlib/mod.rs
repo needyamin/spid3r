@@ -84,6 +84,11 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("float", n_float),
         ("string", n_string),
         ("bool", n_bool),
+        ("bit_and", n_bit_and),
+        ("bit_or", n_bit_or),
+        ("bit_xor", n_bit_xor),
+        ("shl", n_shl),
+        ("shr", n_shr),
         ("random_int", n_random_int),
         ("json_parse", n_json_parse),
         ("json_write", n_json_write),
@@ -917,6 +922,70 @@ fn n_float(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 fn n_string(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let v = one("string", &args)?;
     Ok(Value::Str(crate::value::display_value(&v).into()))
+}
+
+/// The integer operand of a bitwise native.
+fn bit_int(v: &Value, who: &str) -> Result<i64, String> {
+    match v {
+        Value::Int(i) => Ok(*i),
+        other => Err(format!(
+            "{} expects int operands, found {}",
+            who,
+            crate::value::type_name(other)
+        )),
+    }
+}
+
+fn bit_binop(name: &str, args: &[Value], f: impl Fn(i64, i64) -> i64) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("{} expects 2 arguments, got {}", name, args.len()));
+    }
+    let a = bit_int(&args[0], name)?;
+    let b = bit_int(&args[1], name)?;
+    Ok(Value::Int(f(a, b)))
+}
+
+// `a & b` and friends are desugared to these by the parser, so the semantics
+// live in one place instead of in each engine.
+fn n_bit_and(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    bit_binop("bit_and", &args, |a, b| a & b)
+}
+
+fn n_bit_or(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    bit_binop("bit_or", &args, |a, b| a | b)
+}
+
+fn n_bit_xor(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    bit_binop("bit_xor", &args, |a, b| a ^ b)
+}
+
+/// `a << b`. A shift of 0..=63 is defined; anything else is an error rather
+/// than Rust's panic (debug) / wrap (release) on an out-of-range shift.
+fn n_shl(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("shl expects 2 arguments, got {}", args.len()));
+    }
+    let a = bit_int(&args[0], "shl")?;
+    let b = bit_int(&args[1], "shl")?;
+    let shift = u32::try_from(b)
+        .ok()
+        .filter(|s| *s < 64)
+        .ok_or_else(|| format!("shl: shift amount {} is out of range (0..63)", b))?;
+    Ok(Value::Int(a.wrapping_shl(shift)))
+}
+
+/// `a >> b`, arithmetic (sign-preserving) shift.
+fn n_shr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("shr expects 2 arguments, got {}", args.len()));
+    }
+    let a = bit_int(&args[0], "shr")?;
+    let b = bit_int(&args[1], "shr")?;
+    let shift = u32::try_from(b)
+        .ok()
+        .filter(|s| *s < 64)
+        .ok_or_else(|| format!("shr: shift amount {} is out of range (0..63)", b))?;
+    Ok(Value::Int(a.wrapping_shr(shift)))
 }
 
 fn n_bool(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {

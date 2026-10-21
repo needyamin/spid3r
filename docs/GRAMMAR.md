@@ -90,9 +90,13 @@ target         = ident
 assignOp       = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
 
 orExpr         = andExpr { "or" andExpr } ;
-andExpr        = cmpExpr { "and" cmpExpr } ;
-cmpExpr        = addExpr { cmpOp addExpr } ;
+andExpr        = bitorExpr { "and" bitorExpr } ;
+bitorExpr      = bitxorExpr { "|" bitxorExpr } ;
+bitxorExpr     = bitandExpr { "^" bitandExpr } ;
+bitandExpr     = cmpExpr { "&" cmpExpr } ;
+cmpExpr        = shiftExpr { cmpOp shiftExpr } ;
 cmpOp          = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+shiftExpr      = addExpr { ("<<" | ">>") addExpr } ;
 addExpr        = mulExpr { ("+" | "-") mulExpr } ;
 mulExpr        = unary { ("*" | "/" | "%") unary } ;
 
@@ -135,6 +139,17 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
   for an `f64` is a lexer error, never an infinity or a panic.
 - String literal escapes are `\n`, `\r`, `\t`, `\\`, and `\"`; identifiers are ASCII
   (`[A-Za-z_][A-Za-z0-9_]*`).
+- A string literal may contain interpolation holes: `{name}` or `{obj.field}`
+  with **no whitespace** inside the braces. `"hi {name}"` desugars at parse time
+  to `"hi " + string(name)`, so a hole is an ordinary expression to the checker
+  (an unknown name is reported as `unknown name 'x'`). Anything else starting
+  with `{` is literal text — `"{ x }"`, `"{{ user }}"`, `"{}"` and `"{0}"` all
+  stay as written, which keeps the stdlib template syntax working. There is no
+  `{{` escape: a hole is recognised only when `{` is followed immediately by an
+  identifier.
+- Bitwise `& | ^ << >>` follow C precedence and are desugared to the natives
+  `bit_and`, `bit_or`, `bit_xor`, `shl`, `shr`, so they are not separate opcodes.
+  They require `int` operands; a shift amount outside `0..=63` is an error.
 - A `public`/`private` prefix is accepted before any top-level declaration
   (`fn`, `class`, `interface`, `let`, `const`); class bodies additionally accept
   a constructor shorthand `new(params) { ... }` and a C-style `for let` header
