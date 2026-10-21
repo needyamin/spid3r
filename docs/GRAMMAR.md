@@ -103,12 +103,13 @@ mulExpr        = unary { ("*" | "/" | "%") unary } ;
 
 unary          = "not" unary | "-" unary | postfix ;
 
-postfix        = primary { call | index | field | method | optField } ;
+postfix        = primary { call | index | field | method | optField | "?" } ;
 call           = "(" [ args ] ")" ;
 index          = "[" expr "]" ;
 field          = "." ident ;
 method         = "." ident "(" [ args ] ")" ;
 optField       = "?" "." ident ;          (* null-safe field read *)
+propagate      = expr "?" ;               (* return the failure, else unwrap *)
 args           = expr { "," expr } ;
 
 primary        = intLit | floatLit | stringLit | "true" | "false" | "null"

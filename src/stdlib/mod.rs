@@ -93,6 +93,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("json_parse", n_json_parse),
         ("json_write", n_json_write),
         ("type_of", n_type_of),
+        ("is_failure", n_is_failure),
         ("gc_collect", n_gc_collect),
         ("gc_live_cells", n_gc_live_cells),
         ("read_bytes", n_read_bytes),
@@ -991,6 +992,23 @@ fn n_shr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 fn n_bool(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let v = one("bool", &args)?;
     Ok(Value::Bool(crate::value::truthy(&v)))
+}
+
+/// `is_failure(v)` — is this a `none` or an `err`?
+///
+/// This is the predicate the `?` operator lowers to: `x?` becomes
+/// `if (is_failure(v)) { return v; } v.unwrap()`. It is a normal builtin rather
+/// than a hidden helper so the check is usable directly.
+fn n_is_failure(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let v = one("is_failure", &args)?;
+    match v {
+        Value::Option(o) => Ok(Value::Bool(o.is_none())),
+        Value::Result(r) => Ok(Value::Bool(r.is_err())),
+        other => Err(format!(
+            "is_failure expects an option or a result, found {}",
+            crate::value::type_name(&other)
+        )),
+    }
 }
 
 fn n_type_of(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {

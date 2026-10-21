@@ -57,7 +57,10 @@ impl Ty {
             Ty::Bool => "bool".to_string(),
             Ty::Str => "string".to_string(),
             Ty::Null => "null".to_string(),
-            Ty::Coll(n, _) => n.clone(),
+            // Carry the element type: "expected list, got list" tells the user
+            // nothing when the mismatch is the element.
+            Ty::Coll(n, Some(elem)) => format!("{}<{}>", n, elem.name()),
+            Ty::Coll(n, None) => n.clone(),
             Ty::Class(c) => c.clone(),
             Ty::Interface(i) => i.clone(),
             Ty::Fn(_) => "function".to_string(),

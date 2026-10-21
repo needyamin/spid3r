@@ -999,7 +999,8 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
         Expr::If { span, .. }
         | Expr::OptField { span, .. }
         | Expr::Coalesce { span, .. }
-        | Expr::Match { span, .. } => {
+        | Expr::Match { span, .. }
+        | Expr::Propagate(_, span) => {
             return Err(Diagnostic::at(
                 Phase::Vm,
                 span.clone(),

@@ -168,9 +168,11 @@ fn block_needs_lowering(b: &Block) -> bool {
 
 fn expr_needs_lowering(e: &Expr) -> bool {
     match e {
-        Expr::If { .. } | Expr::OptField { .. } | Expr::Coalesce { .. } | Expr::Match { .. } => {
-            true
-        }
+        Expr::If { .. }
+        | Expr::OptField { .. }
+        | Expr::Coalesce { .. }
+        | Expr::Match { .. }
+        | Expr::Propagate(..) => true,
         Expr::Int(..)
         | Expr::Float(..)
         | Expr::Str(..)
@@ -722,6 +724,48 @@ impl Lower {
         (Expr::Ident(result, span.clone()), pre)
     }
 
+    /// `expr?` — return the failure from the enclosing function, otherwise
+    /// yield the payload.
+    ///
+    /// ```text
+    /// let __v = <expr>;
+    /// if (is_failure(__v)) { return __v; }
+    /// __v.unwrap()
+    /// ```
+    ///
+    /// Returning the container itself (not the bare error) is what makes `?`
+    /// compose: an `option` propagates `none`, a `result` propagates `err(e)`.
+    fn propagate(&mut self, inner: &Expr, span: &Span) -> (Expr, Vec<Stmt>) {
+        let (value, mut pre) = self.expr(inner);
+        let vspan = value.span().clone();
+        let v = self.fresh();
+        pre.push(let_null(&v, value, vspan.clone()));
+        pre.push(Stmt::If {
+            cond: Expr::Call {
+                callee: Box::new(Expr::Ident("is_failure".to_string(), span.clone())),
+                args: vec![Expr::Ident(v.clone(), vspan.clone())],
+                span: span.clone(),
+            },
+            then: Block {
+                stmts: vec![Stmt::Return {
+                    value: Some(Expr::Ident(v.clone(), vspan.clone())),
+                    span: span.clone(),
+                }],
+                span: span.clone(),
+            },
+            elifs: Vec::new(),
+            els: None,
+            span: span.clone(),
+        });
+        let unwrapped = Expr::Method {
+            object: Box::new(Expr::Ident(v, vspan.clone())),
+            name: "unwrap".to_string(),
+            args: Vec::new(),
+            span: span.clone(),
+        };
+        (unwrapped, pre)
+    }
+
     /// The condition a pattern imposes plus the bindings it introduces, tested
     /// against `base` (a temp holding the value).
     fn pattern_test(
@@ -834,6 +878,7 @@ impl Lower {
                 arms,
                 span,
             } => self.match_expr(scrutinee, arms, span),
+            Expr::Propagate(inner, span) => self.propagate(inner, span),
 
             Expr::Int(..)
             | Expr::Float(..)

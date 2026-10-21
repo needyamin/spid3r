@@ -111,6 +111,39 @@ const CASES: &[Case] = &[
         err: None,
         aot: true,
     },
+    // ------------------------------------------------------------- errors (4)
+    Case {
+        name: "option_result_annotations",
+        src: "fn main() {\n    let a: option<int> = some(5);\n    let b: option<int> = none();\n    let c: result<int> = ok(1);\n    let d: result<int> = err(\"e\");\n    println(a);\n    println(b);\n    println(c);\n    println(d);\n    return 0;\n}\n",
+        out: "some(5)\nnone\nok(1)\nerr(e)",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "propagate",
+        src: "fn half(n) {\n    if (n % 2 != 0) {\n        return err(\"odd\");\n    }\n    return ok(n / 2);\n}\nfn quarter(n) {\n    let h = half(n)?;\n    return ok(h / 2);\n}\nfn main() {\n    println(quarter(8));\n    println(quarter(3));\n    return 0;\n}\n",
+        out: "ok(2)\nerr(odd)",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "error_combinators",
+        src: "fn main() {\n    println(some(2).map(fn(x) { return x * 10; }));\n    println(none().ok_or(\"m\"));\n    println(err(\"e\").map_err(fn(e) { return \"E-\" + e; }));\n    println(ok(3).and_then(fn(x) { return ok(x * 2); }));\n    return 0;\n}\n",
+        out: "some(20)\nerr(m)\nerr(E-e)\nok(6)",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "err_element_type",
+        src: "fn main() {\n    let xs: list<int> = [\"a\"];\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        err: Some("error[semantic]: type mismatch in 'xs': expected list<int>, got list<string>"),
+        aot: false,
+    },
     // -------------------------------------------------------------- enums (3)
     Case {
         name: "enum_match",

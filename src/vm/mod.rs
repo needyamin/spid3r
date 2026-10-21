@@ -1290,6 +1290,18 @@ impl Vm {
                                 }
                                 continue;
                             }
+                            // `option.map(f)` / `result.and_then(f)` take a
+                            // callback too. Without this arm the VM fell back to
+                            // the no-callbacks dispatcher and reported
+                            // "higher-order methods … not supported in this
+                            // context" while the tree engine ran it fine.
+                            Value::Option(_) | Value::Result(_) => {
+                                match self.host_callback_method(&obj, &name, args) {
+                                    Ok(v) => self.frames[nf].slots.push(v),
+                                    Err(e) => self.error = Some(e),
+                                }
+                                continue;
+                            }
                             _ => {}
                         }
                     }
@@ -2426,6 +2438,44 @@ impl Vm {
     /// callback synchronously via `call_value_sync`. The iteration logic itself
     /// lives in `collections` (shared with the tree interpreter); this wrapper
     /// supplies the engine side of the `CallbackHost` trait.
+    /// Run an option/result combinator whose argument is a script function.
+    fn host_callback_method(
+        &mut self,
+        receiver: &Value,
+        name: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, VmError> {
+        struct VmHost<'a> {
+            vm: &'a mut Vm,
+        }
+        impl crate::value::collections::CallbackHost for VmHost<'_> {
+            fn call_callback(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, String> {
+                self.vm.call_value_sync(f, args).map_err(|e| {
+                    crate::sched::stash_error_thrown(e.thrown.clone());
+                    match &e.thrown {
+                        Some(v) => crate::value::display_value(v),
+                        None => e.message,
+                    }
+                })
+            }
+        }
+        let mut host = VmHost { vm: self };
+        crate::value::collections::call_method_host(&mut host, receiver, name, args).map_err(
+            |msg| {
+                let mut err = VmError {
+                    thrown: None,
+                    message: msg,
+                    span: self.cur_span(),
+                    trace: Vec::new(),
+                };
+                if let Some(v) = crate::sched::take_error_thrown() {
+                    err.thrown = Some(v);
+                }
+                err
+            },
+        )
+    }
+
     fn list_callback_vm(
         &mut self,
         receiver: &Value,

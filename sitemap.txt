@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 559 Rust tests green (543 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 570 Rust tests green (554 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -83,7 +83,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 559 tests (543 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 570 tests (554 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -375,6 +375,11 @@ GaliLang/
                          trailing bytes, instruction-table mismatch, fall-through
                          end, nesting depth, non-quadratic jumps, `exec` on a
                          corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         stage4_errors.rs (11: option/result annotations,
+                         element-type checking, `?` propagating err and none and
+                         returning from the enclosing function, `?` on a non-option,
+                         option/result combinators, a combinator not calling back
+                         on the failure side, is_failure),
                          stage3_match.rs (11: enum construction and match,
                          guards falling through, literals/bindings/wildcards,
                          nested patterns, arm-scoped bindings, statement form,
@@ -517,6 +522,24 @@ GaliLang/
     * detached collection mutators (list/set/bag remove+add) commit with a
       verified snapshot and retry on conflict (bounded, 32) — concurrent adds
       cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Error model (Stage 4, 2026-10-21):
+    * `some`/`none` normalise to `option`, `ok`/`err` to `result`, so an
+      annotation like `let x: option<int> = some(5)` finally type-checks (it
+      used to fail with "expected option, got some" — the annotation was
+      unusable).
+    * collection annotations now compare ELEMENT types (`list<int>` vs
+      `list<string>` is a mismatch; an unknown element type such as `[]` or
+      `none()` stays compatible). `result` is exempt because one type argument
+      cannot describe both sides.
+    * `Ty::name` prints the element (`list<int>`), so the mismatch message says
+      something.
+    * `expr?` lowers to `let v = e; if (is_failure(v)) { return v; } v.unwrap()`.
+      Works on option and result; `is_failure` is a normal builtin.
+    * option: map/and_then/ok_or/unwrap_or_else/flatten; result:
+      map/map_err/and_then/unwrap_or_else/flatten. They take callbacks, so the
+      VM needed a callback-host arm for Option/Result (it only had one for
+      List) and `and_then`/`map_err`/`unwrap_or_else` had to join
+      `is_callback_method`.
   - Sum types (Stage 3, 2026-10-21):
     * `enum Name { A, B(x) }` lowers to one PUBLIC constructor function per
       variant: `A()` / `B(1)` return a map with a `__tag` key plus one key per

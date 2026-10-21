@@ -525,6 +525,12 @@ pub fn is_callback_method(name: &str) -> bool {
             | "sort_by"
             | "sorted_by"
             | "argsort"
+            // option/result combinators: the VM has to route these through a
+            // callback host as well, or they fail with "higher-order methods …
+            // not supported in this context".
+            | "and_then"
+            | "map_err"
+            | "unwrap_or_else"
     )
 }
 
@@ -786,13 +792,13 @@ pub fn call_method_host(
         Value::RefBox(d) => d.lock().unwrap().method(name, &args),
         Value::Str(s) => string_method(s, name, &args),
         Value::Tuple(t) => misc::tuple_method(&t.lock().unwrap(), name, &args),
-        Value::Option(o) => option_method(o.as_deref(), name, &args),
+        Value::Option(o) => option_method(host, o.as_deref(), name, &args),
         Value::Result(r) => {
             let rr: Result<&Value, &Value> = match r {
                 Ok(v) => Ok(v.as_ref()),
                 Err(e) => Err(e.as_ref()),
             };
-            result_method(rr, name, &args)
+            result_method(host, rr, name, &args)
         }
         Value::Task(t) => task_method(t, name, &args),
         Value::Channel(c) => channel_method(c, name, args),
@@ -817,30 +823,6 @@ pub fn list_callback_method(
     name: &str,
     args: &[Value],
 ) -> Result<Value, String> {
-    // Validates that the last of `n` arguments is a callable value.
-    fn want_fn<'a>(meth: &str, args: &'a [Value], n: usize) -> Result<&'a Value, String> {
-        if args.len() != n {
-            return Err(format!(
-                "{} expects {} argument(s), got {}",
-                meth,
-                n,
-                args.len()
-            ));
-        }
-        let f = &args[n - 1];
-        match f {
-            Value::Function(_)
-            | Value::Native(_)
-            | Value::NativeClosure(_)
-            | Value::VFunc(_)
-            | Value::Cfn(_) => Ok(f),
-            other => Err(format!(
-                "{} expects a function, found {}",
-                meth,
-                crate::value::type_name(other)
-            )),
-        }
-    }
     match name {
         "map" => {
             let f = want_fn(name, args, 1)?.clone();
@@ -1223,10 +1205,79 @@ fn format_one_placeholder(spec: &str, v: &Value) -> Result<String, String> {
     }
 }
 
+// Validates that the last of `n` arguments is a callable value.
+fn want_fn<'a>(meth: &str, args: &'a [Value], n: usize) -> Result<&'a Value, String> {
+    if args.len() != n {
+        return Err(format!(
+            "{} expects {} argument(s), got {}",
+            meth,
+            n,
+            args.len()
+        ));
+    }
+    let f = &args[n - 1];
+    match f {
+        Value::Function(_)
+        | Value::Native(_)
+        | Value::NativeClosure(_)
+        | Value::VFunc(_)
+        | Value::Cfn(_) => Ok(f),
+        other => Err(format!(
+            "{} expects a function, found {}",
+            meth,
+            crate::value::type_name(other)
+        )),
+    }
+}
+
 // -------------------------------------------------- option/result/task/etc.
 
-fn option_method(o: Option<&Value>, name: &str, args: &[Value]) -> Result<Value, String> {
+fn option_method(
+    host: &mut dyn CallbackHost,
+    o: Option<&Value>,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, String> {
     match name {
+        // Combinators. They take a callback, so they live here rather than in
+        // the value layer's pure helpers.
+        "map" => {
+            let f = want_fn(name, args, 1)?.clone();
+            match o {
+                Some(v) => Ok(Value::Option(Some(Box::new(
+                    host.call_callback(&f, vec![v.clone()])?,
+                )))),
+                None => Ok(Value::Option(None)),
+            }
+        }
+        "and_then" => {
+            let f = want_fn(name, args, 1)?.clone();
+            match o {
+                Some(v) => host.call_callback(&f, vec![v.clone()]),
+                None => Ok(Value::Option(None)),
+            }
+        }
+        "ok_or" => {
+            want(name, args, 1)?;
+            match o {
+                Some(v) => Ok(Value::Result(Ok(Box::new(v.clone())))),
+                None => Ok(Value::Result(Err(Box::new(args[0].clone())))),
+            }
+        }
+        "unwrap_or_else" => {
+            let f = want_fn(name, args, 1)?.clone();
+            match o {
+                Some(v) => Ok(v.clone()),
+                None => host.call_callback(&f, Vec::new()),
+            }
+        }
+        "flatten" => {
+            want(name, args, 0)?;
+            match o {
+                Some(Value::Option(inner)) => Ok(Value::Option(inner.clone())),
+                _ => Ok(Value::Option(None)),
+            }
+        }
         "is_some" => {
             want(name, args, 0)?;
             Ok(Value::Bool(o.is_some()))
@@ -1253,8 +1304,53 @@ fn option_method(o: Option<&Value>, name: &str, args: &[Value]) -> Result<Value,
     }
 }
 
-fn result_method(r: Result<&Value, &Value>, name: &str, args: &[Value]) -> Result<Value, String> {
+fn result_method(
+    host: &mut dyn CallbackHost,
+    r: Result<&Value, &Value>,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, String> {
     match name {
+        "map" => {
+            let f = want_fn(name, args, 1)?.clone();
+            match r {
+                Ok(v) => Ok(Value::Result(Ok(Box::new(
+                    host.call_callback(&f, vec![v.clone()])?,
+                )))),
+                Err(e) => Ok(Value::Result(Err(Box::new(e.clone())))),
+            }
+        }
+        "map_err" => {
+            let f = want_fn(name, args, 1)?.clone();
+            match r {
+                Ok(v) => Ok(Value::Result(Ok(Box::new(v.clone())))),
+                Err(e) => Ok(Value::Result(Err(Box::new(
+                    host.call_callback(&f, vec![e.clone()])?,
+                )))),
+            }
+        }
+        "and_then" => {
+            let f = want_fn(name, args, 1)?.clone();
+            match r {
+                Ok(v) => host.call_callback(&f, vec![v.clone()]),
+                Err(e) => Ok(Value::Result(Err(Box::new(e.clone())))),
+            }
+        }
+        "unwrap_or_else" => {
+            let f = want_fn(name, args, 1)?.clone();
+            match r {
+                Ok(v) => Ok(v.clone()),
+                Err(e) => host.call_callback(&f, vec![e.clone()]),
+            }
+        }
+        "flatten" => {
+            want(name, args, 0)?;
+            match r {
+                Ok(Value::Result(inner)) => Ok(Value::Result(inner.clone())),
+                Ok(v) => Ok(Value::Result(Ok(Box::new(v.clone())))),
+                Err(e) => Ok(Value::Result(Err(Box::new(e.clone())))),
+            }
+        }
         "is_ok" => {
             want(name, args, 0)?;
             Ok(Value::Bool(r.is_ok()))

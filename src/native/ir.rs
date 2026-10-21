@@ -272,6 +272,7 @@ fn collect_outer_uses_expr(
                 collect_outer_uses(&arm.body.stmts, declared, out);
             }
         }
+        Expr::Propagate(inner, _) => collect_outer_uses_expr(inner, declared, out),
         Expr::OptField { object, .. } => collect_outer_uses_expr(object, declared, out),
         Expr::Coalesce { l, r, .. } => {
             collect_outer_uses_expr(l, declared, out);
@@ -1068,6 +1069,7 @@ fn nested_fns_expr<'a>(e: &'a Expr, out: &mut Vec<&'a FnProto>) {
                 nested_fns_block(&arm.body.stmts, out);
             }
         }
+        Expr::Propagate(inner, _) => nested_fns_expr(inner, out),
         Expr::OptField { object, .. } => nested_fns_expr(object, out),
         Expr::Coalesce { l, r, .. } => {
             nested_fns_expr(l, out);
@@ -1782,7 +1784,8 @@ impl<'ctx> Ir<'ctx> {
             Expr::If { span, .. }
             | Expr::OptField { span, .. }
             | Expr::Coalesce { span, .. }
-            | Expr::Match { span, .. } => Err(format!(
+            | Expr::Match { span, .. }
+            | Expr::Propagate(_, span) => Err(format!(
                 "internal error at {}:{}: a surface-only expression reached the native \
                      backend without lowering (this is a bug in spid3r)",
                 span.file, span.line

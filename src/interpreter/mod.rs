@@ -734,7 +734,8 @@ impl Interp {
             Expr::If { span, .. }
             | Expr::OptField { span, .. }
             | Expr::Coalesce { span, .. }
-            | Expr::Match { span, .. } => Err(self.rt(
+            | Expr::Match { span, .. }
+            | Expr::Propagate(_, span) => Err(self.rt(
                 span,
                 "internal error: a surface-only expression reached the interpreter \
                      without lowering (this is a bug in spid3r)",

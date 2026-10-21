@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">559 tests · 25/25 examples agree</span>
+          <span class="badge">570 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -1426,17 +1426,42 @@ fn main() {
             <td><code>option</code></td>
             <td><code>some(v)</code>, <code>none</code></td>
             <td class="wrap"><code>is_some</code>, <code>is_none</code>, <code>unwrap</code> (throws on none),
-              <code>unwrap_or(d)</code>
+              <code>unwrap_or(d)</code>, <code>map(f)</code>, <code>and_then(f)</code>,
+              <code>ok_or(e)</code>, <code>unwrap_or_else(f)</code>, <code>flatten</code>
             </td>
           </tr>
           <tr>
             <td><code>result</code></td>
             <td><code>ok(v)</code>, <code>err(e)</code></td>
             <td class="wrap"><code>is_ok</code>, <code>is_err</code>, <code>unwrap</code> (throws on err),
-              <code>unwrap_or(d)</code>, <code>unwrap_err</code>
+              <code>unwrap_or(d)</code>, <code>unwrap_err</code>, <code>map(f)</code>,
+              <code>map_err(f)</code>, <code>and_then(f)</code>, <code>unwrap_or_else(f)</code>,
+              <code>flatten</code>
             </td>
           </tr>
         </table>
+        <p>An <code>option</code> or <code>result</code> can be <em>annotated</em> — <code>let x: option&lt;int&gt; =
+          some(5)</code> — and collection annotations check their element type, so
+          <code>let xs: list&lt;int&gt; = ["a"]</code> is rejected.</p>
+        <h3>The <code>?</code> operator</h3>
+        <p><code>expr?</code> returns the failure from the enclosing function and yields the payload
+          otherwise. It works on both <code>option</code> and <code>result</code>, so a chain of
+          fallible calls needs no nesting:</p>
+        <pre data-lang="spid3r"><code>fn half(n) {
+    if (n % 2 != 0) { return err("odd"); }
+    return ok(n / 2);
+}
+
+fn quarter(n) {
+    let h = half(n)?;        // returns err("odd") to the caller
+    return ok(h / 2);
+}
+
+quarter(8);   // ok(2)
+quarter(3);   // err(odd)</code></pre>
+        <p>On an <code>option</code> it propagates <code>none</code>. It is implemented as
+          <code>if (is_failure(v)) { return v; } v.unwrap()</code>, and <code>is_failure</code> is a normal
+          builtin, so the same check is available directly.</p>
         <pre data-lang="spid3r"><code>fn parse_age(s) {
     let n = int(s);
     if n &lt; 0 { return err("age cannot be negative"); }
@@ -3281,7 +3306,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>559 tests</strong> (<strong>543</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>570 tests</strong> (<strong>554</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

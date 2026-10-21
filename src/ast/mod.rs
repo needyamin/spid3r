@@ -342,6 +342,9 @@ pub enum Expr {
         r: Box<Expr>,
         span: Span,
     },
+    /// `expr?` — propagate a failure. If the value is `none`/`err`, return it
+    /// from the enclosing function; otherwise yield the payload.
+    Propagate(Box<Expr>, Span),
     /// `match (value) { Pattern => body, … }` in value position. Arms are tried
     /// top to bottom; the first whose pattern (and guard) succeeds wins.
     Match {
@@ -376,6 +379,7 @@ impl Expr {
             | Expr::OptField { span, .. }
             | Expr::Coalesce { span, .. }
             | Expr::Match { span, .. } => span,
+            Expr::Propagate(_, span) => span,
             Expr::Fn(f) => &f.span,
         }
     }

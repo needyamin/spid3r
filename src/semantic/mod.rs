@@ -287,6 +287,7 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "json_parse",
     "json_write",
     "type_of",
+    "is_failure",
     "gc_collect",
     "gc_live_cells",
     // networking (src/stdlib/net.rs)
@@ -367,6 +368,7 @@ fn builtin_return_type(name: &str) -> Option<Ty> {
         "sha256" | "hmac_sha256" => Ty::Str,
         "bool" => Ty::Bool,
         "type_of" => Ty::Str,
+        "is_failure" => Ty::Bool,
         _ => return None,
     })
 }
@@ -482,6 +484,21 @@ fn block_value_type(c: &Checker, b: &Block) -> Ty {
         Some(Stmt::Expr(e)) => c.type_of(e),
         Some(Stmt::Block(inner)) => block_value_type(c, inner),
         _ => Ty::Any,
+    }
+}
+
+/// The collection a constructor really produces.
+///
+/// `some`/`none` are `option` constructors and `ok`/`err` are `result`
+/// constructors. Normalising the name here is what makes an `option<T>` (or
+/// `result<T>`) annotation usable at all — the annotation resolves to
+/// `Coll("option")` while `some(5)` used to produce `Coll("some")`, so every
+/// annotated binding was a type error.
+fn coll_kind(name: &str) -> &str {
+    match name {
+        "some" | "none" => "option",
+        "ok" | "err" => "result",
+        other => other,
     }
 }
 
@@ -1563,6 +1580,9 @@ impl Checker {
             // A null-safe field read can always produce null, so the only honest
             // static type is `any`.
             Expr::OptField { .. } => Ty::Any,
+            // The payload type of an option/result is not tracked, so `?` is
+            // dynamically typed.
+            Expr::Propagate(..) => Ty::Any,
             Expr::Coalesce { l, r, .. } => common_type(self.type_of(l), self.type_of(r)),
             Expr::Ident(name, _) => {
                 if name == "self" {
@@ -1656,7 +1676,7 @@ impl Checker {
                                 }
                             }
                         }
-                        return Ty::Coll(name.to_string(), elem.map(Box::new));
+                        return Ty::Coll(coll_kind(name).to_string(), elem.map(Box::new));
                     }
                     if let Some(rt) = builtin_return_type(name) {
                         return rt;
@@ -1740,7 +1760,22 @@ impl Checker {
             | (Ty::Null, Ty::Coll(_, _)) => true,
             (Ty::Class(c), Ty::Class(p)) => c == p || self.is_subclass(c, p),
             (Ty::Class(c), Ty::Interface(i)) => self.implements(c, i),
-            (Ty::Coll(a, _), Ty::Coll(b, _)) => a == b,
+            (Ty::Coll(a, ea), Ty::Coll(b, eb)) => {
+                if a != b {
+                    return false;
+                }
+                if a == "result" {
+                    // `result<int>` cannot name the error side, so the element
+                    // types are not comparable.
+                    return true;
+                }
+                match (ea, eb) {
+                    // An unknown element type (an empty literal, `none()`,
+                    // `map()`) is compatible with anything.
+                    (Some(x), Some(y)) => self.assignable(x, y) || self.assignable(y, x),
+                    _ => true,
+                }
+            }
             // A10: function types are compared by signature, not treated as
             // interchangeable. `Ty::Fn(None)` is an unannotated function (fully
             // dynamic under gradual typing) and stays permissive; when both
@@ -1881,6 +1916,7 @@ impl Checker {
                 Ok(())
             }
             Expr::OptField { object, .. } => self.check_expr(object),
+            Expr::Propagate(inner, _) => self.check_expr(inner),
             Expr::Match {
                 scrutinee,
                 arms,

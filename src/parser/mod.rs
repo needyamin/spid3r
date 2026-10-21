@@ -1300,6 +1300,14 @@ impl Parser {
                         span,
                     };
                 }
+                // `expr?` — propagate a failure out of the function. A lone
+                // `?` can only be this: `?.` and `??` are lexed as their own
+                // tokens.
+                TokenKind::Question => {
+                    self.pos += 1;
+                    let span = join(e.span().clone(), self.prev_span());
+                    e = Expr::Propagate(Box::new(e), span);
+                }
                 _ => return Ok(e),
             }
         }
