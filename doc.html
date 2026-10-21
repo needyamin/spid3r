@@ -1323,7 +1323,12 @@ println("{lo}..{hi}");     // 3..4</code></pre>
         <h2 id="functions">Functions &amp; closures</h2>
         <p>Functions are first-class values. Anonymous <code>fn(x) { … }</code> literals nest and
           capture their surrounding bindings, and recursion is supported. <code>async fn</code> marks a
-          function that may <code>await</code>; using <code>await</code> elsewhere is a semantic error.</p>
+          function that may <code>await</code>; using <code>await</code> elsewhere is a semantic error.
+          Trailing parameters may declare <strong>constant defaults</strong>
+          (<code>fn greet(name, greeting = "Hello")</code>) — omitted trailing arguments are filled from
+          them (functions, methods, and constructors alike); once one parameter has a default, every
+          parameter after it must have one, and defaults must be literal numbers, strings, booleans, or
+          <code>null</code>.</p>
         <pre data-lang="spid3r"><code>fn make_adder(base) {
     return fn(x) { return x + base; };   // captures `base`
 }

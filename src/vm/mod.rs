@@ -892,11 +892,20 @@ impl Vm {
                         Some(_) => argc + 1,
                         None => argc + 1,
                     };
-                    if target.arity != want {
+                    if want < target.min_arity || want > target.arity {
+                        let want_msg = if target.min_arity == target.arity {
+                            format!("{} argument(s)", target.arity - 1)
+                        } else {
+                            format!(
+                                "{} to {} argument(s)",
+                                target.min_arity - 1,
+                                target.arity - 1
+                            )
+                        };
                         self.fail(format!(
-                            "{} expects {} argument(s), got {}",
+                            "{} expects {}, got {}",
                             target.name.as_deref().unwrap_or("fn"),
-                            target.arity - 1,
+                            want_msg,
                             argc
                         ));
                         continue;
@@ -1498,13 +1507,20 @@ impl Vm {
                                 };
                                 match resolved {
                                     Some(fd) => {
-                                        if fd.arity != argc + 1 {
+                                        if argc + 1 < fd.min_arity || argc + 1 > fd.arity {
                                             self.frames[nf].slots.truncate(recv_idx);
+                                            let want = if fd.min_arity == fd.arity {
+                                                format!("{} argument(s)", fd.arity - 1)
+                                            } else {
+                                                format!(
+                                                    "{} to {} argument(s)",
+                                                    fd.min_arity - 1,
+                                                    fd.arity - 1
+                                                )
+                                            };
                                             self.fail(format!(
-                                                "method {} expects {} argument(s), got {}",
-                                                name,
-                                                fd.arity - 1,
-                                                argc
+                                                "method {} expects {}, got {}",
+                                                name, want, argc
                                             ));
                                             continue;
                                         }
@@ -2159,21 +2175,36 @@ impl Vm {
     fn call_vfunc_frame(
         &mut self,
         fd: Arc<VmFunc>,
-        args: Vec<Value>,
+        mut args: Vec<Value>,
         display: Option<String>,
     ) -> Result<(), VmError> {
-        if fd.arity != args.len() {
+        if args.len() < fd.min_arity || args.len() > fd.arity {
+            let want = if fd.min_arity == fd.arity {
+                format!("{} argument(s)", fd.arity)
+            } else {
+                format!("{} to {} argument(s)", fd.min_arity, fd.arity)
+            };
             return Err(VmError {
                 thrown: None,
                 message: format!(
-                    "{} expects {} argument(s), got {}",
+                    "{} expects {}, got {}",
                     fd.name.as_deref().unwrap_or("fn"),
-                    fd.arity,
+                    want,
                     args.len()
                 ),
                 span: self.cur_span(),
                 trace: Vec::new(),
             });
+        }
+        // Fill omitted trailing parameters from the baked constant defaults.
+        // Every caller routes through here, so short calls never reach the
+        // frame with uninitialized slots.
+        let missing = fd.arity - args.len();
+        if missing > 0 {
+            let start = fd.defaults.len() - missing;
+            for v in &fd.defaults[start..] {
+                args.push(v.clone());
+            }
         }
         if self.depth >= MAX_CALL_DEPTH {
             return Err(VmError {
@@ -2250,6 +2281,8 @@ impl Vm {
         Arc::new(VmFunc {
             name: fproto.name.clone(),
             arity: fproto.arity,
+            min_arity: fproto.min_arity,
+            defaults: fproto.defaults.clone(),
             is_async: fproto.is_async,
             // Cheap Arc clone: every closure from the same prototype shares
             // one immutable bytecode chunk.
@@ -2334,15 +2367,15 @@ impl Vm {
         };
         match ctor {
             Some(ctor) => {
-                if ctor.arity != args.len() + 1 {
+                if args.len() + 1 < ctor.min_arity || args.len() + 1 > ctor.arity {
+                    let want = if ctor.min_arity == ctor.arity {
+                        format!("{} argument(s)", ctor.arity - 1)
+                    } else {
+                        format!("{} to {} argument(s)", ctor.min_arity - 1, ctor.arity - 1)
+                    };
                     return Err(VmError {
                         thrown: None,
-                        message: format!(
-                            "new {} expects {} argument(s), got {}",
-                            class.name,
-                            ctor.arity - 1,
-                            args.len()
-                        ),
+                        message: format!("new {} expects {}, got {}", class.name, want, args.len()),
                         span: self.cur_span(),
                         trace: Vec::new(),
                     });
@@ -2827,6 +2860,8 @@ impl Vm {
                 std::sync::Arc::new(VmFuncProto {
                     name: None,
                     arity: 0,
+                    min_arity: 0,
+                    defaults: Vec::new(),
                     is_async: false,
                     upvalues: Vec::new(),
                     own_upvalues: 0,

@@ -28,6 +28,8 @@ fn func_with(chunk: Chunk) -> VmFunc {
     VmFunc {
         name: None,
         arity: 0,
+        min_arity: 0,
+        defaults: Vec::new(),
         is_async: false,
         chunk: Arc::new(chunk),
         upvalues: Vec::new(),
@@ -137,6 +139,8 @@ fn deeply_nested_bytecode_hits_the_depth_limit() {
         outer.functions.push(Arc::new(VmFuncProto {
             name: None,
             arity: 0,
+            min_arity: 0,
+            defaults: Vec::new(),
             is_async: false,
             upvalues: Vec::new(),
             own_upvalues: 0,

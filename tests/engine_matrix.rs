@@ -491,6 +491,16 @@ const CASES: &[Case] = &[
         aot: true,
     },
     Case {
+        name: "default_params",
+        // Constant defaults are trailing-only (parser-enforced) and fill at
+        // the callee: functions, methods, and constructors alike.
+        src: "fn greet(name, greeting = \"Hello\", punct = \"!\") {\n    return greeting + \", \" + name + punct;\n}\nclass Counter {\n    public let n;\n    fn new(start = 0) { self.n = start; }\n    public fn add(self, by = 1) { self.n = self.n + by; }\n}\nfn main() {\n    println(greet(\"ada\"));\n    println(greet(\"bob\", \"Yo\"));\n    println(greet(\"cid\", \"Hey\", \"?\"));\n    let c = new Counter();\n    c.add();\n    c.add(5);\n    println(c.n);\n    println(greet(\"x\", \"Hi\", \"!\"));\n    return 0;\n}\n",
+        out: "Hello, ada!\nYo, bob!\nHey, cid?\n6\nHi, x!",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
         name: "interface",
         src: "interface Named {\n    fn name(self) -> string;\n}\nclass Person implements Named {\n    public let n;\n    fn new(n) { self.n = n; }\n    public fn name(self) { return self.n; }\n}\nfn main() {\n    let p = new Person(\"ada\");\n    println(p.name());\n    return 0;\n}\n",
         out: "ada",

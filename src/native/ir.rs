@@ -2008,6 +2008,28 @@ impl<'ctx> Ir<'ctx> {
         }
     }
 
+    /// Build the constant handle for a checker-validated default expression.
+    /// The semantic checker guarantees the shape; the error arms are defensive.
+    fn const_expr_value(&mut self, e: &Expr) -> IrResult<PointerValue<'ctx>> {
+        match e {
+            Expr::Int(v, _) => Ok(self.v_int(*v)),
+            Expr::Float(v, _) => Ok(self.v_float(*v)),
+            Expr::Str(s, _) => Ok(self.v_str(s)),
+            Expr::Bool(b, _) => Ok(self.v_bool(*b)),
+            Expr::Null(_) => Ok(self.v_null()),
+            Expr::Unary {
+                op: crate::ast::UnOp::Neg,
+                expr,
+                ..
+            } => match &**expr {
+                Expr::Int(v, _) => Ok(self.v_int(-v)),
+                Expr::Float(v, _) => Ok(self.v_float(-v)),
+                _ => Err(self.unsupported("non-constant parameter default")),
+            },
+            _ => Err(self.unsupported("non-constant parameter default")),
+        }
+    }
+
     fn compile_ident(&mut self, name: &str) -> IrResult<PointerValue<'ctx>> {
         match self.lookup(name) {
             Some(VarLoc::Local(slot)) => {
@@ -2307,24 +2329,66 @@ impl<'ctx> Ir<'ctx> {
             self.builder.build_store(slot, recv).unwrap();
             self.declare("self", VarLoc::Local(slot));
         }
-        // bind parameters (argv[self_offset..]); captured params get a cell
+        // bind parameters (argv[self_offset..]); captured params get a cell.
+        // A parameter with a constant default is bound conditionally: the
+        // argument exists only when argc exceeds its slot, otherwise the
+        // baked constant is used (defaults are trailing-only, so omitted
+        // arguments are always a suffix).
         let boxed = self.boxed.clone().unwrap_or_default();
+        let argc_v = f.get_nth_param(1).unwrap().into_int_value();
         for (i, p) in proto.params.iter().enumerate() {
-            let gep = unsafe {
-                self.builder
-                    .build_in_bounds_gep(
-                        self.ptr_ty(),
-                        argv,
-                        &[self.i64c((self_offset + i) as i64)],
-                        "arg",
+            let a = if let Some(d) = &p.default {
+                let has = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::SGT,
+                        argc_v,
+                        self.i64c((self_offset + i) as i64),
+                        "has_arg",
                     )
+                    .unwrap();
+                let then_bb = self.ctx.append_basic_block(f, "arg_then");
+                let else_bb = self.ctx.append_basic_block(f, "arg_else");
+                let merge_bb = self.ctx.append_basic_block(f, "arg_merge");
+                self.builder
+                    .build_conditional_branch(has, then_bb, else_bb)
+                    .unwrap();
+                self.builder.position_at_end(then_bb);
+                let gep = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(
+                            self.ptr_ty(),
+                            argv,
+                            &[self.i64c((self_offset + i) as i64)],
+                            "arg",
+                        )
+                        .unwrap()
+                };
+                let from_argv = self.builder.build_load(ptr_ty, gep, "argv").unwrap();
+                self.builder.build_unconditional_branch(merge_bb).unwrap();
+                self.builder.position_at_end(else_bb);
+                let from_default = self.const_expr_value(d)?;
+                self.builder.build_unconditional_branch(merge_bb).unwrap();
+                self.builder.position_at_end(merge_bb);
+                let phi = self.builder.build_phi(ptr_ty, "arg").unwrap();
+                phi.add_incoming(&[(&from_argv, then_bb), (&from_default, else_bb)]);
+                phi.as_basic_value().into_pointer_value()
+            } else {
+                let gep = unsafe {
+                    self.builder
+                        .build_in_bounds_gep(
+                            self.ptr_ty(),
+                            argv,
+                            &[self.i64c((self_offset + i) as i64)],
+                            "arg",
+                        )
+                        .unwrap()
+                };
+                self.builder
+                    .build_load(ptr_ty, gep, "argv")
                     .unwrap()
+                    .into_pointer_value()
             };
-            let a = self
-                .builder
-                .build_load(ptr_ty, gep, "argv")
-                .unwrap()
-                .into_pointer_value();
             if boxed.contains(&p.name) {
                 let cell = self.call1p("spid3r_cell_new", a);
                 let slot = self.builder.build_alloca(ptr_ty, "pcell").unwrap();
@@ -2426,7 +2490,13 @@ impl<'ctx> Ir<'ctx> {
             }
             env
         };
-        let r = self.build_make_fn(name_ptr, arity as i64, code_ptr, env);
+        let r = self.build_make_fn(
+            name_ptr,
+            arity as i64,
+            proto.min_arity() as i64,
+            code_ptr,
+            env,
+        );
         Ok(r)
     }
 
@@ -2470,6 +2540,7 @@ impl<'ctx> Ir<'ctx> {
         &mut self,
         name_ptr: PointerValue<'ctx>,
         arity: i64,
+        min_arity: i64,
         code_ptr: PointerValue<'ctx>,
         env: PointerValue<'ctx>,
     ) -> PointerValue<'ctx> {
@@ -2478,18 +2549,26 @@ impl<'ctx> Ir<'ctx> {
             &[
                 self.ptr_ty().into(),
                 self.i64_ty().into(),
+                self.i64_ty().into(),
                 self.ptr_ty().into(),
                 self.ptr_ty().into(),
             ],
             Some(self.ptr_ty().into()),
         );
         let n = self.i64c(arity);
+        let mn = self.i64c(min_arity);
         let fname = self.tmp_name("fn");
         let r = self
             .builder
             .build_call(
                 f,
-                &[name_ptr.into(), n.into(), code_ptr.into(), env.into()],
+                &[
+                    name_ptr.into(),
+                    n.into(),
+                    mn.into(),
+                    code_ptr.into(),
+                    env.into(),
+                ],
                 &fname,
             )
             .unwrap();
@@ -2618,6 +2697,7 @@ impl<'ctx> Ir<'ctx> {
                     &[
                         self.ptr_ty().into(),
                         self.i64_ty().into(),
+                        self.i64_ty().into(),
                         self.ptr_ty().into(),
                     ],
                     None,
@@ -2625,7 +2705,12 @@ impl<'ctx> Ir<'ctx> {
                 self.builder
                     .build_call(
                         ft,
-                        &[cls.into(), self.i64c(arity as i64).into(), code_ptr.into()],
+                        &[
+                            cls.into(),
+                            self.i64c(arity as i64).into(),
+                            self.i64c(m.min_arity() as i64).into(),
+                            code_ptr.into(),
+                        ],
                         "",
                     )
                     .unwrap();
@@ -2636,6 +2721,7 @@ impl<'ctx> Ir<'ctx> {
                     &[
                         self.ptr_ty().into(),
                         self.ptr_ty().into(),
+                        self.i64_ty().into(),
                         self.i64_ty().into(),
                         self.ptr_ty().into(),
                     ],
@@ -2648,6 +2734,7 @@ impl<'ctx> Ir<'ctx> {
                             cls.into(),
                             mp.into(),
                             self.i64c(arity as i64).into(),
+                            self.i64c(m.min_arity() as i64).into(),
                             code_ptr.into(),
                         ],
                         "",

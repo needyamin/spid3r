@@ -39,6 +39,10 @@ pub struct Chunk {
 pub struct VmFuncProto {
     pub name: Option<String>,
     pub arity: usize,
+    /// Smallest accepted argument count (trailing constant defaults).
+    pub min_arity: usize,
+    /// Baked constant defaults for the trailing `defaults.len()` parameters.
+    pub defaults: Vec<Value>,
     pub is_async: bool,
     pub upvalues: Vec<u8>,
     /// How many upvalue cells this function allocates for its own captured locals.
@@ -62,7 +66,11 @@ pub struct VmClassProto {
 /// Magic number at the start of every `.matrixc` file.
 pub const FORMAT_MAGIC: &[u8; 6] = b"SPID3R";
 /// On-disk bytecode format version. Bump when the layout changes incompatibly.
-pub const FORMAT_VERSION: u16 = 1;
+pub const FORMAT_VERSION: u16 = 2;
+// Format versions this reader accepts: v1 predates parameter defaults (a v1
+// prototype has min_arity == arity and no defaults); v2 adds them. See
+// docs/BYTECODE_STABILITY.md — the reader keeps accepting every version it
+// knows, and rejects anything newer with a clean diagnostic.
 
 /// A module compiled and embedded into a `.matrixc` file so that `exec` can run
 /// the program without re-reading any `.matrix` source. `key` is the import
@@ -770,6 +778,16 @@ fn put_vmfunc(b: &mut Vec<u8>, func: &VmFunc) {
         put_value(b, &v);
     }
     put_u8(b, func.own_upvalues);
+    // v2: trailing constant defaults — must mirror get_vmfunc exactly.
+    let has_defaults = !func.defaults.is_empty();
+    put_bool(b, has_defaults);
+    if has_defaults {
+        put_usize(b, func.min_arity);
+        put_usize(b, func.defaults.len());
+        for v in &func.defaults {
+            put_value(b, v);
+        }
+    }
     put_chunk(b, &func.chunk);
 }
 
@@ -782,6 +800,17 @@ fn put_func_proto(b: &mut Vec<u8>, f: &VmFuncProto) {
         b.push(*u);
     }
     put_u8(b, f.own_upvalues);
+    // v2: trailing constant defaults — must mirror get_func_proto's position
+    // (after own_upvalues, before the chunk).
+    let has_defaults = !f.defaults.is_empty();
+    put_bool(b, has_defaults);
+    if has_defaults {
+        put_usize(b, f.min_arity);
+        put_usize(b, f.defaults.len());
+        for v in &f.defaults {
+            put_value(b, v);
+        }
+    }
     put_chunk(b, &f.chunk);
 }
 
@@ -832,6 +861,9 @@ pub fn serialize_vmfunc(func: &VmFunc) -> Vec<u8> {
 struct Reader<'a> {
     b: &'a [u8],
     p: usize,
+    /// The file's format version (set right after the header is decoded);
+    /// prototype decoding is version-gated (v2 adds parameter defaults).
+    version: u16,
     /// Nesting depth of `get_chunk` (functions, class methods, embedded
     /// modules). A crafted file can nest without bound, which would recurse
     /// until the host's stack overflowed (an uncatchable abort); the limit is
@@ -840,11 +872,19 @@ struct Reader<'a> {
 }
 
 /// Deepest function/module nesting accepted while deserializing a `.matrixc`.
-const MAX_DESERIALIZE_DEPTH: usize = 128;
+/// Calibrated against the per-level stack frame of `get_chunk` (which grew
+/// when v2 added parameter-default decoding) — the limit must always fire
+/// before a hostile deep-nesting file overflows the host stack.
+const MAX_DESERIALIZE_DEPTH: usize = 96;
 
 impl<'a> Reader<'a> {
     fn new(b: &'a [u8]) -> Self {
-        Reader { b, p: 0, depth: 0 }
+        Reader {
+            b,
+            p: 0,
+            depth: 0,
+            version: FORMAT_VERSION,
+        }
     }
 
     fn u8(&mut self) -> SpidResult<u8> {
@@ -1060,10 +1100,24 @@ fn get_func_proto(r: &mut Reader) -> SpidResult<VmFuncProto> {
         upvalues.push(r.u8()?);
     }
     let own_upvalues = r.u8()?;
+    // v2 carries trailing constant defaults; v1 artifacts predate them.
+    let (min_arity, defaults) = if r.version >= 2 && r.bool()? {
+        let min_arity = r.usize()?;
+        let n = r.count(1)?;
+        let mut defaults = Vec::with_capacity(n);
+        for _ in 0..n {
+            defaults.push(r.value()?);
+        }
+        (min_arity, defaults)
+    } else {
+        (arity, Vec::new())
+    };
     let chunk = std::sync::Arc::new(get_chunk(r)?);
     Ok(VmFuncProto {
         name,
         arity,
+        min_arity,
+        defaults,
         is_async,
         upvalues,
         own_upvalues,
@@ -1124,10 +1178,24 @@ fn get_vmfunc(r: &mut Reader) -> SpidResult<VmFunc> {
         upvalues.push(crate::value::new_untracked_ref(v));
     }
     let own_upvalues = r.u8()?;
+    // v2: trailing constant defaults (same layout as get_func_proto).
+    let (min_arity, defaults) = if r.version >= 2 && r.bool()? {
+        let min_arity = r.usize()?;
+        let n = r.count(1)?;
+        let mut defaults = Vec::with_capacity(n);
+        for _ in 0..n {
+            defaults.push(r.value()?);
+        }
+        (min_arity, defaults)
+    } else {
+        (arity, Vec::new())
+    };
     let chunk = std::sync::Arc::new(get_chunk(r)?);
     Ok(VmFunc {
         name,
         arity,
+        min_arity,
+        defaults,
         is_async,
         chunk,
         upvalues,
@@ -1155,15 +1223,18 @@ pub fn deserialize_vmfunc(b: &[u8]) -> SpidResult<VmFunc> {
     let mut r = Reader::new(b);
     r.p = 6;
     let version = r.u16()?;
-    if version != FORMAT_VERSION {
+    // Accept every format version this reader knows (see FORMAT_VERSION);
+    // anything older or newer is a clean rejection, never a misread.
+    if version == 0 || version > FORMAT_VERSION {
         return Err(err(
             Phase::Vm,
             format!(
-                "unsupported bytecode version {} (expected {})",
+                "unsupported bytecode version {} (this reader supports 1..={})",
                 version, FORMAT_VERSION
             ),
         ));
     }
+    r.version = version;
     let func = get_vmfunc(&mut r)?;
     // Trailing-byte rejection (audit A-8): a file whose declared structures do
     // not consume the whole buffer is malformed. Accepting it silently let an

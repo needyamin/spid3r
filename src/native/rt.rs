@@ -496,19 +496,21 @@ fn leave_call() {
 pub extern "C" fn spid3r_make_fn(
     name: *const c_char,
     arity: usize,
+    min_arity: usize,
     code: *const c_void,
     env: *mut c_void,
 ) -> *mut Value {
     ffi_guard(
         "make_fn",
         |_| std::ptr::null_mut(),
-        || make_fn_inner(name, arity, code, env),
+        || make_fn_inner(name, arity, min_arity, code, env),
     )
 }
 
 fn make_fn_inner(
     name: *const c_char,
     arity: usize,
+    min_arity: usize,
     code: *const c_void,
     env: *mut c_void,
 ) -> *mut Value {
@@ -522,6 +524,7 @@ fn make_fn_inner(
     leak(Value::Cfn(std::sync::Arc::new(CompiledFn {
         name,
         arity,
+        min_arity,
         code,
         env,
     })))
@@ -573,13 +576,13 @@ fn spid3r_method_inner(
             // Same wording as the VM/tree runtime dispatch (PAR-04): the
             // message counts the *declared* parameters and the *passed*
             // arguments, neither of which includes `self`.
-            if cfn.arity != argc + 1 {
-                return rt_throw(&format!(
-                    "method {} expects {} argument(s), got {}",
-                    name,
-                    cfn.arity.saturating_sub(1),
-                    argc
-                ));
+            if argc + 1 < cfn.min_arity || argc + 1 > cfn.arity {
+                let want = if cfn.min_arity == cfn.arity {
+                    format!("{} argument(s)", cfn.arity - 1)
+                } else {
+                    format!("{} to {} argument(s)", cfn.min_arity - 1, cfn.arity - 1)
+                };
+                return rt_throw(&format!("method {} expects {}, got {}", name, want, argc));
             }
             let env = cfn.env;
             let code = cfn.code;
@@ -1081,6 +1084,7 @@ pub extern "C" fn spid3r_class_add_method(
     class: *const Value,
     name: *const c_char,
     arity: usize,
+    min_arity: usize,
     code: *const c_void,
 ) {
     let name = cstr(name);
@@ -1089,6 +1093,7 @@ pub extern "C" fn spid3r_class_add_method(
     let f = std::sync::Arc::new(CompiledFn {
         name: Some(name.clone()),
         arity,
+        min_arity,
         code,
         env: std::ptr::null_mut(),
     });
@@ -1098,13 +1103,19 @@ pub extern "C" fn spid3r_class_add_method(
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_class_set_ctor(class: *const Value, arity: usize, code: *const c_void) {
+pub extern "C" fn spid3r_class_set_ctor(
+    class: *const Value,
+    arity: usize,
+    min_arity: usize,
+    code: *const c_void,
+) {
     let code: unsafe extern "C" fn(*mut c_void, usize, *const *mut Value) -> *mut Value =
         unsafe { std::mem::transmute(code) };
     let c = class_mut(class);
     let f = std::sync::Arc::new(CompiledFn {
         name: Some(format!("{}.new", c.name)),
         arity,
+        min_arity,
         code,
         env: std::ptr::null_mut(),
     });
@@ -1148,7 +1159,19 @@ pub fn construct_cinstance(
         found
     };
     if let Some(ctor) = ctor {
-        check_arity(&format!("new {}", class.name), ctor.arity, args.len() + 1);
+        if args.len() + 1 < ctor.min_arity || args.len() + 1 > ctor.arity {
+            let want = if ctor.min_arity == ctor.arity {
+                format!("{} argument(s)", ctor.arity - 1)
+            } else {
+                format!("{} to {} argument(s)", ctor.min_arity - 1, ctor.arity - 1)
+            };
+            abort(&format!(
+                "new {} expects {}, got {}",
+                class.name,
+                want,
+                args.len()
+            ));
+        }
         let mut call_args: Vec<*mut Value> = Vec::with_capacity(args.len() + 1);
         call_args.push(obj_ptr);
         for a in &args {
@@ -1532,6 +1555,6 @@ mod tests {
             }
         }
         let code: extern "C" fn(*mut c_void, u64, *const *mut Value) -> *mut Value = ctor;
-        spid3r_class_set_ctor(cls, 2, code as *const c_void);
+        spid3r_class_set_ctor(cls, 2, 2, code as *const c_void);
     }
 }

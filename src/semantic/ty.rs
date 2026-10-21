@@ -41,6 +41,8 @@ pub enum Ty {
 pub struct FnSig {
     /// Number of parameters.
     pub arity: usize,
+    /// Smallest accepted argument count (constant defaults are trailing-only).
+    pub min_arity: usize,
     /// Resolved per-parameter type; `None` = unannotated (unchecked).
     pub params: Vec<Option<Ty>>,
     /// Resolved return type, if annotated.

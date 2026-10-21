@@ -19,6 +19,9 @@ struct MethodInfo {
     /// Parameter types, including `self` at index 0.
     params: Vec<Option<TypeExpr>>,
     ret: Option<TypeExpr>,
+    /// Smallest accepted argument count *including* `self` (`self` is never
+    /// defaulted, so it always contributes). Call sites pass one fewer.
+    min_arity: usize,
 }
 
 impl MethodInfo {
@@ -31,6 +34,9 @@ impl MethodInfo {
 #[derive(Clone)]
 struct FuncInfo {
     arity: usize,
+    /// Smallest accepted argument count (constant defaults are trailing-only,
+    /// parser-enforced). `== arity` when no parameter has a default.
+    min_arity: usize,
     params: Vec<Option<TypeExpr>>,
     ret: Option<TypeExpr>,
 }
@@ -614,6 +620,7 @@ impl Checker {
                             v.name.clone(),
                             FuncInfo {
                                 arity: v.fields.len(),
+                                min_arity: v.fields.len(),
                                 params: v.fields.iter().map(|_| None).collect(),
                                 ret: None,
                             },
@@ -666,6 +673,7 @@ impl Checker {
                         name.clone(),
                         FuncInfo {
                             arity: f.params.len(),
+                            min_arity: f.min_arity(),
                             params: f.params.iter().map(|p| p.ty.clone()).collect(),
                             ret: f.ret.clone(),
                         },
@@ -741,6 +749,7 @@ impl Checker {
                                 vis: m.vis,
                                 params: m.params.iter().map(|p| p.ty.clone()).collect(),
                                 ret: m.ret.clone(),
+                                min_arity: m.min_arity(),
                             },
                         )
                         .is_some()
@@ -967,16 +976,15 @@ impl Checker {
                     return Err(self.err(span, format!("class '{}' has no method '{}'", parent, m)));
                 };
                 // A method takes `self` explicitly; the call does not.
-                if sig.arity() != argc + 1 {
+                if argc + 1 < sig.min_arity || argc + 1 > sig.arity() {
+                    let want = if sig.min_arity == sig.arity() {
+                        format!("{} argument(s)", sig.arity() - 1)
+                    } else {
+                        format!("{} to {} argument(s)", sig.min_arity - 1, sig.arity() - 1)
+                    };
                     return Err(self.err(
                         span,
-                        format!(
-                            "method {}::{} expects {} argument(s), got {}",
-                            parent,
-                            m,
-                            sig.arity() - 1,
-                            argc
-                        ),
+                        format!("method {}::{} expects {}, got {}", parent, m, want, argc),
                     ));
                 }
             }
@@ -985,15 +993,15 @@ impl Checker {
                     return Err(self.err(span, format!("class '{}' has no constructor", parent)));
                 };
                 // A constructor takes no `self` parameter.
-                if sig.arity() != argc {
+                if argc < sig.min_arity || argc > sig.arity() {
+                    let want = if sig.min_arity == sig.arity() {
+                        format!("{} argument(s)", sig.arity())
+                    } else {
+                        format!("{} to {} argument(s)", sig.min_arity, sig.arity())
+                    };
                     return Err(self.err(
                         span,
-                        format!(
-                            "constructor {}::new expects {} argument(s), got {}",
-                            parent,
-                            sig.arity(),
-                            argc
-                        ),
+                        format!("constructor {}::new expects {}, got {}", parent, want, argc),
                     ));
                 }
             }
@@ -1002,8 +1010,29 @@ impl Checker {
     }
 
     /// Method (visibility, arity) through the inheritance chain.
-    fn method_info(&self, class: &str, method: &str) -> Option<(Vis, usize)> {
-        self.method_sig(class, method).map(|m| (m.vis, m.arity()))
+    fn method_info(&self, class: &str, method: &str) -> Option<(Vis, usize, usize)> {
+        self.method_sig(class, method)
+            .map(|m| (m.vis, m.arity(), m.min_arity))
+    }
+
+    /// Constant default values only (`= 10`, `= "x"`, `= true`, `= null`,
+    /// unary minus over a numeric literal). Expression defaults that reference
+    /// earlier parameters are a documented future step — the engines fill
+    /// missing arguments from baked constants today.
+    fn is_const_default(e: &Expr) -> bool {
+        match e {
+            Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Null(_) => {
+                true
+            }
+            Expr::Unary {
+                op: UnOp::Neg,
+                expr,
+                ..
+            } => {
+                matches!(**expr, Expr::Int(..) | Expr::Float(..))
+            }
+            _ => false,
+        }
     }
 
     /// Full method signature through the inheritance chain.
@@ -1270,6 +1299,18 @@ impl Checker {
                 for p in &f.params {
                     if !names.insert(p.name.clone()) {
                         return Err(self.err(&p.span, format!("duplicate parameter '{}'", p.name)));
+                    }
+                    if let Some(d) = &p.default {
+                        if !Self::is_const_default(d) {
+                            return Err(self.err(
+                                &p.span,
+                                format!(
+                                    "the default for parameter '{}' must be a constant \
+                                     (a literal number, string, bool, or null)",
+                                    p.name
+                                ),
+                            ));
+                        }
                     }
                     let class = p.ty.as_ref().and_then(|t| {
                         if self.classes.contains_key(&t.name) {
@@ -1788,6 +1829,7 @@ impl Checker {
             .collect();
         Ty::Fn(Some(std::sync::Arc::new(ty::FnSig {
             arity: f.params.len(),
+            min_arity: f.min_arity(),
             params,
             ret: f.ret.as_ref().map(|t| self.resolve_type(t)),
         })))
@@ -1816,15 +1858,15 @@ impl Checker {
         args: &[Expr],
         span: &Span,
     ) -> SpidResult<()> {
-        if args.len() != sig.arity {
+        if args.len() < sig.min_arity || args.len() > sig.arity {
+            let want = if sig.min_arity == sig.arity {
+                format!("{} argument(s)", sig.arity)
+            } else {
+                format!("{} to {} argument(s)", sig.min_arity, sig.arity)
+            };
             return Err(self.err(
                 span,
-                format!(
-                    "{} expects {} argument(s), got {}",
-                    label,
-                    sig.arity,
-                    args.len()
-                ),
+                format!("{} expects {}, got {}", label, want, args.len()),
             ));
         }
         for (i, a) in args.iter().enumerate() {
@@ -2278,6 +2320,18 @@ impl Checker {
                     if !names.insert(p.name.clone()) {
                         return Err(self.err(&p.span, format!("duplicate parameter '{}'", p.name)));
                     }
+                    if let Some(d) = &p.default {
+                        if !Self::is_const_default(d) {
+                            return Err(self.err(
+                                &p.span,
+                                format!(
+                                    "the default for parameter '{}' must be a constant \
+                                     (a literal number, string, bool, or null)",
+                                    p.name
+                                ),
+                            ));
+                        }
+                    }
                     self.declare(
                         &p.name,
                         &p.span,
@@ -2448,15 +2502,15 @@ impl Checker {
                     // in a variable and then called.
                     self.mark_used(name);
                     if let Some(fi) = self.funcs.get(name).cloned() {
-                        if args.len() != fi.arity {
+                        if args.len() < fi.min_arity || args.len() > fi.arity {
+                            let want = if fi.min_arity == fi.arity {
+                                format!("{} argument(s)", fi.arity)
+                            } else {
+                                format!("{} to {} argument(s)", fi.min_arity, fi.arity)
+                            };
                             return Err(self.err(
                                 span,
-                                format!(
-                                    "{} expects {} argument(s), got {}",
-                                    name,
-                                    fi.arity,
-                                    args.len()
-                                ),
+                                format!("{} expects {}, got {}", name, want, args.len()),
                             ));
                         }
                         for (i, a) in args.iter().enumerate() {
@@ -2546,20 +2600,25 @@ impl Checker {
                 let recv_class = self.receiver_class(object);
                 if let Some(cls) = recv_class {
                     match self.method_info(&cls, name) {
-                        Some((vis, arity)) => {
+                        Some((vis, arity, arity_min)) => {
                             if vis == Vis::Private && self.current_class.as_deref() != Some(&cls) {
                                 return Err(self.err(
                                     span,
                                     format!("method '{}' of class '{}' is private", name, cls),
                                 ));
                             }
-                            if args.len() + 1 != arity {
+                            if args.len() + 1 < arity_min || args.len() + 1 > arity {
+                                let want = if arity_min == arity {
+                                    format!("{} argument(s)", arity - 1)
+                                } else {
+                                    format!("{} to {} argument(s)", arity_min - 1, arity - 1)
+                                };
                                 return Err(self.err(
                                     span,
                                     format!(
-                                        "method '{}' expects {} argument(s), got {}",
+                                        "method '{}' expects {}, got {}",
                                         name,
-                                        arity - 1,
+                                        want,
                                         args.len()
                                     ),
                                 ));
@@ -2635,15 +2694,15 @@ impl Checker {
                 }
                 if self.classes.contains_key(class) {
                     if let Some(mi) = self.method_sig(class, "new") {
-                        if args.len() != mi.arity() {
+                        if args.len() < mi.min_arity || args.len() > mi.arity() {
+                            let want = if mi.min_arity == mi.arity() {
+                                format!("{} argument(s)", mi.arity())
+                            } else {
+                                format!("{} to {} argument(s)", mi.min_arity, mi.arity())
+                            };
                             return Err(self.err(
                                 span,
-                                format!(
-                                    "new {} expects {} argument(s), got {}",
-                                    class,
-                                    mi.arity(),
-                                    args.len()
-                                ),
+                                format!("new {} expects {}, got {}", class, want, args.len()),
                             ));
                         }
                     } else if !args.is_empty() {

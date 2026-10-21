@@ -686,6 +686,7 @@ impl Lower {
                     .map(|f| crate::ast::Param {
                         name: f.clone(),
                         ty: None,
+                        default: None,
                         span: span.clone(),
                     })
                     .collect(),

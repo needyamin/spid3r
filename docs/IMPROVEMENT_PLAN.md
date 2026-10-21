@@ -23,13 +23,18 @@ issue IDs (report parked in `_dustbin/architect_report.txt`).
    transport-generic; core stays zero-dependency without the feature.
    Remaining sub-item: a raw `tls_connect(host, port)` handle native when a
    user needs non-HTTP TLS.
-2. **Default parameter values** (report PAR-*). Design sketch: `FnProto`
-   gains `defaults: Vec<Option<Expr>>`; the arity check becomes a range
-   (`argc < min_arity` errors); each engine's callee prologue evaluates
-   missing trailing defaults *inside the callee* (earlier params are visible,
-   Python-style). Touches: parser, `FnProto`, semantic (arity range), VM
-   compiler prologue + runtime, interpreter call path, native prologue,
-   docs, matrix rows. Effort: L, three engines — needs a session of its own.
+2. ~~**Default parameter values**~~ — **done 2026-10-22** (v1 scope:
+   **constant defaults**, trailing-only, parser-enforced; expression defaults
+   referencing earlier parameters are future work). Landed across ALL THREE
+   engines: parser + `Param.default` + `FnProto::min_arity`; semantic arity
+   checks became ranges (6 sites, message format stable when min==max);
+   interpreter fills from the default exprs; VM bakes default VALUES into
+   `VmFuncProto`/`VmFunc` and fills at `call_vfunc_frame` (every call path
+   funnels there); native embeds the constants in the generated prologue
+   (argc-conditional phi) and the dispatch FFI gained `min_arity`.
+   Bytecode format bumped to **v2** per docs/BYTECODE_STABILITY.md (reader
+   dual-decodes v1+v2; writer emits v2). `default_params` matrix case with
+   `aot: true`; count 696 -> 702.
 3. **Named arguments** — parse `f(x: 1)`; checker binds by name against the
    prototype; engines normalize call order before invocation. Effort: M/L.
 4. ~~**LSP rename + find-references**~~ — **done 2026-10-22** (this round):

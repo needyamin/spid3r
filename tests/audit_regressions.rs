@@ -689,6 +689,8 @@ fn bytecode_deserializer_rejects_truncated_constants_huge_counts_and_negative_ju
     let func = VmFunc {
         name: None,
         arity: 0,
+        min_arity: 0,
+        defaults: Vec::new(),
         is_async: false,
         chunk: Arc::new(chunk),
         upvalues: Vec::new(),

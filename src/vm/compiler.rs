@@ -385,6 +385,8 @@ fn compile_one(
     let func = crate::value::VmFunc {
         name: None,
         arity: 0,
+        min_arity: 0,
+        defaults: Vec::new(),
         is_async: false,
         chunk: std::sync::Arc::new(chunk),
         upvalues: Vec::new(),
@@ -948,9 +950,46 @@ fn compile_function(
             ),
         ));
     }
+    // Bake the trailing constant defaults into the prototype as values: the
+    // runtime fills omitted arguments from these at frame setup.
+    let mut defaults = Vec::new();
+    for p in proto.params.iter().rev() {
+        match &p.default {
+            Some(d) => match const_default_value(d) {
+                Some(v) => defaults.push(v),
+                None => break, // checker guarantees constants; stop defensively
+            },
+            None => break,
+        }
+    }
+    defaults.reverse();
+    /// Evaluate a checker-validated constant default expression into a `Value`.
+    /// The semantic checker guarantees this shape; `None` is a defensive fallback.
+    fn const_default_value(e: &Expr) -> Option<Value> {
+        match e {
+            Expr::Int(v, _) => Some(Value::Int(*v)),
+            Expr::Float(v, _) => Some(Value::Float(*v)),
+            Expr::Str(s, _) => Some(Value::Str(s.clone().into())),
+            Expr::Bool(b, _) => Some(Value::Bool(*b)),
+            Expr::Null(_) => Some(Value::Null),
+            Expr::Unary {
+                op: crate::ast::UnOp::Neg,
+                expr,
+                ..
+            } => match &**expr {
+                Expr::Int(v, _) => Some(Value::Int(-v)),
+                Expr::Float(v, _) => Some(Value::Float(-v)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     Ok(VmFuncProto {
         name: proto.name.clone(),
         arity: proto.params.len(),
+        min_arity: proto.min_arity(),
+        defaults,
         is_async: proto.is_async,
         upvalues: c.upvalues,
         own_upvalues: c.own_upvalues,
@@ -974,6 +1013,7 @@ fn compile_class(
                 Param {
                     name: "self".to_string(),
                     ty: None,
+                    default: None,
                     span: m.span.clone(),
                 },
             );

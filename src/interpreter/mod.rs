@@ -1416,20 +1416,35 @@ impl Interp {
         args: Vec<Value>,
         span: &Span,
     ) -> Result<Value, Flow> {
-        if fd.proto.params.len() != args.len() {
+        if args.len() < fd.proto.min_arity() || args.len() > fd.proto.params.len() {
+            let (min, max) = (fd.proto.min_arity(), fd.proto.params.len());
+            let want = if min == max {
+                format!("{} argument(s)", max)
+            } else {
+                format!("{} to {} argument(s)", min, max)
+            };
             return Err(self.rt(
                 span,
                 format!(
-                    "{} expects {} argument(s), got {}",
+                    "{} expects {}, got {}",
                     fd.proto.name.as_deref().unwrap_or("fn"),
-                    fd.proto.params.len(),
+                    want,
                     args.len()
                 ),
             ));
         }
+        let argc = args.len();
         let mut vars = HashMap::with_capacity(fd.proto.params.len());
         for (p, v) in fd.proto.params.iter().zip(args) {
             vars.insert(p.name.clone(), v);
+        }
+        // Fill omitted trailing parameters from their constant defaults. The
+        // checker guarantees defaults are literals, so evaluation cannot touch
+        // the environment.
+        for p in fd.proto.params.iter().skip(argc) {
+            if let Some(d) = &p.default {
+                vars.insert(p.name.clone(), self.eval(d, &self.globals)?);
+            }
         }
         let fenv = environment::child_with_vars(&fd.env, vars);
         let mark = self.guard_mark();
@@ -1522,15 +1537,16 @@ impl Interp {
         };
         if let Some(ctor) = ctor {
             // Constructor parameters do not include self; self is bound here.
-            if ctor.proto.params.len() != args.len() {
+            if args.len() < ctor.proto.min_arity() || args.len() > ctor.proto.params.len() {
+                let (min, max) = (ctor.proto.min_arity(), ctor.proto.params.len());
+                let want = if min == max {
+                    format!("{} argument(s)", max)
+                } else {
+                    format!("{} to {} argument(s)", min, max)
+                };
                 return Err(self.rt(
                     span,
-                    format!(
-                        "new {} expects {} argument(s), got {}",
-                        class.name,
-                        ctor.proto.params.len(),
-                        args.len()
-                    ),
+                    format!("new {} expects {}, got {}", class.name, want, args.len()),
                 ));
             }
             let depth = self.depth.fetch_add(1, Ordering::Relaxed);
@@ -1544,8 +1560,14 @@ impl Interp {
                 .push((TraceCallee::Ctor(class.clone()), span.clone()));
             let mut vars = HashMap::with_capacity(ctor.proto.params.len() + 1);
             vars.insert("self".to_string(), obj.clone());
+            let argc = args.len();
             for (p, v) in ctor.proto.params.iter().zip(args) {
                 vars.insert(p.name.clone(), v);
+            }
+            for p in ctor.proto.params.iter().skip(argc) {
+                if let Some(d) = &p.default {
+                    vars.insert(p.name.clone(), self.eval(d, &self.globals)?);
+                }
             }
             let fenv = environment::child_with_vars(&ctor.env, vars);
             let mark = self.guard_mark();
@@ -1651,13 +1673,19 @@ impl Interp {
             None => return Err(self.rt(span, format!("class '{}' has no constructor", class.name))),
         };
         // Constructor parameters do not include self; self is bound here.
-        if ctor.proto.params.len() != args.len() {
+        if args.len() < ctor.proto.min_arity() || args.len() > ctor.proto.params.len() {
+            let (min, max) = (ctor.proto.min_arity(), ctor.proto.params.len());
+            let want = if min == max {
+                format!("{} argument(s)", max)
+            } else {
+                format!("{} to {} argument(s)", min, max)
+            };
             return Err(self.rt(
                 span,
                 format!(
-                    "constructor {}::new expects {} argument(s), got {}",
+                    "constructor {}::new expects {}, got {}",
                     class.name,
-                    ctor.proto.params.len(),
+                    want,
                     args.len()
                 ),
             ));
@@ -1673,8 +1701,14 @@ impl Interp {
             .push((TraceCallee::Ctor(class.clone()), span.clone()));
         let mut vars = HashMap::with_capacity(ctor.proto.params.len() + 1);
         vars.insert("self".to_string(), Value::Instance(inst.clone()));
+        let argc = args.len();
         for (p, v) in ctor.proto.params.iter().zip(args) {
             vars.insert(p.name.clone(), v);
+        }
+        for p in ctor.proto.params.iter().skip(argc) {
+            if let Some(d) = &p.default {
+                vars.insert(p.name.clone(), self.eval(d, &self.globals)?);
+            }
         }
         let fenv = environment::child_with_vars(&ctor.env, vars);
         let mark = self.guard_mark();
@@ -1708,15 +1742,16 @@ impl Interp {
                 ))
             }
         };
-        if fd.proto.params.len() != args.len() + 1 {
+        if args.len() + 1 < fd.proto.min_arity() || args.len() + 1 > fd.proto.params.len() {
+            let (min, max) = (fd.proto.min_arity(), fd.proto.params.len());
+            let want = if min == max {
+                format!("{} argument(s)", max - 1)
+            } else {
+                format!("{} to {} argument(s)", min - 1, max - 1)
+            };
             return Err(self.rt(
                 span,
-                format!(
-                    "method {} expects {} argument(s), got {}",
-                    name,
-                    fd.proto.params.len() - 1,
-                    args.len()
-                ),
+                format!("method {} expects {}, got {}", name, want, args.len()),
             ));
         }
         let depth = self.depth.fetch_add(1, Ordering::Relaxed);
@@ -1731,8 +1766,14 @@ impl Interp {
         let obj = Value::Instance(inst.clone());
         let mut vars = HashMap::with_capacity(fd.proto.params.len());
         vars.insert("self".to_string(), obj);
+        let argc = args.len();
         for (p, v) in fd.proto.params.iter().skip(1).zip(args) {
             vars.insert(p.name.clone(), v);
+        }
+        for p in fd.proto.params.iter().skip(1 + argc) {
+            if let Some(d) = &p.default {
+                vars.insert(p.name.clone(), self.eval(d, &self.globals)?);
+            }
         }
         let fenv = environment::child_with_vars(&fd.env, vars);
         let mark = self.guard_mark();

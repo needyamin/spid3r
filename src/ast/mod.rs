@@ -18,6 +18,9 @@ pub enum Vis {
 pub struct Param {
     pub name: String,
     pub ty: Option<TypeExpr>,
+    /// A constant default value (`b = 10`), validated by the semantic checker
+    /// (literals only, trailing-only parameters). `None` = required parameter.
+    pub default: Option<Expr>,
     pub span: Span,
 }
 
@@ -39,6 +42,15 @@ pub struct FnProto {
     pub ret: Option<TypeExpr>,
     pub body: Block,
     pub span: Span,
+}
+
+impl FnProto {
+    /// The smallest accepted argument count: required parameters only. With
+    /// constant defaults (parser-enforced trailing-only), every parameter
+    /// after the last required one may be omitted at a call site.
+    pub fn min_arity(&self) -> usize {
+        self.params.iter().filter(|p| p.default.is_none()).count()
+    }
 }
 
 /// A variant of an [`EnumDecl`]: a name plus its payload field names.

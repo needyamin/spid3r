@@ -29,7 +29,9 @@ interfaceDecl  = "interface" ident "{" { ifaceMethod } "}" ;
 ifaceMethod    = "fn" ident "(" [ params ] ")" [ "->" type ] ";" ;
 
 params         = param { "," param } ;
-param          = "self" | ident [ ":" type ] ;
+param          = "self" | ident [ ":" type ] [ "=" literal ] ;
+(* defaults are trailing-only (parser-enforced) and must be constant literals;
+   omitted trailing arguments are filled from them at the callee *)
 
 type           = ident [ "<" type ">" ] ;
 

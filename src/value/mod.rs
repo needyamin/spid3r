@@ -38,6 +38,10 @@ pub type UpvalueCell = Arc<Mutex<Value>>;
 pub struct VmFunc {
     pub name: Option<String>,
     pub arity: usize,
+    /// Smallest accepted argument count (trailing constant defaults).
+    pub min_arity: usize,
+    /// Baked constant defaults for the trailing `defaults.len()` parameters.
+    pub defaults: Vec<Value>,
     pub is_async: bool,
     pub chunk: std::sync::Arc<crate::vm::bytecode::Chunk>,
     pub upvalues: Vec<UpvalueCell>,
@@ -237,6 +241,10 @@ impl Drop for InstanceData {
 pub struct CompiledFn {
     pub name: Option<String>,
     pub arity: usize,
+    /// Smallest accepted argument count (trailing constant defaults; the
+    /// generated prologue fills omitted arguments itself, so dispatchers only
+    /// range-check).
+    pub min_arity: usize,
     pub code: unsafe extern "C" fn(*mut c_void, usize, *const *mut Value) -> *mut Value,
     pub env: *mut c_void,
 }

@@ -319,6 +319,9 @@ impl Parser {
     fn parse_params(&mut self) -> SpidResult<Vec<Param>> {
         self.expect(&TokenKind::LParen, "'('")?;
         let mut params = Vec::new();
+        // Defaults are trailing-only: once `p = v` appears, every parameter
+        // after it needs one too (the arity range is otherwise ambiguous).
+        let mut seen_default = false;
         if !self.at(&TokenKind::RParen) {
             loop {
                 let sp = self.span();
@@ -328,7 +331,27 @@ impl Parser {
                 } else {
                     None
                 };
-                params.push(Param { name, ty, span: sp });
+                let default = if self.eat(&TokenKind::Assign) {
+                    seen_default = true;
+                    Some(self.parse_expr()?)
+                } else if seen_default {
+                    return Err(self.err_here(format!(
+                        "parameter '{}' needs a default value: once one parameter has \
+                         a default, every parameter after it must have one",
+                        name
+                    )));
+                } else {
+                    None
+                };
+                if name == "self" && default.is_some() {
+                    return Err(self.err_here("the receiver 'self' cannot have a default value"));
+                }
+                params.push(Param {
+                    name,
+                    ty,
+                    default,
+                    span: sp,
+                });
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
