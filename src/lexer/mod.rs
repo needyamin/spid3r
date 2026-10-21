@@ -94,7 +94,11 @@ impl<'a> Lexer<'a> {
         if c == b'\n' {
             self.line += 1;
             self.col = 1;
-        } else {
+        } else if (c & 0xC0) != 0x80 {
+            // Columns count CHARACTERS, not bytes: a UTF-8 continuation byte
+            // (10xxxxxx) is part of the previous character, so it must not
+            // advance the column. Counting bytes put every caret on a
+            // non-ASCII line too far right.
             self.col += 1;
         }
         Some(c)
@@ -294,7 +298,13 @@ impl<'a> Lexer<'a> {
             }
         }
         let text = std::str::from_utf8(&self.src[begin..self.pos]).unwrap();
-        let span = Span::new(self.file.clone(), line, col, (self.pos - begin) as u32);
+        // `len` counts characters for the same reason `col` does: a span must
+        // stay meaningful on a line with non-ASCII text.
+        let len = self.src[begin..self.pos]
+            .iter()
+            .filter(|b| (*b & 0xC0) != 0x80)
+            .count() as u32;
+        let span = Span::new(self.file.clone(), line, col, len);
         let kind = if is_float {
             let v: f64 = text.parse().map_err(|_| {
                 err_at(

@@ -216,6 +216,21 @@ engines), `tests/sched_limits.rs` (isolated pools), the CAS unit tests in
 `src/value/collections/seq.rs`, and
 `tests/native_tests.rs::native_matches_tree_on_structured_task_errors`.
 
+Stage-0 (2026-10-21) then closed the correctness debt the audit left open — see
+`audit_notes/stage0_correctness.md`. A 200k-deep `stack`/`queue`/`deque`/`bag`/
+instance chain no longer aborts the process in `Drop` (one iterative teardown
+worklist now covers every container and instance type, and mixed chains are
+handled); `deep_clone` preserves cycles instead of aliasing the original into the
+copy; the regex engine scans once, turning a 20 000-character failing search from
+a >30 s timeout into 4 ms with 532 differential cases byte-identical; HTTP framing
+has a deadline (`SPID3R_NET_TIMEOUT_MS`) so a silent client cannot hold a worker,
+and the chunked-body buffer compacts; `.npy` shape arithmetic is checked. The
+low-severity batch is closed too (empty token stream, character-based diagnostic
+columns, CSV BOM, `[^a]` versus newline, tar entry types, non-UTF-8 CLI
+arguments, `spid3r test --filter/--list`). **A-13 (closure/environment cycles)
+remains open**: measured at one leaked cell per closure, with the required design
+recorded in `docs/GC.md`.
+
 Stage-4 (2026-10-21) finished the toolchain and docs pass — see
 `audit_notes/stage4_toolchain_docs.md`: `spid3r check` now validates the index
 expression of an index-assign target, the `main` signature, and function-type

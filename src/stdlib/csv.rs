@@ -7,6 +7,11 @@ use crate::value::collections::{make_list, MapData};
 use crate::value::{new_ref, MapKey, Value};
 
 pub fn parse_csv_text(text: &str, delimiter: char, has_header: bool) -> Result<Value, String> {
+    // A UTF-8 BOM (EF BB BF) is not part of the first header name. Excel writes
+    // one by default, and leaving it in makes `headers[0]` compare unequal to
+    // the obvious string ("name" != "\u{feff}name"), so every column lookup by
+    // name silently misses.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut raw_rows: Vec<Vec<String>> = Vec::new();
     let mut cur_row: Vec<String> = Vec::new();
     let mut cur_field = String::new();

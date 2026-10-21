@@ -145,3 +145,54 @@ off (it never frees live data); `tests/cycle_tests.rs` proves cycles across all
 container and instance types are reclaimed while live cycles survive.
 
 
+
+## Closures and environments are NOT collected (audit A-13, open)
+
+The collector tracks value containers and instances. A **closure's environment**
+(`Env = Arc<Mutex<EnvironmentData>>`, holding `vars: HashMap<String, Value>` and
+`parent: Option<Env>`) is not a registered cell, and neither is
+`FunctionData`/`VmFunc`/`ClassData`. A cycle through them therefore leaks.
+
+Measured on the current tree — the leak is one cell per closure, not a slow
+drift:
+
+```spid3r
+fn make() {
+    let data = list();      // a tracked cell
+    data.push(1);
+    let f = fn() { return data; };   // f is bound in the env it captures
+    return f;                        // env -> f -> env: a cycle
+}
+fn main() {
+    let i = 0;
+    while (i < 20000) { let f = make(); i = i + 1; }
+    println(gc_live_cells());        // 20000, not 0
+}
+```
+
+Every nested function and every closure that is bound to a name in its own
+captured scope has this shape, so a long-running program that creates closures in
+a loop grows without bound. `tests/closure_cycle_leak.rs` pins the current
+number so a future fix is visible.
+
+**Why registering environments alone does not fix it.** The collector's root rule
+is `external = strong_count − internal_edges`. With only envs registered, the
+single strong reference to an env comes from an *untraced* `FunctionData`, so
+`internal_edges == 0` and `external == 1` — the env looks like a root and is
+kept. Registering only `FunctionData` has the mirror problem. Both ends of the
+cycle must be cells, which means:
+
+1. Register `EnvironmentData` (one place: `environment::child`, plus
+   `new_global`), tracing `vars` values and `parent`.
+2. Register `FunctionData` (3 construction sites), tracing `env`.
+3. Register `ClassData`/`VmClass` (their `methods` map holds `FunctionData`, so a
+   class→method→env path must be traversable) and `VmFunc`.
+4. Keep registration *complete*: a container holding a `Value::Function` whose
+   cell is unregistered cannot be traversed, so an env reachable only through it
+   would be swept while still live. This is the one failure mode that is a
+   use-after-free rather than a leak, and it is why the change needs the fields
+   made private (or a `new_closure`/`new_class` constructor) so a future
+   construction site cannot silently skip registration.
+
+Until then the workaround is explicit: break the cycle with `weak()`/`deref()`
+(the manual escape hatch) or hoist the closure out of the scope it captures.

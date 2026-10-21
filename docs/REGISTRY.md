@@ -84,9 +84,13 @@ The chosen directory's `spider.toml` version must also satisfy the constraint
 - **No network fetch.** Point `SPID3R_REGISTRY` at a local/checked-out tree. A
   remote index + download is a deliberate future step (it needs an HTTP client,
   which the zero-dependency default avoids).
-- **No transitive resolution.** Like path/git deps, only the *declared*
-  dependencies are vendored; a registry package's own `[dependencies]` are not
-  recursively installed. Declare what you use in your own manifest.
+- **Transitive resolution is supported** for all three source kinds (path, git,
+  registry): `install` walks each dependency's own `[dependencies]` breadth-first
+  with cycle detection and a same-name/different-source conflict check, so a
+  registry package's dependencies are vendored too. (This section claimed the
+  opposite until 2026-10-21; the code has done it since the workspace support
+  landed.) There is still no *version-range intersection* across the graph — a
+  constraint is checked against the resolved version, not unified.
 - **No semver pre-releases / build metadata** — plain `major.minor.patch`.
 
 ## Example

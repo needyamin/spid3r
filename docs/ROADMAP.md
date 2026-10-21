@@ -174,12 +174,13 @@ are done.
 
 ## Known limitations
 
-- Higher-order methods (`list.map(f)` etc.) are not available in the native AOT
-  backend yet — programs using them there get a clear runtime diagnostic (run
-  with `--engine vm` instead).
-- A `throw` through a callback into an outer `catch` binds the error *message*
-  (string) rather than the thrown value; same for other errors crossing a
-  callback boundary.
+- Higher-order collection methods (`list.map(f)` etc.) **are** supported by the
+  native AOT backend (`src/native/rt.rs`); `spid3r build` + run of
+  `xs.map(fn(x){ ... })` matches the interpreter. (This entry claimed otherwise
+  until 2026-10-21.)
+- A `throw` crossing a task/await/join/callback seam carries the thrown **value**
+  (audit A-9), so an enclosing `catch` rebinds the original map/object rather
+  than a message string.
 - Error messages from the VM reuse the shared diagnostics layer, so their wording
   matches the tree-walk interpreter by construction.
 

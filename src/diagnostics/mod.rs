@@ -3,7 +3,9 @@
 use std::fmt;
 use std::sync::Arc;
 
-/// A location in a source file. `len` is measured in bytes from `line:col`.
+/// A location in a source file. `col` and `len` are measured in **characters**
+/// (not bytes), so a caret lands on the right glyph on a line containing
+/// non-ASCII text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Span {
     pub file: Arc<str>,

@@ -535,6 +535,33 @@ pub fn read_tar(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
             continue;
         }
 
+        // Only regular files are package content. A directory entry carries no
+        // payload; a symlink/hardlink/device/fifo entry used to be extracted as
+        // a regular file whose *contents* were the link target — a silently
+        // corrupt package. Refusing them is both correct and the safe choice
+        // (creating a symlink from an archive is the classic traversal trick).
+        match typeflag {
+            b'0' | 0 => {}
+            // Skipped entries still consume any pending long name, otherwise it
+            // would be attached to the following entry.
+            b'5' | b'x' | b'g' => {
+                pending_long_name = None;
+                continue;
+            }
+            other => {
+                return Err(format!(
+                    "tar: entry '{}' has unsupported type '{}' (only regular files and \
+                     directories are accepted)",
+                    raw_name,
+                    if other.is_ascii_graphic() {
+                        (other as char).to_string()
+                    } else {
+                        format!("0x{:02x}", other)
+                    }
+                ))
+            }
+        }
+
         let full_name = if let Some(long) = pending_long_name.take() {
             long
         } else if !prefix.is_empty() {

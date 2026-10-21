@@ -524,8 +524,11 @@ impl Nfa {
                     StateKind::Any => ch != '\n',
                     StateKind::Class { ranges, negated } => {
                         let in_range = ranges.iter().any(|&(lo, hi)| ch >= lo && ch <= hi);
+                        // A negated class matches newline, as in PCRE/Python/Go.
+                        // Only `.` excludes it (the `Any` arm above); excluding
+                        // it here too made `[^a]` fail on every newline.
                         if *negated {
-                            !in_range && ch != '\n'
+                            !in_range
                         } else {
                             in_range
                         }

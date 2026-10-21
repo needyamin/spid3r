@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">500 tests · 25/25 examples agree</span>
+          <span class="badge">520 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -2972,6 +2972,13 @@ cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
               <td><code>SPID3R_ALLOW_INSECURE_GIT</code></td>
               <td><code>1</code> allows plaintext <code>http://</code>/<code>git://</code> git dependency URLs.</td>
             </tr>
+            <tr>
+              <td><code>SPID3R_NET_TIMEOUT_MS</code></td>
+              <td>Deadline for reading an HTTP request head and body (default <code>30000</code>;
+                <code>0</code> disables). Applied when a connection enters HTTP framing, so a client that
+                connects and stays silent cannot hold a server worker; an explicit
+                <code>tcp_set_timeout</code> on the connection always wins.</td>
+            </tr>
           </table>
           <h3>Build-time variables <span class="pill">native feature</span></h3>
           <table>
@@ -3211,7 +3218,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>500 tests</strong> (<strong>484</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>520 tests</strong> (<strong>504</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

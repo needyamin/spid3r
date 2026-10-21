@@ -14,6 +14,15 @@ pub struct Parser {
 }
 
 pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
+    // The lexer always appends EOF, so an empty stream can only come from a
+    // direct API caller — but `kind()`/`span()` index `toks[0]` unconditionally,
+    // so an empty vector used to panic here (audit, low severity).
+    if toks.is_empty() {
+        return Err(crate::diagnostics::Diagnostic::new(
+            Phase::Parser,
+            "cannot parse an empty token stream (the lexer always emits EOF)",
+        ));
+    }
     let mut p = Parser {
         toks,
         pos: 0,
@@ -30,7 +39,10 @@ impl Parser {
     }
 
     fn peek_kind(&self, n: usize) -> &TokenKind {
-        let i = (self.pos + n).min(self.toks.len() - 1);
+        // `saturating_sub`: an empty stream would otherwise underflow here even
+        // if a caller slipped past `parse`'s guard.
+        let last = self.toks.len().saturating_sub(1);
+        let i = (self.pos + n).min(last);
         &self.toks[i].kind
     }
 

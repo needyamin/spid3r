@@ -54,7 +54,9 @@ COMMANDS:
                                            locked commits
     dist [-o out] [--no-opt]               Compile the project entry (spider.toml)
                                            into target/<package>.matrixc
-    test                                   Run every examples/*.matrix file
+    test [--filter SUBSTR] [--list]        Run every examples/*.matrix file (or
+                                           a project's tests/*.matrix) through the
+                                           three-engine differential
     bench [--engine tree|vm] [--runs N] [--compare] [files...]
                                            Time benchmarks/*.matrix (best of N)
     fmt [--check] [files...]               Canonical formatting (in place);
@@ -554,7 +556,59 @@ fn single_file(args: &[String], cmd: &str) -> Result<String, Diagnostic> {
     Ok(files[0].clone())
 }
 
-fn cmd_test(_args: &[String]) -> Result<i32, Diagnostic> {
+/// Options for `spid3r test`.
+struct TestOpts {
+    /// Only run files whose name contains this substring.
+    filter: Option<String>,
+    /// Print the files that would run, without running them.
+    list: bool,
+}
+
+fn parse_test_args(args: &[String]) -> Result<TestOpts, Diagnostic> {
+    let mut opts = TestOpts {
+        filter: None,
+        list: false,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--filter" | "-f" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| usage("--filter needs a substring to match"))?;
+                opts.filter = Some(v.clone());
+                i += 2;
+            }
+            "--list" => {
+                opts.list = true;
+                i += 1;
+            }
+            other => {
+                return Err(usage(&format!(
+                    "test: unknown argument '{}' (supported: --filter SUBSTR, --list)",
+                    other
+                )))
+            }
+        }
+    }
+    Ok(opts)
+}
+
+/// Does `path` pass the `--filter` substring?
+fn test_selected(opts: &TestOpts, path: &Path) -> bool {
+    match &opts.filter {
+        None => true,
+        Some(needle) => path
+            .file_stem()
+            .map(|s| s.to_string_lossy().contains(needle.as_str()))
+            .unwrap_or(false),
+    }
+}
+
+fn cmd_test(args: &[String]) -> Result<i32, Diagnostic> {
+    // Audit: the argument vector used to be discarded (`_args`), so
+    // `spid3r test whatever` silently ran everything.
+    let opts = parse_test_args(args)?;
     let root = PathBuf::from("examples");
     if !root.is_dir() {
         if Path::new("spider.toml").is_file() {
@@ -562,14 +616,14 @@ fn cmd_test(_args: &[String]) -> Result<i32, Diagnostic> {
                 .map_err(|e| usage(&e))?
                 .ok_or_else(|| usage("cannot read spider.toml"))?;
             let (total_ok, total_failed) = if manifest.members.is_empty() {
-                project_test_in(Path::new("."))?
+                project_test_in(Path::new("."), &opts)?
             } else {
                 // Workspace: test every member in its own directory.
                 let mut ok = 0;
                 let mut failed = 0;
                 for member in &manifest.members {
                     println!("== member {} ==", member);
-                    let (o, f) = project_test_in(Path::new(member))?;
+                    let (o, f) = project_test_in(Path::new(member), &opts)?;
                     println!("member {}: {} ok, {} failed", member, o, f);
                     ok += o;
                     failed += f;
@@ -599,6 +653,13 @@ fn cmd_test(_args: &[String]) -> Result<i32, Diagnostic> {
         .filter(|p| p.extension().map(|x| x == "matrix").unwrap_or(false))
         .collect();
     files.sort();
+    files.retain(|p| test_selected(&opts, p));
+    if opts.list {
+        for f in &files {
+            println!("{}", f.display());
+        }
+        return Ok(EXIT_OK);
+    }
     let mut ok = 0;
     let mut failed = 0;
     for f in &files {
@@ -675,7 +736,7 @@ fn cmd_test(_args: &[String]) -> Result<i32, Diagnostic> {
 /// differential (tree == vm, both exit 0); files without `fn main` are
 /// libraries and only get the semantic check. Prints the per-test lines and
 /// returns (ok, failed) for the caller's summary.
-fn project_test_in(dir: &Path) -> Result<(usize, usize), Diagnostic> {
+fn project_test_in(dir: &Path, opts: &TestOpts) -> Result<(usize, usize), Diagnostic> {
     let tests = dir.join("tests");
     if !tests.is_dir() {
         println!("no tests/ directory in this project — nothing to run");
@@ -693,6 +754,13 @@ fn project_test_in(dir: &Path) -> Result<(usize, usize), Diagnostic> {
         .filter(|p| p.extension().map(|x| x == "matrix").unwrap_or(false))
         .collect();
     files.sort();
+    files.retain(|p| test_selected(opts, p));
+    if opts.list {
+        for f in &files {
+            println!("{}", f.display());
+        }
+        return Ok((0, 0));
+    }
     let mut ok = 0;
     let mut failed = 0;
     for f in &files {
