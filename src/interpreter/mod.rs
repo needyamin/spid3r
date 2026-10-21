@@ -810,6 +810,10 @@ impl Interp {
             // statements before any backend runs. Reaching one here means the
             // lowering pass was skipped, which is an internal bug, not a program
             // error — report it instead of aborting the host.
+            Expr::NamedArg { span, .. } => Err(self.rt(
+                span,
+                "internal error: a named argument reached the interpreter without lowering",
+            )),
             Expr::If { span, .. }
             | Expr::OptField { span, .. }
             | Expr::Coalesce { span, .. }

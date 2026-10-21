@@ -1328,7 +1328,10 @@ println("{lo}..{hi}");     // 3..4</code></pre>
           (<code>fn greet(name, greeting = "Hello")</code>) — omitted trailing arguments are filled from
           them (functions, methods, and constructors alike); once one parameter has a default, every
           parameter after it must have one, and defaults must be literal numbers, strings, booleans, or
-          <code>null</code>.</p>
+          <code>null</code>. Calls may also pass arguments <strong>by name</strong>
+          (<code>greet(greeting: "Hi", name: "ada")</code>) on direct function calls, constructors, and
+          <code>super</code>; positional arguments must come first, and parameters the call omits fall
+          back to their defaults.</p>
         <pre data-lang="spid3r"><code>fn make_adder(base) {
     return fn(x) { return x + base; };   // captures `base`
 }

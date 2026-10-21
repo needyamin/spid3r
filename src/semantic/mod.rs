@@ -18,6 +18,8 @@ struct MethodInfo {
     vis: Vis,
     /// Parameter types, including `self` at index 0.
     params: Vec<Option<TypeExpr>>,
+    /// Parameter names, including `self` at index 0.
+    param_names: Vec<String>,
     ret: Option<TypeExpr>,
     /// Smallest accepted argument count *including* `self` (`self` is never
     /// defaulted, so it always contributes). Call sites pass one fewer.
@@ -38,6 +40,8 @@ struct FuncInfo {
     /// parser-enforced). `== arity` when no parameter has a default.
     min_arity: usize,
     params: Vec<Option<TypeExpr>>,
+    /// Parameter names in declaration order (for named arguments).
+    param_names: Vec<String>,
     ret: Option<TypeExpr>,
 }
 
@@ -622,6 +626,7 @@ impl Checker {
                                 arity: v.fields.len(),
                                 min_arity: v.fields.len(),
                                 params: v.fields.iter().map(|_| None).collect(),
+                                param_names: v.fields.clone(),
                                 ret: None,
                             },
                         );
@@ -675,6 +680,7 @@ impl Checker {
                             arity: f.params.len(),
                             min_arity: f.min_arity(),
                             params: f.params.iter().map(|p| p.ty.clone()).collect(),
+                            param_names: f.params.iter().map(|p| p.name.clone()).collect(),
                             ret: f.ret.clone(),
                         },
                     );
@@ -748,6 +754,7 @@ impl Checker {
                             MethodInfo {
                                 vis: m.vis,
                                 params: m.params.iter().map(|p| p.ty.clone()).collect(),
+                                param_names: m.params.iter().map(|p| p.name.clone()).collect(),
                                 ret: m.ret.clone(),
                                 min_arity: m.min_arity(),
                             },
@@ -1010,6 +1017,97 @@ impl Checker {
     }
 
     /// Method (visibility, arity) through the inheritance chain.
+    /// Validate a call whose arguments contain named arguments
+    /// (`name: value`). The plain count-based arity check is skipped for such
+    /// calls; this is the stricter replacement. `names` lists the callee's
+    /// parameters in declaration order and `required` how many of the leading
+    /// parameters have no default.
+    fn check_named_args(
+        &self,
+        args: &[Expr],
+        names: &[String],
+        required: usize,
+        label: &str,
+        span: &Span,
+    ) -> SpidResult<()> {
+        let mut seen_named = false;
+        let mut provided = vec![false; names.len()];
+        let mut positional = 0usize;
+        for a in args {
+            match a {
+                Expr::NamedArg {
+                    name, span: nsp, ..
+                } => {
+                    seen_named = true;
+                    match names.iter().position(|p| p == name) {
+                        Some(i) => {
+                            if provided[i] {
+                                return Err(
+                                    self.err(nsp, format!("duplicate named argument '{}'", name))
+                                );
+                            }
+                            provided[i] = true;
+                        }
+                        None => {
+                            return Err(self.err(
+                                nsp,
+                                format!("unknown parameter '{}' in the call to {}", name, label),
+                            ));
+                        }
+                    }
+                }
+                other => {
+                    if seen_named {
+                        return Err(self.err(
+                            other.span(),
+                            "a positional argument cannot follow a named one",
+                        ));
+                    }
+                    if positional < names.len() {
+                        provided[positional] = true;
+                    }
+                    positional += 1;
+                }
+            }
+        }
+        if positional > names.len() {
+            return Err(self.err(
+                span,
+                format!(
+                    "too many positional arguments for {} (at most {})",
+                    label,
+                    names.len()
+                ),
+            ));
+        }
+        for (i, name) in names.iter().enumerate() {
+            if !provided[i] && i < required {
+                return Err(self.err(
+                    span,
+                    format!(
+                        "missing required parameter '{}' in the call to {}",
+                        name, label
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Check one call argument: a named argument checks its VALUE (the name
+    /// is validated by `check_named_args` against the callee signature).
+    fn check_arg(&mut self, a: &Expr) -> SpidResult<()> {
+        match a {
+            Expr::NamedArg { value, .. } => self.check_expr(value),
+            other => self.check_expr(other),
+        }
+    }
+
+    /// True when any argument is a named argument.
+    fn has_named_args(args: &[Expr]) -> bool {
+        args.iter().any(|a| matches!(a, Expr::NamedArg { .. }))
+    }
+
     fn method_info(&self, class: &str, method: &str) -> Option<(Vis, usize, usize)> {
         self.method_sig(class, method)
             .map(|m| (m.vis, m.arity(), m.min_arity))
@@ -1858,6 +1956,19 @@ impl Checker {
         args: &[Expr],
         span: &Span,
     ) -> SpidResult<()> {
+        if Self::has_named_args(args) {
+            // FnSig carries no parameter names, so a call through a function
+            // VALUE cannot resolve named arguments — reject rather than
+            // silently mis-bind.
+            return Err(self.err(
+                span,
+                format!(
+                    "named arguments on a call through '{}' are not supported yet \
+                     (call the declared function directly)",
+                    label
+                ),
+            ));
+        }
         if args.len() < sig.min_arity || args.len() > sig.arity {
             let want = if sig.min_arity == sig.arity {
                 format!("{} argument(s)", sig.arity)
@@ -1902,6 +2013,10 @@ impl Checker {
 
     fn type_of(&self, e: &Expr) -> Ty {
         match e {
+            // A named argument is only legal inside a call's argument list,
+            // where the caller checks it against the signature; it has no
+            // standalone type.
+            Expr::NamedArg { .. } => Ty::Any,
             Expr::Int(_, _) => Ty::Int,
             Expr::Float(_, _) => Ty::Float,
             Expr::Str(_, _) => Ty::Str,
@@ -2229,6 +2344,13 @@ impl Checker {
 
     fn check_expr(&mut self, e: &Expr) -> SpidResult<()> {
         match e {
+            // Named arguments are validated where the call is checked (the
+            // callee's signature is known there); a stray one outside a call
+            // is a compile error.
+            Expr::NamedArg { span, .. } => Err(self.err(
+                span,
+                "a named argument (name: value) is only valid inside a call",
+            )),
             Expr::If {
                 cond,
                 then,
@@ -2481,9 +2603,25 @@ impl Checker {
                 args,
                 span,
             } => {
+                // Named arguments on a super call: validated against the parent
+                // signature here; `lower` reorders against the same signature.
+                if Self::has_named_args(args) {
+                    let sig = match method {
+                        Some(m) => self.method_sig(parent, m),
+                        None => self.method_sig(parent, "new"),
+                    };
+                    if let Some(sig) = sig {
+                        let names = sig.param_names.clone();
+                        let label = match method {
+                            Some(m) => format!("super.{}", m),
+                            None => "super".to_string(),
+                        };
+                        self.check_named_args(args, &names, sig.min_arity, &label, span)?;
+                    }
+                }
                 self.check_super_in(parent, span, method.as_deref(), args.len())?;
                 for a in args {
-                    self.check_expr(a)?;
+                    self.check_arg(a)?;
                 }
                 Ok(())
             }
@@ -2492,7 +2630,7 @@ impl Checker {
                 if let Expr::Super { .. } = &**callee {
                     self.check_super(span, None, args.len())?;
                     for a in args {
-                        self.check_expr(a)?;
+                        self.check_arg(a)?;
                     }
                     return Ok(());
                 }
@@ -2502,7 +2640,9 @@ impl Checker {
                     // in a variable and then called.
                     self.mark_used(name);
                     if let Some(fi) = self.funcs.get(name).cloned() {
-                        if args.len() < fi.min_arity || args.len() > fi.arity {
+                        if Self::has_named_args(args) {
+                            self.check_named_args(args, &fi.param_names, fi.min_arity, name, span)?;
+                        } else if args.len() < fi.min_arity || args.len() > fi.arity {
                             let want = if fi.min_arity == fi.arity {
                                 format!("{} argument(s)", fi.arity)
                             } else {
@@ -2542,6 +2682,15 @@ impl Checker {
                         });
                         if let Some(sig) = sig {
                             self.check_sig_args(name, &sig, args, span)?;
+                        } else if Self::has_named_args(args) {
+                            return Err(self.err(
+                                span,
+                                format!(
+                                    "named arguments on a call to '{}' are not supported: \
+                                     the callee is not a statically-known function",
+                                    name
+                                ),
+                            ));
                         } else if !self.known(name) {
                             return Err(self.err(span, format!("unknown name '{}'", name)));
                         }
@@ -2555,7 +2704,7 @@ impl Checker {
                     }
                 }
                 for a in args {
-                    self.check_expr(a)?;
+                    self.check_arg(a)?;
                 }
                 Ok(())
             }
@@ -2569,13 +2718,13 @@ impl Checker {
                 if let Expr::Super { .. } = &**object {
                     self.check_super(span, Some(name), args.len())?;
                     for a in args {
-                        self.check_expr(a)?;
+                        self.check_arg(a)?;
                     }
                     return Ok(());
                 }
                 self.check_expr(object)?;
                 for a in args {
-                    self.check_expr(a)?;
+                    self.check_arg(a)?;
                 }
                 // `mu.set("VERSION", 1)` on a module namespace would rebind a
                 // `public const` export — the same rejection the index form
@@ -2599,6 +2748,16 @@ impl Checker {
                 // ANY receiver expression (F6), not only bare Idents.
                 let recv_class = self.receiver_class(object);
                 if let Some(cls) = recv_class {
+                    if Self::has_named_args(args) {
+                        return Err(self.err(
+                            span,
+                            format!(
+                                "named arguments on method calls are not supported yet \
+                                 (call {} as a function, or pass arguments positionally)",
+                                name
+                            ),
+                        ));
+                    }
                     match self.method_info(&cls, name) {
                         Some((vis, arity, arity_min)) => {
                             if vis == Vis::Private && self.current_class.as_deref() != Some(&cls) {
@@ -2694,7 +2853,16 @@ impl Checker {
                 }
                 if self.classes.contains_key(class) {
                     if let Some(mi) = self.method_sig(class, "new") {
-                        if args.len() < mi.min_arity || args.len() > mi.arity() {
+                        if Self::has_named_args(args) {
+                            let names = mi.param_names.clone();
+                            self.check_named_args(
+                                args,
+                                &names,
+                                mi.min_arity,
+                                &format!("new {}", class),
+                                span,
+                            )?;
+                        } else if args.len() < mi.min_arity || args.len() > mi.arity() {
                             let want = if mi.min_arity == mi.arity() {
                                 format!("{} argument(s)", mi.arity())
                             } else {
@@ -2713,7 +2881,7 @@ impl Checker {
                     }
                 }
                 for a in args {
-                    self.check_expr(a)?;
+                    self.check_arg(a)?;
                 }
                 Ok(())
             }

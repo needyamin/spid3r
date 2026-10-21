@@ -1432,6 +1432,24 @@ impl Parser {
         let mut args = Vec::new();
         if !self.at(&TokenKind::RParen) {
             loop {
+                // A named argument is `ident : expr` — lookahead distinguishes
+                // it from an expression that merely starts with an identifier.
+                if let TokenKind::Ident(name) = self.kind().clone() {
+                    if matches!(self.peek_kind(1), TokenKind::Colon) {
+                        let sp = self.span();
+                        self.pos += 2; // ident + ':'
+                        let value = self.parse_expr()?;
+                        args.push(Expr::NamedArg {
+                            name,
+                            value: Box::new(value),
+                            span: sp,
+                        });
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
                 args.push(self.parse_expr()?);
                 if !self.eat(&TokenKind::Comma) {
                     break;

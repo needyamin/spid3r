@@ -116,7 +116,9 @@ field          = "." ident ;
 method         = "." ident "(" [ args ] ")" ;
 optField       = "?" "." ident ;          (* null-safe field read *)
 propagate      = expr "?" ;               (* return the failure, else unwrap *)
-args           = expr { "," expr } ;
+args           = arg { "," arg } ;
+arg            = expr | namedArg ;
+namedArg       = ident ":" expr ;   (* reordered to positional form by lower *)
 
 primary        = intLit | floatLit | stringLit | "true" | "false" | "null"
                | ident | listLit | tupleLit | fnLit | "new" ident "(" [ args ] ")"

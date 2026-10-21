@@ -35,8 +35,16 @@ issue IDs (report parked in `_dustbin/architect_report.txt`).
    Bytecode format bumped to **v2** per docs/BYTECODE_STABILITY.md (reader
    dual-decodes v1+v2; writer emits v2). `default_params` matrix case with
    `aot: true`; count 696 -> 702.
-3. **Named arguments** — parse `f(x: 1)`; checker binds by name against the
-   prototype; engines normalize call order before invocation. Effort: M/L.
+3. ~~**Named arguments**~~ — **done 2026-10-22**: `f(x: 1, y: 2)` on direct
+   function calls, constructors, and `super` (parser: lookahead for
+   `ident :`; `Expr::NamedArg`). The checker validates names/duplicates/
+   ordering/coverage against the callee signature (FuncInfo/MethodInfo gained
+   `param_names`); `lower` — the desugar seam — reorders into positional form
+   and substitutes each omitted parameter's own constant default into its
+   slot (so `new Point(y: 5)` binds correctly rather than shifting). Engines
+   never see the node (defensive internal-error arms everywhere). Documented
+   v1 limits: method calls and calls through function values reject named
+   arguments with precise diagnostics. 4 matrix rows (one aot: true).
 4. ~~**LSP rename + find-references**~~ — **done 2026-10-22** (this round):
    `textDocument/references` + `textDocument/rename` over the existing
    declaration index, file-scoped, shadow-aware; nested-block extents were

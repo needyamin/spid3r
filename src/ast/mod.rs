@@ -337,6 +337,14 @@ pub enum Expr {
         span: Span,
     },
     Await(Box<Expr>, Span),
+    /// A named call argument (`name: value`), legal only inside a call's
+    /// argument list. `crate::lower` reorders calls into positional form
+    /// against the callee's declared parameters, so engines never see it.
+    NamedArg {
+        name: String,
+        value: Box<Expr>,
+        span: Span,
+    },
     Spawn {
         callable: Box<Expr>,
         span: Span,
@@ -413,7 +421,8 @@ impl Expr {
             | Expr::Ident(_, s)
             | Expr::List(_, s)
             | Expr::Super { span: s }
-            | Expr::Await(_, s) => s,
+            | Expr::Await(_, s)
+            | Expr::NamedArg { span: s, .. } => s,
             Expr::Unary { span, .. }
             | Expr::Binary { span, .. }
             | Expr::Logical { span, .. }

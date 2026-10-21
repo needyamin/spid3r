@@ -1047,6 +1047,15 @@ fn compile_class(
 fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<(), Diagnostic> {
     compilers[ci].chunk.set_span(e.span().clone());
     match e {
+        // Named arguments are reordered by `crate::lower`; one surviving here
+        // is an internal bug, not a program error.
+        Expr::NamedArg { span, .. } => {
+            return Err(Diagnostic::at(
+                Phase::Vm,
+                span.clone(),
+                "internal error: a named argument reached the compiler without lowering",
+            ));
+        }
         // Surface-only nodes are removed by `crate::lower` before compilation.
         Expr::If { span, .. }
         | Expr::OptField { span, .. }

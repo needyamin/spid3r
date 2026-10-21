@@ -501,6 +501,44 @@ const CASES: &[Case] = &[
         aot: true,
     },
     Case {
+        name: "named_args",
+        // Named arguments on direct function calls and constructors (v1:
+        // method calls reject them with a clear diagnostic). `lower`
+        // reorders them into positional form against the callee's declared
+        // parameters; unbound trailing parameters fall back to defaults.
+        src: "fn connect(host, port = 80, secure = false) {\n    return host + \":\" + string(port) + \" ssl=\" + string(secure);\n}\nclass Point {\n    public let x;\n    public let y;\n    fn new(x = 0, y = 0) { self.x = x; self.y = y; }\n}\nfn main() {\n    println(connect(\"example.com\"));\n    println(connect(\"a.io\", port: 8080));\n    println(connect(host: \"b.io\", secure: true));\n    let p = new Point(y: 5);\n    println(p.x);\n    println(p.y);\n    let q = new Point(x: 1, y: 2);\n    println(q.x);\n    println(q.y);\n    return 0;\n}\n",
+        out: "example.com:80 ssl=false\na.io:8080 ssl=false\nb.io:80 ssl=true\n0\n5\n1\n2",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "named_args_errors",
+        // Compile-time rejections: unknown name, duplicate, positional after
+        // named, and (v1) method calls.
+        src: "fn f(a, b) { return a; }\nfn main() {\n    f(b: 1, nope: 2);\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        err: Some("error[semantic]: unknown parameter 'nope' in the call to f"),
+        aot: false,
+    },
+    Case {
+        name: "named_args_positional_after_named",
+        src: "fn f(a, b) { return a; }\nfn main() {\n    f(b: 1, 2);\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        err: Some("error[semantic]: a positional argument cannot follow a named one"),
+        aot: false,
+    },
+    Case {
+        name: "named_args_method_rejected",
+        src: "class C {\n    fn m(self, a) { return a; }\n}\nfn main() {\n    let c = new C();\n    c.m(a: 1);\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        err: Some("error[semantic]: named arguments on method calls are not supported yet (call m as a function, or pass arguments positionally)"),
+        aot: false,
+    },
+    Case {
         name: "interface",
         src: "interface Named {\n    fn name(self) -> string;\n}\nclass Person implements Named {\n    public let n;\n    fn new(n) { self.n = n; }\n    public fn name(self) { return self.n; }\n}\nfn main() {\n    let p = new Person(\"ada\");\n    println(p.name());\n    return 0;\n}\n",
         out: "ada",

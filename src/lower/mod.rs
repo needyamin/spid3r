@@ -83,6 +83,8 @@ pub fn lower(program: &Program) -> Cow<'_, Program> {
         next_temp: 0,
         current_parent: None,
         variants: std::collections::HashMap::new(),
+        fns: std::collections::HashMap::new(),
+        classes: std::collections::HashMap::new(),
     };
     Cow::Owned(l.program(program))
 }
@@ -176,11 +178,10 @@ fn block_needs_lowering(b: &Block) -> bool {
 
 fn expr_needs_lowering(e: &Expr) -> bool {
     match e {
-        Expr::If { .. }
-        | Expr::OptField { .. }
-        | Expr::Coalesce { .. }
-        | Expr::Match { .. }
-        | Expr::Propagate(..) => true,
+        Expr::If { .. } | Expr::OptField { .. } | Expr::Coalesce { .. } | Expr::NamedArg { .. } => {
+            true
+        }
+        Expr::Match { .. } | Expr::Propagate(..) => true,
         // `super` is rewritten into a resolved `SuperCall`.
         Expr::Super { .. } => true,
         Expr::Int(..)
@@ -218,8 +219,22 @@ fn expr_needs_lowering(e: &Expr) -> bool {
 
 // ------------------------------------------------------------------- lowering
 
+/// A class's parameter table: its constructor's parameters plus one entry
+/// per method. Used to reorder named-argument calls.
+#[derive(Default)]
+struct ClassParams {
+    ctor: Vec<crate::ast::Param>,
+    methods: std::collections::HashMap<String, Vec<crate::ast::Param>>,
+}
+
 struct Lower {
     next_temp: usize,
+    /// Top-level function name -> its parameters, in declaration order.
+    /// Named-argument calls are reordered against it.
+    fns: std::collections::HashMap<String, Vec<crate::ast::Param>>,
+    /// Class name -> parameter table. Same purpose for `new X(...)` and
+    /// `super` calls.
+    classes: std::collections::HashMap<String, ClassParams>,
     /// The parent class of the class whose body is being lowered. `super`
     /// resolves against it: `super.m(...)` calls the parent's implementation
     /// of `m`, `super(...)` calls the parent's constructor.
@@ -237,11 +252,102 @@ impl Lower {
     }
 
     fn program(&mut self, p: &Program) -> Program {
+        // Named-argument reorder tables: the checker has already validated the
+        // names against these signatures; the reorder is purely positional.
+        for s in &p.stmts {
+            match s {
+                Stmt::Fn(f) => {
+                    if let Some(name) = &f.name {
+                        self.fns.insert(name.clone(), f.params.clone());
+                    }
+                }
+                Stmt::Class(c) => {
+                    let mut cp = ClassParams::default();
+                    for m in &c.methods {
+                        if m.name.as_deref() == Some("new") {
+                            cp.ctor = m.params.clone();
+                        } else if let Some(mn) = &m.name {
+                            cp.methods.insert(mn.clone(), m.params.clone());
+                        }
+                    }
+                    self.classes.insert(c.name.clone(), cp);
+                }
+                _ => {}
+            }
+        }
         let mut stmts = Vec::new();
         for s in &p.stmts {
             stmts.extend(self.stmt(s));
         }
         Program { stmts }
+    }
+
+    /// Reorder a call's arguments from named form into the callee's parameter
+    /// order. Positional arguments bind first (left to right), named ones fill
+    /// the remaining parameters, and parameters left unbound are omitted (the
+    /// callee's constant defaults fill them). The checker has already
+    /// validated names, duplicates, and ordering — anything reaching the error
+    /// paths here survived a checker gap and is left unreordered so a backend
+    /// reports it instead of mis-binding.
+    fn reorder_named_args(
+        &self,
+        args: Vec<Expr>,
+        params: &[crate::ast::Param],
+    ) -> Option<Vec<Expr>> {
+        let mut slots: Vec<Option<Expr>> = params.iter().map(|_| None).collect();
+        let mut named_seen = false;
+        let mut positional = 0usize;
+        let mut ok = true;
+        let mut extra: Vec<Expr> = Vec::new();
+        for a in args {
+            match a {
+                Expr::NamedArg { name, value, .. } => {
+                    named_seen = true;
+                    let hit = params.iter().position(|p| p.name == *name);
+                    match hit {
+                        Some(i) if slots[i].is_none() => slots[i] = Some(*value),
+                        Some(_) => ok = false, // duplicate
+                        None => ok = false,    // unknown name
+                    }
+                }
+                other => {
+                    if named_seen {
+                        ok = false;
+                    }
+                    if positional < slots.len() {
+                        slots[positional] = Some(other);
+                    } else {
+                        extra.push(other);
+                    }
+                    positional += 1;
+                }
+            }
+        }
+        if !ok {
+            return None; // caller keeps the original arguments
+        }
+        // A parameter the call did not bind takes its own constant default,
+        // cloned into the slot — so the reordered call stays purely positional
+        // and `new Point(y: 5)` really binds 5 to `y` (x falls back to 0).
+        // The checker guarantees every unbound parameter has a default.
+        let mut out: Vec<Expr> = Vec::with_capacity(params.len());
+        for (slot, p) in slots.into_iter().zip(params.iter()) {
+            match slot {
+                Some(v) => out.push(v),
+                None => match &p.default {
+                    Some(d) => out.push(d.clone()),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                },
+            }
+        }
+        if !ok {
+            return None;
+        }
+        out.extend(extra);
+        Some(out)
     }
 
     /// Lower one statement into one or more statements (a prelude plus itself).
@@ -946,6 +1052,10 @@ impl Lower {
     /// before it is evaluated.
     fn expr(&mut self, e: &Expr) -> (Expr, Vec<Stmt>) {
         match e {
+            // A named argument never survives lowering as a value: the call
+            // reorder below consumes it. Reaching this arm directly means the
+            // argument was not inside a call's argument list.
+            Expr::NamedArg { span, .. } => (Expr::Null(span.clone()), Vec::new()),
             Expr::If {
                 cond,
                 then,
@@ -1015,7 +1125,20 @@ impl Lower {
             Expr::Call { callee, args, span } => {
                 // `super(args)` — the parent class's constructor.
                 if let Expr::Super { .. } = &**callee {
-                    let (args, pre) = self.seq_list(args);
+                    // `super(...)` — reorder against the parent's constructor.
+                    let args: Vec<Expr> = if args.iter().any(|a| matches!(a, Expr::NamedArg { .. }))
+                    {
+                        let parent = self.current_parent.clone().unwrap_or_default();
+                        match self.classes.get(&parent) {
+                            Some(cp) => self
+                                .reorder_named_args(args.clone(), &cp.ctor)
+                                .unwrap_or_else(|| args.clone()),
+                            None => args.clone(),
+                        }
+                    } else {
+                        args.clone()
+                    };
+                    let (args, pre) = self.seq_list(&args);
                     return (
                         Expr::SuperCall {
                             parent: self.current_parent.clone().unwrap_or_default(),
@@ -1026,6 +1149,21 @@ impl Lower {
                         pre,
                     );
                 }
+                // Named arguments: reorder against the callee's declared
+                // parameters (the checker validated the names already).
+                let args: Vec<Expr> = if args.iter().any(|a| matches!(a, Expr::NamedArg { .. })) {
+                    match &**callee {
+                        Expr::Ident(fname, _) => match self.fns.get(fname) {
+                            Some(params) => self
+                                .reorder_named_args(args.clone(), params)
+                                .unwrap_or_else(|| args.clone()),
+                            None => args.clone(),
+                        },
+                        _ => args.clone(),
+                    }
+                } else {
+                    args.clone()
+                };
                 let mut parts: Vec<&Expr> = vec![callee];
                 parts.extend(args.iter());
                 let (v, pre) = self.seq(&parts);
@@ -1048,7 +1186,23 @@ impl Lower {
             } => {
                 // `super.m(args)` — the parent class's implementation of `m`.
                 if let Expr::Super { .. } = &**object {
-                    let (args, pre) = self.seq_list(args);
+                    // `super.m(...)` — reorder against the parent's method.
+                    let args: Vec<Expr> = if args.iter().any(|a| matches!(a, Expr::NamedArg { .. }))
+                    {
+                        let parent = self.current_parent.clone().unwrap_or_default();
+                        match self.classes.get(&parent) {
+                            Some(cp) => match cp.methods.get(name) {
+                                Some(params) => self
+                                    .reorder_named_args(args.clone(), params)
+                                    .unwrap_or_else(|| args.clone()),
+                                None => args.clone(),
+                            },
+                            None => args.clone(),
+                        }
+                    } else {
+                        args.clone()
+                    };
+                    let (args, pre) = self.seq_list(&args);
                     return (
                         Expr::SuperCall {
                             parent: self.current_parent.clone().unwrap_or_default(),
@@ -1102,7 +1256,17 @@ impl Lower {
                 )
             }
             Expr::New { class, args, span } => {
-                let (args, pre) = self.seq_list(args);
+                let args: Vec<Expr> = if args.iter().any(|a| matches!(a, Expr::NamedArg { .. })) {
+                    match self.classes.get(class) {
+                        Some(cp) => self
+                            .reorder_named_args(args.clone(), &cp.ctor)
+                            .unwrap_or_else(|| args.clone()),
+                        None => args.clone(),
+                    }
+                } else {
+                    args.clone()
+                };
+                let (args, pre) = self.seq_list(&args);
                 (
                     Expr::New {
                         class: class.clone(),

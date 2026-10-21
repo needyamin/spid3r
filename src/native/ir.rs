@@ -251,6 +251,11 @@ fn collect_outer_uses_expr(
     out: &mut HashSet<String>,
 ) {
     match e {
+        // A named argument never survives `lower`; walk its value anyway so a
+        // capture inside one is never missed.
+        Expr::NamedArg { value, .. } => {
+            collect_outer_uses_expr(value, declared, out);
+        }
         // `super` itself references no names; its arguments might — and the
         // receiver is read implicitly, so a nested closure whose body uses
         // `super` must capture `self` like any other outer local (PAR-03).
@@ -1070,6 +1075,9 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
 fn nested_fns_expr<'a>(e: &'a Expr, out: &mut Vec<&'a FnProto>) {
     match e {
         Expr::Super { .. } => {}
+        Expr::NamedArg { value, .. } => {
+            nested_fns_expr(value, out);
+        }
         Expr::SuperCall { args, .. } => {
             for a in args {
                 nested_fns_expr(a, out);
@@ -1813,6 +1821,13 @@ impl<'ctx> Ir<'ctx> {
 
     fn compile_expr_inner(&mut self, e: &Expr) -> IrResult<PointerValue<'ctx>> {
         match e {
+            // Named arguments are reordered away by `crate::lower`; one
+            // surviving here is a pipeline bug, not a user error.
+            Expr::NamedArg { span, .. } => Err(format!(
+                "internal error at {}:{}: a named argument reached the native \
+                 backend without lowering (this is a bug in spid3r)",
+                span.file, span.line
+            )),
             // `super` is resolved to a `SuperCall` by `crate::lower`; the
             // checker rejects a bare value-position `super` before codegen,
             // so reaching this arm is a pipeline bug, not a user error.
