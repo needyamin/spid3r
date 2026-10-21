@@ -38,8 +38,12 @@ issue IDs (report parked in `_dustbin/architect_report.txt`).
    narrowed per block so shadowing is modeled correctly. 6 wire tests added
    (23 LSP tests total). Remaining sub-items: cross-file references (needs
    the import graph), signatureHelp, codeAction.
-5. **Profiler** (report TOOL-06). VM opcode-count sampling behind a
-   `--prof` flag; self-own data, flamegraph-able output. Effort: M.
+5. ~~**Profiler**~~ — **done 2026-10-22** (this round): `spid3r run --prof`
+   (vm) counts every executed instruction by opcode — one array increment per
+   instruction, zero cost when off — and prints a sorted per-opcode report
+   (counts + share) to stderr after the run. 3 wire tests, including a
+   counts-sum-to-total assertion. Remaining sub-item: per-function self-time
+   attribution (needs call/return instrumentation) for flamegraph-style data.
 6. **stdlib growth in pure Spid3r** (the web.matrix pattern — libraries
    written in Spid3r, shipped in `stdlib/`): TOML subset parser, CSV→dataset
    helpers, hex/base32, semver, uuid v4 (from `random`), a tiny test

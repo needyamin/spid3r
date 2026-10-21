@@ -26,7 +26,9 @@ USAGE:
     spid3r <command> [options]
 
 COMMANDS:
-    run [--engine tree|vm] <file.matrix>   Compile and run a program
+    run [--engine tree|vm] [--prof] <file.matrix>
+                                           Compile and run; --prof (vm) prints
+                                           per-opcode execution counts
     check <file.matrix> [--json]           Lex, parse, semantic-check; no run.
       [--deny-warnings] [--allow LINT]     Lints: unused-variable, unused-parameter,
                                            unused-import, unreachable-code
@@ -266,11 +268,13 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     let mut engine = "tree";
     let mut file: Option<String> = None;
     let mut no_opt = false;
+    let mut prof = false;
     let mut script_args: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--no-opt" => no_opt = true,
+            "--prof" => prof = true,
             "--engine" => {
                 i += 1;
                 match args.get(i) {
@@ -312,19 +316,40 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     // `args()` must see the program's arguments, not the interpreter's argv.
     crate::stdlib::set_script_args(script_args);
     match engine {
-        "tree" => run_tree(&file),
+        "tree" => {
+            if prof {
+                return Err(usage(
+                    "--prof is a VM-engine feature; rerun with --engine vm",
+                ));
+            }
+            run_tree(&file)
+        }
         "vm" => {
             let (program, file_name) = front_end(&file)?;
             let dirs = modules::default_module_dirs();
-            if no_opt {
+            let (result, report) = if no_opt {
                 let (script, _public) =
                     crate::vm::compile_program_unoptimized(&program, &file, &dirs)?;
                 let mut vm = Vm::new(file_name, dirs);
-                vm.run_compiled(Arc::new(script))
+                if prof {
+                    vm.enable_profiling();
+                }
+                let r = vm.run_compiled(Arc::new(script));
+                let report = vm.profiling_report();
+                (r, report)
             } else {
                 let mut vm = Vm::new(file_name, dirs);
-                vm.run_program(&program)
+                if prof {
+                    vm.enable_profiling();
+                }
+                let r = vm.run_program(&program);
+                let report = vm.profiling_report();
+                (r, report)
+            };
+            if prof {
+                eprint!("{}", report);
             }
+            result
         }
         _ => unreachable!(),
     }

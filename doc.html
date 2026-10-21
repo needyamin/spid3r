@@ -2827,9 +2827,10 @@ console.log(formatted.code);  // "let a = 1 + 2;\nprintln(a);\n"</code></pre>
               <th>Description</th>
             </tr>
             <tr>
-              <td><code>run [--engine tree|vm] [--no-opt] &lt;file&gt; [args…]</code></td>
+              <td><code>run [--engine tree|vm] [--no-opt] [--prof] &lt;file&gt; [args…]</code></td>
               <td>Check and run a program. <code>tree</code> (default) is the reference interpreter; <code>vm</code>
-                compiles to bytecode first. <code>--no-opt</code> disables the bytecode optimizer. Arguments after the
+                compiles to bytecode first. <code>--no-opt</code> disables the bytecode optimizer. <code>--prof</code>
+                (vm only) prints a per-opcode execution-count profile to stderr after the run. Arguments after the
                 file are exposed through <code>args()</code>. Inside a project, <code>run</code> with no file runs the
                 manifest entry.</td>
             </tr>

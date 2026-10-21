@@ -167,6 +167,9 @@ pub struct Vm {
     stop: usize,
     /// Active debugger session (`spid3r debug`); `None` in normal runs.
     debug: Option<DebugState>,
+    /// Opcode profiler (`spid3r run --prof`); `None` in normal runs, so the
+    /// hot loop pays a single well-predicted `Option` check per instruction.
+    prof: Option<Profiler>,
     /// Monomorphic inline cache for `Invoke` on instances: keyed by
     /// (chunk address, instruction offset) → (class identity, resolved
     /// method). The class check makes it safe when a site sees several
@@ -191,6 +194,57 @@ struct InvokeCache {
     func: Arc<VmFunc>,
 }
 
+// ------------------------------------------------------------------ profiler
+
+/// Opcode execution counts for `spid3r run --prof`. Indexed by the raw opcode
+/// byte (the full byte range — `OpCode::from_u8` already rejected anything
+/// else before the counter sees it), so counting is one array increment.
+struct Profiler {
+    counts: [u64; 256],
+    instructions: u64,
+}
+
+impl Default for Profiler {
+    fn default() -> Self {
+        Profiler {
+            counts: [0u64; 256],
+            instructions: 0,
+        }
+    }
+}
+
+impl Profiler {
+    fn count(&mut self, opcode_byte: u8) {
+        self.counts[opcode_byte as usize] += 1;
+        self.instructions += 1;
+    }
+
+    fn report(&self) -> String {
+        let mut rows: Vec<(u64, &'static str)> = (0u8..=u8::MAX)
+            .filter_map(|b| {
+                let count = self.counts[b as usize];
+                if count == 0 {
+                    return None;
+                }
+                OpCode::from_u8(b).map(|op| (count, op.name()))
+            })
+            .collect();
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        let mut out = String::from("==== vm profile ====\n");
+        out.push_str(&format!("instructions: {}\n", self.instructions));
+        out.push_str("  count  %   opcode\n");
+        for (count, name) in &rows {
+            out.push_str(&format!(
+                "{:>8}  {:>4.1}%  {}\n",
+                count,
+                100.0 * *count as f64 / self.instructions as f64,
+                name
+            ));
+        }
+        out
+    }
+}
+
 impl Vm {
     /// Create a VM with its own globals (natives + `Object`) and module cache.
     pub fn new(file: Arc<str>, module_dirs: Vec<PathBuf>) -> Self {
@@ -210,6 +264,7 @@ impl Vm {
             depth: 0,
             stop: 0,
             debug: None,
+            prof: None,
             invoke_cache: HashMap::new(),
             slot_pool: Vec::with_capacity(16),
             pending_str: None,
@@ -247,6 +302,7 @@ impl Vm {
             depth: 0,
             stop: 0,
             debug: None,
+            prof: None,
             invoke_cache: HashMap::new(),
             slot_pool: Vec::with_capacity(8),
             pending_str: None,
@@ -434,6 +490,22 @@ impl Vm {
         self.run_loop()
     }
 
+    /// Enable opcode profiling for this VM (`spid3r run --prof`). Counts every
+    /// executed instruction by opcode; the report is retrieved with
+    /// [`Self::profiling_report`] after the run.
+    pub fn enable_profiling(&mut self) {
+        self.prof = Some(Profiler::default());
+    }
+
+    /// The profiling report: total instructions and per-opcode counts, hot
+    /// opcodes first. Empty (and stderr-silent) unless profiling was enabled.
+    pub fn profiling_report(&self) -> String {
+        match &self.prof {
+            Some(p) => p.report(),
+            None => String::new(),
+        }
+    }
+
     fn run_loop(&mut self) -> Result<Value, VmError> {
         loop {
             if let Some(mut err) = self.error.take() {
@@ -482,6 +554,9 @@ impl Vm {
                     continue;
                 }
             };
+            if let Some(p) = self.prof.as_mut() {
+                p.count(b);
+            }
             match op {
                 OpCode::Constant => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
