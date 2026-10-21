@@ -81,6 +81,11 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("random_normal", n_random_normal),
         ("sha256", n_sha256),
         ("hmac_sha256", n_hmac_sha256),
+        ("pbkdf2_sha256", n_pbkdf2_sha256),
+        ("base64_encode", n_base64_encode),
+        ("base64_decode", n_base64_decode),
+        ("base64_url_encode", n_base64_url_encode),
+        ("base64_url_decode", n_base64_url_decode),
         ("int", n_int),
         ("float", n_float),
         ("string", n_string),
@@ -882,6 +887,200 @@ fn hmac_sha256_bytes(key: &[u8], msg: &[u8]) -> [u8; 32] {
     outer.extend_from_slice(&opad);
     outer.extend_from_slice(&inner_hash);
     sha256_bytes(&outer)
+}
+
+// ------------------------------------------------------ pbkdf2 / base64
+
+/// `pbkdf2_sha256(password, salt, iterations)` — PBKDF2-HMAC-SHA256 (RFC
+/// 8018) with a 32-byte derived key, returned as lowercase hex. The one
+/// primitive user-password storage needs on top of `hmac_sha256`: iterated
+/// HMAC slows brute-force attempts by `iterations`. The salt may be a string
+/// or a bytes value; iterations are clamped to 1..=10_000_000 (a DoS guard —
+/// the native would otherwise spin a host process indefinitely).
+fn n_pbkdf2_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "pbkdf2_sha256 expects 3 arguments (password, salt, iterations), got {}",
+            args.len()
+        ));
+    }
+    let password = want_str(&args[0], "pbkdf2_sha256")?;
+    let salt = want_salt(&args[1], "pbkdf2_sha256")?;
+    let iters = match &args[2] {
+        Value::Int(i) if (1..=10_000_000).contains(i) => *i as u32,
+        Value::Int(i) => {
+            return Err(format!(
+                "pbkdf2_sha256: iterations must be between 1 and 10000000, got {}",
+                i
+            ));
+        }
+        other => {
+            return Err(format!(
+                "pbkdf2_sha256 expects an int iteration count, found {}",
+                crate::value::type_name(other)
+            ));
+        }
+    };
+    Ok(Value::Str(
+        crate::pkg::hex_encode(&pbkdf2_sha256_bytes(password.as_bytes(), &salt, iters)).into(),
+    ))
+}
+
+fn want_salt(v: &Value, who: &str) -> Result<Vec<u8>, String> {
+    match v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::Bytes(b) => Ok(b.lock().unwrap().clone()),
+        other => Err(format!(
+            "{}: salt must be a string or bytes, found {}",
+            who,
+            crate::value::type_name(other)
+        )),
+    }
+}
+
+/// PBKDF2 (RFC 8018) with HMAC-SHA256 as the PRF and dkLen = 32 — a single
+/// block (block index 1), so no dkLen splitting logic is needed.
+fn pbkdf2_sha256_bytes(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32] {
+    let mut block = Vec::with_capacity(salt.len() + 4);
+    block.extend_from_slice(salt);
+    block.extend_from_slice(&1u32.to_be_bytes());
+    let mut u = hmac_sha256_bytes(password, &block);
+    let mut out = u;
+    for _ in 1..iterations {
+        u = hmac_sha256_bytes(password, &u);
+        for (o, b) in out.iter_mut().zip(u.iter()) {
+            *o ^= *b;
+        }
+    }
+    out
+}
+
+/// Base64 (RFC 4648). The standard alphabet (+/) with padding, and the
+/// URL-safe alphabet (-_) unpadded — the pair the web framework's JWT
+/// helpers need. Accepts strings or bytes; `decode` returns bytes.
+const B64_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+fn want_b64_input(v: &Value, who: &str) -> Result<Vec<u8>, String> {
+    match v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::Bytes(b) => Ok(b.lock().unwrap().clone()),
+        other => Err(format!(
+            "{} expects a string or bytes, found {}",
+            who,
+            crate::value::type_name(other)
+        )),
+    }
+}
+
+fn base64_encode_bytes(data: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(alphabet[(n >> 18) as usize & 63] as char);
+        out.push(alphabet[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(alphabet[(n >> 6) as usize & 63] as char);
+        } else if pad {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(alphabet[n as usize & 63] as char);
+        } else if pad {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn base64_decode_str(text: &str, alphabet: &[u8; 64], who: &str) -> Result<Vec<u8>, String> {
+    // Padding ('=') is accepted only as a 0/1/2-character suffix; its count
+    // is implied by the data length, so it is stripped and not validated
+    // beyond position (the RFC's canonical encoders never emit it for the
+    // URL-safe alphabet anyway).
+    let core = text.trim_end_matches('=');
+    if text[..core.len()].contains('=') {
+        return Err(format!("{}: misplaced '=' padding", who));
+    }
+    if core.len() % 4 == 1 {
+        return Err(format!(
+            "{}: invalid base64 length {} (a quantum cannot encode a byte)",
+            who,
+            core.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(core.len() * 3 / 4);
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+    for ch in core.bytes() {
+        let v = match alphabet.iter().position(|&a| a == ch) {
+            Some(i) => i as u32,
+            None => {
+                return Err(format!(
+                    "{}: invalid base64 character '{}'",
+                    who, ch as char
+                ));
+            }
+        };
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn n_base64_encode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "base64_encode expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let data = want_b64_input(&args[0], "base64_encode")?;
+    Ok(Value::Str(base64_encode_bytes(&data, B64_STD, true).into()))
+}
+
+fn n_base64_url_encode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "base64_url_encode expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let data = want_b64_input(&args[0], "base64_url_encode")?;
+    Ok(Value::Str(
+        base64_encode_bytes(&data, B64_URL, false).into(),
+    ))
+}
+
+fn n_base64_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "base64_decode expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let text = want_str(&args[0], "base64_decode")?;
+    let data = base64_decode_str(&text, B64_STD, "base64_decode")?;
+    Ok(Value::Bytes(new_ref(data)))
+}
+
+fn n_base64_url_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "base64_url_decode expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let text = want_str(&args[0], "base64_url_decode")?;
+    let data = base64_decode_str(&text, B64_URL, "base64_url_decode")?;
+    Ok(Value::Bytes(new_ref(data)))
 }
 
 // ------------------------------------------------------------- conversions

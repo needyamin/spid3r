@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -47,6 +47,11 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("tcp_local_addr", n_tcp_local_addr),
         ("tcp_peer_addr", n_tcp_peer_addr),
         ("tcp_set_timeout", n_tcp_set_timeout),
+        ("udp_bind", n_udp_bind),
+        ("udp_local_addr", n_udp_local_addr),
+        ("udp_send_to", n_udp_send_to),
+        ("udp_recv_from", n_udp_recv_from),
+        ("udp_close", n_udp_close),
         ("http_read_request", n_http_read_request),
         ("http_write_response", n_http_write_response),
         ("http_fetch", n_http_fetch),
@@ -61,6 +66,7 @@ pub fn native_defs() -> Vec<NativeDef> {
 enum Sock {
     Listener(Arc<TcpListener>),
     Stream(Arc<TcpStream>),
+    Udp(Arc<UdpSocket>),
 }
 
 fn table() -> &'static Mutex<HashMap<i64, Sock>> {
@@ -87,6 +93,10 @@ fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
             "{}: handle {} is a connection, not a listener",
             who, id
         )),
+        Some(Sock::Udp(_)) => Err(format!(
+            "{}: handle {} is a UDP socket, not a listener",
+            who, id
+        )),
         None => Err(format!("{}: handle {} is not open", who, id)),
     }
 }
@@ -96,6 +106,25 @@ fn get_stream(id: i64, who: &str) -> Result<Arc<TcpStream>, String> {
         Some(Sock::Stream(s)) => Ok(s),
         Some(Sock::Listener(_)) => Err(format!(
             "{}: handle {} is a listener, not a connection",
+            who, id
+        )),
+        Some(Sock::Udp(_)) => Err(format!(
+            "{}: handle {} is a UDP socket, not a connection",
+            who, id
+        )),
+        None => Err(format!("{}: handle {} is not open", who, id)),
+    }
+}
+
+fn get_udp(id: i64, who: &str) -> Result<Arc<UdpSocket>, String> {
+    match lookup(id) {
+        Some(Sock::Udp(s)) => Ok(s),
+        Some(Sock::Stream(_)) => Err(format!(
+            "{}: handle {} is a TCP connection, not a UDP socket",
+            who, id
+        )),
+        Some(Sock::Listener(_)) => Err(format!(
+            "{}: handle {} is a TCP listener, not a UDP socket",
             who, id
         )),
         None => Err(format!("{}: handle {} is not open", who, id)),
@@ -394,6 +423,11 @@ fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             let _ = s.shutdown(Shutdown::Both);
             Ok(Value::Bool(true))
         }
+        Some(Sock::Udp(s)) => {
+            // Dropping the last Arc closes the socket; no shutdown needed.
+            drop(s);
+            Ok(Value::Bool(true))
+        }
         Some(Sock::Listener(l)) => {
             // std cannot interrupt a blocking accept(); poke it with a
             // short-lived connection so the acceptor notices the closure.
@@ -421,6 +455,7 @@ fn n_tcp_local_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
     let addr = match lookup(id) {
         Some(Sock::Listener(l)) => l.local_addr(),
         Some(Sock::Stream(s)) => s.local_addr(),
+        Some(Sock::Udp(s)) => s.local_addr(),
         None => return Err(format!("tcp_local_addr: handle {} is not open", id)),
     };
     match addr {
@@ -463,6 +498,79 @@ fn n_tcp_set_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String
     }
 }
 
+// ------------------------------------------------------------------- UDP
+
+/// `udp_bind("127.0.0.1:0")` -> `ok(handle)`. Port 0 picks an ephemeral port;
+/// discover it with `udp_local_addr`. UdpSocket::bind does not block.
+fn n_udp_bind(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("udp_bind", &args, 1)?;
+    let addr = want_str(&args[0], "udp_bind")?;
+    match UdpSocket::bind(&addr) {
+        Ok(s) => ok(Value::Int(register(Sock::Udp(Arc::new(s))))),
+        Err(e) => err(format!("udp_bind '{}': {}", addr, e)),
+    }
+}
+
+/// `udp_local_addr(handle)` -> `ok("127.0.0.1:54321")`.
+fn n_udp_local_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("udp_local_addr", &args, 1)?;
+    let id = want_int(&args[0], "udp_local_addr")?;
+    let sock = get_udp(id, "udp_local_addr")?;
+    match sock.local_addr() {
+        Ok(a) => ok(str_val(a.to_string())),
+        Err(e) => err(io_msg("udp_local_addr", &e)),
+    }
+}
+
+/// `udp_send_to(handle, "127.0.0.1:9000", text)` -> `ok(bytes_written)`.
+/// The datagram carries the UTF-8 bytes of `text`.
+fn n_udp_send_to(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("udp_send_to", &args, 3)?;
+    let id = want_int(&args[0], "udp_send_to")?;
+    let addr = want_str(&args[1], "udp_send_to")?;
+    let text = want_str(&args[2], "udp_send_to")?;
+    let sock = get_udp(id, "udp_send_to")?;
+    match sock.send_to(text.as_bytes(), &addr) {
+        Ok(n) => ok(Value::Int(n as i64)),
+        Err(e) => err(format!("udp_send_to '{}': {}", addr, e)),
+    }
+}
+
+/// `udp_recv_from(handle, max_bytes)` ->
+/// `ok([text, "sender-ip:port"])`. Invalid UTF-8 is replaced with U+FFFD
+/// (like `tcp_read`); blocks until a datagram arrives.
+fn n_udp_recv_from(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("udp_recv_from", &args, 2)?;
+    let id = want_int(&args[0], "udp_recv_from")?;
+    let max = want_int(&args[1], "udp_recv_from")?;
+    if max <= 0 || max > MAX_READ_BYTES {
+        return Err(format!(
+            "udp_recv_from: max_bytes must be between 1 and {}",
+            MAX_READ_BYTES
+        ));
+    }
+    let sock = get_udp(id, "udp_recv_from")?;
+    let mut buf = vec![0u8; max as usize];
+    match sock.recv_from(&mut buf) {
+        Ok((n, sender)) => {
+            let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+            ok(collections::construct(
+                "list",
+                vec![str_val(text), str_val(sender.to_string())],
+            )?)
+        }
+        Err(e) => err(io_msg("udp_recv_from", &e)),
+    }
+}
+
+/// `udp_close(handle)` -> `true` if the handle was open.
+fn n_udp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("udp_close", &args, 1)?;
+    let id = want_int(&args[0], "udp_close")?;
+    let removed = table().lock().unwrap().remove(&id);
+    Ok(Value::Bool(removed.is_some()))
+}
+
 // ------------------------------------------------------------ HTTP framing
 
 /// A parsed message head plus any body bytes already read past it.
@@ -482,7 +590,9 @@ impl Head {
 }
 
 /// Read up to and including the blank line that ends an HTTP head.
-fn read_head(mut stream: &TcpStream, who: &str) -> Result<Head, String> {
+/// Generic over the transport: a plain `TcpStream` or a TLS stream (the
+/// `tls` feature), which share the `Read` surface the framing needs.
+fn read_head<S: Read>(mut stream: S, who: &str) -> Result<Head, String> {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
     let mut chunk = [0u8; 8192];
     let end = loop {
@@ -535,8 +645,8 @@ fn read_head(mut stream: &TcpStream, who: &str) -> Result<Head, String> {
     })
 }
 
-fn read_exact_body(
-    mut stream: &TcpStream,
+fn read_exact_body<S: Read>(
+    mut stream: S,
     mut body: Vec<u8>,
     len: usize,
     who: &str,
@@ -564,7 +674,7 @@ fn read_exact_body(
     Ok(body)
 }
 
-fn read_to_eof(mut stream: &TcpStream, mut body: Vec<u8>, who: &str) -> Result<Vec<u8>, String> {
+fn read_to_eof<S: Read>(mut stream: S, mut body: Vec<u8>, who: &str) -> Result<Vec<u8>, String> {
     let mut chunk = [0u8; 8192];
     loop {
         if body.len() > MAX_BODY_BYTES {
@@ -582,7 +692,7 @@ fn read_to_eof(mut stream: &TcpStream, mut body: Vec<u8>, who: &str) -> Result<V
 }
 
 /// Decode a `Transfer-Encoding: chunked` body.
-fn read_chunked(stream: &TcpStream, leftover: Vec<u8>, who: &str) -> Result<Vec<u8>, String> {
+fn read_chunked<S: Read>(stream: S, leftover: Vec<u8>, who: &str) -> Result<Vec<u8>, String> {
     let mut reader = ChunkReader {
         stream,
         buf: leftover,
@@ -616,17 +726,18 @@ fn read_chunked(stream: &TcpStream, leftover: Vec<u8>, who: &str) -> Result<Vec<
     }
 }
 
-struct ChunkReader<'a> {
-    stream: &'a TcpStream,
+struct ChunkReader<'a, S: Read> {
+    stream: S,
     buf: Vec<u8>,
     pos: usize,
     who: &'a str,
 }
 
-impl ChunkReader<'_> {
+impl<S: Read> ChunkReader<'_, S> {
     fn fill(&mut self) -> Result<(), String> {
         let mut chunk = [0u8; 8192];
-        let n = (&*self.stream)
+        let n = self
+            .stream
             .read(&mut chunk)
             .map_err(|e| io_msg(self.who, &e))?;
         if n == 0 {
@@ -929,15 +1040,15 @@ fn fetch(
     body: &str,
 ) -> Result<Value, String> {
     const WHO: &str = "http_fetch";
-    let rest = if let Some(r) = url.strip_prefix("http://") {
-        r
-    } else if url.starts_with("https://") {
-        return Err(format!(
-            "{}: https:// is not supported (no TLS in the zero-dependency core); use http://",
-            WHO
-        ));
+    let (secure, rest) = if let Some(r) = url.strip_prefix("https://") {
+        (true, r)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (false, r)
     } else {
-        return Err(format!("{}: URL must start with http:// ('{}')", WHO, url));
+        return Err(format!(
+            "{}: URL must start with http:// or https:// ('{}')",
+            WHO, url
+        ));
     };
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
@@ -955,15 +1066,54 @@ fn fetch(
             WHO, url
         ));
     }
+    let default_port = if secure { 443 } else { 80 };
     let addr = if authority.contains(':') && !authority.ends_with(']') {
         authority.to_string()
     } else {
-        format!("{}:80", authority)
+        format!("{}:{}", authority, default_port)
     };
 
-    let stream = connect_with_timeout(&addr).map_err(|e| format!("{} '{}': {}", WHO, url, e))?;
-    let _ = stream.set_read_timeout(Some(FETCH_IO_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(FETCH_IO_TIMEOUT));
+    // The TLS handshake needs the bare host name (SNI), not host:port.
+    #[allow(unused_variables)]
+    let host = match authority.rsplit_once(':') {
+        Some((h, _)) if !h.contains(']') => h,
+        _ => authority,
+    };
+
+    // Both transports are boxed behind one Read+Write surface so the request
+    // framing below is written once. I/O timeouts are set on the underlying
+    // TcpStream and survive the TLS handshake.
+    type Conn = Box<dyn ReadWrite>;
+
+    let mut stream: Conn = if secure {
+        #[cfg(feature = "tls")]
+        {
+            let tcp =
+                connect_with_timeout(&addr).map_err(|e| format!("{} '{}': {}", WHO, url, e))?;
+            let _ = tcp.set_read_timeout(Some(FETCH_IO_TIMEOUT));
+            let _ = tcp.set_write_timeout(Some(FETCH_IO_TIMEOUT));
+            let connector = native_tls::TlsConnector::new()
+                .map_err(|e| format!("{}: TLS setup failed: {}", WHO, e))?;
+            let tls = connector
+                .connect(host, tcp)
+                .map_err(|e| format!("{}: TLS handshake with '{}' failed: {}", WHO, host, e))?;
+            Box::new(tls)
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            let _ = host;
+            return Err(format!(
+                "{}: https:// needs the `tls` feature (rebuild the toolchain with \
+                 --features tls); the zero-dependency core ships without a TLS stack",
+                WHO
+            ));
+        }
+    } else {
+        let tcp = connect_with_timeout(&addr).map_err(|e| format!("{} '{}': {}", WHO, url, e))?;
+        let _ = tcp.set_read_timeout(Some(FETCH_IO_TIMEOUT));
+        let _ = tcp.set_write_timeout(Some(FETCH_IO_TIMEOUT));
+        Box::new(tcp)
+    };
 
     let mut req = format!(
         "{} {} HTTP/1.1\r\nhost: {}\r\nuser-agent: spid3r\r\naccept: */*\r\nconnection: close\r\n",
@@ -984,11 +1134,11 @@ fn fetch(
     }
     req.push_str("\r\n");
     req.push_str(body);
-    (&stream)
+    stream
         .write_all(req.as_bytes())
         .map_err(|e| io_msg(WHO, &e))?;
 
-    let head = read_head(&stream, WHO)?;
+    let head = read_head(&mut *stream, WHO)?;
     let mut parts = head.start_line.splitn(3, ' ');
     let version = parts.next().unwrap_or("");
     let status: i64 = parts
@@ -1006,16 +1156,15 @@ fn fetch(
         .header("transfer-encoding")
         .is_some_and(|te| te.to_ascii_lowercase().contains("chunked"))
     {
-        read_chunked(&stream, leftover, WHO)?
+        read_chunked(&mut *stream, leftover, WHO)?
     } else if let Some(len) = head.header("content-length") {
         let len = len
             .parse::<usize>()
             .map_err(|_| format!("{}: bad content-length '{}'", WHO, len))?;
-        read_exact_body(&stream, leftover, len, WHO)?
+        read_exact_body(&mut *stream, leftover, len, WHO)?
     } else {
-        read_to_eof(&stream, leftover, WHO)?
+        read_to_eof(&mut *stream, leftover, WHO)?
     };
-    let _ = stream.shutdown(Shutdown::Both);
 
     make_map(vec![
         ("status".to_string(), Value::Int(status)),
@@ -1026,6 +1175,11 @@ fn fetch(
         ),
     ])
 }
+
+/// One connection surface for HTTP framing: a plain TCP stream or (with the
+/// `tls` feature) a TLS stream over one.
+trait ReadWrite: Read + Write {}
+impl<T: Read + Write + ?Sized> ReadWrite for T {}
 
 /// `url_decode("a%20b+c")` -> `"a b c"` (form rules: `+` is a space).
 fn n_url_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
