@@ -172,6 +172,16 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    /// `let (a, b) = expr;` — bind the elements of a list/tuple.
+    ///
+    /// Lowered to one `let` per name with a shared temporary, so no backend
+    /// needs to know about it.
+    LetTuple {
+        vis: Vis,
+        names: Vec<String>,
+        value: Expr,
+        span: Span,
+    },
     If {
         cond: Expr,
         then: Block,
@@ -186,6 +196,9 @@ pub enum Stmt {
     },
     ForIn {
         var: String,
+        /// `for (k, v) in map` — the value for each key. Lowered to a lookup in
+        /// the body, so the engines still only see a one-variable loop.
+        var2: Option<String>,
         iter: Expr,
         body: Block,
         span: Span,
@@ -234,6 +247,7 @@ impl Stmt {
             | Stmt::If { span, .. }
             | Stmt::While { span, .. }
             | Stmt::ForIn { span, .. }
+            | Stmt::LetTuple { span, .. }
             | Stmt::ForC { span, .. }
             | Stmt::Return { span, .. }
             | Stmt::Break { span }

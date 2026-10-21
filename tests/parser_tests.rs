@@ -147,6 +147,7 @@ fn every_statement_form_parses() {
             Stmt::Try { .. } => "try",
             Stmt::Throw { .. } => "throw",
             Stmt::Enum(_) => "enum",
+            Stmt::LetTuple { .. } => "let-tuple",
         })
         .collect();
     for f in [

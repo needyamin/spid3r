@@ -150,6 +150,7 @@ fn collect_outer_uses_stmt(
     match s {
         // Removed by lowering; nothing to walk.
         Stmt::Enum(_) => {}
+        Stmt::LetTuple { value, .. } => collect_outer_uses_expr(value, declared, out),
         Stmt::Let { name, value, .. } => {
             if let Some(v) = value {
                 collect_outer_uses_expr(v, declared, out);
@@ -1044,6 +1045,7 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
         Stmt::Throw { value, .. } => nested_fns_expr(value, out),
         Stmt::Interface(_) | Stmt::Import { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Enum(_) => {}
+        Stmt::LetTuple { value, .. } => nested_fns_expr(value, out),
     }
 }
 
@@ -1172,6 +1174,11 @@ impl<'ctx> Ir<'ctx> {
     fn compile_stmt(&mut self, s: &Stmt) -> IrResult<()> {
         match s {
             // `crate::lower` turns an enum into constructor functions.
+            Stmt::LetTuple { span, .. } => Err(format!(
+                "internal error at {}:{}: a destructuring `let` reached the native backend \
+                 without lowering (this is a bug in spid3r)",
+                span.file, span.line
+            )),
             Stmt::Enum(e) => Err(format!(
                 "internal error at {}:{}: an enum declaration reached the native backend \
                  without lowering (this is a bug in spid3r)",

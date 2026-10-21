@@ -111,6 +111,31 @@ const CASES: &[Case] = &[
         err: None,
         aot: true,
     },
+    // ---------------------------------------------------------- ergonomics (3)
+    Case {
+        name: "destructure",
+        src: "fn pair() {\n    return [10, 20];\n}\nfn main() {\n    let (a, b) = pair();\n    println(a + b);\n    let (x, y, z) = [1, 2, 3];\n    println(x * 100 + y * 10 + z);\n    return 0;\n}\n",
+        out: "30\n123",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "for_kv",
+        src: "fn main() {\n    let m = map();\n    m[\"one\"] = 1;\n    m[\"two\"] = 2;\n    let total = 0;\n    for (k, v) in m {\n        println(\"{k}={v}\");\n        total = total + v;\n    }\n    println(total);\n    return 0;\n}\n",
+        out: "one=1\ntwo=2\n3",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "spawn_named",
+        src: "fn work() {\n    return 41;\n}\nfn main() {\n    let t = spawn work;\n    println(t.join());\n    return 0;\n}\n",
+        out: "41",
+        code: 0,
+        err: None,
+        aot: true,
+    },
     // ------------------------------------------------------------- errors (4)
     Case {
         name: "option_result_annotations",

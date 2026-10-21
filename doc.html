@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">570 tests · 25/25 examples agree</span>
+          <span class="badge">578 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -1234,6 +1234,7 @@ let label = if (count == 0) { "empty" } else { "{count} items" };</code></pre>
         </p>
         <pre data-lang="spid3r"><code>fn main() {
     for x in [1, 2, 3] { println(x); }                 // 1 2 3
+    for (k, v) in scores { println("{k}={v}"); }       // map entries
     for let k = 0; k &lt; 3; k = k + 1 { println(k); }    // 0 1 2
 
     let i = 0;
@@ -1245,6 +1246,18 @@ let label = if (count == 0) { "empty" } else { "{count} items" };</code></pre>
     else { println("other"); }                         // two
     return 0;
 }</code></pre>
+        <p><code>for (k, v) in m</code> walks a map's entries — <code>k</code> is the key and
+          <code>v</code> its value. The one-variable form keeps its meaning (a map yields keys, a list
+          yields elements), so the two forms are unambiguous.</p>
+        <h3>Destructuring bindings</h3>
+        <p><code>let</code> can bind several elements of a list or tuple at once; the right-hand side is
+          evaluated exactly once.</p>
+        <pre data-lang="spid3r"><code>fn min_max(xs) {
+    return [xs[0], xs[xs.len() - 1]];
+}
+
+let (lo, hi) = min_max([3, 1, 4]);
+println("{lo}..{hi}");     // 3..4</code></pre>
         <h3>What <code>for … in</code> iterates</h3>
         <table>
           <tr>
@@ -3306,7 +3319,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>570 tests</strong> (<strong>554</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>578 tests</strong> (<strong>562</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

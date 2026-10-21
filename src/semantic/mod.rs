@@ -882,6 +882,24 @@ impl Checker {
             // Variants were registered in pass 1; a variant declaration carries
             // no body to check.
             Stmt::Enum(_) => Ok(()),
+            Stmt::LetTuple {
+                names, value, span, ..
+            } => {
+                self.check_expr(value)?;
+                for n in names {
+                    self.declare(
+                        n,
+                        span,
+                        VarInfo {
+                            is_const: false,
+                            class: None,
+                            ty: None,
+                            is_import: false,
+                        },
+                    )?;
+                }
+                Ok(())
+            }
             Stmt::Import { path, alias, span } => {
                 let names = crate::modules::public_names_of_in(
                     path,
@@ -1265,7 +1283,11 @@ impl Checker {
                 r
             }
             Stmt::ForIn {
-                var, iter, body, ..
+                var,
+                var2,
+                iter,
+                body,
+                ..
             } => {
                 self.check_expr(iter)?;
                 self.push_scope();
@@ -1279,6 +1301,19 @@ impl Checker {
                         is_import: false,
                     },
                 )?;
+                // `for (k, v) in m` also binds the value.
+                if let Some(v2) = var2 {
+                    self.declare(
+                        v2,
+                        s.span(),
+                        VarInfo {
+                            is_const: false,
+                            class: None,
+                            ty: None,
+                            is_import: false,
+                        },
+                    )?;
+                }
                 self.loop_depth += 1;
                 let r = self.check_stmts(&body.stmts);
                 self.loop_depth -= 1;
@@ -1388,12 +1423,12 @@ impl Checker {
             }
             Stmt::Block(b) => self.check_block(b),
             Stmt::Expr(e) => self.check_expr(e),
-            Stmt::Spawn { callable, span } => {
-                self.check_expr(callable)?;
-                if !matches!(callable, Expr::Fn(_)) {
-                    return Err(self.err(span, "spawn expects a function: spawn fn() { ... };"));
-                }
-                Ok(())
+            Stmt::Spawn { callable, .. } => {
+                // Any expression that evaluates to a function: the runtime
+                // reports a clear error when the value is not callable, and a
+                // static check would reject `spawn obj.handler` and
+                // `spawn some_closure` for no good reason.
+                self.check_expr(callable)
             }
             Stmt::Try {
                 body,
@@ -2289,13 +2324,7 @@ impl Checker {
                 }
                 Ok(())
             }
-            Expr::Spawn { callable, span } => {
-                self.check_expr(callable)?;
-                if !matches!(callable.as_ref(), Expr::Fn(_)) {
-                    return Err(self.err(span, "spawn expects a function: spawn fn() { ... };"));
-                }
-                Ok(())
-            }
+            Expr::Spawn { callable, .. } => self.check_expr(callable),
             Expr::Await(inner, span) => {
                 if !self.in_async {
                     return Err(self.err(span, "await is only allowed inside an async function"));

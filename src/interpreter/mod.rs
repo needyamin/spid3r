@@ -348,6 +348,12 @@ impl Interp {
         match s {
             // `crate::lower` turns an enum into constructor functions; a backend
             // must never see the declaration itself.
+            Stmt::LetTuple { span, .. } => Flow::Error(crate::diagnostics::Diagnostic::at(
+                crate::diagnostics::Phase::Runtime,
+                span.clone(),
+                "internal error: a destructuring `let` reached the interpreter without \
+                 lowering (this is a bug in spid3r)",
+            )),
             Stmt::Enum(e) => Flow::Error(crate::diagnostics::Diagnostic::at(
                 crate::diagnostics::Phase::Runtime,
                 e.span.clone(),

@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 570 Rust tests green (554 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 578 Rust tests green (562 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -83,7 +83,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 570 tests (554 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 578 tests (562 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -375,6 +375,11 @@ GaliLang/
                          trailing bytes, instruction-table mismatch, fall-through
                          end, nesting depth, non-quadratic jumps, `exec` on a
                          corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         stage2c_ergonomics.rs (8: destructuring let from a
+                         list/function, value evaluated once, names are ordinary
+                         bindings; for (k, v) over a map with the single-variable
+                         form unchanged; spawn of a named function, a closure in
+                         a variable, and a clean error for a non-callable),
                          stage4_errors.rs (11: option/result annotations,
                          element-type checking, `?` propagating err and none and
                          returning from the enclosing function, `?` on a non-option,
@@ -522,6 +527,19 @@ GaliLang/
     * detached collection mutators (list/set/bag remove+add) commit with a
       verified snapshot and retry on conflict (bounded, 32) — concurrent adds
       cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Ergonomics (Stage 2c, 2026-10-21):
+    * `let (a, b) = expr;` lowers to `let __d = expr; let a = __d[0]; …` — one
+      evaluation, ordinary bindings. New `Stmt::LetTuple`, expanded by lower.
+    * `for (k, v) in m` lowers to `let __src = m; for k in __src { let v =
+      __src[k]; … }`. `Stmt::ForIn` gained `var2: Option<String>`; the engines
+      still only see one variable. GOTCHA: the lowering fast-path scan must test
+      `var2.is_some()`, or a program whose only construct is `for (k, v)` is
+      passed through unchanged and the value binding never exists (runtime
+      "unknown name").
+    * `spawn` accepts any callable (`spawn work`, `spawn closure_var`); the
+      parser and the checker dropped their `matches!(Expr::Fn)` restriction —
+      the runtime already handled any function value and reports a clean error
+      otherwise.
   - Error model (Stage 4, 2026-10-21):
     * `some`/`none` normalise to `option`, `ok`/`err` to `result`, so an
       annotation like `let x: option<int> = some(5)` finally type-checks (it

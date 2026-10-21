@@ -168,6 +168,11 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
 - A branch block of a value-position `if` may omit the `;` after its final
   expression, because that expression is the branch's value. Everywhere else an
   expression statement still needs its `;`.
+- `let (a, b) = expr;` destructures a list/tuple; it lowers to one `let` per
+  name sharing a temporary, so the value is evaluated once. `for (k, v) in m`
+  walks a map's entries and lowers to a key loop with a lookup in the body.
+- `spawn` takes any expression that evaluates to a function (`spawn work`,
+  `spawn closure_var`), not just a `fn` literal.
 - `enum Name { A, B(x), C(x, y) }` declares a sum type. Each variant becomes a
   `public` constructor function (`A()`, `B(1)`) returning a map with a `__tag`
   key, so a variant works across `import` like any other function. A `match`

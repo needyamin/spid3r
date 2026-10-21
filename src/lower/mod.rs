@@ -113,6 +113,8 @@ fn stmt_needs_lowering(s: &Stmt) -> bool {
         Stmt::Class(c) => c.methods.iter().any(|m| block_needs_lowering(&m.body)),
         Stmt::Let { value, .. } => value.as_ref().map(expr_needs_lowering).unwrap_or(false),
         Stmt::Const { value, .. } => expr_needs_lowering(value),
+        // Both always need lowering: they expand into ordinary statements.
+        Stmt::LetTuple { .. } => true,
         Stmt::If {
             cond,
             then,
@@ -128,7 +130,12 @@ fn stmt_needs_lowering(s: &Stmt) -> bool {
                 || els.as_ref().map(block_needs_lowering).unwrap_or(false)
         }
         Stmt::While { cond, body, .. } => expr_needs_lowering(cond) || block_needs_lowering(body),
-        Stmt::ForIn { iter, body, .. } => expr_needs_lowering(iter) || block_needs_lowering(body),
+        // `for (k, v)` must be rewritten even when nothing else needs lowering:
+        // the engines only know the one-variable form, and the value binding is
+        // synthesized here.
+        Stmt::ForIn {
+            var2, iter, body, ..
+        } => var2.is_some() || expr_needs_lowering(iter) || block_needs_lowering(body),
         Stmt::ForC {
             init,
             cond,
@@ -265,6 +272,31 @@ impl Lower {
                 }
                 None => vec![s.clone()],
             },
+            // `let (a, b) = e;` -> `let __d = e; let a = __d[0]; let b = __d[1];`
+            Stmt::LetTuple {
+                vis,
+                names,
+                value,
+                span,
+            } => {
+                let (value, mut pre) = self.expr(value);
+                let d = self.fresh();
+                pre.push(let_stmt(&d, value, span.clone()));
+                for (i, n) in names.iter().enumerate() {
+                    pre.push(Stmt::Let {
+                        vis: *vis,
+                        name: n.clone(),
+                        ty: None,
+                        value: Some(Expr::Index {
+                            object: Box::new(Expr::Ident(d.clone(), span.clone())),
+                            index: Box::new(Expr::Int(i as i64, span.clone())),
+                            span: span.clone(),
+                        }),
+                        span: span.clone(),
+                    });
+                }
+                pre
+            }
             Stmt::Const {
                 vis,
                 name,
@@ -293,15 +325,47 @@ impl Lower {
             Stmt::While { cond, body, span } => self.while_stmt(cond, body, span),
             Stmt::ForIn {
                 var,
+                var2,
                 iter,
                 body,
                 span,
             } => {
                 let (iter, mut pre) = self.expr(iter);
+                let mut body = self.block(body);
+                // `for (k, v) in m` -> `for k in m { let v = m[k]; … }`. The
+                // iterable expression is evaluated once into a temp so the
+                // lookup does not repeat it.
+                if let Some(v2) = var2 {
+                    let src = self.fresh();
+                    pre.push(let_stmt(&src, iter.clone(), span.clone()));
+                    body.stmts.insert(
+                        0,
+                        Stmt::Let {
+                            vis: Vis::Private,
+                            name: v2.clone(),
+                            ty: None,
+                            value: Some(Expr::Index {
+                                object: Box::new(Expr::Ident(src.clone(), span.clone())),
+                                index: Box::new(Expr::Ident(var.clone(), span.clone())),
+                                span: span.clone(),
+                            }),
+                            span: span.clone(),
+                        },
+                    );
+                    pre.push(Stmt::ForIn {
+                        var: var.clone(),
+                        var2: None,
+                        iter: Expr::Ident(src, span.clone()),
+                        body,
+                        span: span.clone(),
+                    });
+                    return pre;
+                }
                 pre.push(Stmt::ForIn {
                     var: var.clone(),
+                    var2: None,
                     iter,
-                    body: self.block(body),
+                    body,
                     span: span.clone(),
                 });
                 pre

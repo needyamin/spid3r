@@ -430,7 +430,15 @@ fn resolve_module_path(
 fn compile_stmt(compilers: &mut Vec<Compiler>, ci: usize, stmt: &Stmt) -> Result<(), Diagnostic> {
     compilers[ci].chunk.set_span(stmt.span().clone());
     match stmt {
-        // `crate::lower` turns an enum into constructor functions.
+        // `crate::lower` expands these before compilation.
+        Stmt::LetTuple { span, .. } => {
+            return Err(Diagnostic::at(
+                Phase::Vm,
+                span.clone(),
+                "internal error: a destructuring `let` reached the bytecode compiler \
+                 without lowering (this is a bug in spid3r)",
+            ))
+        }
         Stmt::Enum(e) => {
             return Err(Diagnostic::at(
                 Phase::Vm,

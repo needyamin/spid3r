@@ -571,6 +571,9 @@ impl Parser {
 
     fn parse_statement(&mut self) -> SpidResult<Stmt> {
         match self.kind() {
+            TokenKind::Kw(Keyword::Let) if matches!(self.peek_kind(1), TokenKind::LParen) => {
+                self.parse_let_tuple(Vis::Private)
+            }
             TokenKind::Kw(Keyword::Let) => self.parse_let(true),
             TokenKind::Kw(Keyword::Const) => self.parse_const(),
             TokenKind::Kw(Keyword::Fn) if matches!(self.peek_kind(1), TokenKind::Ident(_)) => {
@@ -621,11 +624,11 @@ impl Parser {
                 self.pos += 1;
                 let callable = self.parse_expr()?;
                 self.expect(&TokenKind::Semi, "';' after spawn")?;
-                if matches!(callable, Expr::Fn(_)) {
-                    Ok(Stmt::Spawn { callable, span: sp })
-                } else {
-                    Err(self.err_here("spawn expects a function: spawn fn() { ... };"))
-                }
+                // Any expression that evaluates to a function: a `fn` literal,
+                // a named function, a closure held in a variable, a method
+                // reference. The runtime reports a clear error when the value is
+                // not callable.
+                Ok(Stmt::Spawn { callable, span: sp })
             }
             // A `match` in statement position: like `if`, the trailing `;` is
             // optional because the arm bodies are already delimited.
@@ -645,6 +648,30 @@ impl Parser {
                 Ok(Stmt::Expr(e))
             }
         }
+    }
+
+    /// `let (a, b) = expr;` — destructuring bind of a list or tuple.
+    fn parse_let_tuple(&mut self, vis: Vis) -> SpidResult<Stmt> {
+        let start = self.expect_kw(Keyword::Let)?;
+        self.expect(&TokenKind::LParen, "'(' after let")?;
+        let mut names = Vec::new();
+        loop {
+            names.push(self.expect_ident()?.0);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RParen, "')' after the names")?;
+        self.expect(&TokenKind::Assign, "'=' before the value")?;
+        let value = self.parse_expr()?;
+        let span = join(start, value.span().clone());
+        self.expect(&TokenKind::Semi, "';' after the let")?;
+        Ok(Stmt::LetTuple {
+            vis,
+            names,
+            value,
+            span,
+        })
     }
 
     fn parse_let(&mut self, with_semi: bool) -> SpidResult<Stmt> {
@@ -871,14 +898,30 @@ impl Parser {
 
     fn parse_for(&mut self) -> SpidResult<Stmt> {
         let sp = self.expect_kw(Keyword::For)?;
-        if matches!(self.peek_kind(1), TokenKind::Kw(Keyword::In)) {
-            let (var, _) = self.expect_ident()?;
+        // `for x in …`, `for (k, v) in map`, or the C-style `for let i = …`.
+        // A `(` after `for` is always the two-variable form: the C-style header
+        // starts with `let`, never with a parenthesis.
+        // `for` is already consumed, so the current token is `(` or the variable.
+        let for_in = matches!(self.kind(), TokenKind::LParen)
+            || matches!(self.peek_kind(1), TokenKind::Kw(Keyword::In));
+        if for_in {
+            // `for x in …` or `for (k, v) in map`.
+            let (var, var2) = if self.eat(&TokenKind::LParen) {
+                let (a, _) = self.expect_ident()?;
+                self.expect(&TokenKind::Comma, "',' between the two loop variables")?;
+                let (b, _) = self.expect_ident()?;
+                self.expect(&TokenKind::RParen, "')' after the loop variables")?;
+                (a, Some(b))
+            } else {
+                (self.expect_ident()?.0, None)
+            };
             self.expect_kw(Keyword::In)?;
             let iter = self.parse_expr()?;
             let body = self.parse_block()?;
             let span = join(sp, body.span.clone());
             return Ok(Stmt::ForIn {
                 var,
+                var2,
                 iter,
                 body,
                 span,
@@ -1199,9 +1242,6 @@ impl Parser {
                 self.pos += 1;
                 let callable = self.parse_unary()?;
                 let span = join(sp, callable.span().clone());
-                if !matches!(callable, Expr::Fn(_)) {
-                    return Err(err_at(Phase::Parser, span, "spawn expects a function"));
-                }
                 return Ok(Expr::Spawn {
                     callable: Box::new(callable),
                     span,
