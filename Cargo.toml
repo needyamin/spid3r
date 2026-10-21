@@ -34,6 +34,10 @@ required-features = ["gui"]
 default = ["gui", "native"]
 native = ["dep:inkwell"]
 gui = ["dep:wry", "dep:tao"]
+# TLS for `http_fetch` (https://) via native-tls: schannel on Windows,
+# OpenSSL on Linux, Security.framework on macOS. Opt-in so the core
+# toolchain stays zero-dependency; build with --features tls.
+tls = ["dep:native-tls"]
 
 [dependencies]
 # inkwell is a BUILD-TIME dependency of the native backend only. It requires
@@ -42,6 +46,9 @@ gui = ["dep:wry", "dep:tao"]
 # dynamic linking on Windows nor ships a built-in llvm-config for the stock
 # installer; build.rs links the LLVM C API library itself.
 inkwell = { version = "0.10.0", features = ["llvm18-1-no-llvm-linking"], optional = true }
+# TLS backend for the `tls` feature (https:// in http_fetch). Uses the OS
+# certificate store; no pinned CA bundle to rotate.
+native-tls = { version = "0.2", optional = true }
 # GUI backend (Phase 2): embedded webview via wry on tao.
 wry = { version = "0.53", optional = true }
 tao = { version = "0.34", optional = true }
