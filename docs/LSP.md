@@ -116,7 +116,25 @@ reply verbatim; useful when debugging a client handshake by hand.
 ## Not implemented
 
 - Incremental (`textDocumentSync` kinds 2/3) sync.
-- Cross-file navigation, workspace symbols, `references`, `rename`,
-  `signatureHelp`, `codeAction`, `semanticTokens`, `debug` adapter.
+- Cross-file navigation, workspace symbols, `signatureHelp`, `codeAction`,
+  `semanticTokens`, `debug` adapter.
 - `window/logMessage` / telemetry: the server is silent unless it is answering
   a request or publishing diagnostics.
+
+## References & rename (file-scoped)
+
+`textDocument/references` and `textDocument/rename` are implemented
+(2026-10-22) and honored by the same declaration index as hover/definition —
+occurrences resolve through the smallest containing extent, so shadowing is
+respected. Semantics:
+
+- **File-scoped.** Only the open document is searched; cross-file references
+  need the import graph the index deliberately does not model. Renaming a
+  top-level function therefore does not touch importers — check other files
+  (the editor shows exactly which spans change before you accept).
+- The declaration's own name is renamed with the rest; for references,
+  `context.includeDeclaration` filters it.
+- `rename` validates the replacement lexes as one identifier and answers with
+  `failureReason` otherwise; the result is a standard `WorkspaceEdit`.
+- Local extents are narrowed per nested block (if/while/for/try), so a
+  same-named binding inside a block shadows correctly.

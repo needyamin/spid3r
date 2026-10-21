@@ -716,3 +716,160 @@ fn closing_stdin_ends_the_session_cleanly() {
     let status = s.child.wait().expect("child should exit");
     assert_eq!(status.code(), Some(0));
 }
+
+// ------------------------------------------------------------------ rename
+
+/// Shadowing fixture: an outer `value` and an inner `value` must rename
+/// independently.
+const SHADOW: &str = "fn main() {\n  let value = 1;\n  if (true) {\n    let value = 2;\n    println(value);\n  }\n  println(value);\n  return 0;\n}\n";
+
+#[test]
+fn references_find_all_occurrences_including_the_declaration() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    // `helper` inside `helper(1)` — line 4, character 2.
+    let result = s.request(
+        "textDocument/references",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":4,\"character\":2}},\"context\":{{\"includeDeclaration\":true}}}}",
+            URI
+        ),
+    );
+    let arr = result.as_arr().expect("an array of locations");
+    assert_eq!(arr.len(), 2, "declaration + one call site: {:?}", arr);
+    for loc in arr {
+        assert_eq!(
+            loc.get("uri").and_then(|u| u.as_str()),
+            Some(URI),
+            "file-scoped references"
+        );
+    }
+    s.finish();
+}
+
+#[test]
+fn references_respect_include_declaration_false() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    let result = s.request(
+        "textDocument/references",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":4,\"character\":2}},\"context\":{{\"includeDeclaration\":false}}}}",
+            URI
+        ),
+    );
+    let arr = result.as_arr().expect("an array of locations");
+    assert_eq!(arr.len(), 1, "call site only: {:?}", arr);
+    s.finish();
+}
+
+#[test]
+fn references_do_not_cross_shadowing_boundaries() {
+    let mut s = Session::start();
+    s.open(URI, SHADOW);
+    // The OUTER `value` (line 1, char 6): declaration + the final println.
+    let result = s.request(
+        "textDocument/references",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":1,\"character\":6}},\"context\":{{\"includeDeclaration\":true}}}}",
+            URI
+        ),
+    );
+    let arr = result.as_arr().expect("an array of locations");
+    assert_eq!(arr.len(), 2, "outer value: decl + println: {:?}", arr);
+    // The INNER `value` (line 3, char 8): declaration + its println.
+    let result = s.request(
+        "textDocument/references",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":3,\"character\":8}},\"context\":{{\"includeDeclaration\":true}}}}",
+            URI
+        ),
+    );
+    let arr = result.as_arr().expect("an array of locations");
+    assert_eq!(arr.len(), 2, "inner value: decl + println: {:?}", arr);
+    s.finish();
+}
+
+#[test]
+fn rename_rewrites_every_occurrence_of_the_target() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    let result = s.request(
+        "textDocument/rename",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":4,\"character\":2}},\"newName\":\"greet\"}}",
+            URI
+        ),
+    );
+    let changes = result.get("changes").expect("a workspace edit");
+    let edits = changes
+        .get(URI)
+        .and_then(|e| e.as_arr())
+        .expect("edits for the uri");
+    assert_eq!(edits.len(), 2, "declaration + call site renamed");
+    for edit in edits {
+        assert_eq!(edit.get("newText").and_then(|t| t.as_str()), Some("greet"));
+    }
+    // Applying the edits to the source text yields the renamed program.
+    // (The fixture is ASCII, so character offsets are byte offsets.)
+    fn offset_of(text: &str, line: i64, ch: i64) -> usize {
+        let mut off = 0usize;
+        for (i, l) in text.lines().enumerate() {
+            if i as i64 == line {
+                return off + ch as usize;
+            }
+            off += l.len() + 1;
+        }
+        off
+    }
+    let mut text = TWO_FUNCS.to_string();
+    let mut spans: Vec<(usize, usize)> = edits
+        .iter()
+        .map(|e| {
+            let r = e.get("range").expect("range");
+            let st = r.get("start").expect("start");
+            let en = r.get("end").expect("end");
+            (
+                offset_of(
+                    &text,
+                    st.get("line").and_then(|v| v.as_i()).unwrap_or(0),
+                    st.get("character").and_then(|v| v.as_i()).unwrap_or(0),
+                ),
+                offset_of(
+                    &text,
+                    en.get("line").and_then(|v| v.as_i()).unwrap_or(0),
+                    en.get("character").and_then(|v| v.as_i()).unwrap_or(0),
+                ),
+            )
+        })
+        .collect();
+    spans.sort();
+    for (s, e) in spans.iter().rev() {
+        text.replace_range(s..e, "greet");
+    }
+    assert!(
+        text.contains("fn greet(a)") && text.contains("greet(1);") && !text.contains("helper"),
+        "renamed program should have no `helper` left: {}",
+        text
+    );
+    s.finish();
+}
+
+#[test]
+fn rename_rejects_an_invalid_identifier() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    let result = s.request(
+        "textDocument/rename",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":4,\"character\":2}},\"newName\":\"2bad name\"}}",
+            URI
+        ),
+    );
+    assert!(
+        result.get("failureReason").is_some(),
+        "an invalid identifier must report a failure reason: {:?}",
+        result
+    );
+    s.finish();
+}

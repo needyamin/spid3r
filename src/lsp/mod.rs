@@ -68,6 +68,12 @@ impl Json {
             _ => None,
         }
     }
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            Json::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
     fn arr(&self) -> Option<&Vec<Json>> {
         match self {
             Json::Arr(a) => Some(a),
@@ -551,33 +557,41 @@ fn collect_locals_stmt(s: &Stmt, extent: Extent, decls: &mut Vec<Decl>) {
             if let Some(v) = var2 {
                 add(v, SymKind::Let, span, String::new(), decls);
             }
+            // Narrow to the loop body: a loop variable is not visible outside
+            // it, and a same-named binding inside must shadow (rename needs
+            // that distinction).
+            let be = block_extent(body);
             for s in &body.stmts {
-                collect_locals_stmt(s, extent, decls);
+                collect_locals_stmt(s, be, decls);
             }
         }
         Stmt::ForC { init, body, .. } => {
             collect_locals_stmt(init, extent, decls);
+            let be = block_extent(body);
             for s in &body.stmts {
-                collect_locals_stmt(s, extent, decls);
+                collect_locals_stmt(s, be, decls);
             }
         }
         Stmt::If {
             then, elifs, els, ..
         } => {
             for b in [then].into_iter().chain(elifs.iter().map(|(_, b)| b)) {
+                let be = block_extent(b);
                 for s in &b.stmts {
-                    collect_locals_stmt(s, extent, decls);
+                    collect_locals_stmt(s, be, decls);
                 }
             }
             if let Some(b) = els {
+                let be = block_extent(b);
                 for s in &b.stmts {
-                    collect_locals_stmt(s, extent, decls);
+                    collect_locals_stmt(s, be, decls);
                 }
             }
         }
         Stmt::While { body, .. } | Stmt::Block(body) => {
+            let be = block_extent(body);
             for s in &body.stmts {
-                collect_locals_stmt(s, extent, decls);
+                collect_locals_stmt(s, be, decls);
             }
         }
         Stmt::Try {
@@ -586,17 +600,20 @@ fn collect_locals_stmt(s: &Stmt, extent: Extent, decls: &mut Vec<Decl>) {
             finally,
             ..
         } => {
+            let be = block_extent(body);
             for s in &body.stmts {
-                collect_locals_stmt(s, extent, decls);
+                collect_locals_stmt(s, be, decls);
             }
             if let Some(c) = catch {
+                let ce = block_extent(&c.body);
                 for s in &c.body.stmts {
-                    collect_locals_stmt(s, extent, decls);
+                    collect_locals_stmt(s, ce, decls);
                 }
             }
             if let Some(b) = finally {
+                let fe = block_extent(b);
                 for s in &b.stmts {
-                    collect_locals_stmt(s, extent, decls);
+                    collect_locals_stmt(s, fe, decls);
                 }
             }
         }
@@ -926,6 +943,147 @@ fn definition_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
     ])])
 }
 
+/// The character position for a byte offset — the inverse of `byte_offset`.
+/// Document-scale inputs (editor files), so the single pass is fine.
+fn pos_at_byte(text: &str, off: usize) -> Pos {
+    let mut line = 0u32;
+    let mut col = 0u32;
+    for (i, c) in text.char_indices() {
+        if i >= off {
+            break;
+        }
+        if c == '\n' {
+            line += 1;
+            col = 0;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Every occurrence of `name` in the document that resolves to `target`,
+/// flagged with whether it is the declaration's own name token. Resolution
+/// goes through the same `resolve` the hover/definition handlers use, so
+/// shadowing is honored: a same-named local inside a tighter extent that
+/// resolves elsewhere is NOT a reference. File-scoped by design (see LSP.md).
+///
+/// The declaration's name token is the FIRST same-named identifier at or after
+/// the declaration's start: for `fn helper(a) { … }` that is `helper` (params
+/// and body follow it), for `let v = expr` the binding name precedes the
+/// initializer — so the rule survives recursion and self-referencing
+/// initializers alike.
+fn occurrences_of(doc: &Doc, target: &Decl, name: &str) -> Vec<(Span, bool)> {
+    let decl_start = byte_offset(
+        &doc.text,
+        (
+            target.def_span.line.saturating_sub(1),
+            target.def_span.col.saturating_sub(1),
+        ),
+    );
+    let mut out = Vec::new();
+    let mut decl_seen = false;
+    for (tok, (s, _e)) in doc.tokens.iter().zip(doc.ranges.iter()) {
+        if let TokenKind::Ident(n) = &tok.kind {
+            if n != name || *s < decl_start {
+                continue;
+            }
+            let pos = pos_at_byte(&doc.text, *s);
+            if let Some(d) = resolve(doc, name, pos) {
+                if d.def_span.line == target.def_span.line && d.def_span.col == target.def_span.col
+                {
+                    let is_decl = !decl_seen;
+                    decl_seen = true;
+                    out.push((tok.span.clone(), is_decl));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn references_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
+    let uri = uri_of(params);
+    let doc = match docs.get(&uri) {
+        Some(d) => d,
+        None => return Json::Null,
+    };
+    let pos = position_of(params);
+    let (name, _) = match ident_at(doc, pos) {
+        Some(x) => x,
+        None => return Json::Null,
+    };
+    let decl = match resolve(doc, &name, pos) {
+        Some(d) => d,
+        None => return Json::Null,
+    };
+    let include_decl = params
+        .get("context")
+        .and_then(|c| c.get("includeDeclaration"))
+        .and_then(|b| b.as_bool())
+        .unwrap_or(true);
+    let mut locs = Vec::new();
+    for (span, is_decl) in occurrences_of(doc, decl, &name) {
+        if is_decl && !include_decl {
+            continue;
+        }
+        locs.push(Json::Obj(vec![
+            ("uri".into(), Json::Str(uri.clone())),
+            ("range".into(), span_range(&span)),
+        ]));
+    }
+    Json::Arr(locs)
+}
+
+fn rename_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
+    let uri = uri_of(params);
+    let doc = match docs.get(&uri) {
+        Some(d) => d,
+        None => return Json::Null,
+    };
+    let pos = position_of(params);
+    let (name, _) = match ident_at(doc, pos) {
+        Some(x) => x,
+        None => return Json::Null,
+    };
+    let decl = match resolve(doc, &name, pos) {
+        Some(d) => d,
+        None => return Json::Null,
+    };
+    let new_name = match params.get("newName").and_then(|n| n.as_str()) {
+        Some(n) => n,
+        None => return Json::Null,
+    };
+    // The replacement must lex as one identifier, or the edit would corrupt
+    // the program the moment the client applies it.
+    let valid = !new_name.is_empty()
+        && new_name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && !new_name
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(true);
+    if !valid {
+        return Json::Obj(vec![(
+            "failureReason".into(),
+            Json::Str(format!("'{}' is not a valid identifier", new_name)),
+        )]);
+    }
+    let edits: Vec<Json> = occurrences_of(doc, decl, &name)
+        .into_iter()
+        .map(|(span, _is_decl)| {
+            Json::Obj(vec![
+                ("range".into(), span_range(&span)),
+                ("newText".into(), Json::Str(new_name.to_string())),
+            ])
+        })
+        .collect();
+    Json::Obj(vec![(
+        "changes".into(),
+        Json::Obj(vec![(uri, Json::Arr(edits))]),
+    )])
+}
+
 fn symbol(name: &str, kind: SymKind, span: &Span, children: Vec<Json>) -> Json {
     let mut obj = vec![
         ("name".into(), Json::Str(name.to_string())),
@@ -1198,6 +1356,8 @@ fn capabilities() -> Json {
                 ("textDocumentSync".into(), Json::Int(1)), // 1 = Full
                 ("hoverProvider".into(), Json::Bool(true)),
                 ("definitionProvider".into(), Json::Bool(true)),
+                ("referencesProvider".into(), Json::Bool(true)),
+                ("renameProvider".into(), Json::Bool(true)),
                 ("documentSymbolProvider".into(), Json::Bool(true)),
                 (
                     "completionProvider".into(),
@@ -1309,6 +1469,16 @@ pub fn cmd_lsp() -> i32 {
             "textDocument/definition" => {
                 if is_request {
                     send_result(&mut out, &id, definition_result(&docs, &params));
+                }
+            }
+            "textDocument/references" => {
+                if is_request {
+                    send_result(&mut out, &id, references_result(&docs, &params));
+                }
+            }
+            "textDocument/rename" => {
+                if is_request {
+                    send_result(&mut out, &id, rename_result(&docs, &params));
                 }
             }
             "textDocument/documentSymbol" => {
