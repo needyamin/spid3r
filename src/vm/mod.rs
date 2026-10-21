@@ -68,6 +68,7 @@ impl VmError {
             span: Some(self.span.clone()),
             thrown: self.thrown.clone(),
             trace: self.trace.clone(),
+            extras: None,
         }
     }
 

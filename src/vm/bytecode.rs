@@ -704,6 +704,15 @@ fn put_class_proto(b: &mut Vec<u8>, c: &VmClassProto) {
 /// buffer begins with the format magic and a version word so a corrupt or
 /// non-Spid3r file is rejected cleanly by `deserialize_vmfunc` rather than
 /// parsed as if it were valid bytecode.
+/// Serialize a compiled function tree.
+///
+/// This recurses once per nested function. The compiler's own output is bounded
+/// by the parser's nesting cap (64), and the reader refuses anything deeper than
+/// [`MAX_DESERIALIZE_DEPTH`], so a tree deep enough to matter cannot be produced
+/// from source. A Rust caller that hand-builds a *much* deeper tree (thousands
+/// of levels) can still exhaust the stack here — the frame is small, but the
+/// recursion is unbounded. `tests/artifact_hardening.rs` exercises 200 levels,
+/// which is the deepest realistic case.
 pub fn serialize_vmfunc(func: &VmFunc) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(FORMAT_MAGIC);

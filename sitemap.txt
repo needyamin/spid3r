@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 578 Rust tests green (562 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 584 Rust tests green (568 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -83,7 +83,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 578 tests (562 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 584 tests (568 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -375,6 +375,10 @@ GaliLang/
                          trailing bytes, instruction-table mismatch, fall-through
                          end, nesting depth, non-quadratic jumps, `exec` on a
                          corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         stage6_diagnostics.rs (6: source line + caret, caret
+                         alignment on a non-ASCII line, `= help:` on a type
+                         mismatch, `check --json` shape, a runtime error's
+                         snippet, and the plain fallback for a synthetic span),
                          stage2c_ergonomics.rs (8: destructuring let from a
                          list/function, value evaluated once, names are ordinary
                          bindings; for (k, v) over a map with the single-variable
@@ -527,6 +531,20 @@ GaliLang/
     * detached collection mutators (list/set/bag remove+add) commit with a
       verified snapshot and retry on conflict (bounded, 32) — concurrent adds
       cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Diagnostics (Stage 6, 2026-10-21):
+    * `Diagnostic::render()` prints message, `-->` location, the source line
+      with a caret under the span (tabs expanded, CHARACTER columns), then
+      `= note:` / `= help:` lines, then the trace. The source is read from the
+      span's file; when that fails the plain form is used, never a guess.
+    * `= help:` is attached where it changes what the user does — type
+      mismatches (`Checker::mismatch`) suggest `any` or an explicit conversion.
+    * `spid3r check --json` prints one JSON object (phase/message/file/line/
+      col/len/help/notes/trace) for editors and CI.
+    * Diagnostic help/notes live in ONE boxed `Option<Box<DiagnosticExtras>>`,
+      not two inline fields: `Diagnostic` sits in every `Result`, and the
+      bytecode serializer/deserializer is recursive, so its size is multiplied
+      by the nesting depth. Two inline fields (48 bytes) overflowed a 2 MB
+      thread stack at 200 levels of nesting.
   - Ergonomics (Stage 2c, 2026-10-21):
     * `let (a, b) = expr;` lowers to `let __d = expr; let a = __d[0]; …` — one
       evaluation, ordinary bindings. New `Stmt::LetTuple`, expanded by lower.

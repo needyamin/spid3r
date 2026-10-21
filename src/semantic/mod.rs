@@ -164,6 +164,16 @@ pub fn check_repl_in(program: &Program, known: &[String], source_file: &str) -> 
 }
 
 impl Checker {
+    /// A type-mismatch diagnostic with the suggestion users actually need:
+    /// annotations are compile-time only, so the fix is either `any` or a
+    /// conversion.
+    fn mismatch(&self, span: &Span, msg: String) -> Diagnostic {
+        self.err(span, msg).with_help(
+            "annotations are checked before the program runs; use `any` to opt out, \
+             or convert explicitly with string(x) / int(x) / float(x)",
+        )
+    }
+
     fn new(is_main: bool, source_file: &str) -> Checker {
         Checker {
             classes: HashMap::new(),
@@ -1167,7 +1177,7 @@ impl Checker {
                     let want = self.resolve_type(t);
                     let got = self.type_of(v);
                     if !self.assignable(&got, &want) {
-                        return Err(self.err(
+                        return Err(self.mismatch(
                             v.span(),
                             format!(
                                 "type mismatch in '{}': expected {}, got {}",
@@ -1222,7 +1232,7 @@ impl Checker {
                     let want = self.resolve_type(t);
                     let got = self.type_of(value);
                     if !self.assignable(&got, &want) {
-                        return Err(self.err(
+                        return Err(self.mismatch(
                             value.span(),
                             format!(
                                 "type mismatch in '{}': expected {}, got {}",
@@ -1346,7 +1356,7 @@ impl Checker {
                         let want = self.resolve_type(t);
                         let got = self.type_of(v);
                         if !self.assignable(&got, &want) {
-                            return Err(self.err(
+                            return Err(self.mismatch(
                                 v.span(),
                                 format!(
                                     "type mismatch in '{}': expected {}, got {}",
@@ -1388,7 +1398,7 @@ impl Checker {
                     if let Some(e) = value {
                         let got = self.type_of(e);
                         if !self.assignable(&got, want) {
-                            return Err(self.err(
+                            return Err(self.mismatch(
                                 span,
                                 format!(
                                     "return type mismatch: expected {}, got {}",
@@ -2065,7 +2075,7 @@ impl Checker {
                             if let Some(t) = &v.ty {
                                 let got = self.type_of(value);
                                 if !self.assignable(&got, t) {
-                                    return Err(self.err(
+                                    return Err(self.mismatch(
                                         span,
                                         format!(
                                             "type mismatch assigning to '{}': expected {}, got {}",
@@ -2120,7 +2130,7 @@ impl Checker {
                                 let want = self.resolve_type(ft);
                                 let got = self.type_of(value);
                                 if !self.assignable(&got, &want) {
-                                    return Err(self.err(
+                                    return Err(self.mismatch(
                                         span,
                                         format!(
                                             "type mismatch assigning to field '{}': expected {}, got {}",

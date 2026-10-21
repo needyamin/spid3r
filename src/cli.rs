@@ -27,7 +27,8 @@ USAGE:
 
 COMMANDS:
     run [--engine tree|vm] <file.matrix>   Compile and run a program
-    check <file.matrix>                    Lex, parse, semantic-check; no run
+    check <file.matrix> [--json]           Lex, parse, semantic-check; no run.
+                                           --json prints one diagnostic object
     compile <file.matrix> [-o out] [--dump]
                                            Write bytecode (.matrixc); --dump prints it
     build <file.matrix> [-o out] [--target triple] [--release]
@@ -88,7 +89,14 @@ pub fn run(args: Vec<String>) -> i32 {
             return EXIT_USAGE;
         }
     };
-    let rest: Vec<String> = it.collect();
+    let mut rest: Vec<String> = it.collect();
+    // `--json` makes the error printer emit one JSON object instead of the
+    // human form. It is a *diagnostic* flag, so it is consumed here rather than
+    // by a subcommand, and only for commands whose output is diagnostics.
+    let json = matches!(cmd.as_str(), "check" | "compile") && rest.iter().any(|a| a == "--json");
+    if json {
+        rest.retain(|a| a != "--json");
+    }
     // The parser caps expression nesting at MAX_PARSE_DEPTH, but the semantic
     // checker, the tree interpreter, and the VM compiler all recurse per AST
     // level with frames far larger than the parser's; on a 1 MiB default stack
@@ -109,7 +117,7 @@ pub fn run(args: Vec<String>) -> i32 {
                 // drained its tasks; stop the pool and join the worker threads
                 // instead of letting process exit kill them mid-write.
                 crate::sched::shutdown();
-                outcome_code(outcome)
+                outcome_code(outcome, json)
             }
             Err(panic) => std::panic::resume_unwind(panic),
         },
@@ -117,7 +125,7 @@ pub fn run(args: Vec<String>) -> i32 {
         Err(_) => {
             let outcome = dispatch(cmd, rest);
             crate::sched::shutdown();
-            outcome_code(outcome)
+            outcome_code(outcome, json)
         }
     }
 }
@@ -160,11 +168,18 @@ fn dispatch(cmd: String, rest: Vec<String>) -> Result<i32, Diagnostic> {
     outcome
 }
 
-fn outcome_code(outcome: Result<i32, Diagnostic>) -> i32 {
+fn outcome_code(outcome: Result<i32, Diagnostic>, json: bool) -> i32 {
     match outcome {
         Ok(code) => code,
         Err(d) => {
-            eprintln!("{}", d);
+            if json {
+                // One object per line: `spid3r check --json file.matrix` is
+                // consumable by an editor or a CI annotation step.
+                println!("{}", d.to_json());
+            } else {
+                // `render` adds the source snippet and the help/note lines.
+                eprintln!("{}", d.render());
+            }
             if d.phase == Phase::Usage {
                 EXIT_USAGE
             } else {
