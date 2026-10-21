@@ -1,9 +1,0 @@
-// P3b: nested fn, correct arity, annotated param — only the TYPE is wrong.
-// Static table lookup misses nested fns; does anything reject "x"?
-fn main() {
-    fn h(a: int) {
-        return 42;
-    }
-    print(h("x"));
-    return 0;
-}

@@ -1,6 +1,0 @@
-// P10: \uXXXX is NOT a Spid3r string escape (GRAMMAR.md lists only
-// \n \r \t \\ \") — expect a lexer "unknown escape" error, doc-consistent.
-fn main() {
-    print("A is \u0041");
-    return 0;
-}

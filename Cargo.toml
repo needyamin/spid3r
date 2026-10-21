@@ -22,11 +22,6 @@ name = "calculator"
 path = "demo_apps/native_calculator/main.rs"
 required-features = ["gui"]
 
-# Embedding API demonstration: a Rust host embedding Spid3r as a scripting
-# layer (`cargo run --example embed_hello`). See docs/EMBEDDING.md.
-[[example]]
-name = "embed_hello"
-path = "examples_rust/embed_hello.rs"
 
 
 [features]

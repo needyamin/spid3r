@@ -1,7 +1,0 @@
-// P16: raw newline inside a string literal is accepted by the lexer (no
-// escape). Span still points at the opening quote; what does fmt do?
-fn main() {
-    print("line one
-line two");
-    return 0;
-}

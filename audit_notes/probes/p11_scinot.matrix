@@ -1,5 +1,0 @@
-// P11: verify sitemap §12 quirk — no scientific notation floats.
-fn main() {
-    print(1e3);
-    return 0;
-}

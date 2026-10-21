@@ -1,7 +1,0 @@
-// lib_b.matrix: nested import leaf
-export const B_CONST = 20;
-var leaf_state = 1;
-export fn leaf_bump() {
-    leaf_state = leaf_state + 1;
-    return leaf_state;
-}

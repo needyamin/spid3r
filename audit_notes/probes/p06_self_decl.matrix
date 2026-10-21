@@ -1,6 +1,0 @@
-// P6: `self` as a declaration name — parser/semantic accept it, violating the
-// KEYWORDS.md note that self appears only as a parameter / in method bodies.
-let self = 3;
-fn main() {
-    return 0;
-}

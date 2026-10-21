@@ -1,9 +1,0 @@
-// P18b: `any` and `heap` annotations alone (both accepted by
-// check_type_name; `heap`/`any` absent from KEYWORDS.md type-name table).
-fn main() {
-    let a: any = 5;
-    let h: heap = heap("min");
-    print(a);
-    print(h);
-    return 0;
-}
