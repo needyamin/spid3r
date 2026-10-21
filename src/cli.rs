@@ -59,8 +59,11 @@ COMMANDS:
     test [--filter SUBSTR] [--list]        Run every examples/*.matrix file (or
                                            a project's tests/*.matrix) through the
                                            three-engine differential
-    bench [--engine tree|vm] [--runs N] [--compare] [files...]
-                                           Time benchmarks/*.matrix (best of N)
+    bench [--engine tree|vm] [--runs N] [--compare] [--gate] [files...]
+                                           Time benchmarks/*.matrix (best of N);
+                                           the shipped set lives in
+                                           _dustbin/benchmarks/ — copy it back
+                                           to the project root to run it
     fmt [--check] [files...]               Canonical formatting (in place);
                                            --check exits 1 if any file differs
     lsp                                    Language Server over stdio
@@ -1190,7 +1193,8 @@ fn cmd_install(args: &[String]) -> Result<i32, Diagnostic> {
 /// Rewrite files in canonical form. Without `--check`, files are formatted in
 /// place; with `--check`, nothing is written and the command exits 1 when any
 /// file is not yet formatted (CI mode). With no files given, formats every
-/// `.matrix` file under examples/ and benchmarks/.
+/// `.matrix` file under examples/ and benchmarks/ (the latter when present —
+/// the shipped set lives in _dustbin/benchmarks/).
 fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
     let mut check = false;
     let mut files: Vec<String> = Vec::new();
@@ -1336,6 +1340,31 @@ fn bench_iters(stem: &str) -> Option<u64> {
         .map(|(_, c)| *c)
 }
 
+/// Perf-gate floors (CI-01): minimum acceptable iters/sec per benchmark, used
+/// by `spid3r bench --gate` (the CI perf job). Calibrated at roughly 1/3 of
+/// the WORST single-run rate observed on reference hardware (best-of-5
+/// release numbers are several times higher still) — they exist to catch
+/// CATASTROPHIC regressions (a 3x+ slowdown) on shared CI runners, not small
+/// drift; _dustbin/ROADMAP.md's table is the record for real tuning. A benchmark file
+/// added to BENCH_ITERS without a floor simply is not gated.
+const BENCH_FLOORS: &[(&str, u64)] = &[
+    ("arith", 6_000_000),
+    ("strings", 140_000),
+    ("list", 800_000),
+    ("map", 160_000),
+    ("methods", 500_000),
+    ("closures", 170_000),
+    ("json", 8_000),
+    ("tasks", 6_000),
+];
+
+fn bench_floor(stem: &str) -> Option<u64> {
+    BENCH_FLOORS
+        .iter()
+        .find(|(n, _)| *n == stem)
+        .map(|(_, c)| *c)
+}
+
 /// `spid3r bench [--engine tree|vm] [--runs N] [--compare] [files...]`
 ///
 /// Times each benchmark file by running it in a fresh subprocess (best of N
@@ -1347,6 +1376,7 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
     let mut runs: usize = 3;
     let mut compare = false;
     let mut no_opt = false;
+    let mut gate = false;
     let mut files: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -1372,6 +1402,7 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
             }
             "--compare" => compare = true,
             "--no-opt" => no_opt = true,
+            "--gate" => gate = true,
             a if a.starts_with("--") => return Err(usage(&format!("unknown option '{}'", a))),
             a => files.push(a.to_string()),
         }
@@ -1382,7 +1413,8 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         if !dir.is_dir() {
             return Err(Diagnostic::new(
                 Phase::Usage,
-                "no benchmarks/ directory here; run spid3r bench from the project root \
+                "no benchmarks/ directory here (the shipped set lives in \
+                 _dustbin/benchmarks/ — copy it back to the project root), \
                  or pass benchmark files explicitly",
             ));
         }
@@ -1418,6 +1450,7 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         "benchmark", "iters", "best time", "iters/sec"
     );
     let mut failures = 0;
+    let mut rates: Vec<(String, Option<f64>)> = Vec::new();
     for f in &files {
         let stem = Path::new(f)
             .file_stem()
@@ -1479,11 +1512,10 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
             }
         }
         let secs = time.as_secs_f64();
-        let (time_s, rate) = match bench_iters(&stem) {
-            Some(iters) => (
-                format!("{:.3?}", time),
-                format!("{:.0}", iters as f64 / secs),
-            ),
+        let rate_val = bench_iters(&stem).map(|iters| iters as f64 / secs);
+        rates.push((stem.clone(), rate_val));
+        let (time_s, rate) = match rate_val {
+            Some(r) => (format!("{:.3?}", time), format!("{:.0}", r)),
             None => (format!("{:.3?}", time), "-".to_string()),
         };
         println!(
@@ -1499,6 +1531,39 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
     if failures > 0 {
         println!("{} benchmark(s) failed", failures);
         return Ok(EXIT_USER_ERROR);
+    }
+    if gate {
+        // CI-01: fail the run when any benchmark falls below its floor.
+        println!();
+        println!("perf gate (floors catch catastrophic regressions on shared runners):");
+        let mut gate_failures = 0;
+        for (stem, rate) in &rates {
+            match (*rate, bench_floor(stem)) {
+                (Some(r), Some(floor)) if r >= floor as f64 => {
+                    println!("{:<12} PASS  ({:.0} >= {} iters/sec)", stem, r, floor);
+                }
+                (Some(r), Some(floor)) => {
+                    println!(
+                        "{:<12} FAIL  ({:.0} < {} iters/sec — investigate before merging)",
+                        stem, r, floor
+                    );
+                    gate_failures += 1;
+                }
+                (None, Some(_)) => {
+                    println!(
+                        "{:<12} FAIL  (no iters/sec — add the file to BENCH_ITERS)",
+                        stem
+                    );
+                    gate_failures += 1;
+                }
+                (_, None) => {}
+            }
+        }
+        if gate_failures > 0 {
+            println!("{} perf gate violation(s)", gate_failures);
+            return Ok(EXIT_USER_ERROR);
+        }
+        println!("perf gate passed");
     }
     Ok(EXIT_OK)
 }

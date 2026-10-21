@@ -251,9 +251,20 @@ fn collect_outer_uses_expr(
     out: &mut HashSet<String>,
 ) {
     match e {
-        // `super` itself references no names; its arguments might.
-        Expr::Super { .. } => {}
+        // `super` itself references no names; its arguments might — and the
+        // receiver is read implicitly, so a nested closure whose body uses
+        // `super` must capture `self` like any other outer local (PAR-03).
+        Expr::Super { .. } => {
+            let local = declared.iter().any(|f| f.contains("self"));
+            if !local {
+                out.insert("self".to_string());
+            }
+        }
         Expr::SuperCall { args, .. } => {
+            let local = declared.iter().any(|f| f.contains("self"));
+            if !local {
+                out.insert("self".to_string());
+            }
             for a in args {
                 collect_outer_uses_expr(a, declared, out);
             }
@@ -1219,9 +1230,11 @@ impl<'ctx> Ir<'ctx> {
                 Ok(())
             }
             Stmt::Class(_) | Stmt::Interface(_) => {
-                // Classes are hoisted and registered when the entry function
-                // starts; a class statement inside a function body is not
-                // supported (matching the reference engines).
+                // Defensive dead code (PAR-01 finding, 2026-10-22): the parser
+                // rejects class/interface declarations inside any function
+                // body on every engine (`unexpected keyword 'class'`), so a
+                // Stmt::Class can never reach this arm. Kept as a guard in
+                // case the grammar ever relaxes.
                 Err(self.unsupported("class declaration inside a function"))
             }
             Stmt::Import { .. } => Err(self.unsupported("import (module resolution)")),
@@ -1800,10 +1813,58 @@ impl<'ctx> Ir<'ctx> {
 
     fn compile_expr_inner(&mut self, e: &Expr) -> IrResult<PointerValue<'ctx>> {
         match e {
-            // `super` needs the runtime's parent-class lookup; rejected with
-            // the backend's standard wording until it is implemented here.
-            Expr::Super { .. } | Expr::SuperCall { .. } => {
-                Err(self.unsupported("super (parent-class calls)"))
+            // `super` is resolved to a `SuperCall` by `crate::lower`; the
+            // checker rejects a bare value-position `super` before codegen,
+            // so reaching this arm is a pipeline bug, not a user error.
+            Expr::Super { span } => Err(format!(
+                "internal error at {}:{}: a bare `super` reached the native backend \
+                 (the checker rejects it first; this is a bug in spid3r)",
+                span.file, span.line
+            )),
+            Expr::SuperCall {
+                parent,
+                method,
+                args,
+                ..
+            } => {
+                // The receiver is the executing frame's `self` (argv[0] of
+                // every compiled method/constructor); the parent class and
+                // method names travel as constants and the runtime trampoline
+                // `spid3r_super_call` resolves the parent in the globals —
+                // the same resolution tree/vm perform.
+                let recv = self.compile_ident("self")?;
+                let mut argv: Vec<PointerValue<'ctx>> = Vec::with_capacity(args.len());
+                for a in args {
+                    argv.push(self.compile_expr(a)?);
+                }
+                let arr = self.argv_array(&argv);
+                let (pp, _) = self.str_global(parent);
+                let mp = match method {
+                    Some(m) => self.str_global(m).0,
+                    None => self.null_ptr(),
+                };
+                let f = self.tramp(
+                    "spid3r_super_call",
+                    &[
+                        self.ptr_ty().into(),
+                        self.ptr_ty().into(),
+                        self.ptr_ty().into(),
+                        self.i64_ty().into(),
+                        self.ptr_ty().into(),
+                    ],
+                    Some(self.ptr_ty().into()),
+                );
+                let n = self.i64c(args.len() as i64);
+                let sname = self.tmp_name("sup");
+                let r = self
+                    .builder
+                    .build_call(
+                        f,
+                        &[recv.into(), pp.into(), mp.into(), n.into(), arr.into()],
+                        &sname,
+                    )
+                    .unwrap();
+                Ok(call_ptr(r))
             }
             // Surface-only nodes are rewritten by `crate::lower` before codegen.
             Expr::If { span, .. }

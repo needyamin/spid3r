@@ -1215,7 +1215,7 @@ impl Parser {
     }
 
     fn parse_mul(&mut self) -> SpidResult<Expr> {
-        let mut left = self.parse_unary()?;
+        let mut left = self.parse_as()?;
         loop {
             let op = match self.kind() {
                 TokenKind::Star => BinOp::Mul,
@@ -1224,12 +1224,48 @@ impl Parser {
                 _ => break,
             };
             self.pos += 1;
-            let right = self.parse_unary()?;
+            let right = self.parse_as()?;
             let span = join(left.span().clone(), right.span().clone());
             left = Expr::Binary {
                 op,
                 l: Box::new(left),
                 r: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    /// `expr as type` (PAR-06). `as` is a lexer keyword already reserved for
+    /// exactly this; desugared to the `int(...)` / `float(...)` /
+    /// `string(...)` / `bool(...)` builtin call — the same
+    /// one-implementation pattern as the bitwise operators — so the conversion
+    /// errors (and the runtime behavior) come from the stdlib the interpreter,
+    /// VM and AOT backend already share. Binds tighter than `*` (like Rust):
+    /// `a + b as int` is `a + (b as int)`, and chains (`x as float as int`)
+    /// are allowed.
+    fn parse_as(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_unary()?;
+        while self.at_kw(Keyword::As) {
+            self.pos += 1;
+            let ty = match self.kind() {
+                TokenKind::Ident(t)
+                    if t == "int" || t == "float" || t == "string" || t == "bool" =>
+                {
+                    t.clone()
+                }
+                other => {
+                    return Err(self.err_here(format!(
+                        "unknown type in 'as' cast: expected int, float, string, or bool, found {}",
+                        describe(other)
+                    )));
+                }
+            };
+            self.pos += 1;
+            let span = join(left.span().clone(), self.prev_span());
+            left = Expr::Call {
+                callee: Box::new(Expr::Ident(ty, span.clone())),
+                args: vec![left],
                 span,
             };
         }
@@ -1464,9 +1500,39 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.pos += 1;
-                let e = self.parse_expr()?;
+                // `(e)` is a parenthesized expression; `(a, b, c)` is a tuple
+                // literal, desugared into the `tuple(...)` constructor call
+                // (the same one-implementation desugar as the bitwise ops, so
+                // every engine — and the checker — sees an ordinary call).
+                // `(e,)` is a one-element tuple; `()` is the empty tuple.
+                if self.at(&TokenKind::RParen) {
+                    self.pos += 1;
+                    let span = join(sp, self.prev_span());
+                    return Ok(Expr::Call {
+                        callee: Box::new(Expr::Ident("tuple".to_string(), span.clone())),
+                        args: Vec::new(),
+                        span,
+                    });
+                }
+                let first = self.parse_expr()?;
+                if self.eat(&TokenKind::Comma) {
+                    let mut items = vec![first];
+                    while !self.at(&TokenKind::RParen) {
+                        items.push(self.parse_expr()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&TokenKind::RParen, "')'")?;
+                    let span = join(sp, self.prev_span());
+                    return Ok(Expr::Call {
+                        callee: Box::new(Expr::Ident("tuple".to_string(), span.clone())),
+                        args: items,
+                        span,
+                    });
+                }
                 self.expect(&TokenKind::RParen, "')'")?;
-                Ok(e)
+                Ok(first)
             }
             _ => Err(self.err_here(format!("unexpected {}", describe(&kind)))),
         }

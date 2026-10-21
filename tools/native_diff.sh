@@ -6,11 +6,16 @@
 # skipped instead of wedging the whole run. Tune via env vars:
 #   VM_TIMEOUT (default 30), BUILD_TIMEOUT (default 180), RUN_TIMEOUT (default 30)
 #
-# NOTE: this needs target/debug/spid3r.exe built WITH the native backend
+# NOTE: this needs the debug spid3r built WITH the native backend
 # (cargo build --features native). Plain `cargo test`/`cargo build` overwrites
 # that binary with a non-native one and every example would SKIP.
 cd "$(dirname "$0")/.."
-SPID3R=./target/debug/spid3r.exe
+# The binary name carries .exe only on Windows (Git Bash included).
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) EXE=spid3r.exe ;;
+    *)                    EXE=spid3r     ;;
+esac
+SPID3R=./target/debug/$EXE
 OUT=target/isolated
 VM_TIMEOUT=${VM_TIMEOUT:-30}
 BUILD_TIMEOUT=${BUILD_TIMEOUT:-180}

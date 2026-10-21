@@ -66,6 +66,19 @@ jobs:
       - name: Verify Spid3r source formatting
         run: cargo run --bin spid3r --no-default-features -- fmt --check
 
+      # CI-03: pin the CANONICAL test counts (tools/count_tests.sh is the only
+      # accepted counter — never hand-count) into the step summary, so a suite
+      # count drifting silently between runs is visible in every CI result.
+      - name: Report canonical test counts
+        shell: bash
+        run: |
+          {
+            echo "### Canonical test counts (${{ matrix.os }})"
+            '```'
+            bash tools/count_tests.sh
+            '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   gui:
     name: GUI Feature (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -132,3 +145,43 @@ jobs:
 
       - name: Clippy WebAssembly target (zero warnings)
         run: cargo clippy --target wasm32-unknown-unknown --lib --no-default-features -- -D warnings
+
+  # CI-02: the native/AOT backend joins the GATED differential (previously the
+  # AOT subset only ran where a developer happened to have LLVM installed).
+  # Ubuntu only for now — macOS (brew llvm@18) and Windows (official LLVM
+  # installer) join with CI-04, the multi-platform native job. LLVM install
+  # per docs/BUILDING.md.
+  aot:
+    name: Native AOT Differential (LLVM)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install LLVM 18 (native backend dependency)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 libllvm18 llvm-18-dev clang
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+
+      # Builds core + native (no gui). Includes the engine-matrix AOT subset
+      # and the native runtime tests.
+      - name: Run the suite with the native backend
+        run: cargo test --no-default-features --features native 2>&1 | tee cargo_test_native.txt
+        shell: bash
+
+      - name: Report native test failures to the step summary
+        if: failure()
+        shell: bash
+        run: |
+          echo "### Native failures" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "FAILED|panicked at|test result:" cargo_test_native.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+      # Tree-vs-native over every shipped example, with per-step timeouts so a
+      # wedged AOT build cannot eat the job (see the script header).
+      - name: Tree-vs-native differential over all examples
+        run: bash tools/native_diff.sh examples/*.matrix

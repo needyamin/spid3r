@@ -418,8 +418,11 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "higher_order",
-        src: "fn main() {\n    let xs = [1, 2, 3, 4];\n    println(xs.map(fn(x) { return x * 2; }));\n    println(xs.filter(fn(x) { return x > 2; }));\n    println(xs.reduce(0, fn(a, b) { return a + b; }));\n    return 0;\n}\n",
-        out: "[2, 4, 6, 8]\n[3, 4]\n10",
+        // Higher-order collection callbacks (PAR-02) — including a closure
+        // that CAPTURES an enclosing local (`k`), which crosses the callback
+        // host boundary inside compiled code.
+        src: "fn scale(k) {\n    let xs = [1, 2, 3];\n    return xs.map(fn(n) { return n * k; });\n}\nfn main() {\n    let xs = [1, 2, 3, 4];\n    println(xs.map(fn(x) { return x * 2; }));\n    println(xs.filter(fn(x) { return x > 2; }));\n    println(xs.reduce(0, fn(a, b) { return a + b; }));\n    println(scale(3));\n    println(scale(10));\n    return 0;\n}\n",
+        out: "[2, 4, 6, 8]\n[3, 4]\n10\n[3, 6, 9]\n[10, 20, 30]",
         code: 0,
         err: None,
         aot: true,
@@ -450,7 +453,42 @@ const CASES: &[Case] = &[
         out: "rex says woof!\n0",
         code: 0,
         err: None,
-        aot: false,
+        aot: true,
+    },
+    Case {
+        name: "method_arity_dynamic",
+        // A call through an untyped parameter bypasses the checker's static
+        // arity check, so the runtime message is observable — and it must be
+        // catchable with the SAME text on every engine. Caught (not uncaught)
+        // because the AOT binary's uncaught-throw format is a documented
+        // diagnostic gap; the caught path pins the message itself.
+        src: "class Greeter {\n    fn new() {}\n    public fn greet(self, who) { return \"hi \" + who; }\n}\nfn shout(g) {\n    try {\n        return g.greet(\"a\", \"b\");\n    } catch (e) {\n        return e;\n    }\n}\nfn main() {\n    println(shout(new Greeter()));\n    return 0;\n}\n",
+        out: "method greet expects 1 argument(s), got 2",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "tuple_literal",
+        // PAR-05: `(a, b, c)` is a tuple literal (desugared to the `tuple(...)`
+        // constructor, like every other collection literal). `(e)` stays a
+        // parenthesized expression and `(e,)` is a one-element tuple.
+        src: "fn main() {\n    let t = (1, \"two\", 3.5);\n    println(t);\n    println(len(t));\n    println(t[1]);\n    let e = ();\n    println(e);\n    let one = (7,);\n    println(one);\n    let g = (5);\n    println(g);\n    let nested = ((1, 2), (3,));\n    println(nested);\n    return 0;\n}\n",
+        out: "(1, two, 3.5)\n3\ntwo\n()\n(7)\n5\n((1, 2), (3))",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "as_cast",
+        // PAR-06: `expr as type` desugars to the int/float/string/bool builtin
+        // (one implementation, every engine). Contextual keyword — `as` binds
+        // tighter than `*` (Rust-style), so `1 + 2 as string` casts only the 2.
+        src: "fn main() {\n    let x = 42;\n    println(x as string + \"!\");\n    println(\"7\" as int + 1);\n    println(3 as float);\n    println(1 as bool);\n    println(\"3.5\" as float * 2.0);\n    println((1 + 2) as string);\n    println(5 as int);\n    return 0;\n}\n",
+        out: "42!\n8\n3.0\ntrue\n7.0\n3\n5",
+        code: 0,
+        err: None,
+        aot: true,
     },
     Case {
         name: "interface",

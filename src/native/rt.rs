@@ -570,8 +570,17 @@ fn spid3r_method_inner(
     if let Value::CInstance(inst) = &object {
         let class = inst.lock().unwrap().class.clone();
         if let Some((_, cfn)) = find_method_cclass(&class, &name) {
-            let arity = cfn.arity;
-            check_arity(&name, arity, argc + 1);
+            // Same wording as the VM/tree runtime dispatch (PAR-04): the
+            // message counts the *declared* parameters and the *passed*
+            // arguments, neither of which includes `self`.
+            if cfn.arity != argc + 1 {
+                return rt_throw(&format!(
+                    "method {} expects {} argument(s), got {}",
+                    name,
+                    cfn.arity.saturating_sub(1),
+                    argc
+                ));
+            }
             let env = cfn.env;
             let code = cfn.code;
             let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
@@ -584,7 +593,10 @@ fn spid3r_method_inner(
             leave_call();
             return r;
         }
-        abort(&format!("class {} has no method '{}'", class.name, name));
+        // Catchable like the tree/VM dispatch (`fail`/`Flow::Error`), not an
+        // internal abort: a call through an untyped value can reach this with
+        // any method name (found by tests/engine_matrix.rs).
+        return rt_throw(&format!("class {} has no method '{}'", class.name, name));
     }
     match collections::call_method_host(&mut NativeCallbackHost, &object, &name, args) {
         Ok(v) => leak(v),
@@ -596,6 +608,112 @@ fn spid3r_method_inner(
             None => rt_throw(&msg),
         },
     }
+}
+
+/// `super(args)` / `super.m(args)` inside a compiled method or constructor
+/// (PAR-03). The receiver is the current compiled instance; the target class
+/// is resolved by name in the globals — the same resolution the tree
+/// interpreter performs — and every error message matches tree/vm verbatim.
+/// `method_name == NULL` calls the parent constructor on the instance being
+/// initialized; otherwise it runs the parent method with the same receiver.
+#[no_mangle]
+pub extern "C" fn spid3r_super_call(
+    recv: *mut Value,
+    parent_name: *const c_char,
+    method_name: *const c_char,
+    argc: usize,
+    argv: *const *mut Value,
+) -> *mut Value {
+    ffi_value("super", || {
+        spid3r_super_call_inner(recv, parent_name, method_name, argc, argv)
+    })
+}
+
+fn spid3r_super_call_inner(
+    recv: *mut Value,
+    parent_name: *const c_char,
+    method_name: *const c_char,
+    argc: usize,
+    argv: *const *mut Value,
+) -> *mut Value {
+    let object = to_owned(recv);
+    match object {
+        Value::CInstance(_) => {}
+        _ => {
+            return rt_throw("super is only available inside a class method");
+        }
+    }
+    let parent = cstr(parent_name);
+    if parent.is_empty() {
+        return rt_throw("super is not available: this class has no parent class");
+    }
+    let class = {
+        let g = globals().lock().unwrap();
+        match g.get(&parent) {
+            Some(Value::CClass(c)) => c.clone(),
+            Some(_) => return rt_throw(&format!("'{}' is not a class", parent)),
+            None => return rt_throw(&format!("unknown class '{}'", parent)),
+        }
+    };
+    let args = unsafe { args_vec(argc, argv) };
+    if method_name.is_null() {
+        // Parent constructor on the SAME instance (it already exists — it is
+        // being initialized). The parent's OWN ctor, no chain walk, and the
+        // result is null — exactly the tree engine's `call_parent_constructor`.
+        let ctor = match &class.ctor {
+            Some(c) => c.clone(),
+            None => {
+                return rt_throw(&format!("class '{}' has no constructor", class.name));
+            }
+        };
+        if ctor.arity != argc + 1 {
+            return rt_throw(&format!(
+                "constructor {}::new expects {} argument(s), got {}",
+                class.name,
+                ctor.arity.saturating_sub(1),
+                argc
+            ));
+        }
+        let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
+        call_args.push(leak(object.clone()));
+        for a in &args {
+            call_args.push(leak(a.clone()));
+        }
+        let env = ctor.env;
+        let code = ctor.code;
+        enter_call();
+        unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
+        leave_call();
+        return leak(Value::Null);
+    }
+    // Parent method on the same receiver (the tree engine's `call_class_method`
+    // against the parent class; `find_method_cclass` walks the same chain).
+    let m = cstr(method_name);
+    let (_, f) = match find_method_cclass(&class, &m) {
+        Some(x) => x,
+        None => {
+            return rt_throw(&format!("class {} has no method '{}'", class.name, m));
+        }
+    };
+    if f.arity != argc + 1 {
+        return rt_throw(&format!(
+            "method {} expects {} argument(s), got {}",
+            m,
+            f.arity.saturating_sub(1),
+            argc
+        ));
+    }
+    let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
+    call_args.push(leak(object.clone()));
+    for a in &args {
+        call_args.push(leak(a.clone()));
+    }
+    let env = f.env;
+    let code = f.code;
+    enter_call();
+    let r = unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
+    leave_call();
+    r
 }
 
 /// Lets builtin collections call Spid3r functions back (higher-order methods

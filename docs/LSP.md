@@ -110,7 +110,7 @@ the implementation's own parser.
 resolution, shadowing, doc-comment attachment, error capture), which is where
 the subtle bugs live — a wire test can only prove the plumbing.
 
-`audit_notes/probes/lsp_probe.py` is a scripted session that prints every
+`_dustbin/audit_notes/probes/lsp_probe.py` is a scripted session that prints every
 reply verbatim; useful when debugging a client handshake by hand.
 
 ## Not implemented

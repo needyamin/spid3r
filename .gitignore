@@ -68,3 +68,8 @@ desktop.ini
 *.tmp
 *.WebView2/
 *.WebView2
+
+# --- Parked material (owner request, 2026-10-22) ------------------------------
+# History/planning/audit artifacts parked in _dustbin/ instead of deleted.
+# Never committed, never pushed. See _dustbin/README.md for contents + restore.
+/_dustbin/

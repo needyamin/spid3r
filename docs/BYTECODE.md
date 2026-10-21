@@ -128,7 +128,7 @@ functions (each with its own prototype's upvalue count). It rejects:
 The VM is defensive at every use site anyway (`match` on the value tag,
 `.get()` with a fallback), so a validator gap degrades to a clean runtime
 error, never to undefined behavior. See
-`audit_notes/state_desync_type_confusion_2026-10-22.md`.
+`_dustbin/audit_notes/state_desync_type_confusion_2026-10-22.md`.
 
 Before any chunk is executed, `validate_chunk` walks it (and all nested function
 prototypes and embedded module chunks) recursively and rejects:

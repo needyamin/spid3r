@@ -1183,6 +1183,10 @@ let label = if (count == 0) { "empty" } else { "{count} items" };</code></pre>
               comparison). A shift amount outside <code>0..=63</code> is an error.</p>
             <p class="tag">Unary</p>
             <p><code>-x</code> · <code>not x</code> · <code>await x</code> · <code>spawn fn(){…}</code></p>
+            <p class="tag">Casts</p>
+            <p><code>x as int · x as float · x as string · x as bool</code> — binds tighter than
+              <code>*</code> (Rust-style), chains allowed; exactly the conversion builtins
+              <code>int()/float()/string()/bool()</code>.</p>
           </div>
           <div>
             <p class="tag">Assignment (right-associative)</p>
@@ -1195,7 +1199,8 @@ let label = if (count == 0) { "empty" } else { "{count} items" };</code></pre>
               <code>m[k] = v</code>
             </p>
             <p class="tag">Construction</p>
-            <p><code>new Class(…)</code> · <code>[a, b]</code> · <code>list(…)</code> · <code>fn(x){…}</code></p>
+            <p><code>new Class(…)</code> · <code>[a, b]</code> · <code>(a, b, c)</code> tuple literal ·
+              <code>list(…)</code> · <code>fn(x){…}</code></p>
             <p class="tag">Not available</p>
             <p>No <code>!</code>, <code>++</code>, <code>~</code>, or <code>**</code>. Use <code>not</code>,
               <code>x += 1</code>, and <code>pow(b, e)</code>. <code>^</code> is bitwise xor, not
@@ -1204,7 +1209,8 @@ let label = if (count == 0) { "empty" } else { "{count} items" };</code></pre>
           </div>
         </div>
         <p><strong>Precedence</strong>, tightest first: postfix (call, index, field, method) → unary
-          <code>not</code> / <code>-</code> / <code>await</code> / <code>spawn</code> → <code>* / %</code> →
+          <code>not</code> / <code>-</code> / <code>await</code> / <code>spawn</code> → <code>as</code>
+          casts → <code>* / %</code> →
           <code>+ -</code> → <code>&lt;&lt; &gt;&gt;</code> → comparisons → <code>&amp;</code> →
           <code>^</code> → <code>|</code> → <code>and</code> → <code>or</code> → <code>??</code> →
           assignment. Comparison chains
@@ -2877,11 +2883,14 @@ console.log(formatted.code);  // "let a = 1 + 2;\nprintln(a);\n"</code></pre>
               <td><code>bench [--engine tree|vm] [--runs N] [--compare] [--no-opt] [files…]</code></td>
               <td>Time <code>benchmarks/*.matrix</code> (or the given files), best of N runs (default engine
                 <code>vm</code>, default 3 runs). <code>--compare</code> also asserts tree and VM output match.
+                The shipped benchmark files live in <code>_dustbin/benchmarks/</code> — copy them back to
+                the project root to run the suite.
               </td>
             </tr>
             <tr>
               <td><code>fmt [--check] [files…]</code></td>
-              <td>Format files in place. With no files, formats <code>examples/</code> and <code>benchmarks/</code>.
+              <td>Format files in place. With no files, formats <code>examples/</code> and
+                <code>benchmarks/</code> (when present — the shipped set lives in <code>_dustbin/benchmarks/</code>).
                 <code>--check</code> writes nothing and exits <code>1</code> if any file would change.
               </td>
             </tr>
@@ -3536,7 +3545,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               precise GC gate, structured thrown values), and packaging security (git transport whitelist,
               locked commits, raw-byte hashes). Enforced in cross-platform GitHub Actions CI
               (<code>.github/workflows/ci.yml</code>, pinned toolchain) plus a nightly fuzz workflow
-              (<code>.github/workflows/fuzz.yml</code>). See <a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a>.</li>
+              (<code>.github/workflows/fuzz.yml</code>). See <a href="_dustbin/AUDIT_REPORT.md">_dustbin/AUDIT_REPORT.md</a>.</li>
           </ul>
 
           <!-- ============================================================ REFERENCE -->
@@ -3578,7 +3587,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               needs M:N scheduling with continuations.</li>
             <li><strong>Dependencies:</strong> local only (path, git, or offline registry); no transitive
               resolution of registry packages.</li>
-            <li><strong>Known open (tracked in <a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a>):</strong>
+            <li><strong>Known open (tracked in <a href="_dustbin/AUDIT_REPORT.md">_dustbin/AUDIT_REPORT.md</a>):</strong>
               closure/environment cycles are not collected (value containers and class instances are), cloning a
               <em>cyclic</em> value aliases the original into the copy, the regex engine restarts its NFA at each
               input index (<code>O(n²·states)</code>), <code>net.rs</code> buffers grow without compaction on a
@@ -3648,7 +3657,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               <td><span class="pill">beyond v1.0</span></td>
             </tr>
           </table>
-          <p class="lead">Per-phase detail: <a href="docs/ROADMAP.md">docs/ROADMAP.md</a>.</p>
+          <p class="lead">Per-phase detail: <a href="_dustbin/ROADMAP.md">_dustbin/ROADMAP.md</a>.</p>
 
           <h2 id="more">Further reading</h2>
           <table>
@@ -3697,11 +3706,11 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               <td>Local dependency registry</td>
             </tr>
             <tr>
-              <td><a href="docs/ROADMAP.md">docs/ROADMAP.md</a></td>
+              <td><a href="_dustbin/ROADMAP.md">_dustbin/ROADMAP.md</a></td>
               <td>Phases, guarantees, limitations</td>
             </tr>
             <tr>
-              <td><a href="docs/AUDIT_REPORT.md">docs/AUDIT_REPORT.md</a></td>
+              <td><a href="_dustbin/AUDIT_REPORT.md">_dustbin/AUDIT_REPORT.md</a></td>
               <td>2026-10 audit findings and fixes</td>
             </tr>
           </table>

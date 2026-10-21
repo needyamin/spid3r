@@ -122,10 +122,12 @@ Supported today: functions/closures with upvalues, `let`/`const`,
 [Exceptions](#exceptions)), `import` (see [Modules](#modules)),
 `spawn`/`async`/`await` + channels/mutexes (see [Concurrency](#concurrency)),
 top-level classes and interfaces (fields,
-methods, constructors, `implements`), method calls, field access, indexing,
-list construction, the standard collections (`list`, `map`, `set`, `queue`,
-`deque`, `stack`, `heap`) via their builtin constructors, and all stdlib
-builtins.
+methods, constructors, `implements`), inheritance with `super(...)`
+/ `super.m(...)` (parent constructor on the same instance, parent method on
+the same receiver — resolved like tree/vm, `spid3r_super_call`), method calls,
+field access, indexing, list construction, the standard collections (`list`,
+`map`, `set`, `queue`, `deque`, `stack`, `heap`) via their builtin
+constructors, and all stdlib builtins.
 
 Explicitly rejected with a clear diagnostic (never silently mis-compiled):
 

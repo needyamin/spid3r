@@ -69,12 +69,13 @@ Pratt parser. Precedence, tightest first:
 
 1. calls, indexing, field access, method calls (postfix)
 2. unary `not`, unary `-`
-3. `*` `/` `%`
-4. `+` `-`
-5. comparisons `==` `!=` `<` `<=` `>` `>=`
-6. `and`
-7. `or`
-8. assignment (right associative, lowest)
+3. `as` casts (`x as int` — binds tighter than `*`, Rust-style)
+4. `*` `/` `%`
+5. `+` `-`
+6. comparisons `==` `!=` `<` `<=` `>` `>=`
+7. `and`
+8. `or`
+9. assignment (right associative, lowest)
 
 ```
 expr           = assignment ;
@@ -99,7 +100,10 @@ cmpExpr        = shiftExpr { cmpOp shiftExpr } ;
 cmpOp          = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 shiftExpr      = addExpr { ("<<" | ">>") addExpr } ;
 addExpr        = mulExpr { ("+" | "-") mulExpr } ;
-mulExpr        = unary { ("*" | "/" | "%") unary } ;
+mulExpr        = asExpr { ("*" | "/" | "%") asExpr } ;
+asExpr         = unary { "as" castType } ;   (* desugars to int()/float()/
+                                                  string()/bool() *)
+castType       = "int" | "float" | "string" | "bool" ;
 
 unary          = "not" unary | "-" unary | postfix ;
 
@@ -113,8 +117,13 @@ propagate      = expr "?" ;               (* return the failure, else unwrap *)
 args           = expr { "," expr } ;
 
 primary        = intLit | floatLit | stringLit | "true" | "false" | "null"
-               | ident | listLit | fnLit | "new" ident "(" [ args ] ")"
-               | "super" | ifExpr | matchExpr | "(" expr ")" ;
+               | ident | listLit | tupleLit | fnLit | "new" ident "(" [ args ] ")"
+               | "super" | ifExpr | matchExpr | parenExpr ;
+
+(* `(e)` parenthesizes; `(a, b, c)` is a tuple literal, `(e,)` a one-element
+   tuple and `()` the empty tuple — all desugared to the `tuple(...)` builtin *)
+parenExpr      = "(" expr ")" ;
+tupleLit       = "(" [ [ expr ] "," [ args ] ] ")" ;
 
 (* `if` in value position; a branch's last expression may omit its `;` *)
 ifExpr         = "if" "(" expr ")" valueBlock [ "else" valueBlock ] ;
