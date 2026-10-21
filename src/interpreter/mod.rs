@@ -217,14 +217,14 @@ impl Interp {
     fn install_builtin_classes(&self) {
         // The root class. `extends Object` works; classes without a parent
         // simply have none.
-        let object = Arc::new(crate::value::ClassData {
-            name: "Object".to_string(),
-            parent: None,
-            interfaces: Vec::new(),
-            fields: Vec::new(),
-            methods: HashMap::new(),
-            ctor: None,
-        });
+        let object = crate::value::new_class(
+            "Object".to_string(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            HashMap::new(),
+            None,
+        );
         environment::define(&self.globals, "Object", Value::Class(object));
     }
 
@@ -450,10 +450,7 @@ impl Interp {
             },
             Stmt::Fn(proto) => {
                 if let Some(name) = &proto.name {
-                    let f = Value::Function(Arc::new(FunctionData {
-                        proto: proto.clone(),
-                        env: env.clone(),
-                    }));
+                    let f = Value::Function(crate::value::new_function(proto.clone(), env.clone()));
                     environment::define(env, name, f);
                     if self.is_module && proto.vis == Vis::Public {
                         self.public_names.lock().unwrap().insert(name.clone());
@@ -837,10 +834,10 @@ impl Interp {
                 }
                 collections::construct("list", vals).map_err(|msg| self.rt(span, msg))
             }
-            Expr::Fn(proto) => Ok(Value::Function(Arc::new(FunctionData {
-                proto: (**proto).clone(),
-                env: env.clone(),
-            }))),
+            Expr::Fn(proto) => Ok(Value::Function(crate::value::new_function(
+                (**proto).clone(),
+                env.clone(),
+            ))),
             Expr::Unary { op, expr, span } => {
                 let v = self.eval(expr, env)?;
                 match op {
@@ -1313,10 +1310,7 @@ impl Interp {
                     None => Err(self.rt(span, format!("missing key '{}'", name))),
                 }
             }
-            other => Err(self.rt(
-                span,
-                crate::value::no_field_error(other, name),
-            )),
+            other => Err(self.rt(span, crate::value::no_field_error(other, name))),
         }
     }
 
@@ -1335,10 +1329,7 @@ impl Interp {
                     )),
                 }
             }
-            other => Err(self.rt(
-                span,
-                crate::value::no_field_error(other, name),
-            )),
+            other => Err(self.rt(span, crate::value::no_field_error(other, name))),
         }
     }
 
@@ -1457,26 +1448,22 @@ impl Interp {
         let mut methods = HashMap::new();
         for m in &decl.methods {
             if let Some(name) = &m.name {
-                let fd = Arc::new(FunctionData {
-                    proto: m.clone(),
-                    env: env.clone(),
-                });
+                let fd = crate::value::new_function(m.clone(), env.clone());
                 methods.insert(name.clone(), (m.vis, fd));
             }
         }
         let ctor = methods.get("new").map(|(_, f)| f.clone());
-        Arc::new(crate::value::ClassData {
-            name: decl.name.clone(),
+        crate::value::new_class(
+            decl.name.clone(),
             parent,
-            interfaces: decl.interfaces.clone(),
-            fields: decl
-                .fields
+            decl.interfaces.clone(),
+            decl.fields
                 .iter()
                 .map(|f| (f.name.clone(), f.vis))
                 .collect(),
             methods,
             ctor,
-        })
+        )
     }
 
     /// Walk the class chain looking for a method.
@@ -1626,12 +1613,7 @@ impl Interp {
         let recv = environment::get(env, "self");
         let inst = match recv {
             Some(Value::Instance(inst)) => inst,
-            _ => {
-                return Err(self.rt(
-                    span,
-                    "super is only available inside a class method",
-                ))
-            }
+            _ => return Err(self.rt(span, "super is only available inside a class method")),
         };
         if parent.is_empty() {
             return Err(self.rt(
@@ -1641,12 +1623,7 @@ impl Interp {
         }
         let class = match environment::get(&self.globals, parent) {
             Some(Value::Class(c)) => c,
-            Some(_) => {
-                return Err(self.rt(
-                    span,
-                    format!("'{}' is not a class", parent),
-                ))
-            }
+            Some(_) => return Err(self.rt(span, format!("'{}' is not a class", parent))),
             None => return Err(self.rt(span, format!("unknown class '{}'", parent))),
         };
         match method {
@@ -1665,12 +1642,7 @@ impl Interp {
     ) -> Result<Value, Flow> {
         let ctor = match &class.ctor {
             Some(c) => c.clone(),
-            None => {
-                return Err(self.rt(
-                    span,
-                    format!("class '{}' has no constructor", class.name),
-                ))
-            }
+            None => return Err(self.rt(span, format!("class '{}' has no constructor", class.name))),
         };
         // Constructor parameters do not include self; self is bound here.
         if ctor.proto.params.len() != args.len() {

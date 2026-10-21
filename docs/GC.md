@@ -146,7 +146,11 @@ container and instance types are reclaimed while live cycles survive.
 
 
 
-## Closures and environments are NOT collected (audit A-13, open)
+## Closures and environments ARE collected (audit A-13, implemented 2026-10-21)
+
+> Historical note: the text below described the leak while it was open. The
+> fix landed exactly along the recorded design; the "why" paragraph is kept
+> because it explains the shape of the implementation.
 
 The collector tracks value containers and instances. A **closure's environment**
 (`Env = Arc<Mutex<EnvironmentData>>`, holding `vars: HashMap<String, Value>` and
@@ -196,3 +200,28 @@ cycle must be cells, which means:
 
 Until then the workaround is explicit: break the cycle with `weak()`/`deref()`
 (the manual escape hatch) or hoist the closure out of the scope it captures.
+
+**Implemented as designed.** The collector gained *cell-level* edges
+(`GcTrace::gc_trace_cells`, called with the registry's id callback in addition
+to the value callback), and three kinds of cells were registered:
+
+1. `EnvironmentData` (`environment::new_global` / `child` / `child_with_vars` —
+   the only construction sites): `gc_trace` yields the vars' values,
+   `gc_trace_cells` the parent environment, `gc_clear` empties `vars`.
+2. `FunctionData` / `ClassData` — **immutable** cells (no field is ever
+   written after construction), registered through `value::new_function` /
+   `value::new_class` via `gc::track_immutable`, which traces without a lock
+   and never clears (their reclamation happens through ordinary `Arc`
+   refcounts once the cycle's mutable side is cleared). The single-constructor
+   rule is what makes the registration complete: a future construction site
+   cannot silently skip it.
+3. `for_each_cell_id` maps `Value::Function` and `Value::Class` to their cell
+   ids, so the `env -> closure` edge is visible from the environment's side
+   (the mirror `closure -> env` edge comes from `FunctionData::gc_trace_cells`).
+
+Both directions of `env -> closure -> env` are therefore registry edges: the
+cycle is unmarked (no external refs) and swept from the environment's side.
+`tests/closure_cycle_leak.rs` — which used to pin the leak — now asserts
+reclamation, including the safety half (captured containers survive
+collections and keep working). The VM needs none of this: its closures carry
+upvalue *cells* (untracked external refs, no env cycle).

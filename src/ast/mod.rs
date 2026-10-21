@@ -336,7 +336,9 @@ pub enum Expr {
     ///
     /// `crate::lower` rewrites both forms into [`Expr::SuperCall`], which
     /// carries the parent class name; the backends only ever see that form.
-    Super { span: Span },
+    Super {
+        span: Span,
+    },
     /// A resolved `super` call: the parent class's constructor
     /// (`method` is `None`) or one of its methods. Produced by `crate::lower`
     /// from [`Expr::Super`].

@@ -463,7 +463,10 @@ impl Lower {
         self.current_parent = c.parent.clone();
         let methods = c.methods.iter().map(|m| self.fn_proto(m)).collect();
         self.current_parent = outer_parent;
-        ClassDecl { methods, ..c.clone() }
+        ClassDecl {
+            methods,
+            ..c.clone()
+        }
     }
 
     /// `if` as a statement. Elif arms whose condition needs a prelude are

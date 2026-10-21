@@ -95,9 +95,14 @@ fn gc_reclaims_instance_and_map_self_cycles() {
     assert_eq!(code, 0, "run failed: {}{}", out, err);
     let lines: Vec<&str> = out.trim().lines().collect();
     let live: i64 = lines[0].parse().expect("number");
+    // A-13 (2026-10-21): environments, closures, and classes are tracked
+    // cells too, so a handful of legitimately-live roots remain (the global
+    // environment, the running frame's environment, `main`'s closure, the
+    // class of the live cycle). The 4000 garbage cycles must still be gone.
     assert!(
-        live <= 2,
-        "only the live cycle should survive the 4000 garbage cycles, got {}",
+        live <= 8,
+        "only the live cycle and the constant roots should survive the 4000 \
+         garbage cycles, got {}",
         live
     );
     assert_eq!(
@@ -227,9 +232,14 @@ fn gc_reclaims_cycles_across_all_container_types() {
         "expected >= 2000 leaked container cells before gc_collect(), got {}",
         before
     );
-    assert_eq!(
-        after, 0,
-        "gc_collect() must reclaim 100% of container cycles (before {}, after {})",
-        before, after
+    // A-13 (2026-10-21): the baseline after a full reclaim is no longer 0 —
+    // the global environment, the running frame's environment, and `main`'s
+    // closure are tracked cells that are genuinely live. Every *cycle* cell
+    // must still be gone, so the remainder is capped at the constant root set.
+    assert!(
+        after <= 8,
+        "gc_collect() must reclaim all container cycles (before {}, after {})",
+        before,
+        after
     );
 }

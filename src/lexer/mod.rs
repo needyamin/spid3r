@@ -304,14 +304,48 @@ impl<'a> Lexer<'a> {
 
     fn lex_number(&mut self, line: u32, col: u32) -> SpidResult<Token> {
         let begin = self.pos;
-        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+        // Radix prefixes: `0x`/`0o`/`0b` (either case) followed by at least
+        // one digit of that radix. Underscores may separate digits. A prefix
+        // without a digit is not a radix literal: `0x` stays the decimal `0`
+        // followed by the identifier `x`, matching the documented `1elif`
+        // behaviour.
+        if self.peek() == Some(b'0') {
+            let radix = match self.peek_at(1) {
+                Some(b'x') | Some(b'X') => Some(16u32),
+                Some(b'o') | Some(b'O') => Some(8u32),
+                Some(b'b') | Some(b'B') => Some(2u32),
+                _ => None,
+            };
+            if let Some(radix) = radix {
+                let starts = matches!(self.peek_at(2), Some(c) if (c as char).is_digit(radix));
+                if starts {
+                    self.bump(); // the `0`
+                    self.bump(); // the prefix letter
+                    let digits_begin = self.pos;
+                    while matches!(self.peek(), Some(c) if (c as char).is_digit(radix) || c == b'_')
+                    {
+                        self.bump();
+                    }
+                    let raw = std::str::from_utf8(&self.src[digits_begin..self.pos]).unwrap();
+                    let full = std::str::from_utf8(&self.src[begin..self.pos]).unwrap();
+                    let len = self.src[begin..self.pos]
+                        .iter()
+                        .filter(|b| (*b & 0xC0) != 0x80)
+                        .count() as u32;
+                    let span = Span::new(self.file.clone(), line, col, len);
+                    let kind = parse_radix_int(raw, radix, full, &span)?;
+                    return Ok(Token { kind, span });
+                }
+            }
+        }
+        while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == b'_') {
             self.bump();
         }
         let mut is_float = false;
         if self.peek() == Some(b'.') && matches!(self.peek_at(1), Some(c) if c.is_ascii_digit()) {
             is_float = true;
             self.bump();
-            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == b'_') {
                 self.bump();
             }
         }
@@ -330,12 +364,21 @@ impl<'a> Lexer<'a> {
                 if matches!(self.peek(), Some(b'+') | Some(b'-')) {
                     self.bump();
                 }
-                while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == b'_') {
                     self.bump();
                 }
             }
         }
         let text = std::str::from_utf8(&self.src[begin..self.pos]).unwrap();
+        if text.contains('_') {
+            if let Some(why) = separator_error(text) {
+                return Err(err_at(
+                    crate::diagnostics::Phase::Lexer,
+                    Span::new(self.file.clone(), line, col, text.chars().count() as u32),
+                    format!("invalid numeric literal '{}': {}", text, why),
+                ));
+            }
+        }
         // `len` counts characters for the same reason `col` does: a span must
         // stay meaningful on a line with non-ASCII text.
         let len = self.src[begin..self.pos]
@@ -343,8 +386,13 @@ impl<'a> Lexer<'a> {
             .filter(|b| (*b & 0xC0) != 0x80)
             .count() as u32;
         let span = Span::new(self.file.clone(), line, col, len);
+        let stripped: String = if text.contains('_') {
+            text.chars().filter(|c| *c != '_').collect()
+        } else {
+            text.to_string()
+        };
         let kind = if is_float {
-            let v: f64 = text.parse().map_err(|_| {
+            let v: f64 = stripped.parse().map_err(|_| {
                 err_at(
                     crate::diagnostics::Phase::Lexer,
                     span.clone(),
@@ -360,7 +408,7 @@ impl<'a> Lexer<'a> {
             }
             TokenKind::Float(v)
         } else {
-            match text.parse::<i64>() {
+            match stripped.parse::<i64>() {
                 Ok(v) => TokenKind::Int(v),
                 Err(_) => {
                     return Err(err_at(
@@ -511,5 +559,44 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
+    }
+}
+
+/// Why a numeric literal's `_` separators are malformed, if they are: every
+/// `_` must sit between two digits.
+fn separator_error(text: &str) -> Option<&'static str> {
+    let bytes = text.as_bytes();
+    let is_d = |b: u8| b.is_ascii_digit();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b'_' {
+            continue;
+        }
+        let before = i > 0 && is_d(bytes[i - 1]);
+        let after = i + 1 < bytes.len() && is_d(bytes[i + 1]);
+        if !before || !after {
+            return Some("underscores must separate digits");
+        }
+    }
+    None
+}
+
+/// Parse the digits of a radix-prefixed integer literal (`0x1_0`, `0b1010`,
+/// `0o777`). Underscores may separate digits but may not lead, trail, or
+/// repeat. Returns the token kind, or a clean lexer error.
+fn parse_radix_int(digits: &str, radix: u32, full: &str, span: &Span) -> SpidResult<TokenKind> {
+    let invalid = |why: &str| {
+        Err(err_at(
+            crate::diagnostics::Phase::Lexer,
+            span.clone(),
+            format!("invalid integer literal '{}': {}", full, why),
+        ))
+    };
+    if digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
+        return invalid("underscores must separate digits");
+    }
+    let text: String = digits.chars().filter(|c| *c != '_').collect();
+    match i64::from_str_radix(&text, radix) {
+        Ok(v) => Ok(TokenKind::Int(v)),
+        Err(_) => invalid("value is out of i64 range"),
     }
 }

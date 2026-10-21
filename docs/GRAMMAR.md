@@ -143,6 +143,9 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
   `slice`) take non-negative indices only.
 - A `let` inside a C-style `for` header consumes no trailing `;` beyond the one
   written in the header.
+- The parenthesized `for` form accepts one or two variables:
+  `for (k, v) in map` and `for (x) in list` are both `for-in`; the bare
+  `for x in list` is unchanged.
 - Method names may be any identifier, including the shared verbs `len`, `push`,
   and `get`; those are not keywords, so `item.get(0)` and `map.get("k")` both
   parse.
@@ -154,6 +157,13 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
   `-`) by at least one digit, so `1e` is the int `1` followed by the
   identifier `e`, and `1elif` is `1` then `elif`. A float literal too large
   for an `f64` is a lexer error, never an infinity or a panic.
+- Integer literals may carry a radix prefix: `0x`/`0X` (hex), `0o`/`0O`
+  (octal), `0b`/`0B` (binary), each followed by at least one digit of that
+  radix. Underscores may separate digits in any digit run — decimal, radix,
+  fraction, or exponent (`1_000`, `0xDEAD_BEEF`, `1_0.5_0`) — and must sit
+  between two digits. A prefix without a digit is not a radix literal:
+  `0x` lexes as the decimal `0` followed by the identifier `x`, matching the
+  `1elif` rule above.
 - String literal escapes are `\n`, `\r`, `\t`, `\\`, and `\"`; identifiers are ASCII
   (`[A-Za-z_][A-Za-z0-9_]*`).
 - A string literal may contain interpolation holes: `{name}` or `{obj.field}`

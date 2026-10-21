@@ -799,20 +799,14 @@ impl Vm {
                         Some(m) => match find_method_vclass(&class, m) {
                             Some(fd) => fd,
                             None => {
-                                self.fail(format!(
-                                    "class {} has no method '{}'",
-                                    class.name, m
-                                ));
+                                self.fail(format!("class {} has no method '{}'", class.name, m));
                                 continue;
                             }
                         },
                         None => match &class.ctor {
                             Some(c) => c.clone(),
                             None => {
-                                self.fail(format!(
-                                    "class {} has no constructor",
-                                    class.name
-                                ));
+                                self.fail(format!("class {} has no constructor", class.name));
                                 continue;
                             }
                         },
@@ -1443,8 +1437,7 @@ impl Vm {
                                         call_args.extend(self.frames[nf].slots.drain(recv_idx..));
                                         // Stack traces name the frame
                                         // `Class::method`, like the tree engine.
-                                        let display =
-                                            Some(format!("{}::{}", class.name, name));
+                                        let display = Some(format!("{}::{}", class.name, name));
                                         if let Err(e) =
                                             self.call_vfunc_frame(fd, call_args, display)
                                         {
@@ -1578,9 +1571,7 @@ impl Vm {
                                 }
                             }
                         }
-                        other => {
-                            self.fail(crate::value::no_field_error(&other, name.as_ref()))
-                        }
+                        other => self.fail(crate::value::no_field_error(&other, name.as_ref())),
                     }
                 }
                 OpCode::FieldSet => {
@@ -2023,17 +2014,11 @@ impl Vm {
             let name = f.display.clone().or_else(|| f.func.name.clone());
             if let Some(last) = out.last() {
                 let last: &crate::diagnostics::TraceFrame = last;
-                if last.func == name
-                    && last.span.line == span.line
-                    && last.span.file == span.file
-                {
+                if last.func == name && last.span.line == span.line && last.span.file == span.file {
                     continue;
                 }
             }
-            out.push(crate::diagnostics::TraceFrame {
-                func: name,
-                span,
-            });
+            out.push(crate::diagnostics::TraceFrame { func: name, span });
         }
         out
     }
@@ -2484,31 +2469,22 @@ impl Vm {
                     .resolve_module_path(path)
                     .ok()
                     .unwrap_or_else(|| PathBuf::from(format!("<embedded:{}>", path)));
-                {
-                    let cache = self.modules.lock().unwrap();
-                    if let Some(exports) = cache.loaded.get(&resolved) {
-                        return Ok(exports
-                            .iter()
-                            .map(|(n, v, c)| (n.clone(), v.clone(), *c))
-                            .collect());
+                // Claim the path atomically (cache check + in-progress): two
+                // tasks importing the same new module load it exactly once.
+                let claim = match crate::modules::claim_load(&self.modules, &resolved, path) {
+                    crate::modules::Claim::AlreadyLoaded(exports) => {
+                        return Ok(exports);
                     }
-                    if cache.in_progress.contains(&resolved) {
+                    crate::modules::Claim::Cyclic(message) => {
                         return Err(VmError {
                             thrown: None,
-                            message: crate::modules::circular_import_message(
-                                &cache.in_progress,
-                                path,
-                            ),
+                            message,
                             span: self.cur_span(),
                             trace: Vec::new(),
                         });
                     }
-                }
-                self.modules
-                    .lock()
-                    .unwrap()
-                    .in_progress
-                    .push(resolved.clone());
+                    crate::modules::Claim::Acquired(claim) => claim,
+                };
                 let globals = self.globals.clone();
                 let sched = self.sched.clone();
                 let modules = self.modules.clone();
@@ -2529,13 +2505,11 @@ impl Vm {
                     module_dirs,
                 )
                 .run_module_from_func(func, public);
-                self.modules.lock().unwrap().in_progress.pop();
-                if let Ok(exports) = &out {
-                    self.modules
-                        .lock()
-                        .unwrap()
-                        .loaded
-                        .insert(resolved, exports.clone());
+                match &out {
+                    Ok(exports) => claim.complete(exports.clone()),
+                    // The claim drops here: the path is released and any
+                    // waiting task retries (and reproduces) the failure.
+                    Err(_) => drop(claim),
                 }
                 return out;
             }
@@ -2544,23 +2518,23 @@ impl Vm {
         //    that did not embed this import, or a transitive import that was not
         //    embedded for some reason).
         let resolved = self.resolve_module_path(path)?;
-        {
-            let cache = self.modules.lock().unwrap();
-            if let Some(exports) = cache.loaded.get(&resolved) {
-                return Ok(exports
-                    .iter()
-                    .map(|(n, v, c)| (n.clone(), v.clone(), *c))
-                    .collect());
+        // Claim the path atomically (see the embedded path above): one load
+        // per module, concurrent importers wait, same-thread re-entry is the
+        // circular-import error.
+        let claim = match crate::modules::claim_load(&self.modules, &resolved, path) {
+            crate::modules::Claim::AlreadyLoaded(exports) => {
+                return Ok(exports);
             }
-            if cache.in_progress.contains(&resolved) {
+            crate::modules::Claim::Cyclic(message) => {
                 return Err(VmError {
                     thrown: None,
-                    message: crate::modules::circular_import_message(&cache.in_progress, path),
+                    message,
                     span: self.cur_span(),
                     trace: Vec::new(),
                 });
             }
-        }
+            crate::modules::Claim::Acquired(claim) => claim,
+        };
         let src = std::fs::read_to_string(&resolved).map_err(|e| VmError {
             thrown: None,
             message: format!("cannot import '{}': {}", path, e),
@@ -2582,11 +2556,6 @@ impl Vm {
                 trace: Vec::new(),
             }
         })?;
-        self.modules
-            .lock()
-            .unwrap()
-            .in_progress
-            .push(resolved.clone());
         let mut module_dirs = self.module_dirs.clone();
         if let Some(dir) = resolved.parent() {
             module_dirs.push(dir.to_path_buf());
@@ -2608,13 +2577,10 @@ impl Vm {
             span: d.span.unwrap_or_else(|| self.cur_span()),
             trace: Vec::new(),
         });
-        self.modules.lock().unwrap().in_progress.pop();
-        if let Ok(ref ex) = exports {
-            self.modules
-                .lock()
-                .unwrap()
-                .loaded
-                .insert(resolved, ex.clone());
+        match &exports {
+            Ok(ex) => claim.complete(ex.clone()),
+            // The claim drops here: release the path and wake any waiter.
+            Err(_) => drop(claim),
         }
         exports
     }

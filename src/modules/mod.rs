@@ -3,8 +3,8 @@
 //! path. Circular imports fail. No package manager in v1.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::ast::Program;
 use crate::diagnostics::{Diagnostic, Phase, Span};
@@ -18,7 +18,96 @@ use crate::value::Value;
 pub struct ModuleCache {
     /// Exports per resolved module path: `(name, value, is_const)`.
     pub loaded: HashMap<PathBuf, Vec<(String, Value, bool)>>,
-    pub in_progress: Vec<PathBuf>,
+    /// Modules currently being loaded, with the thread that claimed them.
+    /// Claiming and consulting happen under the same lock as `loaded`, so two
+    /// tasks importing the same new module cannot both load it (the
+    /// check-then-act race the audit found): the second task *waits*.
+    pub in_progress: Vec<(PathBuf, std::thread::ThreadId)>,
+}
+
+/// The result of trying to claim a module path for loading.
+pub enum Claim {
+    /// Served from the cache; the exports are the load's result.
+    AlreadyLoaded(Vec<(String, Value, bool)>),
+    /// The *current thread* already has this path in flight — a genuine
+    /// import cycle.
+    Cyclic(String),
+    /// This thread may load the module; the [`LoadClaim`] guard releases the
+    /// path on drop (including a panic), waking any waiter.
+    Acquired(LoadClaim),
+}
+
+/// Atomically claim `resolved` for loading: consult the cache, treat a
+/// same-thread in-flight claim as a cycle, and **wait** while another task is
+/// loading the same path (then re-check the cache; if that load failed, retry
+/// the claim here so the error surfaces with this task's span).
+pub fn claim_load(modules: &Arc<Mutex<ModuleCache>>, resolved: &Path, path: &str) -> Claim {
+    let mut guard = modules.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        if let Some(exports) = guard.loaded.get(resolved) {
+            return Claim::AlreadyLoaded(exports.clone());
+        }
+        let owner = guard
+            .in_progress
+            .iter()
+            .find(|(p, _)| p == resolved)
+            .map(|(_, t)| *t);
+        match owner {
+            Some(t) if t == std::thread::current().id() => {
+                // Our own chain is loading this path: a genuine cycle.
+                let chain: Vec<PathBuf> =
+                    guard.in_progress.iter().map(|(p, _)| p.clone()).collect();
+                return Claim::Cyclic(circular_import_message(&chain, path));
+            }
+            Some(_) => {
+                // Another task is loading it: wait for it to finish, then
+                // re-check (the loop re-serves from the cache or retries).
+                guard = LOAD_DONE.wait(guard).unwrap_or_else(|e| e.into_inner());
+            }
+            None => {
+                guard
+                    .in_progress
+                    .push((resolved.to_path_buf(), std::thread::current().id()));
+                return Claim::Acquired(LoadClaim {
+                    modules: modules.clone(),
+                    resolved: resolved.to_path_buf(),
+                    done: false,
+                });
+            }
+        }
+    }
+}
+
+/// Signalled whenever a path leaves `in_progress`. A module-level condvar
+/// (rather than a field) so `claim_load` can move its `MutexGuard` into
+/// `wait` — the pairing rule is that every user of this condvar holds the
+/// module cache's mutex.
+static LOAD_DONE: std::sync::Condvar = std::sync::Condvar::new();
+
+/// A held load claim: releases the path and wakes waiters on drop, so a
+/// panicked loader cannot leave other tasks waiting forever.
+pub struct LoadClaim {
+    modules: Arc<Mutex<ModuleCache>>,
+    resolved: PathBuf,
+    done: bool,
+}
+
+impl LoadClaim {
+    /// Record successful exports and release the claim.
+    pub fn complete(mut self, exports: Vec<(String, Value, bool)>) {
+        self.done = true;
+        let mut cache = self.modules.lock().unwrap_or_else(|e| e.into_inner());
+        cache.finish(&self.resolved, Some(exports));
+    }
+}
+
+impl Drop for LoadClaim {
+    fn drop(&mut self) {
+        if !self.done {
+            let mut cache = self.modules.lock().unwrap_or_else(|e| e.into_inner());
+            cache.finish(&self.resolved, None);
+        }
+    }
 }
 
 impl ModuleCache {
@@ -27,6 +116,16 @@ impl ModuleCache {
             loaded: HashMap::new(),
             in_progress: Vec::new(),
         }
+    }
+
+    /// Complete a claim: record the exports (or just release the path when
+    /// the load failed) and wake every waiter.
+    pub fn finish(&mut self, resolved: &Path, exports: Option<Vec<(String, Value, bool)>>) {
+        self.in_progress.retain(|(p, _)| p != resolved);
+        if let Some(exports) = exports {
+            self.loaded.insert(resolved.to_path_buf(), exports);
+        }
+        LOAD_DONE.notify_all();
     }
 }
 
@@ -138,21 +237,16 @@ pub fn load(
     span: &Span,
 ) -> Result<Vec<(String, Value, bool)>, Diagnostic> {
     let resolved = resolve(interp, path)?;
-    if let Some(exports) = interp.modules.lock().unwrap().loaded.get(&resolved) {
-        return Ok(exports.clone());
-    }
-    {
-        let cache = interp.modules.lock().unwrap();
-        if cache.in_progress.contains(&resolved) {
-            // Show the full chain so the cycle is obvious:
-            //   circular import of 'a' (chain: main -> a -> b -> a)
-            return Err(Diagnostic::at(
-                Phase::Semantic,
-                span.clone(),
-                circular_import_message(&cache.in_progress, path),
-            ));
+    // Claim the path atomically with the cache check: two tasks importing the
+    // same new module must load it exactly once (the second waits), and a
+    // same-thread re-entry is the genuine circular-import error.
+    let _claim = match crate::modules::claim_load(&interp.modules, &resolved, path) {
+        Claim::AlreadyLoaded(exports) => return Ok(exports),
+        Claim::Cyclic(message) => {
+            return Err(Diagnostic::at(Phase::Semantic, span.clone(), message))
         }
-    }
+        Claim::Acquired(claim) => claim,
+    };
     let src = std::fs::read_to_string(&resolved).map_err(|e| {
         Diagnostic::at(
             Phase::Semantic,
@@ -172,12 +266,6 @@ pub fn load(
     let lowered = crate::lower::lower(&program);
     let program = lowered.as_ref();
 
-    interp
-        .modules
-        .lock()
-        .unwrap()
-        .in_progress
-        .push(resolved.clone());
     let mut module_dirs = interp.module_dirs.clone();
     if let Some(dir) = resolved.parent() {
         module_dirs.push(dir.to_path_buf());
@@ -199,7 +287,6 @@ pub fn load(
             break;
         }
     }
-    interp.modules.lock().unwrap().in_progress.pop();
     result?;
 
     let public = minterp.public_names.lock().unwrap().clone();
@@ -221,12 +308,8 @@ pub fn load(
             exports.push((name.clone(), v, const_names.contains(&name)));
         }
     }
-    interp
-        .modules
-        .lock()
-        .unwrap()
-        .loaded
-        .insert(resolved, exports.clone());
+    // Record the exports and release the claim (waking any task that waited).
+    _claim.complete(exports.clone());
     Ok(exports)
 }
 

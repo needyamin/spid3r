@@ -625,7 +625,11 @@ fn formatter_is_idempotent_and_preserves_semantics() {
         .args(["fmt", path.to_str().unwrap()])
         .output()
         .expect("fmt");
-    assert!(f.status.success(), "fmt failed: {}", String::from_utf8_lossy(&f.stderr));
+    assert!(
+        f.status.success(),
+        "fmt failed: {}",
+        String::from_utf8_lossy(&f.stderr)
+    );
     let formatted = std::fs::read_to_string(&path).expect("read back");
     let second = run_src("tree", name, &formatted).expect("second run");
     assert_eq!(first, second, "formatter changed program behaviour");

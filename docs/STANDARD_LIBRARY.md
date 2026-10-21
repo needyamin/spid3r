@@ -297,3 +297,39 @@ Machine learning models and evaluation metrics built on native `matrix` (`solve`
   rather than throwing, so callers can handle failures with `is_ok`/`is_err` and
   `unwrap`. Argument/type errors still throw.
 
+
+## Container methods (the complete matrix)
+
+Every container is constructed by its builtin (`list(…)`, `stack()`, `map(…)`,
+…) and exposes the methods below. `len(x)` / `x.len()` work on all of them;
+`clone()` is a deep copy everywhere it appears. Methods that mutate return
+`null`; lookup misses throw (catchable) unless noted.
+
+| Constructor | Methods |
+|---|---|
+| `list(…)`, `vec(…)` | `len is_empty clear capacity push pop peek get set insert remove_at remove index_of contains reverse sort slice join append clone sorted reversed` |
+| `stack()` | LIFO: `push pop peek contains to_list` (+ `len is_empty clear clone`) |
+| `queue()` | FIFO: `push` (back) `pop` (front) `peek contains to_list` (+ `len is_empty clear clone`) |
+| `deque()` | front-only deque: `push_front pop_front peek_front contains to_list` (+ `len is_empty clear clone`) |
+| `linked_list()`, `singly_linked_list()`, `doubly_linked_list()` | `push_back push_front pop_front pop_back peek_front peek_back get contains remove to_list` (+ `len is_empty clear clone`) |
+| `map(…)` | insertion-ordered: `set get remove delete has items contains keys values` (+ `len is_empty clear clone`); `m[k] = v` is an alias for `set` |
+| `hash_table(…)` | `set get remove contains bucket_count load_factor keys` (+ `len is_empty clear clone`) |
+| `set(…)` | `remove contains union difference to_list` (+ `len is_empty clear clone`; `add` via the shared host) |
+| `bag(…)` | multiset: `remove count_of contains` (+ `len is_empty clear clone`) |
+| `bst()` | ordered: `insert contains remove root` (+ `len is_empty clear clone`) |
+| `binary_tree()` | `insert root` (+ `len is_empty clear clone`) |
+| `heap()` | `push pop peek is_min` (+ `len is_empty clear clone`) |
+| `priority_queue()` | `push pop peek` (+ `len is_empty clear clone`) |
+| `ring_buffer(n)` | bounded: `push peek pop is_full capacity contains` (+ `len is_empty clear clone`) |
+| `trie()` | prefix tree: `insert contains starts_with with_prefix all_words` (+ `len is_empty clear clone`) |
+| `graph(directed?)` | `add_node has_node add_edge neighbors path_exists find_path bfs dfs nodes edge_count is_directed` (+ `len is_empty clear clone`) |
+| `vector(…)` | numeric: `get set push slice to_list add sub mul div sum mean variance std min max argmin argmax dot norm cumsum diff sort argsort save_npy` (+ `len is_empty clear`) |
+| `matrix(rows, cols, fill)` | 2-D numeric: `get set row col to_list transpose scale trace sum mean solve inverse det eigen_sym save_npy` (+ `rows cols is_empty`) |
+| `refbox(v)` | single mutable cell: `get set` |
+
+Two conventions to know: **stack/queue both use `push`/`pop`** — a stack pops
+from the top, a queue pops from the front; and `remove` on `list` removes *by
+value* while `remove_at` removes *by index*. Method names may collide with
+user names freely (`get`, `len`, `keys` are ordinary identifiers, not
+keywords); module namespaces have their own precedence rule — an exported
+name wins over a built-in method of the namespace map.

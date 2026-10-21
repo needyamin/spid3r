@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
+use crate::value::gc::{self, GcTrace};
 use crate::value::Value;
 
 #[derive(Default)]
@@ -20,27 +21,46 @@ pub struct EnvironmentData {
 pub type Env = Arc<Mutex<EnvironmentData>>;
 
 pub fn new_global() -> Env {
-    Arc::new(Mutex::new(EnvironmentData {
+    // Every environment is a tracked cell (audit A-13): a closure bound in
+    // the scope it captures forms `env -> closure -> env`, and the collector
+    // can only reclaim it when both ends are cells.
+    gc::track(Arc::new(Mutex::new(EnvironmentData {
         vars: HashMap::new(),
         consts: HashSet::new(),
         parent: None,
-    }))
+    })))
 }
 
 pub fn child(parent: &Env) -> Env {
-    Arc::new(Mutex::new(EnvironmentData {
+    gc::track(Arc::new(Mutex::new(EnvironmentData {
         vars: HashMap::new(),
         consts: HashSet::new(),
         parent: Some(parent.clone()),
-    }))
+    })))
 }
 
 pub fn child_with_vars(parent: &Env, vars: HashMap<String, Value>) -> Env {
-    Arc::new(Mutex::new(EnvironmentData {
+    gc::track(Arc::new(Mutex::new(EnvironmentData {
         vars,
         consts: HashSet::new(),
         parent: Some(parent.clone()),
-    }))
+    })))
+}
+
+impl GcTrace for EnvironmentData {
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in self.vars.values() {
+            f(v);
+        }
+    }
+    fn gc_trace_cells(&self, f: &mut dyn FnMut(usize)) {
+        if let Some(p) = &self.parent {
+            f(Arc::as_ptr(p) as *const () as usize);
+        }
+    }
+    fn gc_clear(&mut self) {
+        self.vars.clear();
+    }
 }
 
 impl EnvironmentData {

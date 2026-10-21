@@ -45,7 +45,12 @@ fn assert_all_engines(name: &str, src: &str, expected: &str) {
     let path = std::env::temp_dir().join(format!("spid3r_super_{}.matrix", name));
     let tc = std::env::temp_dir().join(format!("spid3r_super_{}.matrixc", name));
     let comp = Command::new(bin())
-        .args(["compile", path.to_str().unwrap(), "-o", tc.to_str().unwrap()])
+        .args([
+            "compile",
+            path.to_str().unwrap(),
+            "-o",
+            tc.to_str().unwrap(),
+        ])
         .output()
         .expect("compile");
     assert!(

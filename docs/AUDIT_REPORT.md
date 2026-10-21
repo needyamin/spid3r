@@ -545,3 +545,34 @@ from `tools/count_tests.sh`: **669 total** = 653 core + 10 GUI + 6 AOT);
 clippy clean on the default-feature build. Docs refreshed: GRAMMAR.md
 (`super`, default member visibility, `??` semantics), KEYWORDS.md (`super`),
 BYTECODE.md (opcodes 55-57), README/doc.html/sitemap test counts.
+
+### Remaining backlog (recorded 2026-10-21; items 1, 2, 5, 7, 11 implemented the same day)
+
+Still open:
+1. **Field type annotations (LOW)** — not enforced on external
+   `obj.field = v` assignments (checked on `self.field` only).
+2. **Net hardening P3s (LOW)** — no default read timeout for raw
+   `http_read_request`; handle-table lifecycle; wasm FFI `catch_unwind`.
+3. **Tuple literals (FEATURE)** — `(1, 2, 3)` does not parse; only the
+   `tuple(...)` constructor exists.
+4. **`as` casts (FEATURE)** — no cast syntax; conversions are the builtins
+   `int(x)`/`float(x)`/`string(x)`.
+5. **Interpolation holes (FEATURE)** — a hole is `{name}` / `{obj.field}`
+   only; `{len(xs)}` stays literal text. Extending needs a compat story with
+   the documented `{{ user }}` template rule (stdlib/web.matrix).
+6. **AOT `super` (PARITY)** — rejected with the standard `unsupported`
+   diagnostic; the tree and VM engines run it.
+
+Implemented in this round (details above and in the sections that follow):
+- ~~A-13~~ — closure/environment/class cycles are now collected
+  (`gc_trace_cells`, `track_immutable`, registering constructors;
+  `tests/closure_cycle_leak.rs` asserts reclamation + liveness).
+- ~~Module-load race~~ — `claim_load`/`LoadClaim`: atomic claim, cross-task
+  waiters wait on a condvar, same-thread re-entry stays the circular-import
+  error, a panicked loader releases the claim on drop.
+- ~~`for (x) in list`~~ — the parenthesized single-variable form parses.
+- ~~Hex literals~~ — `0x`/`0o`/`0b` (either case) plus `_` digit separators
+  everywhere (`1_000`, `0xDEAD_BEEF`, `1_0.5_0`), clean lexer errors for
+  malformed separators; `tests/literal_syntax.rs` (6 tests).
+- ~~Container-method docs~~ — the full matrix is in
+  STANDARD_LIBRARY.md ("Container methods").

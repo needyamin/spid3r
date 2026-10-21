@@ -47,10 +47,7 @@ fn run(engine: &str, name: &str, src: &str) -> Result<String, String> {
 fn assert_both_fail(name: &str, src: &str, needle: &str) {
     for engine in ["tree", "vm"] {
         let err = match run(engine, name, src) {
-            Ok(out) => panic!(
-                "[{}] {} unexpectedly succeeded:\n{}",
-                name, engine, out
-            ),
+            Ok(out) => panic!("[{}] {} unexpectedly succeeded:\n{}", name, engine, out),
             Err(e) => e,
         };
         assert!(
@@ -105,8 +102,7 @@ fn public_const_export_is_frozen_at_run_time_for_computed_keys() {
         assert_eq!(
             out, "frozen\n7\n",
             "[{}] {} namespace was mutable",
-            "ns_const_runtime",
-            engine
+            "ns_const_runtime", engine
         );
     }
 }

@@ -915,13 +915,18 @@ impl Parser {
         let for_in = matches!(self.kind(), TokenKind::LParen)
             || matches!(self.peek_kind(1), TokenKind::Kw(Keyword::In));
         if for_in {
-            // `for x in …` or `for (k, v) in map`.
+            // `for x in …` or `for (k, v) in map`. The parenthesized form also
+            // accepts a single variable — `for (x) in list` — so the two
+            // spellings stay symmetric (the single bare form is unchanged).
             let (var, var2) = if self.eat(&TokenKind::LParen) {
                 let (a, _) = self.expect_ident()?;
-                self.expect(&TokenKind::Comma, "',' between the two loop variables")?;
-                let (b, _) = self.expect_ident()?;
+                let b = if self.eat(&TokenKind::Comma) {
+                    Some(self.expect_ident()?.0)
+                } else {
+                    None
+                };
                 self.expect(&TokenKind::RParen, "')' after the loop variables")?;
-                (a, Some(b))
+                (a, b)
             } else {
                 (self.expect_ident()?.0, None)
             };

@@ -951,10 +951,7 @@ impl Checker {
         match method {
             Some(m) => {
                 let Some(sig) = self.method_sig(parent, m) else {
-                    return Err(self.err(
-                        span,
-                        format!("class '{}' has no method '{}'", parent, m),
-                    ));
+                    return Err(self.err(span, format!("class '{}' has no method '{}'", parent, m)));
                 };
                 // A method takes `self` explicitly; the call does not.
                 if sig.arity() != argc + 1 {
@@ -972,10 +969,7 @@ impl Checker {
             }
             None => {
                 let Some(sig) = self.method_sig(parent, "new") else {
-                    return Err(self.err(
-                        span,
-                        format!("class '{}' has no constructor", parent),
-                    ));
+                    return Err(self.err(span, format!("class '{}' has no constructor", parent)));
                 };
                 // A constructor takes no `self` parameter.
                 if sig.arity() != argc {

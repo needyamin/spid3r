@@ -39,7 +39,7 @@ use crate::value::collections::{
 };
 use crate::value::{CompiledInstanceData, InstanceData, Value, VmInstanceData};
 
-type TraceFn = fn(&Arc<dyn Any + Send + Sync>, &mut dyn FnMut(&Value));
+type TraceFn = fn(&Arc<dyn Any + Send + Sync>, &mut dyn FnMut(&Value), &mut dyn FnMut(usize));
 type ClearFn = fn(&Arc<dyn Any + Send + Sync>);
 
 struct Entry {
@@ -58,6 +58,14 @@ pub trait GcTrace {
     /// Call `f` once per strong `Value` child. Must NEVER over-count (a missed
     /// child only leaks; a spurious one could free live memory).
     fn gc_trace(&self, f: &mut dyn FnMut(&Value));
+    /// Call `f` once per strong child **cell** that is not reachable through a
+    /// `Value` — a closure's captured environment, a class's method cells.
+    /// Only cell identities (`Arc::as_ptr`) are reported; the collector maps
+    /// them through the registry. A missed child only leaks; a spurious one
+    /// could free live memory.
+    fn gc_trace_cells(&self, f: &mut dyn FnMut(usize)) {
+        let _ = f;
+    }
     /// Empty the cell's contents so the cycle's internal strong refs are dropped.
     fn gc_clear(&mut self);
 }
@@ -358,10 +366,12 @@ impl GcTrace for CompiledInstanceData {
 fn trace_erased<T: GcTrace + Send + 'static>(
     arc: &Arc<dyn Any + Send + Sync>,
     f: &mut dyn FnMut(&Value),
+    cells: &mut dyn FnMut(usize),
 ) {
     if let Some(m) = arc.downcast_ref::<Mutex<T>>() {
         if let Ok(g) = m.lock() {
             g.gc_trace(f);
+            g.gc_trace_cells(cells);
         }
     }
 }
@@ -405,6 +415,42 @@ pub fn track<T: GcTrace + Send + 'static>(cell: Arc<Mutex<T>>) -> Arc<Mutex<T>> 
     cell
 }
 
+/// Register an **immutable** cell — one whose contents never change after
+/// construction (`FunctionData`, `ClassData`). Such a cell needs no lock for
+/// tracing (the collector runs only while this thread is the only *running*
+/// one, and nobody else can be mutating an immutable cell), and its
+/// `gc_clear` must be a no-op: reclamation happens through ordinary `Arc`
+/// refcounts once the cycle's mutable cells are cleared. An immutable cell
+/// that needed clearing could not use this path.
+pub fn track_immutable<T: GcTrace + Send + Sync + 'static>(cell: Arc<T>) -> Arc<T> {
+    fn trace_immutable<T: GcTrace + 'static>(
+        arc: &Arc<dyn Any + Send + Sync>,
+        f: &mut dyn FnMut(&Value),
+        cells: &mut dyn FnMut(usize),
+    ) {
+        if let Some(c) = arc.downcast_ref::<T>() {
+            c.gc_trace(f);
+            c.gc_trace_cells(cells);
+        }
+    }
+    fn no_clear(_arc: &Arc<dyn Any + Send + Sync>) {}
+
+    let id = Arc::as_ptr(&cell) as *const () as usize;
+    let erased: Arc<dyn Any + Send + Sync> = cell.clone();
+    let weak = Arc::downgrade(&erased);
+    drop(erased);
+    let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    reg.push(Entry {
+        id,
+        weak,
+        trace: trace_immutable::<T>,
+        clear: no_clear,
+    });
+    drop(reg);
+    ALLOCS.fetch_add(1, Ordering::Relaxed);
+    cell
+}
+
 /// Visit the cell identity of `v` (peeling inline `Option`/`Result` boxes).
 fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
     match v {
@@ -434,6 +480,12 @@ fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
         Value::Instance(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::VInstance(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::CInstance(a) => f(Arc::as_ptr(a) as *const () as usize),
+        // Closure and class cells (audit A-13): an environment holds its
+        // closures as `Value::Function`, so the `env -> closure` edge is only
+        // visible when function values map to their registered cells. The
+        // mirror `closure -> env` edge comes from `FunctionData::gc_trace_cells`.
+        Value::Function(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::Class(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Option(Some(inner)) => for_each_cell_id(inner, f),
         Value::Result(Ok(inner) | Err(inner)) => for_each_cell_id(inner, f),
         _ => {}
@@ -485,15 +537,28 @@ pub fn collect() -> usize {
     let mut edges: Vec<Vec<usize>> = vec![Vec::new(); n];
     for i in 0..n {
         if let Some(arc) = snapshot[i].1.upgrade() {
-            let mut kids: Vec<usize> = Vec::new();
-            (snapshot[i].2)(&arc, &mut |v: &Value| {
-                for_each_cell_id(v, &mut |cid| {
-                    if let Some(&j) = index.get(&cid) {
-                        internal[j] += 1;
-                        kids.push(j);
-                    }
-                });
-            });
+            let mut value_children: Vec<usize> = Vec::new();
+            let mut cell_children: Vec<usize> = Vec::new();
+            (snapshot[i].2)(
+                &arc,
+                &mut |v: &Value| {
+                    for_each_cell_id(v, &mut |cid| value_children.push(cid));
+                },
+                &mut |cid: usize| {
+                    // Non-`Value` children (a closure's environment, a class's
+                    // method cells) carry the same strong refs as `Value` ones.
+                    cell_children.push(cid);
+                },
+            );
+            let mut child_ids = value_children;
+            child_ids.extend(cell_children);
+            let mut kids: Vec<usize> = Vec::with_capacity(child_ids.len());
+            for cid in child_ids {
+                if let Some(&j) = index.get(&cid) {
+                    internal[j] += 1;
+                    kids.push(j);
+                }
+            }
             edges[i] = kids;
         }
     }

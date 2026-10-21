@@ -12,6 +12,7 @@ use crate::environment::Env;
 
 pub mod collections;
 pub mod gc;
+use crate::value::gc::GcTrace;
 
 pub type Ref<T> = Arc<Mutex<T>>;
 
@@ -118,6 +119,27 @@ pub struct FunctionData {
     pub env: Env,
 }
 
+impl GcTrace for FunctionData {
+    /// A closure's only non-`Value` child is its captured environment
+    /// (audit A-13): `env -> closure -> env` is the cycle being collected.
+    /// `gc_trace`/`gc_clear` are empty on purpose: the prototype holds no
+    /// values, and the cycle is broken from the environment's side (clearing
+    /// its vars drops the last Arcs, which reclaims this cell naturally).
+    fn gc_trace_cells(&self, f: &mut dyn FnMut(usize)) {
+        f(Arc::as_ptr(&self.env) as *const () as usize);
+    }
+    fn gc_trace(&self, _f: &mut dyn FnMut(&Value)) {}
+    fn gc_clear(&mut self) {}
+}
+
+/// Construct a **tracked** closure. The single sanctioned way to build a
+/// `FunctionData`: an unregistered closure cell cannot be traversed, which
+/// would turn the closure's environment into a phantom root (a leak) or, with
+/// a partially-tracked graph, risk sweeping live memory.
+pub fn new_function(proto: crate::ast::FnProto, env: Env) -> Arc<FunctionData> {
+    gc::track_immutable(Arc::new(FunctionData { proto, env }))
+}
+
 /// Native (Rust) functions exposed to Spid3r.
 pub struct NativeFn {
     pub name: &'static str,
@@ -148,6 +170,47 @@ pub struct ClassData {
     pub fields: Vec<(String, crate::ast::Vis)>,
     pub methods: std::collections::HashMap<String, (crate::ast::Vis, Arc<FunctionData>)>,
     pub ctor: Option<Arc<FunctionData>>,
+}
+
+impl GcTrace for ClassData {
+    /// A class's methods and constructor are closure cells, and the parent is
+    /// a class cell: an instance's class must stay traversable (audit A-13).
+    fn gc_trace_cells(&self, f: &mut dyn FnMut(usize)) {
+        for (_, fd) in self.methods.values() {
+            f(Arc::as_ptr(fd) as *const () as usize);
+        }
+        if let Some(c) = &self.ctor {
+            f(Arc::as_ptr(c) as *const () as usize);
+        }
+        if let Some(p) = &self.parent {
+            f(Arc::as_ptr(p) as *const () as usize);
+        }
+    }
+    fn gc_trace(&self, _f: &mut dyn FnMut(&Value)) {}
+    /// Empty on purpose: the class is reclaimed when its last instance (or
+    /// the scope that declared it) drops its Arc.
+    fn gc_clear(&mut self) {}
+}
+
+/// Construct a **tracked** class (see [`new_function`] for why registration
+/// is mandatory).
+#[allow(clippy::too_many_arguments)]
+pub fn new_class(
+    name: String,
+    parent: Option<Arc<ClassData>>,
+    interfaces: Vec<String>,
+    fields: Vec<(String, Vis)>,
+    methods: std::collections::HashMap<String, (Vis, Arc<FunctionData>)>,
+    ctor: Option<Arc<FunctionData>>,
+) -> Arc<ClassData> {
+    gc::track_immutable(Arc::new(ClassData {
+        name,
+        parent,
+        interfaces,
+        fields,
+        methods,
+        ctor,
+    }))
 }
 
 pub struct InstanceData {
@@ -1365,11 +1428,7 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
         Value::Map(d) => {
             let (entries, namespace, frozen) = {
                 let guard = d.lock().unwrap();
-                (
-                    guard.entries.clone(),
-                    guard.namespace,
-                    guard.frozen.clone(),
-                )
+                (guard.entries.clone(), guard.namespace, guard.frozen.clone())
             };
             let nd = new_ref(c::MapData::default());
             register!(Value::Map(nd.clone()));

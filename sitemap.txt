@@ -25,7 +25,7 @@ REPL, line debugger, a Language Server Protocol server (`spid3r lsp`, see
 docs/LSP.md), optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 669 Rust tests green (653 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 676 Rust tests green (660 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -85,7 +85,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 669 tests (653 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 676 tests (660 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
