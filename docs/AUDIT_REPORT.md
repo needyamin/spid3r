@@ -362,3 +362,81 @@ Known residuals (plan.html R7 follow-ups): VM/bytecode embedding path;
 per-run script args (args() is process-global); native closures in the AOT
 runtime's install path; Smart-App-Control interaction is environmental, not a
 crate defect.
+
+## 12. 2026-10-21 — Language server (`spid3r lsp`, roadmap R20)
+
+Adoption barrier #1 in `audit_notes/market_analysis.md` is "no LSP / editor
+support" — table stakes for a dynamic language. This round closes it **without
+adding a second implementation of anything**.
+
+**Design.** `src/lsp/mod.rs` is a thin JSON-RPC 2.0 server over stdio that
+reuses the compiler's own front end: the same lexer, the same parser,
+`semantic::check_file_with_warnings` (so lints are published too, not just
+errors) and `fmt::format_source`. There is exactly one checker and one
+formatter in the crate, so an editor can never disagree with `spid3r check`.
+Output JSON is a hand-written lock-free `Json` enum; input JSON is parsed by the
+stdlib's already-tested `JsonParser`, exposed as `pub(crate) json_parse_text`.
+No third-party crates (the crate is zero-dependency by policy).
+
+**Symbol resolution.** A flat declaration index (`SymKind`, `Decl`) with
+*visibility extents*: top-level declarations resolve over the whole file, a
+function body's parameters and locals resolve over that body, and the cursor
+picks the **smallest extent containing it** — so a local shadows a global with
+no scope algebra at all. Positions are character-based, matching Spid3r's
+`Span`, so the 0-based LSP conversion is pure arithmetic (with a UTF-16 caveat
+documented in `docs/LSP.md`).
+
+**Surface.** `initialize`/`initialized`/`shutdown`/`exit`,
+`didOpen`/`didChange`/`didClose` (Full sync), `hover`, `definition`,
+`documentSymbol`, `completion`, `formatting`, `publishDiagnostics`. A VS Code
+client ships in `packaging/vscode/` — dependency-free, no build step.
+Deliberately **not** implemented (documented, not silently missing): rename,
+references, semantic tokens, incremental sync, workspace symbols, signature
+help, code actions.
+
+### 12a. Bug found and fixed while building it
+
+- **`analyze` swallowed the error diagnostic.** The first version used
+  `unwrap_or_default()`, so a file with a type error published *no*
+  diagnostics and broken code looked clean in the editor. Fixed with an
+  explicit `match` that keeps `vec![first_error]`; verified against
+  `spid3r check`, which does report the same error.
+- **Extent computation ended at `return`.** `Stmt::Return`'s own span covers
+  only the keyword, so a function's extent stopped there and its parameters
+  never resolved. Fixed by growing the extent over the return value, and by
+  simplifying `expr_extent` to grow over `Expr::span()` (an expression's span
+  already covers its whole text).
+
+### 12b. Pre-existing flake found by this round's gate run (not caused by it)
+
+A full-suite run failed once in `tests/stage2_concurrency.rs`
+(`a_task_can_collect_when_no_other_thread_is_running`), then passed on every
+later run. Investigated rather than re-rolled, because a load-dependent
+failure is a real defect somewhere:
+
+- **The runtime is correct.** `gc_quiescent()` is `active_threads() == 1`, and
+  `sched::sleep_ms`/recv/join/mutex each hold a `BlockedGuard` for their whole
+  wait, so a parked thread never holds a concurrent collection back. Proven
+  with a probe where the main thread stays active after `spawn`: the task's
+  `gc_collect()` then correctly fails with "gc_collect: 1 other thread(s) are
+  running; join or finish them before collecting" on **both** engines.
+- **The test's expectation was the defect.** It awaited the task immediately,
+  so the main thread was still counted active between `spawn` and the `await`;
+  when the machine was loaded the worker legitimately saw two running threads
+  and refused. Fixed deterministically with the idiom this file already uses
+  elsewhere (`spawn` → `sleep_ms(200)` → `t.join()`): the main thread parks for
+  the sleep and again for the join, so every interleaving lands on exactly one
+  running thread. Verified 160/160 under 16-way parallel load and 4/4
+  consecutive full-suite runs (previously ~1 failure in 5).
+
+### 12c. Verification
+
+Per-suite: `tests/lsp_tests.rs` **18 passed, 0 failed** (handshake,
+diagnostics on open/change, hover on declaration/doc/local/keyword, definition,
+outline nesting, completion, formatting, unknown method `-32601`, exit codes,
+stdin close) plus **6 unit tests** in `src/lsp/mod.rs` (parameter/top-level/local
+resolution, doc-comment attachment, type-error capture, syntax-error capture).
+Full core suite **608 passed, 0 failed** (was 584), GUI **10/10**, AOT **6/6**,
+3-engine differential **25 ok, 0 failed**, wasm32 build clean, `fmt --check`
+clean, clippy `-D warnings` clean. Canonical counts from `tools/count_tests.sh`:
+**624 total** (608 core + 10 GUI + 6 AOT), 25 examples, 3 fuzz targets.

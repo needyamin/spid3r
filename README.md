@@ -22,6 +22,7 @@ Hello, Spid3r!
 - **Zero-Dependency Core**: Pure Rust. Builds in seconds without LLVM or external C libraries.
 - **Dual Engine Parity**: Reference tree-walking interpreter and optimizing bytecode VM with identical output.
 - **Rich Standard Library**: Built-in HTTP/TCP, Web framework, DataFrames, ML/Stats, CSV, JSON, Regex, and 20+ data structures.
+- **Editor Support**: Language Server Protocol (`spid3r lsp`) with diagnostics, hover, go-to-definition, and formatting — reusing the exact same checker as `spid3r check`.
 - **Multi-Target**: Run via CLI, compile to native machine code (LLVM), embed in Rust, bundle as Desktop GUI, or export as standalone offline WebAssembly.
 
 ---
@@ -54,6 +55,7 @@ cargo install --path . --no-default-features
 | **Interactive REPL** | `spid3r repl` |
 | **Format code** | `spid3r fmt app.matrix` (or `spid3r fmt --check`) |
 | **Debug script** | `spid3r debug app.matrix --break 10` |
+| **Language server (editor)** | `spid3r lsp` (speaks LSP over stdio) |
 | **Compile to bytecode** | `spid3r compile app.matrix -o app.matrixc` |
 | **Execute bytecode** | `spid3r exec app.matrixc` |
 | **Bundle app** | `spid3r bundle app.matrix --target wasm --single-file` |
@@ -142,7 +144,7 @@ cargo build
 
 ### Testing
 ```bash
-# Run all core unit and integration tests (584 tests; GUI 10 + AOT 6 more).
+# Run all core unit and integration tests (608 tests; GUI 10 + AOT 6 more).
 # Canonical counts: bash tools/count_tests.sh
 cargo test --no-default-features
 

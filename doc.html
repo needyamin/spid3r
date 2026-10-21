@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">600 tests · 25/25 examples agree</span>
+          <span class="badge">624 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -2827,6 +2827,13 @@ console.log(formatted.code);  // "let a = 1 + 2;\nprintln(a);\n"</code></pre>
               <td><code>debug &lt;file&gt; [--break L[,L…]] [--commands FILE]</code></td>
               <td>Line debugger on the VM (see <a href="#tooling">Developer tools</a>).</td>
             </tr>
+            <tr>
+              <td><code>lsp</code></td>
+              <td>Language Server Protocol over stdio (see <a href="#tooling">Developer tools</a>). Reads JSON-RPC
+                messages framed with <code>Content-Length</code> from stdin and writes responses to stdout; exits
+                <code>0</code> on <code>exit</code> or EOF, <code>1</code> if killed first.
+              </td>
+            </tr>
           </table>
           <h3>Projects &amp; packaging</h3>
           <table>
@@ -2951,6 +2958,11 @@ serde   = { version = "^1.0" }                               # local registry ($
               <code>--break 3,7</code>; script a session with <code>--commands FILE</code> (one command per line,
               <code>#</code> comments). When commands run out, the program runs to completion.
             </div>
+            <div class="card"><span class="t">spid3r lsp</span>Language Server Protocol over stdio — diagnostics,
+              hover, go-to-definition, outline, completion and formatting in any LSP editor. It reuses the same lexer,
+              parser, checker and formatter as the CLI, so the editor can never disagree with
+              <code>spid3r check</code>.
+            </div>
           </div>
           <h3>Debugger commands</h3>
           <table>
@@ -3043,6 +3055,51 @@ serde   = { version = "^1.0" }                               # local registry ($
             Runtime operations go through trampolines that reuse the VM's value code, so native output matches
             the interpreters. A class declared inside a function is rejected with a clear diagnostic. See
             <a href="docs/NATIVE.md">docs/NATIVE.md</a> and <a href="docs/BUILDING.md">docs/BUILDING.md</a>.
+          </p>
+
+          <h3>Language server <span class="pill">spid3r lsp</span></h3>
+          <p><code>spid3r lsp</code> speaks the Language Server Protocol over stdio, so any LSP-capable editor
+            can provide editor features for <code>.matrix</code> files. The server is a thin client around
+            components the compiler already ships, which is the point: there is exactly one lexer, one parser,
+            one semantic checker and one formatter, so an editor can never disagree with
+            <code>spid3r check</code> or <code>spid3r fmt</code>.</p>
+          <table>
+            <tr>
+              <th>Method</th>
+              <th>Behaviour</th>
+            </tr>
+            <tr>
+              <td><code>initialize</code> / <code>initialized</code></td>
+              <td>Advertises hover, definition, documentSymbol, completion, formatting, and full-document sync</td>
+            </tr>
+            <tr>
+              <td><code>textDocument/didOpen</code> · <code>didChange</code> · <code>didClose</code></td>
+              <td>Publishes diagnostics (type/syntax errors <em>and</em> lints) on every change</td>
+            </tr>
+            <tr>
+              <td><code>textDocument/hover</code></td>
+              <td>Type of a binding, or a function/class signature, plus its doc comment</td>
+            </tr>
+            <tr>
+              <td><code>textDocument/definition</code></td>
+              <td>Declaration of the binding under the cursor</td>
+            </tr>
+            <tr>
+              <td><code>textDocument/documentSymbol</code></td>
+              <td>Outline: classes with their methods/fields, interfaces, enums with variants, functions, locals</td>
+            </tr>
+            <tr>
+              <td><code>textDocument/completion</code></td>
+              <td>Symbols from the current file plus the keyword registry</td>
+            </tr>
+            <tr>
+              <td><code>textDocument/formatting</code></td>
+              <td>The canonical <code>spid3r fmt</code> layout as a whole-document edit</td>
+            </tr>
+          </table>
+          <p>Positions are <em>character</em>-based, matching Spid3r spans, so the conversion to LSP's 0-based
+            positions is pure arithmetic. A VS Code client ships in <code>packaging/vscode/</code> — it has no
+            dependencies and needs no build step. See <a href="docs/LSP.md">docs/LSP.md</a>.
           </p>
 
           <h2 id="workflow">Developer workflow</h2>
@@ -3375,7 +3432,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>600 tests</strong> (<strong>584</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>624 tests</strong> (<strong>608</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

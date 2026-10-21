@@ -63,6 +63,10 @@ COMMANDS:
                                            Time benchmarks/*.matrix (best of N)
     fmt [--check] [files...]               Canonical formatting (in place);
                                            --check exits 1 if any file differs
+    lsp                                    Language Server over stdio
+                                           (JSON-RPC: diagnostics, hover,
+                                           go-to-definition, symbols,
+                                           completion, formatting)
     version                                Print version information
     help                                   Print this help
 
@@ -155,6 +159,7 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "test" => cmd_test(&rest),
         "bench" => cmd_bench(&rest),
         "fmt" => cmd_fmt(&rest),
+        "lsp" => Ok(crate::lsp::cmd_lsp()),
         "init" => cmd_init(&rest),
         "install" => cmd_install(&rest),
         "dist" => cmd_project_build(&rest),

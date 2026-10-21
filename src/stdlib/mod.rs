@@ -1136,6 +1136,23 @@ fn n_json_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Str(out.into()))
 }
 
+/// Text → JSON `Value`, for host code that speaks JSON over a wire (the LSP
+/// server) rather than through a `json_parse` builtin call. Same parser, same
+/// errors, same depth guard — one implementation, not two.
+pub(crate) fn json_parse_text(s: &str) -> Result<Value, String> {
+    let mut parser = JsonParser {
+        chars: s.chars().collect(),
+        pos: 0,
+        depth: 0,
+    };
+    let v = parser.parse_value()?;
+    parser.skip_ws();
+    if parser.pos != parser.chars.len() {
+        return Err("json_parse: trailing characters after the value".to_string());
+    }
+    Ok(v)
+}
+
 struct JsonParser {
     chars: Vec<char>,
     pos: usize,

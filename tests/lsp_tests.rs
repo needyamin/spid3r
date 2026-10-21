@@ -1,0 +1,718 @@
+//! End-to-end tests for `spid3r lsp`: a real `spid3r` child process speaking
+//! JSON-RPC over stdio with `Content-Length` framing.
+//!
+//! The binary is launched via `CARGO_BIN_EXE_spid3r`, so these tests exercise
+//! the shipped command line path (argv dispatch, the big-stack worker thread,
+//! stdin/stdout framing) rather than a re-entrant library call.
+
+#![allow(clippy::too_many_lines)]
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+
+const BIN: &str = env!("CARGO_BIN_EXE_spid3r");
+
+// ---------------------------------------------------------- minimal JSON read
+
+/// Enough JSON to navigate an LSP response. Deliberately hand-written so the
+/// test does not depend on the implementation's own parser.
+#[derive(Debug, Clone, PartialEq)]
+enum J {
+    Null,
+    Bool(bool),
+    Num(f64),
+    Str(String),
+    Arr(Vec<J>),
+    Obj(Vec<(String, J)>),
+}
+
+impl J {
+    fn get(&self, key: &str) -> Option<&J> {
+        match self {
+            J::Obj(o) => o.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            J::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+    fn as_arr(&self) -> Option<&[J]> {
+        match self {
+            J::Arr(a) => Some(a),
+            _ => None,
+        }
+    }
+    fn as_i(&self) -> Option<i64> {
+        match self {
+            J::Num(n) => Some(*n as i64),
+            _ => None,
+        }
+    }
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            J::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
+struct P<'a> {
+    s: &'a [u8],
+    i: usize,
+}
+
+impl<'a> P<'a> {
+    fn ws(&mut self) {
+        while self.i < self.s.len() && (self.s[self.i] as char).is_ascii_whitespace() {
+            self.i += 1;
+        }
+    }
+    fn value(&mut self) -> J {
+        self.ws();
+        match self.s[self.i] {
+            b'{' => self.object(),
+            b'[' => self.array(),
+            b'"' => J::Str(self.string()),
+            b't' => {
+                self.i += 4;
+                J::Bool(true)
+            }
+            b'f' => {
+                self.i += 5;
+                J::Bool(false)
+            }
+            b'n' => {
+                self.i += 4;
+                J::Null
+            }
+            _ => self.number(),
+        }
+    }
+    fn object(&mut self) -> J {
+        let mut o = Vec::new();
+        self.i += 1; // {
+        loop {
+            self.ws();
+            if self.i < self.s.len() && self.s[self.i] == b'}' {
+                self.i += 1;
+                break;
+            }
+            let k = self.string();
+            self.ws();
+            if self.i < self.s.len() && self.s[self.i] == b':' {
+                self.i += 1;
+            }
+            o.push((k, self.value()));
+            self.ws();
+            if self.i < self.s.len() && self.s[self.i] == b',' {
+                self.i += 1;
+            }
+        }
+        J::Obj(o)
+    }
+    fn array(&mut self) -> J {
+        let mut a = Vec::new();
+        self.i += 1; // [
+        loop {
+            self.ws();
+            if self.i < self.s.len() && self.s[self.i] == b']' {
+                self.i += 1;
+                break;
+            }
+            a.push(self.value());
+            self.ws();
+            if self.i < self.s.len() && self.s[self.i] == b',' {
+                self.i += 1;
+            }
+        }
+        J::Arr(a)
+    }
+    fn string(&mut self) -> String {
+        let mut out = String::new();
+        self.i += 1; // opening quote
+        while self.i < self.s.len() {
+            let c = self.s[self.i] as char;
+            if c == '"' {
+                self.i += 1;
+                break;
+            }
+            if c == '\\' {
+                self.i += 1;
+                let e = self.s[self.i] as char;
+                match e {
+                    'n' => out.push('\n'),
+                    't' => out.push('\t'),
+                    'r' => out.push('\r'),
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    '/' => out.push('/'),
+                    'u' => {
+                        let hex = &self.s[self.i + 1..self.i + 5];
+                        let n = u32::from_str_radix(std::str::from_utf8(hex).unwrap(), 16).unwrap();
+                        out.push(char::from_u32(n).unwrap_or('\u{fffd}'));
+                        self.i += 4;
+                    }
+                    other => out.push(other),
+                }
+                self.i += 1;
+                continue;
+            }
+            out.push(c);
+            self.i += 1;
+        }
+        out
+    }
+    fn number(&mut self) -> J {
+        let start = self.i;
+        while self.i < self.s.len()
+            && matches!(
+                self.s[self.i],
+                b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'
+            )
+        {
+            self.i += 1;
+        }
+        let text = std::str::from_utf8(&self.s[start..self.i]).unwrap();
+        J::Num(text.parse().unwrap_or(0.0))
+    }
+}
+
+fn parse(s: &str) -> J {
+    let mut p = P {
+        s: s.as_bytes(),
+        i: 0,
+    };
+    p.value()
+}
+
+// -------------------------------------------------------------------- session
+
+/// One `spid3r lsp` child process, already past `initialize`/`initialized`.
+struct Session {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_id: i64,
+    /// The `initialize` result, kept so a test can inspect the capabilities.
+    init: J,
+}
+
+impl Session {
+    fn start() -> Session {
+        let mut child = Command::new(BIN)
+            .arg("lsp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spid3r lsp should start");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut s = Session {
+            child,
+            stdin,
+            stdout,
+            next_id: 1,
+            init: J::Null,
+        };
+        s.init = s.request("initialize", "{\"capabilities\":{}}");
+        s.notify("initialized", "{}");
+        s
+    }
+
+    /// Write one framed JSON-RPC message.
+    fn send(&mut self, body: &str) {
+        let _ = self
+            .stdin
+            .write_all(format!("Content-Length: {}\r\n\r\n{}", body.len(), body).as_bytes());
+        let _ = self.stdin.flush();
+    }
+
+    /// A notification: no `id`, no reply expected.
+    fn notify(&mut self, method: &str, params: &str) {
+        self.send(&format!(
+            "{{\"jsonrpc\":\"2.0\",\"method\":\"{}\",\"params\":{}}}",
+            method, params
+        ));
+    }
+
+    /// A request: returns the `result` object. Server-initiated notifications
+    /// that arrive while we wait are skipped.
+    fn request(&mut self, method: &str, params: &str) -> J {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(&format!(
+            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"{}\",\"params\":{}}}",
+            id, method, params
+        ));
+        loop {
+            let msg = self.read();
+            match msg.get("id").and_then(|i| i.as_i()) {
+                Some(got) if got == id => {
+                    if let Some(err) = msg.get("error") {
+                        panic!("request {} failed: {:?}", method, err);
+                    }
+                    return msg.get("result").cloned().unwrap_or(J::Null);
+                }
+                _ => continue, // a notification or another request's reply
+            }
+        }
+    }
+
+    /// Read the next message whose `method` matches, skipping others.
+    fn read_notification(&mut self, method: &str) -> J {
+        loop {
+            let msg = self.read();
+            if msg.get("method").and_then(|m| m.as_str()) == Some(method) {
+                return msg;
+            }
+        }
+    }
+
+    fn read(&mut self) -> J {
+        let mut content_length: Option<usize> = None;
+        loop {
+            let mut line = String::new();
+            let n = self
+                .stdout
+                .read_line(&mut line)
+                .expect("server should keep its stdout open");
+            assert_ne!(n, 0, "server closed stdout unexpectedly");
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if trimmed.is_empty() {
+                break;
+            }
+            if let Some(rest) = trimmed.strip_prefix("Content-Length:") {
+                content_length = rest.trim().parse().ok();
+            }
+        }
+        let len = content_length.expect("server sent a Content-Length header");
+        let mut buf = vec![0u8; len];
+        self.stdout
+            .read_exact(&mut buf)
+            .expect("server should send the whole body");
+        parse(std::str::from_utf8(&buf).unwrap())
+    }
+
+    /// Open a document and return its first `publishDiagnostics` payload.
+    fn open(&mut self, uri: &str, text: &str) -> J {
+        let params = format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\",\"languageId\":\"spid3r\",\"version\":1,\"text\":{}}}}}",
+            uri,
+            json_string(text)
+        );
+        self.notify("textDocument/didOpen", &params);
+        let msg = self.read_notification("textDocument/publishDiagnostics");
+        assert_eq!(
+            msg.get("params").unwrap().get("uri").unwrap().as_str(),
+            Some(uri)
+        );
+        msg.get("params")
+            .unwrap()
+            .get("diagnostics")
+            .cloned()
+            .unwrap()
+    }
+
+    fn finish(mut self) -> std::process::ExitStatus {
+        self.request("shutdown", "null");
+        self.notify("exit", "null");
+        drop(self.stdin); // EOF is the belt to `exit`'s braces
+        self.child.wait().expect("child should exit")
+    }
+}
+
+/// Quote a Rust string as a JSON string literal (handles the escapes the test
+/// sources need).
+fn json_string(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+// --------------------------------------------------------------------- tests
+
+const URI: &str = "file:///project/main.matrix";
+
+const TWO_FUNCS: &str = "fn helper(a) {\n  return a;\n}\nfn main() {\n  helper(1);\n}\n";
+
+/// The same two functions in canonical formatting (`spid3r fmt` indents with
+/// four spaces), so a formatting request has nothing to change.
+const CANONICAL_FUNCS: &str = "fn helper(a) {\n    return a;\n}\nfn main() {\n    helper(1);\n}\n";
+
+#[test]
+fn initialize_reports_the_supported_features() {
+    let s = Session::start();
+    let caps = s.init.get("capabilities").expect("a capabilities object");
+    assert_eq!(caps.get("textDocumentSync").and_then(|v| v.as_i()), Some(1));
+    assert_eq!(
+        caps.get("hoverProvider").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        caps.get("definitionProvider").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        caps.get("documentSymbolProvider").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        caps.get("documentFormattingProvider")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert!(caps.get("completionProvider").is_some());
+    assert_eq!(
+        s.init
+            .get("serverInfo")
+            .and_then(|i| i.get("name"))
+            .and_then(|n| n.as_str()),
+        Some("spid3r")
+    );
+    s.finish();
+}
+
+#[test]
+fn opening_a_file_publishes_its_semantic_diagnostics() {
+    let mut s = Session::start();
+    // `"hello"` is not an `int`, so the checker reports a type mismatch on the
+    // line that holds the string literal (line 1, 0-based).
+    let src = "fn main() {\n  let x: int = \"hello\";\n}\n";
+    let diags = s.open(URI, src);
+    let first = diags
+        .as_arr()
+        .expect("a diagnostics array")
+        .first()
+        .expect("one diagnostic");
+    assert_eq!(first.get("severity").and_then(|v| v.as_i()), Some(1));
+    assert_eq!(first.get("source").and_then(|v| v.as_str()), Some("spid3r"));
+    let line = first
+        .get("range")
+        .and_then(|r| r.get("start"))
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_i());
+    assert_eq!(line, Some(1));
+    assert!(first
+        .get("message")
+        .and_then(|m| m.as_str())
+        .map(|m| !m.is_empty())
+        .unwrap_or(false));
+    s.finish();
+}
+
+#[test]
+fn a_clean_file_publishes_no_diagnostics() {
+    let mut s = Session::start();
+    let diags = s.open(URI, TWO_FUNCS);
+    assert!(diags.as_arr().expect("array").is_empty());
+    s.finish();
+}
+
+#[test]
+fn editing_a_file_republishes_diagnostics() {
+    let mut s = Session::start();
+    s.open(URI, "fn main() {\n  let x: int = \"hello\"\n}\n");
+    let params = format!(
+        "{{\"textDocument\":{{\"uri\":\"{}\",\"version\":2}},\"contentChanges\":[{{\"text\":{}}}]}}",
+        URI,
+        json_string("fn main() {\n  let x: int = 7;\n  print(x);\n}\n")
+    );
+    s.notify("textDocument/didChange", &params);
+    let msg = s.read_notification("textDocument/publishDiagnostics");
+    let diags = msg.get("params").unwrap().get("diagnostics").unwrap();
+    assert!(diags.as_arr().expect("array").is_empty());
+    s.finish();
+}
+
+#[test]
+fn hover_reports_the_declaration_under_the_cursor() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    // `helper` inside `helper(1)` is line 4, character 2.
+    let result = s.request(
+        "textDocument/hover",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":4,\"character\":2}}}}",
+            URI
+        ),
+    );
+    let value = result
+        .get("contents")
+        .and_then(|c| c.get("value"))
+        .and_then(|v| v.as_str())
+        .expect("a markdown value");
+    assert!(
+        value.contains("function"),
+        "hover should name the kind: {}",
+        value
+    );
+    assert!(
+        value.contains("helper(a)"),
+        "hover should show the signature: {}",
+        value
+    );
+    s.finish();
+}
+
+#[test]
+fn hover_shows_a_doc_comment_when_there_is_one() {
+    let mut s = Session::start();
+    let src = "/// Doubles its argument.\nfn double(x) {\n  return x * 2;\n}\nfn main() {\n  double(2);\n}\n";
+    s.open(URI, src);
+    let result = s.request(
+        "textDocument/hover",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":5,\"character\":2}}}}",
+            URI
+        ),
+    );
+    let value = result
+        .get("contents")
+        .and_then(|c| c.get("value"))
+        .and_then(|v| v.as_str())
+        .expect("a markdown value");
+    assert!(value.contains("Doubles its argument."), "{}", value);
+    s.finish();
+}
+
+#[test]
+fn hover_on_a_local_resolves_it_to_the_parameter() {
+    let mut s = Session::start();
+    // `a` is the parameter of `helper`; hovering it inside the body must not
+    // resolve to something else.
+    s.open(URI, TWO_FUNCS);
+    let result = s.request(
+        "textDocument/hover",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":1,\"character\":9}}}}",
+            URI
+        ),
+    );
+    let value = result
+        .get("contents")
+        .and_then(|c| c.get("value"))
+        .and_then(|v| v.as_str())
+        .expect("a markdown value");
+    assert!(value.contains("parameter"), "{}", value);
+    s.finish();
+}
+
+#[test]
+fn hover_on_a_keyword_yields_nothing() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    // `fn` at line 0, character 0.
+    let result = s.request(
+        "textDocument/hover",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":0,\"character\":0}}}}",
+            URI
+        ),
+    );
+    assert_eq!(result, J::Null);
+    s.finish();
+}
+
+#[test]
+fn definition_jumps_to_the_declaration() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    let result = s.request(
+        "textDocument/definition",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":4,\"character\":2}}}}",
+            URI
+        ),
+    );
+    let locs = result.as_arr().expect("a location array");
+    assert_eq!(locs.len(), 1);
+    assert_eq!(locs[0].get("uri").and_then(|u| u.as_str()), Some(URI));
+    let line = locs[0]
+        .get("range")
+        .and_then(|r| r.get("start"))
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_i());
+    assert_eq!(line, Some(0), "helper is declared on line 0");
+    s.finish();
+}
+
+#[test]
+fn document_symbol_lists_the_outline() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    let result = s.request(
+        "textDocument/documentSymbol",
+        &format!("{{\"textDocument\":{{\"uri\":\"{}\"}}}}", URI),
+    );
+    let syms = result.as_arr().expect("a symbol array");
+    let names: Vec<&str> = syms
+        .iter()
+        .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
+        .collect();
+    assert!(names.contains(&"helper"), "{:?}", names);
+    assert!(names.contains(&"main"), "{:?}", names);
+    s.finish();
+}
+
+#[test]
+fn document_symbol_nests_methods_inside_a_class() {
+    let mut s = Session::start();
+    let src = "class Point {\n  let x: int;\n  fn x2() {\n    return 2;\n  }\n}\n";
+    s.open(URI, src);
+    let result = s.request(
+        "textDocument/documentSymbol",
+        &format!("{{\"textDocument\":{{\"uri\":\"{}\"}}}}", URI),
+    );
+    let point = result
+        .as_arr()
+        .expect("array")
+        .iter()
+        .find(|s| s.get("name").and_then(|n| n.as_str()) == Some("Point"))
+        .expect("a Point symbol");
+    let kids: Vec<&str> = point
+        .get("children")
+        .and_then(|c| c.as_arr())
+        .expect("children")
+        .iter()
+        .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
+        .collect();
+    assert!(kids.contains(&"x2"), "{:?}", kids);
+    assert!(kids.contains(&"x"), "{:?}", kids);
+    s.finish();
+}
+
+#[test]
+fn completion_offers_keywords_and_file_symbols() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    let result = s.request(
+        "textDocument/completion",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"position\":{{\"line\":5,\"character\":0}}}}",
+            URI
+        ),
+    );
+    let labels: Vec<&str> = result
+        .as_arr()
+        .expect("array")
+        .iter()
+        .filter_map(|i| i.get("label").and_then(|l| l.as_str()))
+        .collect();
+    assert!(labels.contains(&"helper"), "{:?}", labels);
+    assert!(labels.contains(&"fn"), "{:?}", labels);
+    assert!(labels.contains(&"while"), "{:?}", labels);
+    s.finish();
+}
+
+#[test]
+fn formatting_returns_a_full_document_edit() {
+    let mut s = Session::start();
+    s.open(URI, CANONICAL_FUNCS);
+    let result = s.request(
+        "textDocument/formatting",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"options\":{{\"tabSize\":2,\"insertSpaces\":true}}}}",
+            URI
+        ),
+    );
+    // Already formatted: no edits, and the server says so rather than
+    // rewriting the buffer.
+    assert!(result.as_arr().expect("array").is_empty());
+    s.finish();
+}
+
+#[test]
+fn formatting_rewrites_unformatted_source() {
+    let mut s = Session::start();
+    let ugly = "fn   main   (   ){  return 1 ;}";
+    s.open(URI, ugly);
+    let result = s.request(
+        "textDocument/formatting",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"options\":{{}}}}",
+            URI
+        ),
+    );
+    let edits = result.as_arr().expect("array");
+    assert_eq!(edits.len(), 1, "one whole-document edit");
+    let new_text = edits[0]
+        .get("newText")
+        .and_then(|t| t.as_str())
+        .expect("a newText");
+    assert!(new_text.contains("fn main()"), "{}", new_text);
+    assert_ne!(new_text, ugly);
+    s.finish();
+}
+
+#[test]
+fn an_unknown_method_is_answered_with_an_error() {
+    let mut s = Session::start();
+    let id = s.next_id;
+    s.send(&format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"textDocument/teleport\",\"params\":{{}}}}",
+        id
+    ));
+    s.next_id += 1;
+    loop {
+        let msg = s.read();
+        if msg.get("id").and_then(|i| i.as_i()) == Some(id) {
+            let code = msg
+                .get("error")
+                .and_then(|e| e.get("code"))
+                .and_then(|c| c.as_i());
+            assert_eq!(code, Some(-32601));
+            break;
+        }
+    }
+    s.finish();
+}
+
+#[test]
+fn exiting_without_shutdown_signals_a_failed_session() {
+    let mut child = Command::new(BIN)
+        .arg("lsp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spid3r lsp should start");
+    // `exit` without `shutdown` first: the server must report failure (LSP §exit).
+    let body = "{\"jsonrpc\":\"2.0\",\"method\":\"exit\",\"params\":null}";
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("Content-Length: {}\r\n\r\n{}", body.len(), body).as_bytes())
+        .unwrap();
+    let status = child.wait().expect("child should exit");
+    assert_eq!(status.code(), Some(1));
+}
+
+#[test]
+fn exiting_after_shutdown_signals_success() {
+    let s = Session::start();
+    let status = s.finish();
+    assert!(status.success(), "{:?}", status);
+}
+
+#[test]
+fn closing_stdin_ends_the_session_cleanly() {
+    let mut s = Session::start();
+    s.open(URI, TWO_FUNCS);
+    drop(s.stdin);
+    let status = s.child.wait().expect("child should exit");
+    assert_eq!(status.code(), Some(0));
+}

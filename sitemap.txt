@@ -21,14 +21,15 @@ One front end, two execution engines that MUST stay semantically identical:
 Also included: module system (import/privacy), task concurrency (spawn/await,
 channels, mutexes), 20+ builtin collections, cycle-collecting GC, a project /
 dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
-REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
+REPL, line debugger, a Language Server Protocol server (`spid3r lsp`, see
+docs/LSP.md), optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 600 Rust tests green (584 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 624 Rust tests green (608 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
-round 2026-10-21),
+round 2026-10-21, LSP round 2026-10-21),
 25/25 examples pass the three-engine differential. Language version 1.0,
 crate version 1.0.0.
 
@@ -77,13 +78,14 @@ GaliLang/
                       native_diff.sh (AOT vs interpreter), count_tests.sh
                       (canonical test/example/fuzz counts — quote these numbers)
   packaging/nsis/     Windows installer (see [10])
+  packaging/vscode/   VS Code extension for `spid3r lsp` (see [11])
   target/             cargo build output (git-ignored)
 
 [3] COMMANDS (run from repo root; shell = PowerShell 5.1)
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 600 tests (584 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 624 tests (608 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -95,6 +97,7 @@ GaliLang/
   .\target\debug\spid3r.exe fmt [--check] [files...]
   .\target\debug\spid3r.exe bench [--engine tree|vm] [--runs N] [--compare]
   .\target\debug\spid3r.exe debug <f> [--break L[,L..]] [--commands FILE]
+  .\target\debug\spid3r.exe lsp                       # LSP over stdio (editors)
   .\target\debug\spid3r.exe init [dir] | install [--update] | dist | pack | unpack
   .\target\debug\spid3r.exe repl | version | help
   Exit codes: 0 ok, 1 user-program error, 2 usage error.
@@ -215,6 +218,23 @@ GaliLang/
                        (tests/engine_matrix.rs). `spid3r check FILE
                        --dump-lowered` prints the result.
   fmt.rs               formatter; invariants: re-lex equality + idempotence
+  lsp/mod.rs           Language Server Protocol over stdio (spid3r lsp). Reuses
+                       the lexer, parser, semantic::check_file_with_warnings
+                       and fmt::format_source — one implementation, not two.
+                       JSON-RPC 2.0 with Content-Length framing; a hand-written
+                       lock-free Json type for output plus stdlib
+                       json_parse_text for input. Flat declaration index
+                       (SymKind/Decl) with visibility extents; resolution
+                       picks the smallest extent containing the cursor, so a
+                       local shadows a global without scope algebra. Positions
+                       are characters (Spid3r spans are characters), so the
+                       0-based LSP conversion is pure arithmetic. Methods:
+                       initialize/shutdown/exit, didOpen/didChange/didClose
+                       (Full sync), hover, definition, documentSymbol,
+                       completion, formatting, publishDiagnostics (errors AND
+                       lints). Deliberately NOT implemented: rename,
+                       references, semantic tokens, incremental sync,
+                       workspace symbols, signature help, code actions
   repl/mod.rs          REPL (:help/:reset/:quit)
   pkg/mod.rs           manifest (spider.toml), install/vendor (valid_pkg_name
                        allowlist + containment assert before remove_dir_all),
@@ -435,7 +455,11 @@ GaliLang/
                          opt_tests.rs, debug_tests.rs (scripted debugger),
                          fmt_tests.rs, pkg_tests.rs (39: manifest/install/tar/
                          sha256/registry), net_tests.rs (4), wasm_tests.rs (6),
-                         bundle_tests.rs (4), gui_tests.rs (10) + native_tests.rs (6)
+                         bundle_tests.rs (4), gui_tests.rs (10) + native_tests.rs (6),
+                         lsp_tests.rs (18: handshake, diagnostics, hover,
+                         definition, outline, completion, formatting,
+                         unknown method, exit codes) + 6 unit tests in
+                         src/lsp/mod.rs
 
 [8] EXAMPLES (examples/) — all must pass the 3-engine differential
 --------------------------------------------------------------------------------
@@ -453,6 +477,7 @@ GaliLang/
   BYTECODE.md .matrixc format | GC.md cycle collector | NATIVE.md AOT subset
   GUI.md webview bridge | REGISTRY.md local registry | BUILDING.md LLVM setup
   ROADMAP.md phases + honest limitations | AUDIT_REPORT.md audit evidence
+  LSP.md language server (protocol surface, editor setup)
   Root: README.md (human overview), doc.html (full dev reference).
 
 [10] PACKAGING (packaging/nsis/)
@@ -472,6 +497,24 @@ GaliLang/
   Output:        Spid3r-Setup-1.0.0.exe at repo root (git-ignored).
   Tested: silent install/uninstall, PATH dedupe, ARP entry, association keys,
   installed binary runs examples. Installed copy lives OUTSIDE OneDrive.
+
+[10b] PACKAGING (packaging/vscode/)
+--------------------------------------------------------------------------------
+  package.json               manifest: onLanguage:spid3r activation, `.matrix`
+                             language contribution, settings spid3r.serverPath
+                             (default "spid3r") and spid3r.trace.server, no
+                             runtime dependencies
+  extension.js               dependency-free client: spawns `spid3r lsp`, does
+                             the initialize/initialized handshake, forwards
+                             didOpen/didChange/didClose, parses
+                             publishDiagnostics into a DiagnosticCollection
+  language-configuration.json  comments/brackets/auto-closing/folding/indent
+  syntaxes/spid3r.tmLanguage.json  TextMate grammar (comments, strings with
+                             {ident} interpolation, numbers, keywords, types,
+                             declarations, operators)
+  Build:  cd packaging/vscode && npx @vscode/vsce package
+          (produces spid3r-0.1.0.vsix; no npm install needed — zero deps)
+  See docs/LSP.md for the protocol surface and editor setup.
 
 [11] HOW TO DO COMMON TASKS
 --------------------------------------------------------------------------------

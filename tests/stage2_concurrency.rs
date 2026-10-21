@@ -555,9 +555,6 @@ fn main() {
 #[test]
 fn a_task_can_collect_when_no_other_thread_is_running() {
     let src = r#"
-async fn wait(t) {
-    return await t;
-}
 fn main() {
     let t = spawn fn() {
         let i = 0;
@@ -566,7 +563,15 @@ fn main() {
         }
         return gc_collect() >= 0;
     };
-    println(wait(t));
+    // Park the main thread, so the task is the only one executing Spid3r code.
+    // Without this the main thread is still counted active between `spawn` and
+    // the await, and the task can legitimately observe two running threads and
+    // refuse (that is the gate working, not a bug) — which made this test fail
+    // intermittently under full-suite load. `sleep_ms` holds a BlockedGuard for
+    // its whole duration, and `join` parks too, so every interleaving lands on
+    // exactly one running thread.
+    sleep_ms(200);
+    println(t.join());
     return 0;
 }
 "#;

@@ -162,6 +162,36 @@ linker — MSVC `link.exe` plus the CRT/SDK import libraries on Windows,
 has **no** `LLVM-C.dll` dependency — verified by running built binaries from
 an isolated directory).
 
+## Building the VS Code extension
+
+The language server is part of the compiler, so building the compiler is all the
+server needs:
+
+```
+cargo build --no-default-features
+```
+
+The editor client lives in `packaging/vscode/` and has **no dependencies and no
+build step** — `package.json` plus one `extension.js`. Package it into a `.vsix`
+with the official packager:
+
+```
+cd packaging/vscode
+npx --yes @vscode/vsce package      # writes spid3r-0.1.0.vsix
+code --install-extension spid3r-0.1.0.vsix
+```
+
+`npx` fetches `@vscode/vsce` on demand, so nothing has to be installed
+permanently and no `npm install` is required in that directory. To develop
+against it, open `packaging/vscode` in VS Code and press `F5` to launch an
+Extension Development Host.
+
+If `spid3r` is not on your `PATH`, set `spid3r.serverPath` to its absolute path
+in VS Code settings. Set `spid3r.trace.server` to `messages` or `verbose` to
+log the JSON-RPC traffic to the *Spid3r Language Server* output channel — that
+channel is also where any server startup failure is reported. See
+[LSP.md](LSP.md) for the protocol surface.
+
 ## Tests and verification
 
 ```
