@@ -74,9 +74,9 @@ jobs:
         run: |
           {
             echo "### Canonical test counts (${{ matrix.os }})"
-            '```'
+            echo '```'
             bash tools/count_tests.sh
-            '```'
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
   gui:
