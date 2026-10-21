@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">593 tests · 25/25 examples agree</span>
+          <span class="badge">600 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -1227,7 +1227,8 @@ let label = if (count == 0) { "empty" } else { "{count} items" };</code></pre>
 }</code></pre>
 
         <h2 id="control">Control flow</h2>
-        <p><code>if</code> / <code>elif</code> / <code>else</code>, <code>while</code>, two forms of
+        <p><code>if</code> / <code>elif</code> / <code>else</code> (<code>else if</code> is the same as
+          <code>elif</code>), <code>while</code>, two forms of
           <code>for</code> (collection iteration and a C-style header), plus <code>break</code> and
           <code>continue</code> in every loop form. <code>else</code> always binds to the nearest unfinished
           <code>if</code>.
@@ -1561,7 +1562,9 @@ fn main() {
 
         <h2 id="strings">Strings</h2>
         <p>Strings are immutable UTF-8. Lengths and indexes count characters, not bytes. Indexing
-          <code>s[i]</code> returns a one-character string. <code>+</code> concatenates two strings only;
+          <code>s[i]</code> returns a one-character string. Negative indices count from the end —
+          <code>s[-1]</code> is the last character, and <code>xs[-1]</code> the last element of a list —
+          on lists, tuples and strings. <code>+</code> concatenates two strings only;
           convert other values with <code>string(x)</code> or use <code>format</code>
           (<code>"a" + 1</code> throws <code>cannot add string and int</code>).
         </p>
@@ -3372,7 +3375,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>593 tests</strong> (<strong>577</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>600 tests</strong> (<strong>584</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

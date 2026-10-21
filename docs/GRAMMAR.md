@@ -136,6 +136,11 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
 
 - `else` always belongs to the nearest unfinished `if` (no dangling-else
   ambiguity: `else` may only directly follow an if-block or an elif-block).
+  `else if (c) { … }` is accepted as a synonym for `elif (c) { … }` and the two
+  may be mixed in one chain.
+- The `[]` operator accepts a negative index on a list, tuple or string: `-1` is
+  the last element and `-len` the first. Method arguments (`remove`, `insert`,
+  `slice`) take non-negative indices only.
 - A `let` inside a C-style `for` header consumes no trailing `;` beyond the one
   written in the header.
 - Method names may be any identifier, including the shared verbs `len`, `push`,

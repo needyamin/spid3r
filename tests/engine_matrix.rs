@@ -111,6 +111,23 @@ const CASES: &[Case] = &[
         err: None,
         aot: true,
     },
+    // ------------------------------------------------------------- polish (2)
+    Case {
+        name: "else_if",
+        src: "fn grade(n) {\n    if (n > 90) {\n        return \"A\";\n    } else if (n > 80) {\n        return \"B\";\n    } else if (n > 70) {\n        return \"C\";\n    } else {\n        return \"F\";\n    }\n}\nfn main() {\n    println(grade(95));\n    println(grade(85));\n    println(grade(75));\n    println(grade(10));\n    return 0;\n}\n",
+        out: "A\nB\nC\nF",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "negative_index",
+        src: "fn main() {\n    let xs = [10, 20, 30];\n    println(xs[-1]);\n    println(xs[-3]);\n    println(\"abc\"[-1]);\n    xs[-1] = 99;\n    println(xs);\n    return 0;\n}\n",
+        out: "30\n10\nc\n[10, 20, 99]",
+        code: 0,
+        err: None,
+        aot: true,
+    },
     // ---------------------------------------------------------- ergonomics (3)
     Case {
         name: "destructure",

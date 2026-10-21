@@ -1469,37 +1469,20 @@ pub fn index_get(obj: &Value, idx: &Value) -> Result<Value, String> {
     match obj {
         Value::List(d) | Value::VecDyn(d) => {
             let d = d.lock().unwrap();
-            let i = want_index(idx, "index")?;
-            match d.items.get(i) {
-                Some(v) => Ok(v.clone()),
-                None => Err(format!(
-                    "index {} out of bounds for length {}",
-                    i,
-                    d.items.len()
-                )),
-            }
+            let i = seq::resolve_index(idx, d.items.len(), "index")?;
+            Ok(d.items[i].clone())
         }
         Value::Tuple(t) => {
             let t = t.lock().unwrap();
-            let i = want_index(idx, "index")?;
-            match t.get(i) {
-                Some(v) => Ok(v.clone()),
-                None => Err(format!(
-                    "index {} out of bounds for tuple of arity {}",
-                    i,
-                    t.len()
-                )),
-            }
+            let i = seq::resolve_index(idx, t.len(), "index")?;
+            Ok(t[i].clone())
         }
         Value::Str(s) => {
-            let i = want_index(idx, "index")?;
+            let len = s.chars().count();
+            let i = seq::resolve_index(idx, len, "index")?;
             match s.chars().nth(i) {
                 Some(c) => Ok(Value::Str(c.to_string().into())),
-                None => Err(format!(
-                    "index {} out of bounds for length {}",
-                    i,
-                    s.chars().count()
-                )),
+                None => Err(format!("index {} out of bounds for length {}", i, len)),
             }
         }
         Value::Matrix(m) => {
@@ -1549,18 +1532,9 @@ pub fn index_set(obj: &Value, idx: &Value, v: Value) -> Result<(), String> {
     match obj {
         Value::List(d) | Value::VecDyn(d) => {
             let mut d = d.lock().unwrap();
-            let i = want_index(idx, "index")?;
-            match d.items.get_mut(i) {
-                Some(slot) => {
-                    *slot = v;
-                    Ok(())
-                }
-                None => Err(format!(
-                    "index {} out of bounds for length {}",
-                    i,
-                    d.items.len()
-                )),
-            }
+            let i = seq::resolve_index(idx, d.items.len(), "index")?;
+            d.items[i] = v;
+            Ok(())
         }
         Value::Matrix(m) => {
             let mut m = m.lock().unwrap();

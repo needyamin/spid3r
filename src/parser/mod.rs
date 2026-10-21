@@ -867,6 +867,16 @@ impl Parser {
                 let b = self.parse_block()?;
                 elifs.push((c, b));
             } else if self.eat_kw(Keyword::Else) {
+                // `else if` is `elif`. Every C-family programmer writes it, and
+                // rejecting it was a gratuitous difference from the languages
+                // people arrive from (the keyword `elif` still works).
+                if self.at_kw(Keyword::If) {
+                    self.pos += 1;
+                    let c = self.parse_expr()?;
+                    let b = self.parse_block()?;
+                    elifs.push((c, b));
+                    continue;
+                }
                 els = Some(self.parse_block()?);
                 break;
             } else {

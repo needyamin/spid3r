@@ -979,12 +979,41 @@ pub fn unknown(name: &str, ty: &str) -> String {
 pub fn want_index(v: &Value, who: &str) -> Result<usize, String> {
     match v {
         Value::Int(i) if *i >= 0 => Ok(*i as usize),
+        // Report the VALUE, not its type: "found int" for `-1` told the reader
+        // nothing.
+        Value::Int(i) => Err(format!("{} must not be negative, found {}", who, i)),
         other => Err(format!(
-            "{} expects a non-negative int index, found {}",
+            "{} expects an integer index, found {}",
             who,
             super::type_name(other)
         )),
     }
+}
+
+/// Resolve an index for `obj[i]`, allowing Python-style negative indices:
+/// `-1` is the last element, `-len` the first.
+///
+/// Only the `[]` operator accepts these; method arguments (`remove`, `insert`,
+/// `slice`) stay non-negative, because they take an index *and* a length in a
+/// different order and the asymmetry would be worse than the inconsistency.
+pub fn resolve_index(v: &Value, len: usize, who: &str) -> Result<usize, String> {
+    let raw = match v {
+        Value::Int(i) => *i,
+        other => {
+            return Err(format!(
+                "{} expects an integer index, found {}",
+                who,
+                super::type_name(other)
+            ))
+        }
+    };
+    let resolved = if raw < 0 { raw + len as i64 } else { raw };
+    if resolved < 0 || resolved as usize >= len {
+        // Report the index the user wrote, so `xs[-5]` on a 3-element list says
+        // -5 rather than -2.
+        return Err(format!("index {} out of bounds for length {}", raw, len));
+    }
+    Ok(resolved as usize)
 }
 
 pub fn want_num(v: &Value, who: &str) -> Result<f64, String> {

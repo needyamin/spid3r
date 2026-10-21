@@ -142,7 +142,7 @@ cargo build
 
 ### Testing
 ```bash
-# Run all core unit and integration tests (577 tests; GUI 10 + AOT 6 more).
+# Run all core unit and integration tests (584 tests; GUI 10 + AOT 6 more).
 # Canonical counts: bash tools/count_tests.sh
 cargo test --no-default-features
 

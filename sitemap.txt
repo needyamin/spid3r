@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 593 Rust tests green (577 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 600 Rust tests green (584 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -83,7 +83,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 593 tests (577 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 600 tests (584 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -375,6 +375,10 @@ GaliLang/
                          trailing bytes, instruction-table mismatch, fall-through
                          end, nesting depth, non-quadratic jumps, `exec` on a
                          corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         syntax_gaps.rs (7: `else if` chains, mixed with `elif`,
+                         in value position; negative index read/assign on list,
+                         string and tuple, the original index in an
+                         out-of-range message, and index type errors),
                          stage7_lints.rs (9: unused variable/parameter (with the
                          `_` opt-out and the called-closure false positive),
                          unreachable reported once per block, --deny-warnings,
@@ -536,6 +540,16 @@ GaliLang/
     * detached collection mutators (list/set/bag remove+add) commit with a
       verified snapshot and retry on conflict (bounded, 32) — concurrent adds
       cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Syntax gaps (2026-10-21):
+    * `else if (c) { … }` is accepted as a synonym for `elif`, and the two may be
+      mixed in one chain. It was a parse error, which is a gratuitous difference
+      from every C-family language.
+    * the `[]` operator takes a NEGATIVE index on list/tuple/string (`-1` is the
+      last element), for both read and write. `collections::seq::resolve_index`
+      maps it and reports the index the user wrote when out of range. Method
+      arguments (remove/insert/slice) stay non-negative.
+    * `want_index` no longer says "found int" for a negative int: it names the
+      value, and non-integer indices say what type they got.
   - Lints (Stage 7, 2026-10-21):
     * Four warnings: unused-variable, unused-parameter, unused-import,
       unreachable-code. `Diagnostic` gained `severity` + `lint` (both 1 byte,
