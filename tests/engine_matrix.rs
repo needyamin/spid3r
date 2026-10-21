@@ -111,6 +111,40 @@ const CASES: &[Case] = &[
         err: None,
         aot: true,
     },
+    // -------------------------------------------------------------- enums (3)
+    Case {
+        name: "enum_match",
+        src: "enum Shape {\n    Empty,\n    Circle(radius),\n    Rect(w, h),\n}\nfn area(s) {\n    return match (s) {\n        Circle(r) => 3 * r * r,\n        Rect(w, h) => w * h,\n        Empty() => 0,\n    };\n}\nfn main() {\n    println(area(Circle(2)));\n    println(area(Rect(3, 4)));\n    println(area(Empty()));\n    return 0;\n}\n",
+        out: "12\n12\n0",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "match_guards",
+        src: "enum Shape {\n    Empty,\n    Circle(radius),\n    Rect(w, h),\n}\nfn describe(s) {\n    return match (s) {\n        Circle(r) if (r > 10) => \"big\",\n        Circle(r) => \"small\",\n        Rect(w, h) if (w == h) => \"square\",\n        Rect(w, h) => \"rect\",\n        Empty() => \"empty\",\n    };\n}\nfn main() {\n    println(describe(Circle(20)));\n    println(describe(Circle(3)));\n    println(describe(Rect(4, 4)));\n    println(describe(Rect(4, 5)));\n    println(describe(Empty()));\n    return 0;\n}\n",
+        // A failed guard falls through to the next arm.
+        out: "big\nsmall\nsquare\nrect\nempty",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "match_literals",
+        src: "fn classify(n) {\n    return match (n) {\n        0 => \"zero\",\n        1 => \"one\",\n        x => \"many ({x})\",\n    };\n}\nfn main() {\n    println(classify(0));\n    println(classify(1));\n    println(classify(7));\n    return 0;\n}\n",
+        out: "zero\none\nmany (7)",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "err_match_not_exhaustive",
+        src: "enum Color { Red, Green, Blue }\nfn name(c) {\n    return match (c) {\n        Red() => \"red\",\n        Green() => \"green\",\n    };\n}\nfn main() {\n    println(name(Red()));\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        err: Some("error[semantic]: this match is not exhaustive for enum 'Color': missing 'Blue' (add an arm or `_`)"),
+        aot: false,
+    },
     // -------------------------------------------------------------- syntax (3)
     Case {
         name: "if_expression",

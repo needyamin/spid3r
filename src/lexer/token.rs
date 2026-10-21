@@ -37,6 +37,8 @@ pub enum Keyword {
     Await,
     Extends,
     Implements,
+    Match,
+    Enum,
 }
 
 impl Keyword {
@@ -78,6 +80,8 @@ impl Keyword {
             Keyword::Await => "await",
             Keyword::Extends => "extends",
             Keyword::Implements => "implements",
+            Keyword::Match => "match",
+            Keyword::Enum => "enum",
         }
     }
 
@@ -118,6 +122,8 @@ impl Keyword {
             "await" => Keyword::Await,
             "extends" => Keyword::Extends,
             "implements" => Keyword::Implements,
+            "match" => Keyword::Match,
+            "enum" => Keyword::Enum,
             _ => return None,
         })
     }
@@ -186,6 +192,8 @@ pub enum TokenKind {
     QuestionDot,
     /// `??` — null coalescing.
     QuestionQuestion,
+    /// `=>` — separates a match pattern from its body.
+    FatArrow,
 
     Eof,
 }

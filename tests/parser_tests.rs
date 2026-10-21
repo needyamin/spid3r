@@ -146,6 +146,7 @@ fn every_statement_form_parses() {
             Stmt::Spawn { .. } => "spawn",
             Stmt::Try { .. } => "try",
             Stmt::Throw { .. } => "throw",
+            Stmt::Enum(_) => "enum",
         })
         .collect();
     for f in [

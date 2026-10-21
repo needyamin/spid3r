@@ -349,9 +349,12 @@ fn compile_one(
             let file: Arc<str> = Arc::from(rkey.clone());
             let mod_program = parser::parse_file(&src, file.clone())?;
             semantic::check_file(&mod_program, false, &rkey)?;
+            // An imported module is a program: it goes through the same lowering
+            // seam, or an `enum`/`match` inside it reaches the compiler raw.
+            let lowered_mod = crate::lower::lower(&mod_program);
             in_progress.insert(rkey.clone());
             let (mod_func, mod_public) = compile_one(
-                &mod_program,
+                lowered_mod.as_ref(),
                 &file,
                 module_dirs,
                 embedded,
@@ -427,6 +430,15 @@ fn resolve_module_path(
 fn compile_stmt(compilers: &mut Vec<Compiler>, ci: usize, stmt: &Stmt) -> Result<(), Diagnostic> {
     compilers[ci].chunk.set_span(stmt.span().clone());
     match stmt {
+        // `crate::lower` turns an enum into constructor functions.
+        Stmt::Enum(e) => {
+            return Err(Diagnostic::at(
+                Phase::Vm,
+                e.span.clone(),
+                "internal error: an enum declaration reached the bytecode compiler \
+                 without lowering (this is a bug in spid3r)",
+            ))
+        }
         Stmt::Expr(e) => {
             compile_expr(compilers, ci, e)?;
             compilers[ci].chunk.emit(OpCode::Pop);
@@ -984,7 +996,10 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
     compilers[ci].chunk.set_span(e.span().clone());
     match e {
         // Surface-only nodes are removed by `crate::lower` before compilation.
-        Expr::If { span, .. } | Expr::OptField { span, .. } | Expr::Coalesce { span, .. } => {
+        Expr::If { span, .. }
+        | Expr::OptField { span, .. }
+        | Expr::Coalesce { span, .. }
+        | Expr::Match { span, .. } => {
             return Err(Diagnostic::at(
                 Phase::Vm,
                 span.clone(),

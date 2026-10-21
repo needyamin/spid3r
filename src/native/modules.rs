@@ -71,8 +71,11 @@ fn flatten_stmts(
             let file_id: Arc<str> = Arc::from(resolved_str.as_str());
             let module: Program = crate::parser::parse_file(&src, file_id)?;
             crate::semantic::check_file(&module, false, &resolved_str)?;
+            // Same seam as the other backends: an imported module is lowered
+            // before its statements are flattened into the caller.
+            let lowered = crate::lower::lower(&module);
             in_progress.insert(canon.clone());
-            flatten_stmts(&module.stmts, &resolved_str, out, done, in_progress)?;
+            flatten_stmts(&lowered.stmts, &resolved_str, out, done, in_progress)?;
             in_progress.remove(&canon);
             done.insert(canon);
         } else {

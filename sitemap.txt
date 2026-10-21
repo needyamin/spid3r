@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 548 Rust tests green (532 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 559 Rust tests green (543 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -83,7 +83,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 548 tests (532 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 559 tests (543 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -375,6 +375,11 @@ GaliLang/
                          trailing bytes, instruction-table mismatch, fall-through
                          end, nesting depth, non-quadratic jumps, `exec` on a
                          corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         stage3_match.rs (11: enum construction and match,
+                         guards falling through, literals/bindings/wildcards,
+                         nested patterns, arm-scoped bindings, statement form,
+                         exhaustiveness error, unmatched-value runtime error,
+                         scrutinee evaluated once, constructors across import),
                          stage2b_hoisting.rs (14: if-expression value/missing
                          else/else-if/return-in-branch, ?? fallback and laziness,
                          ?. null receiver and single evaluation, hoisting
@@ -512,6 +517,24 @@ GaliLang/
     * detached collection mutators (list/set/bag remove+add) commit with a
       verified snapshot and retry on conflict (bounded, 32) — concurrent adds
       cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Sum types (Stage 3, 2026-10-21):
+    * `enum Name { A, B(x) }` lowers to one PUBLIC constructor function per
+      variant: `A()` / `B(1)` return a map with a `__tag` key plus one key per
+      field. Construction is therefore an ordinary call, so it works across
+      `import` with no name-resolution step, and no backend changed.
+    * `match (v) { P => body }` lowers to a linear chain:
+      `let __s = v; let __t = null; let __d = false;` then one
+      `if (not __d and <test>) { <binds>; if (<guard>) { <body>; __d = true } }`
+      per arm, then `if (not __d) { throw "no match arm matched …" }`.
+      The `__d` flag keeps the chain linear: a failed guard falls through
+      without duplicating the remaining arms.
+    * patterns: variant `Circle(r)`, literal, binding `x`, wildcard `_`, and
+      nesting (`Dot(At(x, y))`). Bindings are scoped to the arm.
+    * exhaustiveness: a match whose variant patterns all belong to one enum and
+      that has no `_`/binding arm must cover every variant (semantic error
+      naming the missing ones). Otherwise an unmatched value throws at runtime.
+    * `public enum` exports its VARIANTS (modules::public_names_of_in), because
+      the variant names are the constructor functions.
   - Value forms (Stage 2b, 2026-10-21):
     * `if` works in value position; a branch's last expression may omit its `;`
       and a missing `else` yields null. `return` inside a branch returns from

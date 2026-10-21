@@ -113,10 +113,16 @@ args           = expr { "," expr } ;
 
 primary        = intLit | floatLit | stringLit | "true" | "false" | "null"
                | ident | listLit | fnLit | "new" ident "(" [ args ] ")"
-               | ifExpr | "(" expr ")" ;
+               | ifExpr | matchExpr | "(" expr ")" ;
 
 (* `if` in value position; a branch's last expression may omit its `;` *)
 ifExpr         = "if" "(" expr ")" valueBlock [ "else" valueBlock ] ;
+
+(* `match` is an expression; in statement position its trailing `;` is optional *)
+matchExpr      = "match" "(" expr ")" "{" arm { [ "," ] arm } "}" ;
+arm            = pattern [ "if" expr ] "=>" ( valueBlock | expr ) ;
+pattern        = "_" | ident | literal
+               | ident "(" [ pattern { "," pattern } ] ")" ;
 
 listLit        = "[" [ args ] "]" ;
 fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
@@ -161,6 +167,13 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
 - A branch block of a value-position `if` may omit the `;` after its final
   expression, because that expression is the branch's value. Everywhere else an
   expression statement still needs its `;`.
+- `enum Name { A, B(x), C(x, y) }` declares a sum type. Each variant becomes a
+  `public` constructor function (`A()`, `B(1)`) returning a map with a `__tag`
+  key, so a variant works across `import` like any other function. A `match`
+  compiles to a chain of guarded `if`s: arms are tried in order and a failed
+  guard falls through to the next arm. A match that names variants of one enum
+  and has no `_`/binding arm must cover every variant (a semantic error
+  otherwise); otherwise an unmatched value throws at run time.
 - Expression/statement nesting is capped at 64 levels; deeper input is a parser
   diagnostic, never a stack overflow.
 - Bitwise `& | ^ << >>` follow C precedence and are desugared to the natives

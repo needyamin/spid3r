@@ -70,6 +70,10 @@ struct Checker {
     /// source order, so the import handler uses this set to tell a later-in-
     /// this-chunk local fn from an earlier one (REPL `known` names).
     predeclared: HashSet<String>,
+    /// Enum name -> variant names, for the exhaustiveness check.
+    enums: HashMap<String, Vec<String>>,
+    /// Variant name -> its enum, so a match can tell which enum it covers.
+    variant_enum: HashMap<String, String>,
     /// Externally-bound names (embedding API): host-registered natives and
     /// globals. They resolve as dynamic (`Any`) bindings — known but unchecked.
     externals: HashSet<String>,
@@ -174,6 +178,8 @@ impl Checker {
             is_main,
             source_file: source_file.to_string(),
             predeclared: HashSet::new(),
+            enums: HashMap::new(),
+            variant_enum: HashMap::new(),
             externals: HashSet::new(),
             module_dirs: Vec::new(),
         }
@@ -365,6 +371,98 @@ fn builtin_return_type(name: &str) -> Option<Ty> {
     })
 }
 
+impl Checker {
+    /// Declare the names a pattern binds inside the arm's scope.
+    fn declare_pattern(&mut self, p: &Pattern) -> SpidResult<()> {
+        match p {
+            Pattern::Wild | Pattern::Literal(_) => Ok(()),
+            Pattern::Bind(name) => {
+                self.declare(
+                    name,
+                    &p.span(),
+                    VarInfo {
+                        is_const: false,
+                        class: None,
+                        ty: None,
+                        is_import: false,
+                    },
+                )?;
+                Ok(())
+            }
+            Pattern::Variant { name, args, span } => {
+                if !self.variant_enum.contains_key(name) && !self.known(name) {
+                    return Err(self.err(
+                        span,
+                        format!("unknown enum variant '{}' in a match pattern", name),
+                    ));
+                }
+                for a in args {
+                    self.declare_pattern(a)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Report a match that cannot succeed for every variant of the enum it
+    /// covers.
+    ///
+    /// A dynamic language rarely knows the scrutinee's static type, so the
+    /// enum is inferred from the variants the arms mention: if every variant
+    /// pattern belongs to one enum and there is no catch-all arm, that enum is
+    /// expected to be covered. Anything ambiguous (literals only, variants from
+    /// two enums, a `_` or binding arm) is left alone — the runtime reports an
+    /// unmatched value instead.
+    fn check_exhaustive(&self, arms: &[MatchArm], span: &Span) -> SpidResult<()> {
+        let mut owner: Option<&str> = None;
+        let mut covered: Vec<&str> = Vec::new();
+        for arm in arms {
+            match &arm.pattern {
+                // A catch-all (or a guard on one) makes the match total.
+                Pattern::Wild | Pattern::Bind(_) => return Ok(()),
+                Pattern::Literal(_) => return Ok(()),
+                Pattern::Variant { name, .. } => {
+                    let Some(e) = self.variant_enum.get(name) else {
+                        return Ok(());
+                    };
+                    match owner {
+                        None => owner = Some(e.as_str()),
+                        Some(prev) if prev != e.as_str() => return Ok(()),
+                        _ => {}
+                    }
+                    covered.push(name.as_str());
+                }
+            }
+        }
+        let Some(e) = owner else {
+            return Ok(());
+        };
+        let Some(all) = self.enums.get(e) else {
+            return Ok(());
+        };
+        let missing: Vec<&str> = all
+            .iter()
+            .map(|v| v.as_str())
+            .filter(|v| !covered.contains(v))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(self.err(
+            span,
+            format!(
+                "this match is not exhaustive for enum '{}': missing {} (add an arm or `_`)",
+                e,
+                missing
+                    .iter()
+                    .map(|m| format!("'{}'", m))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ))
+    }
+}
+
 /// Does a block end in something that produces a value?
 ///
 /// A trailing expression does; so does `return`/`throw`, which leave the block
@@ -410,6 +508,30 @@ impl Checker {
         let mut seen = HashSet::new();
         for s in &program.stmts {
             match s {
+                // An enum's variants are constructors: `Circle(1)` is a call of
+                // a function that `crate::lower` emits. Registering them here
+                // means a use above the declaration still type-checks.
+                Stmt::Enum(e) => {
+                    let mut names = Vec::new();
+                    for v in &e.variants {
+                        if !seen.insert(v.name.clone()) {
+                            return Err(
+                                self.err(&v.span, format!("'{}' is declared twice", v.name))
+                            );
+                        }
+                        names.push(v.name.clone());
+                        self.variant_enum.insert(v.name.clone(), e.name.clone());
+                        self.funcs.insert(
+                            v.name.clone(),
+                            FuncInfo {
+                                arity: v.fields.len(),
+                                params: v.fields.iter().map(|_| None).collect(),
+                                ret: None,
+                            },
+                        );
+                    }
+                    self.enums.insert(e.name.clone(), names);
+                }
                 Stmt::Fn(f) => {
                     let name = f.name.clone().unwrap_or_default();
                     if name.is_empty() {
@@ -740,6 +862,9 @@ impl Checker {
 
     fn check_stmt(&mut self, s: &Stmt) -> SpidResult<()> {
         match s {
+            // Variants were registered in pass 1; a variant declaration carries
+            // no body to check.
+            Stmt::Enum(_) => Ok(()),
             Stmt::Import { path, alias, span } => {
                 let names = crate::modules::public_names_of_in(
                     path,
@@ -1431,6 +1556,10 @@ impl Checker {
             Expr::Bool(_, _) => Ty::Bool,
             Expr::Null(_) => Ty::Null,
             Expr::If { then, els, .. } => self.branch_type(then, els.as_ref()),
+            Expr::Match { arms, .. } => arms
+                .iter()
+                .map(|a| block_value_type(self, &a.body))
+                .fold(Ty::Null, common_type),
             // A null-safe field read can always produce null, so the only honest
             // static type is `any`.
             Expr::OptField { .. } => Ty::Any,
@@ -1752,6 +1881,36 @@ impl Checker {
                 Ok(())
             }
             Expr::OptField { object, .. } => self.check_expr(object),
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => {
+                self.check_expr(scrutinee)?;
+                if arms.is_empty() {
+                    return Err(self.err(span, "a match needs at least one arm"));
+                }
+                for arm in arms {
+                    self.push_scope();
+                    self.declare_pattern(&arm.pattern)?;
+                    let r = (|| {
+                        if let Some(g) = &arm.guard {
+                            self.check_expr(g)?;
+                        }
+                        if !block_has_value(&arm.body) {
+                            return Err(self.err(
+                                &arm.span,
+                                "a match arm must end with an expression (or with \
+                                 return/throw)",
+                            ));
+                        }
+                        self.check_block(&arm.body)
+                    })();
+                    self.pop_scope();
+                    r?;
+                }
+                self.check_exhaustive(arms, span)
+            }
             Expr::Coalesce { l, r, .. } => {
                 self.check_expr(l)?;
                 self.check_expr(r)?;

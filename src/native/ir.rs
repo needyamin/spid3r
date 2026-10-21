@@ -148,6 +148,8 @@ fn collect_outer_uses_stmt(
     out: &mut HashSet<String>,
 ) {
     match s {
+        // Removed by lowering; nothing to walk.
+        Stmt::Enum(_) => {}
         Stmt::Let { name, value, .. } => {
             if let Some(v) = value {
                 collect_outer_uses_expr(v, declared, out);
@@ -257,6 +259,17 @@ fn collect_outer_uses_expr(
             collect_outer_uses(&then.stmts, declared, out);
             if let Some(b) = els {
                 collect_outer_uses(&b.stmts, declared, out);
+            }
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_outer_uses_expr(scrutinee, declared, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_outer_uses_expr(g, declared, out);
+                }
+                collect_outer_uses(&arm.body.stmts, declared, out);
             }
         }
         Expr::OptField { object, .. } => collect_outer_uses_expr(object, declared, out),
@@ -1029,6 +1042,7 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
         }
         Stmt::Throw { value, .. } => nested_fns_expr(value, out),
         Stmt::Interface(_) | Stmt::Import { .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        Stmt::Enum(_) => {}
     }
 }
 
@@ -1041,6 +1055,17 @@ fn nested_fns_expr<'a>(e: &'a Expr, out: &mut Vec<&'a FnProto>) {
             nested_fns_block(&then.stmts, out);
             if let Some(b) = els {
                 nested_fns_block(&b.stmts, out);
+            }
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            nested_fns_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    nested_fns_expr(g, out);
+                }
+                nested_fns_block(&arm.body.stmts, out);
             }
         }
         Expr::OptField { object, .. } => nested_fns_expr(object, out),
@@ -1144,6 +1169,12 @@ impl<'ctx> Ir<'ctx> {
 
     fn compile_stmt(&mut self, s: &Stmt) -> IrResult<()> {
         match s {
+            // `crate::lower` turns an enum into constructor functions.
+            Stmt::Enum(e) => Err(format!(
+                "internal error at {}:{}: an enum declaration reached the native backend \
+                 without lowering (this is a bug in spid3r)",
+                e.span.file, e.span.line
+            )),
             Stmt::Let { name, value, .. } => {
                 let v = match value {
                     Some(e) => self.compile_expr(e)?,
@@ -1748,13 +1779,14 @@ impl<'ctx> Ir<'ctx> {
     fn compile_expr_inner(&mut self, e: &Expr) -> IrResult<PointerValue<'ctx>> {
         match e {
             // Surface-only nodes are rewritten by `crate::lower` before codegen.
-            Expr::If { span, .. } | Expr::OptField { span, .. } | Expr::Coalesce { span, .. } => {
-                Err(format!(
-                    "internal error at {}:{}: a surface-only expression reached the native \
+            Expr::If { span, .. }
+            | Expr::OptField { span, .. }
+            | Expr::Coalesce { span, .. }
+            | Expr::Match { span, .. } => Err(format!(
+                "internal error at {}:{}: a surface-only expression reached the native \
                      backend without lowering (this is a bug in spid3r)",
-                    span.file, span.line
-                ))
-            }
+                span.file, span.line
+            )),
             Expr::Int(v, _) => Ok(self.v_int(*v)),
             Expr::Float(v, _) => Ok(self.v_float(*v)),
             Expr::Bool(v, _) => Ok(self.v_bool(*v)),

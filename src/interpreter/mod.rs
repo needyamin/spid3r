@@ -346,6 +346,14 @@ impl Interp {
 
     pub fn exec_stmt(&self, s: &Stmt, env: &Env) -> Flow {
         match s {
+            // `crate::lower` turns an enum into constructor functions; a backend
+            // must never see the declaration itself.
+            Stmt::Enum(e) => Flow::Error(crate::diagnostics::Diagnostic::at(
+                crate::diagnostics::Phase::Runtime,
+                e.span.clone(),
+                "internal error: an enum declaration reached the interpreter without \
+                 lowering (this is a bug in spid3r)",
+            )),
             Stmt::Import { path, alias, span } => match crate::modules::load(self, path, span) {
                 Ok(names) => {
                     if let Some(alias_name) = alias {
@@ -723,13 +731,14 @@ impl Interp {
             // statements before any backend runs. Reaching one here means the
             // lowering pass was skipped, which is an internal bug, not a program
             // error — report it instead of aborting the host.
-            Expr::If { span, .. } | Expr::OptField { span, .. } | Expr::Coalesce { span, .. } => {
-                Err(self.rt(
-                    span,
-                    "internal error: a surface-only expression reached the interpreter \
+            Expr::If { span, .. }
+            | Expr::OptField { span, .. }
+            | Expr::Coalesce { span, .. }
+            | Expr::Match { span, .. } => Err(self.rt(
+                span,
+                "internal error: a surface-only expression reached the interpreter \
                      without lowering (this is a bug in spid3r)",
-                ))
-            }
+            )),
             Expr::Int(i, _) => Ok(Value::Int(*i)),
             Expr::Float(f, _) => Ok(Value::Float(*f)),
             Expr::Bool(b, _) => Ok(Value::Bool(*b)),

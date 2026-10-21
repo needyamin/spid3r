@@ -79,7 +79,10 @@ pub fn lower(program: &Program) -> Cow<'_, Program> {
     if !program_needs_lowering(program) {
         return Cow::Borrowed(program);
     }
-    let mut l = Lower { next_temp: 0 };
+    let mut l = Lower {
+        next_temp: 0,
+        variants: std::collections::HashMap::new(),
+    };
     Cow::Owned(l.program(program))
 }
 
@@ -103,6 +106,9 @@ fn stmt_needs_lowering(s: &Stmt) -> bool {
         Stmt::Import { .. } | Stmt::Interface(_) | Stmt::Break { .. } | Stmt::Continue { .. } => {
             false
         }
+        // An enum always needs lowering: its declaration becomes constructor
+        // functions, and a match always needs lowering into an arm chain.
+        Stmt::Enum(_) => true,
         Stmt::Fn(f) => block_needs_lowering(&f.body),
         Stmt::Class(c) => c.methods.iter().any(|m| block_needs_lowering(&m.body)),
         Stmt::Let { value, .. } => value.as_ref().map(expr_needs_lowering).unwrap_or(false),
@@ -162,7 +168,9 @@ fn block_needs_lowering(b: &Block) -> bool {
 
 fn expr_needs_lowering(e: &Expr) -> bool {
     match e {
-        Expr::If { .. } | Expr::OptField { .. } | Expr::Coalesce { .. } => true,
+        Expr::If { .. } | Expr::OptField { .. } | Expr::Coalesce { .. } | Expr::Match { .. } => {
+            true
+        }
         Expr::Int(..)
         | Expr::Float(..)
         | Expr::Str(..)
@@ -198,6 +206,9 @@ fn expr_needs_lowering(e: &Expr) -> bool {
 
 struct Lower {
     next_temp: usize,
+    /// Variant name -> payload field names, collected from the program's own
+    /// `enum` declarations. A match needs the field names to bind them.
+    variants: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Lower {
@@ -224,6 +235,7 @@ impl Lower {
                 out
             }
             Stmt::Class(c) => vec![Stmt::Class(self.class_decl(c))],
+            Stmt::Enum(e) => self.enum_decl(e),
             Stmt::Interface(_)
             | Stmt::Import { .. }
             | Stmt::Break { .. }
@@ -523,6 +535,288 @@ impl Lower {
         out
     }
 
+    /// `enum Name { A, B(x) }` → one constructor function per variant.
+    ///
+    /// A variant is a `map` with a `__tag` key plus one key per payload field,
+    /// and the constructor is an ordinary **public** function. That choice is
+    /// what makes the feature free for the engines and for the module system:
+    /// `Circle(1)` is a normal call, so it works across `import` with no
+    /// name-resolution step, and `match` only reads a map key.
+    fn enum_decl(&mut self, e: &crate::ast::EnumDecl) -> Vec<Stmt> {
+        let mut out = Vec::new();
+        for v in &e.variants {
+            self.variants.insert(v.name.clone(), v.fields.clone());
+            let span = v.span.clone();
+            let mut body: Vec<Stmt> = Vec::new();
+            // let __m = map();
+            body.push(Stmt::Let {
+                vis: Vis::Private,
+                name: "__m".to_string(),
+                ty: None,
+                value: Some(Expr::Call {
+                    callee: Box::new(Expr::Ident("map".to_string(), span.clone())),
+                    args: Vec::new(),
+                    span: span.clone(),
+                }),
+                span: span.clone(),
+            });
+            // __m["__tag"] = "Variant";
+            body.push(set_index(
+                "__m",
+                "__tag",
+                Expr::Str(v.name.clone(), span.clone()),
+                &span,
+            ));
+            // __m["__fields"] = ["a", "b"] — the field order travels with the
+            // value, so a `match` in *another file* (which never sees this
+            // declaration) can still bind payload fields by position.
+            body.push(set_index(
+                "__m",
+                "__fields",
+                Expr::List(
+                    v.fields
+                        .iter()
+                        .map(|f| Expr::Str(f.clone(), span.clone()))
+                        .collect(),
+                    span.clone(),
+                ),
+                &span,
+            ));
+            for f in &v.fields {
+                body.push(set_index(
+                    "__m",
+                    f,
+                    Expr::Ident(f.clone(), span.clone()),
+                    &span,
+                ));
+            }
+            body.push(Stmt::Return {
+                value: Some(Expr::Ident("__m".to_string(), span.clone())),
+                span: span.clone(),
+            });
+            out.push(Stmt::Fn(FnProto {
+                vis: e.vis,
+                is_async: false,
+                name: Some(v.name.clone()),
+                params: v
+                    .fields
+                    .iter()
+                    .map(|f| crate::ast::Param {
+                        name: f.clone(),
+                        ty: None,
+                        span: span.clone(),
+                    })
+                    .collect(),
+                ret: None,
+                body: Block {
+                    stmts: body,
+                    span: span.clone(),
+                },
+                span: span.clone(),
+            }));
+        }
+        out
+    }
+
+    /// `match (v) { P => body, … }` → a linear chain of guarded `if`s.
+    ///
+    /// ```text
+    /// let __s = <scrutinee>;      // evaluated once
+    /// let __t = null;             // the result
+    /// let __d = false;            // "an arm already ran"
+    /// if (not __d and <tag test>) { <binds>; if (<guard>) { <body>; __d = true } }
+    /// …
+    /// if (not __d) { throw "no match arm matched …" }
+    /// ```
+    ///
+    /// The `__d` flag keeps the chain linear: a failed *guard* falls through to
+    /// the next arm without duplicating the remaining arms into every branch.
+    fn match_expr(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[crate::ast::MatchArm],
+        span: &Span,
+    ) -> (Expr, Vec<Stmt>) {
+        let (scrutinee, mut pre) = self.expr(scrutinee);
+        let s_span = scrutinee.span().clone();
+        let scrut = self.fresh();
+        pre.push(let_null(&scrut, scrutinee, s_span.clone()));
+
+        let result = self.fresh();
+        pre.push(let_stmt(&result, Expr::Null(span.clone()), span.clone()));
+        let done = self.fresh();
+        pre.push(let_stmt(
+            &done,
+            Expr::Bool(false, span.clone()),
+            span.clone(),
+        ));
+
+        for arm in arms {
+            let base = Expr::Ident(scrut.clone(), s_span.clone());
+            let (test, binds) = self.pattern_test(&arm.pattern, &base, span);
+            let mut inner = binds;
+            let body = self.value_block(&arm.body, &result);
+            let mut guarded: Vec<Stmt> = body.stmts;
+            guarded.push(set_local(&done, Expr::Bool(true, span.clone()), span));
+            match &arm.guard {
+                Some(g) => {
+                    let (g, gpre) = self.expr(g);
+                    inner.extend(gpre);
+                    inner.push(Stmt::If {
+                        cond: g,
+                        then: Block {
+                            stmts: guarded,
+                            span: span.clone(),
+                        },
+                        elifs: Vec::new(),
+                        els: None,
+                        span: span.clone(),
+                    });
+                }
+                None => inner.extend(guarded),
+            }
+            // `not __d and <test>`: once an arm has run, later arms are skipped.
+            let cond = Expr::Logical {
+                op: crate::ast::LogOp::And,
+                l: Box::new(Expr::Unary {
+                    op: UnOp::Not,
+                    expr: Box::new(Expr::Ident(done.clone(), span.clone())),
+                    span: span.clone(),
+                }),
+                r: Box::new(test),
+                span: span.clone(),
+            };
+            pre.push(Stmt::If {
+                cond,
+                then: Block {
+                    stmts: inner,
+                    span: span.clone(),
+                },
+                elifs: Vec::new(),
+                els: None,
+                span: span.clone(),
+            });
+        }
+
+        pre.push(Stmt::If {
+            cond: Expr::Unary {
+                op: UnOp::Not,
+                expr: Box::new(Expr::Ident(done.clone(), span.clone())),
+                span: span.clone(),
+            },
+            then: Block {
+                stmts: vec![Stmt::Throw {
+                    value: Expr::Str(
+                        "no match arm matched the value (the match is not exhaustive)".to_string(),
+                        span.clone(),
+                    ),
+                    span: span.clone(),
+                }],
+                span: span.clone(),
+            },
+            elifs: Vec::new(),
+            els: None,
+            span: span.clone(),
+        });
+
+        (Expr::Ident(result, span.clone()), pre)
+    }
+
+    /// The condition a pattern imposes plus the bindings it introduces, tested
+    /// against `base` (a temp holding the value).
+    fn pattern_test(
+        &mut self,
+        p: &crate::ast::Pattern,
+        base: &Expr,
+        span: &Span,
+    ) -> (Expr, Vec<Stmt>) {
+        use crate::ast::Pattern;
+        match p {
+            Pattern::Wild => (Expr::Bool(true, span.clone()), Vec::new()),
+            Pattern::Bind(name) => (
+                Expr::Bool(true, span.clone()),
+                vec![let_stmt(name, base.clone(), span.clone())],
+            ),
+            Pattern::Literal(lit) => (
+                Expr::Binary {
+                    op: BinOp::Eq,
+                    l: Box::new(base.clone()),
+                    r: Box::new(lit.clone()),
+                    span: span.clone(),
+                },
+                Vec::new(),
+            ),
+            Pattern::Variant {
+                name,
+                args,
+                span: vspan,
+            } => {
+                // `base["__tag"] == "Name"`
+                let tag = Expr::Index {
+                    object: Box::new(base.clone()),
+                    index: Box::new(Expr::Str("__tag".to_string(), vspan.clone())),
+                    span: vspan.clone(),
+                };
+                let mut cond = Expr::Binary {
+                    op: BinOp::Eq,
+                    l: Box::new(tag),
+                    r: Box::new(Expr::Str(name.clone(), vspan.clone())),
+                    span: vspan.clone(),
+                };
+                let fields = self.variants.get(name).cloned();
+                let mut binds = Vec::new();
+                // When the enum is declared in another file, its field *names*
+                // are unknown here — but the constructor stored them in
+                // `__fields`, so read the order at run time and index by
+                // position. Without this, a cross-module match bound nothing and
+                // the arm body failed with `unknown name`.
+                let dynamic_fields = if fields.is_none() && !args.is_empty() {
+                    let fl = self.fresh();
+                    binds.push(let_null(
+                        &fl,
+                        Expr::Index {
+                            object: Box::new(base.clone()),
+                            index: Box::new(Expr::Str("__fields".to_string(), vspan.clone())),
+                            span: vspan.clone(),
+                        },
+                        vspan.clone(),
+                    ));
+                    Some(fl)
+                } else {
+                    None
+                };
+                for (i, arg) in args.iter().enumerate() {
+                    let key = match (&fields, &dynamic_fields) {
+                        (Some(f), _) => match f.get(i) {
+                            Some(name) => Expr::Str(name.clone(), vspan.clone()),
+                            None => continue,
+                        },
+                        (None, Some(fl)) => Expr::Index {
+                            object: Box::new(Expr::Ident(fl.clone(), vspan.clone())),
+                            index: Box::new(Expr::Int(i as i64, vspan.clone())),
+                            span: vspan.clone(),
+                        },
+                        (None, None) => continue,
+                    };
+                    let sub = Expr::Index {
+                        object: Box::new(base.clone()),
+                        index: Box::new(key),
+                        span: vspan.clone(),
+                    };
+                    let (sub_cond, mut sub_binds) = self.pattern_test(arg, &sub, span);
+                    binds.append(&mut sub_binds);
+                    cond = Expr::Logical {
+                        op: crate::ast::LogOp::And,
+                        l: Box::new(cond),
+                        r: Box::new(sub_cond),
+                        span: vspan.clone(),
+                    };
+                }
+                (cond, binds)
+            }
+        }
+    }
+
     /// Lower an expression, returning it plus the statements that must run
     /// before it is evaluated.
     fn expr(&mut self, e: &Expr) -> (Expr, Vec<Stmt>) {
@@ -535,6 +829,11 @@ impl Lower {
             } => self.if_expr(cond, then, els.as_ref(), span),
             Expr::OptField { object, name, span } => self.opt_field(object, name, span),
             Expr::Coalesce { l, r, span } => self.coalesce(l, r, span),
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => self.match_expr(scrutinee, arms, span),
 
             Expr::Int(..)
             | Expr::Float(..)
@@ -920,6 +1219,30 @@ impl Lower {
             pre,
         )
     }
+}
+
+/// `name["key"] = value;`
+fn set_index(name: &str, key: &str, value: Expr, span: &Span) -> Stmt {
+    Stmt::Expr(Expr::Assign {
+        target: Box::new(Expr::Index {
+            object: Box::new(Expr::Ident(name.to_string(), span.clone())),
+            index: Box::new(Expr::Str(key.to_string(), span.clone())),
+            span: span.clone(),
+        }),
+        op: AssignOp::Assign,
+        value: Box::new(value),
+        span: span.clone(),
+    })
+}
+
+/// `name = value;` for an existing binding.
+fn set_local(name: &str, value: Expr, span: &Span) -> Stmt {
+    Stmt::Expr(Expr::Assign {
+        target: Box::new(Expr::Ident(name.to_string(), span.clone())),
+        op: AssignOp::Assign,
+        value: Box::new(value),
+        span: span.clone(),
+    })
 }
 
 fn let_stmt(name: &str, value: Expr, span: Span) -> Stmt {

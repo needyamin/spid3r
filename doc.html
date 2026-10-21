@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">548 tests · 25/25 examples agree</span>
+          <span class="badge">559 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -1066,7 +1066,8 @@ fn main() {
         <p>Keywords are lowercase and case-sensitive:</p>
         <pre data-lang="text"><code>fn let const if elif else while for in break continue return
 true false null and or not import try catch finally throw
-class interface new self public private spawn async await extends implements</code></pre>
+class interface new self public private spawn async await extends implements
+match enum</code></pre>
         <p>Type and constructor names (<code>list</code>, <code>map</code>, <code>heap</code>, …) and
           builtin functions are <em>not</em> keywords. They are ordinary globals and can be shadowed. See
           <a href="docs/KEYWORDS.md">docs/KEYWORDS.md</a>.
@@ -1125,6 +1126,36 @@ class interface new self public private spawn async await extends implements</co
           </ul>
         </div>
 
+        <h3>Enums and <code>match</code></h3>
+        <p>An <code>enum</code> is a sum type: a value that is exactly one of its variants, each
+          carrying its own fields. A <code>match</code> takes it apart, and the compiler checks that
+          every variant is handled.</p>
+        <pre data-lang="spid3r"><code>enum Shape {
+    Empty,
+    Circle(radius),
+    Rect(w, h),
+}
+
+fn area(s) {
+    return match (s) {
+        Circle(r) => 3 * r * r,
+        Rect(w, h) => w * h,
+        Empty() => 0,
+    };
+}</code></pre>
+        <p>Arms are tried in order. A pattern can be a variant (<code>Circle(r)</code>), a literal
+          (<code>0</code>, <code>"a"</code>), a binding that captures the whole value (<code>x</code>),
+          or <code>_</code>. Patterns nest (<code>Dot(At(x, y))</code>), and a <code>if</code> guard
+          narrows an arm — a failed guard falls through to the next arm rather than failing the
+          match:</p>
+        <pre data-lang="spid3r"><code>return match (s) {
+    Circle(r) if (r &gt; 10) =&gt; "big",
+    Circle(r) =&gt; "small",
+    _ =&gt; "other",
+};</code></pre>
+        <p>A match with no <code>_</code> or binding arm must cover every variant of the enum it
+          names; <code>spid3r check</code> reports the missing ones. When the enum cannot be inferred
+          (literals only), an unmatched value throws a normal runtime error instead.</p>
         <h3>Value-position <code>if</code></h3>
         <p><code>if</code> also works as an expression, so a conditional value needs no temporary and no
           statement dance. Each branch yields its last expression (a branch may omit that final
@@ -3250,7 +3281,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>548 tests</strong> (<strong>532</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>559 tests</strong> (<strong>543</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

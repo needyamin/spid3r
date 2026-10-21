@@ -41,6 +41,61 @@ pub struct FnProto {
     pub span: Span,
 }
 
+/// A variant of an [`EnumDecl`]: a name plus its payload field names.
+#[derive(Clone, Debug)]
+pub struct VariantDecl {
+    pub name: String,
+    /// Empty for a nullary variant (`Empty()`).
+    pub fields: Vec<String>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnumDecl {
+    /// `public` marks the enum's constructors as module exports.
+    pub vis: Vis,
+    pub name: String,
+    pub variants: Vec<VariantDecl>,
+    pub span: Span,
+}
+
+/// One arm's pattern.
+#[derive(Clone, Debug)]
+pub enum Pattern {
+    /// `_`
+    Wild,
+    /// `x` — matches anything and binds it.
+    Bind(String),
+    /// A literal: `1`, `"s"`, `true`, `null`.
+    Literal(Expr),
+    /// `Circle(r)` / `Empty()` — matches the tag, then the sub-patterns.
+    Variant {
+        name: String,
+        args: Vec<Pattern>,
+        span: Span,
+    },
+}
+
+impl Pattern {
+    pub fn span(&self) -> Span {
+        match self {
+            Pattern::Wild => Span::new(std::sync::Arc::from("<match>"), 0, 0, 0),
+            Pattern::Bind(_) => Span::new(std::sync::Arc::from("<match>"), 0, 0, 0),
+            Pattern::Literal(e) => e.span().clone(),
+            Pattern::Variant { span, .. } => span.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    /// `if (cond)` — a guard; a failed guard falls through to the next arm.
+    pub guard: Option<Expr>,
+    pub body: Block,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
@@ -94,6 +149,13 @@ pub enum Stmt {
     Fn(FnProto),
     Class(ClassDecl),
     Interface(InterfaceDecl),
+    /// `enum Shape { Empty, Circle(radius), Rect(w, h) }`
+    ///
+    /// A sum type: the variants are the constructors. `crate::lower` turns the
+    /// declaration into one constructor function per variant (a map with a
+    /// `__tag` key), so construction is an ordinary call and needs no engine
+    /// support.
+    Enum(EnumDecl),
     Let {
         /// `public` marks the binding as a module export.
         vis: Vis,
@@ -182,6 +244,7 @@ impl Stmt {
             Stmt::Fn(f) => &f.span,
             Stmt::Class(c) => &c.span,
             Stmt::Interface(i) => &i.span,
+            Stmt::Enum(e) => &e.span,
             Stmt::Block(b) => &b.span,
             Stmt::Expr(e) => e.span(),
         }
@@ -279,6 +342,13 @@ pub enum Expr {
         r: Box<Expr>,
         span: Span,
     },
+    /// `match (value) { Pattern => body, … }` in value position. Arms are tried
+    /// top to bottom; the first whose pattern (and guard) succeeds wins.
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -304,7 +374,8 @@ impl Expr {
             | Expr::Spawn { span, .. }
             | Expr::If { span, .. }
             | Expr::OptField { span, .. }
-            | Expr::Coalesce { span, .. } => span,
+            | Expr::Coalesce { span, .. }
+            | Expr::Match { span, .. } => span,
             Expr::Fn(f) => &f.span,
         }
     }

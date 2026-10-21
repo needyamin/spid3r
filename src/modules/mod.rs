@@ -339,6 +339,14 @@ pub fn public_names_of_in(
             crate::ast::Stmt::Interface(i) if i.vis == crate::ast::Vis::Public => {
                 names.push((i.name.clone(), false));
             }
+            // A `public enum` exports its *variants*: lowering turns each one
+            // into a constructor function, and that function is what an
+            // importing file calls (`Circle(1)`).
+            crate::ast::Stmt::Enum(e) if e.vis == crate::ast::Vis::Public => {
+                for v in &e.variants {
+                    names.push((v.name.clone(), false));
+                }
+            }
             crate::ast::Stmt::Let { name, vis, .. } if *vis == crate::ast::Vis::Public => {
                 names.push((name.clone(), false));
             }

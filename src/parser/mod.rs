@@ -207,6 +207,7 @@ impl Parser {
             )),
             TokenKind::Kw(Keyword::Class) => Ok(Stmt::Class(self.parse_class(vis)?)),
             TokenKind::Kw(Keyword::Interface) => Ok(Stmt::Interface(self.parse_interface(vis)?)),
+            TokenKind::Kw(Keyword::Enum) => Ok(Stmt::Enum(self.parse_enum(vis)?)),
             TokenKind::Kw(Keyword::Let) | TokenKind::Kw(Keyword::Const) => {
                 let s = self.parse_statement()?;
                 // attach the visibility the declaration carried
@@ -454,6 +455,46 @@ impl Parser {
         }
     }
 
+    /// `enum Name { A, B(x), C(x, y) }`
+    fn parse_enum(&mut self, vis: Vis) -> SpidResult<EnumDecl> {
+        let start = self.expect_kw(Keyword::Enum)?;
+        let (name, _) = self.expect_ident()?;
+        self.expect(&TokenKind::LBrace, "'{' to open the enum body")?;
+        let mut variants = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            if self.at(&TokenKind::Eof) {
+                return Err(self.err_here("unterminated enum body"));
+            }
+            let (vname, vspan) = self.expect_ident()?;
+            let mut fields = Vec::new();
+            if self.eat(&TokenKind::LParen) {
+                while !self.at(&TokenKind::RParen) {
+                    let (fname, _) = self.expect_ident()?;
+                    fields.push(fname);
+                    if !self.eat(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RParen, "')' after the variant's fields")?;
+            }
+            variants.push(VariantDecl {
+                name: vname,
+                fields,
+                span: vspan,
+            });
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        let end = self.expect_kw_rbrace()?;
+        Ok(EnumDecl {
+            vis,
+            name,
+            variants,
+            span: join(start, end),
+        })
+    }
+
     fn parse_interface(&mut self, vis: Vis) -> SpidResult<InterfaceDecl> {
         let start = self.expect_kw(Keyword::Interface)?;
         let (name, _) = self.expect_ident()?;
@@ -586,6 +627,13 @@ impl Parser {
                     Err(self.err_here("spawn expects a function: spawn fn() { ... };"))
                 }
             }
+            // A `match` in statement position: like `if`, the trailing `;` is
+            // optional because the arm bodies are already delimited.
+            TokenKind::Kw(Keyword::Match) => {
+                let e = self.parse_match_expr()?;
+                let _ = self.eat(&TokenKind::Semi);
+                Ok(Stmt::Expr(e))
+            }
             TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             _ => {
                 let e = self.parse_expr()?;
@@ -684,6 +732,100 @@ impl Parser {
             els,
             span,
         })
+    }
+
+    /// `match (value) { Pattern => body, … }` — the same parser serves the
+    /// statement and the value form.
+    fn parse_match_expr(&mut self) -> SpidResult<Expr> {
+        let start = self.expect_kw(Keyword::Match)?;
+        self.expect(&TokenKind::LParen, "'(' after match")?;
+        let scrutinee = self.parse_expr()?;
+        self.expect(&TokenKind::RParen, "')' after the matched value")?;
+        self.expect(&TokenKind::LBrace, "'{' to open the match arms")?;
+        let mut arms = Vec::new();
+        while !self.at(&TokenKind::RBrace) {
+            if self.at(&TokenKind::Eof) {
+                return Err(self.err_here("unterminated match body"));
+            }
+            let arm_start = self.span();
+            let pattern = self.parse_pattern()?;
+            let guard = if self.eat_kw(Keyword::If) {
+                Some(self.parse_expr()?)
+            } else {
+                None
+            };
+            self.expect(&TokenKind::FatArrow, "'=>' after the pattern")?;
+            // `=> expr` and `=> { statements; value }` are both accepted; the
+            // bare form is wrapped in a one-statement block.
+            let body = if self.at(&TokenKind::LBrace) {
+                self.parse_value_block()?
+            } else {
+                let e = self.parse_expr()?;
+                let span = e.span().clone();
+                Block {
+                    stmts: vec![Stmt::Expr(e)],
+                    span,
+                }
+            };
+            let span = join(arm_start, body.span.clone());
+            arms.push(MatchArm {
+                pattern,
+                guard,
+                body,
+                span,
+            });
+            // Arms may be separated by a comma, or just follow each other.
+            let _ = self.eat(&TokenKind::Comma);
+        }
+        let end = self.expect_kw_rbrace()?;
+        Ok(Expr::Match {
+            scrutinee: Box::new(scrutinee),
+            arms,
+            span: join(start, end),
+        })
+    }
+
+    fn parse_pattern(&mut self) -> SpidResult<Pattern> {
+        match self.kind().clone() {
+            TokenKind::Ident(name) => {
+                let sp = self.span();
+                self.pos += 1;
+                // `Name(...)` is a variant pattern; a bare identifier binds.
+                if self.at(&TokenKind::LParen) {
+                    self.pos += 1;
+                    let mut args = Vec::new();
+                    while !self.at(&TokenKind::RParen) {
+                        args.push(self.parse_pattern()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&TokenKind::RParen, "')' after the variant's fields")?;
+                    return Ok(Pattern::Variant {
+                        name,
+                        args,
+                        span: sp,
+                    });
+                }
+                if name == "_" {
+                    Ok(Pattern::Wild)
+                } else {
+                    Ok(Pattern::Bind(name))
+                }
+            }
+            TokenKind::Int(_)
+            | TokenKind::Float(_)
+            | TokenKind::Str(_)
+            | TokenKind::InterpStr(_)
+            | TokenKind::Kw(Keyword::True)
+            | TokenKind::Kw(Keyword::False)
+            | TokenKind::Kw(Keyword::Null) => {
+                let e = self.parse_primary()?;
+                Ok(Pattern::Literal(e))
+            }
+            _ => Err(self
+                .err_here("expected a pattern: `_`, a name to bind, a literal, or `Variant(...)`")),
+        }
     }
 
     fn parse_if(&mut self) -> SpidResult<Stmt> {
@@ -1201,6 +1343,7 @@ impl Parser {
             // `if` as an expression: only reachable in value position, because
             // `parse_statement` consumes a leading `if` as a statement.
             TokenKind::Kw(Keyword::If) => self.parse_if_expr(),
+            TokenKind::Kw(Keyword::Match) => self.parse_match_expr(),
             TokenKind::Kw(Keyword::True) => {
                 self.pos += 1;
                 Ok(Expr::Bool(true, sp))
