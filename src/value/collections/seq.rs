@@ -16,34 +16,10 @@ pub struct VecData {
 
 impl Drop for VecData {
     fn drop(&mut self) {
-        // F4: a deeply nested, singly-owned list chain (a list containing a
-        // list containing ...) overflows the host stack with the default
-        // recursive drop at ~10^5 levels — the teardown of a deep build
-        // crashed the host after the build stall was fixed. Drain the chain
-        // iteratively instead: when a child list's cell is the LAST owner,
-        // take its items into our worklist rather than letting its own Drop
-        // recurse. Shared cells (strong_count > 1) fall back to the normal
-        // drop — their recursion depth is bounded by the sharing structure.
-        let mut work = std::mem::take(&mut self.items);
-        while let Some(v) = work.pop() {
-            let sole = match &v {
-                Value::List(arc) | Value::VecDyn(arc) => std::sync::Arc::strong_count(arc) == 1,
-                _ => false,
-            };
-            if !sole {
-                drop(v);
-                continue;
-            }
-            match v {
-                Value::List(arc) | Value::VecDyn(arc) => {
-                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
-                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
-                        work.extend(std::mem::take(&mut data.items));
-                    }
-                }
-                _ => drop(v),
-            }
-        }
+        // F4/A-17: drain nested containers iteratively; the shared helper knows
+        // every container type, so mixed chains (list -> stack -> map -> ...)
+        // are covered too.
+        super::drop_iteratively(std::mem::take(&mut self.items));
     }
 }
 
@@ -435,6 +411,13 @@ pub struct StackData {
     pub items: Vec<Value>,
 }
 
+impl Drop for StackData {
+    fn drop(&mut self) {
+        // A-17: a 200k-deep `stack` chain used to abort the process here.
+        super::drop_iteratively(std::mem::take(&mut self.items));
+    }
+}
+
 impl StackData {
     pub fn method(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
         match name {
@@ -503,6 +486,19 @@ pub struct QueueData {
 #[derive(Debug, Default)]
 pub struct DequeData {
     pub items: VecDeque<Value>,
+}
+
+impl Drop for QueueData {
+    fn drop(&mut self) {
+        // A-17: `VecDeque` has no `take`, so drain into a `Vec` first.
+        super::drop_iteratively(self.items.drain(..).collect());
+    }
+}
+
+impl Drop for DequeData {
+    fn drop(&mut self) {
+        super::drop_iteratively(self.items.drain(..).collect());
+    }
 }
 
 impl QueueData {
@@ -660,43 +656,10 @@ pub struct MapData {
 
 impl Drop for MapData {
     fn drop(&mut self) {
-        // F4: same iterative teardown as VecData — a map whose values nest
-        // maps/lists deeply must not recurse per level when the last owner
-        // drops. Values from sole-owned child maps/lists are drained into a
-        // worklist; keys (usually scalars) drop inline.
+        // F4/A-17: iterative teardown through the shared helper. Only values are
+        // walked; keys (`MapKey`) are hashable scalars and drop inline.
         let entries = std::mem::take(&mut self.entries);
-        let mut work: Vec<Value> = Vec::with_capacity(entries.len());
-        for (_, v) in entries {
-            work.push(v);
-        }
-        while let Some(v) = work.pop() {
-            let sole = match &v {
-                Value::Map(arc) => std::sync::Arc::strong_count(arc) == 1,
-                Value::List(arc) | Value::VecDyn(arc) => std::sync::Arc::strong_count(arc) == 1,
-                _ => false,
-            };
-            if !sole {
-                drop(v);
-                continue;
-            }
-            match v {
-                Value::Map(arc) => {
-                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
-                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
-                        for (_, v) in data.entries.drain(..) {
-                            work.push(v);
-                        }
-                    }
-                }
-                Value::List(arc) | Value::VecDyn(arc) => {
-                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
-                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
-                        work.extend(std::mem::take(&mut data.items));
-                    }
-                }
-                _ => drop(v),
-            }
-        }
+        super::drop_iteratively(entries.into_iter().map(|(_, v)| v).collect());
     }
 }
 
@@ -869,34 +832,8 @@ pub struct SetData {
 
 impl Drop for SetData {
     fn drop(&mut self) {
-        // F4: iterative teardown, same contract as VecData above.
-        let mut work = std::mem::take(&mut self.items);
-        while let Some(v) = work.pop() {
-            let sole = match &v {
-                Value::Set(arc) => std::sync::Arc::strong_count(arc) == 1,
-                Value::List(arc) | Value::VecDyn(arc) => std::sync::Arc::strong_count(arc) == 1,
-                _ => false,
-            };
-            if !sole {
-                drop(v);
-                continue;
-            }
-            match v {
-                Value::Set(arc) => {
-                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
-                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
-                        work.extend(std::mem::take(&mut data.items));
-                    }
-                }
-                Value::List(arc) | Value::VecDyn(arc) => {
-                    if let Ok(data) = std::sync::Arc::try_unwrap(arc) {
-                        let mut data = data.into_inner().unwrap_or_else(|e| e.into_inner());
-                        work.extend(std::mem::take(&mut data.items));
-                    }
-                }
-                _ => drop(v),
-            }
-        }
+        // F4/A-17: iterative teardown through the shared helper.
+        super::drop_iteratively(std::mem::take(&mut self.items));
     }
 }
 

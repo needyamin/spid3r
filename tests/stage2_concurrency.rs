@@ -260,17 +260,21 @@ fn main() {
         ),
         (
             "graph.clone (deep clone)",
+            // A-14: the clone is cyclic — its node is the clone itself, not the
+            // original graph. `h.has_node(g)` used to be true precisely because
+            // the clone aliased `g`.
             r#"
 fn main() {
     let g = graph("directed");
     g.add_node(g);
     let h = g.clone();
     println(h.len());
+    println(h.has_node(h));
     println(h.has_node(g));
     return 0;
 }
 "#,
-            &["1", "true"],
+            &["1", "true", "false"],
         ),
         (
             "graph traversal",

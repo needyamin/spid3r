@@ -20,6 +20,13 @@ pub struct HeapData {
     pub min: bool,
 }
 
+impl Drop for HeapData {
+    fn drop(&mut self) {
+        // A-17: deep heap chains must not recurse per level.
+        super::drop_iteratively(std::mem::take(&mut self.items));
+    }
+}
+
 impl HeapData {
     pub fn new(min: bool) -> Self {
         HeapData {
@@ -161,6 +168,12 @@ pub struct PrioQueueData {
     pub items: Vec<PqItem>,
     pub min: bool,
     pub seq: u64,
+}
+
+impl Drop for PrioQueueData {
+    fn drop(&mut self) {
+        super::drop_iteratively(std::mem::take(&mut self.items).into_iter().map(|it| it.value).collect());
+    }
 }
 
 impl PrioQueueData {
@@ -2025,6 +2038,12 @@ pub struct RingData {
     pub items: VecDeque<Value>,
 }
 
+impl Drop for RingData {
+    fn drop(&mut self) {
+        super::drop_iteratively(self.items.drain(..).collect());
+    }
+}
+
 impl RingData {
     pub fn method(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
         match name {
@@ -2095,6 +2114,14 @@ impl RingData {
 #[derive(Debug, Default)]
 pub struct BagData {
     pub counts: Vec<(Value, usize)>,
+}
+
+impl Drop for BagData {
+    fn drop(&mut self) {
+        // A-17: `counts` is a `Vec` of `(Value, count)` pairs, so the default
+        // drop recurses per chain link just like the other containers.
+        super::drop_iteratively(std::mem::take(&mut self.counts).into_iter().map(|(v, _)| v).collect());
+    }
 }
 
 impl BagData {
@@ -2505,6 +2532,21 @@ pub enum NpyLoaded {
 }
 
 pub fn save_npy_file(path: &str, shape: &[usize], data: &[f64]) -> Result<(), String> {
+    // The header advertises `shape`, so a payload that disagrees with it would
+    // write a file that `load_npy` (correctly) rejects as corrupt.
+    let expected: Option<usize> = shape.iter().try_fold(1usize, |acc, d| acc.checked_mul(*d));
+    match expected {
+        Some(n) if n == data.len() => {}
+        Some(n) => {
+            return Err(format!(
+                "npy shape {:?} needs {} values, got {}",
+                shape,
+                n,
+                data.len()
+            ))
+        }
+        None => return Err(format!("npy shape {:?} is too large", shape)),
+    }
     let shape_str = if shape.len() == 1 {
         format!("({},), ", shape[0])
     } else if shape.len() == 2 {
@@ -2587,10 +2629,16 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
     let payload = &bytes[10 + h_len..];
     if dims.len() == 1 {
         let n = dims[0];
-        if payload.len() != n * 8 {
+        // A-17: the shape comes from the file header, so `n * 8` is
+        // attacker-controlled. Unchecked, it wraps in release builds (a huge
+        // shape passes the length check) and panics in debug builds.
+        let want = n
+            .checked_mul(8)
+            .ok_or_else(|| format!("npy dimension {} is too large", n))?;
+        if payload.len() != want {
             return Err(format!(
                 "npy payload size mismatch: expected {} bytes, got {}",
-                n * 8,
+                want,
                 payload.len()
             ));
         }
@@ -2601,11 +2649,16 @@ pub fn load_npy_data(path: &str) -> Result<NpyLoaded, String> {
         Ok(NpyLoaded::Vector(data))
     } else if dims.len() == 2 {
         let (rows, cols) = (dims[0], dims[1]);
-        let total = rows * cols;
-        if payload.len() != total * 8 {
+        let total = rows
+            .checked_mul(cols)
+            .ok_or_else(|| format!("npy shape {}x{} is too large", rows, cols))?;
+        let want = total
+            .checked_mul(8)
+            .ok_or_else(|| format!("npy shape {}x{} is too large", rows, cols))?;
+        if payload.len() != want {
             return Err(format!(
                 "npy payload size mismatch: expected {} bytes, got {}",
-                total * 8,
+                want,
                 payload.len()
             ));
         }

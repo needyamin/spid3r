@@ -25,6 +25,100 @@ pub use misc::{
 pub use nodes::{BinTreeData, BstData, ListData};
 pub use seq::{DequeData, MapData, QueueData, SetData, StackData, VecData};
 
+// -------------------------------------------------------- iterative teardown
+//
+// A chain of containers (`s = stack(); s.push(s)`, 200k times) is a
+// singly-owned chain as far as refcounting is concerned, so the default
+// recursive `Drop` walks it on the host stack and aborts the process around
+// 10^5 levels (audit A-17: exit 0xC00000FD, "has overflowed its stack").
+//
+// Every flat container therefore tears down through this one worklist instead
+// of recursing. It deliberately understands *every* container variant: the
+// three earlier per-type copies each knew only their own type plus `list`, so
+// a `stack`/`queue`/`deque` chain slipped past all of them.
+
+/// Move the children of `v` into `out` when `v` is a solely-owned container,
+/// leaving that container empty. Any other value — a scalar, a shared cell, a
+/// tree, an instance — is dropped here instead.
+///
+/// Shared cells (`strong_count > 1`) fall back to the normal drop: their
+/// recursion depth is bounded by how much aliasing the program created, not by
+/// how long the chain is.
+pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
+    macro_rules! flat {
+        ($arc:expr, $field:ident) => {{
+            if let Ok(data) = Arc::try_unwrap($arc) {
+                // A poisoned lock still owns its values; recover them.
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.extend(std::mem::take(&mut d.$field));
+            }
+        }};
+    }
+    // Instances are the other realistic deep chain (`class Node { next }`), so
+    // their field maps are drained too.
+    macro_rules! fields {
+        ($arc:expr) => {{
+            if let Ok(data) = Arc::try_unwrap($arc) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.extend(std::mem::take(&mut d.fields).into_values());
+            }
+        }};
+    }
+    match v {
+        Value::List(a) | Value::VecDyn(a) => flat!(a, items),
+        Value::Stack(a) => flat!(a, items),
+        Value::Queue(a) => flat!(a, items),
+        Value::Deque(a) => flat!(a, items),
+        Value::Set(a) => flat!(a, items),
+        Value::Heap(a) => flat!(a, items),
+        Value::Ring(a) => flat!(a, items),
+        Value::Map(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.extend(std::mem::take(&mut d.entries).into_iter().map(|(_, v)| v));
+            }
+        }
+        Value::Bag(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.extend(std::mem::take(&mut d.counts).into_iter().map(|(v, _)| v));
+            }
+        }
+        Value::PrioQueue(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.extend(std::mem::take(&mut d.items).into_iter().map(|it| it.value));
+            }
+        }
+        Value::Instance(a) => fields!(a),
+        Value::VInstance(a) => fields!(a),
+        Value::CInstance(a) => fields!(a),
+        Value::Tuple(a) => {
+            if let Ok(items) = Arc::try_unwrap(a) {
+                let mut items = items.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.append(&mut items);
+            }
+        }
+        Value::Option(o) => {
+            if let Some(inner) = o {
+                out.push(*inner);
+            }
+        }
+        Value::Result(r) => match r {
+            Ok(inner) | Err(inner) => out.push(*inner),
+        },
+        other => drop(other),
+    }
+}
+
+/// Drop `items` without recursing through nested containers.
+pub(crate) fn drop_iteratively(items: Vec<Value>) {
+    let mut work = items;
+    while let Some(v) = work.pop() {
+        take_children(v, &mut work);
+    }
+}
+
 // ------------------------------------------------------------- constructors
 
 pub fn is_constructor(name: &str) -> bool {

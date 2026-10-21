@@ -422,6 +422,10 @@ fn local_named_function_declarations_and_recursion() {
 
 #[test]
 fn cyclic_containers_display_equal_and_clone_without_deadlock() {
+    // A-14: the clone is a *cyclic copy*, so `b` prints the same `[[...]]` as
+    // `a`. It used to print `[[[...]]]` — one extra level — because `b[0]` was
+    // the original `a` rather than `b`. Mutating through the clone must leave
+    // the original alone.
     assert_both_engines(
         "cyclic_containers",
         r#"fn main() {
@@ -431,10 +435,14 @@ fn cyclic_containers_display_equal_and_clone_without_deadlock() {
     println(a == a);
     let b = a.clone();
     println(b);
+    println(b[0] == b);
+    b[0].push("x");
+    println(a.len());
+    println(b.len());
     return 0;
 }
 "#,
-        "[[...]]\ntrue\n[[[...]]]\n",
+        "[[...]]\ntrue\n[[...]]\ntrue\n1\n2\n",
     );
 }
 

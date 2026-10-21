@@ -59,6 +59,13 @@ pub struct VmInstanceData {
     pub fields: std::collections::HashMap<String, Value>,
 }
 
+impl Drop for VmInstanceData {
+    fn drop(&mut self) {
+        // A-17: same iterative teardown as `InstanceData`.
+        crate::value::collections::drop_iteratively(self.fields.drain().map(|(_, v)| v).collect());
+    }
+}
+
 /// Keys allowed by `map`, `set`, `bag`, `hash_table`, and graph node ids:
 /// null, bool, int, string. Floats are rejected on purpose.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -148,6 +155,15 @@ pub struct InstanceData {
     pub fields: std::collections::HashMap<String, Value>,
 }
 
+impl Drop for InstanceData {
+    fn drop(&mut self) {
+        // A-17: `class Node { next }` chains are the most idiomatic deep
+        // structure in a dynamic language; drain the field map iteratively
+        // instead of recursing once per link.
+        crate::value::collections::drop_iteratively(self.fields.drain().map(|(_, v)| v).collect());
+    }
+}
+
 /// A function compiled to native machine code by the LLVM backend.
 ///
 /// `code` is the machine-code entry point (`extern "C"`), `env` points at the
@@ -181,6 +197,13 @@ pub struct CompiledClass {
 pub struct CompiledInstanceData {
     pub class: Arc<CompiledClass>,
     pub fields: std::collections::HashMap<String, Value>,
+}
+
+impl Drop for CompiledInstanceData {
+    fn drop(&mut self) {
+        // A-17: same iterative teardown as `InstanceData`.
+        crate::value::collections::drop_iteratively(self.fields.drain().map(|(_, v)| v).collect());
+    }
 }
 
 #[derive(Clone)]
@@ -1177,49 +1200,80 @@ fn display_prio(p: f64) -> String {
 /// Deep copy. Primitives copy; reference types are rebuilt so mutating the
 /// clone never touches the original.
 pub fn deep_clone(v: &Value) -> Value {
-    let mut seen = std::collections::HashSet::new();
-    deep_clone_inner(v, &mut seen)
+    let mut memo = std::collections::HashMap::new();
+    deep_clone_inner(v, &mut memo)
 }
 
-fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Value {
+/// Deep clone that preserves cycles (audit A-14).
+///
+/// `memo` maps the identity of a container to the **clone** standing in for it.
+/// A back-reference therefore resolves to the new value, so the copy is a
+/// cyclic copy rather than an alias of the original. The previous version kept
+/// a `HashSet` of visited ids and returned `v.clone()` on a revisit, which meant
+/// `a.push(a); b = a.clone()` left `b[0]` pointing at `a` — mutating through the
+/// clone silently mutated the original.
+///
+/// Containers are registered *before* their children are cloned; that is what
+/// lets a self-reference resolve to the half-built clone. It also means a value
+/// reachable by two paths is shared in the copy rather than duplicated, which
+/// is what `copy.deepcopy`-style semantics call for.
+fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>) -> Value {
     use crate::value::collections as c;
     if let Some(id) = ref_id(v) {
-        if !seen.insert(id) {
-            return v.clone();
+        if let Some(done) = memo.get(&id) {
+            return done.clone();
         }
     }
-    let out = match v {
+    // Publish `handle` as the clone of `v` before filling it in.
+    macro_rules! register {
+        ($handle:expr) => {
+            if let Some(id) = ref_id(v) {
+                memo.insert(id, $handle.clone());
+            }
+        };
+    }
+    match v {
         Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Str(_) | Value::Null => v.clone(),
         Value::Weak(_) => v.clone(),
         Value::List(d) => {
             let items = d.lock().unwrap().items.clone();
-            Value::List(new_ref(c::VecData {
-                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            }))
+            let nd = new_ref(c::VecData::default());
+            register!(Value::List(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            nd.lock().unwrap().items = items;
+            Value::List(nd)
         }
         Value::VecDyn(d) => {
             let items = d.lock().unwrap().items.clone();
-            Value::VecDyn(new_ref(c::VecData {
-                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            }))
+            let nd = new_ref(c::VecData::default());
+            register!(Value::VecDyn(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            nd.lock().unwrap().items = items;
+            Value::VecDyn(nd)
         }
         Value::Stack(d) => {
             let items = d.lock().unwrap().items.clone();
-            Value::Stack(new_ref(c::StackData {
-                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            }))
+            let nd = new_ref(c::StackData::default());
+            register!(Value::Stack(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            nd.lock().unwrap().items = items;
+            Value::Stack(nd)
         }
         Value::Queue(d) => {
-            let items = d.lock().unwrap().items.clone();
-            Value::Queue(new_ref(c::QueueData {
-                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            }))
+            let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
+            let nd = new_ref(c::QueueData::default());
+            register!(Value::Queue(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            nd.lock().unwrap().items = items.into();
+            Value::Queue(nd)
         }
         Value::Deque(d) => {
-            let items = d.lock().unwrap().items.clone();
-            Value::Deque(new_ref(c::DequeData {
-                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            }))
+            let items: Vec<Value> = d.lock().unwrap().items.iter().cloned().collect();
+            let nd = new_ref(c::DequeData::default());
+            register!(Value::Deque(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            nd.lock().unwrap().items = items.into();
+            Value::Deque(nd)
         }
         Value::LinkedList(_) | Value::SinglyList(_) | Value::DoublyList(_) => {
             let (head, kind) = match v {
@@ -1238,66 +1292,92 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
                 raw.push(val);
                 cur = next;
             }
-            let mut nd = match kind {
+            let nd = new_ref(match kind {
                 0 => c::ListData::linked(),
                 1 => c::ListData::singly(),
                 _ => c::ListData::doubly(),
+            });
+            let handle = match kind {
+                0 => Value::LinkedList(nd.clone()),
+                1 => Value::SinglyList(nd.clone()),
+                _ => Value::DoublyList(nd.clone()),
             };
-            for it in raw {
-                nd.push_back(deep_clone_inner(&it, seen));
+            register!(handle);
+            let cloned: Vec<Value> = raw.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            {
+                let mut w = nd.lock().unwrap();
+                for it in cloned {
+                    w.push_back(it);
+                }
             }
-            match kind {
-                0 => Value::LinkedList(new_ref(nd)),
-                1 => Value::SinglyList(new_ref(nd)),
-                _ => Value::DoublyList(new_ref(nd)),
-            }
+            handle
         }
         Value::Map(d) => {
             let entries = d.lock().unwrap().entries.clone();
-            Value::Map(new_ref(c::MapData::from_entries(
-                entries
-                    .iter()
-                    .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
-                    .collect(),
-            )))
+            let nd = new_ref(c::MapData::default());
+            register!(Value::Map(nd.clone()));
+            let cloned: Vec<(c::MapKey, Value)> = entries
+                .iter()
+                .map(|(k, vv)| (k.clone(), deep_clone_inner(vv, memo)))
+                .collect();
+            *nd.lock().unwrap() = c::MapData::from_entries(cloned);
+            Value::Map(nd)
         }
         Value::Set(d) => {
             let items = d.lock().unwrap().items.clone();
-            Value::Set(new_ref(c::SetData {
-                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            }))
+            let nd = new_ref(c::SetData::default());
+            register!(Value::Set(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            nd.lock().unwrap().items = items;
+            Value::Set(nd)
         }
         Value::Tuple(t) => {
             let items = t.lock().unwrap().clone();
-            Value::Tuple(new_ref(
-                items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            ))
+            let nd = new_ref(Vec::<Value>::new());
+            register!(Value::Tuple(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            *nd.lock().unwrap() = items;
+            Value::Tuple(nd)
         }
         Value::Bst(d) => {
             let items = d.lock().unwrap().inorder();
-            let mut nd = c::BstData::new();
-            for it in items {
-                let _ = nd.insert(it);
+            let nd = new_ref(c::BstData::new());
+            register!(Value::Bst(nd.clone()));
+            let cloned: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            {
+                let mut w = nd.lock().unwrap();
+                for it in cloned {
+                    let _ = w.insert(it);
+                }
             }
-            Value::Bst(new_ref(nd))
+            Value::Bst(nd)
         }
         Value::BinTree(d) => {
             let items = d.lock().unwrap().level_order();
-            let mut nd = c::BinTreeData::new();
-            for it in items {
-                let _ = nd.insert(it);
+            let nd = new_ref(c::BinTreeData::new());
+            register!(Value::BinTree(nd.clone()));
+            let cloned: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            {
+                let mut w = nd.lock().unwrap();
+                for it in cloned {
+                    let _ = w.insert(it);
+                }
             }
-            Value::BinTree(new_ref(nd))
+            Value::BinTree(nd)
         }
         Value::Heap(d) => {
             let (items, min) = {
                 let d = d.lock().unwrap();
                 (d.items.clone(), d.min)
             };
-            Value::Heap(new_ref(c::HeapData {
-                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
+            let nd = new_ref(c::HeapData {
+                items: Vec::new(),
                 min,
-            }))
+            });
+            register!(Value::Heap(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            nd.lock().unwrap().items = items;
+            Value::Heap(nd)
         }
         Value::PrioQueue(d) => {
             let (items, min) = {
@@ -1310,53 +1390,71 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
                     d.min,
                 )
             };
-            let mut nd = c::PrioQueueData::new(min);
-            for (val, prio) in items {
-                let _ = nd.push(deep_clone_inner(&val, seen), prio);
+            let nd = new_ref(c::PrioQueueData::new(min));
+            register!(Value::PrioQueue(nd.clone()));
+            let cloned: Vec<(Value, f64)> = items
+                .iter()
+                .map(|(val, prio)| (deep_clone_inner(val, memo), *prio))
+                .collect();
+            {
+                let mut w = nd.lock().unwrap();
+                for (val, prio) in cloned {
+                    let _ = w.push(val, prio);
+                }
             }
-            Value::PrioQueue(new_ref(nd))
+            Value::PrioQueue(nd)
         }
         Value::Graph(d) => {
-            // Snapshot the node list and adjacency under the lock, then recurse
-            // with the lock released (audit A-7): a node value can be the graph
-            // itself, and `GraphData::deep_clone` re-locks the same mutex the
-            // caller already holds — a non-reentrant `std::sync::Mutex`, so it
-            // hung forever on `g.add_node(g); g.clone()` / `g.nodes()`.
-            // The shared `seen` set keeps a self-referential graph finite.
+            // Snapshot under the lock, then recurse with the lock released
+            // (audit A-7): a node value can be the graph itself, and
+            // `GraphData::deep_clone` would re-lock the same non-reentrant
+            // mutex the caller holds.
             let (directed, nodes, adj) = {
                 let g = d.lock().unwrap();
                 (g.directed, g.nodes.clone(), g.adj.clone())
             };
-            Value::Graph(new_ref(c::GraphData {
+            let nd = new_ref(c::GraphData {
                 directed,
-                nodes: nodes.iter().map(|n| deep_clone_inner(n, seen)).collect(),
+                nodes: Vec::new(),
                 adj,
-            }))
+            });
+            register!(Value::Graph(nd.clone()));
+            let nodes: Vec<Value> = nodes.iter().map(|n| deep_clone_inner(n, memo)).collect();
+            nd.lock().unwrap().nodes = nodes;
+            Value::Graph(nd)
         }
         Value::HashTable(d) => {
             let (buckets, size) = {
                 let d = d.lock().unwrap();
                 (d.buckets.clone(), d.size)
             };
-            Value::HashTable(new_ref(c::HashTableData {
-                buckets: buckets
-                    .iter()
-                    .map(|b| {
-                        b.iter()
-                            .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
-                            .collect()
-                    })
-                    .collect(),
+            let nd = new_ref(c::HashTableData {
+                buckets: Vec::new(),
                 size,
-            }))
+            });
+            register!(Value::HashTable(nd.clone()));
+            let cloned: Vec<Vec<(c::MapKey, Value)>> = buckets
+                .iter()
+                .map(|b| {
+                    b.iter()
+                        .map(|(k, vv)| (k.clone(), deep_clone_inner(vv, memo)))
+                        .collect()
+                })
+                .collect();
+            nd.lock().unwrap().buckets = cloned;
+            Value::HashTable(nd)
         }
         Value::Trie(d) => {
             let words = d.lock().unwrap().all_words();
-            let mut nd = c::TrieData::new();
-            for w in words {
-                let _ = nd.insert(&w);
+            let nd = new_ref(c::TrieData::new());
+            register!(Value::Trie(nd.clone()));
+            {
+                let mut w = nd.lock().unwrap();
+                for wd in words {
+                    let _ = w.insert(&wd);
+                }
             }
-            Value::Trie(new_ref(nd))
+            Value::Trie(nd)
         }
         Value::Matrix(d) => {
             let d = d.lock().unwrap();
@@ -1379,66 +1477,87 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
         Value::Ring(d) => {
             let (cap, items) = {
                 let d = d.lock().unwrap();
-                (d.cap, d.items.clone())
+                (d.cap, d.items.iter().cloned().collect::<Vec<_>>())
             };
-            Value::Ring(new_ref(c::RingData {
+            let nd = new_ref(c::RingData {
                 cap,
-                items: items.iter().map(|it| deep_clone_inner(it, seen)).collect(),
-            }))
+                items: Default::default(),
+            });
+            register!(Value::Ring(nd.clone()));
+            let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
+            nd.lock().unwrap().items = items.into();
+            Value::Ring(nd)
         }
         Value::Bag(d) => {
             let counts = d.lock().unwrap().counts.clone();
-            Value::Bag(new_ref(c::BagData {
-                counts: counts
-                    .iter()
-                    .map(|(v, n)| (deep_clone_inner(v, seen), *n))
-                    .collect(),
-            }))
+            let nd = new_ref(c::BagData::default());
+            register!(Value::Bag(nd.clone()));
+            let counts: Vec<(Value, usize)> = counts
+                .iter()
+                .map(|(vv, n)| (deep_clone_inner(vv, memo), *n))
+                .collect();
+            nd.lock().unwrap().counts = counts;
+            Value::Bag(nd)
         }
         Value::RefBox(d) => {
             let inner = d.lock().unwrap().value.clone();
-            Value::RefBox(new_ref(c::RefBoxData {
-                value: deep_clone_inner(&inner, seen),
-            }))
+            let nd = new_ref(c::RefBoxData {
+                value: Value::Null,
+            });
+            register!(Value::RefBox(nd.clone()));
+            nd.lock().unwrap().value = deep_clone_inner(&inner, memo);
+            Value::RefBox(nd)
         }
         Value::Instance(i) => {
             let (class, fields) = {
                 let i = i.lock().unwrap();
                 (i.class.clone(), i.fields.clone())
             };
-            Value::Instance(new_ref(InstanceData {
+            let nd = new_ref(InstanceData {
                 class,
-                fields: fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
-                    .collect(),
-            }))
+                fields: std::collections::HashMap::new(),
+            });
+            register!(Value::Instance(nd.clone()));
+            let fields: std::collections::HashMap<String, Value> = fields
+                .iter()
+                .map(|(k, vv)| (k.clone(), deep_clone_inner(vv, memo)))
+                .collect();
+            nd.lock().unwrap().fields = fields;
+            Value::Instance(nd)
         }
         Value::VInstance(i) => {
             let (class, fields) = {
                 let i = i.lock().unwrap();
                 (i.class.clone(), i.fields.clone())
             };
-            Value::VInstance(new_ref(VmInstanceData {
+            let nd = new_ref(VmInstanceData {
                 class,
-                fields: fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
-                    .collect(),
-            }))
+                fields: std::collections::HashMap::new(),
+            });
+            register!(Value::VInstance(nd.clone()));
+            let fields: std::collections::HashMap<String, Value> = fields
+                .iter()
+                .map(|(k, vv)| (k.clone(), deep_clone_inner(vv, memo)))
+                .collect();
+            nd.lock().unwrap().fields = fields;
+            Value::VInstance(nd)
         }
         Value::CInstance(i) => {
             let (class, fields) = {
                 let i = i.lock().unwrap();
                 (i.class.clone(), i.fields.clone())
             };
-            Value::CInstance(new_ref(CompiledInstanceData {
+            let nd = new_ref(CompiledInstanceData {
                 class,
-                fields: fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), deep_clone_inner(v, seen)))
-                    .collect(),
-            }))
+                fields: std::collections::HashMap::new(),
+            });
+            register!(Value::CInstance(nd.clone()));
+            let fields: std::collections::HashMap<String, Value> = fields
+                .iter()
+                .map(|(k, vv)| (k.clone(), deep_clone_inner(vv, memo)))
+                .collect();
+            nd.lock().unwrap().fields = fields;
+            Value::CInstance(nd)
         }
         // identity types: the clone aliases, matching reference semantics
         Value::Function(_)
@@ -1452,14 +1571,11 @@ fn deep_clone_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> Val
         | Value::Task(_)
         | Value::Channel(_)
         | Value::MutexVal(_) => v.clone(),
-        Value::Option(o) => Value::Option(o.as_ref().map(|v| Box::new(deep_clone_inner(v, seen)))),
+        Value::Option(o) => Value::Option(o.as_ref().map(|v| Box::new(deep_clone_inner(v, memo)))),
         Value::Result(r) => Value::Result(match r {
-            Ok(v) => Ok(Box::new(deep_clone_inner(v, seen))),
-            Err(v) => Err(Box::new(deep_clone_inner(v, seen))),
+            Ok(v) => Ok(Box::new(deep_clone_inner(v, memo))),
+            Err(v) => Err(Box::new(deep_clone_inner(v, memo))),
         }),
-    };
-    if let Some(id) = ref_id(v) {
-        seen.remove(&id);
     }
-    out
 }
+
