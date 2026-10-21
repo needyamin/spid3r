@@ -9,7 +9,7 @@ use ty::Ty;
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
-use crate::diagnostics::{Diagnostic, Phase, Span, SpidResult};
+use crate::diagnostics::{Diagnostic, Lint, Phase, Span, SpidResult};
 
 /// Signature of a declared method, retained so call sites and `return`s inside
 /// the method body can be type-checked.
@@ -42,6 +42,7 @@ struct ClassInfo {
     methods: HashMap<String, MethodInfo>,
 }
 
+#[derive(Default)]
 struct VarInfo {
     is_const: bool,
     class: Option<String>,
@@ -51,6 +52,21 @@ struct VarInfo {
     /// diagnose local declarations that shadow an imported binding (and
     /// imports that would shadow an existing local in the REPL).
     is_import: bool,
+    /// What kind of binding this is, for the unused-* lints' wording.
+    kind: BindKind,
+    /// Set when the name is read. `pop_scope` reports the ones that never are.
+    used: bool,
+    /// Where the binding was declared, for the warning's snippet. Filled by
+    /// `declare`, which already receives the span.
+    decl: Option<Span>,
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum BindKind {
+    #[default]
+    Local,
+    Param,
+    Import,
 }
 
 struct Checker {
@@ -77,6 +93,9 @@ struct Checker {
     /// Externally-bound names (embedding API): host-registered natives and
     /// globals. They resolve as dynamic (`Any`) bindings — known but unchecked.
     externals: HashSet<String>,
+    /// Warnings produced by the lints. Errors short-circuit the checker, so
+    /// these are only collected on a successful check.
+    warnings: Vec<Diagnostic>,
     /// Extra module search roots for embedded runs (host `add_module_dir`).
     module_dirs: Vec<std::path::PathBuf>,
 }
@@ -87,6 +106,28 @@ pub fn check(program: &Program, is_main: bool) -> SpidResult<()> {
 
 pub fn check_file(program: &Program, is_main: bool, source_file: &str) -> SpidResult<()> {
     check_file_with(program, is_main, source_file, &Externals::default())
+}
+
+/// Like [`check_file`], but also returns the lint warnings.
+///
+/// Errors still short-circuit: a file that does not check produces no warnings.
+/// Callers that only care about validity keep using `check_file`.
+pub fn check_file_with_warnings(
+    program: &Program,
+    is_main: bool,
+    source_file: &str,
+) -> Result<Vec<Diagnostic>, Diagnostic> {
+    let mut c = Checker::new(is_main, source_file);
+    c.check_program(program)?;
+    // Warnings surface when a scope closes, which is inside-out; sort them so
+    // they read top-to-bottom like the source.
+    c.warnings.sort_by_key(|w| {
+        w.span
+            .as_ref()
+            .map(|s| (s.line, s.col))
+            .unwrap_or((u32::MAX, u32::MAX))
+    });
+    Ok(c.warnings)
 }
 
 /// Externally-visible configuration for embedded runs: host-bound names
@@ -115,7 +156,7 @@ pub fn check_file_with(
     let mut c = Checker::new(is_main, source_file);
     c.externals = externals.names.clone();
     c.module_dirs = externals.module_dirs.clone();
-    c.check_program(program)
+    c.check_program(program).map(|_| ())
 }
 
 /// Names a chunk of code binds at its top level. The REPL uses this to carry
@@ -157,6 +198,7 @@ pub fn check_repl_in(program: &Program, known: &[String], source_file: &str) -> 
                 class: None,
                 ty: None,
                 is_import: false,
+                ..Default::default()
             },
         );
     }
@@ -188,6 +230,7 @@ impl Checker {
             is_main,
             source_file: source_file.to_string(),
             predeclared: HashSet::new(),
+            warnings: Vec::new(),
             enums: HashMap::new(),
             variant_enum: HashMap::new(),
             externals: HashSet::new(),
@@ -397,6 +440,7 @@ impl Checker {
                         class: None,
                         ty: None,
                         is_import: false,
+                        ..Default::default()
                     },
                 )?;
                 Ok(())
@@ -630,6 +674,7 @@ impl Checker {
                             // signature so `let g = f; g(...)` is checked.
                             ty: Some(self.fn_sig_type(f)),
                             is_import: false,
+                            ..Default::default()
                         },
                     )?;
                     self.predeclared.insert(name);
@@ -791,7 +836,9 @@ impl Checker {
         Ok(())
     }
 
-    fn declare(&mut self, name: &str, span: &Span, info: VarInfo) -> SpidResult<()> {
+    fn declare(&mut self, name: &str, span: &Span, mut info: VarInfo) -> SpidResult<()> {
+        // The lint needs the declaration site; every caller already has it.
+        info.decl = Some(span.clone());
         let scope = self.scopes.last_mut().unwrap();
         if scope.contains_key(name) {
             return Err(self.err(
@@ -869,8 +916,46 @@ impl Checker {
         self.scopes.push(HashMap::new());
     }
 
+    /// Record that `name` was read, so the unused-* lints stay quiet.
+    fn mark_used(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(v) = scope.get_mut(name) {
+                v.used = true;
+                return;
+            }
+        }
+    }
+
     fn pop_scope(&mut self) {
-        self.scopes.pop();
+        let scope = match self.scopes.pop() {
+            Some(s) => s,
+            None => return,
+        };
+        // Scope 0 is the file's top level: a private global may be used from
+        // another module, and a public one is an export, so only unused
+        // *imports* are worth reporting there.
+        let top_level = self.scopes.is_empty();
+        for (name, info) in scope {
+            if info.used || name.starts_with('_') || info.kind == BindKind::Import && !top_level {
+                continue;
+            }
+            let Some(span) = info.decl.clone() else {
+                continue;
+            };
+            let (lint, what) = match info.kind {
+                BindKind::Param => (Lint::UnusedParameter, "parameter"),
+                BindKind::Import => (Lint::UnusedImport, "import"),
+                BindKind::Local => (Lint::UnusedVariable, "variable"),
+            };
+            if top_level && info.kind != BindKind::Import {
+                continue;
+            }
+            self.warnings.push(Diagnostic::warning(
+                lint,
+                span,
+                format!("unused {} '{}'", what, name),
+            ));
+        }
     }
 
     fn check_block(&mut self, b: &Block) -> SpidResult<()> {
@@ -881,8 +966,27 @@ impl Checker {
     }
 
     fn check_stmts(&mut self, stmts: &[Stmt]) -> SpidResult<()> {
+        let mut terminated = false;
+        // One report per block: a run of dead statements is one finding.
+        let mut dead_reported = false;
         for s in stmts {
+            if terminated && !dead_reported {
+                self.warnings.push(Diagnostic::warning(
+                    Lint::UnreachableCode,
+                    s.span().clone(),
+                    "unreachable code: this statement follows a `return`, `throw`, \
+                     `break`, or `continue`",
+                ));
+                dead_reported = true;
+            }
             self.check_stmt(s)?;
+            terminated = matches!(
+                s,
+                Stmt::Return { .. }
+                    | Stmt::Throw { .. }
+                    | Stmt::Break { .. }
+                    | Stmt::Continue { .. }
+            );
         }
         Ok(())
     }
@@ -905,6 +1009,7 @@ impl Checker {
                             class: None,
                             ty: None,
                             is_import: false,
+                            ..Default::default()
                         },
                     )?;
                 }
@@ -949,6 +1054,9 @@ impl Checker {
                             class: None,
                             ty: None,
                             is_import: true,
+                            kind: BindKind::Import,
+                            decl: Some(span.clone()),
+                            ..Default::default()
                         },
                     );
                 } else {
@@ -986,6 +1094,9 @@ impl Checker {
                                 class: None,
                                 ty: None,
                                 is_import: true,
+                                kind: BindKind::Import,
+                                decl: Some(span.clone()),
+                                ..Default::default()
                             },
                         );
                     }
@@ -1022,6 +1133,7 @@ impl Checker {
                                 // F5: nested functions carry their signature.
                                 ty: Some(self.fn_sig_type(f)),
                                 is_import: false,
+                                ..Default::default()
                             },
                         )?;
                     }
@@ -1050,6 +1162,8 @@ impl Checker {
                             class,
                             ty: p.ty.as_ref().map(|t| self.resolve_type(t)),
                             is_import: false,
+                            kind: BindKind::Param,
+                            ..Default::default()
                         },
                     )?;
                 }
@@ -1085,6 +1199,7 @@ impl Checker {
                                 class: Some(c.name.clone()),
                                 ty: Some(Ty::Class(c.name.clone())),
                                 is_import: false,
+                                ..Default::default()
                             },
                         )?;
                         let mut names = HashSet::new();
@@ -1102,6 +1217,7 @@ impl Checker {
                                     class: None,
                                     ty: p.ty.as_ref().map(|t| self.resolve_type(t)),
                                     is_import: false,
+                                    ..Default::default()
                                 },
                             )?;
                         }
@@ -1114,6 +1230,7 @@ impl Checker {
                                 class: Some(c.name.clone()),
                                 ty: Some(Ty::Class(c.name.clone())),
                                 is_import: false,
+                                ..Default::default()
                             },
                         )?;
                         let mut names = HashSet::new();
@@ -1131,6 +1248,7 @@ impl Checker {
                                     class: None,
                                     ty: p.ty.as_ref().map(|t| self.resolve_type(t)),
                                     is_import: false,
+                                    ..Default::default()
                                 },
                             )?;
                         }
@@ -1214,6 +1332,7 @@ impl Checker {
                             .map(|t| self.resolve_type(t))
                             .or_else(|| value.as_ref().and_then(|v| self.fn_value_type(v))),
                         is_import: false,
+                        ..Default::default()
                     },
                 )
             }
@@ -1264,6 +1383,7 @@ impl Checker {
                             .map(|t| self.resolve_type(t))
                             .or_else(|| self.fn_value_type(value)),
                         is_import: false,
+                        ..Default::default()
                     },
                 )
             }
@@ -1309,6 +1429,7 @@ impl Checker {
                         class: None,
                         ty: None,
                         is_import: false,
+                        ..Default::default()
                     },
                 )?;
                 // `for (k, v) in m` also binds the value.
@@ -1321,6 +1442,7 @@ impl Checker {
                             class: None,
                             ty: None,
                             is_import: false,
+                            ..Default::default()
                         },
                     )?;
                 }
@@ -1376,6 +1498,7 @@ impl Checker {
                             class: None,
                             ty: tyo,
                             is_import: false,
+                            ..Default::default()
                         },
                     )?;
                 }
@@ -1457,6 +1580,7 @@ impl Checker {
                             class: None,
                             ty: None,
                             is_import: false,
+                            ..Default::default()
                         },
                     )?;
                     let r = self.check_stmts(&cc.body.stmts);
@@ -2007,6 +2131,7 @@ impl Checker {
                     return Err(self.err(span, "self outside a method"));
                 }
                 if self.known(name) {
+                    self.mark_used(name);
                     Ok(())
                 } else {
                     Err(self.err(span, format!("unknown name '{}'", name)))
@@ -2036,6 +2161,8 @@ impl Checker {
                             class: None,
                             ty: p.ty.as_ref().map(|t| self.resolve_type(t)),
                             is_import: false,
+                            kind: BindKind::Param,
+                            ..Default::default()
                         },
                     )?;
                 }
@@ -2149,6 +2276,10 @@ impl Checker {
             }
             Expr::Call { callee, args, span } => {
                 if let Expr::Ident(name, _) = &**callee {
+                    // A call is a READ of the callee: `f()` uses `f`. Without
+                    // this the unused-variable lint fired on every closure held
+                    // in a variable and then called.
+                    self.mark_used(name);
                     if let Some(fi) = self.funcs.get(name).cloned() {
                         if args.len() != fi.arity {
                             return Err(self.err(

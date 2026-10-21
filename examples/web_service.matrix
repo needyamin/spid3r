@@ -10,7 +10,7 @@ fn main() {
     let app = w.web_app();
 
     // Logger middleware
-    app.use(fn(req) {
+    app.use(fn(_req) {
         // Continue processing
         return null;
     });
@@ -32,14 +32,14 @@ fn main() {
     });
 
     // 2. HTML template endpoint
-    app.get("/profile", fn(req) {
+    app.get("/profile", fn(_req) {
         let tpl = "<h1>Welcome, {{ user }}!</h1><p>Role: {{ role }}</p>";
         let html = w.render_template(tpl, map("user", "Alice", "role", "Engineer"));
         return w.html_response(200, html);
     });
 
     // 3. POST endpoint with JSON body and cookie setting
-    app.post("/api/login", fn(req) {
+    app.post("/api/login", fn(_req) {
         let token = w.jwt_sign(map("sub", "alice123", "role", "admin"), "app-secret");
         let resp = w.json_response(200, map("token", token, "status", "authenticated"));
         return w.set_cookie(resp, "auth_token", token, map("path", "/", "http_only", true));

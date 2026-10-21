@@ -64,6 +64,8 @@ impl VmError {
             // deserialize). Before this, the same program reported a different
             // phase depending on `--engine`; tests/engine_matrix.rs caught it.
             phase: Phase::Runtime,
+            severity: crate::diagnostics::Severity::Error,
+            lint: crate::diagnostics::Lint::None,
             message: self.message.clone(),
             span: Some(self.span.clone()),
             thrown: self.thrown.clone(),

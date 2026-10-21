@@ -28,7 +28,8 @@ USAGE:
 COMMANDS:
     run [--engine tree|vm] <file.matrix>   Compile and run a program
     check <file.matrix> [--json]           Lex, parse, semantic-check; no run.
-                                           --json prints one diagnostic object
+      [--deny-warnings] [--allow LINT]     Lints: unused-variable, unused-parameter,
+                                           unused-import, unreachable-code
     compile <file.matrix> [-o out] [--dump]
                                            Write bytecode (.matrixc); --dump prints it
     build <file.matrix> [-o out] [--target triple] [--release]
@@ -109,7 +110,7 @@ pub fn run(args: Vec<String>) -> i32 {
     let spawned = std::thread::Builder::new()
         .name(format!("spid3r-{}", cmd_for_thread))
         .stack_size(512 * 1024 * 1024)
-        .spawn(move || dispatch(cmd_for_thread, rest_clone));
+        .spawn(move || dispatch(cmd_for_thread, rest_clone, json));
     match spawned {
         Ok(handle) => match handle.join() {
             Ok(outcome) => {
@@ -123,14 +124,14 @@ pub fn run(args: Vec<String>) -> i32 {
         },
         // Thread creation failed (extremely unlikely): run inline as before.
         Err(_) => {
-            let outcome = dispatch(cmd, rest);
+            let outcome = dispatch(cmd, rest, json);
             crate::sched::shutdown();
             outcome_code(outcome, json)
         }
     }
 }
 
-fn dispatch(cmd: String, rest: Vec<String>) -> Result<i32, Diagnostic> {
+fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnostic> {
     let outcome = match cmd.as_str() {
         "version" | "--version" | "-V" => {
             println!("{}", version_text());
@@ -141,7 +142,7 @@ fn dispatch(cmd: String, rest: Vec<String>) -> Result<i32, Diagnostic> {
             return Ok(EXIT_OK);
         }
         "run" => cmd_run(&rest),
-        "check" => cmd_check(&rest),
+        "check" => cmd_check_with(&rest, json),
         "compile" => cmd_compile(&rest),
         "build" => cmd_build(&rest),
         "gui" => cmd_gui(&rest),
@@ -322,15 +323,40 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
 }
 
 fn cmd_check(args: &[String]) -> Result<i32, Diagnostic> {
+    cmd_check_with(args, false)
+}
+
+fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
     // `--dump-lowered` prints what the backends actually receive. With an
     // identity lowering pass that is the same tree, but it is the only way to
     // see a desugaring rule's output without reading engine code.
-    let dump = args.iter().any(|a| a == "--dump-lowered");
-    let positional: Vec<String> = args
-        .iter()
-        .filter(|a| a.as_str() != "--dump-lowered")
-        .cloned()
-        .collect();
+    let mut dump = false;
+    let mut deny_warnings = false;
+    let mut allow: Vec<String> = Vec::new();
+    let mut positional: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--dump-lowered" => dump = true,
+            "--deny-warnings" => deny_warnings = true,
+            "--allow" => {
+                let name = args
+                    .get(i + 1)
+                    .ok_or_else(|| usage("--allow needs a lint name (e.g. unused-variable)"))?;
+                allow.push(name.clone());
+                i += 1;
+            }
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "check: unknown flag '{}' (supported: --json, --dump-lowered, \
+                     --deny-warnings, --allow LINT)",
+                    other
+                )))
+            }
+            other => positional.push(other.to_string()),
+        }
+        i += 1;
+    }
     let file = single_file(&positional, "check")?;
     let (src, file_name) = read_source(&file)?;
     let program = parser::parse_file(&src, file_name)?;
@@ -339,10 +365,33 @@ fn cmd_check(args: &[String]) -> Result<i32, Diagnostic> {
         crate::ast::Stmt::Fn(f) => f.name.as_deref() == Some("main"),
         _ => false,
     });
-    semantic::check_file(&program, has_main, &file)?;
+    // `check` is the only command that surfaces lint warnings; every other
+    // entry point keeps using the validity-only API.
+    let warnings = semantic::check_file_with_warnings(&program, has_main, &file)?;
+    let mut reported = 0usize;
+    for w in &warnings {
+        if allow.iter().any(|a| a == w.lint.as_str()) {
+            continue;
+        }
+        reported += 1;
+        if json {
+            println!("{}", w.to_json());
+        } else {
+            eprintln!("{}", w.render());
+        }
+    }
     if dump {
         let lowered = crate::lower::lower(&program);
         println!("{:#?}", lowered.as_ref());
+    }
+    if deny_warnings && reported > 0 {
+        return Err(Diagnostic::new(
+            Phase::Semantic,
+            format!(
+                "{} warning(s) treated as errors because --deny-warnings was given",
+                reported
+            ),
+        ));
     }
     println!("{}: ok", file);
     Ok(EXIT_OK)

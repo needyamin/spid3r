@@ -74,11 +74,51 @@ impl fmt::Display for TraceFrame {
     }
 }
 
-/// A Spid3r error. Ordinary user errors are values of this type; the Rust host
-/// never panics because of user code.
+/// How serious a diagnostic is. A warning never fails a build unless
+/// `--deny-warnings` is passed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Severity {
+    #[default]
+    Error,
+    Warning,
+}
+
+/// Which lint produced a warning, so `--allow <name>` can silence one without
+/// silencing the rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Lint {
+    #[default]
+    None,
+    UnusedVariable,
+    UnusedParameter,
+    UnusedImport,
+    UnreachableCode,
+}
+
+impl Lint {
+    /// The name used on the command line (`--allow unused-variable`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Lint::None => "",
+            Lint::UnusedVariable => "unused-variable",
+            Lint::UnusedParameter => "unused-parameter",
+            Lint::UnusedImport => "unused-import",
+            Lint::UnreachableCode => "unreachable-code",
+        }
+    }
+}
+
+/// A Spid3r diagnostic: an error, or a warning from a lint. Ordinary user errors
+/// are values of this type; the Rust host never panics because of user code.
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub phase: Phase,
+    /// `Error` unless a lint produced this. It fits in the padding after
+    /// `phase`, so the struct does not grow — which matters because it sits in
+    /// every `Result` (see `extras`).
+    pub severity: Severity,
+    /// Which lint produced this, if any.
+    pub lint: Lint,
     pub message: String,
     pub span: Option<Span>,
     /// The value a user `throw`ed, when the error came from user code.
@@ -108,6 +148,8 @@ impl Diagnostic {
     pub fn new(phase: Phase, message: impl Into<String>) -> Self {
         Diagnostic {
             phase,
+            severity: Severity::Error,
+            lint: Lint::None,
             message: message.into(),
             span: None,
             thrown: None,
@@ -119,12 +161,32 @@ impl Diagnostic {
     pub fn at(phase: Phase, span: Span, message: impl Into<String>) -> Self {
         Diagnostic {
             phase,
+            severity: Severity::Error,
+            lint: Lint::None,
             message: message.into(),
             span: Some(span),
             thrown: None,
             trace: Vec::new(),
             extras: None,
         }
+    }
+
+    /// A lint warning: never fails the build unless the caller says so.
+    pub fn warning(lint: Lint, span: Span, message: impl Into<String>) -> Self {
+        Diagnostic {
+            phase: Phase::Semantic,
+            severity: Severity::Warning,
+            lint,
+            message: message.into(),
+            span: Some(span),
+            thrown: None,
+            trace: Vec::new(),
+            extras: None,
+        }
+    }
+
+    pub fn is_warning(&self) -> bool {
+        self.severity == Severity::Warning
     }
 
     pub fn with_span(mut self, span: Span) -> Self {
@@ -183,7 +245,16 @@ impl Diagnostic {
     /// (used by the embedding API and the WASM bridge, which have no file).
     pub fn render_with(&self, source: Option<&str>) -> String {
         let mut out = String::new();
-        out.push_str(&format!("error[{}]: {}", self.phase.as_str(), self.message));
+        let kind = match self.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        };
+        out.push_str(&format!(
+            "{}[{}]: {}",
+            kind,
+            self.phase.as_str(),
+            self.message
+        ));
         if let Some(v) = &self.thrown {
             out.push_str(&format!(" (thrown: {})", crate::value::display_value(v)));
         }
@@ -254,8 +325,16 @@ impl Diagnostic {
             })
             .collect();
         format!(
-            "{{\"phase\":{},\"message\":{},{},\"help\":{},\"notes\":[{}],\"trace\":[{}]}}",
+            "{{\"severity\":{},\"phase\":{},\"lint\":{},\"message\":{},{},\"help\":{},\"notes\":[{}],\"trace\":[{}]}}",
+            json_str(match self.severity {
+                Severity::Error => "error",
+                Severity::Warning => "warning",
+            }),
             json_str(self.phase.as_str()),
+            match self.lint {
+                Lint::None => "null".to_string(),
+                l => json_str(l.as_str()),
+            },
             json_str(&self.message),
             span,
             match self.help() {

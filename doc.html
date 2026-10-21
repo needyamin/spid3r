@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">584 tests · 25/25 examples agree</span>
+          <span class="badge">593 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -1444,6 +1444,42 @@ fn main() {
           (<code>phase</code>, <code>message</code>, <code>file</code>, <code>line</code>,
           <code>col</code>, <code>len</code>, <code>help</code>, <code>notes</code>,
           <code>trace</code>) for editors and CI.</p>
+        <h3>Lint warnings</h3>
+        <p><code>spid3r check</code> also reports things that are suspicious rather than wrong. Warnings
+          never change the exit code unless you ask them to:</p>
+        <table>
+          <tr>
+            <th>Lint</th>
+            <th>Reports</th>
+          </tr>
+          <tr>
+            <td><code>unused-variable</code></td>
+            <td>A local that is never read.</td>
+          </tr>
+          <tr>
+            <td><code>unused-parameter</code></td>
+            <td>A parameter that is never read. Name it <code>_req</code> when a callback must match a
+              signature it does not use.</td>
+          </tr>
+          <tr>
+            <td><code>unused-import</code></td>
+            <td>An <code>import</code> whose names are never used.</td>
+          </tr>
+          <tr>
+            <td><code>unreachable-code</code></td>
+            <td>A statement after <code>return</code>, <code>throw</code>, <code>break</code>, or
+              <code>continue</code>.</td>
+          </tr>
+        </table>
+        <pre data-lang="output"><code>warning[semantic]: unused parameter 'req'
+  --&gt; app.matrix:13:16
+   |
+13 |     app.use(fn(req) {
+   |                ^^^</code></pre>
+        <p><code>--deny-warnings</code> makes any warning fail the build (exit 1), and
+          <code>--allow unused-parameter</code> silences one lint without hiding the rest. In
+          <code>--json</code> mode each warning carries <code>"severity":"warning"</code> and its
+          <code>"lint"</code> name.</p>
         <h3>Option and result</h3>
         <p>Two sum types model expected failure without throwing:</p>
         <table>
@@ -3336,7 +3372,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>584 tests</strong> (<strong>568</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>593 tests</strong> (<strong>577</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from
