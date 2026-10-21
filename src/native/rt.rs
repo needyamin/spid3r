@@ -704,6 +704,18 @@ pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *m
                 )),
             }
         }
+        // `map.field` is key lookup, the same as the interpreter and the VM.
+        // Without this arm a program using it ran on tree and VM but aborted
+        // here with "cannot read field 'k' of map" (found by
+        // tests/engine_matrix.rs).
+        Value::Map(m) => {
+            let key = crate::value::MapKey::Str(name.clone().into());
+            let guard = m.lock().unwrap();
+            match guard.find(&key) {
+                Some(i) => leak(guard.entries[i].1.clone()),
+                None => abort(&format!("missing key '{}'", name)),
+            }
+        }
         other => abort(&format!(
             "cannot read field '{}' of {}",
             name,

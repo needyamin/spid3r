@@ -111,6 +111,50 @@ const CASES: &[Case] = &[
         err: None,
         aot: true,
     },
+    // -------------------------------------------------------------- syntax (3)
+    Case {
+        name: "if_expression",
+        src: "fn grade(n) {\n    return if (n > 90) { \"A\" } else { \"B\" };\n}\nfn main() {\n    println(grade(95));\n    println(grade(10));\n    println(if (false) { 1 });\n    let x = if (1 < 2) { 10 } else { 20 };\n    println(x);\n    return 0;\n}\n",
+        // A missing `else` yields null; branches need no trailing `;`.
+        out: "A\nB\nnull\n10",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "null_coalesce",
+        src: "fn expensive() {\n    println(\"expensive\");\n    return 99;\n}\nfn main() {\n    println(null ?? \"d\");\n    println(\"v\" ?? \"d\");\n    println(null ?? expensive());\n    println(\"v\" ?? expensive());\n    println(null ?? null ?? \"last\");\n    return 0;\n}\n",
+        // The right side must NOT be evaluated when the left is non-null.
+        out: "d\nv\nexpensive\n99\nv\nlast",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "opt_field",
+        src: "fn main() {\n    let m = map();\n    m[\"k\"] = 7;\n    println(m?.k);\n    let z = null;\n    println(z?.k);\n    println(z?.k ?? \"fallback\");\n    return 0;\n}\n",
+        out: "7\nnull\nfallback",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "hoist_preserves_order",
+        src: "fn side(n) {\n    println(\"s{n}\");\n    return n;\n}\nfn main() {\n    println(side(1) + (if (true) { side(2) } else { 0 }));\n    println(side(9), (if (true) { side(8) } else { 0 }));\n    println(false and (if (true) { side(7) } else { 0 }));\n    return 0;\n}\n",
+        // Earlier operands still evaluate first, and `and` still short-circuits.
+        out: "s1\ns2\n3\ns9\ns8\n9 8\nfalse",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "err_if_branch_has_no_value",
+        src: "fn main() {\n    let x = if (true) { let y = 1; } else { 2 };\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        err: Some("error[semantic]: an if-expression branch must end with an expression (or with return/throw)"),
+        aot: false,
+    },
     // -------------------------------------------------------------- syntax (2)
     Case {
         name: "string_interp",
@@ -563,22 +607,52 @@ fn imports_behave_identically_on_tree_and_vm() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// `src/lower` is the identity today, so the lowered tree must be structurally
-/// equal to the parsed one. When a desugaring rule lands, this test is the place
-/// that says *what* it changed — and `--dump-lowered` shows it.
+/// A program with none of the surface-only nodes is passed through **by
+/// reference**: `lower` returns `Cow::Borrowed`, so nothing is copied and no
+/// existing behaviour can change. This is the property that makes the pass safe
+/// to insert in front of every backend.
 #[test]
-fn lowering_is_the_identity_today() {
+fn lowering_is_a_no_op_for_programs_without_the_new_syntax() {
     let src = "fn main() {\n    let xs = [1, 2, 3];\n    for x in xs {\n        println(x);\n    }\n    try {\n        throw \"e\";\n    } catch (e) {\n        println(e);\n    }\n    return 0;\n}\n";
     let program =
         spid3r_lang::parser::parse_file(src, std::sync::Arc::from("lower.matrix")).expect("parse");
     let lowered = spid3r_lang::lower::lower(&program);
+    assert!(
+        matches!(lowered, std::borrow::Cow::Borrowed(_)),
+        "a program without if-expressions, ?. or ?? must not be copied"
+    );
     assert_eq!(
         format!("{:?}", program),
         format!("{:?}", lowered.as_ref()),
-        "the lowering pass changed the tree; update this test and the Stage-2 notes"
+        "the lowering pass changed a program it had nothing to rewrite in"
     );
-    // And it must be idempotent, because a backend can be handed an already
-    // lowered program (the VM compiles module programs through the same entry).
+}
+
+/// The three surface nodes must be gone before a backend sees the tree, and the
+/// pass must be idempotent (the VM compiles module programs through it too).
+#[test]
+fn lowering_removes_the_surface_nodes_and_is_idempotent() {
+    let src = "fn main() {\n    let a = if (true) { 1 } else { 2 };\n    let b = null ?? a;\n    let m = map();\n    println(m?.k);\n    println(b);\n    return 0;\n}\n";
+    let program =
+        spid3r_lang::parser::parse_file(src, std::sync::Arc::from("lower2.matrix")).expect("parse");
+    let lowered = spid3r_lang::lower::lower(&program);
+    let text = format!("{:?}", lowered.as_ref());
+    // `OptField`/`Coalesce` have unique names; the if-expression cannot be
+    // checked by name because lowering *produces* `Stmt::If`, which prints the
+    // same `If {` — its removal is covered by the matrix cases that execute it.
+    for node in ["OptField", "Coalesce"] {
+        assert!(
+            !text.contains(node),
+            "`{}` survived lowering://n{}",
+            node,
+            text
+        );
+    }
+    assert!(
+        text.contains("__spid3r_t"),
+        "no temporary was introduced, so nothing was lowered://n{}",
+        text
+    );
     let twice = spid3r_lang::lower::lower(lowered.as_ref());
     assert_eq!(
         format!("{:?}", lowered.as_ref()),

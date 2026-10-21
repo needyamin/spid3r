@@ -983,6 +983,15 @@ fn compile_class(
 fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<(), Diagnostic> {
     compilers[ci].chunk.set_span(e.span().clone());
     match e {
+        // Surface-only nodes are removed by `crate::lower` before compilation.
+        Expr::If { span, .. } | Expr::OptField { span, .. } | Expr::Coalesce { span, .. } => {
+            return Err(Diagnostic::at(
+                Phase::Vm,
+                span.clone(),
+                "internal error: a surface-only expression reached the bytecode compiler \
+                 without lowering (this is a bug in spid3r)",
+            ))
+        }
         Expr::Int(i, _) => {
             let idx = compilers[ci].chunk.emit_const(Value::Int(*i));
             compilers[ci].chunk.emit_u16(OpCode::Constant, idx);

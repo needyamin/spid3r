@@ -24,7 +24,7 @@ dependency layer (spider.toml, vendor/, local registry, tar packing), formatter,
 REPL, line debugger, optional LLVM AOT backend (feature "native"), optional
 webview GUI (feature "gui"), and an NSIS Windows installer (packaging/).
 
-State: 533 Rust tests green (517 core incl. 2 doc-tests + 10 GUI + 6 AOT;
+State: 548 Rust tests green (532 core incl. 2 doc-tests + 10 GUI + 6 AOT;
 embed-API round 2026-10-20, stdlib expansion round 2026-10-20, bytes & CSV &
 regex & datetime round 2026-10-20, master audit & non-regression sweep
 completed 2026-10-20, Stage-2 concurrency round 2026-10-20, scheduler-limits
@@ -83,7 +83,7 @@ GaliLang/
 --------------------------------------------------------------------------------
   cargo build                 debug build  -> target\debug\spid3r.exe
   cargo build --release       optimized    -> target\release\spid3r.exe
-  cargo test                  FULL suite, 533 tests (517 with --no-default-features + 16 gui/aot), must stay green
+  cargo test                  FULL suite, 548 tests (532 with --no-default-features + 16 gui/aot), must stay green
   cargo test --test audit_regressions    engine-parity regressions only
   cargo test --test sched_tests          example: single suite
   .\target\debug\spid3r.exe run --engine tree <file.matrix>
@@ -200,13 +200,20 @@ GaliLang/
                        Runtime/Vm/Usage), Diagnostic{phase,message,span,thrown,
                        trace}, TraceFrame; Spid3r errors NEVER panic the host
   lower/mod.rs         AST lowering: the single seam between the parser and the
-                       three backends. Identity today (returns Cow::Borrowed, so
-                       no clone); a syntax feature is meant to be written here as
-                       a desugaring instead of three times as an engine feature.
-                       Contract: idempotent (the VM compiles module programs
-                       through the same entry), span-preserving,
-                       behaviour-preserving (tests/engine_matrix.rs proves it).
-                       `spid3r check FILE --dump-lowered` prints the result.
+                       three backends. Rewrites the three surface-only nodes
+                       (value-position `if`, `?.`, `??`) into a temporary plus
+                       statements, hoisting them to the enclosing statement.
+                       HOISTING RULE: if any child of a composite needs a
+                       prelude, EVERY child is spilled into a temp in source
+                       order, so side-effect order is exact; and/or are never
+                       spilled (they lower to a conditional assignment to keep
+                       short-circuit); a while/for-C condition with a prelude
+                       becomes `while (true) { <prelude>; if (not c) break; … }`.
+                       A program with none of the three nodes returns
+                       Cow::Borrowed (no clone, no change). Contract:
+                       idempotent, span-preserving, behaviour-preserving
+                       (tests/engine_matrix.rs). `spid3r check FILE
+                       --dump-lowered` prints the result.
   fmt.rs               formatter; invariants: re-lex equality + idempotence
   repl/mod.rs          REPL (:help/:reset/:quit)
   pkg/mod.rs           manifest (spider.toml), install/vendor (valid_pkg_name
@@ -368,6 +375,11 @@ GaliLang/
                          trailing bytes, instruction-table mismatch, fall-through
                          end, nesting depth, non-quadratic jumps, `exec` on a
                          corrupt file; A-11 WebView2 opt-in + checksum policy),
+                         stage2b_hoisting.rs (14: if-expression value/missing
+                         else/else-if/return-in-branch, ?? fallback and laziness,
+                         ?. null receiver and single evaluation, hoisting
+                         preserves left-to-right order, and/or still
+                         short-circuit, a loop condition re-runs per iteration),
                          stage2_syntax.rs (10: string interpolation — holes,
                          field paths, template-brace compatibility, unknown name
                          in a hole; bitwise values, C precedence, non-int
@@ -500,6 +512,20 @@ GaliLang/
     * detached collection mutators (list/set/bag remove+add) commit with a
       verified snapshot and retry on conflict (bounded, 32) — concurrent adds
       cannot duplicate, concurrent removes cannot hit a shifted slot.
+  - Value forms (Stage 2b, 2026-10-21):
+    * `if` works in value position; a branch's last expression may omit its `;`
+      and a missing `else` yields null. `return` inside a branch returns from
+      the enclosing function (the reason an IIFE lowering was rejected).
+    * `a ?? b` evaluates `b` only when `a` is null; `obj?.field` evaluates the
+      receiver once and yields null for a null receiver.
+    * all three are lowered away before any backend runs, so no engine changed.
+      A program without them is passed through by reference.
+    * MAX_PARSE_DEPTH is now 64 (was 96): each nesting level costs ~13 parser
+      frames, and 96 overflowed a 2 MB thread stack once one precedence level
+      was added.
+    * AOT FIX found by the matrix: `map.field` aborted with "cannot read field
+      'k' of map" in the native backend while tree and VM read the key. The
+      runtime helper now has the map arm.
   - Syntax batch (Stage 2, 2026-10-21):
     * string interpolation: `{name}` / `{obj.field}` (no whitespace inside the
       braces) desugars in the PARSER to `+ string(...)` calls, so the checker

@@ -252,6 +252,33 @@ pub enum Expr {
         callable: Box<Expr>,
         span: Span,
     },
+
+    // ------------------------------------------------------- surface-only nodes
+    //
+    // These three cannot be executed by any backend: `crate::lower` rewrites
+    // them into a temp plus statements before a backend sees them. They exist as
+    // AST nodes only so the checker can report real errors (an unknown field, a
+    // branch with no value) against the source the user wrote.
+    /// `if (c) { a } else { b }` in value position. Both branches must end with
+    /// an expression; the missing `else` yields `null`.
+    If {
+        cond: Box<Expr>,
+        then: Block,
+        els: Option<Block>,
+        span: Span,
+    },
+    /// `obj?.field` — `null` when `obj` is `null`, otherwise `obj.field`.
+    OptField {
+        object: Box<Expr>,
+        name: String,
+        span: Span,
+    },
+    /// `a ?? b` — `b` is evaluated only when `a` is `null`.
+    Coalesce {
+        l: Box<Expr>,
+        r: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -274,7 +301,10 @@ impl Expr {
             | Expr::Index { span, .. }
             | Expr::Field { span, .. }
             | Expr::New { span, .. }
-            | Expr::Spawn { span, .. } => span,
+            | Expr::Spawn { span, .. }
+            | Expr::If { span, .. }
+            | Expr::OptField { span, .. }
+            | Expr::Coalesce { span, .. } => span,
             Expr::Fn(f) => &f.span,
         }
     }

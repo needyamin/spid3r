@@ -5,12 +5,22 @@ use crate::diagnostics::{err_at, Phase, Span, SpidResult};
 use crate::lexer::token::{Keyword, Token, TokenKind};
 use std::sync::Arc;
 
-const MAX_PARSE_DEPTH: usize = 96;
+/// Maximum expression/statement nesting.
+///
+/// Each level costs roughly one stack frame per precedence function (~13), so
+/// the cap has to stay well inside a 2 MB thread stack — the default for a
+/// spawned thread, and the size the test suite runs on. At 96 the parser sat on
+/// the edge (adding one precedence level overflowed it), so 64 leaves room.
+const MAX_PARSE_DEPTH: usize = 64;
 
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
     depth: usize,
+    /// Depth of `if`-expression branch blocks. Inside one, a trailing
+    /// expression may omit its `;`, because it is the branch's value:
+    /// `let x = if (c) { 1 } else { 2 };`
+    value_block_depth: usize,
 }
 
 pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
@@ -27,6 +37,7 @@ pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
         toks,
         pos: 0,
         depth: 0,
+        value_block_depth: 0,
     };
     p.parse_program()
 }
@@ -508,6 +519,15 @@ impl Parser {
         res
     }
 
+    /// A block in value position: like `parse_block`, but the trailing
+    /// expression may omit its `;`.
+    fn parse_value_block(&mut self) -> SpidResult<Block> {
+        self.value_block_depth += 1;
+        let res = self.parse_block();
+        self.value_block_depth -= 1;
+        res
+    }
+
     fn parse_statement(&mut self) -> SpidResult<Stmt> {
         match self.kind() {
             TokenKind::Kw(Keyword::Let) => self.parse_let(true),
@@ -569,7 +589,11 @@ impl Parser {
             TokenKind::LBrace => Ok(Stmt::Block(self.parse_block()?)),
             _ => {
                 let e = self.parse_expr()?;
-                self.expect(&TokenKind::Semi, "';' after expression")?;
+                // The last expression of an `if`-expression branch is its
+                // value, so the `;` is optional there.
+                if !(self.value_block_depth > 0 && self.at(&TokenKind::RBrace)) {
+                    self.expect(&TokenKind::Semi, "';' after expression")?;
+                }
                 Ok(Stmt::Expr(e))
             }
         }
@@ -625,6 +649,40 @@ impl Parser {
             ty,
             value,
             span: sp,
+        })
+    }
+
+    /// `if` in value position: `let x = if (c) { a } else { b };`.
+    ///
+    /// `else if` chains are represented by nesting the second `if` inside a
+    /// one-statement block, so `lower` only ever sees a single `els` block.
+    fn parse_if_expr(&mut self) -> SpidResult<Expr> {
+        let sp = self.expect_kw(Keyword::If)?;
+        let cond = self.parse_expr()?;
+        let then = self.parse_value_block()?;
+        let mut els = None;
+        if self.eat_kw(Keyword::Else) {
+            if self.at_kw(Keyword::If) {
+                let nested = self.parse_if_expr()?;
+                let span = nested.span().clone();
+                els = Some(Block {
+                    stmts: vec![Stmt::Expr(nested)],
+                    span,
+                });
+            } else {
+                els = Some(self.parse_value_block()?);
+            }
+        }
+        let end_span = els
+            .as_ref()
+            .map(|b| b.span.clone())
+            .unwrap_or_else(|| then.span.clone());
+        let span = join(sp, end_span);
+        Ok(Expr::If {
+            cond: Box::new(cond),
+            then,
+            els,
+            span,
         })
     }
 
@@ -762,7 +820,7 @@ impl Parser {
     }
 
     fn parse_assign(&mut self) -> SpidResult<Expr> {
-        let left = self.parse_or()?;
+        let left = self.parse_coalesce_inline()?;
         let op = match self.kind() {
             TokenKind::Assign => Some(AssignOp::Assign),
             TokenKind::PlusEq => Some(AssignOp::AddAssign),
@@ -804,6 +862,27 @@ impl Parser {
                 value: Box::new(value),
                 span,
             });
+        }
+        Ok(left)
+    }
+
+    /// `a ?? b` — null coalescing, binding looser than `or` (as in C#) and
+    /// tighter than assignment. Left-associative.
+    ///
+    /// Folded into `parse_assign` rather than given its own function: every
+    /// level of nesting costs one stack frame per precedence level, and at the
+    /// depth cap the parser was already close to a 2 MB thread's limit.
+    fn parse_coalesce_inline(&mut self) -> SpidResult<Expr> {
+        let mut left = self.parse_or()?;
+        while matches!(self.kind(), TokenKind::QuestionQuestion) {
+            self.pos += 1;
+            let right = self.parse_or()?;
+            let span = join(left.span().clone(), right.span().clone());
+            left = Expr::Coalesce {
+                l: Box::new(left),
+                r: Box::new(right),
+                span,
+            };
         }
         Ok(left)
     }
@@ -1059,6 +1138,26 @@ impl Parser {
                         };
                     }
                 }
+                // `obj?.field` — null-safe field access. A method call through
+                // `?.` is deliberately not accepted yet: it needs the argument
+                // list to be skipped when the receiver is null, which is a
+                // different lowering.
+                TokenKind::QuestionDot => {
+                    self.pos += 1;
+                    let (name, nspan) = self.expect_ident()?;
+                    if self.at(&TokenKind::LParen) {
+                        return Err(self.err_here(
+                            "`?.` takes a field, not a call; write `(obj?.f)(...)` \
+                             or check for null first",
+                        ));
+                    }
+                    let span = join(e.span().clone(), nspan);
+                    e = Expr::OptField {
+                        object: Box::new(e),
+                        name,
+                        span,
+                    };
+                }
                 _ => return Ok(e),
             }
         }
@@ -1099,6 +1198,9 @@ impl Parser {
                 self.pos += 1;
                 Ok(interp_to_expr(&pieces, sp))
             }
+            // `if` as an expression: only reachable in value position, because
+            // `parse_statement` consumes a leading `if` as a statement.
+            TokenKind::Kw(Keyword::If) => self.parse_if_expr(),
             TokenKind::Kw(Keyword::True) => {
                 self.pos += 1;
                 Ok(Expr::Bool(true, sp))

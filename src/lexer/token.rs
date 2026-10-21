@@ -180,6 +180,12 @@ pub enum TokenKind {
     Shl,
     /// `>>` — shift right (desugared to `shr(a, b)`).
     Shr,
+    /// `?` on its own (reserved; `?.` and `??` are the usable forms).
+    Question,
+    /// `?.` — null-safe field access.
+    QuestionDot,
+    /// `??` — null coalescing.
+    QuestionQuestion,
 
     Eof,
 }

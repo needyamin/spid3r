@@ -248,6 +248,22 @@ fn collect_outer_uses_expr(
     out: &mut HashSet<String>,
 ) {
     match e {
+        // Surface-only nodes (removed by lowering) — walk them anyway so a
+        // capture inside one is never missed.
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            collect_outer_uses_expr(cond, declared, out);
+            collect_outer_uses(&then.stmts, declared, out);
+            if let Some(b) = els {
+                collect_outer_uses(&b.stmts, declared, out);
+            }
+        }
+        Expr::OptField { object, .. } => collect_outer_uses_expr(object, declared, out),
+        Expr::Coalesce { l, r, .. } => {
+            collect_outer_uses_expr(l, declared, out);
+            collect_outer_uses_expr(r, declared, out);
+        }
         Expr::Ident(name, _) => {
             let local = declared.iter().any(|f| f.contains(name));
             if !local {
@@ -1018,6 +1034,20 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
 
 fn nested_fns_expr<'a>(e: &'a Expr, out: &mut Vec<&'a FnProto>) {
     match e {
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            nested_fns_expr(cond, out);
+            nested_fns_block(&then.stmts, out);
+            if let Some(b) = els {
+                nested_fns_block(&b.stmts, out);
+            }
+        }
+        Expr::OptField { object, .. } => nested_fns_expr(object, out),
+        Expr::Coalesce { l, r, .. } => {
+            nested_fns_expr(l, out);
+            nested_fns_expr(r, out);
+        }
         Expr::Fn(p) => {
             out.push(p);
             nested_fns_block(&p.body.stmts, out);
@@ -1717,6 +1747,14 @@ impl<'ctx> Ir<'ctx> {
 
     fn compile_expr_inner(&mut self, e: &Expr) -> IrResult<PointerValue<'ctx>> {
         match e {
+            // Surface-only nodes are rewritten by `crate::lower` before codegen.
+            Expr::If { span, .. } | Expr::OptField { span, .. } | Expr::Coalesce { span, .. } => {
+                Err(format!(
+                    "internal error at {}:{}: a surface-only expression reached the native \
+                     backend without lowering (this is a bug in spid3r)",
+                    span.file, span.line
+                ))
+            }
             Expr::Int(v, _) => Ok(self.v_int(*v)),
             Expr::Float(v, _) => Ok(self.v_float(*v)),
             Expr::Bool(v, _) => Ok(self.v_bool(*v)),

@@ -242,6 +242,17 @@ impl<'a> Lexer<'a> {
                     self.two(b'=', TokenKind::Ge, TokenKind::Gt)
                 }
             }
+            b'?' => {
+                if self.peek() == Some(b'.') {
+                    self.bump();
+                    TokenKind::QuestionDot
+                } else if self.peek() == Some(b'?') {
+                    self.bump();
+                    TokenKind::QuestionQuestion
+                } else {
+                    TokenKind::Question
+                }
+            }
             b'&' => TokenKind::Amp,
             b'|' => TokenKind::Pipe,
             b'^' => TokenKind::Caret,

@@ -81,7 +81,7 @@ expr           = assignment ;
 
 assignment     = target assignOp expr
                | "await" expr
-               | orExpr ;
+               | coalesceExpr ;
 
 target         = ident
                | postfix "[" expr "]"            (* index assignment *)
@@ -89,6 +89,7 @@ target         = ident
 
 assignOp       = "=" | "+=" | "-=" | "*=" | "/=" | "%=" ;
 
+coalesceExpr   = orExpr { "??" orExpr } ;
 orExpr         = andExpr { "or" andExpr } ;
 andExpr        = bitorExpr { "and" bitorExpr } ;
 bitorExpr      = bitxorExpr { "|" bitxorExpr } ;
@@ -102,16 +103,20 @@ mulExpr        = unary { ("*" | "/" | "%") unary } ;
 
 unary          = "not" unary | "-" unary | postfix ;
 
-postfix        = primary { call | index | field | method } ;
+postfix        = primary { call | index | field | method | optField } ;
 call           = "(" [ args ] ")" ;
 index          = "[" expr "]" ;
 field          = "." ident ;
 method         = "." ident "(" [ args ] ")" ;
+optField       = "?" "." ident ;          (* null-safe field read *)
 args           = expr { "," expr } ;
 
 primary        = intLit | floatLit | stringLit | "true" | "false" | "null"
                | ident | listLit | fnLit | "new" ident "(" [ args ] ")"
-               | "(" expr ")" ;
+               | ifExpr | "(" expr ")" ;
+
+(* `if` in value position; a branch's last expression may omit its `;` *)
+ifExpr         = "if" "(" expr ")" valueBlock [ "else" valueBlock ] ;
 
 listLit        = "[" [ args ] "]" ;
 fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
@@ -147,6 +152,17 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
   stay as written, which keeps the stdlib template syntax working. There is no
   `{{` escape: a hole is recognised only when `{` is followed immediately by an
   identifier.
+- `??` binds looser than `or` and tighter than assignment; `?.` is postfix.
+  Both, and the value-position `if`, are rewritten by `crate::lower` into a
+  temporary plus statements before any backend sees them, so they cost no engine
+  support. A `while` condition that needs such a temporary keeps its
+  once-per-iteration semantics (it becomes `while (true) { <prelude>; if (not c)
+  { break } … }`).
+- A branch block of a value-position `if` may omit the `;` after its final
+  expression, because that expression is the branch's value. Everywhere else an
+  expression statement still needs its `;`.
+- Expression/statement nesting is capped at 64 levels; deeper input is a parser
+  diagnostic, never a stack overflow.
 - Bitwise `& | ^ << >>` follow C precedence and are desugared to the natives
   `bit_and`, `bit_or`, `bit_xor`, `shl`, `shr`, so they are not separate opcodes.
   They require `int` operands; a shift amount outside `0..=63` is an error.

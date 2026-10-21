@@ -365,6 +365,41 @@ fn builtin_return_type(name: &str) -> Option<Ty> {
     })
 }
 
+/// Does a block end in something that produces a value?
+///
+/// A trailing expression does; so does `return`/`throw`, which leave the block
+/// before the value is ever read.
+fn block_has_value(b: &Block) -> bool {
+    match b.stmts.last() {
+        Some(Stmt::Expr(_)) | Some(Stmt::Return { .. }) | Some(Stmt::Throw { .. }) => true,
+        // A nested block that itself has a value.
+        Some(Stmt::Block(inner)) => block_has_value(inner),
+        _ => false,
+    }
+}
+
+/// The type of a block used as a value (its last expression).
+fn block_value_type(c: &Checker, b: &Block) -> Ty {
+    match b.stmts.last() {
+        Some(Stmt::Expr(e)) => c.type_of(e),
+        Some(Stmt::Block(inner)) => block_value_type(c, inner),
+        _ => Ty::Any,
+    }
+}
+
+/// The type that can hold both `a` and `b`.
+fn common_type(a: Ty, b: Ty) -> Ty {
+    if a == b {
+        return a;
+    }
+    match (a, b) {
+        (Ty::Any, _) | (_, Ty::Any) => Ty::Any,
+        (Ty::Null, other) | (other, Ty::Null) => other,
+        (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => Ty::Float,
+        _ => Ty::Any,
+    }
+}
+
 impl Checker {
     fn err(&self, span: &Span, msg: impl Into<String>) -> Diagnostic {
         Diagnostic::at(Phase::Semantic, span.clone(), msg)
@@ -1377,6 +1412,17 @@ impl Checker {
         Ok(())
     }
 
+    /// The static type of a value-position `if`: the two branches must agree,
+    /// and a missing `else` contributes `null`.
+    fn branch_type(&self, then: &Block, els: Option<&Block>) -> Ty {
+        let a = block_value_type(self, then);
+        let b = match els {
+            Some(b) => block_value_type(self, b),
+            None => Ty::Null,
+        };
+        common_type(a, b)
+    }
+
     fn type_of(&self, e: &Expr) -> Ty {
         match e {
             Expr::Int(_, _) => Ty::Int,
@@ -1384,6 +1430,11 @@ impl Checker {
             Expr::Str(_, _) => Ty::Str,
             Expr::Bool(_, _) => Ty::Bool,
             Expr::Null(_) => Ty::Null,
+            Expr::If { then, els, .. } => self.branch_type(then, els.as_ref()),
+            // A null-safe field read can always produce null, so the only honest
+            // static type is `any`.
+            Expr::OptField { .. } => Ty::Any,
+            Expr::Coalesce { l, r, .. } => common_type(self.type_of(l), self.type_of(r)),
             Expr::Ident(name, _) => {
                 if name == "self" {
                     self.current_class.clone().map(Ty::Class).unwrap_or(Ty::Any)
@@ -1678,6 +1729,34 @@ impl Checker {
 
     fn check_expr(&mut self, e: &Expr) -> SpidResult<()> {
         match e {
+            Expr::If {
+                cond,
+                then,
+                els,
+                span,
+            } => {
+                self.check_expr(cond)?;
+                for b in std::iter::once(then).chain(els.iter()) {
+                    if !block_has_value(b) {
+                        return Err(self.err(
+                            span,
+                            "an if-expression branch must end with an expression (or with \
+                             return/throw)",
+                        ));
+                    }
+                }
+                self.check_block(then)?;
+                if let Some(b) = els {
+                    self.check_block(b)?;
+                }
+                Ok(())
+            }
+            Expr::OptField { object, .. } => self.check_expr(object),
+            Expr::Coalesce { l, r, .. } => {
+                self.check_expr(l)?;
+                self.check_expr(r)?;
+                Ok(())
+            }
             Expr::Int(_, _)
             | Expr::Float(_, _)
             | Expr::Str(_, _)

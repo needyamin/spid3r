@@ -719,6 +719,17 @@ impl Interp {
 
     pub fn eval(&self, e: &Expr, env: &Env) -> Result<Value, Flow> {
         match e {
+            // Surface-only nodes: `crate::lower` rewrites these into a temp plus
+            // statements before any backend runs. Reaching one here means the
+            // lowering pass was skipped, which is an internal bug, not a program
+            // error — report it instead of aborting the host.
+            Expr::If { span, .. } | Expr::OptField { span, .. } | Expr::Coalesce { span, .. } => {
+                Err(self.rt(
+                    span,
+                    "internal error: a surface-only expression reached the interpreter \
+                     without lowering (this is a bug in spid3r)",
+                ))
+            }
             Expr::Int(i, _) => Ok(Value::Int(*i)),
             Expr::Float(f, _) => Ok(Value::Float(*f)),
             Expr::Bool(b, _) => Ok(Value::Bool(*b)),

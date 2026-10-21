@@ -829,7 +829,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">533 tests · 25/25 examples agree</span>
+          <span class="badge">548 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -1125,6 +1125,18 @@ class interface new self public private spawn async await extends implements</co
           </ul>
         </div>
 
+        <h3>Value-position <code>if</code></h3>
+        <p><code>if</code> also works as an expression, so a conditional value needs no temporary and no
+          statement dance. Each branch yields its last expression (a branch may omit that final
+          <code>;</code>); a missing <code>else</code> yields <code>null</code>.</p>
+        <pre data-lang="spid3r"><code>fn grade(n) {
+    return if (n &gt;= 90) { "A" } else if (n &gt;= 80) { "B" } else { "C" };
+}
+let label = if (count == 0) { "empty" } else { "{count} items" };</code></pre>
+        <p><code>return</code> inside a branch returns from the <em>enclosing function</em>, not from the
+          branch. The value forms are rewritten into a temporary plus ordinary statements before any
+          engine runs, so all three engines agree by construction — and a statement that uses none of
+          them is passed through untouched.</p>
         <h2 id="ops">Operators &amp; precedence</h2>
         <div class="grid2">
           <div>
@@ -1144,6 +1156,9 @@ class interface new self public private spawn async await extends implements</co
           <div>
             <p class="tag">Assignment (right-associative)</p>
             <p><code>=  +=  -=  *=  /=  %=</code></p>
+            <p class="tag">Null handling</p>
+            <p><code>??</code> (fallback when null — the right side is evaluated only when the left is
+              null) · <code>obj?.field</code> (null when the receiver is null)</p>
             <p class="tag">Members &amp; indexing</p>
             <p><code>obj.field</code> · <code>obj.method()</code> · <code>xs[i]</code> · <code>xs[i] = v</code> ·
               <code>m[k] = v</code>
@@ -1160,7 +1175,8 @@ class interface new self public private spawn async await extends implements</co
         <p><strong>Precedence</strong>, tightest first: postfix (call, index, field, method) → unary
           <code>not</code> / <code>-</code> / <code>await</code> / <code>spawn</code> → <code>* / %</code> →
           <code>+ -</code> → <code>&lt;&lt; &gt;&gt;</code> → comparisons → <code>&amp;</code> →
-          <code>^</code> → <code>|</code> → <code>and</code> → <code>or</code> → assignment. Comparison chains
+          <code>^</code> → <code>|</code> → <code>and</code> → <code>or</code> → <code>??</code> →
+          assignment. Comparison chains
           are left-associative (<code>a &lt; b &lt; c</code> parses as <code>(a &lt; b) &lt; c</code>), so write
           <code>a &lt; b and b &lt; c</code> instead.
         </p>
@@ -3234,7 +3250,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>533 tests</strong> (<strong>517</strong> with
+            As of this revision, <code>cargo test</code> passes <strong>548 tests</strong> (<strong>532</strong> with
             <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from
