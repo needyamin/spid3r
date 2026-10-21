@@ -39,7 +39,18 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run unit, integration, and fuzz/regression test suites
-        run: cargo test --no-default-features
+        shell: bash
+        run: |
+          cargo test --no-default-features 2>&1 | tee cargo_test_output.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Report test failures to the step summary
+        if: failure()
+        shell: bash
+        run: |
+          echo "### Failing tests (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "FAILED|panicked at|test result:" cargo_test_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+          tail -n 80 cargo_test_output.txt >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run 3-engine differential example suite (tree == vm == exec)
         run: cargo run --bin spid3r --no-default-features -- test

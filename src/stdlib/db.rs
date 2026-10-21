@@ -20,11 +20,17 @@
 //! handle's `Mutex`, and the connection is opened with SQLITE_OPEN_FULLMUTEX,
 //! so the raw pointer inside `DbData` is sound to move across threads.
 
-use crate::value::new_ref;
 use crate::value::{NativeCtx, Value};
+use std::ffi::c_void;
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
-use std::ffi::{c_void, CString};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(target_arch = "wasm32"))]
+use std::ffi::CString;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::value::new_ref;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------- loading
 
@@ -57,17 +63,26 @@ pub struct SqliteApi {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 const SQLITE_OK: i32 = 0;
+#[cfg(not(target_arch = "wasm32"))]
 const SQLITE_ROW: i32 = 100;
+#[cfg(not(target_arch = "wasm32"))]
 const SQLITE_DONE: i32 = 101;
 /// SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX.
+#[cfg(not(target_arch = "wasm32"))]
 const OPEN_FLAGS: i32 = 0x2 | 0x4 | 0x1_0000;
 /// SQLITE_TRANSIENT: SQLite copies the bound buffer.
+#[cfg(not(target_arch = "wasm32"))]
 const TRANSIENT: isize = -1;
 
+#[cfg(not(target_arch = "wasm32"))]
 const COL_INT: i32 = 1;
+#[cfg(not(target_arch = "wasm32"))]
 const COL_FLOAT: i32 = 2;
+#[cfg(not(target_arch = "wasm32"))]
 const COL_TEXT: i32 = 3;
+#[cfg(not(target_arch = "wasm32"))]
 const COL_BLOB: i32 = 5;
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
@@ -535,7 +550,7 @@ fn n_db_open(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = args;
-        return Err("db_open is not supported on WebAssembly (no OS file system)".to_string());
+        Err("db_open is not supported on WebAssembly (no OS file system)".to_string())
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
