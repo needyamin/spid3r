@@ -107,6 +107,29 @@ the (flat, transitive) embedded table, so nested imports resolve too.
 
 ### Bytecode validation (safety net)
 
+The validator runs at load time, **before any instruction executes**, and
+recurses into nested function prototypes, class methods, and embedded module
+functions (each with its own prototype's upvalue count). It rejects:
+
+- invalid opcodes, truncated instructions, non-increasing `inst_offsets`,
+  offsets past the code, jump targets that are not instruction boundaries,
+  a chunk that can fall off its end, and trailing bytes;
+- pool indices out of range for `Constant`, `GetGlobal`, `SetGlobal`,
+  `DefineGlobal`, `DefineConst`, `FieldGet`, `FieldSet`, `Import`,
+  `ImportAs`, `Construct`, `Invoke`, `Closure`, `Class`, and the `Super*`
+  opcodes;
+- **wrong value kinds**: every name operand (all of the above except
+  `Constant`) must be a `string` constant; the `Constant` pool itself may
+  only hold `int`/`float`/`string` (bool/null use dedicated opcodes);
+- `GetUpvalue`/`SetUpvalue` indices outside the prototype's declared upvalue
+  list — otherwise a crafted artifact would silently read `null` for a cell
+  that does not exist.
+
+The VM is defensive at every use site anyway (`match` on the value tag,
+`.get()` with a fallback), so a validator gap degrades to a clean runtime
+error, never to undefined behavior. See
+`audit_notes/state_desync_type_confusion_2026-10-22.md`.
+
 Before any chunk is executed, `validate_chunk` walks it (and all nested function
 prototypes and embedded module chunks) recursively and rejects:
 

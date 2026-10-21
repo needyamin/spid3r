@@ -1,0 +1,511 @@
+================================================================================
+ SPID3R / GALILANG — SYSTEM ARCHITECTURE & LONG-TERM DEVELOPMENT PLAN
+ Author: Software Architect (expert review)        Date: 2026-10-22
+ Audience: language designers, runtime/toolchain engineers, ecosystem owners
+ Status: DRAFT for review — accompanies ISSUE_BACKLOG.md (GitHub-import-ready)
+================================================================================
+
+0. PURPOSE & SCOPE
+--------------------------------------------------------------------------------
+You asked for (a) a scalable system architecture for a large-scale programming
+language, (b) long-term development planning, and (c) the full set of issues
+that should be fixed. This document is the deliverable.
+
+It is based on a direct read of the repository at commit state 2026-10-22:
+  - 44,797 lines of Rust across 49 source files (single crate `spid3r`,
+    library target `spid3r_lang`).
+  - 680 automated tests, 25 differential examples, 3 fuzz targets, a 3-engine
+    differential gate, and an LLVM AOT + webview GUI + wasm target.
+  - A recent (2026-10-18 → 10-21) multi-round audit that fixed ~80 critical/
+    high bugs and left a small, well-documented residue (A-13 closure-cycle
+    leak now closed; a few parity/feature gaps remain — see §5 / ISSUE_BACKLOG).
+
+This report does NOT re-litigate the already-fixed bugs. It assesses
+ARCHITECTURE-LEVEL scalability and prescribes the structure and sequencing to
+take Spid3r from "a solid single-crate interpreter + VM + AOT" to "a language
+platform that can absorb many backends, a package ecosystem, web/CMS/ERP
+workloads, and untrusted-script embedding without N-fold re-implementation
+cost."
+
+1. EXECUTIVE SUMMARY
+--------------------------------------------------------------------------------
+Strengths to preserve (do not regress):
+  - The `lower` seam (src/lower/mod.rs) is the correct idea: one place where
+    syntactic sugar is desugared before ANY backend runs. Keep investing here.
+  - `value::collections` (9,284 LOC — the largest module) is the single source
+    of truth for data semantics. Both engines + AOT delegate to it. This is the
+    right pattern and is why tree/vm parity is tractable today.
+  - The differential test harness (tree == vm == exec) is excellent. It must
+    become the GATING contract for ALL backends, not just two.
+  - Zero third-party-dependency core policy is a real asset for embedding and
+    supply-chain trust. Keep it, but make dependencies opt-in behind features.
+
+Top 5 recommendations (highest leverage first):
+  R1. MAKE THE BYTECODE `Chunk` THE ONE PORTABLE IR. Today the Native/AOT
+      backend consumes the AST and re-implements control flow, closures,
+      classes, `super`, error propagation (5,159 LOC, AST→LLVM). Every new
+      backend therefore re-implements the whole semantics. Converge everything
+      on `AST → lower → Chunk`, then have Native/LLVM, wasm, and any future
+      backend consume `Chunk`. This is the single highest-leverage change:
+      it turns "N backends × full semantics" into "1 frontend + N thin codegens."
+  R2. SPLIT THE MONOLITH INTO A WORKSPACE OF CRATES. A single 45k-LOC crate
+      couples compile units, slows iteration, and lets subsystems leak into
+      each other. Decompose into frontend / value / vm / codegen / stdlib /
+      runtime / pkg / lsp / cli with strict public-API boundaries. This also
+      makes the embedding API depend only on what it needs.
+  R3. REPLACE THE BLOCKING, TLS-LESS NETWORKING with an async I/O core before
+      advertising CMS/ERP/web-server usage. Blocking TCP/HTTP with no TLS is a
+      non-starter for production web workloads and is the biggest mismatch
+      between the new `web.matrix` framework and real deployment.
+  R4. PLAN THE GC FOR CONCURRENCY. The current collector quiesces all threads
+      (statement-boundary, single-global mark-sweep). As task counts grow, the
+      global stop-the-world gate is a throughput ceiling. Budget a generational
+      / per-heap design before it bites.
+  R5. ADD RESOURCE METERING + A SANDBOX CONTRACT for the embedding API. The
+      embed API runs host scripts on a 512 MiB worker but has NO CPU-time,
+      instruction-count, or syscall budget. For untrusted plugins this is an
+      availability/security hole. Make a capability model explicit.
+
+These five are the spine of the roadmap in §4.
+
+2. CURRENT ARCHITECTURE (AS-IS)
+--------------------------------------------------------------------------------
+2.1 Module map (lines of Rust, measured 2026-10-22)
+    value       9,284   shared value model + 20+ collections + GC         [GOOD]
+    vm          7,094   bytecode Chunk, stack VM, optimizer, debugger
+    native      5,159   LLVM AOT (AST → IR → LLVM) — PARALLEL PIPELINE   [RISK]
+    stdlib      4,659   natives, JSON, csv, datetime, regex, net, db
+    semantic    2,754   name resolution, privacy, gradual typing
+    lower       1,419   the single desugaring seam
+    parser      1,582   recursive-descent Pratt parser
+    lsp         1,409   JSON-RPC server (reuses front-end, no 2nd impl)
+    pkg         1,883   manifest, install/vendor, git deps, tar, sha256
+    sched       1,051   OS-thread pool, channels, mutexes, GC gate
+    lexer         819   hand-written byte lexer
+    gui           797   webview (wry/tao)
+    modules       453   module resolution/caching
+    environment   142   lexical environments
+    ---- total 44,797 ----
+
+2.2 Data / control flow (today)
+    source ──▶ lexer ──▶ parser ──▶ semantic ──▶ lower ──▶ AST(lowered)
+                                                              │
+                  ┌───────────────────────────────────────────┼───────────────┐
+                  ▼                       ▼                    ▼               ▼
+            tree interpreter      bytecode compiler      NATIVE/AOT          wasm
+            (consumes AST)        (AST→Chunk)→VM         (consumes AST →     (reuses
+                                   (+optimizer)          IR→LLVM)            tree & VM)
+                  │                       │                    │               │
+                  └───────────▶ stdout/stderr ◀────────────────┴───────────────┘
+                  (each engine independently implements control flow, closures,
+                   classes, super, error propagation, `?`, callbacks)
+
+2.3 What is working well (preserve)
+    - Single front-end shared by all engines (lexer/parser/semantic/lower).
+    - `lower` is the only place sugar is desugared; fast-path returns borrowed.
+    - `value::collections` centralizes data semantics → engines stay thin.
+    - Differential gate (tree==vm==exec) catches cross-engine drift.
+    - Bytecode validator + bounds-checked deserializer (no host panic).
+    - Security hardening already strong (path-traversal, archive, git-transport,
+      crafted-bytecode rejections).
+    - LSP reuses the same checker/formatter → editor cannot disagree with CLI.
+
+2.4 Scalability risks (the core of the review)
+    R1 Monolithic crate. One 45k-LOC crate; no enforced API boundaries; a change
+       in `value` recompiles everything; embedding consumers pull the whole CLI.
+    R2 N-engine semantic multiplication. tree + vm + native + wasm each implement
+       control flow / closures / classes / `super` / `?` / callbacks. Language
+       feature cost grows ×(number of backends).
+    R3 Native re-implements the pipeline. native/ (5,159 LOC) takes the AST and
+       emits LLVM IR directly — a second full semantics. `super`, class-in-fn,
+       and HOF callbacks are unsupported there (parity gaps that will widen).
+    R4 GC global-quiescence ceiling. Collection is safe only when the caller is
+       the sole RUNNING thread; under many tasks this serializes progress.
+    R5 I/O model mismatch. Blocking TCP/HTTP, no TLS, no async runtime — the
+       very thing the new web/CMS framework needs to scale.
+    R6 Package ecosystem gaps. Local registry only; no remote/HTTP registry, no
+       package signing, no content-addressed storage, no transitive resolution.
+    R7 LSP/incremental gaps. Full-document sync (no incremental), missing
+       rename/references/semantic-tokens/signature-help/code-actions.
+    R8 No resource metering for embedded/untrusted scripts. 512 MiB worker but
+       no CPU/instruction/syscall budget → DoS surface.
+    R9 Robustness of locking. Pervasive `.lock().unwrap()`; a poisoned mutex or
+       panic-under-lock can wedge a long-running host.
+    R10 Stdlib monolith + no versioning. `stdlib/mod.rs` is large; stdlib has no
+       module namespaces (`import "std/net"`), no per-version compatibility.
+    R11 Test/CI matrix growth. Differential correctness is great but perf is
+       gated manually; no perf-budget CI; native CI only on one platform/subset.
+    R12 No bytecode stability policy. `.matrixc` format promises no cross-release
+       compatibility; needed for a deployment/distribution language.
+    R13 Observability vacuum. Only `eprint`; no structured logging/metrics/trace
+       facade for operators of long-running services.
+
+3. TARGET ARCHITECTURE (TO-BE)
+--------------------------------------------------------------------------------
+3.1 PRINCIPLE: ONE IR TO RULE THEM ALL
+    Promote the bytecode `Chunk` to the project's single PORTABLE INTERMEDIATE
+    REPRESENTATION. The front-end produces exactly one artifact; every execution
+    target consumes it.
+
+    source ─▶ lexer ─▶ parser ─▶ semantic ─▶ lower ─▶ Chunk (canonical IR)
+                                                              │
+            ┌─────────────────────────────────────────────────┼───────────────┐
+            ▼                  ▼                ▼             ▼                ▼
+        tree "oracle"      stack VM        LLVM/AOT       wasm            (future: JIT)
+        (debug/ref only)    (default)       codegen        codegen        codegen
+                                   all consume `Chunk`, never the raw AST
+
+    Consequence: language features are implemented ONCE (in `lower` + `Chunk`
+    compiler + `value`). Each backend is a *code generator over Chunk*, not a
+    re-implementation of the language. Native/AOT shrinks from 5,159 LOC of
+    parallel semantics to a `Chunk → LLVM` emitter.
+
+3.2 Proposed crate decomposition (workspace)
+    spid3r-frontend   lexer, parser, ast, semantic, lower
+    spid3r-ir         Chunk, OpCode, validator, serializer (.matrixc), optimizer
+    spid3r-value      Value, collections, GC            (the semantic source of truth)
+    spid3r-vm         stack VM executing Chunk
+    spid3r-codegen-llvm  Chunk → LLVM (feature "native")
+    spid3r-codegen-wasm  Chunk → wasm (feature "wasm")
+    spid3r-runtime   sched, environment, modules, embed API, resource metering
+    spid3r-stdlib    natives, json/csv/datetime/regex/net/db/web
+    spid3r-pkg       manifest, install/vendor/registry/lockfile/tar/sha256
+    spid3r-lsp       language server (depends on frontend + semantic + stdlib)
+    spid3r-cli       subcommand dispatch + binaries
+    spid3r (meta)    workspace root; `spid3r_lang` lib re-exported for embedders
+
+    Boundaries enforced by `pub use` of a minimal API per crate; `cargo build`
+    of the core stays dependency-free.
+
+3.3 Layered view
+    ┌──────────────────────────────────────────────────────────────┐
+    │ Tooling:  CLI · LSP · REPL · Debugger · Formatter · Profiler   │
+    ├──────────────────────────────────────────────────────────────┤
+    │ Libraries: stdlib · pkg/registry · embed API · web framework   │
+    ├──────────────────────────────────────────────────────────────┤
+    │ Runtime:  scheduler · GC · environments · modules · metering   │
+    ├──────────────────────────────────────────────────────────────┤
+    │ Execution: tree(oracle) · VM · LLVM-AOT · wasm  — all on Chunk │
+    ├──────────────────────────────────────────────────────────────┤
+    │ IR:  Chunk (validator · optimizer · serializer)                │
+    ├──────────────────────────────────────────────────────────────┤
+    │ Frontend: lexer · parser · semantic · lower                    │
+    └──────────────────────────────────────────────────────────────┘
+
+3.4 Engine Contract & Conformance Harness
+    Define a machine-checked "Engine Contract": for a fixed Chunk, every backend
+    MUST produce identical observable behaviour (stdout, stderr phase+message,
+    exit code, and a defined side-effect set). `tests/engine_matrix.rs` already
+    asserts EXPECTED output; elevate it to the universal gate so adding a backend
+    = passing the contract. This caps feature cost at ×1 regardless of backend count.
+
+3.5 Scalable runtime (three workstreams)
+    - Async I/O core: an event loop + non-blocking TCP/TLS + async task model;
+      the blocking `net` API becomes a sync adapter over it.
+    - Generational / per-heap GC: young generation for short-lived values,
+      incremental marking to shrink the quiescence window; keep the statement-
+      boundary auto-collect as the safe fallback.
+    - Resource metering: instruction-count + wall-clock + allocation budgets and
+      a capability/sandbox descriptor for the embed API (deny-by-default natives,
+      explicit grants). Enables safe untrusted plugins.
+
+3.6 Packaging & distribution
+    - Remote registry protocol (HTTP), content-addressed store, signed packages
+      (Ed25519), lockfile with hashes (already has git-commit pinning — extend).
+    - Multi-arch native binaries; container + system-package (deb/rpm/brew)
+      distribution; `dist` produces self-contained artifacts.
+    - Bytecode stability: versioned `.matrixc` header; a compatibility promise
+      for a major-version window.
+
+3.7 Horizon (research, not committed)
+    Tracing/JIT over Chunk for hot loops; distributed/actor deployment; polyglot
+    FFI; WASM-component-model target. All become cheap BECAUSE everything is on Chunk.
+
+4. LONG-TERM ROADMAP (phased, with exit criteria)
+--------------------------------------------------------------------------------
+PHASE A — Consolidate & de-risk  (0–3 months)  [preserve what works]
+  Goals:   freeze the Chunk IR as the contract; begin crate split behind the
+           existing `spid3r_lang` lib; close known parity/feature gaps; add
+           perf-budget CI; write the stability policy.
+  Exit:    `lower`+Chunk are the only semantic entry point; native gap issues
+           (super/class-in-fn/HOF) either fixed or explicitly scoped & tested;
+           perf regression CI green; bytecode version header shipped.
+  Issues:  ARC-01..04, PAR-01..06, CI-01..03, DOC-01.
+
+PHASE B — Scale the engine  (3–9 months)  [the R1/R2 payoff]
+  Goals:   Native/AOT consumes Chunk (not AST); register/threaded VM experiment;
+           generational GC pilot; async I/O core + TLS; resource metering MVP.
+  Exit:    adding a language feature touches ≤2 crates; native parity ≥95% of
+           examples; a concurrent web server sustains load on async I/O; an
+           untrusted embed script is CPU/memory-bounded.
+  Issues:  ARC-05..08, PERF-01..05, CONC-01..04, SEC-01..03.
+
+PHASE C — Ecosystem & distribution  (6–15 months)
+  Goals:   remote registry + signing + content-addressing; stdlib modularization
+           + versioning; full LSP (incremental, rename, refs, semantic tokens,
+           signature help, code actions); self-hosted package manager; containers.
+  Exit:    `spid3r install <pkg>` from a remote registry with verified signatures;
+           LSP feature-complete; stdlib importable by module path with semver.
+  Issues:  PKG-01..05, STD-01..04, TOOL-01..05, ARC-09.
+
+PHASE D — Production hardening  (12–24 months)
+  Goals:   JIT pilot over Chunk; observability (logging/metrics/trace); fuzzing
+           expansion; multi-platform native CI; security audit of sandbox; docs
+           generated from source; governance/release process.
+  Exit:    a reference web/CMS app runs in production with metrics + safe plugins;
+           full differential + fuzz + perf gates on every PR; published stability
+           & security policy.
+  Issues:  PERF-06, CONC-05, SEC-04..06, CI-04..06, DOC-02..04.
+
+PHASE E — Horizon  (24 months+)
+  Goals:   distributed/actor runtime; WASM-component target; polyglot FFI;
+           self-hosting compiler.
+  Issues:  ARC-10, research track.
+
+5. ISSUE / BACKLOG — THE COMPREHENSIVE FIX LIST
+--------------------------------------------------------------------------------
+Each issue: ID · Area · Sev · Title · Why it matters · Recommended approach ·
+Phase · Effort(S/M/L). Full machine-importable form in ISSUE_BACKLOG.md.
+
+--- ARCHITECTURE / REFACTOR (ARC) ---
+ARC-01  ARC  HIGH  Promote `Chunk` to the canonical portable IR.
+        Why: today native re-implements semantics from the AST (5,159 LOC, R3).
+        How: define Chunk as the contract; make tree/vm/native/wasm all consume it.
+        Phase A · L
+ARC-02  ARC  HIGH  Split monolith into a workspace of crates (§3.2).
+        Why: coupling, slow iteration, embed pulls everything (R1).
+        How: extract frontend/ir/value/vm/codegen*/runtime/stdlib/pkg/lsp/cli;
+             keep `spid3r_lang` re-exported. Phase A · L
+ARC-03  ARC  MED   Move all desugaring OUT of the parser INTO `lower`.
+        Why: parser currently bakes in interpolation/bitwise; engines stay cleaner
+             if parser is purely syntactic (R2). Phase A · M
+ARC-04  ARC  MED   Define and enforce crate public-API boundaries (minimal `pub`).
+        Why: prevents cross-subsystem leakage as the crate splits. Phase A · M
+ARC-05  ARC  HIGH  Make Native/AOT consume `Chunk` (Chunk→LLVM), not the AST.
+        Why: collapses native parity gaps and halves feature cost (R3).
+        How: reuse vm/compiler output; emit LLVM from Chunk. Phase B · L
+ARC-06  ARC  MED   Introduce a formal "Engine Contract" test surface.
+        Why: caps feature cost at ×1 across backends (R2). Phase B · M
+ARC-07  ARC  LOW   Adopt a workspace-wide error type (anyhow-like, dependency-free).
+        Why: `Result<_, String>` everywhere loses context/traces. Phase B · M
+ARC-08  ARC  MED   Decouple `sched` from the global singleton for testability.
+        Why: enables per-tenant pools and embedded multi-tenant hosts. Phase B · M
+ARC-09  ARC  MED   Add a stable C/FFI embedding ABI version header.
+        Why: embedders need forward-compatible native symbols. Phase C · M
+ARC-10  ARC  LOW   Research self-hosting the compiler in Spid3r.
+        Why: ultimate dogfood of the language + IR. Phase E · L
+
+--- PERFORMANCE (PERF) ---
+PERF-01 PERF HIGH  Replace poisoned-mutex GC gate with incremental/generational GC.
+        Why: global quiescence is a throughput ceiling under many tasks (R4).
+        How: young gen + incremental mark; keep stmt-boundary fallback. Phase B · L
+PERF-02 PERF MED   Interning of identifiers/field names (string → u32 symbol).
+        Why: repeated `Arc<str>` clones on every name lookup. Phase B · M
+PERF-03 PERF MED   Register-based or threaded-code VM experiment.
+        Why: ROADMAP notes VM perf is "closed" at ~8M iters/s; next step needs a
+             redesign. Phase B · L
+PERF-04 PERF LOW   Per-call frame allocation reuse / cache-friendly CallFrame.
+        Why: Invoke path adds ~250ns/call (ROADMAP). Phase B · M
+PERF-05 PERF MED   Compile-time constant evaluation (const folding beyond opt).
+        Why: enables static config, faster startup. Phase B · M
+PERF-06 PERF MED   Tracing/JIT pilot over `Chunk` for hot loops.
+        Why: bridges interpreter speed and AOT compile cost. Phase D · L
+
+--- CONCURRENCY / I/O (CONC) ---
+CONC-01 CONC HIGH  Async I/O core + event loop.
+        Why: blocking net is unusable for production web/CMS (R5). Phase B · L
+CONC-02 CONC HIGH  TLS support (rustls-style, feature-gated) for net/http.
+        Why: plaintext-only HTTP cannot serve real traffic (R5). Phase B · M
+CONC-03 CONC MED   Work-stealing scheduler option for fine-grained tasks.
+        Why: OS-thread pool is heavy per task. Phase B · M
+CONC-04 CONC MED   Per-task resource budgets (CPU/instructions/alloc).
+        Why: needed for safe concurrency + metering (R8). Phase B · M
+CONC-05 CONC MED   Structured concurrency (task scopes / cancellation).
+        Why: today exit-drain is best-effort; no cancel. Phase D · M
+
+--- ENGINE PARITY / CORRECTNESS (PAR) ---
+PAR-01  PAR  HIGH  Native: support classes declared inside functions.
+        Why: rejected today; breaks real programs on AOT. Phase A · M
+PAR-02  PAR  HIGH  Native: support higher-order collection callbacks (map/filter…).
+        Why: unsupported in AOT; major feature gap. Phase A · M
+PAR-03  PAR  MED   Native: support `super` (currently rejected).
+        Why: parity gap vs tree/vm. Phase A · S
+PAR-04  PAR  MED   Unify remaining diagnostic phase labels precisely across engines.
+        Why: `error[vm]` vs `error[runtime]` divergence risk. Phase A · S
+PAR-05  PAR  LOW   Add tuple literals `(1,2,3)` (only `tuple(...)` exists).
+        Why: ergonomics; common expectation. Phase A · M
+PAR-06  PAR  LOW   Add `as` cast syntax (int/float/string/bool).
+        Why: ergonomics; today only builtins. Phase A · M
+PAR-07  PAR  MED   Field type annotations enforced on external `obj.field = v`.
+        Why: currently only `self.field` checked. Phase B · M
+PAR-08  PAR  MED   Gradual typing hardening (rebound fn values, nested `fn`).
+        Why: bypassable today (audit V-open). Phase B · M
+PAR-09  PAR  MED   VM: 255-arg / 255-local / 128-capture hard limits → raise or
+        stream. Why: arbitrary caps block large metaprograms. Phase B · M
+PAR-10  PAR  LOW   Interpolation holes beyond `{name}`/`{obj.field}` (e.g.
+        `{len(xs)}`) with a compat story for `{{ }}` template rule. Phase B · M
+
+--- LANGUAGE FEATURES (LANG) ---
+LANG-01 LANG MED   Records/structs as a distinct value kind (not just maps).
+        Why: performance + type clarity for data. Phase B · L
+LANG-02 LANG MED   Generics / parametric types.
+        Why: reusable containers & APIs at scale. Phase C · L
+LANG-03 LANG MED   `async`/`await` language syntax over the async runtime.
+        Why: ergonomic concurrency (today only `spawn`/`task`). Phase B · L
+LANG-04 LANG LOW   Enum methods + associated functions.
+        Why: parity with class capabilities for sum types. Phase C · M
+LANG-05 LANG MED   Operator overloading via traits.
+        Why: numeric/matrix ergonomics. Phase C · M
+LANG-06 LANG MED   Macros / compile-time metaprogramming.
+        Why: reduces boilerplate at language scale. Phase D · L
+LANG-07 LANG LOW   Compile-time reflection / introspection API.
+        Why: serializers, ORMs, test harnesses. Phase D · M
+LANG-08 LANG MED   Module namespaces + `import ... as` + `from` imports.
+        Why: large programs need namespacing; stdlib needs it too (R10). Phase C · M
+LANG-09 LANG LOW   Const blocks / compile-time config.
+        Why: ties to PERF-05. Phase B · S
+
+--- STANDARD LIBRARY (STD) ---
+STD-01  STD  MED   Split `stdlib/mod.rs`; namespace stdlib (`std/net`, `std/json`).
+        Why: monolith + no import paths (R10). Phase C · M
+STD-02  STD  MED   Stdlib versioning / semver-compatible updates.
+        Why: ecosystem stability. Phase C · M
+STD-03  STD  LOW   Expand containers per demand (e.g. rope, persistent map).
+        Why: scale-data workloads. Phase C · S
+STD-04  STD  MED   Timezone/IO/encoding (UTF-8 streams, gzip) libraries.
+        Why: real apps need them. Phase C · M
+STD-05  STD  LOW   Math/linear-algebra stdlib module (build on `vector`/`matrix`).
+        Why: scientific/CMS workloads. Phase C · M
+
+--- PACKAGING / REGISTRY (PKG) ---
+PKG-01  PKG  HIGH  Remote (HTTP) package registry protocol + client.
+        Why: local-only registry blocks ecosystem (R6). Phase C · L
+PKG-02  PKG  HIGH  Package signing (Ed25519) + verification on install.
+        Why: supply-chain trust. Phase C · M
+PKG-03  PKG  MED   Content-addressed storage for packages.
+        Why: integrity + dedupe. Phase C · M
+PKG-04  PKG  MED   Transitive dependency resolution for registry packages.
+        Why: today deps are not resolved transitively. Phase C · M
+PKG-05  PKG  MED   `dist` produces self-contained multi-arch native artifacts.
+        Why: deployment. Phase C · M
+PKG-06  PKG  LOW   System-package distribution (deb/rpm/brew).
+        Why: reach. Phase D · M
+
+--- TOOLING / LSP (TOOL) ---
+TOOL-01 TOOL HIGH  Incremental LSP analysis (no full re-parse per keystroke).
+        Why: full-sync won't scale to large files (R7). Phase C · L
+TOOL-02 TOOL MED   LSP: rename + find-references.
+        Why: table-stakes editor features. Phase C · M
+TOOL-03 TOOL MED   LSP: semantic tokens + signature help.
+        Why: editor UX parity. Phase C · M
+TOOL-04 TOOL MED   LSP: code actions + quick-fixes (e.g. `?` insertion).
+        Why: productivity. Phase C · M
+TOOL-05 TOOL LOW   LSP: workspace symbols + multi-file index.
+        Why: cross-module nav. Phase C · M
+TOOL-06 TOOL MED   Profiler / flamegraph for tree & VM.
+        Why: perf work needs measurement. Phase B · M
+TOOL-07 TOOL LOW   Coverage tooling for the differential suite.
+        Why: confidence in parity. Phase B · S
+TOOL-08 TOOL MED   Debugger: conditional breakpoints + watch + REPL-in-frame.
+        Why: production debugging. Phase D · M
+
+--- SECURITY / SANDBOX (SEC) ---
+SEC-01  SEC  HIGH  Resource metering for embed API (CPU/instructions/alloc).
+        Why: untrusted scripts can DoS the host (R8). Phase B · L
+SEC-02  SEC  MED   Capability/sandbox descriptor: deny-by-default natives.
+        Why: safe plugin model. Phase B · M
+SEC-03  SEC  MED   Replace pervasive `.lock().unwrap()` with non-poisoning locks
+        or guarded unwrap; ensure lock release on panic (audit N2 pattern).
+        Why: a poisoned/panicked mutex can wedge a host (R9). Phase B · M
+SEC-04  SEC  MED   Bytecode signing / verification for distributed `.matrixc`.
+        Why: trust for cached/remote artifacts. Phase D · M
+SEC-05  SEC  MED   Hardening pass on the async + TLS stack (audit before launch).
+        Why: new attack surface. Phase D · M
+SEC-06  SEC  LOW   SBOM + dependency/feature attestation in releases.
+        Why: supply-chain transparency. Phase D · S
+
+--- CI / QUALITY (CI) ---
+CI-01   CI   MED   Perf-budget CI (benchmarks with regression thresholds).
+        Why: perf is gated manually today (R11). Phase A · M
+CI-02   CI   MED   Expand differential matrix to native + wasm engines.
+        Why: parity must be gated, not sampled. Phase A · M
+CI-03   CI   LOW   Pin/report the canonical test counts in CI summary.
+        Why: already have count_tests.sh; surface it. Phase A · S
+CI-04   CI   MED   Multi-platform native CI (Linux/mac/Windows LLVM builds).
+        Why: native only tested on a subset. Phase D · M
+CI-05   CI   MED   Broaden fuzzing (semantic, optimizer, registry, net framing).
+        Why: more surfaces → more found early. Phase D · M
+CI-06   CI   LOW   Nightly "engine contract" job across all backends.
+        Why: catch drift before release. Phase D · S
+
+--- DOCUMENTATION / DISTRIBUTION (DOC) ---
+DOC-01  DOC  MED   Bytecode / `.matrixc` stability & compatibility policy.
+        Why: deployment language needs a promise (R12). Phase A · M
+DOC-02  DOC  MED   Generate reference docs from source annotations.
+        Why: doc.html is 173KB hand-maintained. Phase D · M
+DOC-03  DOC  LOW   Published stability & security policy pages.
+        Why: production adoption needs it. Phase D · S
+DOC-04  DOC  LOW   Architecture decision records (ADRs) for the IR/crate split.
+        Why: future engineers need the "why". Phase A · S
+
+6. RISK REGISTER
+--------------------------------------------------------------------------------
+ID     Risk                                  Likelihood  Impact  Mitigation
+R-NAT  Native parity gap widens              High        High    ARC-05/ PAR-01..03
+R-PERF GC quiescence stalls under load       Med         High    PERF-01
+R-IO   Web framework unusable in prod        High        High    CONC-01/02
+R-CRATE Split regresses build/embed          Med         Med     ARC-02 incremental
+R-SEC  Untrusted embed script DoS/hang       Med         High    SEC-01/02/03
+R-ECOS No registry → no ecosystem            High        Med     PKG-01..04
+R-TEST  Perf/parity drift undetected         Med         Med     CI-01/02/06
+R-DOC  No stability promise → no adoption    Med         Med     DOC-01
+
+7. RECOMMENDED IMMEDIATE NEXT STEPS (quick wins)
+--------------------------------------------------------------------------------
+1. Ship DOC-01 (bytecode stability policy) + ARC-04 (API boundaries) — low risk,
+   high clarity, unblocks everything else. (Phase A, ~days)
+2. Close native parity gaps PAR-01/02/03 (class-in-fn, HOF callbacks, super) —
+   these are the most-visible "AOT is second-class" complaints. (Phase A)
+3. Stand up CI-01 (perf-budget CI) and CI-02 (native+wasm differential) — gate
+   quality before the refactor expands the surface. (Phase A)
+4. Land ARC-03 (desugaring moves to `lower`) behind the existing fast-path so
+   parsers stay syntactic. (Phase A)
+5. Write the Engine Contract doc (ARC-06) so ARC-05 (native-on-Chunk) has a
+   measurable acceptance bar. (Phase A→B)
+Then begin ARC-02/ARC-05 (the big, high-payoff refactor) in Phase B with the
+contract + CI already in place.
+
+8. APPENDIX A — PROPOSED ENGINE CONTRACT (acceptance surface)
+--------------------------------------------------------------------------------
+For a given SourceProgram P, after `lower`, produce Chunk C. Every backend B
+(tree-oracle, vm, llvm-aot, wasm) MUST satisfy, for the agreed observable set:
+  - stdout byte-for-byte identical
+  - stderr: identical Phase + message (normalized)
+  - exit code identical
+  - side effects on granted capabilities identical (files, net within sandbox)
+  - resource accounting within backend-declared tolerances
+New language feature ⇒ implemented once in (lower + Chunk compiler + value);
+every backend MUST then pass the contract for the new construct (CI-02/06 gate).
+
+9. APPENDIX B — PROPOSED CRATE LAYOUT (workspace root Cargo.toml)
+--------------------------------------------------------------------------------
+[workspace]
+members = [
+  "crates/frontend", "crates/ir", "crates/value", "crates/vm",
+  "crates/codegen-llvm", "crates/codegen-wasm", "crates/runtime",
+  "crates/stdlib", "crates/pkg", "crates/lsp", "crates/cli"
+]
+# `spid3r_lang` lib continues to re-export the public API for embedders.
+# core (frontend+ir+value+vm+runtime+stdlib) stays zero-dependency;
+# codegen-llvm/codegen-wasm/lsp opt into deps behind features.
+
+10. APPENDIX C — CREATING THE GITHUB ISSUES
+--------------------------------------------------------------------------------
+This report's §5 backlog is also provided as ISSUE_BACKLOG.md, which contains a
+ready-to-run `tools/create_issues.sh` (using the `gh` CLI). After authenticating
+(`gh auth login`), run it from the repo root to create all issues with titles,
+bodies, and labels. Until then, §5 is the canonical, human-readable list.
+
+================================================================================
+ END OF ARCHITECT REPORT — see ISSUE_BACKLOG.md for the importable issue set.
+================================================================================

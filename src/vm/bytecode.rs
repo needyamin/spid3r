@@ -1125,10 +1125,14 @@ pub fn deserialize_vmfunc(b: &[u8]) -> SpidResult<VmFunc> {
 /// instruction boundary — all with a clean `Diagnostic` rather than a panic or
 /// undefined behaviour.
 pub fn validate_chunk(chunk: &Chunk) -> SpidResult<()> {
-    validate_chunk_inner(chunk, "<script>")
+    validate_chunk_inner(chunk, 0, "<script>")
 }
 
-fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
+/// `upvalues` is the number of upvalue cells the owning prototype declares:
+/// `GetUpvalue`/`SetUpvalue` operands are indices into that list, so a
+/// crafted artifact could otherwise read a cell that does not exist (the VM
+/// yields `null` silently — a value the compiler never intended).
+fn validate_chunk_inner(chunk: &Chunk, upvalues: usize, where_: &str) -> SpidResult<()> {
     let code = &chunk.code;
     let len = code.len();
     if len == 0 {
@@ -1227,6 +1231,60 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
             | OpCode::Import => {
                 let idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
                 check_pool("constant", chunk.constants.len(), idx, where_)?;
+                // Every one of these except `Constant` consumes the entry as
+                // a *name*. The VM rejects a wrong kind at run time; rejecting
+                // it here means a cached artifact is never executed at all
+                // (defense in depth: type tags are checked before the code
+                // runs, not while it runs).
+                if op != OpCode::Constant
+                    && !matches!(chunk.constants.get(idx), Some(Value::Str(_)))
+                {
+                    return Err(err(
+                        Phase::Vm,
+                        format!(
+                            "{:?} name operand at index {} is not a string in {}",
+                            op, idx, where_
+                        ),
+                    ));
+                }
+            }
+            OpCode::GetUpvalue | OpCode::SetUpvalue => {
+                let slot = code[ip + 1] as usize;
+                if slot >= upvalues {
+                    return Err(err(
+                        Phase::Vm,
+                        format!(
+                            "{:?} upvalue index {} is out of range (the prototype declares {}) in {}",
+                            op, slot, upvalues, where_
+                        ),
+                    ));
+                }
+            }
+            OpCode::SuperCtor | OpCode::SuperMethod => {
+                let pidx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
+                check_pool("constant", chunk.constants.len(), pidx, where_)?;
+                if !matches!(chunk.constants.get(pidx), Some(Value::Str(_))) {
+                    return Err(err(
+                        Phase::Vm,
+                        format!(
+                            "{:?} parent-class operand at index {} is not a string in {}",
+                            op, pidx, where_
+                        ),
+                    ));
+                }
+                if op == OpCode::SuperMethod {
+                    let midx = u16::from_le_bytes([code[ip + 3], code[ip + 4]]) as usize;
+                    check_pool("constant", chunk.constants.len(), midx, where_)?;
+                    if !matches!(chunk.constants.get(midx), Some(Value::Str(_))) {
+                        return Err(err(
+                            Phase::Vm,
+                            format!(
+                                "SuperMethod name operand at index {} is not a string in {}",
+                                midx, where_
+                            ),
+                        ));
+                    }
+                }
             }
             OpCode::ImportAs => {
                 let p_idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
@@ -1338,7 +1396,7 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
     }
 
     for f in &chunk.functions {
-        validate_chunk_inner(&f.chunk, "<fn>")?;
+        validate_chunk_inner(&f.chunk, f.upvalues.len(), "<fn>")?;
     }
     for c in &chunk.classes {
         for (_m, _v, fidx, _c) in &c.methods {
@@ -1352,11 +1410,12 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
                     ),
                 ));
             }
-            validate_chunk_inner(&chunk.functions[idx].chunk, "<method>")?;
+            let proto = &chunk.functions[idx];
+            validate_chunk_inner(&proto.chunk, proto.upvalues.len(), "<method>")?;
         }
     }
     for m in &chunk.modules {
-        validate_chunk_inner(&m.func.chunk, &m.key)?;
+        validate_chunk_inner(&m.func.chunk, m.func.upvalues.len(), &m.key)?;
     }
     Ok(())
 }
@@ -1452,6 +1511,81 @@ mod tests {
         c.code.push(0);
         c.code.push(0x12);
         assert!(validate_chunk(&c).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_non_string_name_operand() {
+        // A crafted artifact: `GetGlobal` whose "name" is a float constant.
+        // The VM would reject it at run time; the loader must reject it
+        // before any instruction executes (type tags at the cache boundary).
+        let mut c = Chunk::new();
+        c.constants.push(Value::Float(1.5));
+        c.emit_u16(OpCode::GetGlobal, 0);
+        c.emit(OpCode::Return);
+        let e = validate_chunk(&c).expect_err("non-string global name must be rejected");
+        assert!(
+            e.message.contains("not a string"),
+            "unexpected diagnostic: {}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn validate_rejects_non_string_field_name() {
+        let mut c = Chunk::new();
+        c.constants.push(Value::Int(7));
+        c.emit(OpCode::Null);
+        c.emit_u16(OpCode::FieldGet, 0);
+        c.emit(OpCode::Return);
+        assert!(validate_chunk(&c).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_upvalue_index() {
+        // The top-level prototype declares no upvalues, so index 0 is already
+        // out of range: the VM would silently read `null` for a cell that
+        // does not exist.
+        let mut c = Chunk::new();
+        c.emit(OpCode::GetUpvalue);
+        c.code.push(0);
+        c.emit(OpCode::Return);
+        let e = validate_chunk(&c).expect_err("out-of-range upvalue must be rejected");
+        assert!(
+            e.message.contains("upvalue index"),
+            "unexpected diagnostic: {}",
+            e.message
+        );
+    }
+
+    #[test]
+    fn validate_rejects_non_string_super_operands() {
+        let mut c = Chunk::new();
+        c.constants.push(Value::Int(1)); // parent class "name"
+        c.emit_u16(OpCode::SuperCtor, 0);
+        c.code.push(0); // argc
+        c.emit(OpCode::Return);
+        assert!(validate_chunk(&c).is_err());
+
+        let mut c = Chunk::new();
+        c.constants.push(Value::Str("Base".into()));
+        c.constants.push(Value::Float(2.0)); // method "name"
+        c.emit_u16(OpCode::SuperMethod, 0);
+        c.code.extend_from_slice(&1u16.to_le_bytes());
+        c.code.push(0);
+        c.emit(OpCode::Return);
+        assert!(validate_chunk(&c).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_super_with_string_operands() {
+        let mut c = Chunk::new();
+        c.constants.push(Value::Str("Base".into()));
+        c.constants.push(Value::Str("speak".into()));
+        c.emit_u16(OpCode::SuperMethod, 0);
+        c.code.extend_from_slice(&1u16.to_le_bytes());
+        c.code.push(0);
+        c.emit(OpCode::Return);
+        assert!(validate_chunk(&c).is_ok());
     }
 
     #[test]
