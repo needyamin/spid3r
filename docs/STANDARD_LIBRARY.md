@@ -75,6 +75,9 @@ rather than an infinity or a panic.
 |---|---|
 | `sha256(s)` | SHA-256 (FIPS 180-4) of the UTF-8 bytes of `s`, lowercase hex — the same implementation the package layer uses to verify dependencies. |
 | `hmac_sha256(key, msg)` | RFC 2104 HMAC-SHA256 of `msg` under `key`, lowercase hex, over the standard 64-byte block. |
+| `pbkdf2_sha256(password, salt, iterations)` | PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte key as lowercase hex. `salt` is a string or bytes; `iterations` clamped to 1..=10_000_000. The primitive for password storage: store `(salt, iterations, hash)`. |
+| `base64_encode(data)` / `base64_decode(text)` | RFC 4648 standard alphabet (+/, padded). `data` is a string or bytes; `decode` returns bytes. |
+| `base64_url_encode(data)` / `base64_url_decode(text)` | URL-safe alphabet (-_, unpadded) — the JWT form. |
 
 ## Conversions
 
@@ -107,9 +110,14 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 | `tcp_local_addr(handle)` | Bound local address string (`ok("127.0.0.1:port")`). |
 | `tcp_peer_addr(conn_id)` | Peer remote address string (`ok("ip:port")`). |
 | `tcp_set_timeout(conn_id, ms)` | Set socket read/write timeout in milliseconds (`0` disables). |
+| `udp_bind(addr)` | Bind a UDP socket (`port 0` = ephemeral); returns `ok(handle)`. |
+| `udp_local_addr(handle)` | Local address string (`ok("ip:port")`). |
+| `udp_send_to(handle, addr, text)` | Send one datagram (UTF-8 bytes of `text`); `ok(bytes_written)`. |
+| `udp_recv_from(handle, max)` | Block for one datagram; `ok([text, "sender-ip:port"])`. Invalid UTF-8 → U+FFFD. |
+| `udp_close(handle)` | Close the socket; `true` if it was open. |
 | `http_read_request(conn_id)` | Read and parse an HTTP 1.1 request (`ok(req)` map with method, path, query, headers, body). |
 | `http_write_response(conn_id, status, headers, body)` | Send an HTTP 1.1 response (`ok(bytes_sent)`). |
-| `http_fetch(method, url, headers?, body?)` | High-level HTTP client request (`ok(res)` map with status, headers, body). |
+| `http_fetch(method, url, headers?, body?)` | High-level HTTP client request (`ok(res)` map with status, headers, body). `https://` requires the `tls` feature (`--features tls`; native-tls → OS certificate store); without it an `err` result explains the rebuild. |
 | `url_decode(s)` | Decode percent-encoded string (with form `+` as space). |
 | `url_encode(s)` | Percent-encode string adhering to RFC 3986. |
 

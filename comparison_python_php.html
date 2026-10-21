@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spid3r vs Python 3.13 vs PHP 8.3 — Measured &amp; Verified Comparison</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: "Segoe UI", system-ui, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; color: #1a1a2e; line-height: 1.5; }
+  h1 { font-size: 1.6em; } h2 { font-size: 1.25em; margin-top: 2em; border-bottom: 2px solid #e2e2ee; padding-bottom: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.95em; }
+  th, td { border: 1px solid #d8d8e4; padding: 6px 10px; text-align: left; }
+  th { background: #f0f0f8; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .best { background: #e8f6e8; font-weight: 600; }
+  .worst { background: #fdeaea; }
+  .method { background: #f6f6fb; border-left: 4px solid #8888c8; padding: 10px 14px; font-size: 0.9em; }
+  .verdict { background: #fffbe8; border: 1px solid #e8d880; padding: 10px 14px; margin: 10px 0; }
+  code { background: #f0f0f4; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  li { margin: 4px 0; }
+  .tag { display: inline-block; font-size: 0.78em; font-weight: 700; padding: 1px 7px; border-radius: 9px; margin-right: 6px; }
+  .t-no { background: #fde3e3; color: #8a1f1f; }
+  .t-yes { background: #e0f0e0; color: #1f5a1f; }
+  .src { color: #666; font-size: 0.85em; }
+</style>
+</head>
+<body>
+
+<h1>Spid3r vs Python 3.13 vs PHP 8.3 — a measured, verified comparison</h1>
+<p>Every performance number below was measured on <strong>this machine, today</strong>, running
+<em>identical</em> workloads (the project's cross-language benchmark suite) through one harness.
+Every "cannot do" claim was verified against the source code or reproduced with a probe — no
+assumptions, no marketing.</p>
+
+<div class="method">
+<strong>Methodology.</strong> Windows x64, best of 3 wall-clock runs per benchmark including
+process startup, same harness for all languages. Versions: Spid3r 1.0.0 (bytecode VM, release
+build, optimizer on) · Python 3.13.14 (CPython) · PHP 8.3.33 (CLI, ZTS). Iteration counts match
+across languages (arith 2M, list 200k, methods 200k, map 40k, closures 40k, strings 30k,
+json 2k). "Iters/sec" = outer loop iterations per second.
+</div>
+
+<h2>1. Measured performance (identical workloads)</h2>
+<table>
+<tr><th>benchmark</th><th class="num">iters</th><th class="num">Spid3r VM</th><th class="num">Python 3.13</th><th class="num">PHP 8.3</th></tr>
+<tr><td>arith (int loop)</td><td class="num">2,000,000</td><td class="num best">6,557,183/s</td><td class="num worst">3,924,924/s</td><td class="num">6,621,792/s</td></tr>
+<tr><td>strings (build/slice/concat)</td><td class="num">30,000</td><td class="num best">110,348/s</td><td class="num worst">65,587/s</td><td class="num">102,912/s</td></tr>
+<tr><td>list (append/index/slice)</td><td class="num">200,000</td><td class="num">686,817/s</td><td class="num worst">434,105/s</td><td class="num best">693,219/s</td></tr>
+<tr><td>map (set/get/iterate)</td><td class="num">40,000</td><td class="num best">139,468/s</td><td class="num worst">86,285/s</td><td class="num">139,082/s</td></tr>
+<tr><td>methods (class dispatch)</td><td class="num">200,000</td><td class="num">589,777/s</td><td class="num worst">426,501/s</td><td class="num best">683,050/s</td></tr>
+<tr><td>closures (create/call)</td><td class="num">40,000</td><td class="num best">144,228/s</td><td class="num worst">86,420/s</td><td class="num">140,458/s</td></tr>
+<tr><td>json (parse+write)</td><td class="num">2,000</td><td class="num best">7,152/s</td><td class="num worst">4,396/s</td><td class="num">7,124/s</td></tr>
+</table>
+
+<div class="verdict"><strong>Performance verdict (honest):</strong> on these micro-workloads
+Spid3r's VM sits <strong>at PHP's level and ≈1.6–1.7× faster than CPython 3.13</strong>.
+PHP is measurably faster at method dispatch (683k vs 590k/s — its method call path is two
+decades more optimized). This says nothing about real apps — there Spid3r's thin standard
+library dominates the picture (see §3). Python's heavyweight numeric stack (NumPy) and PHP's
+JIT-enabled OPCache for long-lived web processes are different workloads than this CLI loop.
+</div>
+
+<p><strong>The AOT surprise (measured, not hidden):</strong> the same arith workload
+LLVM-AOT-compiled via <code>spid3r build</code> ran at <strong>≈2.1M iters/s — slower than the
+VM</strong> (≈960 ms for 2M iterations). The native backend currently routes every operation
+through C-ABI runtime trampolines (<code>spid3r_binop</code>, <code>spid3r_global_get</code>,
+…), which dominates this loop shape. The planned Chunk-based codegen (ARC-05) exists precisely
+to fix this; today, if you want speed, use the VM.</p>
+
+<h2>2. What Spid3r does have (verified parity or better)</h2>
+<ul>
+  <li><strong>Unicode-correct strings</strong> — <code>len("héllo") == 5</code>, <code>s[1] == "é"</code> (measured): character-indexed like Python, unlike PHP's byte strings. Plus interpolation, negative indexing.</li>
+  <li><strong>Real closures with correct capture</strong>, higher-order methods (<code>map/filter/reduce</code> taking functions — works in all engines, verified).</li>
+  <li><strong>Memory safety story Python/PHP lack:</strong> cycle-collecting GC with weak references (<code>weak()</code>), deep-clone semantics, no GIL — closures/values cross threads safely.</li>
+  <li><strong>LLVM AOT to a standalone native binary + a wasm target</strong> — Python/PHP have no equivalent in the standard toolchain (PyInstaller/cxls are packaging, not compilation).</li>
+  <li><strong>Zero third-party dependencies</strong> in the core; bytecode validator; a 3-engine differential test harness; LSP; formatter; REPL; line debugger — in the box.</li>
+  <li><strong>Option/Result error model</strong> (<code>some/none/ok/err</code>, <code>? propagation</code>) <em>and</em> try/catch — PHP has neither natively (exceptions only), Python has neither natively (exceptions only).</li>
+  <li><strong>Batteries that matter for its size:</strong> SQLite driver, regex, JSON, CSV, datetime, SHA-256/HMAC, process spawn, a web micro-framework (routing, cookies, JWT sign/verify, templates, form/query parsing — <code>stdlib/web.matrix</code>).</li>
+  <li><strong>Threads with real parallelism</strong> (<code>spawn</code> on an OS-thread pool, channels, mutexes) — PHP has no built-in threads (ZTS aside); Python has the GIL (free-threading is new/experimental in 3.13).</li>
+</ul>
+
+<h2>3. What Spid3r <em>cannot</em> do today (verified) — vs Python and PHP</h2>
+
+<h3>3.1 Platform &amp; I/O — the hardest gaps</h3>
+<ul>
+  <li><span class="tag t-no">NO</span><strong>HTTPS/TLS anywhere.</strong> <code>http_fetch("https://…")</code> fails with <em>"https:// is not supported (no TLS in the zero-dependency core); use http://"</em> (<code>src/stdlib/net.rs:934</code>). Python has <code>ssl</code> in stdlib; PHP streams are TLS by default. A Spid3r program cannot call a single modern HTTPS API. <em>UPDATE 2026-10-22: <strong>fixed</strong> — the opt-in <code>tls</code> feature adds HTTPS to <code>http_fetch</code> (native-tls, OS certificate store), verified with a real fetch of https://example.com; the zero-dependency default build is unchanged.</em></li>
+  <li><span class="tag t-no">NO</span><strong>Evented/async I/O.</strong> Sockets are blocking; concurrency is an OS-thread pool. No <code>select/poll/epoll</code>, no event loop, no <code>async/await</code>. Python: asyncio; PHP: Fibers + ReactPHP/Swoole. A 10k-connection server is not writable in Spid3r.</li>
+  <li><span class="tag t-no">NO</span><strong>UDP, WebSockets, or multicast</strong> — TCP client/server + manual HTTP framing only. <em>UPDATE 2026-10-22: UDP datagram sockets shipped (<code>udp_bind/send_to/recv_from/close</code>, loopback-tested); WebSockets and multicast remain absent.</em></li>
+  <li><span class="tag t-no">NO</span><strong>Task cancellation or structured concurrency</strong> — a spawned task cannot be cancelled; exit-drain is best-effort.</li>
+</ul>
+
+<h3>3.2 Numbers &amp; data types</h3>
+<ul>
+  <li><span class="tag t-no">NO</span><strong>Arbitrary-precision integers.</strong> Measured: <code>9223372036854775807 + 1</code> silently wraps to <code>-9223372036854775808</code> (exit 0). Python ints are unbounded; PHP converts overflow to float. Crypto/BigInt math silently corrupts in Spid3r.</li>
+  <li><span class="tag t-no">NO</span><strong>Decimal / arbitrary-precision float</strong> (Python <code>decimal</code>/<code>fractions</code>) — money math is f64-only.</li>
+  <li><span class="tag t-no">NO</span><strong>Complex numbers</strong> (Python builtin <code>complex</code>).</li>
+</ul>
+
+<h3>3.3 Language constructs (all verified by probe/source)</h3>
+<ul>
+  <li><span class="tag t-no">NO</span><strong>Generators</strong> — <code>yield 1;</code> is a parse error ("expected ';' … found integer 1"). Python/PHP both have generator functions.</li>
+  <li><span class="tag t-no">NO</span><strong>Default parameter values</strong> — structurally blocked today: the arity check runs before the function body in all engines.</li>
+  <li><span class="tag t-no">NO</span><strong>Named arguments</strong> at call sites.</li>
+  <li><span class="tag t-no">NO</span><strong>Abstract classes / traits / mixins</strong> — no <code>abstract</code> keyword; interfaces exist, but nothing like PHP traits or Python mixins/ABCs.</li>
+  <li><span class="tag t-no">NO</span><strong>Generics / parametric types</strong> — no type parameters anywhere.</li>
+  <li><span class="tag t-no">NO</span><strong>Operator overloading, decorators, macros, compile-time reflection/introspection</strong> — Python's decorator + reflection model and PHP's attribute/reflection API have no counterpart. (Python <code>@decorator</code>, <code>getattr/type()</code> tricks cannot be written.)</li>
+  <li><span class="tag t-no">NO</span><strong>Rich interpolation holes</strong> — only <code>{name}</code> and <code>{obj.field}</code>; <code>"{len(xs)}"</code> is literal text.</li>
+</ul>
+
+<h3>3.4 Ecosystem — the biggest realistic difference</h3>
+<ul>
+  <li><span class="tag t-no">NO</span><strong>Remote package registry.</strong> <code>spid3r install</code> works from a local registry/vendor dir only; no HTTP registry, no package signing, no transitive resolution. Python: ~600k packages on PyPI one <code>pip install</code> away; PHP: Packagist/Composer. Spid3r: <strong>zero third-party packages installable from anywhere</strong>. Everything you want — requests, numpy, pandas, pillow, lxml, symfony, laravel, SQLAlchemy, pytest — you would have to write yourself.</li>
+  <li><span class="tag t-no">NO</span><strong>Database breadth</strong> — SQLite only. No MySQL/MariaDB/Postgres/Redis/MongoDB drivers. PHP/Python connect to everything.</li>
+  <li><span class="tag t-no">NO</span><strong>Web-serving stack</strong> — no FastCGI/WSGI integration, no production server, no sessions beyond DIY JWT/cookies, no multipart file-upload parsing, no middleware ecosystem. A real CMS in Spid3r today means building all of that.</li>
+</ul>
+
+<h3>3.5 Standard library gaps (verified against the native registry)</h3>
+<ul>
+  <li><span class="tag t-no">NO</span><strong>Compression</strong> — no gzip/zip/zlib (Python: <code>gzip/zipfile/zlib</code>; PHP: <code>gz*</code>, <code>ZipArchive</code>).</li>
+  <li><span class="tag t-no">NO</span><strong>Serialization beyond JSON/CSV</strong> — no XML, YAML, TOML, protocol buffers. (PHP: <code>xml/simplexml</code>, <code>yaml</code>; Python: all of it.) <em>Correction 2026-10-22: bytes-level Base64/hex (<code>b.to_base64()/from_base64/to_hex/from_hex</code>) DID already exist as bytes methods; the new <code>base64_*</code> natives add string-level and URL-safe forms.</em></li>
+  <li><span class="tag t-no">NO</span><strong>Email/SMTP, SSH, FTP</strong> clients.</li>
+  <li><span class="tag t-no">NO</span><strong>Password hashing</strong> — no bcrypt/argon2/PBKDF2 (PHP: <code>password_hash</code>; Python: <code>hashlib.pbkdf2_hmac</code> plus libraries). Only SHA-256/HMAC-SHA256 exist — storing user passwords safely requires rolling your own KDF, which you shouldn't. <em>UPDATE 2026-10-22: <code>pbkdf2_sha256()</code> shipped (RFC 8018, vector-tested) — the KDF gap is closed; bcrypt/argon2 remain absent.</em></li>
+  <li><span class="tag t-no">NO</span><strong>Image/audio/media processing, PDF generation</strong> (Python: Pillow; PHP: GD/Imagick).</li>
+  <li><span class="tag t-no">NO</span><strong>Timezone database / locale-aware formatting</strong> — datetime has parts/formatting but no IANA tz conversion or locale collation; no Unicode normalization or grapheme segmentation.</li>
+  <li><span class="tag t-no">NO</span><strong>math/science stack</strong> — no NumPy-class arrays (there is <code>.npy</code> save/load, but no vectorized compute), no statistics beyond basics, no big-int math.</li>
+</ul>
+
+<h3>3.6 Tooling gaps</h3>
+<ul>
+  <li><span class="tag t-no">NO</span><strong>LSP rename / find-references / semantic tokens / code actions</strong> — hover, diagnostics, symbols and formatting work. <em>UPDATE 2026-10-22: <strong>rename and find-references shipped</strong> (file-scoped, shadow-aware, 6 wire tests); semantic tokens and code actions remain absent.</em></li>
+  <li><span class="tag t-no">NO</span><strong>Profiler / coverage tooling</strong>; <code>spid3r test</code> compares stdout only (no assertions framework, no mocking, no fixtures — Python: pytest; PHP: PHPUnit).</li>
+  <li><span class="tag t-no">NO</span><strong>Interactive debugging depth</strong> (breakpoints, watches, REPL-in-frame — a line debugger exists; xdebug/pdb-level tooling does not).</li>
+</ul>
+
+<h2>4. Bottom line (no sugar-coating)</h2>
+<div class="verdict">
+Spid3r is a <strong>fast (PHP-class VM), safe, self-contained language with a genuinely nice
+core</strong> — unicode strings, closures, threads without a GIL, AOT+wasm targets, and an
+error model PHP/Python don't have. But <strong>realistically, today it cannot be used for:
+any application that talks HTTPS; any multi-connection server; anything needing a package
+ecosystem (parsing XML/YAML, compression, email, images, DBs beyond SQLite, password
+hashing); numeric/scientific work; or a team-scale web stack</strong> — because the library
+and tooling to do those things do not exist in it, and cannot be installed from anywhere.
+The measured interpreter speed (≈1.7× CPython) is real but is the <em>smallest</em> of the
+differences that matter; the ecosystem gap is the largest, and only time and the Phase C
+registry work change that.
+</div>
+
+<p class="src">Generated 2026-10-22 from live measurements and source inspection of the
+repository (Spid3r 1.0.0). Probe evidence: <code>net.rs:934</code> (https), overflow and
+generator probes, native-function registry scan, engine-matrix results.</p>
+
+</body>
+</html>

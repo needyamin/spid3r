@@ -123,7 +123,7 @@ fn main() {
 
 ### First-Party Standard Modules (`stdlib/`)
 - **`stdlib/web.matrix`**: Full web framework with routing, cookies, templates, and JWT.
-- **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort, group_by, joins).
+- **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort_by, group_by, inner_join).
 - **`stdlib/stats.matrix`** & **`stdlib/ml.matrix`**: Regression, classification, clustering, PCA, and distributions.
 
 ---
@@ -144,7 +144,7 @@ cargo build
 
 ### Testing
 ```bash
-# Run all core unit and integration tests (685 tests; GUI 10 + AOT 6 more).
+# Run all core unit and integration tests (696 total: 680 core + 10 GUI + 6 AOT).
 # Canonical counts: bash tools/count_tests.sh
 cargo test --no-default-features
 

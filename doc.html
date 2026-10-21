@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Spid3r | Developer Documentation</title>
   <meta name="description"
-    content="Spid3r developer documentation: language reference, standard library, data structures, toolchain, package manager, and engine internals for a dynamically typed language with a tree-walk interpreter and a bytecode VM, written in Rust.">
+    content="Spid3r developer documentation: language reference, standard library, data structures, toolchain, package manager, and engine internals for a dynamically typed language with a tree-walk interpreter and a bytecode VM.">
   <meta name="color-scheme" content="light dark">
   <script>
     (function () {
@@ -797,7 +797,6 @@
       </ol>
       <div class="group">Internals</div>
       <ol>
-        <li><a href="#embedding">Embedding from Rust</a></li>
         <li><a href="#arch">Architecture</a></li>
         <li><a href="#vm">Bytecode VM &amp; .matrixc</a></li>
         <li><a href="#testing">Testing &amp; QA</a></li>
@@ -820,8 +819,8 @@
 
       <header class="hero">
         <h1>Spid3r</h1>
-        <p>A small, dynamically typed programming language with optional static types, written in
-          Rust. Programs run on a tree-walking reference interpreter <em>or</em> a
+        <p>A small, dynamically typed programming language with optional static types.
+          Programs run on a tree-walking reference interpreter <em>or</em> a
           bytecode compiler + stack VM, and both engines are differentially tested to agree.</p>
         <div class="badges">
           <span class="badge">two engines: tree-walk &amp; VM</span>
@@ -852,7 +851,8 @@
           types, closures with upvalues, single-inheritance classes with interfaces, structured error
           handling, modules with visibility, task-based concurrency, a standard library, and a suite of
           20+ built-in data structures. The language core has <strong>no third-party
-            dependencies</strong>; the webview GUI and the LLVM backend are Cargo features, both on by default.
+            dependencies</strong>; the webview GUI and the LLVM native backend are included in the standard
+          installer.
         </p>
         <div class="grid3">
           <div class="card"><span class="t">Two engines, one front end</span>The lexer, parser, and semantic checker are
@@ -871,57 +871,54 @@
         </div>
 
         <h2 id="install">Installation</h2>
-        <p>Spid3r builds from source with Rust <strong>1.99.1</strong>, pinned in
-          <code>rust-toolchain.toml</code> (rustup installs it automatically on the first <code>cargo</code>
-          command in the repository), and, for the default build, LLVM 18.1+. The pin exists because CI lints
-          with <code>-D warnings</code>: a new stable that deprecates an API would otherwise turn the whole
-          matrix red. From the repository root:</p>
-        <pre data-lang="sh"><code>cargo build                 # debug binary     -> target/debug/spid3r(.exe)
-cargo build --release       # optimized binary -> target/release/spid3r(.exe)
-cargo test                  # unit, integration, and differential tests</code></pre>
+        <p>Spid3r ships prebuilt — there is nothing to compile and no dependencies to install first.
+          On Windows, run <code>Spid3r-Setup-1.0.0.exe</code>; on Linux and macOS, run the one-line
+          installer. Both give you the <code>spid3r</code> command-line tool: the tree-walk interpreter,
+          the bytecode VM, the package manager, the formatter, the REPL, the debugger, and the language
+          server.</p>
+        <h3>Windows installer</h3>
+        <p>Run <code>Spid3r-Setup-1.0.0.exe</code>. It installs the <code>spid3r</code> toolchain into
+          <code>%LOCALAPPDATA%\Programs\Spid3r</code> and adds that directory to your user
+          <code>PATH</code> (terminals started after the install pick it up; already-open ones do not).
+          The installer always ships the <code>spid3r.exe</code> binary, the standard library
+          (<code>stdlib/</code>), and — for the native backend — <code>LLVM-C.dll</code>,
+          <code>LLVM-C.lib</code>, and the <code>spid3r_lang.lib</code> runtime library that
+          <code>spid3r build</code> links into programs. Optional components:</p>
+        <ul>
+          <li><strong>Examples, documentation &amp; reference</strong> — <code>README.md</code>,
+            <code>docs/</code>, <code>examples/</code>, and the web/native calculator demos.</li>
+          <li><strong>WebView2 runtime</strong> — installed only when it is missing;
+            <code>spid3r gui</code> programs need it (Windows 11 and Microsoft Edge already include it).</li>
+          <li><strong>C++ Build Tools</strong> — downloads the MSVC Build Tools with the Windows SDK
+            (~3&nbsp;GB, needs administrator rights), which linking a native executable requires; skipped when
+            already installed.</li>
+          <li><strong>.matrix file association</strong> — double-clicking a <code>.matrix</code> file runs it
+            with <code>spid3r run</code>.</li>
+        </ul>
         <h3>Linux / macOS installer</h3>
-        <p>On Linux and macOS you can skip the build entirely and use the one-line installer
-          (plain POSIX <code>sh</code>; <code>curl</code> or <code>wget</code> is the only requirement):</p>
+        <p>A one-line installer (plain POSIX <code>sh</code>; <code>curl</code> or <code>wget</code> is the
+          only requirement):</p>
         <pre
           data-lang="sh"><code>curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | sh</code></pre>
         <p>The script detects your architecture (<code>x86_64</code> / <code>aarch64</code>), downloads the
           matching release tarball from GitHub, installs <code>spid3r</code> into
           <code>~/.spid3r/bin</code>, and adds that directory to your <code>PATH</code> in
           <code>~/.bashrc</code>, <code>~/.zshrc</code>, and <code>~/.profile</code> (it never writes a
-          line that is already there). Supported options:
+          line that is already there). Options:
         </p>
         <pre data-lang="sh"><code>sh install.sh --version 1.0.0   # pin a release instead of latest
-sh install.sh --dir ~/.local/bin
-sh install.sh --source          # build from source via cargo (no release needed)</code></pre>
+sh install.sh --dir ~/.local/bin</code></pre>
         <p><code>--dir</code> and the <code>SPID3R_INSTALL_DIR</code> environment variable override the
-          install location. If no release asset exists for your platform yet, <code>--source</code>
-          builds the toolchain from the Git repository with <code>cargo install --git</code>.</p>
+          install location. Afterwards open a new terminal (or <code>source ~/.bashrc</code>) and verify with
+          <code>spid3r --version</code>.</p>
         <h3>Backends</h3>
-        <p>Both backends, the webview GUI (<code>gui</code>) and the LLVM compiler (<code>native</code>), are
-          default Cargo features:</p>
-        <pre data-lang="sh"><code>cargo build --release                                        # core + spid3r gui + spid3r build (needs LLVM 18.1+)
-cargo build --release --no-default-features --features gui   # core + GUI, no LLVM needed
-cargo build --release --no-default-features                  # zero-dependency core only</code></pre>
-        <p>Without the feature, <code>spid3r build</code> / <code>spid3r gui</code> exit with a usage
-          error explaining how to enable it. LLVM discovery is described in
-          <a href="docs/BUILDING.md">docs/BUILDING.md</a> and under <a href="#env">Environment &amp; exit codes</a>.
-        </p>
-        <h3>Windows installer</h3>
-        <p>On Windows, <code>cargo build --release</code> also writes <code>Spid3r-Setup-&lt;version&gt;.exe</code>
-          to the repository root. <code>build.rs</code> builds a release binary with the same features into
-          <code>target/installer/</code> and runs NSIS on <code>packaging/nsis/spid3r.nsi</code>, packing the
-          binary with <code>README.md</code>, <code>docs/</code>, <code>examples/</code>, and the web/native calculator
-          demos.
-          With the native backend it also ships <code>LLVM-C.dll</code>, <code>LLVM-C.lib</code>, and the
-          <code>spid3r_lang.lib</code> runtime library that <code>spid3r build</code> links into programs; users need MSVC
-          Build Tools with the Windows SDK to link. NSIS 3.x is taken from <code>packaging/nsis/nsis/nsis-3.10/</code>
-          or <code>PATH</code>; without it the
-          step is skipped with a warning. Set <code>SPID3R_NO_INSTALLER=1</code> to skip it.
-        </p>
-        <p>The WebView2 bootstrapper is <strong>not</strong> downloaded by default — a release build performs no
-          network access. Opt in with <code>SPID3R_FETCH_WEBVIEW2=1</code>; the download is verified against a
-          pinned SHA-256 (override with <code>SPID3R_WEBVIEW2_SHA256</code>) and a partial or tampered file is
-          discarded, so the installer is built without it rather than with something unverified.</p>
+        <p>The webview GUI backend (<code>spid3r gui</code>) and the LLVM native backend
+          (<code>spid3r build</code>) are part of the standard toolchain build and are described under
+          <a href="#tooling">Developer tools</a>. GUI programs need the WebView2 runtime on Windows;
+          linking a native executable needs the MSVC Build Tools with the Windows SDK. Everything else —
+          <code>run</code>, <code>check</code>, <code>compile</code>, <code>exec</code>, <code>test</code>,
+          <code>fmt</code>, <code>debug</code>, <code>repl</code>, <code>lsp</code>, <code>bundle</code>,
+          and the package manager — works out of the box on both engines.</p>
 
         <h2 id="quickstart">Quick start</h2>
         <p>Create <code>hello.matrix</code>:</p>
@@ -1185,7 +1182,7 @@ let label = if (count == 0) { "empty" } else { "{count} items" };</code></pre>
             <p><code>-x</code> · <code>not x</code> · <code>await x</code> · <code>spawn fn(){…}</code></p>
             <p class="tag">Casts</p>
             <p><code>x as int · x as float · x as string · x as bool</code> — binds tighter than
-              <code>*</code> (Rust-style), chains allowed; exactly the conversion builtins
+              <code>*</code> and may chain; exactly the conversion builtins
               <code>int()/float()/string()/bool()</code>.</p>
           </div>
           <div>
@@ -2308,9 +2305,18 @@ fn main() {
             <th>Notes</th>
           </tr>
           <tr>
-            <td><code>sha256(str)</code> · <code>hmac_sha256(key, msg)</code></td>
+            <td><code>sha256(str)</code> · <code>hmac_sha256(key, msg)</code> ·
+              <code>pbkdf2_sha256(password, salt, iterations)</code></td>
             <td>string</td>
-            <td>FIPS 180-4 SHA-256 and RFC 2104 HMAC-SHA256 lowercase hex strings. Zero dependencies.</td>
+            <td>FIPS 180-4 SHA-256, RFC 2104 HMAC-SHA256, and RFC 8018 PBKDF2-HMAC-SHA256
+              (32-byte key, hex) — the password-storage primitive. Zero dependencies.</td>
+          </tr>
+          <tr>
+            <td><code>base64_encode(data)</code> · <code>base64_decode(text)</code> ·
+              <code>base64_url_encode(data)</code> · <code>base64_url_decode(text)</code></td>
+            <td>string / bytes</td>
+            <td>RFC 4648 Base64 — standard (+/, padded) and URL-safe (-_, unpadded) alphabets.
+              Encode accepts strings or bytes; decode returns bytes.</td>
           </tr>
           <tr>
             <td><code>regex_match(pat, text)</code> · <code>regex_find(pat, text)</code></td>
@@ -2415,7 +2421,7 @@ fn main() {
         </div>
           <h3>SQLite database</h3>
           <p><code>db_open(path)</code> opens (or creates) a real SQLite database by loading the SQLite C
-            library at runtime — no crates, nothing downloaded at build time. The loader looks for
+            library at runtime — no external packages, nothing downloaded at install time. The loader looks for
             <code>sqlite3.dll</code> / <code>libsqlite3.so</code> / <code>libsqlite3.dylib</code> in the
             <code>SPID3R_SQLITE_PATH</code> environment variable, next to the running executable, then the
             system search paths. Connections default to WAL journaling and <code>foreign_keys=ON</code>.
@@ -2490,6 +2496,15 @@ fn main() {
                 <td><code>ok("ip:port")</code> of bound local port or remote peer address.</td>
               </tr>
               <tr>
+                <td><code>udp_bind(addr)</code> · <code>udp_local_addr(h)</code> ·
+                  <code>udp_send_to(h, addr, text)</code> · <code>udp_recv_from(h, max)</code> ·
+                  <code>udp_close(h)</code></td>
+                <td><code>result</code></td>
+                <td>UDP datagram sockets over the same handle table as TCP. Bind port 0 for an
+                  ephemeral port; <code>udp_recv_from</code> returns
+                  <code>ok([text, "sender-ip:port"])</code> and blocks until a datagram arrives.</td>
+              </tr>
+              <tr>
                 <td><code>http_read_request(conn)</code></td>
                 <td><code>result</code></td>
                 <td>Parses HTTP/1.1 request into a map: <code>method</code>, <code>path</code>, <code>query</code>
@@ -2504,8 +2519,9 @@ fn main() {
                 <td><code>http_fetch(method, url[, headers, body])</code></td>
                 <td><code>result</code></td>
                 <td>HTTP client request returning a map with <code>status</code> (int), <code>headers</code> (map), and
-                  <code>body</code> (string).
-                </td>
+                  <code>body</code> (string). <code>https://</code> is supported with the <code>tls</code> feature
+                  (<code>--features tls</code>; uses the OS certificate store) — without it an
+                  <code>err</code> result names the rebuild.</td>
               </tr>
               <tr>
                 <td><code>url_decode(s)</code> · <code>url_encode(s)</code></td>
@@ -2645,13 +2661,13 @@ fn main() {
 }</code></pre>
 
           <h2 id="networking">Networking &amp; HTTP Web Servers</h2>
-          <p>Spid3r ships with a production-grade TCP networking layer in the core toolchain (built on Rust's
-            <code>std::net</code>) and an Express-style web framework in the standard library
-            (<code>stdlib/http.matrix</code>). Every incoming client connection is dispatched into its own
-            <code>spawn</code>ed task on the OS worker thread pool.
+          <p>Spid3r ships with a production-grade TCP networking layer in the core toolchain and an
+            Express-style web framework in the standard library (<code>stdlib/http.matrix</code>). Every
+            incoming client connection is dispatched into its own <code>spawn</code>ed task on the OS worker
+            thread pool.
           </p>
           <div class="callout good"><b>Zero external dependencies</b>Socket I/O and HTTP framing require no third-party
-            crates or C libraries. They run with identical semantics across both the tree-walking interpreter and the
+            packages or libraries. They run with identical semantics across both the tree-walking interpreter and the
             bytecode VM.</div>
           <h3>Building an HTTP Server with <code>stdlib/http.matrix</code></h3>
           <pre data-lang="spid3r"><code>import "http";
@@ -2686,7 +2702,7 @@ fn main() {
           </p>
 
           <h2 id="wasm">WebAssembly &amp; In-Browser Execution</h2>
-          <p>Spid3r compiles cleanly to <code>wasm32-unknown-unknown</code> with <strong>zero external
+          <p>Spid3r ships as a WebAssembly module with <strong>zero external
               dependencies</strong>. The entire language runtime—including the tokenizer, Pratt parser, semantic
             analyzer, code formatter, tree-walking interpreter, and stack bytecode VM—runs seamlessly inside modern web
             browsers, Node.js, Deno, and Cloudflare Workers.</p>
@@ -2705,7 +2721,8 @@ fn main() {
           </p>
 
           <h3>Application Bundler (<code>spid3r bundle</code>)</h3>
-          <p>Spid3r features a built-in cross-platform packager for distributing standalone applications:</p>
+          <p>Spid3r features a built-in cross-platform packager for distributing standalone applications — no
+            external toolchain required:</p>
           <table>
             <tr>
               <th>Target</th>
@@ -2741,19 +2758,6 @@ fn main() {
             </tr>
           </table>
 
-          <h3>Compiling to WebAssembly</h3>
-          <pre data-lang="bash"><code># 1. Add wasm32 target
-rustup target add wasm32-unknown-unknown
-
-# 2. Compile zero-dependency WebAssembly release binary
-cargo build --target wasm32-unknown-unknown --release --lib --no-default-features
-
-# 3. Binary is generated at target/wasm32-unknown-unknown/release/spid3r_lang.wasm (~1.3 MB)
-copy target/wasm32-unknown-unknown/release/spid3r_lang.wasm web/spid3r.wasm
-
-# 4. (Optional) Generate embedded base64 dataset for offline file:// execution
-node tools/gen_wasm_data.js</code></pre>
-
           <h3>Using the JavaScript SDK (<code>web/spid3r.js</code>)</h3>
           <p>The companion SDK provides an ergonomic Promise-based API for JavaScript and TypeScript projects:</p>
           <pre data-lang="javascript"><code>import { Spid3r } from "./web/spid3r.js";
@@ -2781,7 +2785,7 @@ const formatted = sp.format("let a=1+2;\nprintln(a);");
 console.log(formatted.code);  // "let a = 1 + 2;\nprintln(a);\n"</code></pre>
 
           <h2 id="gc">Memory model &amp; GC</h2>
-          <p>Values are reference-counted with <code>Arc</code>/<code>Mutex</code>. Both engines share this
+          <p>Values are reference-counted and internally synchronized. Both engines share this
             representation, which is what lets values cross <code>spawn</code> boundaries. Acyclic garbage is
             freed as soon as the last reference drops.</p>
           <div class="callout info"><b>Full-container cycle collection</b>A reference cycle (a list containing
@@ -2846,12 +2850,12 @@ console.log(formatted.code);  // "let a = 1 + 2;\nprintln(a);\n"</code></pre>
             </tr>
             <tr>
               <td><code>build &lt;file&gt; [-o out] [--target triple] [--release]</code></td>
-              <td>Compile to a native executable via LLVM. <span class="pill">native feature</span></td>
+              <td>Compile to a native executable via LLVM. <span class="pill">native backend</span></td>
             </tr>
             <tr>
               <td><code>gui &lt;file&gt; [--html page.html] [--dry-run]</code></td>
               <td>Run a program in a desktop webview window; <code>--dry-run</code> replays the bridge headlessly. <span
-                  class="pill">gui feature</span></td>
+                  class="pill">gui backend</span></td>
             </tr>
             <tr>
               <td>
@@ -3088,7 +3092,7 @@ serde   = { version = "^1.0" }                               # local registry ($
               <td>List commands</td>
             </tr>
           </table>
-          <h3>GUI backend <span class="pill">gui feature</span></h3>
+          <h3>GUI backend <span class="pill">spid3r gui</span></h3>
           <p><code>spid3r gui app.matrix</code> opens a desktop window with an embedded webview (wry + tao).</p>
           <table>
             <tr>
@@ -3121,11 +3125,11 @@ serde   = { version = "^1.0" }                               # local registry ($
             what the test suite drives). See <a href="docs/GUI.md">docs/GUI.md</a> and
             <code>examples/gui/counter.matrix</code>.
           </p>
-          <h3>Native AOT backend <span class="pill">native feature</span></h3>
+          <h3>Native AOT backend <span class="pill">spid3r build</span></h3>
           <p><code>spid3r build app.matrix</code> compiles control flow to machine code through LLVM 18.1+.
             Runtime operations go through trampolines that reuse the VM's value code, so native output matches
             the interpreters. A class declared inside a function is rejected with a clear diagnostic. See
-            <a href="docs/NATIVE.md">docs/NATIVE.md</a> and <a href="docs/BUILDING.md">docs/BUILDING.md</a>.
+            <a href="docs/NATIVE.md">docs/NATIVE.md</a>.
           </p>
 
           <h3>Language server <span class="pill">spid3r lsp</span></h3>
@@ -3174,12 +3178,9 @@ serde   = { version = "^1.0" }                               # local registry ($
           </p>
 
           <h2 id="workflow">Developer workflow</h2>
-          <p>Whether you are building an application in Spid3r or contributing to the Spid3r compiler and runtime, these
-            workflows cover the day-to-day loop.</p>
-          <div class="grid2">
-            <div>
-              <h3>1. Building a Spid3r project</h3>
-              <pre data-lang="sh"><code># 1. Scaffold a project
+          <p>The day-to-day loop of building a Spid3r application:</p>
+          <h3>Building a Spid3r project</h3>
+          <pre data-lang="sh"><code># 1. Scaffold a project
 spid3r init myapp
 cd myapp
 
@@ -3196,24 +3197,6 @@ spid3r test
 
 # 5. Package as self-contained bytecode (.matrixc)
 spid3r dist</code></pre>
-            </div>
-            <div>
-              <h3>2. Contributing to the Spid3r toolchain</h3>
-              <pre data-lang="sh"><code># Build &amp; test zero-dependency core (no LLVM needed)
-cargo build --no-default-features
-cargo test --no-default-features
-
-# Test the headless GUI bridge
-cargo test --no-default-features --features gui --test gui_tests
-
-# Run the 3-way differential example suite
-cargo run --no-default-features -- test
-
-# Check formatting &amp; Clippy lints (matches CI)
-cargo run --no-default-features -- fmt --check
-cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
-            </div>
-          </div>
 
           <h2 id="env">Environment &amp; exit codes</h2>
           <h3>Runtime variables</h3>
@@ -3265,41 +3248,6 @@ cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
                 <code>tcp_set_timeout</code> on the connection always wins.</td>
             </tr>
           </table>
-          <h3>Build-time variables <span class="pill">native feature</span></h3>
-          <table>
-            <tr>
-              <th>Variable</th>
-              <th>Effect</th>
-            </tr>
-            <tr>
-              <td><code>SPID3R_LLVM_LIB_DIR</code></td>
-              <td>Windows: directory containing <code>LLVM-C.lib</code> (checked first).</td>
-            </tr>
-            <tr>
-              <td><code>LLVM_SYS_181_PREFIX</code></td>
-              <td>LLVM install prefix (Windows fallback; also used on Unix).</td>
-            </tr>
-            <tr>
-              <td><code>SPID3R_LLVM_BIN_DIR</code></td>
-              <td>Windows: directory containing <code>LLVM-C.dll</code>, copied next to the built binaries so
-                <code>cargo run</code>/<code>cargo test</code> work.
-              </td>
-            </tr>
-            <tr>
-              <td><code>SPID3R_NO_INSTALLER</code></td>
-              <td><code>1</code> skips the Windows installer step of a release build.</td>
-            </tr>
-            <tr>
-              <td><code>SPID3R_FETCH_WEBVIEW2</code></td>
-              <td><code>1</code> opts in to downloading the WebView2 bootstrapper for the installer (no network
-                access otherwise).</td>
-            </tr>
-            <tr>
-              <td><code>SPID3R_WEBVIEW2_SHA256</code></td>
-              <td>Expected SHA-256 of the bootstrapper (64 hex chars); overrides the pinned value when Microsoft
-                rotates the download.</td>
-            </tr>
-          </table>
           <h3>Exit codes</h3>
           <table>
             <tr>
@@ -3331,72 +3279,6 @@ cargo clippy --no-default-features --all-targets -- -D warnings</code></pre>
           </p>
 
           <!-- ============================================================ INTERNALS -->
-
-          <h2 id="embedding">Embedding from Rust</h2>
-          <p>Spid3r's core is a zero-dependency Rust library, and <code>spid3r_lang::embed</code> is the
-            supported surface for hosting it as a scripting layer: register Rust closures as script
-            functions, bind globals, extend the module search path, and run in-memory source with the
-            output captured.</p>
-          <div class="callout info"><b>Crate name</b>The package and the <code>spid3r</code> binary keep their
-            names, but the <em>library target</em> is <code>spid3r_lang</code> — its <code>cdylib</code> artifact
-            would otherwise collide with the binary's <code>spid3r.pdb</code> on Windows. Depend on the package as
-            usual and import <code>spid3r_lang</code>; the runtime staticlib the AOT backend links is
-            <code>spid3r_lang.lib</code> / <code>libspid3r_lang.a</code>.</div>
-          <pre data-lang="rust"><code>use spid3r_lang::embed::{conv, Engine};
-
-let engine = Engine::new()
-    .register("shout", |args| {
-        let s = conv::as_str(args.first().unwrap_or(&amp;spid3r_lang::Value::Null)).unwrap_or("");
-        Ok(conv::from_string(s.to_uppercase()))
-    })
-    .set_global("version", conv::from_string("1.0"));
-
-let out = engine
-    .run("demo", r#"fn main() { println(shout("hi") + " " + version); return 0; }"#)
-    .expect("script failed");
-assert_eq!(out.output, "HI 1.0\n");</code></pre>
-          <div class="tablewrap">
-            <table>
-              <tr>
-                <th>Piece</th>
-                <th>What it does</th>
-              </tr>
-              <tr>
-                <td><code>Engine::register(name, f)</code></td>
-                <td>Host function callable from Spid3r — a stateful Rust closure over <code>&amp;[Value]</code>;
-                  <code>Err(String)</code> becomes a catchable runtime error; works as a collection callback
-                  (<code>xs.map(host_fn)</code>) and overrides same-named stdlib natives
-                </td>
-              </tr>
-              <tr>
-                <td><code>Engine::set_global(name, v)</code></td>
-                <td>Global binding visible to the script (dynamic, unchecked; shadowable by <code>let</code>)</td>
-              </tr>
-              <tr>
-                <td><code>Engine::add_module_dir(dir)</code></td>
-                <td>Extra import search root — the checker and the loader share one search order</td>
-              </tr>
-              <tr>
-                <td><code>Engine::set_script_args(vec)</code></td>
-                <td><code>args()</code> for the script (process-global, matching the CLI)</td>
-              </tr>
-              <tr>
-                <td><code>Engine::run(name, src)</code></td>
-                <td>Parse → check → execute on a dedicated 512 MiB worker; returns the exit code (<code>main</code>'s
-                  integer return) and the captured <code>print</code>/<code>println</code>/<code>eprint</code> text</td>
-              </tr>
-              <tr>
-                <td><code>conv</code></td>
-                <td>Lossless value conversions: <code>as_i64/as_f64/as_bool/as_str/as_list/display</code> and
-                  <code>from_i64/from_f64/from_bool/from_string/from_list</code>
-                </td>
-              </tr>
-            </table>
-          </div>
-          <p>Host names are dynamically typed (<code>any</code>) — the same treatment the standard
-            library's natives get — and embedded runs use the tree-walk reference engine, so behavior
-            matches <code>spid3r run</code>. Full reference: <a href="docs/EMBEDDING.md">docs/EMBEDDING.md</a>;
-            runnable demo: <code>cargo run --example embed_hello</code>.</p>
 
           <h2 id="arch">Architecture</h2>
           <p>Both engines share one front end and one value layer, which is what keeps them behaviorally identical.</p>
@@ -3446,8 +3328,7 @@ assert_eq!(out.output, "HI 1.0\n");</code></pre>
               </tr>
               <tr>
                 <td><code>src/native</code> · <code>src/gui</code></td>
-                <td>LLVM AOT backend (<code>native</code> feature) and webview GUI (<code>gui</code> feature, default)
-                </td>
+                <td>LLVM AOT backend and webview GUI backend</td>
               </tr>
             </table>
           </div>
@@ -3480,7 +3361,7 @@ Chunk          ::= code:bytes
                    modules:embedded[]         # imports, keyed by resolved path
 EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
           <div class="callout good"><b>Safety</b>Before a chunk runs, it is validated. Opcodes are decoded
-            through a safe lookup (no <code>mem::transmute</code>), and the validator rejects invalid opcodes,
+            through a safe lookup (no unchecked casts), and the validator rejects invalid opcodes,
             truncated instructions, out-of-range constant/function/class references, jump targets that miss an
             instruction boundary (found by binary search, so validation stays <code>O(n log n)</code>), an empty
             code section, a chunk that can fall through its last instruction (it must end in
@@ -3503,19 +3384,19 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
           <h2 id="testing">Testing &amp; QA</h2>
           <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-            As of this revision, <code>cargo test</code> passes <strong>685 tests</strong> (<strong>669</strong> with
-            <code>--no-default-features</code>, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
+            As of this revision, the test suite passes <strong>685 tests</strong> (<strong>669</strong> without the
+            optional backends, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
             <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
             <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from
-            <code>tools/count_tests.sh</code>, which asks cargo rather than grepping, so the documentation cannot
-            drift from reality.
+            <code>tools/count_tests.sh</code>, which queries the test runner directly rather than grepping, so the
+            documentation cannot drift from reality.
           </p>
           <ul>
             <li><strong><code>spid3r test</code></strong> classifies each <code>examples/*.matrix</code> by its
               parsed AST (a file with <code>fn main</code> is a program, anything else is a library).
               Programs run on the tree interpreter, the VM, and compile + exec, and all three stdout streams
               must match. Libraries are semantic-checked.</li>
-            <li><strong><code>cargo test</code></strong> runs unit tests per subsystem, integration tests, the
+            <li><strong>The test suite</strong> runs unit tests per subsystem, integration tests, the
               differential harness (<code>tests/difftest.rs</code>), property/mutation fuzz suites
               (<code>tests/fuzz_tests.rs</code>), and dedicated engine-parity regressions
               (<code>tests/audit_regressions.rs</code>). The regressions cover closure capture,
@@ -3533,7 +3414,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               huge count headers, out-of-range pool references, negative jumps, off-boundary jumps, trailing
               bytes, mismatched instruction tables, fall-through chunk ends and over-deep nesting are all rejected
               cleanly (<code>tests/artifact_hardening.rs</code>), backed by deterministic mutation tests
-              (<code>tests/fuzz_tests.rs</code>) and three <code>cargo-fuzz</code> targets (<code>fuzz/</code>)
+              (<code>tests/fuzz_tests.rs</code>) and three fuzz targets (<code>fuzz/</code>)
               that a nightly CI workflow actually runs.</li>
             <li><strong>GUI</strong> is tested headlessly: IPC decoding, JSON escaping and round-trips, event
               ordering, unknown-event dropping, payload fidelity, and queued JS (bridge unit tests plus the
@@ -3544,7 +3425,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               semantics, collections, cycle GC, concurrency (scheduler growth, bounded queue, exit drain,
               precise GC gate, structured thrown values), and packaging security (git transport whitelist,
               locked commits, raw-byte hashes). Enforced in cross-platform GitHub Actions CI
-              (<code>.github/workflows/ci.yml</code>, pinned toolchain) plus a nightly fuzz workflow
+              (<code>.github/workflows/ci.yml</code>) plus a nightly fuzz workflow
               (<code>.github/workflows/fuzz.yml</code>). See <a href="_dustbin/AUDIT_REPORT.md">_dustbin/AUDIT_REPORT.md</a>.</li>
           </ul>
 
@@ -3568,7 +3449,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
             <div class="card"><span class="t">channel · tasks</span>Concurrency</div>
             <div class="card"><span class="t">modules · math_util</span>Imports and exports</div>
             <div class="card"><span class="t">server_report</span>A larger program tying it together</div>
-            <div class="card"><span class="t">gui/counter</span>Webview UI <span class="pill">gui feature</span></div>
+            <div class="card"><span class="t">gui/counter</span>Webview UI <span class="pill">gui backend</span></div>
           </div>
 
           <h2 id="limits">Limitations &amp; roadmap</h2>
@@ -3637,11 +3518,11 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               <td><span class="pill ok">done</span></td>
             </tr>
             <tr>
-              <td>Native AOT backend (<code>native</code> feature)</td>
+              <td>Native AOT backend (LLVM)</td>
               <td><span class="pill ok">done</span> no class-in-function</td>
             </tr>
             <tr>
-              <td>GUI layer (<code>gui</code> feature, headless-tested bridge)</td>
+              <td>GUI layer (headless-tested bridge)</td>
               <td><span class="pill ok">done</span> window tested manually</td>
             </tr>
             <tr>
@@ -3694,8 +3575,8 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
               <td>Cycle-collector design</td>
             </tr>
             <tr>
-              <td><a href="docs/NATIVE.md">docs/NATIVE.md</a> · <a href="docs/BUILDING.md">docs/BUILDING.md</a></td>
-              <td>LLVM backend and building from source</td>
+              <td><a href="docs/NATIVE.md">docs/NATIVE.md</a></td>
+              <td>LLVM native backend</td>
             </tr>
             <tr>
               <td><a href="docs/GUI.md">docs/GUI.md</a></td>
@@ -3750,7 +3631,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
       var KW = 'fn|let|const|if|elif|else|while|for|in|break|continue|return|and|or|not|import|try|catch|finally|throw|class|interface|new|self|public|private|spawn|async|await|extends|implements';
       var RULES = {
         spid3r: new RegExp('(\\/\\/[^\\n]*|\\/\\*[\\s\\S]*?\\*\\/)|("(?:\\\\.|[^"\\\\])*")|\\b(\\d+(?:\\.\\d+)?)\\b|\\b(' + KW + ')\\b|\\b(int|float|string|bool|any)\\b|\\b(true|false|null|none)\\b|([A-Za-z_]\\w*)(?=\\s*\\()', 'g'),
-        sh: /(#[^\n]*)|("(?:\\.|[^"\\])*"|'[^']*')|\b(\d+)\b|(^|\n)(\s*)(cargo|spid3r|powershell)\b/g,
+        sh: /(#[^\n]*)|("(?:\\.|[^"\\])*"|'[^']*')|\b(\d+)\b|(^|\n)(\s*)(spid3r|powershell)\b/g,
         toml: /(#[^\n]*)|("(?:\\.|[^"\\])*")|\b(\d+(?:\.\d+)*)\b|(^|\n)(\s*\[[^\]\n]+\])|(^|\n)(\s*[\w.-]+)(?=\s*=)/g
       };
       function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }

@@ -9,6 +9,7 @@ default:
 | *(core, `--no-default-features`)* | — | Rust toolchain only |
 | `gui` *(default)* | embedded webview GUI (`spid3r gui`) via tao + wry | system webview runtime (see below) |
 | `native` *(default)* | LLVM AOT backend (`spid3r build`) via inkwell 0.10 | LLVM 18.1+ |
+| `tls` *(opt-in)* | `https://` in `http_fetch` via native-tls | OS certificate store (schannel / OpenSSL / Security.framework) |
 
 Without LLVM installed, build with `--no-default-features --features gui`.
 
