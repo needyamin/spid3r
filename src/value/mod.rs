@@ -1501,9 +1501,7 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
         }
         Value::RefBox(d) => {
             let inner = d.lock().unwrap().value.clone();
-            let nd = new_ref(c::RefBoxData {
-                value: Value::Null,
-            });
+            let nd = new_ref(c::RefBoxData { value: Value::Null });
             register!(Value::RefBox(nd.clone()));
             nd.lock().unwrap().value = deep_clone_inner(&inner, memo);
             Value::RefBox(nd)
@@ -1578,4 +1576,3 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
         }),
     }
 }
-

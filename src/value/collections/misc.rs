@@ -172,7 +172,12 @@ pub struct PrioQueueData {
 
 impl Drop for PrioQueueData {
     fn drop(&mut self) {
-        super::drop_iteratively(std::mem::take(&mut self.items).into_iter().map(|it| it.value).collect());
+        super::drop_iteratively(
+            std::mem::take(&mut self.items)
+                .into_iter()
+                .map(|it| it.value)
+                .collect(),
+        );
     }
 }
 
@@ -2120,7 +2125,12 @@ impl Drop for BagData {
     fn drop(&mut self) {
         // A-17: `counts` is a `Vec` of `(Value, count)` pairs, so the default
         // drop recurses per chain link just like the other containers.
-        super::drop_iteratively(std::mem::take(&mut self.counts).into_iter().map(|(v, _)| v).collect());
+        super::drop_iteratively(
+            std::mem::take(&mut self.counts)
+                .into_iter()
+                .map(|(v, _)| v)
+                .collect(),
+        );
     }
 }
 

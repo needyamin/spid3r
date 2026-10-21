@@ -467,103 +467,112 @@ impl Nfa {
         }
     }
 
-    /// Finds longest match starting at `start_idx`. Returns Some(end_idx).
-    fn match_from(&self, chars: &[char], start_idx: usize) -> Option<usize> {
+    /// Leftmost match at or after `from`: `(start, end)` in char indices.
+    ///
+    /// One scan of the input carries a "start anywhere" thread, so the whole
+    /// search costs O(n * states). The previous implementation re-ran the NFA
+    /// from every possible start index, which is O(n^2 * states) — measured at
+    /// 634 ms for 2 500 characters and past 30 s at 20 000 (audit A-15).
+    ///
+    /// Semantics are unchanged: the earliest start that can match wins, and for
+    /// that start the longest end is reported (the old `match_from` also kept
+    /// the last `Match` it saw).
+    fn search(&self, chars: &[char], from: usize) -> Option<(usize, usize)> {
         let n = chars.len();
         let num_states = self.states.len();
-        let mut active = Vec::new();
+        // (state, start) — the start index is what makes the result leftmost.
+        let mut active: Vec<(usize, usize)> = Vec::new();
         let mut visited = vec![false; num_states];
-        let mut matched_end = None;
+        let mut next: Vec<(usize, usize)> = Vec::new();
+        let mut visited_next = vec![false; num_states];
+        let mut best: Option<(usize, usize)> = None;
 
-        self.add_state(
-            self.start,
-            start_idx,
-            n,
-            &mut active,
-            &mut visited,
-            &mut matched_end,
-        );
-
-        for (cur_idx, &ch) in chars.iter().enumerate().skip(start_idx) {
-            if active.is_empty() {
+        // A manual cursor rather than `for i in from..=n`: the loop needs the
+        // index as a *position* (thread starts, `cur_idx`) and runs one step
+        // past the last character, where there is no element to iterate.
+        let mut i = from;
+        loop {
+            // `active` already holds the closures reached at position `i`.
+            // Existing threads started earlier, so they claim states first and
+            // a later start can never displace them.
+            if best.is_none() {
+                self.add_thread(self.start, i, i, n, &mut active, &mut visited, &mut best);
+            }
+            // No live thread only ends the search once a match is in hand: an
+            // empty thread set just means nothing is in flight *at this
+            // position*, and a later start can still match — that is how `$`
+            // finds the empty match at the end of a non-empty string.
+            if active.is_empty() && best.is_some() {
+                return best;
+            }
+            if i == n {
                 break;
             }
-            let mut next_active = Vec::new();
-            visited.fill(false);
-
-            for &s_idx in &active {
-                match &self.states[s_idx].kind {
-                    StateKind::Char(c) => {
-                        if *c == ch {
-                            if let Some(nxt) = self.states[s_idx].next1 {
-                                self.add_state(
-                                    nxt,
-                                    cur_idx + 1,
-                                    n,
-                                    &mut next_active,
-                                    &mut visited,
-                                    &mut matched_end,
-                                );
-                            }
-                        }
+            let ch = chars[i];
+            visited_next.fill(false);
+            next.clear();
+            for &(s_idx, thread_start) in &active {
+                // Once a start is known to match, threads that began later
+                // cannot improve the answer.
+                if let Some((best_start, _)) = best {
+                    if thread_start != best_start {
+                        continue;
                     }
-                    StateKind::Any => {
-                        if ch != '\n' {
-                            if let Some(nxt) = self.states[s_idx].next1 {
-                                self.add_state(
-                                    nxt,
-                                    cur_idx + 1,
-                                    n,
-                                    &mut next_active,
-                                    &mut visited,
-                                    &mut matched_end,
-                                );
-                            }
-                        }
-                    }
+                }
+                let step = match &self.states[s_idx].kind {
+                    StateKind::Char(c) => *c == ch,
+                    StateKind::Any => ch != '\n',
                     StateKind::Class { ranges, negated } => {
                         let in_range = ranges.iter().any(|&(lo, hi)| ch >= lo && ch <= hi);
-                        let ok = if *negated {
+                        if *negated {
                             !in_range && ch != '\n'
                         } else {
                             in_range
-                        };
-                        if ok {
-                            if let Some(nxt) = self.states[s_idx].next1 {
-                                self.add_state(
-                                    nxt,
-                                    cur_idx + 1,
-                                    n,
-                                    &mut next_active,
-                                    &mut visited,
-                                    &mut matched_end,
-                                );
-                            }
                         }
                     }
-                    _ => {}
+                    _ => false,
+                };
+                if step {
+                    if let Some(nxt) = self.states[s_idx].next1 {
+                        self.add_thread(
+                            nxt,
+                            i + 1,
+                            thread_start,
+                            n,
+                            &mut next,
+                            &mut visited_next,
+                            &mut best,
+                        );
+                    }
                 }
             }
-            active = next_active;
+            std::mem::swap(&mut active, &mut next);
+            std::mem::swap(&mut visited, &mut visited_next);
+            i += 1;
         }
 
-        matched_end
+        best
     }
 
-    /// Epsilon-closure of `start` at input position `cur_idx`, computed with an
-    /// explicit stack. A pathological `a|b|c…` pattern chains one Split state
-    /// per branch, so a recursive closure would overflow the call stack and
-    /// abort the host; iteration has no depth limit. The visit order is exactly
-    /// the former recursive preorder (next1 subtree before next2), so `active`
-    /// and `matched_end` come out identical.
-    fn add_state(
+    /// Epsilon-closure of `start`, computed with an explicit stack. A
+    /// pathological `a|b|c…` pattern chains one Split state per branch, so a
+    /// recursive closure would overflow the call stack and abort the host;
+    /// iteration has no depth limit.
+    ///
+    /// `thread_start` is the input index the thread began at, so a `Match` can
+    /// report where the match started. A state already visited at this position
+    /// belongs to an equal-or-earlier start and wins, which is what keeps the
+    /// result leftmost without tracking every start separately.
+    #[allow(clippy::too_many_arguments)]
+    fn add_thread(
         &self,
         start: usize,
         cur_idx: usize,
+        thread_start: usize,
         total_len: usize,
-        active: &mut Vec<usize>,
+        active: &mut Vec<(usize, usize)>,
         visited: &mut [bool],
-        matched_end: &mut Option<usize>,
+        best: &mut Option<(usize, usize)>,
     ) {
         let mut stack = vec![start];
         while let Some(s_idx) = stack.pop() {
@@ -573,8 +582,6 @@ impl Nfa {
             visited[s_idx] = true;
             match &self.states[s_idx].kind {
                 StateKind::Split => {
-                    // Push next2 first so next1 is popped (and its whole
-                    // epsilon subtree explored) first, as the recursion did.
                     if let Some(n2) = self.states[s_idx].next2 {
                         stack.push(n2);
                     }
@@ -596,12 +603,14 @@ impl Nfa {
                         }
                     }
                 }
-                StateKind::Match => {
-                    *matched_end = Some(cur_idx);
-                }
-                _ => {
-                    active.push(s_idx);
-                }
+                StateKind::Match => match best {
+                    None => *best = Some((thread_start, cur_idx)),
+                    // Same start: a later `Match` is a longer match.
+                    Some((bs, be)) if *bs == thread_start => *be = cur_idx,
+                    // A later start cannot beat the leftmost one.
+                    Some(_) => {}
+                },
+                _ => active.push((s_idx, thread_start)),
             }
         }
     }
@@ -616,42 +625,31 @@ fn regex_compile(pattern: &str) -> Result<Nfa, String> {
 pub fn regex_match(pattern: &str, text: &str) -> Result<bool, String> {
     let nfa = regex_compile(pattern)?;
     let chars: Vec<char> = text.chars().collect();
-    for start in 0..=chars.len() {
-        if nfa.match_from(&chars, start).is_some() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(nfa.search(&chars, 0).is_some())
 }
 
 pub fn regex_find(pattern: &str, text: &str) -> Result<Option<String>, String> {
     let nfa = regex_compile(pattern)?;
     let chars: Vec<char> = text.chars().collect();
-    for start in 0..=chars.len() {
-        if let Some(end) = nfa.match_from(&chars, start) {
-            let matched: String = chars[start..end].iter().collect();
-            return Ok(Some(matched));
-        }
-    }
-    Ok(None)
+    Ok(nfa
+        .search(&chars, 0)
+        .map(|(s, e)| chars[s..e].iter().collect()))
 }
 
 pub fn regex_find_all(pattern: &str, text: &str) -> Result<Vec<String>, String> {
     let nfa = regex_compile(pattern)?;
     let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
-    let mut start = 0;
-    while start <= chars.len() {
-        if let Some(end) = nfa.match_from(&chars, start) {
-            let matched: String = chars[start..end].iter().collect();
-            out.push(matched);
-            if end > start {
-                start = end;
-            } else {
-                start += 1;
+    let mut pos = 0;
+    // Each iteration resumes the scan where the last match ended, so the input
+    // is walked once overall rather than once per candidate start.
+    while pos <= chars.len() {
+        match nfa.search(&chars, pos) {
+            Some((s, e)) => {
+                out.push(chars[s..e].iter().collect());
+                pos = if e > s { e } else { s + 1 };
             }
-        } else {
-            start += 1;
+            None => break,
         }
     }
     Ok(out)
@@ -661,22 +659,31 @@ pub fn regex_replace(pattern: &str, text: &str, replacement: &str) -> Result<Str
     let nfa = regex_compile(pattern)?;
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
-    let mut start = 0;
-    while start <= chars.len() {
-        if start == chars.len() {
-            break;
-        }
-        if let Some(end) = nfa.match_from(&chars, start) {
-            out.push_str(replacement);
-            if end > start {
-                start = end;
-            } else {
-                out.push(chars[start]);
-                start += 1;
+    let mut pos = 0;
+    while pos < chars.len() {
+        match nfa.search(&chars, pos) {
+            Some((s, e)) => {
+                // A match that starts at end-of-input is never replaced (the
+                // pre-single-pass implementation skipped that position too),
+                // but the unmatched prefix still has to be emitted.
+                if s == chars.len() {
+                    out.extend(&chars[pos..]);
+                    break;
+                }
+                out.extend(&chars[pos..s]);
+                out.push_str(replacement);
+                if e > s {
+                    pos = e;
+                } else {
+                    // Empty match: emit the character so the loop advances.
+                    out.push(chars[s]);
+                    pos = s + 1;
+                }
             }
-        } else {
-            out.push(chars[start]);
-            start += 1;
+            None => {
+                out.extend(&chars[pos..]);
+                break;
+            }
         }
     }
     Ok(out)
