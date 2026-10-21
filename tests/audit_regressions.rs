@@ -2493,3 +2493,89 @@ fn phase3_collections_and_linear_algebra_edge_cases() {
         ),
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2026-10-21 — VM optimizer: static-condition `elif` chains were mis-folded.
+//
+// The branch fold turned `[False][JumpIfFalse -> A]` into `[Jump -> A]`, then a
+// later pass removed the `[True][JumpIfFalse]` pair that lived at A (the elif
+// condition) without noticing A had become a live jump target. The dead-code
+// pass ignored the dangling target, marked the elif arm unreachable, deleted
+// it, and the jump forward-filled onto the `else` arm. On the VM,
+// `if (false) {X} elif (true) {Y} else {Z}` executed Z (or nothing without an
+// else); the tree engine was correct.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn opt_static_elif_with_else_takes_elif_arm() {
+    assert_both_engines(
+        "opt_elif_else",
+        r#"fn main() {
+    if (false) { println("no"); } elif (true) { println("yes"); } else { println("else"); }
+    return 0;
+}
+"#,
+        "yes\n",
+    );
+}
+
+#[test]
+fn opt_static_elif_without_else_takes_elif_arm() {
+    assert_both_engines(
+        "opt_elif_noelse",
+        r#"fn main() {
+    if (false) { println("no"); } elif (true) { println("yes"); }
+    println("after");
+    return 0;
+}
+"#,
+        "yes\nafter\n",
+    );
+}
+
+#[test]
+fn opt_folded_comparison_conditions_in_elif_chain() {
+    assert_both_engines(
+        "opt_elif_cmp",
+        r#"fn main() {
+    if (1 > 2) { println("a"); } elif (1 < 2) { println("b"); } else { println("c"); }
+    if ("a" == "a") { println("A"); } elif (true) { println("B"); }
+    if (false) { println("x"); } elif (2 + 2 == 4) { println("Y"); } elif (true) { println("t"); }
+    return 0;
+}
+"#,
+        "b\nA\nY\n",
+    );
+}
+
+#[test]
+fn opt_static_true_while_still_terminates() {
+    // `while (true)` folds away its condition; the loop body stays reachable
+    // through the loop back-edge and `break` still exits.
+    assert_both_engines(
+        "opt_while_true",
+        r#"fn main() {
+    let i = 0;
+    while (true) { i += 1; if (i > 3) { break; } }
+    println(i);
+    return 0;
+}
+"#,
+        "4\n",
+    );
+}
+
+#[test]
+fn opt_dynamic_if_chain_unaffected() {
+    assert_both_engines(
+        "opt_dyn_if",
+        r#"fn main() {
+    let n = 2;
+    if (n == 1) { println("one"); } elif (n == 2) { println("two"); } else { println("other"); }
+    println("done");
+    return 0;
+}
+"#,
+        "two\ndone\n",
+    );
+}

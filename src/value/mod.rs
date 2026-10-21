@@ -863,6 +863,56 @@ pub fn type_name(v: &Value) -> &'static str {
     }
 }
 
+/// Whether the value has a length the `len(x)` builtin (or the `x.len()`
+/// method) can report. Used only to decide whether the "no field" diagnostic
+/// should point at the length helpers.
+fn has_len(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Str(_)
+            | Value::List(_)
+            | Value::VecDyn(_)
+            | Value::Stack(_)
+            | Value::Queue(_)
+            | Value::Deque(_)
+            | Value::LinkedList(_)
+            | Value::SinglyList(_)
+            | Value::DoublyList(_)
+            | Value::Set(_)
+            | Value::Tuple(_)
+            | Value::BinTree(_)
+            | Value::Bst(_)
+            | Value::Heap(_)
+            | Value::PrioQueue(_)
+            | Value::HashTable(_)
+            | Value::Trie(_)
+            | Value::Matrix(_)
+            | Value::Vector(_)
+            | Value::Bytes(_)
+            | Value::Ring(_)
+            | Value::Bag(_)
+    )
+}
+
+/// The diagnostic for a field read or write on a value that has no fields.
+///
+/// Shared by the tree engine and the VM so the wording can never diverge
+/// between engines. Reading `xs.len` is the mistake newcomers make most
+/// often — the length is the method `xs.len()` or the builtin `len(xs)` — so
+/// container values get that pointer; every other value just names the field
+/// that was not found.
+pub fn no_field_error(value: &Value, field: &str) -> String {
+    let t = type_name(value);
+    if has_len(value) {
+        format!(
+            "{} has no field '{}' (use len(x) or x.len() for its length)",
+            t, field
+        )
+    } else {
+        format!("{} has no field '{}'", t, field)
+    }
+}
+
 /// Debug display used by `print`, error messages, and `string()`.
 pub fn display_value(v: &Value) -> String {
     let mut seen = std::collections::HashSet::new();
@@ -1313,14 +1363,27 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
             handle
         }
         Value::Map(d) => {
-            let entries = d.lock().unwrap().entries.clone();
+            let (entries, namespace, frozen) = {
+                let guard = d.lock().unwrap();
+                (
+                    guard.entries.clone(),
+                    guard.namespace,
+                    guard.frozen.clone(),
+                )
+            };
             let nd = new_ref(c::MapData::default());
             register!(Value::Map(nd.clone()));
             let cloned: Vec<(c::MapKey, Value)> = entries
                 .iter()
                 .map(|(k, vv)| (k.clone(), deep_clone_inner(vv, memo)))
                 .collect();
-            *nd.lock().unwrap() = c::MapData::from_entries(cloned);
+            // A cloned module namespace stays a namespace (read-only, with
+            // the same frozen constants).
+            *nd.lock().unwrap() = if namespace {
+                c::MapData::namespace(cloned, frozen)
+            } else {
+                c::MapData::from_entries(cloned)
+            };
             Value::Map(nd)
         }
         Value::Set(d) => {

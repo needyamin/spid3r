@@ -440,3 +440,108 @@ Full core suite **608 passed, 0 failed** (was 584), GUI **10/10**, AOT **6/6**,
 3-engine differential **25 ok, 0 failed**, wasm32 build clean, `fmt --check`
 clean, clippy `-D warnings` clean. Canonical counts from `tools/count_tests.sh`:
 **624 total** (608 core + 10 GUI + 6 AOT), 25 examples, 3 fuzz targets.
+
+---
+
+## 13. 2026-10-21 addendum — external audit (commit `88aac74` baseline)
+
+A fresh differential-audit round (32 probe programs over the newest language
+surface: interpolation, bitwise, `??`/`?.`, destructuring, `for (k, v)`,
+`match`/enums, option/result, elif chains, negative indexing, try/finally,
+tasks+mutexes, while-spill, C-style `for`, closures, floats, JSON, classes,
+modules, string/list methods, formatter idempotence).
+
+### Fixed
+
+| ID | Severity | Bug (root cause) | Fix |
+|---|---|---|---|
+| O1 | CRITICAL | **VM optimizer mis-folded static-condition `elif` chains.** The branch fold rewrote `[False][JumpIfFalse -> A]` into `[Jump -> A]`; a later pass then removed the `[True][JumpIfFalse]` pair that lived at A (the elif condition) without noticing A had become a live jump target (it only guarded the jump instruction's own offset). The dead-code pass ignored the dangling target, marked the elif arm unreachable, deleted it, and the encode-time forward-fill re-pointed the jump onto the `else` arm. On the VM, `if (false) {X} elif (true) {Y} else {Z}` executed **Z** (or **nothing** without an `else`); also reproduced with foldable comparisons (`1 < 2`, `"a" == "a"`, `2 + 2 == 4`). Tree engine correct. | The dead-code pass in `src/vm/opt.rs` now resolves any target that is not a surviving instruction start by forward-filling to the **next surviving instruction** — the same remap semantics the encode step already applies. Applied both to the seed-target loop and to targets followed during the reachability walk. |
+
+Repro probes: `target/probes/z_min{,2,3,4}.matrix`, `z7.matrix` (pre-fix VM
+output was `else`/empty; post-fix byte-identical to the tree engine).
+
+Verification: `cargo test --no-default-features` **613 passed, 0 failed**
+(5 new regression tests in `tests/audit_regressions.rs`:
+`opt_static_elif_with_else_takes_elif_arm`, `opt_static_elif_without_else_takes_elif_arm`,
+`opt_folded_comparison_conditions_in_elif_chain`, `opt_static_true_while_still_terminates`,
+`opt_dynamic_if_chain_unaffected`); 3-engine differential **25/25**;
+`spid3r fmt --check` clean on all probes; clippy `-D warnings` clean.
+Docs counts refreshed (624 -> 629 total) in README.md, doc.html, sitemap.txt.
+
+### Open findings recorded (not fixed in this round)
+
+| ID | Severity | Finding (evidence) |
+|---|---|---|
+| F-1 | HIGH | **`super` is not implemented.** `super(args)` in a constructor and `super.method(self)` both fail with `error[semantic]: unknown name 'super'` on both engines (probes `z_super2.matrix`, `z_super.matrix`); no `super` handling exists in `src/semantic`, `src/interpreter`, or `src/vm`. Consequence: a subclass constructor must re-initialize every parent field, and an overridden method can never delegate to the parent implementation (calling `Parent.method(self)` is also unsupported: "class values have no methods"). This is the largest single OOP gap vs PHP (`parent::`), Python (`super()`), and Java (`super.`). Recommended shape: parse `super` as a dedicated expression only valid inside class bodies; lower to a parent-class method/constructor lookup resolved at semantic time (single lowering, both engines consume the same AST — no new opcode needed for the tree engine; the VM compiler needs a `GetSuperMethod`-equivalent emitted as an existing closure/constant pattern). |
+| F-2 | LOW | Stack-trace frame naming diverges: the tree engine labels an overridden method frame `Dog::speak`, the VM labels it `speak` (probe `q02_class.matrix`). Cosmetic diagnostic parity; fix by storing the qualified name (class + method) in `VmFuncProto`/method compilation. |
+| F-3 | LOW | `.len`-as-field (without parens) on containers produces "list has no fields"; the message does not suggest the documented `len(x)` / `xs.len()`. A "did you mean" hint would remove the top newcomer stumbling block observed while writing the probes. |
+| F-4 | INFO | Default member visibility is private (`fn speak(self)` in a class is class-private, including when overriding a public parent method). Consistent and enforced on both engines, but worth calling out prominently in GRAMMAR.md — it differs from PHP/Python/Java defaults. |
+| F-5 | INFO | Module namespaces are read-only maps; `mu.VERSION = 8` errors with "map has no fields" rather than "module bindings are immutable". Message-quality item only. |
+
+### Audit methodology note
+
+Probe programs live in `target/probes/` (p*.matrix language surface,
+q*.matrix stdlib/class/module surface, z*.matrix minimizations) with
+`target/probes/run.sh` diffing tree vs vm stdout+stderr and exit codes. The
+corpus confirmed: interpolation holes, `{{` literal handling (per the
+documented "hole only when `{` is immediately followed by an identifier"
+rule), bitwise precedence and shift bounds, `??`/`?.` lowering (including
+while-condition spill), destructuring and closure capture, `for (k, v)`
+capture, match guards and fall-through, option/result combinators and `?`
+propagation, mixed `elif`/`else if`, negative indexing on list/string/tuple,
+`return`/`break`/`continue` through `finally`, task throw fidelity and mutex
+accumulation, C-style `for` variants, per-activation closure cells, float
+literals/promotion, JSON round-trips (incl. non-ASCII and escapes), class
+privacy (static, inherited-private enforced), module const/fn export +
+privacy, and formatter idempotence on all new syntax. All byte-identical
+across engines post-fix.
+
+---
+
+## 14. 2026-10-21 addendum 2 — findings implemented (F-1 through F-5, plus the defects the work uncovered)
+
+This round implemented the open findings from §13, working one issue at a
+time with tests re-run after each change. Two **new** confirmed defects were
+found and fixed along the way (N1, N2 below).
+
+### Fixed
+
+| ID | Severity | Finding → Fix |
+|---|---|---|
+| F-1 | HIGH | **`super` was entirely unimplemented** (§13 F-1). Implemented end-to-end: `super` is now a keyword (`src/lexer/token.rs`), parses as `Expr::Super` (`src/parser/mod.rs`), is validated against the class table by the checker (`src/semantic/mod.rs`: parent exists, the parent provides the method/constructor, arity checked — all identical on both engines), resolved by the lowering into `Expr::SuperCall { parent }` (`src/lower/mod.rs` — one seam, both engines consume it), executed by the tree interpreter (`call_super`/`call_class_method`/`call_parent_constructor`) and by the VM via two new additive opcodes `SuperCtor` (56) and `SuperMethod` (57) with the parent class resolved by name in the globals. The AOT backend rejects it with the standard `unsupported` wording (documented). Semantics are Java/Python-correct: `super(args)` runs the parent constructor on the *same* instance; `super.m(args)` starts the lookup at the *defining* class's parent, so a subclass that does not override a method reaches the grandparent instead of recursing. Pinned by `tests/super_tests.rs` (8 tests: constructor chaining, method delegation, the three-level unoverridden-method chain, and four error cases, each on tree + VM + compiled artifact) and an `engine_matrix.rs` case. |
+| F-2 | LOW | **Stack-trace frame naming diverged** (tree `Dog::speak` vs VM `speak`). `CallFrame` now carries a `display` name set at the call site (`Class::method` / `Class::new`), used by `capture_trace`; method and constructor traces are byte-identical across engines. Pinned by two `tests/language_surface.rs` cases that compare full stderr. |
+| F-3 | LOW | **`xs.len` produced "list has no fields"** with no pointer to the fix. A shared `value::no_field_error(value, field)` now produces `list has no field 'len' (use len(x) or x.len() for its length)` for every length-capable type, and names the field for every other type — identical on both engines (both call the same helper). |
+| F-5 | MED | **A module's `public const` was mutable through the import alias**: `mu["VERSION"] = 9` and `mu.set("VERSION", 9)` succeeded and changed the value the module itself saw. An import alias is now a **module namespace** (`MapData::namespace`, with its `public const` exports frozen): the checker rejects rebinding a const export with a literal key (both engines, identical message), the runtime rejects it for a computed key (`mutation_error`), and the namespace rejects all mutation. The VM now learns an export's const-ness through the new `DefineConst` opcode (55): the module VM records its own top-level consts while running and reports them with its exports, so embedded modules (`.matrixc`) freeze namespaces exactly like source-loaded ones. Pinned by `tests/module_namespace.rs` (6 tests). |
+| N1 | MED | **Found while implementing F-5: an exported function was shadowed by a built-in map method.** A module exporting `get`, `set`, `len`, `keys`, … was unreachable through the alias (`mu.get()` called `map.get` and failed its arity check). A namespace's exported names now win over the map's own methods in the shared dispatcher (`call_method_host`) and in the VM's `Invoke` (which routes namespace maps through the shared path). Pinned by `tests/module_namespace.rs::exported_names_shadow_built_in_map_methods`. |
+| N2 | CRITICAL | **Found while implementing the panic-guard fix: the VM never recorded `mu.lock()` at all.** A mutex locked inside a function stayed locked forever after the function returned on the VM (a deterministic hang; the tree engine released at the call boundary). Both engines now record a `sched::MutexGuardToken` per `lock()` — the token **unlocks on drop**, so a panic unwinding through the engine (an embedding host runs many scripts in one process) also cannot leave a mutex locked — and an explicit `unlock()` disarms the token so the frame-exit release cannot free a lock another task re-acquired. The tree engine sweeps its guards at the entry points (`run_program_inner`, each spawned task, module load); the VM's tokens live on the `CallFrame` and unlock when the frame is dropped. Pinned by two watchdog tests in `tests/stage2_concurrency.rs` (child processes under a timeout, per the project's concurrency-test convention). |
+
+### Verified along the way
+
+- **Error phase labels**: spot-checked six runtime/semantic error programs —
+  `error[runtime]` / `error[semantic]` are identical across engines (the
+  earlier rounds' unification holds; `error[vm]` remains reserved for
+  malformed bytecode). No change needed.
+- **`??` semantics**: confirmed null-coalescing by design (implementation and
+  lowering) and documented it in GRAMMAR.md — `none ?? x` yields `none`.
+- **Formatter idempotence** on the new syntax, and **AOT backend compile**
+  restored (`Super`/`SuperCall` arms added to `src/native/ir.rs`; native_tests 6/6).
+
+### Regression caught during the work (and fixed)
+
+The first version of the panic-guard fix placed a sweep object in every
+`exec_block`; its stack cost multiplied once per recursion level and pushed
+`recursive_depth_guard_stops_infinite_recursion` (in-process, 1000 levels) over
+the thread stack. The sweeps now live only at the interpreter's entry points,
+the super-call evaluation is in `#[inline(never)]` helpers so the (large)
+error-path locals never land in `eval`'s frame, and `Interp::rt` is
+`#[inline(never)]` (cold path). The depth-guard test passes again at
+`MAX_CALL_DEPTH = 1000`.
+
+### Verification
+
+`cargo test --no-default-features` **653 passed, 0 failed** (canonical count
+from `tools/count_tests.sh`: **669 total** = 653 core + 10 GUI + 6 AOT);
+3-engine differential **25/25**; `cargo test --features native` AOT **6/6**;
+clippy clean on the default-feature build. Docs refreshed: GRAMMAR.md
+(`super`, default member visibility, `??` semantics), KEYWORDS.md (`super`),
+BYTECODE.md (opcodes 55-57), README/doc.html/sitemap test counts.

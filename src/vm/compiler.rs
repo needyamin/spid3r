@@ -465,7 +465,11 @@ fn compile_stmt(compilers: &mut Vec<Compiler>, ci: usize, stmt: &Stmt) -> Result
             name, value, vis, ..
         } => {
             compile_expr(compilers, ci, value)?;
-            define_variable(compilers, ci, name, *vis)?;
+            // A top-level `const` is defined with `DefineConst`, so the VM
+            // records it as immutable: the binding cannot be rebound, and a
+            // module that exports it reports it as a `public const` (the
+            // importer then freezes it in the namespace).
+            define_const_variable(compilers, ci, name, *vis)?;
         }
         Stmt::Fn(proto) => {
             if compilers[ci].is_global && compilers[ci].scope_depth == 0 {
@@ -1130,6 +1134,46 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
         Expr::Assign {
             target, op, value, ..
         } => compile_assign(compilers, ci, target, *op, value)?,
+        // `super(...)` / `super.m(...)`: the parent class's constructor or
+        // method, called on the current instance (the frame's `self`).
+        Expr::SuperCall {
+            parent,
+            method,
+            args,
+            span,
+        } => {
+            check_argc(span, args.len())?;
+            for a in args {
+                compile_expr(compilers, ci, a)?;
+            }
+            compilers[ci].chunk.set_span(span.clone());
+            let pidx = compilers[ci].chunk.emit_str_const(parent);
+            match method {
+                Some(m) => {
+                    let midx = compilers[ci].chunk.emit_str_const(m);
+                    compilers[ci].chunk.emit_u16_u16_u8(
+                        OpCode::SuperMethod,
+                        pidx,
+                        midx,
+                        args.len() as u8,
+                    );
+                }
+                None => {
+                    compilers[ci]
+                        .chunk
+                        .emit_u16_u8(OpCode::SuperCtor, pidx, args.len() as u8);
+                }
+            }
+            return Ok(());
+        }
+        // A bare `super` is not a value: the checker rejects it.
+        Expr::Super { span } => {
+            return Err(Diagnostic::at(
+                Phase::Semantic,
+                span.clone(),
+                "super must be called: write super(...) or super.method(...)",
+            ));
+        }
         Expr::Call { callee, args, span } => {
             if let Expr::Ident(name, _) = &**callee {
                 if is_constructor(name) {
@@ -1393,6 +1437,27 @@ fn define_variable(
     if compilers[ci].is_global && compilers[ci].scope_depth == 0 {
         let idx = compilers[ci].chunk.emit_str_const(name);
         compilers[ci].chunk.emit_u16(OpCode::DefineGlobal, idx);
+        if vis == Vis::Public {
+            compilers[0].public.insert(name.to_string());
+        }
+    } else {
+        compilers[ci].add_local(name)?;
+    }
+    Ok(())
+}
+
+/// Define a **constant** binding. A top-level `const` becomes a global that
+/// the VM records as immutable; a local `const` is an ordinary local (the
+/// checker already rejects a rebind at compile time).
+fn define_const_variable(
+    compilers: &mut [Compiler],
+    ci: usize,
+    name: &str,
+    vis: Vis,
+) -> Result<(), Diagnostic> {
+    if compilers[ci].is_global && compilers[ci].scope_depth == 0 {
+        let idx = compilers[ci].chunk.emit_str_const(name);
+        compilers[ci].chunk.emit_u16(OpCode::DefineConst, idx);
         if vis == Vis::Public {
             compilers[0].public.insert(name.to_string());
         }

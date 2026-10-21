@@ -867,3 +867,78 @@ fn main() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// 2026-10-21 — mutex scope discipline (audit F-5c and the panic-guard gap).
+//
+// The VM never recorded `mu.lock()` on the call frame, so a mutex locked
+// inside a function stayed locked forever after the function returned — a
+// hang where the tree engine released the lock at the call boundary. Both
+// engines now record the lock and release it when the frame goes away, and
+// an explicit `unlock` disarms the recorded token so the frame-exit release
+// cannot free a lock another task legitimately holds.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_mutex_locked_in_a_returned_function_is_released() {
+    // Must terminate on both engines: `hold` locks and returns without
+    // unlocking; the spawned task then needs the same mutex.
+    let src = r#"
+        fn hold(mu) {
+            mu.lock();
+            return 0;
+        }
+        fn main() {
+            let mu = mutex(0);
+            hold(mu);
+            let t = spawn fn() {
+                mu.lock();
+                mu.unlock();
+                return 0;
+            };
+            t.join();
+            println("no-deadlock");
+            return 0;
+        }
+    "#;
+    for engine in ["tree", "vm"] {
+        let out = run_with(src, engine, DEFAULT_TIMEOUT, &[]);
+        assert!(
+            !out.timed_out,
+            "[{}] mutex was not released when the locking function returned",
+            engine
+        );
+        assert_eq!(out.stdout_lines(), vec!["no-deadlock"], "[{}]", engine);
+    }
+}
+
+#[test]
+fn an_explicit_unlock_does_not_double_release() {
+    // Lock, unlock explicitly, then contend: if the frame-exit release fired
+    // a second time, a task that re-locked in between would lose its lock.
+    let src = r#"
+        fn main() {
+            let mu = mutex(0);
+            let acc = 0;
+            mu.lock();
+            mu.unlock();
+            let ts = [];
+            for i in [1, 2, 3, 4] {
+                ts.push(spawn fn() {
+                    mu.lock();
+                    acc += i;
+                    mu.unlock();
+                    return 0;
+                });
+            }
+            for t in ts { t.join(); }
+            println(acc);
+            return 0;
+        }
+    "#;
+    for engine in ["tree", "vm"] {
+        let out = run_with(src, engine, DEFAULT_TIMEOUT, &[]);
+        assert!(!out.timed_out, "[{}] contention deadlocked", engine);
+        assert_eq!(out.stdout_lines(), vec!["10"], "[{}]", engine);
+    }
+}

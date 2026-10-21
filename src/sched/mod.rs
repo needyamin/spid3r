@@ -242,6 +242,40 @@ impl MutexData {
     }
 }
 
+/// A held user mutex that unlocks when dropped — including during a panic
+/// unwind. The engines record one of these per `mu.lock()`; without it, a
+/// panic unwinding through the engine leaves the mutex flagged as locked
+/// forever, deadlocking every later `lock()` in a long-lived embedding host.
+pub struct MutexGuardToken {
+    m: Option<Arc<MutexData>>,
+}
+
+impl MutexGuardToken {
+    pub fn new(m: Arc<MutexData>) -> Self {
+        MutexGuardToken { m: Some(m) }
+    }
+
+    /// The held mutex, if the token is still armed.
+    pub fn mutex(&self) -> Option<&Arc<MutexData>> {
+        self.m.as_ref()
+    }
+
+    /// Mark the token as released: the mutex was unlocked explicitly, so the
+    /// token must not unlock it again on drop (a second unlock could free a
+    /// lock another task legitimately holds).
+    pub fn disarm(&mut self) {
+        self.m = None;
+    }
+}
+
+impl Drop for MutexGuardToken {
+    fn drop(&mut self) {
+        if let Some(m) = self.m.take() {
+            m.unlock();
+        }
+    }
+}
+
 /// A running or finished spawned task.
 pub struct TaskHandle {
     pub id: usize,

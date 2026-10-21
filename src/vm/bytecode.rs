@@ -168,6 +168,20 @@ pub enum OpCode {
     /// binding per iteration). No-op when the slot is not currently captured.
     Uncapture = 53,
     ImportAs = 54,
+    /// Define a global as a **constant** (operand: name index). Like
+    /// `DefineGlobal`, but the name is recorded as immutable for the rest of
+    /// the run, so a rebind is rejected and an importing module sees the
+    /// export as a `public const`.
+    DefineConst = 55,
+    /// Call the **parent class's constructor** on the current instance
+    /// (operands: parent class name constant index `u16`, argument count
+    /// `u8`). The receiver is the executing frame's `self` (slot 0).
+    SuperCtor = 56,
+    /// Call the **parent class's method** on the current instance (operands:
+    /// parent class name constant index `u16`, method name constant index
+    /// `u16`, argument count `u8`). The receiver is the executing frame's
+    /// `self` (slot 0).
+    SuperMethod = 57,
 }
 
 impl OpCode {
@@ -234,6 +248,9 @@ impl OpCode {
             52 => Some(OpCode::CaptureSync),
             53 => Some(OpCode::Uncapture),
             54 => Some(OpCode::ImportAs),
+            55 => Some(OpCode::DefineConst),
+            56 => Some(OpCode::SuperCtor),
+            57 => Some(OpCode::SuperMethod),
             _ => None,
         }
     }
@@ -297,6 +314,15 @@ impl Chunk {
         self.emit_opcode(op);
         self.code.extend_from_slice(&a.to_le_bytes());
         self.code.extend_from_slice(&b.to_le_bytes());
+    }
+
+    /// Emit one opcode followed by two `u16` operands and one `u8` operand
+    /// (used by `SuperMethod`).
+    pub fn emit_u16_u16_u8(&mut self, op: OpCode, a: u16, b: u16, c: u8) {
+        self.emit_opcode(op);
+        self.code.extend_from_slice(&a.to_le_bytes());
+        self.code.extend_from_slice(&b.to_le_bytes());
+        self.code.push(c);
     }
 
     /// Emit one opcode followed by two `u8` operands (e.g. `CaptureSync`).
@@ -495,6 +521,7 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
             | OpCode::FieldGet
             | OpCode::FieldSet
             | OpCode::Import
+            | OpCode::DefineConst
             | OpCode::Class => {
                 let (c, no) = read_u16(&chunk.code, o);
                 o = no;
@@ -505,6 +532,17 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
                 let (c2, no2) = read_u16(&chunk.code, no);
                 o = no2;
                 out.push_str(&format!("{:?} {} alias {}", op, c1, c2));
+            }
+            OpCode::SuperCtor => {
+                let (c, no) = read_u16(&chunk.code, o);
+                o = no;
+                out.push_str(&format!("{:?} {}", op, c));
+            }
+            OpCode::SuperMethod => {
+                let (c1, no) = read_u16(&chunk.code, o);
+                let (c2, no2) = read_u16(&chunk.code, no);
+                o = no2;
+                out.push_str(&format!("{:?} {} method {}", op, c1, c2));
             }
             OpCode::Construct | OpCode::Invoke => {
                 let (c, no) = read_u16(&chunk.code, o);
@@ -1183,6 +1221,7 @@ fn validate_chunk_inner(chunk: &Chunk, where_: &str) -> SpidResult<()> {
             | OpCode::GetGlobal
             | OpCode::SetGlobal
             | OpCode::DefineGlobal
+            | OpCode::DefineConst
             | OpCode::FieldGet
             | OpCode::FieldSet
             | OpCode::Import => {
@@ -1338,8 +1377,11 @@ pub(crate) fn operand_len(op: OpCode) -> usize {
         | OpCode::FieldGet
         | OpCode::FieldSet
         | OpCode::Import
+        | OpCode::DefineConst
         | OpCode::Class => 2,
         OpCode::Construct | OpCode::Invoke => 3,
+        OpCode::SuperCtor => 3,
+        OpCode::SuperMethod => 5,
         OpCode::ImportAs => 4,
         OpCode::CaptureSync => 2,
         OpCode::Uncapture => 1,
@@ -1370,8 +1412,8 @@ mod tests {
 
     #[test]
     fn from_u8_rejects_garbage_without_ub() {
-        // Any byte outside 0..=54 must decode to None (no transmute / UB).
-        for b in 55u16..=255 {
+        // Any byte outside 0..=57 must decode to None (no transmute / UB).
+        for b in 58u16..=255 {
             assert!(OpCode::from_u8(b as u8).is_none(), "byte {} decoded", b);
         }
         // A handful of real opcodes round-trip.
@@ -1383,6 +1425,9 @@ mod tests {
         assert_eq!(OpCode::from_u8(52), Some(OpCode::CaptureSync));
         assert_eq!(OpCode::from_u8(53), Some(OpCode::Uncapture));
         assert_eq!(OpCode::from_u8(54), Some(OpCode::ImportAs));
+        assert_eq!(OpCode::from_u8(55), Some(OpCode::DefineConst));
+        assert_eq!(OpCode::from_u8(56), Some(OpCode::SuperCtor));
+        assert_eq!(OpCode::from_u8(57), Some(OpCode::SuperMethod));
     }
 
     #[test]

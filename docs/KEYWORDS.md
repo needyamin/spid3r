@@ -44,6 +44,7 @@ text, not a keyword (`"class"` is the six characters `class`, nothing more).
 | Implements | `implements` |
 | Match | `match` |
 | Enum | `enum` |
+| Super | `super` |
 | Import alias | `as` |
 
 Rules that come with the registry:

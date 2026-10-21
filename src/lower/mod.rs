@@ -81,6 +81,7 @@ pub fn lower(program: &Program) -> Cow<'_, Program> {
     }
     let mut l = Lower {
         next_temp: 0,
+        current_parent: None,
         variants: std::collections::HashMap::new(),
     };
     Cow::Owned(l.program(program))
@@ -180,12 +181,16 @@ fn expr_needs_lowering(e: &Expr) -> bool {
         | Expr::Coalesce { .. }
         | Expr::Match { .. }
         | Expr::Propagate(..) => true,
+        // `super` is rewritten into a resolved `SuperCall`.
+        Expr::Super { .. } => true,
         Expr::Int(..)
         | Expr::Float(..)
         | Expr::Str(..)
         | Expr::Bool(..)
         | Expr::Null(..)
         | Expr::Ident(..) => false,
+        // An already-resolved `SuperCall` needs no further lowering.
+        Expr::SuperCall { .. } => false,
         Expr::List(items, _) => items.iter().any(expr_needs_lowering),
         Expr::Fn(f) => block_needs_lowering(&f.body),
         Expr::Unary { expr, .. } => expr_needs_lowering(expr),
@@ -215,6 +220,10 @@ fn expr_needs_lowering(e: &Expr) -> bool {
 
 struct Lower {
     next_temp: usize,
+    /// The parent class of the class whose body is being lowered. `super`
+    /// resolves against it: `super.m(...)` calls the parent's implementation
+    /// of `m`, `super(...)` calls the parent's constructor.
+    current_parent: Option<String>,
     /// Variant name -> payload field names, collected from the program's own
     /// `enum` declarations. A match needs the field names to bind them.
     variants: std::collections::HashMap<String, Vec<String>>,
@@ -447,10 +456,14 @@ impl Lower {
     }
 
     fn class_decl(&mut self, c: &ClassDecl) -> ClassDecl {
-        ClassDecl {
-            methods: c.methods.iter().map(|m| self.fn_proto(m)).collect(),
-            ..c.clone()
-        }
+        // A method body may use `super`, which resolves against this class's
+        // parent. The parent name is known here (the `extends` clause), so the
+        // lowering can resolve `super` without the checker rewriting the AST.
+        let outer_parent = self.current_parent.clone();
+        self.current_parent = c.parent.clone();
+        let methods = c.methods.iter().map(|m| self.fn_proto(m)).collect();
+        self.current_parent = outer_parent;
+        ClassDecl { methods, ..c.clone() }
     }
 
     /// `if` as a statement. Elif arms whose condition needs a prelude are
@@ -943,6 +956,12 @@ impl Lower {
                 span,
             } => self.match_expr(scrutinee, arms, span),
             Expr::Propagate(inner, span) => self.propagate(inner, span),
+            // A bare `super` is not a value; the checker rejects it. It is
+            // passed through so the backend can report it if the checker was
+            // bypassed.
+            Expr::Super { span } => (Expr::Super { span: span.clone() }, Vec::new()),
+            // An already-resolved `SuperCall` passes through unchanged.
+            Expr::SuperCall { .. } => (e.clone(), Vec::new()),
 
             Expr::Int(..)
             | Expr::Float(..)
@@ -990,6 +1009,19 @@ impl Lower {
                 span,
             } => self.assign(target, *op, value, span),
             Expr::Call { callee, args, span } => {
+                // `super(args)` — the parent class's constructor.
+                if let Expr::Super { .. } = &**callee {
+                    let (args, pre) = self.seq_list(args);
+                    return (
+                        Expr::SuperCall {
+                            parent: self.current_parent.clone().unwrap_or_default(),
+                            method: None,
+                            args,
+                            span: span.clone(),
+                        },
+                        pre,
+                    );
+                }
                 let mut parts: Vec<&Expr> = vec![callee];
                 parts.extend(args.iter());
                 let (v, pre) = self.seq(&parts);
@@ -1010,6 +1042,19 @@ impl Lower {
                 args,
                 span,
             } => {
+                // `super.m(args)` — the parent class's implementation of `m`.
+                if let Expr::Super { .. } = &**object {
+                    let (args, pre) = self.seq_list(args);
+                    return (
+                        Expr::SuperCall {
+                            parent: self.current_parent.clone().unwrap_or_default(),
+                            method: Some(name.clone()),
+                            args,
+                            span: span.clone(),
+                        },
+                        pre,
+                    );
+                }
                 let mut parts: Vec<&Expr> = vec![object];
                 parts.extend(args.iter());
                 let (v, pre) = self.seq(&parts);

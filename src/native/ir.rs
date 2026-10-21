@@ -251,6 +251,13 @@ fn collect_outer_uses_expr(
     out: &mut HashSet<String>,
 ) {
     match e {
+        // `super` itself references no names; its arguments might.
+        Expr::Super { .. } => {}
+        Expr::SuperCall { args, .. } => {
+            for a in args {
+                collect_outer_uses_expr(a, declared, out);
+            }
+        }
         // Surface-only nodes (removed by lowering) — walk them anyway so a
         // capture inside one is never missed.
         Expr::If {
@@ -1051,6 +1058,12 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
 
 fn nested_fns_expr<'a>(e: &'a Expr, out: &mut Vec<&'a FnProto>) {
     match e {
+        Expr::Super { .. } => {}
+        Expr::SuperCall { args, .. } => {
+            for a in args {
+                nested_fns_expr(a, out);
+            }
+        }
         Expr::If {
             cond, then, els, ..
         } => {
@@ -1787,6 +1800,11 @@ impl<'ctx> Ir<'ctx> {
 
     fn compile_expr_inner(&mut self, e: &Expr) -> IrResult<PointerValue<'ctx>> {
         match e {
+            // `super` needs the runtime's parent-class lookup; rejected with
+            // the backend's standard wording until it is implemented here.
+            Expr::Super { .. } | Expr::SuperCall { .. } => {
+                Err(self.unsupported("super (parent-class calls)"))
+            }
             // Surface-only nodes are rewritten by `crate::lower` before codegen.
             Expr::If { span, .. }
             | Expr::OptField { span, .. }

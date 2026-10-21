@@ -374,12 +374,30 @@ fn optimize_body(chunk: &mut Chunk, stats: &mut OptStats) {
     if !has_try {
         let index_of: HashMap<usize, usize> =
             ins.iter().enumerate().map(|(k, i)| (i.old, k)).collect();
+        // A fold can remove an instruction that a surviving jump targets (e.g.
+        // `[False][JumpIfFalse -> A]` becomes `[Jump -> A]`, then the
+        // `[True][JumpIfFalse]` pair at A itself folds away). Such a dangling
+        // target must resolve to the next surviving instruction — the same
+        // forward-fill the encode step applies through `remap` — otherwise the
+        // dead-code pass would mark the reachable code after it unreachable
+        // and delete live branches.
+        let mut starts: Vec<usize> = index_of.keys().copied().collect();
+        starts.sort_unstable();
+        let resolve = |t: usize| -> Option<usize> {
+            if let Some(&k) = index_of.get(&t) {
+                return Some(k);
+            }
+            let pos = starts.partition_point(|&o| o <= t);
+            if pos < starts.len() {
+                Some(index_of[&starts[pos]])
+            } else {
+                None // past the end: nothing left to run
+            }
+        };
         let mut reachable = vec![false; ins.len()];
         let mut stack: Vec<usize> = vec![0];
-        // Targets that do not correspond to an instruction start are ignored
-        // (they cannot be jumped to anyway).
         for t in &targets {
-            if let Some(&k) = index_of.get(t) {
+            if let Some(k) = resolve(*t) {
                 stack.push(k);
             }
         }
@@ -393,7 +411,7 @@ fn optimize_body(chunk: &mut Chunk, stats: &mut OptStats) {
                 _ => stack.push(k + 1),
             }
             if let Some(t) = ins[k].jump_target() {
-                if let Some(&tk) = index_of.get(&t) {
+                if let Some(tk) = resolve(t) {
                     stack.push(tk);
                 }
             }

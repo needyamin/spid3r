@@ -34,6 +34,48 @@ pub enum Flow {
     Error(Diagnostic),
 }
 
+/// Public sweep handle for other crates in this workspace (`modules`) that
+/// run interpreter entry points; see [`GuardSweep`].
+pub struct GuardSweepPublic<'a> {
+    interp: &'a Interp,
+    mark: usize,
+}
+
+impl<'a> GuardSweepPublic<'a> {
+    pub fn new(interp: &'a Interp) -> Self {
+        GuardSweepPublic {
+            interp,
+            mark: interp.guard_mark(),
+        }
+    }
+}
+
+impl Drop for GuardSweepPublic<'_> {
+    fn drop(&mut self) {
+        self.interp.release_guards(self.mark);
+    }
+}
+
+/// Releases every mutex this interpreter still holds when the entry-point
+/// stack frame goes away.
+///
+/// A panic is never caught *inside* the engine — it unwinds out of the whole
+/// run — so a sweep at each entry point (program run, spawned task, module
+/// load) covers every user frame. On the normal path the sweep is a no-op:
+/// the call boundaries already released their guards, so nothing is left
+/// above the entry mark. The sweep lives at entry points, not per block, so
+/// deep recursion does not pay extra stack per frame.
+struct GuardSweep<'a> {
+    interp: &'a Interp,
+    mark: usize,
+}
+
+impl Drop for GuardSweep<'_> {
+    fn drop(&mut self) {
+        self.interp.release_guards(self.mark);
+    }
+}
+
 #[derive(Clone)]
 enum TraceCallee {
     Func(Option<String>),
@@ -61,8 +103,10 @@ pub struct Interp {
     pub modules: Arc<Mutex<crate::modules::ModuleCache>>,
     pub file: Arc<str>,
     pub module_dirs: Vec<PathBuf>,
-    /// Mutex guards held by the current scope; released at block exit.
-    pub guards: Mutex<Vec<std::sync::Arc<crate::sched::MutexData>>>,
+    /// Mutex guards held by the current scope; released at block exit. Each
+    /// entry unlocks its mutex when dropped, so a panic unwinding through the
+    /// interpreter cannot leave a user mutex locked.
+    pub guards: Mutex<Vec<crate::sched::MutexGuardToken>>,
     guards_len: AtomicUsize,
     pub is_module: bool,
     pub public_names: Mutex<HashSet<String>>,
@@ -230,6 +274,12 @@ impl Interp {
     }
 
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
+        // On a panic (which unwinds out of the whole run), release every user
+        // mutex this interpreter still holds; see `GuardSweep`.
+        let _guard_sweep = GuardSweep {
+            interp: self,
+            mark: self.guard_mark(),
+        };
         // Every backend executes the *lowered* AST, never the parser's output
         // directly (see `crate::lower`). The pass is the identity today, so this
         // borrows rather than clones.
@@ -291,6 +341,11 @@ impl Interp {
 
     // ------------------------------------------------------------- errors
 
+    /// Build a runtime error. Cold path: kept out of line so the (large)
+    /// `Diagnostic` locals do not land in the frame of every caller — the
+    /// interpreter recurses once per call level, and inflating `eval`'s frame
+    /// multiplies directly into the recursion stack budget.
+    #[inline(never)]
     pub fn rt(&self, span: &Span, msg: impl Into<String>) -> Flow {
         Flow::Error(
             Diagnostic::at(Phase::Runtime, span.clone(), msg).with_trace(self.trace_frames(span)),
@@ -311,9 +366,8 @@ impl Interp {
         }
         let mut guards = self.guards.lock().unwrap();
         while guards.len() > mark {
-            if let Some(m) = guards.pop() {
-                m.unlock();
-            }
+            // Dropping the token unlocks the mutex (and wakes a waiter).
+            guards.pop();
         }
         self.guards_len.store(guards.len(), Ordering::Relaxed);
     }
@@ -364,11 +418,21 @@ impl Interp {
                 Ok(names) => {
                     if let Some(alias_name) = alias {
                         let mut entries = Vec::new();
-                        for (name, value, _) in names {
-                            entries.push((crate::value::MapKey::Str(name.into()), value));
+                        let mut frozen = std::collections::HashSet::new();
+                        for (name, value, is_const) in names {
+                            let key = crate::value::MapKey::Str(name.into());
+                            if is_const {
+                                // A `public const` export stays immutable
+                                // through the namespace as well.
+                                frozen.insert(key.clone());
+                            }
+                            entries.push((key, value));
                         }
+                        // The alias is a **module namespace**: a read-only view
+                        // of the module's exports. `mu.get()` calls the
+                        // module's `get`, and the namespace cannot be mutated.
                         let map_val = Value::Map(crate::value::new_ref(
-                            crate::value::collections::MapData::from_entries(entries),
+                            crate::value::collections::MapData::namespace(entries, frozen),
                         ));
                         environment::define_const(env, alias_name, map_val);
                     } else {
@@ -653,6 +717,12 @@ impl Interp {
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let interp = Interp::shared(globals, sched, modules, file, module_dirs);
+                    // A panic in the task releases the task's mutexes (see
+                    // `GuardSweep`).
+                    let _guard_sweep = GuardSweep {
+                        interp: &interp,
+                        mark: 0,
+                    };
                     // Surface the user-thrown value across the task boundary
                     // so `join`/`await` rethrow is structural: `catch` on the
                     // joining side rebinds the original value, not its display
@@ -902,9 +972,28 @@ impl Interp {
                         }
                         let v = m.lock();
                         let mut guards = self.guards.lock().unwrap();
-                        guards.push(m.clone());
+                        guards.push(crate::sched::MutexGuardToken::new(m.clone()));
                         self.guards_len.store(guards.len(), Ordering::Relaxed);
                         return Ok(v);
+                    }
+                    if name == "unlock" {
+                        if !args.is_empty() {
+                            return Err(self.rt(span, "unlock takes no arguments"));
+                        }
+                        m.unlock();
+                        // The mutex was released explicitly: disarm this
+                        // scope's token so the block-exit release does not
+                        // unlock it a second time (which could free a lock
+                        // another task now legitimately holds).
+                        let mut guards = self.guards.lock().unwrap();
+                        for g in guards.iter_mut() {
+                            if let Some(held) = g.mutex() {
+                                if std::sync::Arc::ptr_eq(held, m) {
+                                    g.disarm();
+                                }
+                            }
+                        }
+                        return Ok(Value::Null);
                     }
                 }
                 if let Value::Instance(inst) = &obj {
@@ -950,6 +1039,25 @@ impl Interp {
                 let obj = self.eval(object, env)?;
                 self.field_get(&obj, name, span)
             }
+            // A bare `super` is not a value (the checker rejects it); the
+            // lowering turns every legal use into a `SuperCall`.
+            // `super(...)` / `super.m(...)`: the parent class's constructor or
+            // method, called on the current instance. The work lives in a
+            // `#[inline(never)]` helper: inlining it into `eval` would grow
+            // every expression frame, and the interpreter recurses once per
+            // call level — the recursion stack budget is per-frame cost.
+            Expr::SuperCall {
+                parent,
+                method,
+                args,
+                span,
+            } => self.eval_super_call(parent, method, args, env, span),
+            // A bare `super` is not a value (the checker rejects it); the
+            // lowering turns every legal use into a `SuperCall`.
+            Expr::Super { span } => Err(self.rt(
+                span,
+                "super must be called: write super(...) or super.method(...)",
+            )),
             Expr::New { class, args, span } => {
                 let c = match environment::get(env, class) {
                     Some(Value::Class(c)) => c,
@@ -984,6 +1092,12 @@ impl Interp {
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let interp = Interp::shared(globals, sched, modules, file, module_dirs);
+                    // A panic in the task releases the task's mutexes (see
+                    // `GuardSweep`).
+                    let _guard_sweep = GuardSweep {
+                        interp: &interp,
+                        mark: 0,
+                    };
                     // Surface the user-thrown value across the task boundary
                     // so `join`/`await` rethrow is structural: `catch` on the
                     // joining side rebinds the original value, not its display
@@ -1201,7 +1315,7 @@ impl Interp {
             }
             other => Err(self.rt(
                 span,
-                format!("{} has no fields", crate::value::type_name(other)),
+                crate::value::no_field_error(other, name),
             )),
         }
     }
@@ -1223,7 +1337,7 @@ impl Interp {
             }
             other => Err(self.rt(
                 span,
-                format!("{} has no fields", crate::value::type_name(other)),
+                crate::value::no_field_error(other, name),
             )),
         }
     }
@@ -1473,7 +1587,141 @@ impl Interp {
         span: &Span,
     ) -> Result<Value, Flow> {
         let class = { inst.lock().unwrap().class.clone() };
-        let fd = match Self::find_method(&class, name) {
+        self.call_class_method(&class, inst, name, args, span)
+    }
+
+    /// Evaluate a resolved `super` call. Kept out of line (see the match arm).
+    #[inline(never)]
+    fn eval_super_call(
+        &self,
+        parent: &str,
+        method: &Option<String>,
+        args: &[Expr],
+        env: &Env,
+        span: &Span,
+    ) -> Result<Value, Flow> {
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            vals.push(self.eval(a, env)?);
+        }
+        self.call_super(parent, method.as_deref(), vals, env, span)
+    }
+
+    /// `super(...)` / `super.m(...)`.
+    ///
+    /// The receiver is the current instance (`self`); the target is the
+    /// parent class resolved by the lowering. A constructor call runs the
+    /// parent's constructor on the *same* instance (the instance already
+    /// exists — it is being initialized), and a method call runs the parent's
+    /// implementation with the same receiver.
+    #[inline(never)]
+    fn call_super(
+        &self,
+        parent: &str,
+        method: Option<&str>,
+        args: Vec<Value>,
+        env: &environment::Env,
+        span: &Span,
+    ) -> Result<Value, Flow> {
+        let recv = environment::get(env, "self");
+        let inst = match recv {
+            Some(Value::Instance(inst)) => inst,
+            _ => {
+                return Err(self.rt(
+                    span,
+                    "super is only available inside a class method",
+                ))
+            }
+        };
+        if parent.is_empty() {
+            return Err(self.rt(
+                span,
+                "super is not available: this class has no parent class",
+            ));
+        }
+        let class = match environment::get(&self.globals, parent) {
+            Some(Value::Class(c)) => c,
+            Some(_) => {
+                return Err(self.rt(
+                    span,
+                    format!("'{}' is not a class", parent),
+                ))
+            }
+            None => return Err(self.rt(span, format!("unknown class '{}'", parent))),
+        };
+        match method {
+            Some(m) => self.call_class_method(&class, &inst, m, args, span),
+            None => self.call_parent_constructor(&class, &inst, args, span),
+        }
+    }
+
+    /// Run the parent class's constructor on the instance being initialized.
+    fn call_parent_constructor(
+        &self,
+        class: &Arc<crate::value::ClassData>,
+        inst: &crate::value::Ref<InstanceData>,
+        args: Vec<Value>,
+        span: &Span,
+    ) -> Result<Value, Flow> {
+        let ctor = match &class.ctor {
+            Some(c) => c.clone(),
+            None => {
+                return Err(self.rt(
+                    span,
+                    format!("class '{}' has no constructor", class.name),
+                ))
+            }
+        };
+        // Constructor parameters do not include self; self is bound here.
+        if ctor.proto.params.len() != args.len() {
+            return Err(self.rt(
+                span,
+                format!(
+                    "constructor {}::new expects {} argument(s), got {}",
+                    class.name,
+                    ctor.proto.params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        let depth = self.depth.fetch_add(1, Ordering::Relaxed);
+        if depth >= MAX_CALL_DEPTH {
+            self.depth.fetch_sub(1, Ordering::Relaxed);
+            return Err(self.rt(span, "stack overflow: call depth limit reached"));
+        }
+        self.call_stack
+            .lock()
+            .unwrap()
+            .push((TraceCallee::Ctor(class.clone()), span.clone()));
+        let mut vars = HashMap::with_capacity(ctor.proto.params.len() + 1);
+        vars.insert("self".to_string(), Value::Instance(inst.clone()));
+        for (p, v) in ctor.proto.params.iter().zip(args) {
+            vars.insert(p.name.clone(), v);
+        }
+        let fenv = environment::child_with_vars(&ctor.env, vars);
+        let mark = self.guard_mark();
+        let flow = self.exec_block(&ctor.proto.body.stmts, &fenv);
+        self.release_guards(mark);
+        self.call_stack.lock().unwrap().pop();
+        self.depth.fetch_sub(1, Ordering::Relaxed);
+        match flow {
+            Flow::Value(_) | Flow::Return(_) => Ok(Value::Null),
+            Flow::Break => Err(self.rt(span, "break outside a loop")),
+            Flow::Continue => Err(self.rt(span, "continue outside a loop")),
+            Flow::Error(d) => Err(Flow::Error(d)),
+        }
+    }
+
+    /// Call a method of `class` (searching its inheritance chain) on `inst`.
+    fn call_class_method(
+        &self,
+        class: &Arc<crate::value::ClassData>,
+        inst: &crate::value::Ref<InstanceData>,
+        name: &str,
+        args: Vec<Value>,
+        span: &Span,
+    ) -> Result<Value, Flow> {
+        let fd = match Self::find_method(class, name) {
             Some(fd) => fd,
             None => {
                 return Err(self.rt(
@@ -1501,7 +1749,7 @@ impl Interp {
         self.call_stack
             .lock()
             .unwrap()
-            .push((TraceCallee::Method(class, fd.clone()), span.clone()));
+            .push((TraceCallee::Method(class.clone(), fd.clone()), span.clone()));
         let obj = Value::Instance(inst.clone());
         let mut vars = HashMap::with_capacity(fd.proto.params.len());
         vars.insert("self".to_string(), obj);

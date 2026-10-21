@@ -96,6 +96,14 @@ the (flat, transitive) embedded table, so nested imports resolve too.
 - Exception handling (`try`/`catch`/`finally`/`throw`) is driven by a handler
   stack the VM owns; unwinding restores the operand-stack height and releases any
   mutex guards held by the unwound frames.
+- `super` compiles to `SuperCtor` (opcode 56: parent class name index `u16`,
+  argc `u8`) and `SuperMethod` (opcode 57: parent class name index `u16`,
+  method name index `u16`, argc `u8`). The receiver is the executing frame's
+  `self` (slot 0); the parent class is resolved by name in the globals, so the
+  opcodes carry no class-table state. The opcodes are additive (byte 55 is
+  `DefineConst`, which records a top-level `const` so the VM can reject a
+  rebind and report a module's `public const` exports); `.matrixc` files
+  written by older builds still load.
 
 ### Bytecode validation (safety net)
 

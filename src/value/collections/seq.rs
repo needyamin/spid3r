@@ -652,6 +652,15 @@ pub struct MapData {
     /// key -> position in `entries`. Kept in sync by `find`-adjacent
     /// mutations; rebuilt wholesale when entries shift.
     index: std::collections::HashMap<super::MapKey, usize>,
+    /// True when this map is a **module namespace** — the value bound to an
+    /// import alias (`import "m" as mu`). Such a map is a read-only view of
+    /// the module's exports: it cannot be mutated, and an exported name
+    /// shadows a built-in map method (`mu.get()` is the module's `get`, not
+    /// `map.get`).
+    pub namespace: bool,
+    /// The module's `public const` exports. They are frozen: a namespace copy
+    /// of a constant must not be rebindable (`mu["VERSION"] = 9`).
+    pub frozen: std::collections::HashSet<super::MapKey>,
 }
 
 impl Drop for MapData {
@@ -671,7 +680,52 @@ impl MapData {
         for (i, (k, _)) in entries.iter().enumerate() {
             index.insert(k.clone(), i);
         }
-        MapData { entries, index }
+        MapData {
+            entries,
+            index,
+            namespace: false,
+            frozen: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Build a **module namespace**: the exported names of an imported module.
+    /// `frozen` holds the module's `public const` exports, which stay
+    /// immutable here exactly as they are in the module itself.
+    pub fn namespace(
+        entries: Vec<(super::MapKey, Value)>,
+        frozen: std::collections::HashSet<super::MapKey>,
+    ) -> MapData {
+        let mut m = MapData::from_entries(entries);
+        m.namespace = true;
+        m.frozen = frozen;
+        m
+    }
+
+    /// Whether a key may not be rebound (a `public const` export).
+    #[inline]
+    pub fn is_frozen(&self, k: &super::MapKey) -> bool {
+        self.frozen.contains(k)
+    }
+
+    /// The error a mutation of this map must produce, or `None` when the
+    /// mutation is allowed. A namespace is a read-only view of a module's
+    /// exports; its constants are frozen even in principle.
+    pub fn mutation_error(&self, k: Option<&super::MapKey>, what: &str) -> Option<String> {
+        if !self.namespace {
+            return None;
+        }
+        match k {
+            Some(k) if self.is_frozen(k) => Some(format!(
+                "cannot assign to constant '{}' (it is a public const of the module)",
+                k.display()
+            )),
+            Some(_) => Some(format!(
+                "module namespace is read-only: cannot {} '{}'",
+                what,
+                k.map(|k| k.display()).unwrap_or_default()
+            )),
+            None => Some("module namespace is read-only".to_string()),
+        }
     }
 
     #[inline]
@@ -707,6 +761,9 @@ impl MapData {
             }
             "clear" => {
                 want(name, args, 0)?;
+                if let Some(e) = self.mutation_error(None, "clear") {
+                    return Err(e);
+                }
                 self.entries.clear();
                 self.index.clear();
                 Ok(Value::Null)
@@ -714,6 +771,9 @@ impl MapData {
             "set" => {
                 want(name, args, 2)?;
                 let k = as_key(&args[0])?;
+                if let Some(e) = self.mutation_error(Some(&k), "assign") {
+                    return Err(e);
+                }
                 self.set_key(k, args[1].clone());
                 Ok(Value::Null)
             }
@@ -728,6 +788,9 @@ impl MapData {
             "remove" => {
                 want(name, args, 1)?;
                 let k = as_key(&args[0])?;
+                if let Some(e) = self.mutation_error(Some(&k), "remove") {
+                    return Err(e);
+                }
                 match self.find(&k) {
                     Some(i) => {
                         let v = self.entries.remove(i).1;
@@ -740,6 +803,9 @@ impl MapData {
             "delete" => {
                 want(name, args, 1)?;
                 let k = as_key(&args[0])?;
+                if let Some(e) = self.mutation_error(Some(&k), "delete") {
+                    return Err(e);
+                }
                 match self.find(&k) {
                     Some(i) => {
                         self.entries.remove(i);

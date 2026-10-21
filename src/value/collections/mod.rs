@@ -572,6 +572,43 @@ pub fn call_method_host(
     if name == "clone" {
         return Ok(deep_clone(obj));
     }
+    // A **module namespace** is a map whose entries are the module's exports.
+    // An exported function wins over the map's own method of the same name:
+    // `mu.get()` must call the module's `get`, not `map.get` (which would
+    // demand a key argument and fail).
+    if let Value::Map(d) = obj {
+        let exported = {
+            let guard = d.lock().unwrap();
+            if !guard.namespace {
+                None
+            } else {
+                let key = super::MapKey::Str(name.to_string().into());
+                guard
+                    .find(&key)
+                    .map(|i| (guard.entries[i].1.clone(), guard.is_frozen(&key)))
+            }
+        };
+        if let Some((v, frozen)) = exported {
+            if frozen {
+                return Err(format!(
+                    "cannot call constant '{}' (it is a public const of the module)",
+                    name
+                ));
+            }
+            if matches!(
+                v,
+                Value::Function(_)
+                    | Value::VFunc(_)
+                    | Value::Native(_)
+                    | Value::NativeClosure(_)
+                    | Value::Cfn(_)
+            ) {
+                // The lock is released before the call: the callee may touch
+                // the namespace again.
+                return host.call_callback(&v, args);
+            }
+        }
+    }
     match obj {
         Value::List(d) | Value::VecDyn(d) => {
             if is_callback_method(name) {

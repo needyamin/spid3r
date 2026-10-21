@@ -1418,6 +1418,13 @@ impl Parser {
                 self.pos += 1;
                 Ok(Expr::Ident("self".to_string(), sp))
             }
+            // `super` — the parent class. The postfix loop turns it into
+            // `super(args)` (the parent constructor) or `super.m(args)` (the
+            // parent implementation of `m`); `crate::lower` resolves both.
+            TokenKind::Kw(Keyword::Super) => {
+                self.pos += 1;
+                Ok(Expr::Super { span: sp })
+            }
             TokenKind::Ident(name) => {
                 self.pos += 1;
                 Ok(Expr::Ident(name, sp))

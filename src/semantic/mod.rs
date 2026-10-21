@@ -59,6 +59,11 @@ struct VarInfo {
     /// Where the binding was declared, for the warning's snippet. Filled by
     /// `declare`, which already receives the span.
     decl: Option<Span>,
+    /// For an import **alias** (`import "m" as mu`): the names the module
+    /// exports as `public const`. A namespace is a read-only view of the
+    /// module, so these must not be rebound through the alias
+    /// (`mu["VERSION"] = 1`).
+    import_consts: Option<Vec<String>>,
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -859,6 +864,23 @@ impl Checker {
         None
     }
 
+    /// The `public const` exports of the module an expression names, when the
+    /// expression is an import **alias** (`import "m" as mu`).
+    fn alias_const_exports(&self, expr: &Expr) -> Option<&[String]> {
+        let Expr::Ident(name, _) = expr else {
+            return None;
+        };
+        self.lookup(name).and_then(|v| v.import_consts.as_deref())
+    }
+
+    /// A string literal's text, when the expression is one.
+    fn string_literal(expr: &Expr) -> Option<&str> {
+        match expr {
+            Expr::Str(s, _) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
     fn known(&self, name: &str) -> bool {
         // Host-registered names (embedding API) resolve dynamically.
         self.externals.contains(name)
@@ -888,6 +910,88 @@ impl Checker {
             cur = info.parent.clone();
         }
         None
+    }
+
+    /// Validate a `super` use against the class table.
+    ///
+    /// `method` is `None` for a parent-constructor call (`super(args)`) and
+    /// `Some(name)` for a parent-method call (`super.name(args)`). The
+    /// receiver is implicit in both: the current instance is the `self`.
+    fn check_super(
+        &self,
+        span: &Span,
+        method: Option<&str>,
+        argc: usize,
+    ) -> Result<(), Diagnostic> {
+        let Some(class) = self.current_class.as_deref() else {
+            return Err(self.err(span, "super is only allowed inside a class method"));
+        };
+        let Some(parent) = self.classes.get(class).and_then(|ci| ci.parent.clone()) else {
+            return Err(self.err(
+                span,
+                format!(
+                    "class '{}' has no parent class: super is not available here",
+                    class
+                ),
+            ));
+        };
+        self.check_super_in(&parent, span, method, argc)
+    }
+
+    /// Validate a `super` use against an explicit parent class.
+    fn check_super_in(
+        &self,
+        parent: &str,
+        span: &Span,
+        method: Option<&str>,
+        argc: usize,
+    ) -> Result<(), Diagnostic> {
+        let parent = parent.to_string();
+        let parent = parent.as_str();
+        match method {
+            Some(m) => {
+                let Some(sig) = self.method_sig(parent, m) else {
+                    return Err(self.err(
+                        span,
+                        format!("class '{}' has no method '{}'", parent, m),
+                    ));
+                };
+                // A method takes `self` explicitly; the call does not.
+                if sig.arity() != argc + 1 {
+                    return Err(self.err(
+                        span,
+                        format!(
+                            "method {}::{} expects {} argument(s), got {}",
+                            parent,
+                            m,
+                            sig.arity() - 1,
+                            argc
+                        ),
+                    ));
+                }
+            }
+            None => {
+                let Some(sig) = self.method_sig(parent, "new") else {
+                    return Err(self.err(
+                        span,
+                        format!("class '{}' has no constructor", parent),
+                    ));
+                };
+                // A constructor takes no `self` parameter.
+                if sig.arity() != argc {
+                    return Err(self.err(
+                        span,
+                        format!(
+                            "constructor {}::new expects {} argument(s), got {}",
+                            parent,
+                            sig.arity(),
+                            argc
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Method (visibility, arity) through the inheritance chain.
@@ -1046,6 +1150,14 @@ impl Checker {
                             ));
                         }
                     }
+                    // The alias is a namespace: remember the module's
+                    // `public const` exports so a rebind through it can be
+                    // rejected (`mu["VERSION"] = 1`).
+                    let consts: Vec<String> = names
+                        .iter()
+                        .filter(|(_, is_const)| *is_const)
+                        .map(|(n, _)| n.clone())
+                        .collect();
                     let scope = self.scopes.last_mut().unwrap();
                     scope.insert(
                         alias_name.clone(),
@@ -1056,6 +1168,11 @@ impl Checker {
                             is_import: true,
                             kind: BindKind::Import,
                             decl: Some(span.clone()),
+                            import_consts: if consts.is_empty() {
+                                None
+                            } else {
+                                Some(consts)
+                            },
                             ..Default::default()
                         },
                     );
@@ -1823,6 +1940,7 @@ impl Checker {
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => Ty::Bool,
             },
             Expr::Logical { .. } => Ty::Bool,
+            Expr::Super { .. } | Expr::SuperCall { .. } => Ty::Any,
             Expr::Call { callee, args, .. } => {
                 if let Expr::Ident(name, _) = &**callee {
                     if let Some(fi) = self.funcs.get(name) {
@@ -2223,6 +2341,22 @@ impl Checker {
                     Expr::Index { object, index, .. } => {
                         self.check_expr(object)?;
                         self.check_expr(index)?;
+                        // A module namespace is a read-only view of the
+                        // module: its `public const` exports cannot be
+                        // rebound through the alias (`mu["VERSION"] = 1`).
+                        if let Some(consts) = self.alias_const_exports(object) {
+                            if let Some(key) = Self::string_literal(index) {
+                                if consts.iter().any(|c| c == key) {
+                                    return Err(self.err(
+                                        span,
+                                        format!(
+                                            "cannot assign to constant '{}' (it is a public const of the module)",
+                                            key
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                     }
                     Expr::Field { object, name, .. } => {
                         self.check_expr(object)?;
@@ -2274,7 +2408,33 @@ impl Checker {
                 }
                 self.check_expr(value)
             }
+            // A bare `super` is not a value: it must be called.
+            Expr::Super { span } => Err(self.err(
+                span,
+                "super must be called: write super(...) or super.method(...)",
+            )),
+            // An already-resolved `super` call (produced by `crate::lower`).
+            Expr::SuperCall {
+                parent,
+                method,
+                args,
+                span,
+            } => {
+                self.check_super_in(parent, span, method.as_deref(), args.len())?;
+                for a in args {
+                    self.check_expr(a)?;
+                }
+                Ok(())
+            }
             Expr::Call { callee, args, span } => {
+                // `super(args)` — the parent class's constructor.
+                if let Expr::Super { .. } = &**callee {
+                    self.check_super(span, None, args.len())?;
+                    for a in args {
+                        self.check_expr(a)?;
+                    }
+                    return Ok(());
+                }
                 if let Expr::Ident(name, _) = &**callee {
                     // A call is a READ of the callee: `f()` uses `f`. Without
                     // this the unused-variable lint fired on every closure held
@@ -2344,9 +2504,35 @@ impl Checker {
                 args,
                 span,
             } => {
+                // `super.m(args)` — the parent class's implementation of `m`.
+                if let Expr::Super { .. } = &**object {
+                    self.check_super(span, Some(name), args.len())?;
+                    for a in args {
+                        self.check_expr(a)?;
+                    }
+                    return Ok(());
+                }
                 self.check_expr(object)?;
                 for a in args {
                     self.check_expr(a)?;
+                }
+                // `mu.set("VERSION", 1)` on a module namespace would rebind a
+                // `public const` export — the same rejection the index form
+                // gets.
+                if name == "set" {
+                    if let Some(consts) = self.alias_const_exports(object) {
+                        if let Some(key) = args.first().and_then(|a| Self::string_literal(a)) {
+                            if consts.iter().any(|c| c == key) {
+                                return Err(self.err(
+                                    span,
+                                    format!(
+                                        "cannot assign to constant '{}' (it is a public const of the module)",
+                                        key
+                                    ),
+                                ));
+                            }
+                        }
+                    }
                 }
                 // When the receiver class is statically known, check it — for
                 // ANY receiver expression (F6), not only bare Idents.

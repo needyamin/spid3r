@@ -329,6 +329,26 @@ pub enum Expr {
         callable: Box<Expr>,
         span: Span,
     },
+    /// `super` — a reference to the parent class. It is only meaningful as the
+    /// callee of a call (`super(args)` — the parent constructor) or as the
+    /// receiver of a method call (`super.m(args)` — the parent implementation
+    /// of `m`).
+    ///
+    /// `crate::lower` rewrites both forms into [`Expr::SuperCall`], which
+    /// carries the parent class name; the backends only ever see that form.
+    Super { span: Span },
+    /// A resolved `super` call: the parent class's constructor
+    /// (`method` is `None`) or one of its methods. Produced by `crate::lower`
+    /// from [`Expr::Super`].
+    SuperCall {
+        /// The parent class name (resolved from the enclosing class's
+        /// `extends` clause while lowering).
+        parent: String,
+        /// The parent method to call; `None` calls the parent constructor.
+        method: Option<String>,
+        args: Vec<Expr>,
+        span: Span,
+    },
 
     // ------------------------------------------------------- surface-only nodes
     //
@@ -378,6 +398,7 @@ impl Expr {
             | Expr::Null(s)
             | Expr::Ident(_, s)
             | Expr::List(_, s)
+            | Expr::Super { span: s }
             | Expr::Await(_, s) => s,
             Expr::Unary { span, .. }
             | Expr::Binary { span, .. }
@@ -392,7 +413,8 @@ impl Expr {
             | Expr::If { span, .. }
             | Expr::OptField { span, .. }
             | Expr::Coalesce { span, .. }
-            | Expr::Match { span, .. } => span,
+            | Expr::Match { span, .. }
+            | Expr::SuperCall { span, .. } => span,
             Expr::Propagate(_, span) => span,
             Expr::Fn(f) => &f.span,
         }

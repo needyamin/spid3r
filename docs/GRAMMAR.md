@@ -114,7 +114,7 @@ args           = expr { "," expr } ;
 
 primary        = intLit | floatLit | stringLit | "true" | "false" | "null"
                | ident | listLit | fnLit | "new" ident "(" [ args ] ")"
-               | ifExpr | matchExpr | "(" expr ")" ;
+               | "super" | ifExpr | matchExpr | "(" expr ")" ;
 
 (* `if` in value position; a branch's last expression may omit its `;` *)
 ifExpr         = "if" "(" expr ")" valueBlock [ "else" valueBlock ] ;
@@ -165,6 +165,9 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
   `{{` escape: a hole is recognised only when `{` is followed immediately by an
   identifier.
 - `??` binds looser than `or` and tighter than assignment; `?.` is postfix.
+  `??` is **null**-coalescing (PHP semantics): the right side is evaluated
+  only when the left side is `null`. `none` is an option value, not null, so
+  `none ?? fallback` yields `none`; use `.unwrap_or(fallback)` for options.
   Both, and the value-position `if`, are rewritten by `crate::lower` into a
   temporary plus statements before any backend sees them, so they cost no engine
   support. A `while` condition that needs such a temporary keeps its
@@ -194,4 +197,16 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
   (`fn`, `class`, `interface`, `let`, `const`); class bodies additionally accept
   a constructor shorthand `new(params) { ... }` and a C-style `for let` header
   may omit the initializer or carry a type annotation.
+- Inside a class body, a member without an explicit `public`/`private` prefix
+  is **private** — including a method that overrides a public parent method.
+  Write `public` on every member meant to be called from outside.
+- `super` is valid only inside a class method or constructor:
+  `super(args)` runs the parent class's constructor on the current instance,
+  `super.name(args)` calls the parent class's implementation of `name` with
+  the current instance as the receiver. The lookup starts at the parent of
+  the class where the method is written, so a subclass that does not override
+  a method still reaches the grandparent implementation. `super` used anywhere
+  else is a semantic error, as is calling a method the parent does not have
+  or passing the wrong number of arguments. The AOT backend does not support
+  `super` yet (`--engine vm` runs it).
 - `self` may appear only as a parameter name and inside method bodies.

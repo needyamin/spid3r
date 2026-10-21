@@ -107,6 +107,10 @@ struct Handler {
 /// One function activation.
 struct CallFrame {
     func: Arc<VmFunc>,
+    /// Display name for stack traces. `None` means "use `func.name`". Method
+    /// frames carry the qualified `Class::method` form and constructor frames
+    /// `Class::new`, so a trace reads the same on the tree engine and the VM.
+    display: Option<String>,
     ip: usize,
     /// Byte offset of the instruction currently executing (or waiting on a
     /// call) in this frame, recorded before `ip` advances past its operands.
@@ -123,7 +127,9 @@ struct CallFrame {
     /// `func.upvalues[own..]` and are shared intentionally.
     own_cells: Vec<UpvalueCell>,
     /// Mutexes locked in this frame (released on return, like `finally`).
-    guards: Vec<std::sync::Arc<crate::sched::MutexData>>,
+    /// Each token unlocks its mutex when dropped, so a panic unwinding
+    /// through the VM cannot leave a user mutex locked.
+    guards: Vec<crate::sched::MutexGuardToken>,
     /// When `Some`, `OpReturn` from this frame pushes this value instead of
     /// the function's own return (used by class constructors).
     ctor_result: Option<Value>,
@@ -138,6 +144,11 @@ pub struct Vm {
     /// such an assignment (the semantic pass rejects it at compile time),
     /// so the runtime check only fires for crafted bytecode.
     global_consts: Arc<Mutex<HashSet<String>>>,
+    /// The constants **declared by this script** (top-level `const`). A
+    /// module VM gets its own set, so the module can report exactly which of
+    /// its exports are `public const` (the importer freezes those in the
+    /// namespace).
+    consts: Arc<Mutex<HashSet<String>>>,
     sched: Arc<Scheduler>,
     modules: Arc<Mutex<ModuleCache>>,
     file: Arc<str>,
@@ -186,6 +197,7 @@ impl Vm {
         let mut vm = Vm {
             globals: Arc::new(Mutex::new(HashMap::new())),
             global_consts: Arc::new(Mutex::new(HashSet::new())),
+            consts: Arc::new(Mutex::new(HashSet::new())),
             sched: Scheduler::shared(),
             modules: Arc::new(Mutex::new(ModuleCache::new())),
             file,
@@ -208,9 +220,11 @@ impl Vm {
 
     /// A VM that shares globals/imported-const names/scheduler/module cache
     /// with another (used for spawned tasks and imported modules).
+    #[allow(clippy::too_many_arguments)] // the shared handles a child VM needs
     fn with_shared(
         globals: Arc<Mutex<HashMap<String, Value>>>,
         global_consts: Arc<Mutex<HashSet<String>>>,
+        consts: Arc<Mutex<HashSet<String>>>,
         sched: Arc<Scheduler>,
         modules: Arc<Mutex<ModuleCache>>,
         embedded: EmbeddedModules,
@@ -220,6 +234,7 @@ impl Vm {
         Vm {
             globals,
             global_consts,
+            consts,
             sched,
             modules,
             embedded,
@@ -284,13 +299,13 @@ impl Vm {
         }
         validate_chunk(&script.chunk)?;
         let result = (|| {
-            self.call_vfunc_frame(script, Vec::new())
+            self.call_vfunc_frame(script, Vec::new(), None)
                 .map_err(|e| e.to_diag())?;
             let _ = self.run().map_err(|e| e.to_diag())?;
             let main = self.globals.lock().unwrap().get("main").cloned();
             match main {
                 Some(Value::VFunc(f)) => {
-                    self.call_vfunc_frame(f, Vec::new())
+                    self.call_vfunc_frame(f, Vec::new(), None)
                         .map_err(|e| e.to_diag())?;
                     let ret = self.run().map_err(|e| e.to_diag())?;
                     match ret {
@@ -325,7 +340,7 @@ impl Vm {
             }
         }
         validate_chunk(&script.chunk)?;
-        self.call_vfunc_frame(Arc::new(script), Vec::new())
+        self.call_vfunc_frame(Arc::new(script), Vec::new(), None)
             .map_err(|e| e.to_diag())?;
         let _ = self.run().map_err(|e| e.to_diag())?;
         // Const-ness of public bindings, from the module AST (mirrors the
@@ -353,7 +368,7 @@ impl Vm {
 
     /// Run a single function to completion (used by spawned tasks).
     fn run_function(&mut self, fd: Arc<VmFunc>, args: Vec<Value>) -> Result<Value, VmError> {
-        self.call_vfunc_frame(fd, args)?;
+        self.call_vfunc_frame(fd, args, None)?;
         self.run()
     }
 
@@ -369,7 +384,7 @@ impl Vm {
                 let saved = self.stop;
                 self.stop = self.frames.len();
                 let r = self
-                    .call_vfunc_frame(fd.clone(), args)
+                    .call_vfunc_frame(fd.clone(), args, None)
                     .and_then(|_| self.run_loop());
                 self.stop = saved;
                 r
@@ -713,6 +728,122 @@ impl Vm {
                     let v = self.pop_top();
                     self.globals.lock().unwrap().insert(name.to_string(), v);
                 }
+                OpCode::DefineConst => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let name = match self.const_at(nf, idx) {
+                        Value::Str(s) => s,
+                        _ => {
+                            self.fail("global name is not a string");
+                            continue;
+                        }
+                    };
+                    let v = self.pop_top();
+                    // Record the name as a constant of this script, so a
+                    // rebind is rejected and an importing module sees the
+                    // export as a `public const`.
+                    self.consts.lock().unwrap().insert(name.to_string());
+                    self.globals.lock().unwrap().insert(name.to_string(), v);
+                }
+                OpCode::SuperCtor | OpCode::SuperMethod => {
+                    let is_ctor = matches!(op, OpCode::SuperCtor);
+                    let (pidx, midx, argc, next_ip) = if is_ctor {
+                        let pidx = self.code_u16(nf, ip + 1) as usize;
+                        let argc = self.code_u8(nf, ip + 3) as usize;
+                        (pidx, 0usize, argc, ip + 4)
+                    } else {
+                        let pidx = self.code_u16(nf, ip + 1) as usize;
+                        let midx = self.code_u16(nf, ip + 3) as usize;
+                        let argc = self.code_u8(nf, ip + 5) as usize;
+                        (pidx, midx, argc, ip + 6)
+                    };
+                    self.frames[nf].ip = next_ip;
+                    let parent = match self.const_at(nf, pidx) {
+                        Value::Str(s) => s.to_string(),
+                        _ => {
+                            self.fail("super: parent class name is not a string");
+                            continue;
+                        }
+                    };
+                    let method = if is_ctor {
+                        None
+                    } else {
+                        match self.const_at(nf, midx) {
+                            Value::Str(s) => Some(s.to_string()),
+                            _ => {
+                                self.fail("super: method name is not a string");
+                                continue;
+                            }
+                        }
+                    };
+                    // The receiver is the executing frame's `self` (slot 0).
+                    let recv = self.frames[nf]
+                        .slots
+                        .first()
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    let args = self.pop_n(argc);
+                    // The parent class is a global.
+                    let class = {
+                        let g = self.globals.lock().unwrap();
+                        match g.get(&parent) {
+                            Some(Value::VClass(c)) => Some(c.clone()),
+                            _ => None,
+                        }
+                    };
+                    let Some(class) = class else {
+                        self.fail(format!("super: unknown class '{}'", parent));
+                        continue;
+                    };
+                    let target = match &method {
+                        Some(m) => match find_method_vclass(&class, m) {
+                            Some(fd) => fd,
+                            None => {
+                                self.fail(format!(
+                                    "class {} has no method '{}'",
+                                    class.name, m
+                                ));
+                                continue;
+                            }
+                        },
+                        None => match &class.ctor {
+                            Some(c) => c.clone(),
+                            None => {
+                                self.fail(format!(
+                                    "class {} has no constructor",
+                                    class.name
+                                ));
+                                continue;
+                            }
+                        },
+                    };
+                    let want = match &method {
+                        // A method takes `self` explicitly; a constructor gets
+                        // a synthetic one.
+                        Some(_) => argc + 1,
+                        None => argc + 1,
+                    };
+                    if target.arity != want {
+                        self.fail(format!(
+                            "{} expects {} argument(s), got {}",
+                            target.name.as_deref().unwrap_or("fn"),
+                            target.arity - 1,
+                            argc
+                        ));
+                        continue;
+                    }
+                    let mut call_args = self.alloc_slots(want);
+                    call_args.push(recv);
+                    call_args.extend(args);
+                    let display = match &method {
+                        Some(m) => Some(format!("{}::{}", class.name, m)),
+                        None => Some(format!("{}::new", class.name)),
+                    };
+                    if let Err(e) = self.call_vfunc_frame(target, call_args, display) {
+                        self.error = Some(e);
+                        continue;
+                    }
+                }
                 OpCode::GetUpvalue => {
                     let slot = self.code_u8(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 2;
@@ -1002,7 +1133,7 @@ impl Vm {
                     let callee = self.pop_top();
                     match callee {
                         Value::VFunc(fd) => {
-                            if let Err(e) = self.call_vfunc_frame(fd, args) {
+                            if let Err(e) = self.call_vfunc_frame(fd, args, None) {
                                 self.error = Some(e);
                                 continue;
                             }
@@ -1079,8 +1210,55 @@ impl Vm {
                                     continue;
                                 }
                             }
+                            Value::MutexVal(m) => {
+                                // Detach from the frame borrow: the lock paths
+                                // below mutate the frame.
+                                let m = m.clone();
+                                // `mu.lock()` must be recorded on the frame so
+                                // the lock is released when the frame returns —
+                                // and when a panic unwinds through the VM. The
+                                // tree engine has the same discipline in its
+                                // method dispatch.
+                                let mname = name.as_ref();
+                                if mname == "lock" && argc == 0 {
+                                    let v = m.lock();
+                                    self.frames[nf]
+                                        .guards
+                                        .push(crate::sched::MutexGuardToken::new(m.clone()));
+                                    self.frames[nf].slots[recv_idx] = v;
+                                    continue;
+                                }
+                                if mname == "unlock" && argc == 0 {
+                                    m.unlock();
+                                    for g in self.frames[nf].guards.iter_mut() {
+                                        if let Some(held) = g.mutex() {
+                                            if std::sync::Arc::ptr_eq(held, &m) {
+                                                g.disarm();
+                                            }
+                                        }
+                                    }
+                                    self.frames[nf].slots[recv_idx] = Value::Null;
+                                    continue;
+                                }
+                            }
                             Value::Map(m) => {
                                 let mname = name.as_ref();
+                                // A **module namespace** is a read-only view of
+                                // a module's exports: an exported name wins
+                                // over the map's own method (`mu.get()` is the
+                                // module's `get`, not `map.get`), and the
+                                // namespace cannot be mutated. Both rules live
+                                // in the shared dispatcher, so the VM and the
+                                // tree engine cannot diverge.
+                                if m.lock().unwrap().namespace {
+                                    let args = self.pop_n(argc);
+                                    let obj = self.pop_top();
+                                    match self.host_callback_method(&obj, &name, args) {
+                                        Ok(v) => self.frames[nf].slots.push(v),
+                                        Err(e) => self.error = Some(e),
+                                    }
+                                    continue;
+                                }
                                 if mname == "set" && argc == 2 {
                                     let val = self.frames[nf].slots.pop().unwrap();
                                     let key = self.frames[nf].slots.pop().unwrap();
@@ -1152,7 +1330,7 @@ impl Vm {
                                             match callee {
                                                 Value::VFunc(fd) => {
                                                     if let Err(e) =
-                                                        self.call_vfunc_frame(fd, call_args)
+                                                        self.call_vfunc_frame(fd, call_args, None)
                                                     {
                                                         self.error = Some(e);
                                                         continue;
@@ -1263,7 +1441,13 @@ impl Vm {
                                         }
                                         let mut call_args = self.alloc_slots(argc + 1);
                                         call_args.extend(self.frames[nf].slots.drain(recv_idx..));
-                                        if let Err(e) = self.call_vfunc_frame(fd, call_args) {
+                                        // Stack traces name the frame
+                                        // `Class::method`, like the tree engine.
+                                        let display =
+                                            Some(format!("{}::{}", class.name, name));
+                                        if let Err(e) =
+                                            self.call_vfunc_frame(fd, call_args, display)
+                                        {
                                             self.error = Some(e);
                                             continue;
                                         }
@@ -1394,7 +1578,9 @@ impl Vm {
                                 }
                             }
                         }
-                        other => self.fail(format!("{} has no fields", type_name(&other))),
+                        other => {
+                            self.fail(crate::value::no_field_error(&other, name.as_ref()))
+                        }
                     }
                 }
                 OpCode::FieldSet => {
@@ -1402,15 +1588,18 @@ impl Vm {
                     self.frames[nf].ip = ip + 3;
                     let v = self.pop_top();
                     let obj = self.pop_top();
+                    // Read the field name up front: the diagnostic for a
+                    // non-instance target needs it too.
+                    let field_name = match self.frames[nf].func.chunk.constants.get(idx) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => {
+                            self.fail("field name is not a string");
+                            continue;
+                        }
+                    };
                     match obj {
                         Value::VInstance(inst) => {
-                            let name = match self.frames[nf].func.chunk.constants.get(idx) {
-                                Some(Value::Str(s)) => s,
-                                _ => {
-                                    self.fail("field name is not a string");
-                                    continue;
-                                }
-                            };
+                            let name = field_name;
                             let mut ib = inst.lock().unwrap();
                             match ib.fields.get_mut(name.as_ref()) {
                                 Some(slot) => {
@@ -1428,7 +1617,9 @@ impl Vm {
                                 }
                             }
                         }
-                        other => self.fail(format!("{} has no fields", type_name(&other))),
+                        other => {
+                            self.fail(crate::value::no_field_error(&other, field_name.as_ref()))
+                        }
                     }
                 }
                 OpCode::Construct => {
@@ -1492,10 +1683,9 @@ impl Vm {
                     let ctor = self.frames[nf].ctor_result.take();
                     let ret_or_ctor = ctor.unwrap_or(ret);
                     if !self.frames[nf].guards.is_empty() {
-                        let guards = std::mem::take(&mut self.frames[nf].guards);
-                        for g in &guards {
-                            g.unlock();
-                        }
+                        // Dropping the tokens unlocks the mutexes (and wakes
+                        // any waiter).
+                        let _ = std::mem::take(&mut self.frames[nf].guards);
                     }
                     if let Some(popped_frame) = self.frames.pop() {
                         self.free_slots(popped_frame.slots);
@@ -1605,10 +1795,8 @@ impl Vm {
                         let ctor = self.frames[nf].ctor_result.take();
                         let ret_or_ctor = ctor.unwrap_or(ret);
                         if !self.frames[nf].guards.is_empty() {
-                            let guards = std::mem::take(&mut self.frames[nf].guards);
-                            for g in &guards {
-                                g.unlock();
-                            }
+                            // Dropping the tokens unlocks the mutexes.
+                            let _ = std::mem::take(&mut self.frames[nf].guards);
                         }
                         if let Some(popped_frame) = self.frames.pop() {
                             self.free_slots(popped_frame.slots);
@@ -1682,10 +1870,12 @@ impl Vm {
                     let file = self.file.clone();
                     let module_dirs = self.module_dirs.clone();
                     let global_consts = self.global_consts.clone();
+                    let consts = self.consts.clone();
                     let handle = self.sched.spawn_job(Box::new(move || {
                         let mut vm = Vm::with_shared(
                             globals,
                             global_consts,
+                            consts,
                             sched,
                             modules,
                             embedded,
@@ -1764,11 +1954,22 @@ impl Vm {
                     match self.import_module(&path) {
                         Ok(exports) => {
                             let mut entries = Vec::new();
-                            for (name, value, _) in exports {
-                                entries.push((crate::value::MapKey::Str(name.into()), value));
+                            let mut frozen = std::collections::HashSet::new();
+                            for (name, value, is_const) in exports {
+                                let key = crate::value::MapKey::Str(name.into());
+                                if is_const {
+                                    // A `public const` export stays immutable
+                                    // through the namespace as well.
+                                    frozen.insert(key.clone());
+                                }
+                                entries.push((key, value));
                             }
-                            let map_val =
-                                Value::Map(new_ref(collections::MapData::from_entries(entries)));
+                            // The alias is a **module namespace**: a read-only
+                            // view of the module's exports (see the tree
+                            // engine's import path).
+                            let map_val = Value::Map(new_ref(collections::MapData::namespace(
+                                entries, frozen,
+                            )));
                             {
                                 let mut consts = self.global_consts.lock().unwrap();
                                 consts.insert(alias.to_string());
@@ -1819,9 +2020,10 @@ impl Vm {
             // `span_at` maps a byte offset to the span of the instruction that
             // contains it (inst_spans is indexed by instruction, not by byte).
             let span = f.func.chunk.span_at(f.inst_ip);
+            let name = f.display.clone().or_else(|| f.func.name.clone());
             if let Some(last) = out.last() {
                 let last: &crate::diagnostics::TraceFrame = last;
-                if last.func == f.func.name
+                if last.func == name
                     && last.span.line == span.line
                     && last.span.file == span.file
                 {
@@ -1829,7 +2031,7 @@ impl Vm {
                 }
             }
             out.push(crate::diagnostics::TraceFrame {
-                func: f.func.name.clone(),
+                func: name,
                 span,
             });
         }
@@ -1894,7 +2096,12 @@ impl Vm {
         v
     }
 
-    fn call_vfunc_frame(&mut self, fd: Arc<VmFunc>, args: Vec<Value>) -> Result<(), VmError> {
+    fn call_vfunc_frame(
+        &mut self,
+        fd: Arc<VmFunc>,
+        args: Vec<Value>,
+        display: Option<String>,
+    ) -> Result<(), VmError> {
         if fd.arity != args.len() {
             return Err(VmError {
                 thrown: None,
@@ -1926,6 +2133,7 @@ impl Vm {
         };
         self.frames.push(CallFrame {
             func: fd,
+            display,
             ip: 0,
             inst_ip: 0,
             slots: args,
@@ -2082,7 +2290,9 @@ impl Vm {
                 let mut call_args = self.alloc_slots(args.len() + 1);
                 call_args.push(obj.clone());
                 call_args.extend(args);
-                self.call_vfunc_frame(ctor, call_args)?;
+                // Constructor frames read `Class::new` in stack traces.
+                let display = Some(format!("{}::new", class.name));
+                self.call_vfunc_frame(ctor, call_args, display)?;
                 let nf = self.frames.len() - 1;
                 self.frames[nf].ctor_result = Some(obj);
             }
@@ -2126,10 +2336,9 @@ impl Vm {
                 while self.frames.len() > self.stop {
                     let nf = self.frames.len() - 1;
                     if !self.frames[nf].guards.is_empty() {
-                        let guards = std::mem::take(&mut self.frames[nf].guards);
-                        for g in &guards {
-                            g.unlock();
-                        }
+                        // Dropping the tokens unlocks the mutexes (and wakes
+                        // any waiter).
+                        let _ = std::mem::take(&mut self.frames[nf].guards);
                     }
                     if let Some(popped_frame) = self.frames.pop() {
                         self.free_slots(popped_frame.slots);
@@ -2142,10 +2351,8 @@ impl Vm {
             while self.frames.len() > h.frame_depth {
                 let nf = self.frames.len() - 1;
                 if !self.frames[nf].guards.is_empty() {
-                    let guards = std::mem::take(&mut self.frames[nf].guards);
-                    for g in &guards {
-                        g.unlock();
-                    }
+                    // Dropping the tokens unlocks the mutexes.
+                    let _ = std::mem::take(&mut self.frames[nf].guards);
                 }
                 if let Some(popped_frame) = self.frames.pop() {
                     self.free_slots(popped_frame.slots);
@@ -2312,6 +2519,9 @@ impl Vm {
                 let out = Vm::with_shared(
                     globals,
                     global_consts,
+                    // A module VM keeps its own constant set: it reports
+                    // exactly which of its exports are `public const`.
+                    Arc::new(Mutex::new(HashSet::new())),
                     sched,
                     modules,
                     embedded,
@@ -2384,6 +2594,8 @@ impl Vm {
         let mut mvm = Vm::with_shared(
             self.globals.clone(),
             self.global_consts.clone(),
+            // A module VM keeps its own constant set (see the embedded path).
+            Arc::new(Mutex::new(HashSet::new())),
             self.sched.clone(),
             self.modules.clone(),
             self.embedded.clone(),
@@ -2425,13 +2637,17 @@ impl Vm {
                 trace: Vec::new(),
             });
         }
-        self.call_vfunc_frame(func, Vec::new())?;
+        self.call_vfunc_frame(func, Vec::new(), None)?;
         let _ = self.run()?;
         let g = self.globals.lock().unwrap();
+        // Const-ness comes from the module's own constant set (populated by
+        // `DefineConst` while the module ran), so an embedded module reports
+        // its `public const` exports exactly like a source module does.
+        let consts = self.consts.lock().unwrap().clone();
         let mut exports = Vec::new();
         for name in &public {
             if let Some(v) = g.get(name) {
-                exports.push((name.clone(), v.clone(), false));
+                exports.push((name.clone(), v.clone(), consts.contains(name)));
             }
         }
         Ok(exports)

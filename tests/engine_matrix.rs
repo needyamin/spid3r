@@ -443,6 +443,16 @@ const CASES: &[Case] = &[
         aot: true,
     },
     Case {
+        name: "class_super",
+        src: "class Animal {\n    public let name;\n    public let sound;\n    fn new(name, sound) { self.name = name; self.sound = sound; }\n    public fn speak(self) { return self.name + \" says \" + self.sound; }\n}\nclass Dog extends Animal {\n    public let tricks;\n    fn new(name) { super(name, \"woof\"); self.tricks = 0; }\n    public fn speak(self) { return super.speak() + \"!\"; }\n}\nfn main() {\n    let d = new Dog(\"rex\");\n    println(d.speak());\n    println(d.tricks);\n    return 0;\n}\n",
+        // `super(args)` runs the parent constructor on the same instance;
+        // `super.m(args)` delegates to the parent implementation.
+        out: "rex says woof!\n0",
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
         name: "interface",
         src: "interface Named {\n    fn name(self) -> string;\n}\nclass Person implements Named {\n    public let n;\n    fn new(n) { self.n = n; }\n    public fn name(self) { return self.n; }\n}\nfn main() {\n    let p = new Person(\"ada\");\n    println(p.name());\n    return 0;\n}\n",
         out: "ada",

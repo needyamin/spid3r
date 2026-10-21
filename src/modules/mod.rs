@@ -190,6 +190,9 @@ pub fn load(
         interp.globals.clone(),
     );
     let mut result: Result<Vec<(String, Value)>, Diagnostic> = Ok(Vec::new());
+    // A panic while the module body runs releases the module's mutexes (see
+    // the interpreter's `GuardSweep`).
+    let _guard_sweep = crate::interpreter::GuardSweepPublic::new(&minterp);
     for stmt in &program.stmts {
         if let Flow::Error(d) = minterp.exec_stmt(stmt, &minterp.globals) {
             result = Err(d);

@@ -39,6 +39,7 @@ pub enum Keyword {
     Implements,
     Match,
     Enum,
+    Super,
 }
 
 impl Keyword {
@@ -82,6 +83,7 @@ impl Keyword {
             Keyword::Implements => "implements",
             Keyword::Match => "match",
             Keyword::Enum => "enum",
+            Keyword::Super => "super",
         }
     }
 
@@ -124,6 +126,7 @@ impl Keyword {
             "implements" => Keyword::Implements,
             "match" => Keyword::Match,
             "enum" => Keyword::Enum,
+            "super" => Keyword::Super,
             _ => return None,
         })
     }
