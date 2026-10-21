@@ -123,6 +123,8 @@ fn main() {
 
 ### First-Party Standard Modules (`stdlib/`)
 - **`stdlib/web.matrix`**: Full web framework with routing, cookies, templates, and JWT.
+- **`stdlib/assert.matrix`**: Test assertions (`eq/ne/is_true/near/contains/throws/is_ok/is_err`,
+  `done()` returns the failure count as the exit code) — a pytest/PHPUnit-shaped mini suite.
 - **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort_by, group_by, inner_join).
 - **`stdlib/stats.matrix`** & **`stdlib/ml.matrix`**: Regression, classification, clustering, PCA, and distributions.
 

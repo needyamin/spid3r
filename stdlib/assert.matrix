@@ -1,0 +1,148 @@
+// stdlib/assert.matrix - minimal test assertions, written in Spid3r.
+//
+//   import "assert" as a;
+//
+//   fn main() {
+//       a.eq(2 + 2, 4, "math works");
+//       a.contains("hello world", "world", "greeting");
+//       a.throws(fn() { throw "boom"; }, "throwing works");
+//       return a.done();   // exit code = number of failures (0 = all passed)
+//   }
+//
+// Every check prints one line on failure (the label, the expected and the
+// actual value) and bumps the failure counter; passing checks are silent so a
+// big suite stays readable. `done()` returns the failure count, which `main`
+// can return as the process exit code — 0 means the suite passed, and any
+// non-zero value fails the run without needing an exit() native.
+//
+// The counters are module state: import the module ONCE per process (the
+// import system deduplicates to a single module instance, so several modules
+// importing `assert` still share one set of counters).
+
+let passed = 0;
+let failed = 0;
+
+fn record_pass() {
+    passed = passed + 1;
+}
+
+fn record_fail(label, expected, actual) {
+    failed = failed + 1;
+    println("FAIL " + label);
+    println("  expected: " + string(expected));
+    println("  actual:   " + string(actual));
+}
+
+/// Fail unconditionally — for cases no other check expresses.
+public fn fail(label) {
+    record_fail(label, "(a failure)", "(the test ran)");
+}
+
+/// Deep equality (`==` compares collections by value in Spid3r).
+public fn eq(actual, expected, label) {
+    if (actual == expected) {
+        record_pass();
+    } else {
+        record_fail(label, expected, actual);
+    }
+}
+
+public fn ne(actual, unexpected, label) {
+    if (actual != unexpected) {
+        record_pass();
+    } else {
+        record_fail(label, "anything but " + string(unexpected), actual);
+    }
+}
+
+/// Truthiness check: `is_true(cond, "invariant")`.
+public fn is_true(cond, label) {
+    if (cond) {
+        record_pass();
+    } else {
+        record_fail(label, "true", cond);
+    }
+}
+
+/// Float-safe equality: `|a - b| <= eps`.
+public fn near(actual, expected, eps, label) {
+    let diff = actual - expected;
+    if (diff < 0) {
+        diff = -diff;
+    }
+    if (diff <= eps) {
+        record_pass();
+    } else {
+        record_fail(label, expected, actual);
+    }
+}
+
+/// Substring check for strings.
+public fn contains(haystack, needle, label) {
+    if (haystack.contains(needle)) {
+        record_pass();
+    } else {
+        record_fail(label, "contains " + string(needle), haystack);
+    }
+}
+
+/// The callable `f` must throw — any value counts.
+public fn throws(f, label) {
+    let threw = false;
+    try {
+        f();
+    } catch (e) {
+        threw = true;
+    }
+    if (threw) {
+        record_pass();
+    } else {
+        record_fail(label, "a throw", "no throw");
+    }
+}
+
+/// The callable `f` must NOT throw.
+public fn does_not_throw(f, label) {
+    let threw = false;
+    let _ignored = 0;
+    try {
+        f();
+    } catch (e) {
+        threw = true;
+    }
+    if (threw) {
+        record_fail(label, "no throw", "a throw");
+    } else {
+        record_pass();
+    }
+}
+
+/// An ok/err `result` must be `ok`. A non-result value fails the check
+/// (rather than erroring) so a mistyped test reads as a failure.
+public fn is_ok(result, label) {
+    if (type_of(result) != "result") {
+        record_fail(label, "a result", type_of(result));
+    } else if (is_failure(result)) {
+        record_fail(label, "ok", "err");
+    } else {
+        record_pass();
+    }
+}
+
+/// An ok/err `result` must be `err`. Same non-result guard as `is_ok`.
+public fn is_err(result, label) {
+    if (type_of(result) != "result") {
+        record_fail(label, "a result", type_of(result));
+    } else if (is_failure(result)) {
+        record_pass();
+    } else {
+        record_fail(label, "err", "ok");
+    }
+}
+
+/// Finish the suite: prints the summary and returns the failure count, so
+/// `main` can `return a.done();` — 0 passes the process, N>0 fails it.
+public fn done() {
+    println(string(passed) + " passed, " + string(failed) + " failed");
+    return failed;
+}

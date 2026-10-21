@@ -45,10 +45,12 @@ issue IDs (report parked in `_dustbin/architect_report.txt`).
    counts-sum-to-total assertion. Remaining sub-item: per-function self-time
    attribution (needs call/return instrumentation) for flamegraph-style data.
 6. **stdlib growth in pure Spid3r** (the web.matrix pattern — libraries
-   written in Spid3r, shipped in `stdlib/`): TOML subset parser, CSV→dataset
-   helpers, hex/base32, semver, uuid v4 (from `random`), a tiny test
-   assertions framework (`assert.sp`) to fix `spid3r test` stdout-only
-   weakness. Each: S/M, no compiler changes.
+   written in Spid3r, shipped in `stdlib/`): ~~**assertions framework**~~
+   (**done 2026-10-22** — `stdlib/assert.matrix`: eq/ne/is_true/near/contains/
+   throws/does_not_throw/is_ok/is_err + `done()` returning the failure count
+   as the exit code; tested on both engines, 3 wire tests). Still open:
+   TOML subset parser, hex/base32, semver, uuid v4. Each: S/M, no compiler
+   changes.
 
 ## DESIGN — needs a design round or sustained ecosystem work
 
