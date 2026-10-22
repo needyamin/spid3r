@@ -200,6 +200,9 @@ fn resolve(interp: &Interp, path: &str) -> Result<PathBuf, Diagnostic> {
             return Ok(clean_canonical(&c));
         }
     }
+    if let Some(p) = embedded_path(path) {
+        return Ok(p);
+    }
     Err(Diagnostic::new(
         Phase::Semantic,
         format!(
@@ -231,6 +234,42 @@ fn clean_canonical(p: &std::path::Path) -> PathBuf {
 /// Load a module and return its exported names with their mutability
 /// (`true` = `const`). Imported names are defined by the caller in the
 /// importing scope.
+/// Prefix of the synthetic path a module gets when it is served from the
+/// embedded stdlib table instead of the filesystem (wasm32).
+pub const EMBEDDED_PREFIX: &str = "<stdlib>/";
+
+/// Embedded stdlib source for `name`, when this target has no filesystem
+/// (wasm32). Native builds always read from disk, so a project-local `stdlib/`
+/// keeps priority.
+#[cfg(target_arch = "wasm32")]
+fn embedded_module(name: &str) -> Option<&'static str> {
+    crate::stdlib_embed::source(name)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn embedded_module(_name: &str) -> Option<&'static str> {
+    None
+}
+
+/// The synthetic path for an embedded module, if this build has one.
+///
+/// Every resolver (`resolve` here, the checker's, and the VM compiler's) falls
+/// back to this, so `import "json"` works in a browser with no filesystem.
+pub fn embedded_path(path: &str) -> Option<PathBuf> {
+    embedded_module(path).map(|_| PathBuf::from(format!("{}{}.matrix", EMBEDDED_PREFIX, path)))
+}
+
+/// Read a module's source. Marker paths from [`embedded_path`] resolve to the
+/// embedded table; everything else is a normal file read.
+pub fn read_module_source(path: &std::path::Path) -> std::io::Result<String> {
+    if let Some(name) = path.to_str().and_then(|s| s.strip_prefix(EMBEDDED_PREFIX)) {
+        if let Some(src) = embedded_module(name.trim_end_matches(".matrix")) {
+            return Ok(src.to_string());
+        }
+    }
+    std::fs::read_to_string(path)
+}
+
 pub fn load(
     interp: &Interp,
     path: &str,
@@ -247,7 +286,7 @@ pub fn load(
         }
         Claim::Acquired(claim) => claim,
     };
-    let src = std::fs::read_to_string(&resolved).map_err(|e| {
+    let src = read_module_source(&resolved).map_err(|e| {
         Diagnostic::at(
             Phase::Semantic,
             span.clone(),
@@ -395,6 +434,7 @@ pub fn public_names_of_in(
     let resolved = candidates
         .into_iter()
         .find(|c| c.is_file())
+        .or_else(|| embedded_path(path))
         .ok_or_else(|| {
             Diagnostic::at(
                 Phase::Semantic,
@@ -402,7 +442,7 @@ pub fn public_names_of_in(
                 format!("module '{}' not found", path),
             )
         })?;
-    let src = std::fs::read_to_string(&resolved).map_err(|e| {
+    let src = read_module_source(&resolved).map_err(|e| {
         Diagnostic::at(
             Phase::Semantic,
             span.clone(),

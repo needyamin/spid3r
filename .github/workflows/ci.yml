@@ -146,6 +146,17 @@ jobs:
       - name: Clippy WebAssembly target (zero warnings)
         run: cargo clippy --target wasm32-unknown-unknown --lib --no-default-features -- -D warnings
 
+      # The browser runtime is a product surface: run it. `import "toml"` and
+      # friends only work because the stdlib sources are compiled in, and the
+      # playground presets are the first thing a visitor clicks, so both are
+      # exercised here against the freshly built module (Node is preinstalled
+      # on ubuntu runners).
+      - name: Exercise the browser runtime and every playground preset
+        run: |
+          cp target/wasm32-unknown-unknown/release/spid3r_lang.wasm web/spid3r.wasm
+          node tools/test_wasm_runtime.js
+          node tools/test_playground_presets.js
+
   # CI-02: the native/AOT backend joins the GATED differential (previously the
   # AOT subset only ran where a developer happened to have LLVM installed).
   # Ubuntu only for now — macOS (brew llvm@18) and Windows (official LLVM

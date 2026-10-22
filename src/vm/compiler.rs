@@ -343,9 +343,10 @@ fn compile_one(
                     format!("circular import of '{}'", path),
                 ));
             }
-            let src = std::fs::read_to_string(&rkey).map_err(|e| {
-                Diagnostic::new(Phase::Semantic, format!("cannot import '{}': {}", path, e))
-            })?;
+            let src =
+                crate::modules::read_module_source(std::path::Path::new(&rkey)).map_err(|e| {
+                    Diagnostic::new(Phase::Semantic, format!("cannot import '{}': {}", path, e))
+                })?;
             let file: Arc<str> = Arc::from(rkey.clone());
             let mod_program = parser::parse_file(&src, file.clone())?;
             semantic::check_file(&mod_program, false, &rkey)?;
@@ -418,6 +419,9 @@ fn resolve_module_path(
         if c.is_file() {
             return Ok(c);
         }
+    }
+    if let Some(p) = crate::modules::embedded_path(path) {
+        return Ok(p);
     }
     Err(Diagnostic::new(
         Phase::Semantic,

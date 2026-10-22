@@ -2791,7 +2791,7 @@ impl Vm {
             }
             crate::modules::Claim::Acquired(claim) => claim,
         };
-        let src = std::fs::read_to_string(&resolved).map_err(|e| VmError {
+        let src = crate::modules::read_module_source(&resolved).map_err(|e| VmError {
             thrown: None,
             message: format!("cannot import '{}': {}", path, e),
             span: self.cur_span(),

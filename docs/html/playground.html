@@ -1040,6 +1040,7 @@
           <option value="closures">5. Higher-Order Closures</option>
           <option value="benchmark">6. Benchmark (100k Loops)</option>
           <option value="calculator">7. Calculator Engine Demo</option>
+          <option value="stdlib">8. Standard Library &amp; Compression</option>
         </select>
 
         <label style="font-size: 0.85rem; color: var(--text-secondary); margin-left: 6px;">Engine:</label>
@@ -1315,6 +1316,35 @@ for let i = 0; i < 100000; i = i + 1 {
     count = count + 1;
 }
 println("Benchmark completed! Total:", count);
+`,
+        stdlib: `// 8. The standard library, inside WebAssembly
+import "toml";
+import "yaml" as yml;
+import "semver" as sv;
+
+println("=== Standard library in the browser ===");
+
+// TOML parses AND writes; the module sources are compiled into the wasm.
+    let cfg = toml_parse("name = \\"spid3r\\"\\n[server]\\nport = 8080\\n");
+println("name: " + string(cfg["name"]));
+println("server.port: " + string(toml_get(cfg, "server.port")));
+print(toml_write(cfg));
+
+// YAML
+    let doc = yml.yaml_parse("host: a.io\\nports:\\n  - 80\\n  - 443\\n");
+println("yaml host: " + string(doc["host"]));
+println("yaml port: " + string(doc["ports"][1]));
+
+// Semver comparison
+println("1.2.3 vs 1.10.0: " + string(sv.compare("1.2.3", "1.10.0")));
+
+// Compression and hashing are native, so they run at full speed.
+let text = "the quick brown fox jumps over the lazy dog. ";
+let big = text + text + text + text;
+let gz = gzip_compress(big);
+println("raw " + string(len(big)) + " -> gzip " + string(len(gz)) + " bytes");
+println("round trip ok: " + string(gunzip(gz).unwrap().to_string().unwrap() == big));
+println("sha256(abc): " + sha256("abc"));
 `,
         calculator: `// 7. Spid3r Calculator Engine State Machine Demo
 println("=========================================");

@@ -22,6 +22,9 @@ pub mod repl;
 pub mod sched;
 pub mod semantic;
 pub mod stdlib;
+/// Stdlib sources baked into the binary; wasm32 only (see the module docs).
+#[cfg(target_arch = "wasm32")]
+pub mod stdlib_embed;
 pub mod value;
 pub mod vm;
 pub mod wasm;
