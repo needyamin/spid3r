@@ -2,11 +2,18 @@
 //! networking (`net`: TCP sockets + HTTP framing). Every call that touches
 //! the operating system is explicit; there is no implicit shell.
 
+pub mod argon2;
+pub mod bcrypt;
+pub mod compress;
 pub mod csv;
 pub mod datetime;
 pub mod db;
+pub mod kdf;
+pub mod media;
 pub mod net;
 pub mod regex;
+pub mod serialize;
+pub mod signal;
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -82,6 +89,9 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("sha256", n_sha256),
         ("hmac_sha256", n_hmac_sha256),
         ("pbkdf2_sha256", n_pbkdf2_sha256),
+        ("secure_compare", n_secure_compare),
+        ("chr", n_chr),
+        ("ord", n_ord),
         ("base64_encode", n_base64_encode),
         ("base64_decode", n_base64_decode),
         ("base64_url_encode", n_base64_url_encode),
@@ -126,6 +136,13 @@ pub fn native_defs() -> Vec<NativeDef> {
     ];
     defs.extend(net::native_defs());
     defs.extend(db::native_defs());
+    defs.extend(compress::native_defs());
+    defs.extend(signal::native_defs());
+    defs.extend(kdf::native_defs());
+    defs.extend(serialize::native_defs());
+    defs.extend(argon2::native_defs());
+    defs.extend(bcrypt::native_defs());
+    defs.extend(media::native_defs());
     defs
 }
 
@@ -845,16 +862,19 @@ fn n_random_normal(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
 /// `sha256(s)` — FIPS 180-4 SHA-256 of the UTF-8 bytes of `s`, lowercase hex.
 /// Same implementation the package layer uses to verify dependencies, so
 /// program-computed and tool-computed digests agree bit for bit.
+/// Accepts a `bytes` value too, so binary data (a decompressed file, a PNG)
+/// can be hashed without a lossy trip through a string.
 fn n_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    let s = want_str(&one("sha256", &args)?, "sha256")?;
+    let data = want_b64_input(&one("sha256", &args)?, "sha256")?;
     Ok(Value::Str(
-        crate::pkg::hex_encode(&sha256_bytes(s.as_bytes())).into(),
+        crate::pkg::hex_encode(&sha256_bytes(&data)).into(),
     ))
 }
 
 /// `hmac_sha256(key, msg)` — RFC 2104 HMAC-SHA256 of the UTF-8 bytes of
 /// `msg` under the UTF-8 bytes of `key`, lowercase hex. Keys longer than the
-/// 64-byte block are pre-hashed, as the construction requires.
+/// 64-byte block are pre-hashed, as the construction requires. Both arguments
+/// may be strings or `bytes`.
 fn n_hmac_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 2 {
         return Err(format!(
@@ -862,10 +882,10 @@ fn n_hmac_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             args.len()
         ));
     }
-    let key = want_str(&args[0], "hmac_sha256")?;
-    let msg = want_str(&args[1], "hmac_sha256")?;
+    let key = want_b64_input(&args[0], "hmac_sha256")?;
+    let msg = want_b64_input(&args[1], "hmac_sha256")?;
     Ok(Value::Str(
-        crate::pkg::hex_encode(&hmac_sha256_bytes(key.as_bytes(), msg.as_bytes())).into(),
+        crate::pkg::hex_encode(&hmac_sha256_bytes(&key, &msg)).into(),
     ))
 }
 
@@ -958,6 +978,60 @@ fn pbkdf2_sha256_bytes(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32
         }
     }
     out
+}
+
+/// `chr(code)` — the one-character string for a Unicode code point.
+/// Surrogates (U+D800..U+DFFF) and values above U+10FFFF are rejected.
+fn n_chr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let code = want_int(&one("chr", &args)?, "chr")?;
+    if !(0..=0x10FFFF).contains(&code) {
+        return Err(format!("chr: code point out of range: {}", code));
+    }
+    if (0xD800..=0xDFFF).contains(&code) {
+        return Err(format!("chr: {} is a surrogate, not a character", code));
+    }
+    let c = char::from_u32(code as u32)
+        .ok_or_else(|| format!("chr: {} is not a valid code point", code))?;
+    Ok(Value::Str(c.to_string().into()))
+}
+
+/// `ord(s)` — the code point of a one-character string.
+fn n_ord(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let s = want_str(&one("ord", &args)?, "ord")?;
+    let mut chars = s.chars();
+    let first = chars
+        .next()
+        .ok_or_else(|| "ord: expected a one-character string, got an empty one".to_string())?;
+    if chars.next().is_some() {
+        return Err(format!(
+            "ord: expected a one-character string, got {} characters",
+            s.chars().count()
+        ));
+    }
+    Ok(Value::Int(first as i64))
+}
+
+/// `secure_compare(a, b)` — timing-safe equality for two strings or two byte
+/// values. `==` on digests short-circuits at the first differing byte, which
+/// leaks how much of a guess was right; this touches every byte of the longer
+/// input and folds the length difference into the same accumulator.
+fn n_secure_compare(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "secure_compare expects 2 arguments, got {}",
+            args.len()
+        ));
+    }
+    let a = want_b64_input(&args[0], "secure_compare")?;
+    let b = want_b64_input(&args[1], "secure_compare")?;
+    let mut diff = (a.len() ^ b.len()) as u64;
+    let n = a.len().max(b.len());
+    for i in 0..n {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        diff |= (x ^ y) as u64;
+    }
+    Ok(Value::Bool(diff == 0))
 }
 
 /// Base64 (RFC 4648). The standard alphabet (+/) with padding, and the

@@ -452,3 +452,124 @@ public fn toml_get(m, path) {
     }
     return cur;
 }
+
+// ============================================================ writer
+//
+// `toml_write(map)` serializes back to the same subset the parser accepts:
+// scalar keys first, then `[table]` sections, then `[[array of tables]]`.
+// Round-trip: `toml_parse(toml_write(m))` yields the same values for
+// string/int/float/bool/null-free maps. TOML has no null, so `null` is
+// rejected rather than silently dropped.
+
+fn toml_escape_string(s) {
+    let out = "\"";
+    let i = 0;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "\"" {
+            out = out + "\\\"";
+        } elif c == "\\" {
+            out = out + "\\\\";
+        } elif c == "\n" {
+            out = out + "\\n";
+        } elif c == "\r" {
+            out = out + "\\r";
+        } elif c == "\t" {
+            out = out + "\\t";
+        } else {
+            out = out + c;
+        }
+        i = i + 1;
+    }
+    return out + "\"";
+}
+
+fn toml_scalar(v) {
+    let t = type_of(v);
+    if t == "string" {
+        return toml_escape_string(v);
+    }
+    if t == "bool" {
+        if v {
+            return "true";
+        }
+        return "false";
+    }
+    if t == "int" {
+        return string(v);
+    }
+    if t == "float" {
+        return string(v);
+    }
+    if t == "null" {
+        throw "toml_write: TOML has no null; drop the key or use a sentinel string";
+    }
+    if t == "list" {
+        let parts = list();
+        for x in v {
+            parts.push(toml_scalar(x));
+        }
+        return "[" + parts.join(", ") + "]";
+    }
+    throw "toml_write: cannot serialize a " + t + " value";
+}
+
+fn toml_is_table_array(v) {
+    if type_of(v) != "list" {
+        return false;
+    }
+    if len(v) == 0 {
+        return false;
+    }
+    return type_of(v[0]) == "map";
+}
+
+fn toml_write_table(m, prefix, out) {
+    let scalars = list();
+    let tables = list();
+    let arrays = list();
+    for k in m.keys() {
+        let v = m[k];
+        let t = type_of(v);
+        if t == "map" {
+            tables.push(k);
+        } elif toml_is_table_array(v) {
+            arrays.push(k);
+        } else {
+            scalars.push(k);
+        }
+    }
+    for k in scalars {
+        out.push(string(k) + " = " + toml_scalar(m[k]));
+    }
+    for k in tables {
+        let name = string(k);
+        if prefix != "" {
+            name = prefix + "." + name;
+        }
+        out.push("");
+        out.push("[" + name + "]");
+        toml_write_table(m[k], name, out);
+    }
+    for k in arrays {
+        let name = string(k);
+        if prefix != "" {
+            name = prefix + "." + name;
+        }
+        for item in m[k] {
+            out.push("");
+            out.push("[[" + name + "]]");
+            toml_write_table(item, name, out);
+        }
+    }
+}
+
+/// Serialize a map to a TOML document (the subset this module parses).
+public fn toml_write(m) {
+    if type_of(m) != "map" {
+        throw "toml_write expects a map at the top level, found " + type_of(m);
+    }
+    let out = list();
+    toml_write_table(m, "", out);
+    return out.join("\n") + "\n";
+}

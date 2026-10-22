@@ -82,6 +82,40 @@ fn bigint_is_arbitrary_precision_on_both_engines() {
     both(BIGINT);
 }
 
+/// Mixed operands and normalization of `neg`/`abs`.
+///
+/// `n * 2` used to reach `mul_magnitude` with a plain int and die inside the
+/// library (`int does not support indexing`, pointing at bigint.matrix) —
+/// the operator methods assumed both sides were bigints. `neg`/`abs` returned
+/// a bare map without the operator methods, so `bi.neg(n) + 1` had no
+/// `__add__` to dispatch to. Both are regressions, not new features.
+const BIGINT_MIXED: &str = r#"
+import "bigint" as bi;
+
+fn main() {
+    let n = 100n;
+    assert_eq(bi.to_string(n * 2), "200");
+    assert_eq(bi.to_string(n + 1), "101");
+    assert_eq(bi.to_string(n - 1), "99");
+    assert_eq(bi.to_string(n / 3), "33");
+    assert_eq(bi.to_string(n + "41"), "141");
+    assert_eq(bi.cmp(n, 100), 0);
+    assert_eq(bi.to_string(bi.neg(n) + 1), "-99");
+    assert_eq(bi.to_string(bi.abs(bi.from_int(-7))), "7");
+    assert_eq(bi.to_string(bi.divmod(100n, 7)[0]), "14");
+    assert_eq(bi.to_string(bi.divmod(100n, 7)[1]), "2");
+    // There is no `__neg__` dispatch, so a negative value must be built.
+    assert_eq(bi.to_string(bi.from_int(-7)), "-7");
+    assert_eq(bi.to_string(0n - 7n), "-7");
+    return 0;
+}
+"#;
+
+#[test]
+fn bigint_mixed_operands_on_both_engines() {
+    both(BIGINT_MIXED);
+}
+
 const DECIMAL: &str = r#"
 import "decimal" as dec;
 

@@ -150,6 +150,9 @@ fn collect_outer_uses_stmt(
     match s {
         // Removed by lowering; nothing to walk.
         Stmt::Enum(_) => {}
+        // Lowering rewrites generators; the yielded value is still an
+        // expression, so walk it like any other statement value.
+        Stmt::Yield { value, .. } => collect_outer_uses_expr(value, declared, out),
         Stmt::LetTuple { value, .. } => collect_outer_uses_expr(value, declared, out),
         Stmt::Let { name, value, .. } => {
             if let Some(v) = value {
@@ -1060,6 +1063,8 @@ fn nested_fns_stmt<'a>(s: &'a Stmt, out: &mut Vec<&'a FnProto>) {
             }
         }
         Stmt::Const { value, .. } => nested_fns_expr(value, out),
+        // The yielded expression may itself contain a closure literal.
+        Stmt::Yield { value, .. } => nested_fns_expr(value, out),
         Stmt::Class(c) => {
             for m in &c.methods {
                 out.push(m);
@@ -1265,7 +1270,13 @@ impl<'ctx> Ir<'ctx> {
 
     fn compile_stmt(&mut self, s: &Stmt) -> IrResult<()> {
         match s {
-            // `crate::lower` turns an enum into constructor functions.
+            // Lowering rewrites generators; a `yield` here is a pipeline bug.
+            Stmt::Yield { span, .. } => Err(format!(
+                "internal error at {}:{}: a `yield` reached the native backend \
+                 without lowering (this is a bug in spid3r)",
+                span.file, span.line
+            )),
+            // `crate::lower` expands these before compilation.
             Stmt::LetTuple { span, .. } => Err(format!(
                 "internal error at {}:{}: a destructuring `let` reached the native backend \
                  without lowering (this is a bug in spid3r)",

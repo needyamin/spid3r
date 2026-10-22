@@ -518,3 +518,180 @@ public fn train_test_split(X, y, test_ratio, seed) {
 
     return map("X_train", x_train, "X_test", x_test, "y_train", y_train, "y_test", y_test);
 }
+
+// ------------------------------------------------------------ distributions
+//
+// The pdf/cdf family and the inverse normal CDF. `normal_quantile` uses
+// Acklam's rational approximation (|error| ~1e-9), which is what you need
+// for confidence intervals; `lgamma` is Lanczos g=7 so the discrete pmfs do
+// not overflow factorials.
+
+/// Lanczos log-gamma (g = 7, n = 9). Accurate to ~1e-13 for x > 0.
+public fn lgamma(x) {
+    let cof = list(
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7
+    );
+    if x < 0.5 {
+        return ln(3.141592653589793 / abs(sin(3.141592653589793 * x))) - lgamma(1.0 - x);
+    }
+    let z = x - 1.0;
+    let a = cof[0];
+    let i = 1;
+    let acc = a;
+    while i < 9 {
+        acc = acc + cof[i] / (z + float(i));
+        i = i + 1;
+    }
+    let t = z + 7.5;
+    return 0.5 * ln(2.0 * 3.141592653589793) + (z + 0.5) * ln(t) - t + ln(acc);
+}
+
+/// Inverse standard normal CDF (Acklam). `normal_quantile(0.975)` = 1.95996…
+public fn normal_quantile(p, mu = 0.0, sigma = 1.0) {
+    if p <= 0.0 or p >= 1.0 {
+        throw "normal_quantile: p must be in (0, 1), got " + string(p);
+    }
+    if sigma <= 0.0 {
+        throw "normal_quantile: sigma must be positive, got " + string(sigma);
+    }
+    let a = list(
+        -3.969683028665376e+01,
+        2.209460984245205e+02,
+        -2.759285104469687e+02,
+        1.383577518672690e+02,
+        -3.066479806614716e+01,
+        2.506628277459239e+00
+    );
+    let b = list(
+        -5.447609879822406e+01,
+        1.615858368580409e+02,
+        -1.556989798598866e+02,
+        6.680131188771972e+01,
+        -1.328068155288572e+01
+    );
+    let c = list(
+        -7.784894002430293e-03,
+        -3.223964580411365e-01,
+        -2.400758277161838e+00,
+        -2.549732539343734e+00,
+        4.374664141464968e+00,
+        2.938163982698783e+00
+    );
+    let d = list(
+        7.784695709041462e-03,
+        3.224671290700398e-01,
+        2.445134137142996e+00,
+        3.754408661907416e+00
+    );
+    let plow = 0.02425;
+    let phigh = 1.0 - plow;
+    let x = 0.0;
+    if p < plow {
+        let q = sqrt(-2.0 * ln(p));
+        x = (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+    } elif p <= phigh {
+        let q = p - 0.5;
+        let r = q * q;
+        x = (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0);
+    } else {
+        let q = sqrt(-2.0 * ln(1.0 - p));
+        x = -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0);
+    }
+    return mu + sigma * x;
+}
+
+public fn uniform_pdf(x, a = 0.0, b = 1.0) {
+    if b <= a {
+        throw "uniform_pdf: b must be greater than a";
+    }
+    if x < a or x > b {
+        return 0.0;
+    }
+    return 1.0 / (b - a);
+}
+
+public fn uniform_cdf(x, a = 0.0, b = 1.0) {
+    if b <= a {
+        throw "uniform_cdf: b must be greater than a";
+    }
+    if x < a {
+        return 0.0;
+    }
+    if x > b {
+        return 1.0;
+    }
+    return (x - a) / (b - a);
+}
+
+public fn exponential_pdf(x, lambda) {
+    if lambda <= 0.0 {
+        throw "exponential_pdf: lambda must be positive";
+    }
+    if x < 0.0 {
+        return 0.0;
+    }
+    return lambda * exp(-lambda * x);
+}
+
+public fn exponential_cdf(x, lambda) {
+    if lambda <= 0.0 {
+        throw "exponential_cdf: lambda must be positive";
+    }
+    if x < 0.0 {
+        return 0.0;
+    }
+    return 1.0 - exp(-lambda * x);
+}
+
+/// Binomial point mass, computed in log space so `n` can be large.
+public fn binomial_pmf(k, n, p) {
+    if p < 0.0 or p > 1.0 {
+        throw "binomial_pmf: p must be in [0, 1]";
+    }
+    if k < 0 or k > n {
+        return 0.0;
+    }
+    if p == 0.0 {
+        if k == 0 {
+            return 1.0;
+        }
+        return 0.0;
+    }
+    if p == 1.0 {
+        if k == n {
+            return 1.0;
+        }
+        return 0.0;
+    }
+    let logp = lgamma(float(n) + 1.0) - lgamma(float(k) + 1.0) - lgamma(float(n - k) + 1.0)
+        + float(k) * ln(p) + float(n - k) * ln(1.0 - p);
+    return exp(logp);
+}
+
+/// Poisson point mass.
+public fn poisson_pmf(k, lambda) {
+    if lambda < 0.0 {
+        throw "poisson_pmf: lambda must be non-negative";
+    }
+    if k < 0 {
+        return 0.0;
+    }
+    if lambda == 0.0 {
+        if k == 0 {
+            return 1.0;
+        }
+        return 0.0;
+    }
+    return exp(float(k) * ln(lambda) - lambda - lgamma(float(k) + 1.0));
+}

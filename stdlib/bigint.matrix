@@ -35,6 +35,13 @@ fn normalize(sign, limbs) {
     m["__sub__"] = sub;
     m["__mul__"] = mul;
     m["__div__"] = div;
+    m["__neg__"] = neg;
+    // Reflected forms: `1 + n` asks the bigint on the right. The receiver is
+    // the bigint, `other` is the left operand.
+    m["__radd__"] = radd;
+    m["__rsub__"] = rsub;
+    m["__rmul__"] = rmul;
+    m["__rdiv__"] = rdiv;
     m["__display__"] = to_string(m);
     return m;
 }
@@ -101,8 +108,30 @@ public fn from_string(s) {
     return normalize(sign, limbs);
 }
 
+/// Accept a bigint, a plain `int`, or a decimal string.
+///
+/// The operator methods (`n * 2`, `n + 1`) route through here, so a mixed
+/// operand behaves like `n * bi.from_int(2)` instead of failing inside the
+/// magnitude helpers with an internal error. Note that Spid3r has no
+/// *reflected* operators — only the left operand is asked for `__add__` — so
+/// `2 * n` still cannot work; write `bi.from_int(2) * n`.
+fn coerce(x, who) {
+    let t = type_of(x);
+    if t == "map" and x.has("limbs") {
+        return x;
+    }
+    if t == "int" {
+        return from_int(x);
+    }
+    if t == "string" {
+        return from_string(x);
+    }
+    throw "bigint." + who + ": expected a bigint, an int or a decimal string, found " + t;
+}
+
 /// Decimal representation.
-public fn to_string(a) {
+public fn to_string(a_in) {
+    let a = coerce(a_in, "to_string");
     let limbs = a["limbs"];
     let out = string(limbs[len(limbs) - 1]);
     let i = len(limbs) - 2;
@@ -123,16 +152,19 @@ public fn to_string(a) {
     return out;
 }
 
-public fn is_zero(a) {
+public fn is_zero(a_in) {
+    let a = coerce(a_in, "is_zero");
     let limbs = a["limbs"];
     return len(limbs) == 1 and limbs[0] == 0;
 }
 
 /// -1 / 0 / 1.
 public fn cmp(a, b) {
-    let sa = a["sign"];
-    let sb = b["sign"];
-    if is_zero(a) and is_zero(b) {
+    let x = coerce(a, "cmp");
+    let y = coerce(b, "cmp");
+    let sa = x["sign"];
+    let sb = y["sign"];
+    if is_zero(x) and is_zero(y) {
         return 0;
     }
     if sa != sb {
@@ -141,7 +173,7 @@ public fn cmp(a, b) {
         }
         return 1;
     }
-    let c = cmp_magnitude(a["limbs"], b["limbs"]);
+    let c = cmp_magnitude(x["limbs"], y["limbs"]);
     if sa < 0 {
         return -c;
     }
@@ -220,32 +252,55 @@ fn sub_magnitude(la, lb) {
 }
 
 public fn add(a, b) {
-    if a["sign"] == b["sign"] {
-        return normalize(a["sign"], add_magnitude(a["limbs"], b["limbs"]));
+    let x = coerce(a, "add");
+    let y = coerce(b, "add");
+    if x["sign"] == y["sign"] {
+        return normalize(x["sign"], add_magnitude(x["limbs"], y["limbs"]));
     }
-    let c = cmp_magnitude(a["limbs"], b["limbs"]);
+    let c = cmp_magnitude(x["limbs"], y["limbs"]);
     if c == 0 {
         return zero();
     }
     if c > 0 {
-        return normalize(a["sign"], sub_magnitude(a["limbs"], b["limbs"]));
+        return normalize(x["sign"], sub_magnitude(x["limbs"], y["limbs"]));
     }
-    return normalize(b["sign"], sub_magnitude(b["limbs"], a["limbs"]));
+    return normalize(y["sign"], sub_magnitude(y["limbs"], x["limbs"]));
 }
 
 public fn neg(a) {
-    if is_zero(a) {
+    let x = coerce(a, "neg");
+    if is_zero(x) {
         return zero();
     }
-    return map("sign", -a["sign"], "limbs", a["limbs"]);
+    // `normalize`, not a bare map: the result must carry the operator methods
+    // too, otherwise `(-n) + 1` has no `__add__` to dispatch to.
+    return normalize(-x["sign"], x["limbs"]);
 }
 
 public fn abs(a) {
-    return map("sign", 1, "limbs", a["limbs"]);
+    let x = coerce(a, "abs");
+    return normalize(1, x["limbs"]);
 }
 
 public fn sub(a, b) {
-    return add(a, neg(b));
+    return add(coerce(a, "sub"), neg(coerce(b, "sub")));
+}
+
+// Reflected operators: `other OP self`.
+public fn radd(me, other) {
+    return add(other, me);
+}
+
+public fn rsub(me, other) {
+    return sub(other, me);
+}
+
+public fn rmul(me, other) {
+    return mul(other, me);
+}
+
+public fn rdiv(me, other) {
+    return div(other, me);
 }
 
 /// |a| * |b| (schoolbook).
@@ -279,7 +334,9 @@ fn mul_magnitude(la, lb) {
 }
 
 public fn mul(a, b) {
-    return normalize(a["sign"] * b["sign"], mul_magnitude(a["limbs"], b["limbs"]));
+    let x = coerce(a, "mul");
+    let y = coerce(b, "mul");
+    return normalize(x["sign"] * y["sign"], mul_magnitude(x["limbs"], y["limbs"]));
 }
 
 /// Multiply by a small non-negative int (0..BASE).
@@ -318,15 +375,17 @@ public fn div(a, b) {
 
 /// `divmod(a, b)` -> `[quotient, remainder]` (truncating toward zero).
 public fn divmod(a, b) {
-    if is_zero(b) {
+    let x = coerce(a, "divmod");
+    let y = coerce(b, "divmod");
+    if is_zero(y) {
         throw "bigint.divmod: division by zero";
     }
-    let qsign = a["sign"] * b["sign"];
-    let rsign = a["sign"];
-    let la = a["limbs"];
-    let lb = b["limbs"];
+    let qsign = x["sign"] * y["sign"];
+    let rsign = x["sign"];
+    let la = x["limbs"];
+    let lb = y["limbs"];
     if cmp_magnitude(la, lb) < 0 {
-        return [zero(), a];
+        return [zero(), x];
     }
     // Long division: bring down one limb at a time and pick the quotient
     // digit by binary search (0..BASE-1).
@@ -377,7 +436,7 @@ public fn pow(a, e) {
         throw "bigint.pow: negative exponents are not integers";
     }
     let result = from_int(1);
-    let base = a;
+    let base = coerce(a, "pow");
     let k = e;
     while k > 0 {
         if k % 2 == 1 {

@@ -1,0 +1,517 @@
+// stdlib/yaml.matrix - a YAML subset parser and writer, written in Spid3r.
+//
+//   import "yaml";
+//
+//   let cfg = yaml_parse("server:\n  host: a.io\n  ports:\n    - 80\n    - 443\n");
+//   println(cfg["server"]["host"]);     // a.io
+//   println(cfg["server"]["ports"][1]); // 443
+//
+// Supported: block mappings and sequences by indentation, nested blocks,
+// `- key: value` items, flow sequences `[1, 2]` and flow mappings `{a: 1}`,
+// single/double quoted scalars, literal (`|`) and folded (`>`) block scalars,
+// comments, and the usual scalar resolution (null/~/true/false/ints/floats).
+// Anchors, aliases, tags, merge keys and multi-document streams are NOT
+// supported and are rejected rather than silently mis-read.
+
+let LINES = list();
+let POS = 0;
+
+const DIGITS = "0123456789";
+
+fn fail(msg) {
+    throw "yaml_parse: " + msg + " (line " + string(POS + 1) + ")";
+}
+
+fn indent_of(s) {
+    let i = 0;
+    while i < len(s) and s.slice(i, i + 1) == " " {
+        i = i + 1;
+    }
+    return i;
+}
+
+/// Remove a trailing `#` comment, but only outside quotes and only when the
+/// `#` starts a word (so `a#b` stays intact).
+fn strip_comment(s) {
+    let in_single = false;
+    let in_double = false;
+    let i = 0;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "'" and not in_double {
+            in_single = not in_single;
+        } elif c == "\"" and not in_single {
+            in_double = not in_double;
+        } elif c == "#" and not in_single and not in_double {
+            if i == 0 or s.slice(i - 1, i) == " " {
+                return s.slice(0, i);
+            }
+        }
+        i = i + 1;
+    }
+    return s;
+}
+
+fn is_int_text(s) {
+    if s == "" {
+        return false;
+    }
+    let i = 0;
+    if s.slice(0, 1) == "-" or s.slice(0, 1) == "+" {
+        i = 1;
+    }
+    if i >= len(s) {
+        return false;
+    }
+    while i < len(s) {
+        if DIGITS.index_of(s.slice(i, i + 1)) < 0 {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn is_float_text(s) {
+    if s == "" {
+        return false;
+    }
+    let i = 0;
+    if s.slice(0, 1) == "-" or s.slice(0, 1) == "+" {
+        i = 1;
+    }
+    let seen_dot = false;
+    let seen_digit = false;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "." {
+            if seen_dot {
+                return false;
+            }
+            seen_dot = true;
+        } elif DIGITS.index_of(c) >= 0 {
+            seen_digit = true;
+        } else {
+            return false;
+        }
+        i = i + 1;
+    }
+    return seen_dot and seen_digit;
+}
+
+fn unescape_double(s) {
+    let out = "";
+    let i = 0;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "\\" and i + 1 < len(s) {
+            let n = s.slice(i + 1, i + 2);
+            if n == "n" {
+                out = out + "\n";
+            } elif n == "t" {
+                out = out + "\t";
+            } elif n == "r" {
+                out = out + "\r";
+            } elif n == "\"" {
+                out = out + "\"";
+            } elif n == "\\" {
+                out = out + "\\";
+            } else {
+                out = out + n;
+            }
+            i = i + 2;
+        } else {
+            out = out + c;
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
+/// Split on commas that are not inside quotes or nested flow collections.
+fn split_flow(s) {
+    let parts = list();
+    let depth = 0;
+    let in_single = false;
+    let in_double = false;
+    let cur = "";
+    let i = 0;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "'" and not in_double {
+            in_single = not in_single;
+        } elif c == "\"" and not in_single {
+            in_double = not in_double;
+        } elif not in_single and not in_double {
+            if c == "[" or c == "{" {
+                depth = depth + 1;
+            } elif c == "]" or c == "}" {
+                depth = depth - 1;
+            } elif c == "," and depth == 0 {
+                parts.push(cur);
+                cur = "";
+                i = i + 1;
+                continue;
+            }
+        }
+        cur = cur + c;
+        i = i + 1;
+    }
+    if cur.trim() != "" {
+        parts.push(cur);
+    }
+    return parts;
+}
+
+fn find_key_colon(s) {
+    let in_single = false;
+    let in_double = false;
+    let i = 0;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "'" and not in_double {
+            in_single = not in_single;
+        } elif c == "\"" and not in_single {
+            in_double = not in_double;
+        } elif c == ":" and not in_single and not in_double {
+            if i + 1 >= len(s) or s.slice(i + 1, i + 2) == " " {
+                return i;
+            }
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn parse_scalar(t) {
+    let s = t.trim();
+    if s == "" or s == "~" or s == "null" or s == "Null" or s == "NULL" {
+        return null;
+    }
+    if s == "true" or s == "True" or s == "TRUE" {
+        return true;
+    }
+    if s == "false" or s == "False" or s == "FALSE" {
+        return false;
+    }
+    if s.starts_with("&") or s.starts_with("*") or s.starts_with("!") {
+        fail("anchors, aliases and tags are not supported: " + s);
+    }
+    if len(s) >= 2 and s.starts_with("\"") and s.ends_with("\"") {
+        return unescape_double(s.slice(1, len(s) - 1));
+    }
+    if len(s) >= 2 and s.starts_with("'") and s.ends_with("'") {
+        return s.slice(1, len(s) - 1).replace("''", "'");
+    }
+    if s.starts_with("[") and s.ends_with("]") {
+        let out = list();
+        for part in split_flow(s.slice(1, len(s) - 1)) {
+            out.push(parse_scalar(part));
+        }
+        return out;
+    }
+    if s.starts_with("{") and s.ends_with("}") {
+        let out = map();
+        for part in split_flow(s.slice(1, len(s) - 1)) {
+            if part.trim() == "" {
+                continue;
+            }
+            let c = find_key_colon(part);
+            if c < 0 {
+                fail("bad flow mapping entry: " + part);
+            }
+            let k = parse_scalar(part.slice(0, c));
+            out[string(k)] = parse_scalar(part.slice(c + 1, len(part)));
+        }
+        return out;
+    }
+    if is_int_text(s) {
+        return int(s);
+    }
+    if is_float_text(s) {
+        return float(s);
+    }
+    return s;
+}
+
+fn skip_blank() {
+    while POS < len(LINES) and strip_comment(LINES[POS]).trim() == "" {
+        POS = POS + 1;
+    }
+}
+
+fn parse_block_scalar(parent_indent, folded) {
+    let chunks = list();
+    while POS < len(LINES) {
+        let raw = LINES[POS];
+        if raw.trim() == "" {
+            chunks.push("");
+            POS = POS + 1;
+            continue;
+        }
+        if indent_of(raw) <= parent_indent {
+            break;
+        }
+        chunks.push(raw.slice(parent_indent + 2, len(raw)));
+        POS = POS + 1;
+    }
+    // Drop trailing blank lines the block does not own.
+    while len(chunks) > 0 and chunks[len(chunks) - 1] == "" {
+        chunks.pop();
+    }
+    if folded {
+        return chunks.join(" ");
+    }
+    return chunks.join("\n");
+}
+
+fn parse_block(min_indent) {
+    skip_blank();
+    if POS >= len(LINES) {
+        return null;
+    }
+    let ind = indent_of(LINES[POS]);
+    if ind < min_indent {
+        return null;
+    }
+    let t = strip_comment(LINES[POS]).trim();
+    if t == "-" or t.starts_with("- ") {
+        return parse_list(ind);
+    }
+    return parse_map(ind);
+}
+
+fn parse_list(ind) {
+    let out = list();
+    while true {
+        skip_blank();
+        if POS >= len(LINES) {
+            break;
+        }
+        let raw = LINES[POS];
+        let line = strip_comment(raw);
+        if line.trim() == "" {
+            POS = POS + 1;
+            continue;
+        }
+        if indent_of(raw) != ind {
+            break;
+        }
+        let t = line.trim();
+        // Bound to a local on purpose: `if not (A or B)` miscompiles on the VM
+        // when B has to be evaluated (see docs/VM_NOTES.md).
+        let is_item = t == "-" or t.starts_with("- ");
+        if not is_item {
+            break;
+        }
+        let rest = t.slice(1, len(t)).trim();
+        if rest == "" {
+            POS = POS + 1;
+            out.push(parse_block(ind + 1));
+            continue;
+        }
+        let colon = find_key_colon(rest);
+        if colon >= 0 {
+            // `- key: value` starts a mapping that continues on deeper lines.
+            let m = map();
+            parse_map_entry(m, rest, ind + 2);
+            while true {
+                skip_blank();
+                if POS >= len(LINES) {
+                    break;
+                }
+                let r2 = LINES[POS];
+                let l2 = strip_comment(r2);
+                if l2.trim() == "" {
+                    POS = POS + 1;
+                    continue;
+                }
+                if indent_of(r2) <= ind {
+                    break;
+                }
+                parse_map_entry(m, l2.trim(), indent_of(r2));
+            }
+            out.push(m);
+        } else {
+            POS = POS + 1;
+            out.push(parse_scalar(rest));
+        }
+    }
+    return out;
+}
+
+fn parse_map(ind) {
+    let m = map();
+    while true {
+        skip_blank();
+        if POS >= len(LINES) {
+            break;
+        }
+        let raw = LINES[POS];
+        let line = strip_comment(raw);
+        if line.trim() == "" {
+            POS = POS + 1;
+            continue;
+        }
+        if indent_of(raw) < ind {
+            break;
+        }
+        if indent_of(raw) > ind {
+            break;
+        }
+        parse_map_entry(m, line.trim(), ind);
+    }
+    return m;
+}
+
+fn parse_map_entry(m, text, ind) {
+    let colon = find_key_colon(text);
+    if colon < 0 {
+        fail("expected 'key: value', got '" + text + "'");
+    }
+    let key = parse_scalar(text.slice(0, colon));
+    let rest = text.slice(colon + 1, len(text)).trim();
+    POS = POS + 1;
+    if rest == "|" or rest == "|-" or rest == ">" or rest == ">-" {
+        m[string(key)] = parse_block_scalar(ind, rest.starts_with(">"));
+    } elif rest == "" {
+        m[string(key)] = parse_block(ind + 1);
+    } else {
+        m[string(key)] = parse_scalar(rest);
+    }
+}
+
+/// Parse a YAML document into maps/lists/scalars.
+public fn yaml_parse(text) {
+    LINES = text.replace("\r\n", "\n").split("\n");
+    POS = 0;
+    // Skip a leading document marker.
+    skip_blank();
+    if POS < len(LINES) and LINES[POS].trim() == "---" {
+        POS = POS + 1;
+    }
+    if POS < len(LINES) and LINES[POS].trim() == "..." {
+        return null;
+    }
+    let value = parse_block(0);
+    skip_blank();
+    if POS < len(LINES) {
+        fail("unexpected content: '" + LINES[POS].trim() + "'");
+    }
+    return value;
+}
+
+// ---------------------------------------------------------------- writer
+
+fn yaml_needs_quotes(s) {
+    if s == "" {
+        return true;
+    }
+    if s == "true" or s == "false" or s == "null" or s == "~" {
+        return true;
+    }
+    if is_int_text(s) or is_float_text(s) {
+        return true;
+    }
+    let bad = "-?:,[]{}#&*!|>'\"%@`";
+    if bad.index_of(s.slice(0, 1)) >= 0 {
+        return true;
+    }
+    if s.contains(": ") or s.contains(" #") or s.contains("\n") {
+        return true;
+    }
+    return false;
+}
+
+fn yaml_scalar(v) {
+    let t = type_of(v);
+    if v == null {
+        return "null";
+    }
+    if t == "bool" {
+        if v {
+            return "true";
+        }
+        return "false";
+    }
+    if t == "int" or t == "float" {
+        return string(v);
+    }
+    if t == "string" {
+        if yaml_needs_quotes(v) {
+            return "\"" + v.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\"";
+        }
+        return v;
+    }
+    throw "yaml_write: cannot serialize a " + t + " value";
+}
+
+fn yaml_write_value(v, indent, out) {
+    let pad = " ".repeat(indent);
+    if type_of(v) == "map" {
+        if len(v.keys()) == 0 {
+            out.push(pad + "{}");
+            return;
+        }
+        for k in v.keys() {
+            let item = v[k];
+            let t = type_of(item);
+            if t == "map" and len(item.keys()) > 0 {
+                out.push(pad + yaml_scalar(string(k)) + ":");
+                yaml_write_value(item, indent + 2, out);
+            } elif t == "list" and len(item) > 0 {
+                out.push(pad + yaml_scalar(string(k)) + ":");
+                yaml_write_value(item, indent + 2, out);
+            } else {
+                out.push(pad + yaml_scalar(string(k)) + ": " + yaml_scalar(item));
+            }
+        }
+        return;
+    }
+    if type_of(v) == "list" {
+        if len(v) == 0 {
+            out.push(pad + "[]");
+            return;
+        }
+        for item in v {
+            let t = type_of(item);
+            if t == "map" and len(item.keys()) > 0 {
+                let first = true;
+                for k in item.keys() {
+                    let sub = item[k];
+                    let st = type_of(sub);
+                    if first {
+                        if st == "map" or (st == "list" and len(sub) > 0) {
+                            out.push(pad + "- " + yaml_scalar(string(k)) + ":");
+                            yaml_write_value(sub, indent + 4, out);
+                        } else {
+                            out.push(pad + "- " + yaml_scalar(string(k)) + ": " + yaml_scalar(sub));
+                        }
+                        first = false;
+                    } else {
+                        if st == "map" or (st == "list" and len(sub) > 0) {
+                            out.push(pad + "  " + yaml_scalar(string(k)) + ":");
+                            yaml_write_value(sub, indent + 4, out);
+                        } else {
+                            out.push(pad + "  " + yaml_scalar(string(k)) + ": " + yaml_scalar(sub));
+                        }
+                    }
+                }
+            } elif t == "list" and len(item) > 0 {
+                out.push(pad + "-");
+                yaml_write_value(item, indent + 2, out);
+            } else {
+                out.push(pad + "- " + yaml_scalar(item));
+            }
+        }
+        return;
+    }
+    out.push(pad + yaml_scalar(v));
+}
+
+/// Serialize a value to YAML (the subset this module parses).
+public fn yaml_write(v) {
+    let out = list();
+    yaml_write_value(v, 0, out);
+    return out.join("\n") + "\n";
+}

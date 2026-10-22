@@ -868,10 +868,13 @@ impl Interp {
                             crate::value::checked_neg(i).map_err(|e| self.rt(span, e))?,
                         )),
                         Value::Float(f) => Ok(Value::Float(-f)),
-                        other => Err(self.rt(
-                            span,
-                            format!("cannot negate {}", crate::value::type_name(&other)),
-                        )),
+                        other => match self.unary_operator_call(&other, "__neg__", span) {
+                            Some(res) => res,
+                            None => Err(self.rt(
+                                span,
+                                format!("cannot negate {}", crate::value::type_name(&other)),
+                            )),
+                        },
                     },
                 }
             }
@@ -1204,7 +1207,10 @@ impl Interp {
                     s.push_str(b);
                     Ok(Str(s.into()))
                 }
-                _ => match self.operator_call(&l, &r, "__add__", span) {
+                _ => match self
+                    .operator_call(&l, &r, "__add__", span)
+                    .or_else(|| self.operator_call(&r, &l, "__radd__", span))
+                {
                     Some(res) => res,
                     None => Err(self.rt(
                         span,
@@ -1223,7 +1229,10 @@ impl Interp {
                 (Int(a), Float(b)) => Ok(Float(*a as f64 - b)),
                 (Float(a), Int(b)) => Ok(Float(a - *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a - b)),
-                _ => match self.operator_call(&l, &r, "__sub__", span) {
+                _ => match self
+                    .operator_call(&l, &r, "__sub__", span)
+                    .or_else(|| self.operator_call(&r, &l, "__rsub__", span))
+                {
                     Some(res) => res,
                     None => Err(self.rt(
                         span,
@@ -1242,7 +1251,10 @@ impl Interp {
                 (Int(a), Float(b)) => Ok(Float(*a as f64 * b)),
                 (Float(a), Int(b)) => Ok(Float(a * *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a * b)),
-                _ => match self.operator_call(&l, &r, "__mul__", span) {
+                _ => match self
+                    .operator_call(&l, &r, "__mul__", span)
+                    .or_else(|| self.operator_call(&r, &l, "__rmul__", span))
+                {
                     Some(res) => res,
                     None => Err(self.rt(
                         span,
@@ -1261,7 +1273,10 @@ impl Interp {
                 (Float(a), Int(b)) => Ok(Float(a / *b as f64)),
                 (Float(a), Float(b)) if *b == 0.0 => Err(self.rt(span, "division by zero")),
                 (Float(a), Float(b)) => Ok(Float(a / b)),
-                _ => match self.operator_call(&l, &r, "__div__", span) {
+                _ => match self
+                    .operator_call(&l, &r, "__div__", span)
+                    .or_else(|| self.operator_call(&r, &l, "__rdiv__", span))
+                {
                     Some(res) => res,
                     None => Err(self.rt(
                         span,
@@ -1398,6 +1413,27 @@ impl Interp {
             return None;
         }
         Some(self.call_value(f, vec![l.clone(), r.clone()], span))
+    }
+
+    /// Unary counterpart of [`Self::operator_call`]: `__neg__` receives just
+    /// the receiver, not a right-hand operand.
+    fn unary_operator_call(
+        &self,
+        v: &Value,
+        method: &str,
+        span: &Span,
+    ) -> Option<Result<Value, Flow>> {
+        if !matches!(v, Value::Map(_) | Value::Instance(_)) {
+            return None;
+        }
+        let f = self.field_get(v, method, span).ok()?;
+        if !matches!(
+            f,
+            Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::Class(_)
+        ) {
+            return None;
+        }
+        Some(self.call_value(f, vec![v.clone()], span))
     }
 
     pub fn call_value(&self, f: Value, args: Vec<Value>, span: &Span) -> Result<Value, Flow> {

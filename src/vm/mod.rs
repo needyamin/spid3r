@@ -469,6 +469,31 @@ impl Vm {
         )
     }
 
+    /// Unary operator dispatch (`__neg__`): same lookup as `try_operator`,
+    /// but the method is called with the receiver alone.
+    fn try_unary_operator(&mut self, v: &Value, method: &str) -> Option<Result<Value, String>> {
+        let f = match v {
+            Value::Map(_) => {
+                crate::value::collections::index_get(v, &Value::Str(method.into())).ok()?
+            }
+            Value::VInstance(inst) => {
+                let cls = inst.lock().unwrap().class.clone();
+                Value::VFunc(find_method_vclass(&cls, method)?)
+            }
+            _ => return None,
+        };
+        if !matches!(
+            f,
+            Value::VFunc(_) | Value::Native(_) | Value::NativeClosure(_)
+        ) {
+            return None;
+        }
+        Some(
+            self.call_value_sync(&f, vec![v.clone()])
+                .map_err(|e| e.message),
+        )
+    }
+
     fn call_value_sync(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmError> {
         match f {
             Value::VFunc(fd) => {
@@ -1037,7 +1062,10 @@ impl Vm {
                         (Value::Int(a), Value::Int(b)) => {
                             crate::value::checked_int("+", *a, *b).map(Value::Int)
                         }
-                        _ => match self.try_operator(&l, &r, "__add__") {
+                        _ => match self
+                            .try_operator(&l, &r, "__add__")
+                            .or_else(|| self.try_operator(&r, &l, "__radd__"))
+                        {
                             Some(over) => over,
                             None => vm_eval_binary(BinOp::Add, l.clone(), r.clone()),
                         },
@@ -1078,7 +1106,10 @@ impl Vm {
                         }
                     }
                     let l = self.pop_top();
-                    match match self.try_operator(&l, &r, "__sub__") {
+                    match match self
+                        .try_operator(&l, &r, "__sub__")
+                        .or_else(|| self.try_operator(&r, &l, "__rsub__"))
+                    {
                         Some(over) => over,
                         None => vm_eval_binary(BinOp::Sub, l.clone(), r.clone()),
                     } {
@@ -1098,7 +1129,10 @@ impl Vm {
                         }
                     }
                     let l = self.pop_top();
-                    match match self.try_operator(&l, &r, "__mul__") {
+                    match match self
+                        .try_operator(&l, &r, "__mul__")
+                        .or_else(|| self.try_operator(&r, &l, "__rmul__"))
+                    {
                         Some(over) => over,
                         None => vm_eval_binary(BinOp::Mul, l.clone(), r.clone()),
                     } {
@@ -1118,7 +1152,10 @@ impl Vm {
                         }
                     }
                     let l = self.pop_top();
-                    match match self.try_operator(&l, &r, "__div__") {
+                    match match self
+                        .try_operator(&l, &r, "__div__")
+                        .or_else(|| self.try_operator(&r, &l, "__rdiv__"))
+                    {
                         Some(over) => over,
                         None => vm_eval_binary(BinOp::Div, l.clone(), r.clone()),
                     } {
@@ -1146,7 +1183,11 @@ impl Vm {
                 OpCode::Neg => {
                     self.frames[nf].ip = ip + 1;
                     let v = self.pop_top();
-                    match vm_eval_unary(UnOp::Neg, v) {
+                    let res = match self.try_unary_operator(&v, "__neg__") {
+                        Some(over) => over,
+                        None => vm_eval_unary(UnOp::Neg, v),
+                    };
+                    match res {
                         Ok(x) => self.frames[nf].slots.push(x),
                         Err(m) => self.fail(m),
                     }

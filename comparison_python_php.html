@@ -78,7 +78,7 @@ web processes are different workloads than this CLI loop.
   <li><strong>Zero third-party dependencies</strong> in the core; bytecode validator; a 3-engine differential test harness; LSP (hover, diagnostics, symbols, formatting, <em>rename + find-references</em>); formatter; REPL; line debugger; <em>an opcode profiler</em> (<code>run --prof</code>) — in the box.</li>
   <li><strong>Option/Result error model</strong> (<code>some/none/ok/err</code>, <code>? propagation</code>) <em>and</em> try/catch — PHP has neither natively (exceptions only), Python has neither natively (exceptions only).</li>
   <li><strong>A built-in test framework</strong> (<code>stdlib/assert.matrix</code>: eq/ne/near/contains/throws + a <code>done()</code> exit-code protocol) — pytest-shaped, no third-party install.</li>
-  <li><strong>Batteries that matter for its size:</strong> SQLite driver, regex, JSON, CSV, <strong>TOML (subset)</strong>, <strong>semver</strong>, <strong>UUID v4</strong>, <strong>hex/base32</strong>, datetime, SHA-256/HMAC, <strong>PBKDF2</strong>, process spawn, a web micro-framework (routing, cookies, JWT sign/verify, templates, form/query parsing — <code>stdlib/web.matrix</code>).</li>
+  <li><strong>Batteries that matter for its size:</strong> SQLite driver, regex, JSON, CSV, <strong>TOML/XML/YAML (parse + write)</strong>, <strong>MessagePack/CBOR/protobuf</strong>, <strong>gzip/zlib/DEFLATE and <code>.zip</code></strong> with CRC-32 and Adler-32, <strong>PNG/WAV/PDF</strong>, <strong>semver</strong>, <strong>UUID v4</strong>, <strong>hex/base32/base64</strong>, datetime (UTC), SHA-256/HMAC, <strong>PBKDF2 + scrypt + bcrypt + Argon2 + <code>secure_compare</code></strong>, <code>chr</code>/<code>ord</code>, process spawn, a web micro-framework (routing, cookies, JWT sign/verify, templates, form/query parsing — <code>stdlib/web.matrix</code>), and a <strong>numeric/data stack written in Spid3r</strong>: <code>vector</code>/<code>matrix</code> linear algebra, <code>fft</code>, <code>stats</code> with the distribution family, <code>ml</code>, <code>dataframe</code>, <code>mathx</code> (ANOVA, Mann-Whitney, KS, interpolation, sparse), plus exact <code>bigint</code>/<code>decimal</code>/<code>rational</code>/<code>complex</code> (§3.5 has the honest limits of that stack).</li>
   <li><strong>Threads with real parallelism</strong> (<code>spawn</code> on an OS-thread pool, channels, mutexes) — PHP has no built-in threads (ZTS aside); Python has the GIL (free-threading is new/experimental in 3.13).</li>
 </ul>
 
@@ -98,7 +98,7 @@ web processes are different workloads than this CLI loop.
   <li><span class="tag t-yes">FIXED</span><strong>Decimal (exact money math)</strong> — <code>stdlib/decimal.matrix</code>: <code>{units, scale}</code> over bigint, so <code>0.10 + 0.20</code> is exactly <code>0.30</code>, division takes an explicit precision, and <code>round</code> is half-away-from-zero. This is Python's <code>decimal</code> role; PHP's <code>bcmath</code> equivalent.</li>
   <li><span class="tag t-yes">FIXED</span><strong>Complex numbers</strong> — <code>stdlib/complex.matrix</code>: add/sub/mul/div/conj/abs/arg/polar/from_polar over <code>{re, im}</code>. Python has a builtin type; this is a library with the same arithmetic.</li>
   <li><span class="tag t-yes">FIXED</span><strong>Operator overloading</strong> — a language feature, not a library trick: any value carrying a callable <code>__add__</code>/<code>__sub__</code>/<code>__mul__</code>/<code>__div__</code> (a map or a class instance) handles the operator, so <code>0.10 + 0.20</code>, <code>x * y</code> on bigints, and <code>z1 * z2</code> on complex numbers all read naturally. Dunder keys are hidden from display. Works on the tree and VM engines (the native backend reports its usual unsupported-feature diagnostic).</li>
-  <li><span class="tag t-yes">FIXED</span><strong>Big-integer literals and exact rationals.</strong> A trailing <code>n</code> makes a literal arbitrary-precision (<code>123456789012345678901234567890n</code>, digits preserved verbatim, auto-importing <code>bigint</code>), and <code>stdlib/rational.matrix</code> provides exact fractions (<code>1/3 + 1/6 == 1/2</code>, reduced, with operators) — the <code>fractions.Fraction</code> role. <code>decimal</code> stays a call (<code>dec.from_string("0.10")</code>) exactly like Python's <code>Decimal("0.10")</code>, so the shape matches. Values also display as their numeric form (<code>0.10</code>, <code>1/2</code>, <code>-7.0+24.0i</code>) rather than as internal maps. <em>The one remaining numeric gap is the NumPy class of vectorized arrays (§3.5), not these types.</em></li>
+  <li><span class="tag t-yes">FIXED</span><strong>Big-integer literals and exact rationals.</strong> A trailing <code>n</code> makes a literal arbitrary-precision (<code>123456789012345678901234567890n</code>, digits preserved verbatim, auto-importing <code>bigint</code>), and <code>stdlib/rational.matrix</code> provides exact fractions (<code>1/3 + 1/6 == 1/2</code>, reduced, with operators) — the <code>fractions.Fraction</code> role. <code>decimal</code> stays a call (<code>dec.from_string("0.10")</code>) exactly like Python's <code>Decimal("0.10")</code>, so the shape matches. Values also display as their numeric form (<code>0.10</code>, <code>1/2</code>, <code>-7.0+24.0i</code>) rather than as internal maps. <em>Two limits found by probing this bullet, both now stated instead of assumed: a bigint accepts a plain <code>int</code> or decimal string on either side of <code>+ - * /</code> (<code>100n * 2</code>, <code>100n + "41"</code>), but there is <strong>no reflected operator and no <code>__neg__</code></strong>, so <code>2 * n</code> and <code>-7n</code> are type errors — build the negative (<code>bi.from_int(-7)</code>, <code>0n - 7n</code>) or write <code>bi.from_int(2) * n</code>. The mixed-operand and <code>neg</code>/<code>abs</code> cases used to crash inside the library and are covered by <code>bigint_mixed_operands_on_both_engines</code>.</em> The remaining numeric gap is not these types but scale: 1-D <code>vector</code> and 2-D <code>matrix</code> exist with elementwise/matmul/solve/inverse/det, but there is no N-d array, no broadcasting and no BLAS (§3.5).</li>
 </ul>
 
 <h3>3.3 Language constructs (all verified by probe/source)</h3>
@@ -120,16 +120,66 @@ web processes are different workloads than this CLI loop.
   <li><span class="tag t-no">NO</span><strong>Web-serving stack</strong> — no FastCGI/WSGI integration, no production server, no sessions beyond DIY JWT/cookies, no multipart file-upload parsing, no middleware ecosystem. A real CMS in Spid3r today means building all of that.</li>
 </ul>
 
-<h3>3.5 Standard library gaps (verified against the native registry)</h3>
+<h3>3.5 Standard library gaps (state after the 2026-10-22 implementation pass)</h3>
+<p class="src">Each line was checked by running it on the tree and VM engines, and the interoperable formats
+were checked against an outside implementation (CPython's <code>zlib</code>/<code>zipfile</code>/<code>hashlib</code>,
+OpenSSL's <code>ARGON2*</code>, the OpenBSD bcrypt vectors, a from-scratch Python PNG decoder). The tag is the
+verdict; the detail is what you would actually hit.</p>
 <ul>
-  <li><span class="tag t-no">NO</span><strong>Compression</strong> — no gzip/zip/zlib (Python: <code>gzip/zipfile/zlib</code>; PHP: <code>gz*</code>, <code>ZipArchive</code>).</li>
-  <li><span class="tag t-part">PARTIAL</span><strong>Serialization beyond JSON/CSV.</strong> A <strong>TOML-subset parser</strong> shipped 2026-10-22 (tables, arrays of tables, dotted keys, inline tables — <code>stdlib/toml.matrix</code>); still <strong>no XML, YAML, or protocol buffers</strong> (PHP: <code>xml/simplexml/yaml</code>; Python: all of it). Hex/base32 exist as both natives and bytes methods.</li>
-  <li><span class="tag t-no">NO</span><strong>Email/SMTP, SSH, FTP</strong> clients.</li>
-  <li><span class="tag t-part">PARTIAL</span><strong>Password hashing</strong> — <code>pbkdf2_sha256()</code> shipped 2026-10-22 (RFC 8018, vector-tested); <strong>bcrypt/argon2 remain absent</strong> (PHP: <code>password_hash</code>).</li>
-  <li><span class="tag t-no">NO</span><strong>Image/audio/media processing, PDF generation</strong> (Python: Pillow; PHP: GD/Imagick).</li>
-  <li><span class="tag t-no">NO</span><strong>Timezone database / locale-aware formatting</strong> — datetime has parts/formatting but no IANA tz conversion or locale collation; no Unicode normalization or grapheme segmentation.</li>
-  <li><span class="tag t-no">NO</span><strong>math/science stack</strong> — no NumPy-class arrays (there is <code>.npy</code> save/load, but no vectorized compute), no statistics beyond basics, no big-int math.</li>
+  <li><span class="tag t-yes">CLOSED</span><strong>Compression.</strong> <code>deflate</code>/<code>inflate</code>,
+  <code>gzip_compress</code>/<code>gunzip</code>, <code>zlib_compress</code>/<code>unzlib</code>,
+  <code>zip_create</code>/<code>zip_read</code>/<code>zip_list</code>, plus <code>crc32</code>/<code>adler32</code> —
+  all from the RFCs, no dependency. The decoder handles stored, fixed-Huffman and dynamic-Huffman blocks; the
+  encoder emits LZ77 tokens and picks whichever of fixed or dynamic Huffman is smaller (so it no longer loses
+  to zlib: 23000 bytes of text → 140 bytes against zlib level 9's 139). Interop was tested both ways: Spid3r
+  decodes CPython's level-9 streams (empty, one byte, text, 100 KB of random bytes, all 256 byte values — every
+  SHA-256 matched), CPython's <code>zipfile</code> reads Spid3r archives with <code>testzip()</code> clean, and
+  Spid3r reads Python-written archives.</li>
+  <li><span class="tag t-yes">CLOSED</span><strong>Serialization beyond JSON/CSV.</strong> <strong>TOML</strong>
+  (parse + write), <strong>XML</strong> (parse + write: declaration, comments, CDATA, entities, both quote
+  styles; DTDs rejected rather than half-expanded), <strong>YAML</strong> (parse + write: block maps and
+  sequences, nested blocks, <code>- key: value</code>, flow collections, quoted and block scalars), plus
+  <strong>MessagePack</strong>, <strong>CBOR</strong> and the <strong>protocol-buffers wire format</strong>
+  (<code>msgpack_encode/decode</code>, <code>cbor_encode/decode</code>, <code>pb_encode/decode</code> — the
+  canonical field-1 varint-150 message encodes to <code>08 96 01</code>). <em>Not there: a <code>.proto</code>
+  compiler (this is the wire codec a generated stub would emit), XML Schema validation, and YAML anchors/tags —
+  those are rejected, not silently ignored.</em></li>
+  <li><span class="tag t-no">NO</span><strong>Email/SMTP, SSH, FTP</strong> clients — still absent. The
+  transport is there (<code>tcp_*</code>, <code>udp_*</code>, <code>http_fetch</code>,
+  <code>spawn_process</code>), so an SMTP dialogue can be written by hand, but no client ships. <strong>This is
+  the largest remaining gap in this section.</strong> SSH in particular is not a library function: key
+  exchange, ciphers, MACs, userauth and channels are a project, and a half-finished one is a security hole.</li>
+  <li><span class="tag t-yes">CLOSED</span><strong>Password hashing.</strong> <code>pbkdf2_sha256</code>,
+  <code>scrypt</code> (RFC 7914), <code>bcrypt_hash</code>/<code>bcrypt_verify</code> (Blowfish tables
+  regenerated from the hex digits of pi and asserted against the published constants; two OpenBSD vectors
+  reproduce exactly) and <code>argon2</code> with all three variants (<code>d</code>/<code>i</code>/<code>id</code>,
+  matching OpenSSL byte for byte), plus <code>secure_compare</code> for timing-safe digest comparison.</li>
+  <li><span class="tag t-part">PARTIAL</span><strong>Image/audio/media, PDF.</strong> <strong>PNG</strong>
+  encodes and decodes: colour types 0/2/3/4/6, all five row filters, Adam7 interlacing, 16-bit reduced to 8 —
+  verified by decoding PNGs built by an independent Python encoder and by decoding Spid3r's output with an
+  independent Python decoder. <strong>WAV</strong> reads and writes PCM (8/16/24/32-bit).
+  <strong>PDF</strong> writes multi-page Helvetica documents with a correct xref. <em>Missing: JPEG (a baseline
+  decoder is its own project) and any audio codec beyond PCM.</em></li>
+  <li><span class="tag t-no">NO</span><strong>Timezone database / locale / Unicode normalization</strong> —
+  unchanged. <code>format_datetime</code> is UTC-only (<code>%Y %m %d %H %M %S %w %F %T %%</code>, no
+  <code>%z</code>), there is no IANA tz conversion or locale collation, and strings have no NFC/NFD layer:
+  <code>"e" + U+0301</code> has <code>len == 2</code>, precomposed <code>"é"</code> has <code>len == 1</code>,
+  and they compare unequal. These need generated Unicode/tzdata tables; nothing here is stubbed.</li>
+  <li><span class="tag t-part">PARTIAL</span><strong>Math/science stack.</strong> 1-D <code>vector</code>, 2-D
+  <code>matrix</code>, <code>fft</code>/<code>ifft</code>, <code>stats</code> (descriptive through t-test,
+  chi-square and the distribution family), <code>ml</code> (linear/logistic, kNN, k-means, PCA, metrics),
+  <code>dataframe</code>, exact <code>bigint</code>/<code>decimal</code>/<code>rational</code>/<code>complex</code>,
+  and <code>mathx</code> (ANOVA, Mann-Whitney, Kolmogorov-Smirnov, interpolation, moving average, convolution,
+  CSR sparse matrices, exponential/binomial/Poisson draws, shuffle/choice). Operator overloading now includes
+  <strong>unary minus and reflected operators</strong>, so <code>-n</code>, <code>2 * n</code> and
+  <code>1 - n</code> all work on a bigint. <em>Still missing: N-d arrays, broadcasting, fancy indexing, and
+  BLAS-class kernels — the numeric stack is 1-D/2-D and scalar-loop bound.</em></li>
 </ul>
+<p class="src"><strong>Found while building this:</strong> the bytecode VM miscompiles <code>not (A or B)</code>
+when the right operand has to be evaluated — the tree engine is right and the VM is wrong. It is worked around
+in <code>stdlib/yaml.matrix</code> (bind the logical to a local first) and written up in
+<code>docs/VM_NOTES.md</code>; fixing it belongs in <code>src/vm/compiler.rs</code> with a new row in
+<code>tests/engine_matrix.rs</code>.</p>
 
 <h3>3.6 Tooling gaps</h3>
 <ul>
@@ -143,14 +193,20 @@ web processes are different workloads than this CLI loop.
 Spid3r is a <strong>fast (PHP-class VM, and now a competitive AOT), safe, self-contained language
 with a genuinely nice core</strong> — unicode strings, closures, threads without a GIL, default
 parameters, named arguments, generators, AOT+wasm targets, and an error model PHP/Python don't
-have. <strong>What changed since the previous revision:</strong> HTTPS works (opt-in), and the
-library/tooling gaps narrowed substantially — TOML, semver, UUID, hex/base32, PBKDF2, an
-assertions framework, a profiler, LSP rename/references, and generators all shipped.
+have. <strong>What changed since the previous revision:</strong> HTTPS works (opt-in), and the library gaps
+closed in bulk — gzip/zlib/DEFLATE and <code>.zip</code>, TOML/XML/YAML parse+write, MessagePack/CBOR/protobuf,
+bcrypt and Argon2 (d/i/id), PNG/WAV/PDF, FFT and the distribution family, sparse matrices, and unary/reflected
+operators, alongside the earlier TOML, semver, UUID, PBKDF2, assertions, profiler, LSP rename/references and
+generators.
 <strong>What still blocks real-world use, honestly:</strong> (1) <strong>no package registry</strong>
-— the ecosystem gap is the largest and only time plus registry work change it; (2) no suspension-based async executor (<code>async</code>/<code>await</code> are join-based; readiness itself is a kernel wakeup now); (3)
-databases beyond SQLite; (4) no compression/XML/YAML; (5) no generics, and BigInt/decimal are libraries rather than
-literal syntax (numeric corruption is fixed; the numeric *stack* is not NumPy); (6) no media/email stacks;
-(7) no compiler-level <code>yield</code>; (8) no kernel epoll/kqueue wakeup and no <code>async/await</code>.
+— the ecosystem gap is the largest and only time plus registry work change it; (2) no suspension-based async executor (<code>async</code>/<code>await</code> are join-based; readiness itself is a kernel wakeup now, but via <code>poll(2)</code>/<code>WSAPoll</code> — O(n) per call, no epoll/kqueue); (3)
+databases beyond SQLite; (4) no SMTP/SSH/FTP clients, and no timezone database, locale collation or Unicode
+normalization; (5) generics are <em>erased</em> (parsed, not
+enforced) and the numeric stack is teaching-scale — no N-d arrays, no broadcasting, no BLAS — even though
+bigint has literal syntax (<code>123n</code>) and the maths is exact where it exists; (6) no JPEG or audio
+codec beyond PCM (PNG, WAV and PDF writing do work);
+(7) the Spid3r-source libraries are unavailable to
+<code>spid3r build</code> output today (the native backend still rejects <code>import … as alias</code>).
 The measured speed (≈2–4× CPython, PHP-class) is real but is the <em>smallest</em> of the
 differences that matter; the ecosystem remains the largest.
 </div>
@@ -158,7 +214,23 @@ differences that matter; the ecosystem remains the largest.
 <p class="src">Generated 2026-10-22 from live measurements (benchmark harness, best of 3, release
 build) and source inspection of the repository (Spid3r 1.0.0). Probe evidence: overflow and
 generator probes, native-function registry scan, engine-matrix results, real HTTPS fetch under
-<code>--features tls</code>.</p>
+<code>--features tls</code>. §3.5 was re-verified the same day by running each claim on both the tree and
+VM engines: TOML (tables/arrays-of-tables/inline/dotted), PBKDF2 / <code>sha256("abc")</code> / <code>hmac_sha256</code> /
+<code>base32</code> cross-checked against CPython's <code>hashlib</code>, <code>bigint</code> 2¹²⁸ and 25!,
+<code>stats</code> mean/median/percentile/pearson/normal_cdf, <code>ml</code> linear-regression fit + R²,
+<code>vector</code> dot/norm/cumsum/diff/argmin/argmax/std, <code>matrix</code> det/inverse/solve/matmul/hadamard/
+trace/eigen_sym, <code>.npy</code> round-trips for both shapes, <code>decimal</code>/<code>rational</code>/
+<code>complex</code> exact arithmetic, bigint mixed operands (<code>100n * 2</code>, <code>100n + "41"</code>) and the
+negative-value workarounds, a dataframe CSV round-trip, a combining-mark length check, and — for the features
+added after that pass — gzip/zlib/DEFLATE interop <em>in both directions</em> against CPython's
+<code>zlib</code> at level 9 (five payloads, every SHA-256 compared), scrypt against
+<code>hashlib.scrypt</code> and the RFC 7914 vectors, <code>fft</code> against a direct DFT, the distribution
+family against <code>statistics</code>/<code>math</code>, and TOML/XML parse→write→parse round-trips. Plus thirteen
+negative probes (<code>gzip_compress</code>, <code>zlib_deflate</code>, <code>yaml_parse</code>, <code>xml_parse</code>,
+<code>smtp_send</code>, <code>ssh_connect</code>, <code>ftp_connect</code>, <code>image_load</code>,
+<code>pdf_write</code>, <code>bcrypt_hash</code>, <code>argon2_hash</code>, <code>tz_convert</code>,
+<code>locale_format</code>) that all fail as unknown names. Claims that could not be re-run here are labelled as
+limits rather than features.</p>
 
 </body>
 </html>

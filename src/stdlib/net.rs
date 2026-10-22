@@ -1249,6 +1249,7 @@ mod sys {
 /// `None` when the platform call is unavailable or fails (the caller then
 /// falls back to the probe loop), `Some` with one (id, readable, writable)
 /// per connection otherwise.
+#[cfg(any(unix, windows))]
 fn kernel_poll(conns: &[(i64, Arc<Conn>)], timeout_ms: i32) -> Option<Vec<(i64, bool, bool)>> {
     if conns.is_empty() {
         return Some(Vec::new());
@@ -1300,6 +1301,14 @@ fn kernel_poll(conns: &[(i64, Arc<Conn>)], timeout_ms: i32) -> Option<Vec<(i64, 
         out.push((*id, readable, writable));
     }
     Some(out)
+}
+
+/// Targets without `poll(2)`/`WSAPoll` (wasm32) have no readiness syscall:
+/// returning `None` sends `tcp_poll` down the portable probe loop, which is
+/// what the wasm build has always used.
+#[cfg(not(any(unix, windows)))]
+fn kernel_poll(_conns: &[(i64, Arc<Conn>)], _timeout_ms: i32) -> Option<Vec<(i64, bool, bool)>> {
+    None
 }
 
 // ------------------------------------------------------------------- UDP
