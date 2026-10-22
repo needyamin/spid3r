@@ -1114,8 +1114,11 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
         }
         Value::Map(d) => {
             let entries = d.lock().unwrap().entries.clone();
+            // Keys starting with `__` are internal (operator methods such as
+            // `__add__`); they are not part of the value's visible shape.
             let body = entries
                 .iter()
+                .filter(|(k, _)| !k.display().starts_with("__"))
                 .map(|(k, v)| format!("{}: {}", k.display(), display_value_inner(v, seen)))
                 .collect::<Vec<_>>()
                 .join(", ");

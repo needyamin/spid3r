@@ -16,7 +16,15 @@
 import "bigint" as bi;
 
 fn make(units, scale) {
-    return map("units", units, "scale", scale);
+    // The dunder fields make `a + b`, `a - b`, `a * b`, `a / b` work: the
+    // engines dispatch to them when the left operand is a map carrying a
+    // callable `__add__` etc. (They are hidden from display.)
+    let m = map("units", units, "scale", scale);
+    m["__add__"] = add;
+    m["__sub__"] = sub;
+    m["__mul__"] = mul;
+    m["__div__"] = div;
+    return m;
 }
 
 /// From an int (scale 0).

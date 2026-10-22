@@ -28,10 +28,14 @@ fn normalize(sign, limbs) {
     while len(out) > 1 and out[len(out) - 1] == 0 {
         out.pop();
     }
-    if len(out) == 1 and out[0] == 0 {
-        return map("sign", 1, "limbs", [0]);
-    }
-    return map("sign", sign, "limbs", out);
+    let m = map("sign", sign, "limbs", out);
+    // Operator methods (hidden from display): `a + b`, `a - b`, `a * b`,
+    // `a / b` dispatch here when the left operand carries them.
+    m["__add__"] = add;
+    m["__sub__"] = sub;
+    m["__mul__"] = mul;
+    m["__div__"] = div;
+    return m;
 }
 
 /// Zero.
@@ -303,6 +307,12 @@ fn shift_limb(la) {
         i = i + 1;
     }
     return out;
+}
+
+/// `a / b` as an integer quotient (truncating toward zero). Use `divmod`
+/// when you need the remainder too.
+public fn div(a, b) {
+    return divmod(a, b)[0];
 }
 
 /// `divmod(a, b)` -> `[quotient, remainder]` (truncating toward zero).

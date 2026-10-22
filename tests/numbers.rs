@@ -144,3 +144,40 @@ fn main() {
 fn two_modules_with_the_same_export_names_stay_isolated() {
     both(MODULE_ISOLATION);
 }
+
+const OPERATORS: &str = r#"
+import "decimal" as dec;
+import "bigint" as bi;
+import "complex" as cx;
+
+fn main() {
+    // Operator overloading: the values carry __add__/__sub__/__mul__/__div__,
+    // so the ordinary operators work on them.
+    let a = dec.from_string("0.10");
+    let b = dec.from_string("0.20");
+    assert_eq(dec.to_string(a + b), "0.30");
+    assert_eq(dec.to_string(dec.from_string("1.00") - a), "0.90");
+    assert_eq(dec.to_string(dec.from_string("1.5") * dec.from_string("2.5")), "3.75");
+    assert_eq(dec.to_string(dec.from_string("1") / dec.from_string("4")), "0.250000");
+
+    let x = bi.from_int(6);
+    let y = bi.from_int(7);
+    assert_eq(bi.to_string(x * y), "42");
+    assert_eq(bi.to_string(x + y), "13");
+    assert_eq(bi.to_string(y / x), "1");
+
+    let z1 = cx.of(1, 2);
+    let z2 = cx.of(3, -1);
+    assert_eq(cx.to_string(z1 + z2), "4.0+1.0i");
+    assert_eq(cx.to_string(z1 * z2), "5.0+5.0i");
+
+    // The dunder methods stay out of the value's visible shape.
+    assert_eq(string(a).starts_with("map{units:"), true);
+    return 0;
+}
+"#;
+
+#[test]
+fn operator_overloading_on_both_engines() {
+    both(OPERATORS);
+}

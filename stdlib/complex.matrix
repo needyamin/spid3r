@@ -11,7 +11,14 @@
 // represent; for exact rational arithmetic use stdlib/decimal.matrix.
 
 public fn of(re, im = 0) {
-    return map("re", float(re), "im", float(im));
+    let z = map("re", float(re), "im", float(im));
+    // Operator methods (hidden from display): `a + b`, `a - b`, `a * b`,
+    // `a / b` dispatch here.
+    z["__add__"] = add;
+    z["__sub__"] = sub;
+    z["__mul__"] = mul;
+    z["__div__"] = div;
+    return z;
 }
 
 public fn add(a, b) {

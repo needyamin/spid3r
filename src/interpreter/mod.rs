@@ -1198,14 +1198,17 @@ impl Interp {
                     s.push_str(b);
                     Ok(Str(s.into()))
                 }
-                _ => Err(self.rt(
-                    span,
-                    format!(
-                        "cannot add {} and {}",
-                        crate::value::type_name(&l),
-                        crate::value::type_name(&r)
-                    ),
-                )),
+                _ => match self.operator_call(&l, &r, "__add__", span) {
+                    Some(res) => res,
+                    None => Err(self.rt(
+                        span,
+                        format!(
+                            "cannot add {} and {}",
+                            crate::value::type_name(&l),
+                            crate::value::type_name(&r)
+                        ),
+                    )),
+                },
             },
             BinOp::Sub => match (&l, &r) {
                 (Int(a), Int(b)) => Ok(Int(
@@ -1214,14 +1217,17 @@ impl Interp {
                 (Int(a), Float(b)) => Ok(Float(*a as f64 - b)),
                 (Float(a), Int(b)) => Ok(Float(a - *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a - b)),
-                _ => Err(self.rt(
-                    span,
-                    format!(
-                        "cannot subtract {} from {}",
-                        crate::value::type_name(&r),
-                        crate::value::type_name(&l)
-                    ),
-                )),
+                _ => match self.operator_call(&l, &r, "__sub__", span) {
+                    Some(res) => res,
+                    None => Err(self.rt(
+                        span,
+                        format!(
+                            "cannot subtract {} from {}",
+                            crate::value::type_name(&r),
+                            crate::value::type_name(&l)
+                        ),
+                    )),
+                },
             },
             BinOp::Mul => match (&l, &r) {
                 (Int(a), Int(b)) => Ok(Int(
@@ -1230,14 +1236,17 @@ impl Interp {
                 (Int(a), Float(b)) => Ok(Float(*a as f64 * b)),
                 (Float(a), Int(b)) => Ok(Float(a * *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a * b)),
-                _ => Err(self.rt(
-                    span,
-                    format!(
-                        "cannot multiply {} and {}",
-                        crate::value::type_name(&l),
-                        crate::value::type_name(&r)
-                    ),
-                )),
+                _ => match self.operator_call(&l, &r, "__mul__", span) {
+                    Some(res) => res,
+                    None => Err(self.rt(
+                        span,
+                        format!(
+                            "cannot multiply {} and {}",
+                            crate::value::type_name(&l),
+                            crate::value::type_name(&r)
+                        ),
+                    )),
+                },
             },
             BinOp::Div => match (&l, &r) {
                 (Int(_), Int(b)) if *b == 0 => Err(self.rt(span, "division by zero")),
@@ -1246,14 +1255,17 @@ impl Interp {
                 (Float(a), Int(b)) => Ok(Float(a / *b as f64)),
                 (Float(a), Float(b)) if *b == 0.0 => Err(self.rt(span, "division by zero")),
                 (Float(a), Float(b)) => Ok(Float(a / b)),
-                _ => Err(self.rt(
-                    span,
-                    format!(
-                        "cannot divide {} by {}",
-                        crate::value::type_name(&l),
-                        crate::value::type_name(&r)
-                    ),
-                )),
+                _ => match self.operator_call(&l, &r, "__div__", span) {
+                    Some(res) => res,
+                    None => Err(self.rt(
+                        span,
+                        format!(
+                            "cannot divide {} by {}",
+                            crate::value::type_name(&l),
+                            crate::value::type_name(&r)
+                        ),
+                    )),
+                },
             },
             BinOp::Mod => match (&l, &r) {
                 (Int(_), Int(b)) if *b == 0 => Err(self.rt(span, "modulo by zero")),
@@ -1357,6 +1369,30 @@ impl Interp {
     }
 
     // --------------------------------------------------------------- calling
+
+    /// Operator overloading: a value that carries a callable `__add__`
+    /// (or `__sub__`/`__mul__`/`__div__`) field handles the operator.
+    /// Maps (the stdlib numeric types) and class instances both qualify.
+    /// `None` means "no overload": the caller reports its usual type error.
+    fn operator_call(
+        &self,
+        l: &Value,
+        r: &Value,
+        method: &str,
+        span: &Span,
+    ) -> Option<Result<Value, Flow>> {
+        if !matches!(l, Value::Map(_) | Value::Instance(_)) {
+            return None;
+        }
+        let f = self.field_get(l, method, span).ok()?;
+        if !matches!(
+            f,
+            Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::Class(_)
+        ) {
+            return None;
+        }
+        Some(self.call_value(f, vec![l.clone(), r.clone()], span))
+    }
 
     pub fn call_value(&self, f: Value, args: Vec<Value>, span: &Span) -> Result<Value, Flow> {
         match f {

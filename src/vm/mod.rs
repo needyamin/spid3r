@@ -437,6 +437,38 @@ impl Vm {
     /// upvalue cells) and `run` returns as soon as the frame stack shrinks
     /// back to the current depth. Handler/depth state is deliberately NOT
     /// reset, so a `try` around the call still catches a callback's `throw`.
+    /// Operator overloading: a map (the stdlib numeric types) or a class
+    /// instance that carries a callable `__add__`/`__sub__`/`__mul__`/
+    /// `__div__` handles the operator. `None` means "no overload": the caller
+    /// reports its usual type error.
+    fn try_operator(
+        &mut self,
+        l: &Value,
+        r: &Value,
+        method: &str,
+    ) -> Option<Result<Value, String>> {
+        let f = match l {
+            Value::Map(_) => {
+                crate::value::collections::index_get(l, &Value::Str(method.into())).ok()?
+            }
+            Value::VInstance(inst) => {
+                let cls = inst.lock().unwrap().class.clone();
+                Value::VFunc(find_method_vclass(&cls, method)?)
+            }
+            _ => return None,
+        };
+        if !matches!(
+            f,
+            Value::VFunc(_) | Value::Native(_) | Value::NativeClosure(_)
+        ) {
+            return None;
+        }
+        Some(
+            self.call_value_sync(&f, vec![l.clone(), r.clone()])
+                .map_err(|e| e.message),
+        )
+    }
+
     fn call_value_sync(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, VmError> {
         match f {
             Value::VFunc(fd) => {
@@ -1005,7 +1037,10 @@ impl Vm {
                         (Value::Int(a), Value::Int(b)) => {
                             crate::value::checked_int("+", *a, *b).map(Value::Int)
                         }
-                        _ => vm_eval_binary(BinOp::Add, l, r),
+                        _ => match self.try_operator(&l, &r, "__add__") {
+                            Some(over) => over,
+                            None => vm_eval_binary(BinOp::Add, l.clone(), r.clone()),
+                        },
                     };
                     match res {
                         Ok(v) => {
@@ -1043,7 +1078,10 @@ impl Vm {
                         }
                     }
                     let l = self.pop_top();
-                    match vm_eval_binary(BinOp::Sub, l, r) {
+                    match match self.try_operator(&l, &r, "__sub__") {
+                        Some(over) => over,
+                        None => vm_eval_binary(BinOp::Sub, l.clone(), r.clone()),
+                    } {
                         Ok(v) => self.frames[nf].slots.push(v),
                         Err(m) => self.fail(m),
                     }
@@ -1060,7 +1098,10 @@ impl Vm {
                         }
                     }
                     let l = self.pop_top();
-                    match vm_eval_binary(BinOp::Mul, l, r) {
+                    match match self.try_operator(&l, &r, "__mul__") {
+                        Some(over) => over,
+                        None => vm_eval_binary(BinOp::Mul, l.clone(), r.clone()),
+                    } {
                         Ok(v) => self.frames[nf].slots.push(v),
                         Err(m) => self.fail(m),
                     }
@@ -1077,7 +1118,10 @@ impl Vm {
                         }
                     }
                     let l = self.pop_top();
-                    match vm_eval_binary(BinOp::Div, l, r) {
+                    match match self.try_operator(&l, &r, "__div__") {
+                        Some(over) => over,
+                        None => vm_eval_binary(BinOp::Div, l.clone(), r.clone()),
+                    } {
                         Ok(v) => self.frames[nf].slots.push(v),
                         Err(m) => self.fail(m),
                     }
