@@ -1192,6 +1192,7 @@ fn get_vmfunc(r: &mut Reader) -> SpidResult<VmFunc> {
     };
     let chunk = std::sync::Arc::new(get_chunk(r)?);
     Ok(VmFunc {
+        globals: None,
         name,
         arity,
         min_arity,

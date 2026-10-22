@@ -858,7 +858,9 @@ impl Interp {
                 match op {
                     UnOp::Not => Ok(Value::Bool(!crate::value::truthy(&v))),
                     UnOp::Neg => match v {
-                        Value::Int(i) => Ok(Value::Int(i.wrapping_neg())),
+                        Value::Int(i) => Ok(Value::Int(
+                            crate::value::checked_neg(i).map_err(|e| self.rt(span, e))?,
+                        )),
                         Value::Float(f) => Ok(Value::Float(-f)),
                         other => Err(self.rt(
                             span,
@@ -1184,7 +1186,9 @@ impl Interp {
         use Value::*;
         match op {
             BinOp::Add => match (&l, &r) {
-                (Int(a), Int(b)) => Ok(Int(a.wrapping_add(*b))),
+                (Int(a), Int(b)) => Ok(Int(
+                    crate::value::checked_int("+", *a, *b).map_err(|e| self.rt(span, e))?
+                )),
                 (Int(a), Float(b)) => Ok(Float(*a as f64 + b)),
                 (Float(a), Int(b)) => Ok(Float(a + *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a + b)),
@@ -1204,7 +1208,9 @@ impl Interp {
                 )),
             },
             BinOp::Sub => match (&l, &r) {
-                (Int(a), Int(b)) => Ok(Int(a.wrapping_sub(*b))),
+                (Int(a), Int(b)) => Ok(Int(
+                    crate::value::checked_int("-", *a, *b).map_err(|e| self.rt(span, e))?
+                )),
                 (Int(a), Float(b)) => Ok(Float(*a as f64 - b)),
                 (Float(a), Int(b)) => Ok(Float(a - *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a - b)),
@@ -1218,7 +1224,9 @@ impl Interp {
                 )),
             },
             BinOp::Mul => match (&l, &r) {
-                (Int(a), Int(b)) => Ok(Int(a.wrapping_mul(*b))),
+                (Int(a), Int(b)) => Ok(Int(
+                    crate::value::checked_int("*", *a, *b).map_err(|e| self.rt(span, e))?
+                )),
                 (Int(a), Float(b)) => Ok(Float(*a as f64 * b)),
                 (Float(a), Int(b)) => Ok(Float(a * *b as f64)),
                 (Float(a), Float(b)) => Ok(Float(a * b)),

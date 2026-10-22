@@ -3,6 +3,7 @@
 
 use std::any::Any;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::os::raw::c_void;
 use std::sync::{Arc, Mutex};
@@ -46,6 +47,12 @@ pub struct VmFunc {
     pub chunk: std::sync::Arc<crate::vm::bytecode::Chunk>,
     pub upvalues: Vec<UpvalueCell>,
     pub own_upvalues: u8,
+    /// The globals map this function was defined in. A module's functions
+    /// resolve names against their own module scope, so two modules may
+    /// export the same function name without one shadowing the other.
+    /// `None` on prototypes built before the VM fills it in (the compiler's
+    /// and the bytecode reader's paths); the VM then uses its current map.
+    pub globals: Option<Arc<Mutex<HashMap<String, Value>>>>,
 }
 
 /// A class compiled to bytecode. Mirrors `ClassData` but methods are `VmFunc`.
@@ -989,6 +996,27 @@ pub fn no_field_error(value: &Value, field: &str) -> String {
     } else {
         format!("{} has no field '{}'", t, field)
     }
+}
+
+/// Checked integer arithmetic shared by every engine (the interpreter, the VM,
+/// and the native backend's `spid3r_binop` all route through here). Integer
+/// overflow is a runtime error, not a silent wrap: `9223372036854775807 + 1`
+/// must not quietly become the smallest i64 (Python raises, PHP converts to
+/// float - Spid3r previously corrupted the value, which the audit flagged).
+pub fn checked_int(op: &'static str, a: i64, b: i64) -> Result<i64, String> {
+    let r = match op {
+        "+" => a.checked_add(b),
+        "-" => a.checked_sub(b),
+        "*" => a.checked_mul(b),
+        _ => unreachable!("checked_int only covers +, -, *"),
+    };
+    r.ok_or_else(|| format!("integer overflow: {} {} {}", a, op, b))
+}
+
+/// Checked integer negation (`-i64::MIN` overflows).
+pub fn checked_neg(a: i64) -> Result<i64, String> {
+    a.checked_neg()
+        .ok_or_else(|| format!("integer overflow: -{}", a))
 }
 
 /// Debug display used by `print`, error messages, and `string()`.

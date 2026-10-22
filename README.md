@@ -134,6 +134,9 @@ fn main() {
   `close`) — lazy, composable streams; infinite producers cost nothing until consumed.
 - **`stdlib/event.matrix`**: An event loop over the `tcp_poll` readiness primitive — one task
   multiplexes any number of connections (`start`/`on_readable`/`remove`/`stop`/`run`).
+- **`stdlib/bigint.matrix` / `stdlib/decimal.matrix` / `stdlib/complex.matrix`**: arbitrary-precision
+  integers, exact fixed-point decimals (money math: `0.10 + 0.20 == 0.30`), and complex numbers —
+  pure Spid3r on top of the 64-bit `int` (which now raises on overflow instead of wrapping).
 - **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort_by, group_by, inner_join).
 - **`stdlib/stats.matrix`** & **`stdlib/ml.matrix`**: Regression, classification, clustering, PCA, and distributions.
 

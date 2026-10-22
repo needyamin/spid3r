@@ -26,6 +26,7 @@ mod webview2;
 
 fn func_with(chunk: Chunk) -> VmFunc {
     VmFunc {
+        globals: None,
         name: None,
         arity: 0,
         min_arity: 0,

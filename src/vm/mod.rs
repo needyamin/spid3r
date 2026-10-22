@@ -107,6 +107,9 @@ struct Handler {
 /// One function activation.
 struct CallFrame {
     func: Arc<VmFunc>,
+    /// The globals this frame resolves names against: the defining module's
+    /// map, not the caller's (see `VmFunc::globals`).
+    globals: Arc<Mutex<HashMap<String, Value>>>,
     /// Display name for stack traces. `None` means "use `func.name`". Method
     /// frames carry the qualified `Class::method` form and constructor frames
     /// `Class::new`, so a trace reads the same on the tree engine and the VM.
@@ -634,10 +637,11 @@ impl Vm {
                                             self.frames[nf].slots.get(slot_b),
                                         ) {
                                             if dst < self.frames[nf].slots.len() {
-                                                self.frames[nf].slots[dst] =
-                                                    Value::Int(a.wrapping_add(b));
-                                                self.frames[nf].ip = ip + 8;
-                                                continue;
+                                                if let Some(v) = a.checked_add(b) {
+                                                    self.frames[nf].slots[dst] = Value::Int(v);
+                                                    self.frames[nf].ip = ip + 8;
+                                                    continue;
+                                                }
                                             }
                                         }
                                     }
@@ -656,10 +660,11 @@ impl Vm {
                                         self.frames[nf].func.chunk.constants.get(cidx),
                                     ) {
                                         if dst < self.frames[nf].slots.len() {
-                                            self.frames[nf].slots[dst] =
-                                                Value::Int(a.wrapping_add(b));
-                                            self.frames[nf].ip = ip + 9;
-                                            continue;
+                                            if let Some(v) = a.checked_add(b) {
+                                                self.frames[nf].slots[dst] = Value::Int(v);
+                                                self.frames[nf].ip = ip + 9;
+                                                continue;
+                                            }
                                         }
                                     } else if dst == slot {
                                         if let Some(Value::Str(rhs)) =
@@ -693,7 +698,10 @@ impl Vm {
                                 ) {
                                     if op2 == OpCode::Mul as u8 {
                                         self.frames[nf].ip = ip + 6;
-                                        self.frames[nf].slots.push(Value::Int(a.wrapping_mul(b)));
+                                        if let Some(v) = a.checked_mul(b) {
+                                            self.frames[nf].slots.push(Value::Int(v));
+                                            continue;
+                                        }
                                         continue;
                                     } else if op2 == OpCode::Div as u8 && b != 0 {
                                         self.frames[nf].ip = ip + 6;
@@ -704,13 +712,17 @@ impl Vm {
                                         self.frames[nf].slots.push(Value::Int(a.wrapping_rem(b)));
                                         continue;
                                     } else if op2 == OpCode::Sub as u8 {
-                                        self.frames[nf].ip = ip + 6;
-                                        self.frames[nf].slots.push(Value::Int(a.wrapping_sub(b)));
-                                        continue;
+                                        if let Some(v) = a.checked_sub(b) {
+                                            self.frames[nf].ip = ip + 6;
+                                            self.frames[nf].slots.push(Value::Int(v));
+                                            continue;
+                                        }
                                     } else if op2 == OpCode::Add as u8 {
-                                        self.frames[nf].ip = ip + 6;
-                                        self.frames[nf].slots.push(Value::Int(a.wrapping_add(b)));
-                                        continue;
+                                        if let Some(v) = a.checked_add(b) {
+                                            self.frames[nf].ip = ip + 6;
+                                            self.frames[nf].slots.push(Value::Int(v));
+                                            continue;
+                                        }
                                     }
                                 }
                             }
@@ -761,7 +773,7 @@ impl Vm {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
                     let v = match self.frames[nf].func.chunk.constants.get(idx) {
-                        Some(Value::Str(name)) => self
+                        Some(Value::Str(name)) => self.frames[nf]
                             .globals
                             .lock()
                             .unwrap()
@@ -795,7 +807,7 @@ impl Vm {
                         self.fail(format!("cannot assign to const '{}'", name));
                         continue;
                     }
-                    let mut g = self.globals.lock().unwrap();
+                    let mut g = self.frames[nf].globals.lock().unwrap();
                     match g.get_mut(name.as_ref()) {
                         Some(slot) => *slot = v,
                         None => {
@@ -814,7 +826,11 @@ impl Vm {
                         }
                     };
                     let v = self.pop_top();
-                    self.globals.lock().unwrap().insert(name.to_string(), v);
+                    self.frames[nf]
+                        .globals
+                        .lock()
+                        .unwrap()
+                        .insert(name.to_string(), v);
                 }
                 OpCode::DefineConst => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
@@ -831,7 +847,11 @@ impl Vm {
                     // rebind is rejected and an importing module sees the
                     // export as a `public const`.
                     self.consts.lock().unwrap().insert(name.to_string());
-                    self.globals.lock().unwrap().insert(name.to_string(), v);
+                    self.frames[nf]
+                        .globals
+                        .lock()
+                        .unwrap()
+                        .insert(name.to_string(), v);
                 }
                 OpCode::SuperCtor | OpCode::SuperMethod => {
                     let is_ctor = matches!(op, OpCode::SuperCtor);
@@ -982,7 +1002,9 @@ impl Vm {
                     let r = self.pop_top();
                     let l = self.pop_top();
                     let res = match (&l, &r) {
-                        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(a.wrapping_add(*b))),
+                        (Value::Int(a), Value::Int(b)) => {
+                            crate::value::checked_int("+", *a, *b).map(Value::Int)
+                        }
                         _ => vm_eval_binary(BinOp::Add, l, r),
                     };
                     match res {
@@ -1015,8 +1037,10 @@ impl Vm {
                     if let (Some(Value::Int(a)), Value::Int(b)) =
                         (self.frames[nf].slots.last_mut(), &r)
                     {
-                        *a = a.wrapping_sub(*b);
-                        continue;
+                        if let Some(v) = a.checked_sub(*b) {
+                            *a = v;
+                            continue;
+                        }
                     }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Sub, l, r) {
@@ -1030,8 +1054,10 @@ impl Vm {
                     if let (Some(Value::Int(a)), Value::Int(b)) =
                         (self.frames[nf].slots.last_mut(), &r)
                     {
-                        *a = a.wrapping_mul(*b);
-                        continue;
+                        if let Some(v) = a.checked_mul(*b) {
+                            *a = v;
+                            continue;
+                        }
                     }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Mul, l, r) {
@@ -2016,7 +2042,8 @@ impl Vm {
                                     }
                                 }
                             }
-                            let mut g = self.globals.lock().unwrap();
+                            let frame_globals = self.frames[nf].globals.clone();
+                            let mut g = frame_globals.lock().unwrap();
                             for (n, v, _is_const) in exports {
                                 g.insert(n, v);
                             }
@@ -2069,7 +2096,8 @@ impl Vm {
                                 let mut consts = self.global_consts.lock().unwrap();
                                 consts.insert(alias.to_string());
                             }
-                            let mut g = self.globals.lock().unwrap();
+                            let frame_globals = self.frames[nf].globals.clone();
+                            let mut g = frame_globals.lock().unwrap();
                             g.insert(alias.to_string(), map_val);
                             self.frames[nf].slots.push(Value::Null);
                         }
@@ -2235,8 +2263,10 @@ impl Vm {
                 .map(|_| crate::value::new_untracked_ref(Value::Null))
                 .collect()
         };
+        let frame_globals = fd.globals.clone().unwrap_or_else(|| self.globals.clone());
         self.frames.push(CallFrame {
             func: fd,
+            globals: frame_globals,
             display,
             ip: 0,
             inst_ip: 0,
@@ -2291,7 +2321,17 @@ impl Vm {
             };
             upvalues.push(cell);
         }
+        // Capture the globals of the frame doing the defining, not the VM's
+        // field: a module's function creating a closure must give that
+        // closure the module's scope (the VM field holds the *entry*
+        // program's map once a module function runs under another VM).
+        let defining_globals = self
+            .frames
+            .last()
+            .map(|f| f.globals.clone())
+            .unwrap_or_else(|| self.globals.clone());
         Arc::new(VmFunc {
+            globals: Some(defining_globals),
             name: fproto.name.clone(),
             arity: fproto.arity,
             min_arity: fproto.min_arity,
@@ -2606,14 +2646,21 @@ impl Vm {
                     }
                     crate::modules::Claim::Acquired(claim) => claim,
                 };
-                let globals = self.globals.clone();
+                // A module runs against its OWN globals map: sharing the
+                // importer's map let one module's `mul` overwrite another's
+                // (a same-named function in two modules resolved to whichever
+                // loaded last). Functions created while the module runs
+                // capture this map, so the module's internals stay isolated
+                // and only its exports cross the boundary.
+                let globals: Arc<Mutex<HashMap<String, Value>>> =
+                    Arc::new(Mutex::new(HashMap::new()));
                 let sched = self.sched.clone();
                 let modules = self.modules.clone();
                 let embedded = self.embedded.clone();
                 let file = self.file.clone();
                 let module_dirs = self.module_dirs.clone();
                 let global_consts = self.global_consts.clone();
-                let out = Vm::with_shared(
+                let mut mvm = Vm::with_shared(
                     globals,
                     global_consts,
                     // A module VM keeps its own constant set: it reports
@@ -2624,8 +2671,11 @@ impl Vm {
                     embedded,
                     file,
                     module_dirs,
-                )
-                .run_module_from_func(func, public);
+                );
+                // Seed the builtins into the module's own globals (see the
+                // source path's note).
+                mvm.install_stdlib();
+                let out = mvm.run_module_from_func(func, public);
                 match &out {
                     Ok(exports) => claim.complete(exports.clone()),
                     // The claim drops here: the path is released and any
@@ -2682,7 +2732,8 @@ impl Vm {
             module_dirs.push(dir.to_path_buf());
         }
         let mut mvm = Vm::with_shared(
-            self.globals.clone(),
+            // Own globals map: see the embedded path's isolation note.
+            Arc::new(Mutex::new(HashMap::new())),
             self.global_consts.clone(),
             // A module VM keeps its own constant set (see the embedded path).
             Arc::new(Mutex::new(HashSet::new())),
@@ -2692,6 +2743,10 @@ impl Vm {
             file,
             module_dirs,
         );
+        // A module's globals start empty; the builtins must be seeded or the
+        // module cannot even call `len` (they used to arrive via the shared
+        // importer map).
+        mvm.install_stdlib();
         let exports = mvm.run_module(&program).map_err(|d| VmError {
             thrown: d.thrown,
             message: d.message,
@@ -2946,7 +3001,7 @@ pub(crate) fn vm_eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, Str
     use Value::*;
     match op {
         BinOp::Add => match (&l, &r) {
-            (Int(a), Int(b)) => Ok(Int(a.wrapping_add(*b))),
+            (Int(a), Int(b)) => Ok(Int(crate::value::checked_int("+", *a, *b)?)),
             (Int(a), Float(b)) => Ok(Float(*a as f64 + b)),
             (Float(a), Int(b)) => Ok(Float(a + *b as f64)),
             (Float(a), Float(b)) => Ok(Float(a + b)),
@@ -2963,7 +3018,7 @@ pub(crate) fn vm_eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, Str
             )),
         },
         BinOp::Sub => match (&l, &r) {
-            (Int(a), Int(b)) => Ok(Int(a.wrapping_sub(*b))),
+            (Int(a), Int(b)) => Ok(Int(crate::value::checked_int("-", *a, *b)?)),
             (Int(a), Float(b)) => Ok(Float(*a as f64 - b)),
             (Float(a), Int(b)) => Ok(Float(a - *b as f64)),
             (Float(a), Float(b)) => Ok(Float(a - b)),
@@ -2974,7 +3029,7 @@ pub(crate) fn vm_eval_binary(op: BinOp, l: Value, r: Value) -> Result<Value, Str
             )),
         },
         BinOp::Mul => match (&l, &r) {
-            (Int(a), Int(b)) => Ok(Int(a.wrapping_mul(*b))),
+            (Int(a), Int(b)) => Ok(Int(crate::value::checked_int("*", *a, *b)?)),
             (Int(a), Float(b)) => Ok(Float(*a as f64 * b)),
             (Float(a), Int(b)) => Ok(Float(a * *b as f64)),
             (Float(a), Float(b)) => Ok(Float(a * b)),
@@ -3047,7 +3102,7 @@ pub(crate) fn vm_eval_unary(op: UnOp, v: Value) -> Result<Value, String> {
     match op {
         UnOp::Not => Ok(Value::Bool(!truthy(&v))),
         UnOp::Neg => match v {
-            Value::Int(i) => Ok(Value::Int(i.wrapping_neg())),
+            Value::Int(i) => Ok(Value::Int(crate::value::checked_neg(i)?)),
             Value::Float(f) => Ok(Value::Float(-f)),
             other => Err(format!("cannot negate {}", type_name(&other))),
         },

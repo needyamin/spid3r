@@ -1,0 +1,75 @@
+// stdlib/complex.matrix - complex numbers, written in Spid3r.
+//
+//   import "complex" as cx;
+//
+//   let z = cx.of(3, 4);
+//   println(cx.to_string(cx.mul(z, z)));   // -7+24i
+//   println(cx.abs(z));                    // 5
+//
+// A value is `{ re: float, im: float }`. All the usual operations, plus
+// polar form (`abs`/`arg`) and `from_polar`. Exact for the values f64 can
+// represent; for exact rational arithmetic use stdlib/decimal.matrix.
+
+public fn of(re, im = 0) {
+    return map("re", float(re), "im", float(im));
+}
+
+public fn add(a, b) {
+    return of(a["re"] + b["re"], a["im"] + b["im"]);
+}
+
+public fn sub(a, b) {
+    return of(a["re"] - b["re"], a["im"] - b["im"]);
+}
+
+public fn mul(a, b) {
+    return of(
+        a["re"] * b["re"] - a["im"] * b["im"],
+        a["re"] * b["im"] + a["im"] * b["re"]
+    );
+}
+
+public fn div(a, b) {
+    let d = b["re"] * b["re"] + b["im"] * b["im"];
+    if d == 0.0 {
+        throw "complex.div: division by zero";
+    }
+    return of(
+        (a["re"] * b["re"] + a["im"] * b["im"]) / d,
+        (a["im"] * b["re"] - a["re"] * b["im"]) / d
+    );
+}
+
+/// Complex conjugate.
+public fn conj(a) {
+    return of(a["re"], -a["im"]);
+}
+
+/// Magnitude (modulus).
+public fn abs(a) {
+    return sqrt(a["re"] * a["re"] + a["im"] * a["im"]);
+}
+
+/// Argument (phase) in radians, in (-pi, pi].
+public fn arg(a) {
+    return atan2(a["im"], a["re"]);
+}
+
+/// `abs` and `arg` in one call: `[magnitude, phase]`.
+public fn polar(a) {
+    return [abs(a), arg(a)];
+}
+
+/// From magnitude and phase.
+public fn from_polar(r, theta) {
+    return of(r * cos(theta), r * sin(theta));
+}
+
+/// `re + im i` with the sign folded into the separator.
+public fn to_string(a) {
+    let im = a["im"];
+    if im < 0.0 {
+        return string(a["re"]) + "-" + string(-im) + "i";
+    }
+    return string(a["re"]) + "+" + string(im) + "i";
+}

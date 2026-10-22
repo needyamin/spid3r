@@ -687,6 +687,7 @@ fn bytecode_deserializer_rejects_truncated_constants_huge_counts_and_negative_ju
     chunk.emit_u16(OpCode::Constant, cf);
     chunk.emit(OpCode::Return);
     let func = VmFunc {
+        globals: None,
         name: None,
         arity: 0,
         min_arity: 0,

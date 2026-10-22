@@ -61,16 +61,29 @@ fn arithmetic_promotes_ints_to_floats() {
 }
 
 #[test]
-fn integer_math_wraps_on_overflow() {
-    expect_ok(
+fn integer_overflow_is_an_error_not_a_silent_wrap() {
+    // The audit flagged silent wraparound as data corruption: `max * 2` used
+    // to become -2. It is a runtime error now (Python raises; PHP converts to
+    // float - nobody silently corrupts).
+    expect_err(
         r#"
         fn main() {
             let big = 9223372036854775807;
             let wrapped = big * 2;
-            if wrapped != -2 { return 1; }
             return 0;
         }
     "#,
+        "integer overflow",
+    );
+    expect_err(
+        r#"
+        fn main() {
+            let big = 9223372036854775807;
+            let wrapped = big + 1;
+            return 0;
+        }
+    "#,
+        "integer overflow",
     );
 }
 

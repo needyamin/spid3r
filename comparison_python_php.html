@@ -93,9 +93,11 @@ web processes are different workloads than this CLI loop.
 
 <h3>3.2 Numbers &amp; data types</h3>
 <ul>
-  <li><span class="tag t-no">NO</span><strong>Arbitrary-precision integers.</strong> Measured: <code>9223372036854775807 + 1</code> silently wraps to <code>-9223372036854775808</code> (exit 0). Python ints are unbounded; PHP converts overflow to float. Crypto/BigInt math silently corrupts in Spid3r.</li>
-  <li><span class="tag t-no">NO</span><strong>Decimal / arbitrary-precision float</strong> (Python <code>decimal</code>/<code>fractions</code>) — money math is f64-only.</li>
-  <li><span class="tag t-no">NO</span><strong>Complex numbers</strong> (Python builtin <code>complex</code>).</li>
+  <li><span class="tag t-yes">FIXED</span><strong>Silent integer overflow.</strong> The worst of the three was a correctness bug, not a missing feature: <code>9223372036854775807 + 1</code> used to wrap to <code>-9223372036854775808</code> with exit 0. It is now a runtime error (<em>integer overflow: 9223372036854775807 + 1</em>) in all three engines — Python raises, PHP converts to float; nobody silently corrupts. The VM's fast-path superinstructions fall through to the checked path, so the common case pays one predictable branch.</li>
+  <li><span class="tag t-yes">FIXED</span><strong>Arbitrary-precision integers</strong> — <code>stdlib/bigint.matrix</code>: add/sub/mul/divmod/pow/cmp/neg/abs over base-10⁴ limbs, verified against Python for 2^128, 25!, and a 30-digit product/quotient. It is a library, not literal syntax: <code>int</code> stays 64-bit, so you opt in with <code>bi.from_string(...)</code>. <em>O(n²) multiplication, schoolbook division — correct, not fast. These three libraries run on the tree and VM engines; the native backend still rejects <code>import ... as alias</code>, so an AOT build of a program using them is refused with a clear diagnostic (pre-existing limitation, unrelated to the libraries).</em></li>
+  <li><span class="tag t-yes">FIXED</span><strong>Decimal (exact money math)</strong> — <code>stdlib/decimal.matrix</code>: <code>{units, scale}</code> over bigint, so <code>0.10 + 0.20</code> is exactly <code>0.30</code>, division takes an explicit precision, and <code>round</code> is half-away-from-zero. This is Python's <code>decimal</code> role; PHP's <code>bcmath</code> equivalent.</li>
+  <li><span class="tag t-yes">FIXED</span><strong>Complex numbers</strong> — <code>stdlib/complex.matrix</code>: add/sub/mul/div/conj/abs/arg/polar/from_polar over <code>{re, im}</code>. Python has a builtin type; this is a library with the same arithmetic.</li>
+  <li><span class="tag t-part">PARTIAL</span><strong>What is still library-level, not language-level:</strong> there are no big-integer or decimal <em>literals</em>, no operator overloading (so it is <code>dec.add(a, b)</code>, not <code>a + b</code>), and no exact rationals (<code>fractions</code>). Python's numeric stack remains richer — and NumPy-class vectorized arrays are still absent (§3.5).</li>
 </ul>
 
 <h3>3.3 Language constructs (all verified by probe/source)</h3>
@@ -144,8 +146,8 @@ library/tooling gaps narrowed substantially — TOML, semver, UUID, hex/base32, 
 assertions framework, a profiler, LSP rename/references, and generators all shipped.
 <strong>What still blocks real-world use, honestly:</strong> (1) <strong>no package registry</strong>
 — the ecosystem gap is the largest and only time plus registry work change it; (2) no suspension-based async executor (<code>async</code>/<code>await</code> are join-based; readiness itself is a kernel wakeup now); (3)
-databases beyond SQLite; (4) no compression/XML/YAML; (5) no BigInt/decimal/generics —
-numeric and scientific work silently corrupts or is impossible; (6) no media/email stacks;
+databases beyond SQLite; (4) no compression/XML/YAML; (5) no generics, and BigInt/decimal are libraries rather than
+literal syntax (numeric corruption is fixed; the numeric *stack* is not NumPy); (6) no media/email stacks;
 (7) no compiler-level <code>yield</code>; (8) no kernel epoll/kqueue wakeup and no <code>async/await</code>.
 The measured speed (≈2–4× CPython, PHP-class) is real but is the <em>smallest</em> of the
 differences that matter; the ecosystem remains the largest.

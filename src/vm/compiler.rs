@@ -383,6 +383,7 @@ fn compile_one(
         chunk.modules = std::mem::take(embedded);
     }
     let func = crate::value::VmFunc {
+        globals: None,
         name: None,
         arity: 0,
         min_arity: 0,

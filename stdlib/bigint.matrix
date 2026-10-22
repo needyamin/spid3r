@@ -1,0 +1,384 @@
+// stdlib/bigint.matrix - arbitrary-precision integers, written in Spid3r.
+//
+//   import "bigint" as bi;
+//
+//   let a = bi.from_string("123456789012345678901234567890");
+//   let b = bi.from_int(7);
+//   println(bi.to_string(bi.mul(a, b)));
+//
+// Values are `{ sign: 1|-1, limbs: [int] }` with base-10000 limbs, least
+// significant first. Every operation returns a new value (no mutation), so
+// they compose freely. `int` stays 64-bit and now raises on overflow; use
+// this module when the numbers do not fit.
+//
+// Implemented: add, sub, mul, divmod, pow, cmp, neg, abs, is_zero,
+// from_int, from_string, to_string. Division is schoolbook long division
+// (correct, not fast); multiplication is O(n^2).
+
+const BASE = 10000;
+const BASE_DIGITS = 4;
+
+fn normalize(sign, limbs) {
+    let out = [];
+    let i = 0;
+    while i < len(limbs) {
+        out.push(limbs[i]);
+        i = i + 1;
+    }
+    while len(out) > 1 and out[len(out) - 1] == 0 {
+        out.pop();
+    }
+    if len(out) == 1 and out[0] == 0 {
+        return map("sign", 1, "limbs", [0]);
+    }
+    return map("sign", sign, "limbs", out);
+}
+
+/// Zero.
+public fn zero() {
+    return normalize(1, [0]);
+}
+
+/// From a (64-bit) int.
+public fn from_int(n) {
+    if n == 0 {
+        return zero();
+    }
+    let sign = 1;
+    let v = n;
+    if v < 0 {
+        sign = -1;
+        v = -v;
+    }
+    let limbs = [];
+    while v > 0 {
+        limbs.push(v % BASE);
+        v = v / BASE;
+    }
+    return normalize(sign, limbs);
+}
+
+/// From a decimal string (optional leading `-` or `+`).
+public fn from_string(s) {
+    let text = s.trim();
+    if text == "" {
+        throw "bigint.from_string: empty string";
+    }
+    let sign = 1;
+    if text.starts_with("-") {
+        sign = -1;
+        text = text.slice(1, len(text));
+    } else if text.starts_with("+") {
+        text = text.slice(1, len(text));
+    }
+    let digits = "0123456789";
+    let i = 0;
+    while i < len(text) {
+        if not digits.contains(text.slice(i, i + 1)) {
+            throw "bigint.from_string: not a decimal integer: " + s;
+        }
+        i = i + 1;
+    }
+    // Chunk from the right into base-10000 limbs.
+    let limbs = [];
+    let end = len(text);
+    while end > 0 {
+        let start = end - BASE_DIGITS;
+        if start < 0 {
+            start = 0;
+        }
+        limbs.push(int(text.slice(start, end)));
+        end = start;
+    }
+    if len(limbs) == 0 {
+        limbs = [0];
+    }
+    return normalize(sign, limbs);
+}
+
+/// Decimal representation.
+public fn to_string(a) {
+    let limbs = a["limbs"];
+    let out = string(limbs[len(limbs) - 1]);
+    let i = len(limbs) - 2;
+    while i >= 0 {
+        let part = string(limbs[i]);
+        let pad = BASE_DIGITS - len(part);
+        let k = 0;
+        while k < pad {
+            part = "0" + part;
+            k = k + 1;
+        }
+        out = out + part;
+        i = i - 1;
+    }
+    if a["sign"] < 0 {
+        return "-" + out;
+    }
+    return out;
+}
+
+public fn is_zero(a) {
+    let limbs = a["limbs"];
+    return len(limbs) == 1 and limbs[0] == 0;
+}
+
+/// -1 / 0 / 1.
+public fn cmp(a, b) {
+    let sa = a["sign"];
+    let sb = b["sign"];
+    if is_zero(a) and is_zero(b) {
+        return 0;
+    }
+    if sa != sb {
+        if sa < sb {
+            return -1;
+        }
+        return 1;
+    }
+    let c = cmp_magnitude(a["limbs"], b["limbs"]);
+    if sa < 0 {
+        return -c;
+    }
+    return c;
+}
+
+fn cmp_magnitude(la, lb) {
+    if len(la) != len(lb) {
+        if len(la) < len(lb) {
+            return -1;
+        }
+        return 1;
+    }
+    let i = len(la) - 1;
+    while i >= 0 {
+        if la[i] != lb[i] {
+            if la[i] < lb[i] {
+                return -1;
+            }
+            return 1;
+        }
+        i = i - 1;
+    }
+    return 0;
+}
+
+fn add_magnitude(la, lb) {
+    let out = [];
+    let carry = 0;
+    let n = len(la);
+    if len(lb) > n {
+        n = len(lb);
+    }
+    let i = 0;
+    while i < n {
+        let x = 0;
+        let y = 0;
+        if i < len(la) {
+            x = la[i];
+        }
+        if i < len(lb) {
+            y = lb[i];
+        }
+        let s = x + y + carry;
+        out.push(s % BASE);
+        carry = s / BASE;
+        i = i + 1;
+    }
+    if carry > 0 {
+        out.push(carry);
+    }
+    return out;
+}
+
+/// |la| - |lb|, requires |la| >= |lb|.
+fn sub_magnitude(la, lb) {
+    let out = [];
+    let borrow = 0;
+    let i = 0;
+    while i < len(la) {
+        let x = la[i] - borrow;
+        let y = 0;
+        if i < len(lb) {
+            y = lb[i];
+        }
+        if x < y {
+            x = x + BASE;
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        out.push(x - y);
+        i = i + 1;
+    }
+    return out;
+}
+
+public fn add(a, b) {
+    if a["sign"] == b["sign"] {
+        return normalize(a["sign"], add_magnitude(a["limbs"], b["limbs"]));
+    }
+    let c = cmp_magnitude(a["limbs"], b["limbs"]);
+    if c == 0 {
+        return zero();
+    }
+    if c > 0 {
+        return normalize(a["sign"], sub_magnitude(a["limbs"], b["limbs"]));
+    }
+    return normalize(b["sign"], sub_magnitude(b["limbs"], a["limbs"]));
+}
+
+public fn neg(a) {
+    if is_zero(a) {
+        return zero();
+    }
+    return map("sign", -a["sign"], "limbs", a["limbs"]);
+}
+
+public fn abs(a) {
+    return map("sign", 1, "limbs", a["limbs"]);
+}
+
+public fn sub(a, b) {
+    return add(a, neg(b));
+}
+
+/// |a| * |b| (schoolbook).
+fn mul_magnitude(la, lb) {
+    let out = [];
+    let i = 0;
+    while i < len(la) + len(lb) {
+        out.push(0);
+        i = i + 1;
+    }
+    i = 0;
+    while i < len(la) {
+        let carry = 0;
+        let j = 0;
+        while j < len(lb) {
+            let cur = out[i + j] + la[i] * lb[j] + carry;
+            out[i + j] = cur % BASE;
+            carry = cur / BASE;
+            j = j + 1;
+        }
+        let k = i + len(lb);
+        while carry > 0 {
+            let cur = out[k] + carry;
+            out[k] = cur % BASE;
+            carry = cur / BASE;
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+public fn mul(a, b) {
+    return normalize(a["sign"] * b["sign"], mul_magnitude(a["limbs"], b["limbs"]));
+}
+
+/// Multiply by a small non-negative int (0..BASE).
+fn mul_small(la, m) {
+    let out = [];
+    let carry = 0;
+    let i = 0;
+    while i < len(la) {
+        let cur = la[i] * m + carry;
+        out.push(cur % BASE);
+        carry = cur / BASE;
+        i = i + 1;
+    }
+    if carry > 0 {
+        out.push(carry);
+    }
+    return out;
+}
+
+/// Shift left by one limb (multiply by BASE).
+fn shift_limb(la) {
+    let out = [0];
+    let i = 0;
+    while i < len(la) {
+        out.push(la[i]);
+        i = i + 1;
+    }
+    return out;
+}
+
+/// `divmod(a, b)` -> `[quotient, remainder]` (truncating toward zero).
+public fn divmod(a, b) {
+    if is_zero(b) {
+        throw "bigint.divmod: division by zero";
+    }
+    let qsign = a["sign"] * b["sign"];
+    let rsign = a["sign"];
+    let la = a["limbs"];
+    let lb = b["limbs"];
+    if cmp_magnitude(la, lb) < 0 {
+        return [zero(), a];
+    }
+    // Long division: bring down one limb at a time and pick the quotient
+    // digit by binary search (0..BASE-1).
+    let q = [];
+    let i = len(la) - 1;
+    while i >= 0 {
+        q.push(0);
+        i = i - 1;
+    }
+    let rem = [0];
+    i = len(la) - 1;
+    while i >= 0 {
+        rem = shift_limb(rem);
+        rem[0] = la[i];
+        // The magnitude comparison is length-first, so the running remainder
+        // must not carry high zero limbs (5 and [5,0,0] are the same number).
+        while len(rem) > 1 and rem[len(rem) - 1] == 0 {
+            rem.pop();
+        }
+        // binary search for the largest d with d*|b| <= rem
+        let lo = 0;
+        let hi = BASE - 1;
+        let best = 0;
+        while lo <= hi {
+            let mid = (lo + hi) / 2;
+            let prod = mul_small(lb, mid);
+            if cmp_magnitude(prod, rem) <= 0 {
+                best = mid;
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if best > 0 {
+            rem = sub_magnitude(rem, mul_small(lb, best));
+        }
+        q[i] = best;
+        i = i - 1;
+    }
+    let quotient = normalize(qsign, q);
+    let remainder = normalize(rsign, rem);
+    return [quotient, remainder];
+}
+
+/// `a` raised to a non-negative int power (binary exponentiation).
+public fn pow(a, e) {
+    if e < 0 {
+        throw "bigint.pow: negative exponents are not integers";
+    }
+    let result = from_int(1);
+    let base = a;
+    let k = e;
+    while k > 0 {
+        if k % 2 == 1 {
+            result = mul(result, base);
+        }
+        base = mul(base, base);
+        k = k / 2;
+    }
+    return result;
+}
+
+/// Compare with a small int: -1 / 0 / 1.
+public fn cmp_int(a, n) {
+    return cmp(a, from_int(n));
+}
