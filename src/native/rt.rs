@@ -108,6 +108,21 @@ pub extern "C" fn spid3r_throw(v: *mut Value) {
     THROWN.with(|t| *t.borrow_mut() = Some(v));
 }
 
+/// Cancellation check for generated code: returns 1 and raises "task
+/// cancelled" when the running task was cancelled, 0 otherwise. Loop bodies
+/// call it periodically, so a cancelled native task stops at the next poll
+/// instead of running to completion.
+#[no_mangle]
+pub extern "C" fn spid3r_cancel_check() -> u8 {
+    if crate::sched::current_task_cancelled() {
+        let v = leak(Value::Str("task cancelled".into()));
+        spid3r_throw(v);
+        1
+    } else {
+        0
+    }
+}
+
 /// Non-zero when a `throw` is pending. Generated code calls this after every
 /// operation that may throw and branches to its handler when it returns non-zero.
 #[no_mangle]

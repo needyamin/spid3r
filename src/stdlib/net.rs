@@ -47,6 +47,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("tcp_local_addr", n_tcp_local_addr),
         ("tcp_peer_addr", n_tcp_peer_addr),
         ("tcp_set_timeout", n_tcp_set_timeout),
+        ("tcp_poll", n_tcp_poll),
         ("udp_bind", n_udp_bind),
         ("udp_local_addr", n_udp_local_addr),
         ("udp_send_to", n_udp_send_to),
@@ -65,8 +66,28 @@ pub fn native_defs() -> Vec<NativeDef> {
 #[derive(Clone)]
 enum Sock {
     Listener(Arc<TcpListener>),
-    Stream(Arc<TcpStream>),
+    Stream(Arc<Conn>),
     Udp(Arc<UdpSocket>),
+}
+
+/// A TCP connection with the state a readiness probe needs.
+///
+/// The stream lives behind its own mutex: a readiness probe flips the socket
+/// to non-blocking, reads what is available, and flips it back. `pending`
+/// holds bytes the probe read ahead, so polling never loses data - the next
+/// `tcp_read` hands them over first.
+struct Conn {
+    stream: Mutex<TcpStream>,
+    pending: Mutex<Vec<u8>>,
+}
+
+impl Conn {
+    fn new(stream: TcpStream) -> Conn {
+        Conn {
+            stream: Mutex::new(stream),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 fn table() -> &'static Mutex<HashMap<i64, Sock>> {
@@ -101,7 +122,7 @@ fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
     }
 }
 
-fn get_stream(id: i64, who: &str) -> Result<Arc<TcpStream>, String> {
+fn get_stream(id: i64, who: &str) -> Result<Arc<Conn>, String> {
     match lookup(id) {
         Some(Sock::Stream(s)) => Ok(s),
         Some(Sock::Listener(_)) => Err(format!(
@@ -358,7 +379,9 @@ fn n_tcp_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                 return err("tcp_accept: listener closed");
             }
             let _ = stream.set_nodelay(true);
-            ok(Value::Int(register(Sock::Stream(Arc::new(stream)))))
+            ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new(
+                stream,
+            ))))))
         }
         Err(e) => err(io_msg("tcp_accept", &e)),
     }
@@ -371,7 +394,7 @@ fn n_tcp_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     match connect_with_timeout(&addr) {
         Ok(s) => {
             let _ = s.set_nodelay(true);
-            ok(Value::Int(register(Sock::Stream(Arc::new(s)))))
+            ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new(s))))))
         }
         Err(e) => err(format!("tcp_connect '{}': {}", addr, e)),
     }
@@ -389,9 +412,26 @@ fn n_tcp_read(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             MAX_READ_BYTES
         ));
     }
-    let stream = get_stream(id, "tcp_read")?;
+    let conn = get_stream(id, "tcp_read")?;
+    // Bytes a readiness probe read ahead come first.
+    let ahead = {
+        let mut p = conn.pending.lock().unwrap();
+        if p.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut *p)
+        }
+    };
+    if !ahead.is_empty() {
+        let take = ahead.len().min(max as usize);
+        let chunk = ahead[..take].to_vec();
+        let rest = ahead[take..].to_vec();
+        *conn.pending.lock().unwrap() = rest;
+        return ok(str_val(String::from_utf8_lossy(&chunk).into_owned()));
+    }
     let mut buf = vec![0u8; max as usize];
-    match (&*stream).read(&mut buf) {
+    let mut stream = conn.stream.lock().unwrap();
+    match stream.read(&mut buf) {
         Ok(n) => ok(str_val(String::from_utf8_lossy(&buf[..n]).into_owned())),
         Err(e) => err(io_msg("tcp_read", &e)),
     }
@@ -402,10 +442,11 @@ fn n_tcp_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_write", &args, 2)?;
     let id = want_int(&args[0], "tcp_write")?;
     let text = want_str(&args[1], "tcp_write")?;
-    let stream = get_stream(id, "tcp_write")?;
-    match (&*stream)
+    let conn = get_stream(id, "tcp_write")?;
+    let mut stream = conn.stream.lock().unwrap();
+    match stream
         .write_all(text.as_bytes())
-        .and_then(|_| (&*stream).flush())
+        .and_then(|_| stream.flush())
     {
         Ok(()) => ok(Value::Int(text.len() as i64)),
         Err(e) => err(io_msg("tcp_write", &e)),
@@ -420,7 +461,7 @@ fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let removed = table().lock().unwrap().remove(&id);
     match removed {
         Some(Sock::Stream(s)) => {
-            let _ = s.shutdown(Shutdown::Both);
+            let _ = s.stream.lock().unwrap().shutdown(Shutdown::Both);
             Ok(Value::Bool(true))
         }
         Some(Sock::Udp(s)) => {
@@ -454,7 +495,7 @@ fn n_tcp_local_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
     let id = want_int(&args[0], "tcp_local_addr")?;
     let addr = match lookup(id) {
         Some(Sock::Listener(l)) => l.local_addr(),
-        Some(Sock::Stream(s)) => s.local_addr(),
+        Some(Sock::Stream(s)) => s.stream.lock().unwrap().local_addr(),
         Some(Sock::Udp(s)) => s.local_addr(),
         None => return Err(format!("tcp_local_addr: handle {} is not open", id)),
     };
@@ -468,8 +509,9 @@ fn n_tcp_local_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
 fn n_tcp_peer_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_peer_addr", &args, 1)?;
     let id = want_int(&args[0], "tcp_peer_addr")?;
-    let stream = get_stream(id, "tcp_peer_addr")?;
-    match stream.peer_addr() {
+    let conn = get_stream(id, "tcp_peer_addr")?;
+    let addr = conn.stream.lock().unwrap().peer_addr();
+    match addr {
         Ok(a) => ok(str_val(a.to_string())),
         Err(e) => err(io_msg("tcp_peer_addr", &e)),
     }
@@ -489,13 +531,115 @@ fn n_tcp_set_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String
     } else {
         Some(Duration::from_millis(ms as u64))
     };
-    match stream
-        .set_read_timeout(t)
-        .and_then(|_| stream.set_write_timeout(t))
-    {
+    let s = stream.stream.lock().unwrap();
+    match s.set_read_timeout(t).and_then(|_| s.set_write_timeout(t)) {
         Ok(()) => ok(Value::Null),
         Err(e) => err(io_msg("tcp_set_timeout", &e)),
     }
+}
+
+/// `tcp_poll(conn_ids, timeout_ms)` -> `ok({readable: [...], writable: [...]})`
+///
+/// Waits until at least one of the given connections has data to read, or
+/// the timeout expires (0 = do not wait). This is the readiness primitive
+/// behind an evented server: one task can watch many connections instead of
+/// blocking on each in turn.
+///
+/// The probe reads ahead into the connection's pending buffer, so polling
+/// never loses data - the next `tcp_read` hands the probed bytes over first.
+/// `writable` lists the connections that are open for writing; without a
+/// platform readiness syscall the runtime reports them optimistically (a
+/// connected socket accepts writes until the peer stops reading).
+fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "tcp_poll";
+    arity(WHO, &args, 2)?;
+    let ids = match collections::iter_values(&args[0]) {
+        Ok(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for v in &items {
+                out.push(want_int(v, WHO)?);
+            }
+            out
+        }
+        Err(_) => {
+            return Err(format!(
+                "{} expects a list of connection ids, found {}",
+                WHO,
+                type_name(&args[0])
+            ))
+        }
+    };
+    let timeout_ms = want_int(&args[1], WHO)?;
+    if timeout_ms < 0 {
+        return Err(format!("{}: timeout_ms must not be negative", WHO));
+    }
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+    let mut readable: Vec<i64> = Vec::new();
+    loop {
+        readable.clear();
+        for id in &ids {
+            if probe_readable(*id, WHO)? {
+                readable.push(*id);
+            }
+        }
+        if !readable.is_empty() || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let mut writable: Vec<i64> = Vec::new();
+    for id in &ids {
+        if lookup(*id).is_some() {
+            writable.push(*id);
+        }
+    }
+    let readable_values: Vec<Value> = readable.into_iter().map(Value::Int).collect();
+    let writable_values: Vec<Value> = writable.into_iter().map(Value::Int).collect();
+    let readable_list = collections::construct("list", readable_values)?;
+    let writable_list = collections::construct("list", writable_values)?;
+    collections::construct(
+        "map",
+        vec![
+            Value::Str("readable".into()),
+            readable_list,
+            Value::Str("writable".into()),
+            writable_list,
+        ],
+    )
+    .and_then(ok)
+}
+
+/// Is there data to read on this connection? Reads ahead into the pending
+/// buffer so the bytes are not lost.
+fn probe_readable(id: i64, who: &str) -> Result<bool, String> {
+    let conn = match lookup(id) {
+        Some(Sock::Stream(c)) => c,
+        Some(Sock::Listener(_)) => {
+            return Err(format!("{}: handle {} is a listener", who, id));
+        }
+        Some(Sock::Udp(_)) => {
+            return Err(format!("{}: handle {} is a UDP socket", who, id));
+        }
+        None => return Err(format!("{}: handle {} is not open", who, id)),
+    };
+    let mut stream = conn.stream.lock().unwrap();
+    let _ = stream.set_nonblocking(true);
+    let mut buf = vec![0u8; 64 * 1024];
+    let result = match stream.read(&mut buf) {
+        Ok(n) if n > 0 => {
+            let mut pending = conn.pending.lock().unwrap();
+            pending.extend_from_slice(&buf[..n]);
+            Ok(true)
+        }
+        Ok(0) => Ok(true), // the peer closed: readable (EOF)
+        Ok(_) => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(false),
+        Err(e) => Err(io_msg(who, &e)),
+    };
+    // Restore blocking mode for the next ordinary read.
+    let _ = stream.set_nonblocking(false);
+    result
 }
 
 // ------------------------------------------------------------------- UDP
@@ -856,7 +1000,8 @@ fn n_http_read_request(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Stri
     const WHO: &str = "http_read_request";
     arity(WHO, &args, 1)?;
     let id = want_int(&args[0], WHO)?;
-    let stream = get_stream(id, WHO)?;
+    let conn = get_stream(id, WHO)?;
+    let stream = conn.stream.lock().unwrap();
     match read_request(&stream) {
         Ok(v) => ok(v),
         Err(e) => err(e),
@@ -993,10 +1138,8 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
         Some(raw) => bytes.extend_from_slice(&raw),
         None => bytes.extend_from_slice(body_text.as_bytes()),
     }
-    match (&*stream)
-        .write_all(&bytes)
-        .and_then(|_| (&*stream).flush())
-    {
+    let mut s = stream.stream.lock().unwrap();
+    match s.write_all(&bytes).and_then(|_| s.flush()) {
         Ok(()) => ok(Value::Int(bytes.len() as i64)),
         Err(e) => err(io_msg(WHO, &e)),
     }

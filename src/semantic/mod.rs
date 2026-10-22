@@ -377,6 +377,7 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "tcp_local_addr",
     "tcp_peer_addr",
     "tcp_set_timeout",
+    "tcp_poll",
     "udp_bind",
     "udp_local_addr",
     "udp_send_to",

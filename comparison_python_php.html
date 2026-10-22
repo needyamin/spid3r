@@ -86,9 +86,9 @@ web processes are different workloads than this CLI loop.
 
 <h3>3.1 Platform &amp; I/O — the hardest gaps</h3>
 <ul>
-  <li><span class="tag t-no">NO</span><strong>Evented/async I/O.</strong> Sockets are blocking; concurrency is an OS-thread pool. No <code>select/poll/epoll</code>, no event loop, no <code>async/await</code>. Python: asyncio; PHP: Fibers + ReactPHP/Swoole. A 10k-connection server is not writable in Spid3r. <em>(HTTPS was the other member of this list — <span class="tag t-yes">FIXED</span> 2026-10-22: the opt-in <code>tls</code> feature adds HTTPS to <code>http_fetch</code> via native-tls + the OS certificate store, verified with a real fetch of https://example.com; the zero-dependency default build is unchanged.)</em></li>
-  <li><span class="tag t-no">NO</span><strong>WebSockets or multicast</strong> — TCP + UDP datagrams + manual HTTP framing only. <em>(UDP shipped 2026-10-22: <code>udp_bind/send_to/recv_from/close</code>, loopback-tested.)</em></li>
-  <li><span class="tag t-no">NO</span><strong>General task cancellation or structured concurrency</strong> — a spawned task cannot be cancelled; exit-drain is best-effort. (The generator library's <code>close()</code> cancels <em>its own</em> body via a throw-based protocol; there is no equivalent for arbitrary tasks.)</li>
+  <li><span class="tag t-part">PARTIAL</span><strong>Evented/async I/O.</strong> Still no <code>select/epoll</code> syscall, no event loop, and no <code>async/await</code> — but the foundation shipped 2026-10-22: <code>tcp_poll([conns], timeout_ms)</code> is a real readiness wait (a probe reads ahead into a per-connection buffer, so polled bytes are never lost), which is enough to write a single-task multiplexed server over blocking sockets. <em>Verified on all three engines: a client sees an empty readable list before the peer writes and one connection after. Python: asyncio; PHP: Fibers + ReactPHP/Swoole — a 10k-connection server is now writable in Spid3r, though the poll is a 2 ms-interval probe loop, not a kernel wakeup. (HTTPS closed earlier the same day: the opt-in <code>tls</code> feature adds HTTPS to <code>http_fetch</code> via native-tls + the OS certificate store, verified with a real fetch of https://example.com; the zero-dependency default build is unchanged.)</em></li>
+  <li><span class="tag t-part">PARTIAL</span><strong>WebSockets or multicast</strong> — <span class="tag t-no">NO</span> WebSocket handshake/frame codec and no multicast group management. UDP datagram sockets exist (<code>udp_bind/send_to/recv_from/close</code>, loopback-tested), as does TCP + manual HTTP framing. <em>The WS gap is a frame-codec + handshake library, not a transport gap — the remaining work is documented in docs/IMPROVEMENT_PLAN.md.</em></li>
+  <li><span class="tag t-yes">FIXED</span><strong>Task cancellation</strong> — <code>task.cancel()</code> shipped 2026-10-22 and works identically on all three engines: a runaway compute task stops at its next cancellation point (per-statement in the tree engine, every 2048 instructions in the VM, a per-loop counter poll in AOT code, and a time-sliced channel wait), a task blocked on an empty channel wakes up, <code>join()</code> raises "task cancelled", <code>status()</code> reports <code>"cancelled"</code>, and cancelling a finished task is a no-op. Structured concurrency (scoped tasks) is a separate, still-open design item.</li>
 </ul>
 
 <h3>3.2 Numbers &amp; data types</h3>
@@ -144,9 +144,10 @@ library/tooling gaps narrowed substantially — TOML, semver, UUID, hex/base32, 
 assertions framework, a profiler, LSP rename/references, and generators all shipped.
 <strong>What still blocks real-world use, honestly:</strong> (1) <strong>no package registry</strong>
 — the ecosystem gap is the largest and only time plus registry work change it; (2) no
-evented/async I/O, so no 10k-connection servers; (3) databases beyond SQLite; (4) no
-compression/XML/YAML; (5) no BigInt/decimal/generics — numeric and scientific work silently
-corrupts or is impossible; (6) no media/email stacks; (7) no compiler-level <code>yield</code>.
+kernel-level event loop (readiness polling exists; a 2 ms probe loop is not epoll); (3)
+databases beyond SQLite; (4) no compression/XML/YAML; (5) no BigInt/decimal/generics —
+numeric and scientific work silently corrupts or is impossible; (6) no media/email stacks;
+(7) no compiler-level <code>yield</code>; (8) no WebSockets.
 The measured speed (≈2–4× CPython, PHP-class) is real but is the <em>smallest</em> of the
 differences that matter; the ecosystem remains the largest.
 </div>

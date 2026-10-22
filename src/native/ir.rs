@@ -888,6 +888,66 @@ impl<'ctx> Ir<'ctx> {
 
     // -------------------------------------------------------- control flow
 
+    /// Initialize an entry-block slot to zero EXACTLY ONCE. The store must
+    /// go in the entry block (before its terminator): a store in the loop
+    /// body would reset the counter on every iteration, so the poll would
+    /// never fire.
+    fn init_entry_slot(
+        &mut self,
+        slot: PointerValue<'ctx>,
+        value: inkwell::values::IntValue<'ctx>,
+    ) {
+        let f = self.current_fn();
+        let entry = f
+            .get_first_basic_block()
+            .expect("every function starts with an entry block");
+        let cur = self.cur_block();
+        match entry.get_last_instruction() {
+            Some(term) => self.builder.position_before(&term),
+            None => self.builder.position_at_end(entry),
+        }
+        self.builder.build_store(slot, value).unwrap();
+        match cur {
+            Some(b) => self.builder.position_at_end(b),
+            None => {}
+        }
+    }
+
+    /// Emit the cancellation poll used inside loop bodies. A per-loop
+    /// counter triggers a runtime check every CANCEL_POLL_INTERVAL
+    /// iterations, so a cancelled native task stops promptly without paying
+    /// a runtime call on every iteration.
+    fn emit_cancel_poll(&mut self, counter: PointerValue<'ctx>) {
+        const CANCEL_POLL_INTERVAL: i64 = 2048;
+        let one = self.i64c(1);
+        let cur = self
+            .builder
+            .build_load(self.i64_ty(), counter, "cancel.n")
+            .unwrap()
+            .into_int_value();
+        let next = self.builder.build_int_add(cur, one, "cancel.n1").unwrap();
+        self.builder.build_store(counter, next).unwrap();
+        let limit = self.i64c(CANCEL_POLL_INTERVAL);
+        let hit = self
+            .builder
+            .build_int_compare(IntPredicate::UGE, next, limit, "cancel.hit")
+            .unwrap();
+        let cont = self.new_block("cancel.cont");
+        let check = self.new_block("cancel.check");
+        self.builder
+            .build_conditional_branch(hit, check, cont)
+            .unwrap();
+        self.builder.position_at_end(check);
+        self.builder.build_store(counter, self.i64c(0)).unwrap();
+        let f = self.tramp("spid3r_cancel_check", &[], Some(self.i8_ty().into()));
+        let _r = self.emit_call(f, &[], "cancel.chk");
+        // The check raises "task cancelled" through the normal throw path;
+        // throw_guard routes it to the handler (or out of the function).
+        self.throw_guard();
+        self.builder.build_unconditional_branch(cont).unwrap();
+        self.builder.position_at_end(cont);
+    }
+
     fn new_block(&self, name: &str) -> BasicBlock<'ctx> {
         let f = self.current_fn();
         self.ctx.append_basic_block(f, name)
@@ -1288,6 +1348,11 @@ impl<'ctx> Ir<'ctx> {
                 self.builder.position_at_end(cond_bb);
                 self.emit_cond_branch(cond, body_bb, end_bb)?;
                 self.builder.position_at_end(body_bb);
+                // Cancellation point: the counter slot is allocated in the
+                // entry block, so it is live for the whole loop.
+                let counter = self.alloca_entry_ty(self.i64_ty(), "cancel.counter");
+                self.init_entry_slot(counter, self.i64c(0));
+                self.emit_cancel_poll(counter);
                 self.loops.push(LoopFrame {
                     break_bb: end_bb,
                     continue_bb: cond_bb,

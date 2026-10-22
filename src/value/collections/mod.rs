@@ -1435,6 +1435,14 @@ fn task_method(t: &crate::sched::TaskHandle, name: &str, args: &[Value]) -> Resu
             want(name, args, 0)?;
             Ok(Value::Str(t.status().into()))
         }
+        "cancel" => {
+            want(name, args, 0)?;
+            // Requests cancellation: the task stops at its next cancellation
+            // point and its result becomes the error "task cancelled".
+            // Returns true when the request was accepted (the task was still
+            // running), false when it had already finished.
+            Ok(Value::Bool(t.cancel()))
+        }
         "join" => {
             want(name, args, 0)?;
             // Same contract as `await`: returns the task's value; a failed
@@ -1463,7 +1471,8 @@ fn channel_method(c: &Arc<ChannelData>, name: &str, args: Vec<Value>) -> Result<
         }
         "recv" => {
             want(name, &args, 0)?;
-            Ok(c.recv())
+            // A cancelled task stops here instead of waiting forever.
+            c.recv_checked()
         }
         "try_recv" => {
             want(name, &args, 0)?;

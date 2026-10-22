@@ -121,12 +121,33 @@ pub fn gc_quiescent() -> bool {
 }
 
 thread_local! {
+    /// The cancellation state of the task running on this thread, if any.
+    /// The engines poll `current_task_cancelled()` at their cancellation
+    /// points; the main task has none (it is not cancellable).
+    static CURRENT_TASK: std::cell::RefCell<Option<Arc<TaskState>>> =
+        const { std::cell::RefCell::new(None) };
     /// The user-thrown value behind the most recent String error on this
     /// thread. Set at seams that only carry `String` errors (callback hosts,
     /// `task.join()`), consumed by the engine's method-call seam so `catch`
     /// rebinds the original value (audit A-9).
     static LAST_ERROR_THROWN: std::cell::Cell<Option<Value>> =
         const { std::cell::Cell::new(None) };
+}
+
+/// Install the cancellation state for the task running on this thread.
+pub(crate) fn set_current_task(state: Option<Arc<TaskState>>) {
+    CURRENT_TASK.with(|c| *c.borrow_mut() = state);
+}
+
+/// Has the task running on this thread been cancelled? False for the main
+/// task and for any thread that is not running a spawned task.
+pub fn current_task_cancelled() -> bool {
+    CURRENT_TASK.with(|c| {
+        c.borrow()
+            .as_ref()
+            .map(|s| s.cancelled.load(std::sync::atomic::Ordering::SeqCst))
+            .unwrap_or(false)
+    })
 }
 
 /// Stash the thrown value behind the String error the current operation is
@@ -173,12 +194,26 @@ impl ChannelData {
     /// While parked the thread is reported as blocked, so a concurrent
     /// `gc_collect()` on another thread is allowed (it cannot be mutating).
     pub fn recv(&self) -> Value {
+        self.recv_checked().unwrap_or(Value::Null)
+    }
+
+    /// Receive a value, but give up when the running task is cancelled.
+    /// The wait is time-sliced so a cancelled task wakes up promptly even
+    /// while it is parked on an empty channel.
+    pub fn recv_checked(&self) -> Result<Value, String> {
         let mut q = self.queue.lock().unwrap();
         while q.is_empty() {
+            if current_task_cancelled() {
+                return Err("task cancelled".to_string());
+            }
             let _blocked = enter_blocked();
-            q = self.cv.wait(q).unwrap();
+            let (guard, _timeout) = self
+                .cv
+                .wait_timeout(q, std::time::Duration::from_millis(50))
+                .unwrap();
+            q = guard;
         }
-        q.pop_front().unwrap()
+        Ok(q.pop_front().unwrap())
     }
 
     pub fn try_recv(&self) -> Option<Value> {
@@ -282,9 +317,13 @@ pub struct TaskHandle {
     state: Arc<TaskState>,
 }
 
-struct TaskState {
+pub(crate) struct TaskState {
     result: Mutex<Option<TaskOutcome>>,
     cv: Condvar,
+    /// Set by `task_cancel`; the running task observes it at its next
+    /// cancellation point (instruction/statement boundary in the tree and VM
+    /// engines, runtime-call boundary in the native one).
+    cancelled: std::sync::atomic::AtomicBool,
 }
 
 impl TaskHandle {
@@ -292,9 +331,35 @@ impl TaskHandle {
         self.state.result.lock().unwrap().is_some()
     }
 
+    /// Request cancellation. The task stops at its next cancellation point
+    /// and its result becomes an error ("task cancelled"); joining a
+    /// cancelled task returns that error rather than a value. Cancelling a
+    /// finished task is a no-op.
+    pub fn cancel(&self) -> bool {
+        if self.is_done() {
+            return false;
+        }
+        self.state
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Wake a joiner so it does not wait for the task to notice.
+        self.state.cv.notify_all();
+        true
+    }
+
+    /// Was this task cancelled?
+    pub fn is_cancelled(&self) -> bool {
+        self.state
+            .cancelled
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Task state for `task.status()`: `"running"`, `"done"`, or `"failed"`.
     /// Peeks at the result without consuming it.
     pub fn status(&self) -> &'static str {
+        if self.is_cancelled() {
+            return "cancelled";
+        }
         match self.state.result.lock().unwrap().as_ref() {
             None => "running",
             Some(o) => match &o.result {
@@ -590,6 +655,7 @@ impl Scheduler {
         let state = Arc::new(TaskState {
             result: Mutex::new(None),
             cv: Condvar::new(),
+            cancelled: std::sync::atomic::AtomicBool::new(false),
         });
         let handle = Arc::new(TaskHandle {
             id,
@@ -599,7 +665,9 @@ impl Scheduler {
 
         #[cfg(target_arch = "wasm32")]
         {
+            set_current_task(Some(state.clone()));
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+            set_current_task(None);
             let stored: TaskOutcome = match result {
                 Ok(r) => r,
                 Err(_) => TaskOutcome {
@@ -621,7 +689,9 @@ impl Scheduler {
             // waiting forever. Degrade to running the job on this thread —
             // never lose the work, never hang the caller.
             if self.inner.stopping.load(Ordering::SeqCst) {
+                set_current_task(Some(state.clone()));
                 let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                set_current_task(None);
                 let stored: TaskOutcome = match out {
                     Ok(o) => o,
                     Err(_) => TaskOutcome {
@@ -643,7 +713,9 @@ impl Scheduler {
                 // runs, so a concurrent `gc_collect()` on another thread sees
                 // it and refuses (see `gc_quiescent`).
                 let _active = enter_active();
+                set_current_task(Some(state.clone()));
                 let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                set_current_task(None);
                 let stored: TaskOutcome = match out {
                     Ok(o) => o,
                     Err(_) => TaskOutcome {

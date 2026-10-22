@@ -37,6 +37,7 @@ Global functions available in every program. These are ordinary global values
 | `exec_capture(cmd, args, stdin_text)` | Run a command and capture its output. `stdin_text` is a string written to the child's stdin before waiting (`null` closes stdin immediately). Returns `ok(map("code", exit_code, "stdout", stdout_str, "stderr", stderr_str))`, or `err(msg)` if the process cannot be spawned or its output is not valid UTF-8. Each pipe is capped at 64 MiB. |
 | `yield()` | Cooperatively yield the current task to the scheduler. |
 | `task_count()` | Number of live scheduler tasks. |
+| `task.cancel()` (task method) | Request cancellation: the task stops at its next cancellation point (instruction boundary in the VM, statement boundary in the tree engine, loop poll every 2048 iterations in the native backend, or a channel wait) and its result becomes the error "task cancelled". Returns `true` when the request was accepted (the task was still running), `false` when it had already finished. `task.status()` reports `"cancelled"`. |
 
 ## Math & numbers
 
@@ -112,6 +113,7 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 | `tcp_local_addr(handle)` | Bound local address string (`ok("127.0.0.1:port")`). |
 | `tcp_peer_addr(conn_id)` | Peer remote address string (`ok("ip:port")`). |
 | `tcp_set_timeout(conn_id, ms)` | Set socket read/write timeout in milliseconds (`0` disables). |
+| `tcp_poll([conn_ids], timeout_ms)` | Readiness wait: blocks until at least one listed connection has data to read or the timeout expires (`0` = do not wait); returns `ok(map("readable", [...], "writable", [...]))` with connection ids. The probe reads ahead into a per-connection buffer, so polled bytes are preserved for the next `tcp_read`. `writable` is reported optimistically (no platform readiness syscall is used). |
 | `udp_bind(addr)` | Bind a UDP socket (`port 0` = ephemeral); returns `ok(handle)`. |
 | `udp_local_addr(handle)` | Local address string (`ok("ip:port")`). |
 | `udp_send_to(handle, addr, text)` | Send one datagram (UTF-8 bytes of `text`); `ok(bytes_written)`. |

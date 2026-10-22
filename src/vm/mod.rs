@@ -507,7 +507,20 @@ impl Vm {
     }
 
     fn run_loop(&mut self) -> Result<Value, VmError> {
+        // Cancellation poll: a spawned task checks the flag every
+        // CANCEL_POLL_INTERVAL instructions, so `task_cancel` stops a runaway
+        // task without waiting for it to reach a call boundary.
+        const CANCEL_POLL_INTERVAL: u32 = 2048;
+        let mut cancel_poll: u32 = 0;
         loop {
+            cancel_poll = cancel_poll.wrapping_add(1);
+            if cancel_poll >= CANCEL_POLL_INTERVAL {
+                cancel_poll = 0;
+                if crate::sched::current_task_cancelled() {
+                    self.fail("task cancelled");
+                    continue;
+                }
+            }
             if let Some(mut err) = self.error.take() {
                 self.flush_pending_str();
                 // Capture the runtime call stack while the frames are still

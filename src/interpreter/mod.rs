@@ -396,6 +396,11 @@ impl Interp {
         for s in stmts {
             // Cycle collection at a statement boundary (no-op unless SPID3R_GC).
             crate::value::gc::maybe_collect();
+            // Cancellation point: a cancelled task stops at the next
+            // statement boundary.
+            if crate::sched::current_task_cancelled() {
+                return self.rt(s.span(), "task cancelled");
+            }
             match self.exec_stmt(s, env) {
                 Flow::Value(_) => continue,
                 other => return other,
