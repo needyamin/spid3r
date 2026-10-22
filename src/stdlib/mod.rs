@@ -962,7 +962,8 @@ fn pbkdf2_sha256_bytes(password: &[u8], salt: &[u8], iterations: u32) -> [u8; 32
 /// Base64 (RFC 4648). The standard alphabet (+/) with padding, and the
 /// URL-safe alphabet (-_) unpadded — the pair the web framework's JWT
 /// helpers need. Accepts strings or bytes; `decode` returns bytes.
-const B64_STD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+pub(crate) const B64_STD: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const B64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 fn want_b64_input(v: &Value, who: &str) -> Result<Vec<u8>, String> {
@@ -977,7 +978,7 @@ fn want_b64_input(v: &Value, who: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-fn base64_encode_bytes(data: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
+pub(crate) fn base64_encode_bytes(data: &[u8], alphabet: &[u8; 64], pad: bool) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
@@ -1391,7 +1392,7 @@ thread_local! {
     static RNG: Cell<u64> = const { Cell::new(0) };
 }
 
-fn next_random() -> u64 {
+pub(crate) fn next_random() -> u64 {
     RNG.with(|r| {
         let mut x = r.get();
         if x == 0 {

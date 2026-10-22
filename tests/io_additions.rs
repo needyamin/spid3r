@@ -110,3 +110,107 @@ fn main() {
     assert!(run_tree(code).is_err());
     assert!(run_vm(code).is_err());
 }
+
+const WS_CODE: &str = r#"
+fn main() {
+    let listener = tcp_listen("127.0.0.1:0").unwrap();
+    let addr = tcp_local_addr(listener).unwrap();
+    // Server: accept, upgrade to a WebSocket, echo one frame, close.
+    spawn fn() {
+        let conn = tcp_accept(listener).unwrap();
+        let ws = ws_accept(conn).unwrap();
+        let msg = ws_recv(ws).unwrap();
+        ws_send(ws, "echo:" + msg);
+        sleep_ms(200);
+        ws_close(ws);
+    };
+    let ws = ws_connect("ws://" + addr).unwrap();
+    ws_send(ws, "hello");
+    assert_eq(ws_recv(ws).unwrap(), "echo:hello");
+    ws_close(ws);
+    return 0;
+}
+"#;
+
+#[test]
+fn websocket_handshake_and_frames_on_both_engines() {
+    assert_eq!(run_tree(WS_CODE).unwrap(), 0);
+    assert_eq!(run_vm(WS_CODE).unwrap(), 0);
+}
+
+#[test]
+fn websocket_rejects_a_non_ws_url() {
+    let code = r#"
+fn main() {
+    ws_connect("https://example.com");
+    return 0;
+}
+"#;
+    assert!(run_tree(code).is_err());
+    assert!(run_vm(code).is_err());
+}
+
+const MULTICAST_CODE: &str = r#"
+fn main() {
+    let a = udp_bind("0.0.0.0:0").unwrap();
+    let b = udp_bind("0.0.0.0:0").unwrap();
+    let group = "239.10.20.30";
+    udp_join_multicast(a, group, "0.0.0.0").unwrap();
+    udp_join_multicast(b, group, "0.0.0.0").unwrap();
+    udp_set_multicast_ttl(a, 1).unwrap();
+    udp_set_broadcast(a, true).unwrap();
+    // Send to the group address at b's port: b receives it.
+    let port = udp_local_addr(b).unwrap().split(":")[1];
+    udp_send_to(a, group + ":" + port, "multicast-hello").unwrap();
+    let got = udp_recv_from(b, 128).unwrap();
+    assert_eq(got[0], "multicast-hello");
+    udp_leave_multicast(b, group, "0.0.0.0").unwrap();
+    return 0;
+}
+"#;
+
+#[test]
+fn udp_multicast_delivers_on_both_engines() {
+    assert_eq!(run_tree(MULTICAST_CODE).unwrap(), 0);
+    assert_eq!(run_vm(MULTICAST_CODE).unwrap(), 0);
+}
+
+const EVENT_LOOP_CODE: &str = r#"
+import "event" as ev;
+
+fn main() {
+    let listener = tcp_listen("127.0.0.1:0").unwrap();
+    let addr = tcp_local_addr(listener).unwrap();
+    let c1 = tcp_connect(addr).unwrap();
+    let c2 = tcp_connect(addr).unwrap();
+    let a1 = tcp_accept(listener).unwrap();
+    let a2 = tcp_accept(listener).unwrap();
+    tcp_write(c1, "one");
+    tcp_write(c2, "two");
+    let el = ev.start();
+    ev.on_readable(el, a1, fn(c) {
+        let data = tcp_read(c, 64).unwrap();
+        tcp_write(c, "A:" + data);
+        ev.remove(el, c);
+    });
+    ev.on_readable(el, a2, fn(c) {
+        let data = tcp_read(c, 64).unwrap();
+        tcp_write(c, "B:" + data);
+        ev.remove(el, c);
+    });
+    // The loop returns once every watcher is removed.
+    ev.run(el, 1000);
+    assert_eq(tcp_read(c1, 64).unwrap(), "A:one");
+    assert_eq(tcp_read(c2, 64).unwrap(), "B:two");
+    tcp_close(listener);
+    tcp_close(c1);
+    tcp_close(c2);
+    return 0;
+}
+"#;
+
+#[test]
+fn event_loop_multiplexes_connections_on_both_engines() {
+    assert_eq!(run_tree(EVENT_LOOP_CODE).unwrap(), 0);
+    assert_eq!(run_vm(EVENT_LOOP_CODE).unwrap(), 0);
+}

@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use super::NativeDef;
 use crate::value::collections;
-use crate::value::{display_value, type_name, NativeCtx, Value};
+use crate::value::{display_value, new_ref, type_name, NativeCtx, Value};
 
 /// Largest accepted request/response head (request line + headers).
 const MAX_HEAD_BYTES: usize = 64 * 1024;
@@ -48,7 +48,16 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("tcp_peer_addr", n_tcp_peer_addr),
         ("tcp_set_timeout", n_tcp_set_timeout),
         ("tcp_poll", n_tcp_poll),
+        ("ws_connect", n_ws_connect),
+        ("ws_accept", n_ws_accept),
+        ("ws_send", n_ws_send),
+        ("ws_recv", n_ws_recv),
+        ("ws_close", n_ws_close),
         ("udp_bind", n_udp_bind),
+        ("udp_join_multicast", n_udp_join_multicast),
+        ("udp_leave_multicast", n_udp_leave_multicast),
+        ("udp_set_multicast_ttl", n_udp_set_multicast_ttl),
+        ("udp_set_broadcast", n_udp_set_broadcast),
         ("udp_local_addr", n_udp_local_addr),
         ("udp_send_to", n_udp_send_to),
         ("udp_recv_from", n_udp_recv_from),
@@ -68,6 +77,10 @@ enum Sock {
     Listener(Arc<TcpListener>),
     Stream(Arc<Conn>),
     Udp(Arc<UdpSocket>),
+    /// A WebSocket connection: the same stream machinery as `Stream`, with
+    /// the handshake already done. Handles are interchangeable with TCP
+    /// connection ids at the table level.
+    Ws(Arc<Conn>),
 }
 
 /// A TCP connection with the state a readiness probe needs.
@@ -118,6 +131,10 @@ fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
             "{}: handle {} is a UDP socket, not a listener",
             who, id
         )),
+        Some(Sock::Ws(_)) => Err(format!(
+            "{}: handle {} is a WebSocket, not a listener",
+            who, id
+        )),
         None => Err(format!("{}: handle {} is not open", who, id)),
     }
 }
@@ -133,6 +150,10 @@ fn get_stream(id: i64, who: &str) -> Result<Arc<Conn>, String> {
             "{}: handle {} is a UDP socket, not a connection",
             who, id
         )),
+        Some(Sock::Ws(_)) => Err(format!(
+            "{}: handle {} is a WebSocket, not a raw connection",
+            who, id
+        )),
         None => Err(format!("{}: handle {} is not open", who, id)),
     }
 }
@@ -146,6 +167,10 @@ fn get_udp(id: i64, who: &str) -> Result<Arc<UdpSocket>, String> {
         )),
         Some(Sock::Listener(_)) => Err(format!(
             "{}: handle {} is a TCP listener, not a UDP socket",
+            who, id
+        )),
+        Some(Sock::Ws(_)) => Err(format!(
+            "{}: handle {} is a WebSocket, not a UDP socket",
             who, id
         )),
         None => Err(format!("{}: handle {} is not open", who, id)),
@@ -464,6 +489,10 @@ fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             let _ = s.stream.lock().unwrap().shutdown(Shutdown::Both);
             Ok(Value::Bool(true))
         }
+        Some(Sock::Ws(s)) => {
+            let _ = s.stream.lock().unwrap().shutdown(Shutdown::Both);
+            Ok(Value::Bool(true))
+        }
         Some(Sock::Udp(s)) => {
             // Dropping the last Arc closes the socket; no shutdown needed.
             drop(s);
@@ -497,6 +526,7 @@ fn n_tcp_local_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
         Some(Sock::Listener(l)) => l.local_addr(),
         Some(Sock::Stream(s)) => s.stream.lock().unwrap().local_addr(),
         Some(Sock::Udp(s)) => s.local_addr(),
+        Some(Sock::Ws(s)) => s.stream.lock().unwrap().local_addr(),
         None => return Err(format!("tcp_local_addr: handle {} is not open", id)),
     };
     match addr {
@@ -614,6 +644,7 @@ fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 fn probe_readable(id: i64, who: &str) -> Result<bool, String> {
     let conn = match lookup(id) {
         Some(Sock::Stream(c)) => c,
+        Some(Sock::Ws(c)) => c,
         Some(Sock::Listener(_)) => {
             return Err(format!("{}: handle {} is a listener", who, id));
         }
@@ -640,6 +671,496 @@ fn probe_readable(id: i64, who: &str) -> Result<bool, String> {
     // Restore blocking mode for the next ordinary read.
     let _ = stream.set_nonblocking(false);
     result
+}
+
+/// The UDP socket behind a handle.
+fn udp_socket(v: &Value, who: &str) -> Result<Arc<UdpSocket>, String> {
+    let id = want_int(v, who)?;
+    get_udp(id, who)
+}
+
+/// Parse an IPv4 address argument.
+fn want_ipv4(v: &Value, who: &str, what: &str) -> Result<std::net::Ipv4Addr, String> {
+    let s = want_str(v, who)?;
+    s.parse::<std::net::Ipv4Addr>()
+        .map_err(|_| format!("{}: {} must be an IPv4 address, found '{}'", who, what, s))
+}
+
+/// Parse a boolean argument.
+fn want_bool(v: &Value, who: &str) -> Result<bool, String> {
+    match v {
+        Value::Bool(b) => Ok(*b),
+        other => Err(format!(
+            "{} expects a bool, found {}",
+            who,
+            type_name(other)
+        )),
+    }
+}
+
+/// `udp_join_multicast(handle, group, iface)` -> `ok(null)`. Joins an IPv4
+/// multicast group on the given interface (`"0.0.0.0"` = the default route).
+fn n_udp_join_multicast(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "udp_join_multicast";
+    arity(WHO, &args, 3)?;
+    let sock = udp_socket(&args[0], WHO)?;
+    let group = want_ipv4(&args[1], WHO, "group")?;
+    let iface = want_ipv4(&args[2], WHO, "interface")?;
+    match sock.join_multicast_v4(&group, &iface) {
+        Ok(()) => ok(Value::Null),
+        Err(e) => err(io_msg(WHO, &e)),
+    }
+}
+
+/// `udp_leave_multicast(handle, group, iface)` -> `ok(null)`.
+fn n_udp_leave_multicast(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "udp_leave_multicast";
+    arity(WHO, &args, 3)?;
+    let sock = udp_socket(&args[0], WHO)?;
+    let group = want_ipv4(&args[1], WHO, "group")?;
+    let iface = want_ipv4(&args[2], WHO, "interface")?;
+    match sock.leave_multicast_v4(&group, &iface) {
+        Ok(()) => ok(Value::Null),
+        Err(e) => err(io_msg(WHO, &e)),
+    }
+}
+
+/// `udp_set_multicast_ttl(handle, ttl)` -> `ok(null)`. Hops for outgoing
+/// multicast (0 = same host, 1 = same subnet, ...).
+fn n_udp_set_multicast_ttl(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "udp_set_multicast_ttl";
+    arity(WHO, &args, 2)?;
+    let sock = udp_socket(&args[0], WHO)?;
+    let ttl = want_int(&args[1], WHO)?;
+    if !(0..=255).contains(&ttl) {
+        return Err(format!("{}: ttl must be between 0 and 255", WHO));
+    }
+    match sock.set_multicast_ttl_v4(ttl as u32) {
+        Ok(()) => ok(Value::Null),
+        Err(e) => err(io_msg(WHO, &e)),
+    }
+}
+
+/// `udp_set_broadcast(handle, on)` -> `ok(null)`.
+fn n_udp_set_broadcast(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "udp_set_broadcast";
+    arity(WHO, &args, 2)?;
+    let sock = udp_socket(&args[0], WHO)?;
+    let on = want_bool(&args[1], WHO)?;
+    match sock.set_broadcast(on) {
+        Ok(()) => ok(Value::Null),
+        Err(e) => err(io_msg(WHO, &e)),
+    }
+}
+
+// ----------------------------------------------------------- WebSockets
+
+/// SHA-1 (FIPS 180-4). Needed for the WebSocket handshake's
+/// Sec-WebSocket-Accept; no dependency, ~60 lines.
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+    let ml = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&ml.to_be_bytes());
+    for block in msg.chunks(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                block[i * 4],
+                block[i * 4 + 1],
+                block[i * 4 + 2],
+                block[i * 4 + 3],
+            ]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        // SHA-1's round reads w[i] alongside w[i-3]/w[i-8]/w[i-14]/w[i-16];
+        // the index loop is the clear form here.
+        #[allow(clippy::needless_range_loop)]
+        for i in 0..80 {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999u32),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut out = [0u8; 20];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
+}
+
+/// The RFC 6455 accept value for a client key.
+fn ws_accept_key(key: &str) -> String {
+    let mut material = String::from(key);
+    material.push_str("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    crate::stdlib::base64_encode_bytes(&sha1(material.as_bytes()), crate::stdlib::B64_STD, true)
+}
+
+/// A fresh 16-byte client key, base64-encoded.
+fn ws_client_key() -> String {
+    let mut raw = [0u8; 16];
+    for b in raw.iter_mut() {
+        *b = (crate::stdlib::next_random() & 0xff) as u8;
+    }
+    crate::stdlib::base64_encode_bytes(&raw, crate::stdlib::B64_STD, true)
+}
+
+/// Read exactly `n` bytes from a connection, honoring the probe's pending
+/// buffer. Returns fewer bytes only at EOF.
+fn read_exact_conn(conn: &Conn, n: usize) -> Result<Vec<u8>, String> {
+    let mut out: Vec<u8> = Vec::with_capacity(n);
+    {
+        let mut pending = conn.pending.lock().unwrap();
+        let take = pending.len().min(n);
+        out.extend_from_slice(&pending[..take]);
+        pending.drain(..take);
+    }
+    let mut stream = conn.stream.lock().unwrap();
+    while out.len() < n {
+        let want = n - out.len();
+        let mut buf = vec![0u8; want];
+        match stream.read(&mut buf) {
+            Ok(0) => break, // EOF
+            Ok(k) => out.extend_from_slice(&buf[..k]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(e) => return Err(io_msg("websocket", &e)),
+        }
+    }
+    Ok(out)
+}
+
+/// Read the HTTP head (up to and including the blank line) from a connection.
+fn read_head_conn(conn: &Conn) -> Result<String, String> {
+    let mut head: Vec<u8> = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        {
+            let mut pending = conn.pending.lock().unwrap();
+            if !pending.is_empty() {
+                byte[0] = pending[0];
+                pending.drain(..1);
+                head.push(byte[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    return Ok(String::from_utf8_lossy(&head).into_owned());
+                }
+                continue;
+            }
+        }
+        let mut stream = conn.stream.lock().unwrap();
+        match stream.read(&mut byte) {
+            Ok(0) => return Err("websocket: connection closed during the handshake".into()),
+            Ok(_) => {}
+            Err(e) => return Err(io_msg("websocket", &e)),
+        }
+        drop(stream);
+        head.push(byte[0]);
+        if head.len() > MAX_HEAD_BYTES {
+            return Err("websocket: handshake head exceeds 64 KiB".into());
+        }
+        if head.ends_with(b"\r\n\r\n") {
+            return Ok(String::from_utf8_lossy(&head).into_owned());
+        }
+    }
+}
+
+fn ws_conn(id: i64, who: &str) -> Result<Arc<Conn>, String> {
+    match lookup(id) {
+        Some(Sock::Ws(c)) => Ok(c),
+        Some(Sock::Stream(_)) => Err(format!(
+            "{}: handle {} is a raw TCP connection, not a WebSocket",
+            who, id
+        )),
+        Some(_) => Err(format!("{}: handle {} is not a WebSocket", who, id)),
+        None => Err(format!("{}: handle {} is not open", who, id)),
+    }
+}
+
+/// Parse `ws://host[:port]/path` (and tolerate `wss://` by rejecting it with
+/// a clear message - the TLS layer is a separate feature).
+fn parse_ws_url(url: &str) -> Result<(String, String), String> {
+    let rest = url.strip_prefix("ws://").ok_or_else(|| {
+        "ws_connect: only ws:// URLs are supported (no TLS in this build)".to_string()
+    })?;
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    if authority.is_empty() {
+        return Err("ws_connect: the URL has no host".to_string());
+    }
+    let host_port = if authority.contains(':') {
+        authority.to_string()
+    } else {
+        format!("{}:80", authority)
+    };
+    Ok((host_port, path.to_string()))
+}
+
+/// `ws_connect(url)` -> `ok(handle)`. Performs the RFC 6455 client
+/// handshake and verifies the server's accept key.
+fn n_ws_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "ws_connect";
+    arity(WHO, &args, 1)?;
+    let url = want_str(&args[0], WHO)?;
+    let (host_port, path) = parse_ws_url(&url)?;
+    let key = ws_client_key();
+    let stream =
+        TcpStream::connect(&host_port).map_err(|e| format!("ws_connect '{}': {}", url, e))?;
+    let _ = stream.set_nodelay(true);
+    let conn = Arc::new(Conn::new(stream));
+    let request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        path, host_port, key
+    );
+    {
+        let mut s = conn.stream.lock().unwrap();
+        s.write_all(request.as_bytes())
+            .and_then(|_| s.flush())
+            .map_err(|e| format!("ws_connect '{}': {}", url, e))?;
+    }
+    let head = read_head_conn(&conn)?;
+    let status_line = head.lines().next().unwrap_or("");
+    if !status_line.contains(" 101 ") {
+        return Err(format!(
+            "ws_connect: the server refused the upgrade ({})",
+            status_line.trim()
+        ));
+    }
+    let mut accept_ok = false;
+    for line in head.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("sec-websocket-accept") {
+                accept_ok = value.trim() == ws_accept_key(&key);
+            }
+        }
+    }
+    if !accept_ok {
+        return Err("ws_connect: the server's Sec-WebSocket-Accept does not match".to_string());
+    }
+    ok(Value::Int(register(Sock::Ws(conn))))
+}
+
+/// `ws_accept(conn_id)` -> `ok(handle)`. Server side of the handshake on an
+/// accepted TCP connection.
+fn n_ws_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "ws_accept";
+    arity(WHO, &args, 1)?;
+    let id = want_int(&args[0], WHO)?;
+    let conn = match lookup(id) {
+        Some(Sock::Stream(c)) => c,
+        Some(Sock::Ws(_)) => return Err(format!("{}: handle {} is already a WebSocket", WHO, id)),
+        Some(_) => return Err(format!("{}: handle {} is not a TCP connection", WHO, id)),
+        None => return Err(format!("{}: handle {} is not open", WHO, id)),
+    };
+    let head = read_head_conn(&conn)?;
+    let mut key: Option<String> = None;
+    let mut upgrade = false;
+    for line in head.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':') {
+            let n = name.trim().to_ascii_lowercase();
+            if n == "sec-websocket-key" {
+                key = Some(value.trim().to_string());
+            }
+            if n == "upgrade" && value.trim().eq_ignore_ascii_case("websocket") {
+                upgrade = true;
+            }
+        }
+    }
+    let key = key.ok_or_else(|| "ws_accept: the request has no Sec-WebSocket-Key".to_string())?;
+    if !upgrade {
+        return Err("ws_accept: the request has no Upgrade: websocket header".to_string());
+    }
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+        ws_accept_key(&key)
+    );
+    {
+        let mut s = conn.stream.lock().unwrap();
+        s.write_all(response.as_bytes())
+            .and_then(|_| s.flush())
+            .map_err(|e| io_msg(WHO, &e))?;
+    }
+    ok(Value::Int(register(Sock::Ws(conn))))
+}
+
+/// One decoded frame: (fin, opcode, payload).
+fn read_ws_frame(conn: &Conn) -> Result<(bool, u8, Vec<u8>), String> {
+    let header = read_exact_conn(conn, 2)?;
+    if header.len() < 2 {
+        return Err("websocket: connection closed mid-frame".to_string());
+    }
+    let fin = header[0] & 0x80 != 0;
+    let opcode = header[0] & 0x0f;
+    let masked = header[1] & 0x80 != 0;
+    let len7 = (header[1] & 0x7f) as u64;
+    let len = match len7 {
+        126 => {
+            let ext = read_exact_conn(conn, 2)?;
+            u64::from(u16::from_be_bytes([ext[0], ext[1]]))
+        }
+        127 => {
+            let ext = read_exact_conn(conn, 8)?;
+            u64::from_be_bytes(ext.try_into().unwrap())
+        }
+        n => n,
+    };
+    if len > MAX_BODY_BYTES as u64 {
+        return Err("websocket: frame exceeds the 8 MiB limit".to_string());
+    }
+    let mask = if masked {
+        let m = read_exact_conn(conn, 4)?;
+        [m[0], m[1], m[2], m[3]]
+    } else {
+        [0u8; 4]
+    };
+    let mut payload = read_exact_conn(conn, len as usize)?;
+    if payload.len() < len as usize {
+        return Err("websocket: connection closed mid-payload".to_string());
+    }
+    if masked {
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= mask[i % 4];
+        }
+    }
+    Ok((fin, opcode, payload))
+}
+
+/// Build a client frame: masked, FIN set.
+fn build_ws_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+    let mask = [
+        (crate::stdlib::next_random() & 0xff) as u8,
+        (crate::stdlib::next_random() & 0xff) as u8,
+        (crate::stdlib::next_random() & 0xff) as u8,
+        (crate::stdlib::next_random() & 0xff) as u8,
+    ];
+    let mut out = vec![0x80 | opcode];
+    let len = payload.len();
+    if len < 126 {
+        out.push(0x80 | len as u8);
+    } else if len <= u16::MAX as usize {
+        out.push(0x80 | 126);
+        out.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        out.push(0x80 | 127);
+        out.extend_from_slice(&(len as u64).to_be_bytes());
+    }
+    out.extend_from_slice(&mask);
+    for (i, b) in payload.iter().enumerate() {
+        out.push(b ^ mask[i % 4]);
+    }
+    out
+}
+
+/// `ws_send(handle, text)` -> `ok(bytes_written)`. Sends one text frame.
+fn n_ws_send(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "ws_send";
+    arity(WHO, &args, 2)?;
+    let id = want_int(&args[0], WHO)?;
+    let text = want_str(&args[1], WHO)?;
+    let conn = ws_conn(id, WHO)?;
+    let frame = build_ws_frame(1, text.as_bytes());
+    let mut s = conn.stream.lock().unwrap();
+    match s.write_all(&frame).and_then(|_| s.flush()) {
+        Ok(()) => ok(Value::Int(frame.len() as i64)),
+        Err(e) => err(io_msg(WHO, &e)),
+    }
+}
+
+/// `ws_recv(handle)` -> `ok(text)` / `ok(null)` at close / `err(msg)`.
+/// Pings are answered automatically; fragments are reassembled.
+fn n_ws_recv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "ws_recv";
+    arity(WHO, &args, 1)?;
+    let id = want_int(&args[0], WHO)?;
+    let conn = ws_conn(id, WHO)?;
+    let mut message: Option<Vec<u8>> = None;
+    let mut opcode = 1u8;
+    loop {
+        let (fin, op, payload) = match read_ws_frame(&conn) {
+            Ok(f) => f,
+            Err(e) => return err(e),
+        };
+        match op {
+            1 | 2 => {
+                message = Some(payload);
+                opcode = op;
+            }
+            0 => {
+                // continuation of a fragmented message
+                match message.as_mut() {
+                    Some(m) => m.extend_from_slice(&payload),
+                    None => return err("websocket: continuation without a start frame".to_string()),
+                }
+            }
+            9 => {
+                // ping: answer with a pong and keep reading
+                let pong = build_ws_frame(10, &payload);
+                let mut s = conn.stream.lock().unwrap();
+                let _ = s.write_all(&pong).and_then(|_| s.flush());
+                continue;
+            }
+            10 => continue,
+            8 => {
+                // close: acknowledge and report end-of-stream
+                let ack = build_ws_frame(8, &[]);
+                let mut s = conn.stream.lock().unwrap();
+                let _ = s.write_all(&ack).and_then(|_| s.flush());
+                return ok(Value::Null);
+            }
+            other => return err(format!("websocket: unknown opcode {}", other)),
+        }
+        if fin {
+            let data = message.take().unwrap_or_default();
+            if opcode == 1 {
+                return ok(str_val(String::from_utf8_lossy(&data).into_owned()));
+            }
+            return ok(Value::Bytes(new_ref(data)));
+        }
+    }
+}
+
+/// `ws_close(handle)` -> `ok(null)`. Sends a close frame and closes the
+/// socket.
+fn n_ws_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "ws_close";
+    arity(WHO, &args, 1)?;
+    let id = want_int(&args[0], WHO)?;
+    let conn = ws_conn(id, WHO)?;
+    {
+        let mut s = conn.stream.lock().unwrap();
+        let _ = s.write_all(&build_ws_frame(8, &[]));
+        let _ = s.flush();
+        let _ = s.shutdown(Shutdown::Both);
+    }
+    let removed = table().lock().unwrap().remove(&id);
+    let _ = removed;
+    ok(Value::Null)
 }
 
 // ------------------------------------------------------------------- UDP

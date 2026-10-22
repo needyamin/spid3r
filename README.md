@@ -132,6 +132,8 @@ fn main() {
 - **`stdlib/uuid.matrix`**: RFC 9562 version-4 UUIDs from the runtime entropy source.
 - **`stdlib/gen.matrix`**: Generators (`gen`/`next`/`collect`/`take`/`map`/`filter`/`range_gen`/
   `close`) — lazy, composable streams; infinite producers cost nothing until consumed.
+- **`stdlib/event.matrix`**: An event loop over the `tcp_poll` readiness primitive — one task
+  multiplexes any number of connections (`start`/`on_readable`/`remove`/`stop`/`run`).
 - **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort_by, group_by, inner_join).
 - **`stdlib/stats.matrix`** & **`stdlib/ml.matrix`**: Regression, classification, clustering, PCA, and distributions.
 

@@ -118,6 +118,14 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 | `udp_local_addr(handle)` | Local address string (`ok("ip:port")`). |
 | `udp_send_to(handle, addr, text)` | Send one datagram (UTF-8 bytes of `text`); `ok(bytes_written)`. |
 | `udp_recv_from(handle, max)` | Block for one datagram; `ok([text, "sender-ip:port"])`. Invalid UTF-8 → U+FFFD. |
+| `udp_join_multicast(handle, group, iface)` / `udp_leave_multicast(...)` | Join/leave an IPv4 multicast group (`iface` `"0.0.0.0"` = default route). |
+| `udp_set_multicast_ttl(handle, ttl)` | Outgoing multicast hop count (0..=255). |
+| `udp_set_broadcast(handle, on)` | Enable/disable broadcast sends. |
+| `ws_connect(url)` | WebSocket client (RFC 6455): `ws://` handshake with accept-key verification; returns `ok(handle)`. (`wss://` needs the `tls` feature build — not available in the zero-dependency default.) |
+| `ws_accept(conn_id)` | Server side: upgrade an accepted TCP connection; returns `ok(handle)`. |
+| `ws_send(handle, text)` | Send one masked text frame; `ok(bytes_written)`. |
+| `ws_recv(handle)` | `ok(text)` (binary frames arrive as bytes), `ok(null)` at close; pings are auto-answered, fragments reassembled. |
+| `ws_close(handle)` | Send a close frame and shut the socket. |
 | `udp_close(handle)` | Close the socket; `true` if it was open. |
 | `http_read_request(conn_id)` | Read and parse an HTTP 1.1 request (`ok(req)` map with method, path, query, headers, body). |
 | `http_write_response(conn_id, status, headers, body)` | Send an HTTP 1.1 response (`ok(bytes_sent)`). |
