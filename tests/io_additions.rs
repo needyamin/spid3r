@@ -214,3 +214,37 @@ fn event_loop_multiplexes_connections_on_both_engines() {
     assert_eq!(run_tree(EVENT_LOOP_CODE).unwrap(), 0);
     assert_eq!(run_vm(EVENT_LOOP_CODE).unwrap(), 0);
 }
+
+const KERNEL_POLL_CODE: &str = r#"
+fn main() {
+    let listener = tcp_listen("127.0.0.1:0").unwrap();
+    let addr = tcp_local_addr(listener).unwrap();
+    spawn fn() {
+        let conn = tcp_accept(listener).unwrap();
+        sleep_ms(60);
+        tcp_write(conn, "x");
+        sleep_ms(300);
+        tcp_close(conn);
+    };
+    sleep_ms(30);
+    let client = tcp_connect(addr).unwrap();
+    // A 5-second readiness wait must return as soon as data arrives (~60 ms),
+    // proving the poll is an OS wakeup rather than a timer loop.
+    let t0 = now_ms();
+    let r = tcp_poll([client], 5000).unwrap();
+    let elapsed = now_ms() - t0;
+    assert_eq(len(r["readable"]), 1);
+    assert_eq(len(r["writable"]), 1);
+    assert_eq(elapsed < 1500, true);
+    assert_eq(tcp_read(client, 8).unwrap(), "x");
+    tcp_close(listener);
+    tcp_close(client);
+    return 0;
+}
+"#;
+
+#[test]
+fn tcp_poll_wakes_promptly_on_readiness() {
+    assert_eq!(run_tree(KERNEL_POLL_CODE).unwrap(), 0);
+    assert_eq!(run_vm(KERNEL_POLL_CODE).unwrap(), 0);
+}

@@ -603,24 +603,61 @@ fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if timeout_ms < 0 {
         return Err(format!("{}: timeout_ms must not be negative", WHO));
     }
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+    // Resolve the handles up front: the kernel call needs their sockets, and
+    // resolving here also gives the caller the same error contract as the
+    // fallback path.
+    let mut conns: Vec<(i64, Arc<Conn>)> = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let conn = match lookup(*id) {
+            Some(Sock::Stream(c)) | Some(Sock::Ws(c)) => c,
+            Some(Sock::Listener(_)) => {
+                return Err(format!("{}: handle {} is a listener", WHO, id));
+            }
+            Some(Sock::Udp(_)) => {
+                return Err(format!("{}: handle {} is a UDP socket", WHO, id));
+            }
+            None => return Err(format!("{}: handle {} is not open", WHO, id)),
+        };
+        conns.push((*id, conn));
+    }
+
     let mut readable: Vec<i64> = Vec::new();
-    loop {
-        readable.clear();
-        for id in &ids {
-            if probe_readable(*id, WHO)? {
-                readable.push(*id);
+    let mut writable: Vec<i64> = Vec::new();
+
+    // Kernel readiness first: one blocking call, woken by the OS the moment a
+    // socket becomes ready. The probe loop below only runs when the platform
+    // call is unavailable or fails.
+    let mut used_kernel = false;
+    if let Some(results) = kernel_poll(&conns, timeout_ms as i32) {
+        used_kernel = true;
+        for (id, r, w) in results {
+            if r {
+                readable.push(id);
+            }
+            if w {
+                writable.push(id);
             }
         }
-        if !readable.is_empty() || std::time::Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(2));
     }
-    let mut writable: Vec<i64> = Vec::new();
-    for id in &ids {
-        if lookup(*id).is_some() {
-            writable.push(*id);
+
+    if !used_kernel {
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms as u64);
+        loop {
+            readable.clear();
+            for id in &ids {
+                if probe_readable(*id, WHO)? {
+                    readable.push(*id);
+                }
+            }
+            if !readable.is_empty() || std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        for id in &ids {
+            if lookup(*id).is_some() {
+                writable.push(*id);
+            }
         }
     }
     let readable_values: Vec<Value> = readable.into_iter().map(Value::Int).collect();
@@ -1161,6 +1198,108 @@ fn n_ws_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let removed = table().lock().unwrap().remove(&id);
     let _ = removed;
     ok(Value::Null)
+}
+
+// ------------------------------------------------- kernel readiness (FFI)
+//
+// `tcp_poll` used to be a 2 ms probe loop: it flipped each socket to
+// non-blocking and read ahead to see whether data was waiting. That works,
+// but it wakes up on a timer and moves bytes just to look. The platform
+// readiness call below is a real wakeup: the OS signals the socket that
+// became ready, and nothing is read until the caller asks for it.
+//
+// Declared by hand (no `libc`/`windows-sys` dependency): `std` already links
+// ws2_32 on Windows and libc on Unix, so the symbols resolve at link time.
+
+#[cfg(windows)]
+mod sys {
+    #[repr(C)]
+    pub struct PollFd {
+        pub fd: usize,
+        pub events: i16,
+        pub revents: i16,
+    }
+    pub const POLLIN: i16 = 0x0001;
+    pub const POLLOUT: i16 = 0x0004;
+    extern "system" {
+        pub fn WSAPoll(fd_array: *mut PollFd, fds: u32, timeout: i32) -> i32;
+    }
+}
+
+#[cfg(unix)]
+mod sys {
+    #[repr(C)]
+    pub struct PollFd {
+        pub fd: i32,
+        pub events: i16,
+        pub revents: i16,
+    }
+    pub const POLLIN: i16 = 0x0001;
+    pub const POLLOUT: i16 = 0x0004;
+    #[cfg(target_os = "macos")]
+    pub type Nfds = u32;
+    #[cfg(not(target_os = "macos"))]
+    pub type Nfds = u64;
+    extern "C" {
+        pub fn poll(fds: *mut PollFd, nfds: Nfds, timeout: i32) -> i32;
+    }
+}
+
+/// Ask the OS which of these connections are readable/writable.
+/// `None` when the platform call is unavailable or fails (the caller then
+/// falls back to the probe loop), `Some` with one (id, readable, writable)
+/// per connection otherwise.
+fn kernel_poll(conns: &[(i64, Arc<Conn>)], timeout_ms: i32) -> Option<Vec<(i64, bool, bool)>> {
+    if conns.is_empty() {
+        return Some(Vec::new());
+    }
+    #[cfg(windows)]
+    let mut fds: Vec<sys::PollFd> = {
+        use std::os::windows::io::AsRawSocket;
+        conns
+            .iter()
+            .map(|(_, c)| {
+                let sock = c.stream.lock().unwrap().as_raw_socket() as usize;
+                sys::PollFd {
+                    fd: sock,
+                    events: sys::POLLIN | sys::POLLOUT,
+                    revents: 0,
+                }
+            })
+            .collect()
+    };
+    #[cfg(unix)]
+    let mut fds: Vec<sys::PollFd> = {
+        use std::os::unix::io::AsRawFd;
+        conns
+            .iter()
+            .map(|(_, c)| {
+                let fd = c.stream.lock().unwrap().as_raw_fd();
+                sys::PollFd {
+                    fd,
+                    events: sys::POLLIN | sys::POLLOUT,
+                    revents: 0,
+                }
+            })
+            .collect()
+    };
+    #[cfg(windows)]
+    let rc = unsafe { sys::WSAPoll(fds.as_mut_ptr(), fds.len() as u32, timeout_ms) };
+    #[cfg(unix)]
+    let rc = unsafe { sys::poll(fds.as_mut_ptr(), fds.len() as sys::Nfds, timeout_ms) };
+    if rc < 0 {
+        return None; // e.g. EINTR or an unsupported socket: fall back
+    }
+    let mut out = Vec::with_capacity(conns.len());
+    for (i, (id, _)) in conns.iter().enumerate() {
+        let rev = fds[i].revents;
+        // POLLERR/POLLHUP/POLLNVAL (0x8/0x10/0x20) mean the socket is done:
+        // report it readable so the caller's read sees EOF.
+        let readable = rev & sys::POLLIN != 0 || rev & 0x18 != 0;
+        let writable = rev & sys::POLLOUT != 0;
+        out.push((*id, readable, writable));
+    }
+    Some(out)
 }
 
 // ------------------------------------------------------------------- UDP

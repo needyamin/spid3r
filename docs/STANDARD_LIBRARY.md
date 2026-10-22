@@ -113,7 +113,7 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 | `tcp_local_addr(handle)` | Bound local address string (`ok("127.0.0.1:port")`). |
 | `tcp_peer_addr(conn_id)` | Peer remote address string (`ok("ip:port")`). |
 | `tcp_set_timeout(conn_id, ms)` | Set socket read/write timeout in milliseconds (`0` disables). |
-| `tcp_poll([conn_ids], timeout_ms)` | Readiness wait: blocks until at least one listed connection has data to read or the timeout expires (`0` = do not wait); returns `ok(map("readable", [...], "writable", [...]))` with connection ids. The probe reads ahead into a per-connection buffer, so polled bytes are preserved for the next `tcp_read`. `writable` is reported optimistically (no platform readiness syscall is used). |
+| `tcp_poll([conn_ids], timeout_ms)` | Readiness wait: blocks until at least one listed connection is readable/writable or the timeout expires (`0` = do not wait); returns `ok(map("readable", [...], "writable", [...]))` with connection ids. Backed by the platform readiness call (`WSAPoll` on Windows, `poll(2)` on Unix) — the OS wakes the caller the moment a socket is ready, and nothing is read ahead. A probe-loop fallback covers a failed platform call. |
 | `udp_bind(addr)` | Bind a UDP socket (`port 0` = ephemeral); returns `ok(handle)`. |
 | `udp_local_addr(handle)` | Local address string (`ok("ip:port")`). |
 | `udp_send_to(handle, addr, text)` | Send one datagram (UTF-8 bytes of `text`); `ok(bytes_written)`. |
@@ -175,6 +175,7 @@ Monotonic and epoch time conversion with high-precision civil calendar math.
 | Function | Description |
 |---|---|
 | `unix_time()` | Current Unix epoch timestamp in whole seconds (`int`). |
+| `now_ms()` | Monotonic millisecond clock (`int`) — for measuring elapsed time. |
 | `unix_ms()` | Current Unix epoch timestamp in milliseconds (`int`). |
 | `datetime_parts(epoch_sec)` | Decompose Unix timestamp into map (`year`, `month`, `day`, `hour`, `minute`, `second`, `weekday`). Supports negative and leap-year timestamps. |
 | `datetime_from_parts(y, m, d, h, min, s)` | Convert civil date-time components into epoch seconds (`int`). |

@@ -413,6 +413,7 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "regex_replace",
     // datetime
     "unix_time",
+    "now_ms",
     "unix_ms",
     "datetime_parts",
     "datetime_from_parts",

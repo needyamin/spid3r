@@ -118,6 +118,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("regex_find_all", n_regex_find_all),
         ("regex_replace", n_regex_replace),
         ("unix_time", n_unix_time),
+        ("now_ms", n_now_ms),
         ("unix_ms", n_unix_ms),
         ("datetime_parts", n_datetime_parts),
         ("datetime_from_parts", n_datetime_from_parts),
@@ -2083,6 +2084,14 @@ fn n_regex_replace(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
 }
 
 // ------------------------------------------------------------------ datetime
+
+/// `now_ms()` - a monotonic millisecond clock, for measuring elapsed time.
+fn n_now_ms(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if !args.is_empty() {
+        return Err(format!("now_ms expects 0 arguments, got {}", args.len()));
+    }
+    Ok(Value::Int(crate::sched::now_ms()))
+}
 
 fn n_unix_time(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if !args.is_empty() {
