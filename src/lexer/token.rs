@@ -218,4 +218,8 @@ pub enum InterpPiece {
     Lit(String),
     /// `{a.b.c}`: the first segment is a variable, the rest are field accesses.
     Path(Vec<String>),
+    /// `{expr}`: the hole's source text, compiled as an expression by the
+    /// parser (so `"{len(xs)}"` and `"{a + 1}"` work). The text is captured
+    /// only when it is NOT a plain path, which keeps the simple form cheap.
+    Hole(String),
 }

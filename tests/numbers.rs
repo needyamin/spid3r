@@ -217,3 +217,25 @@ fn main() {
 fn bigint_literals_and_rationals_on_both_engines() {
     both(LITERALS_AND_RATIONALS);
 }
+
+const INTERP: &str = r#"
+fn main() {
+    let xs = [1, 2, 3];
+    let name = "ada";
+    // Rich holes: any expression, not just a name or a field path.
+    assert_eq("len={len(xs)}", "len=3");
+    assert_eq("sum={xs[0] + xs[1] + xs[2]}", "sum=6");
+    assert_eq("upper={name.upper()}", "upper=ADA");
+    assert_eq("cond={xs[0] < xs[2]}", "cond=true");
+    assert_eq("nested={string(len(xs) * 2)}", "nested=6");
+    // The old forms and template text are unchanged.
+    assert_eq("plain {name} and {xs[0]}", "plain ada and 1");
+    assert_eq("template: {{ user }} and { a }", "template: {{ user }} and { a }");
+    return 0;
+}
+"#;
+
+#[test]
+fn rich_interpolation_on_both_engines() {
+    both(INTERP);
+}

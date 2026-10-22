@@ -108,8 +108,9 @@ web processes are different workloads than this CLI loop.
   <li><span class="tag t-yes">FIXED</span><strong>Named arguments</strong> — <code>f(host: "b.io", secure: true)</code> on direct calls, constructors, and <code>super</code>; method calls reject them with a precise diagnostic (documented v1 limit, 2026-10-22).</li>
   <li><span class="tag t-no">NO</span><strong>Abstract classes / traits / mixins</strong> — no <code>abstract</code> keyword; interfaces exist, but nothing like PHP traits or Python mixins/ABCs.</li>
   <li><span class="tag t-no">NO</span><strong>Generics / parametric types</strong> — no type parameters anywhere.</li>
-  <li><span class="tag t-no">NO</span><strong>Operator overloading, decorators, macros, compile-time reflection/introspection</strong> — Python's decorator + reflection model and PHP's attribute/reflection API have no counterpart. (Python <code>@decorator</code>, <code>getattr/type()</code> tricks cannot be written.)</li>
-  <li><span class="tag t-no">NO</span><strong>Rich interpolation holes</strong> — only <code>{name}</code> and <code>{obj.field}</code>; <code>"{len(xs)}"</code> is literal text.</li>
+  <li><span class="tag t-yes">FIXED</span><strong>Operator overloading</strong> — a value carrying a callable <code>__add__</code>/<code>__sub__</code>/<code>__mul__</code>/<code>__div__</code> (a map or a class instance) handles the operator (§3.2).</li>
+  <li><span class="tag t-no">NO</span><strong>Decorators, macros, compile-time reflection/introspection</strong> — Python's decorator + reflection model and PHP's attribute/reflection API have no counterpart. (Python <code>@decorator</code>, <code>getattr/type()</code> tricks cannot be written.)</li>
+  <li><span class="tag t-yes">FIXED</span><strong>Rich interpolation holes</strong> — a hole takes any expression, not just a name or field path: <code>"len={len(xs)}"</code>, <code>"sum={a + b}"</code>, <code>"{name.upper()}"</code>. The hole's text is captured by the lexer (nested braces and quoted strings tracked) and compiled by the parser; a hole that does not parse stays literal text, so prose like <code>"{not a hole}"</code> and template syntax <code>{{ user }}</code> are unaffected, as are format specs (<code>{:.2f}</code>) and JSON-looking text (<code>{"a": 1}</code>).</li>
 </ul>
 
 <h3>3.4 Ecosystem — the biggest realistic difference</h3>

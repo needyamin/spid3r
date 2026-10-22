@@ -1510,7 +1510,7 @@ impl Parser {
             }
             TokenKind::InterpStr(pieces) => {
                 self.pos += 1;
-                Ok(interp_to_expr(&pieces, sp))
+                self.interp_to_expr(&pieces, sp)
             }
             // `if` as an expression: only reachable in value position, because
             // `parse_statement` consumes a leading `if` as a statement.
@@ -1657,48 +1657,93 @@ fn bit_call(name: &str, l: Expr, r: Expr) -> Expr {
 ///
 /// Every hole is wrapped in `string(...)` so an `int` or `bool` interpolates
 /// without an explicit conversion (`string` is idempotent on strings).
-fn interp_to_expr(pieces: &[crate::lexer::token::InterpPiece], sp: Span) -> Expr {
-    use crate::lexer::token::InterpPiece;
-    let mut parts: Vec<Expr> = Vec::new();
-    for piece in pieces {
-        match piece {
-            InterpPiece::Lit(text) => {
-                if !text.is_empty() {
-                    parts.push(Expr::Str(text.clone(), sp.clone()));
+impl Parser {
+    /// Build the concatenation for an interpolated string. `{path}` holes are
+    /// spliced directly; `{expr}` holes are compiled by lexing and parsing the
+    /// captured text as an expression (`"{len(xs)}"`, `"{a + 1}"`).
+    fn interp_to_expr(
+        &mut self,
+        pieces: &[crate::lexer::token::InterpPiece],
+        sp: Span,
+    ) -> SpidResult<Expr> {
+        use crate::lexer::token::InterpPiece;
+        let mut parts: Vec<Expr> = Vec::new();
+        for piece in pieces {
+            match piece {
+                InterpPiece::Lit(text) => {
+                    if !text.is_empty() {
+                        parts.push(Expr::Str(text.clone(), sp.clone()));
+                    }
                 }
-            }
-            InterpPiece::Path(segments) => {
-                let mut path = Expr::Ident(segments[0].clone(), sp.clone());
-                for seg in &segments[1..] {
-                    path = Expr::Field {
-                        object: Box::new(path),
-                        name: seg.clone(),
+                InterpPiece::Path(segments) => {
+                    let mut path = Expr::Ident(segments[0].clone(), sp.clone());
+                    for seg in &segments[1..] {
+                        path = Expr::Field {
+                            object: Box::new(path),
+                            name: seg.clone(),
+                            span: sp.clone(),
+                        };
+                    }
+                    parts.push(Expr::Call {
+                        callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
+                        args: vec![path],
                         span: sp.clone(),
-                    };
+                    });
                 }
-                parts.push(Expr::Call {
-                    callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
-                    args: vec![path],
-                    span: sp.clone(),
-                });
+                InterpPiece::Hole(raw) => {
+                    // Try to compile the hole as an expression. If it does not
+                    // parse (`"{not a hole}"`, `"{a, b}"`), the braces are
+                    // plain text - that keeps prose and template text working
+                    // while still allowing `"{len(xs)}"`.
+                    let compiled = crate::lexer::Lexer::new(raw, Arc::from("<interp>"))
+                        .tokenize()
+                        .ok()
+                        .and_then(|toks| {
+                            let mut sub = Parser {
+                                toks,
+                                pos: 0,
+                                depth: 0,
+                                saw_bigint_lit: false,
+                                value_block_depth: 0,
+                            };
+                            match sub.parse_expr() {
+                                Ok(e) if sub.at(&TokenKind::Eof) => Some((e, sub.saw_bigint_lit)),
+                                _ => None,
+                            }
+                        });
+                    let Some((expr, used_bigint)) = compiled else {
+                        parts.push(Expr::Str(format!("{{{}}}", raw), sp.clone()));
+                        continue;
+                    };
+                    // A big-integer literal inside the hole needs the program
+                    // import too.
+                    if used_bigint {
+                        self.saw_bigint_lit = true;
+                    }
+                    parts.push(Expr::Call {
+                        callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
+                        args: vec![expr],
+                        span: sp.clone(),
+                    });
+                }
             }
         }
+        if parts.is_empty() {
+            return Ok(Expr::Str(String::new(), sp));
+        }
+        // Fold with `+`, which concatenates strings.
+        let mut iter = parts.into_iter();
+        let mut out = iter.next().expect("non-empty");
+        for p in iter {
+            out = Expr::Binary {
+                op: crate::ast::BinOp::Add,
+                l: Box::new(out),
+                r: Box::new(p),
+                span: sp.clone(),
+            };
+        }
+        Ok(out)
     }
-    // An interpolated literal always has at least one hole, but stay total.
-    if parts.is_empty() {
-        return Expr::Str(String::new(), sp);
-    }
-    let mut iter = parts.into_iter();
-    let mut acc = iter.next().expect("non-empty");
-    for next in iter {
-        acc = Expr::Binary {
-            op: BinOp::Add,
-            l: Box::new(acc),
-            r: Box::new(next),
-            span: sp.clone(),
-        };
-    }
-    acc
 }
 
 fn join(a: Span, b: Span) -> Span {

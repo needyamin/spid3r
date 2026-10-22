@@ -449,6 +449,55 @@ impl<'a> Lexer<'a> {
     /// Try to read `ident(.ident)*}` starting at the character after `{`.
     /// Rewinds and returns `None` if the text is not exactly that shape, so the
     /// caller can emit a literal `{`.
+    /// Capture `{...}` as an expression hole: the text between the braces,
+    /// tracked through nested braces and quoted strings. Returns `None` when
+    /// the content is empty, spans a newline, or never closes - the caller
+    /// then treats the `{` as literal text.
+    fn try_interp_expr(&mut self) -> Option<String> {
+        // The caller has already consumed the `{`; capture starts here.
+        let (pos, line, col) = (self.pos, self.line, self.col);
+        let start = self.pos;
+        let mut depth = 0usize;
+        let mut quote: Option<u8> = None;
+        while let Some(c) = self.peek() {
+            match quote {
+                Some(q) => {
+                    if c == b'\\' {
+                        self.bump();
+                    } else if c == q {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    b'"' | b'\'' => quote = Some(c),
+                    b'{' => depth += 1,
+                    b'}' => {
+                        if depth == 0 {
+                            let raw =
+                                String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
+                            self.bump(); // the `}`
+                            if raw.trim().is_empty() {
+                                self.pos = pos;
+                                self.line = line;
+                                self.col = col;
+                                return None;
+                            }
+                            return Some(raw);
+                        }
+                        depth -= 1;
+                    }
+                    b'\n' => break,
+                    _ => {}
+                },
+            }
+            self.bump();
+        }
+        self.pos = pos;
+        self.line = line;
+        self.col = col;
+        None
+    }
+
     fn try_interp_path(&mut self) -> Option<Vec<String>> {
         let (pos, line, col) = (self.pos, self.line, self.col);
         let mut segments = Vec::new();
@@ -519,17 +568,39 @@ impl<'a> Lexer<'a> {
                 // `"{{ user }}"` (used by stdlib/web.matrix) untouched: `{` is
                 // followed by `{` or a space there, and a hole requires an
                 // identifier immediately after the brace.
-                b'{' => match self.try_interp_path() {
-                    Some(path) => {
+                b'{' => {
+                    if let Some(path) = self.try_interp_path() {
                         if !s.is_empty() {
                             pieces.push(crate::lexer::token::InterpPiece::Lit(std::mem::take(
                                 &mut s,
                             )));
                         }
                         pieces.push(crate::lexer::token::InterpPiece::Path(path));
+                    } else if matches!(self.peek(), Some(c)
+                        if c.is_ascii_alphabetic()
+                            || c == b'_'
+                            || c.is_ascii_digit()
+                            || c == b'('
+                            || c == b'['
+                            || c == b'-')
+                    {
+                        // `{expr}`: a richer hole. `{{` and `{ ` stay literal
+                        // so template text (`"{{ user }}"`) is untouched.
+                        match self.try_interp_expr() {
+                            Some(raw) => {
+                                if !s.is_empty() {
+                                    pieces.push(crate::lexer::token::InterpPiece::Lit(
+                                        std::mem::take(&mut s),
+                                    ));
+                                }
+                                pieces.push(crate::lexer::token::InterpPiece::Hole(raw));
+                            }
+                            None => s.push('{'),
+                        }
+                    } else {
+                        s.push('{');
                     }
-                    None => s.push('{'),
-                },
+                }
                 b'\\' => {
                     let e = match self.peek() {
                         Some(e) => e,
