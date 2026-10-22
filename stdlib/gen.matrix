@@ -1,0 +1,163 @@
+// stdlib/gen.matrix - generators over the scheduler, written in Spid3r.
+//
+//   import "gen" as g;
+//
+//   let it = g.range_gen(5);
+//   while true {
+//       let v = g.next(it);
+//       if v == null { break; }
+//       println(v);
+//   }
+//
+//   // composable: squares of the even numbers below 10
+//   let pipe = g.map(g.filter(g.range_gen(10), fn(x) { return x % 2 == 0; }),
+//                    fn(x) { return x * x; });
+//   println(g.collect(pipe));   // [0, 4, 16, 36, 64]
+//
+// Each generator runs its body in its own spawned task and parks on channels
+// at every emission, so an INFINITE producer costs nothing until consumed.
+// Cost model: one scheduler task per live generator (fine for thousands of
+// concurrent generators; for hundreds of thousands, wait for the
+// compiler-level `yield` - see docs/IMPROVEMENT_PLAN.md DESIGN).
+//
+// Protocol notes:
+// - `next` returns null at the end of the stream.
+// - `close` releases an abandoned generator early; without it, a generator
+//   whose consumer stops early stays parked until the process exits.
+// - An exception inside the body ends the generator (the task unwinds);
+//   handle errors inside the body.
+
+fn new_gen(out, ack, cancel) {
+    let m = map("out", out);
+    m["ack"] = ack;
+    m["cancel"] = cancel;
+    return m;
+}
+
+/// Wrap a body `fn(emit)` as a generator. `emit(v)` yields one value.
+public fn gen(body) {
+    let out = channel();
+    let ack = channel();
+    let cancel = channel();
+    spawn fn() {
+        try {
+            body(fn(v) {
+                // try_recv answers `none` when the channel is empty and
+                // `some(v)` otherwise - compare against none, not null.
+                // A cancel THROWS (it must unwind the body, not skip one
+                // emission: the body would keep looping otherwise).
+                if cancel.try_recv() != none {
+                    throw "gen:closed";
+                }
+                out.send(v);
+                ack.recv();
+            });
+        } catch (e) {
+            // The body failed: end the stream rather than leaving the
+            // consumer parked forever. Errors are the body's business.
+        }
+        out.send(null);
+    };
+    return new_gen(out, ack, cancel);
+}
+
+/// The next value, or null at the end of the stream.
+public fn next(it) {
+    let v = it["out"].recv();
+    if v == null {
+        return null;
+    }
+    it["ack"].send(true);
+    return v;
+}
+
+/// Every remaining value as a list.
+public fn collect(it) {
+    let out = [];
+    while true {
+        let v = next(it);
+        if v == null {
+            return out;
+        }
+        out.push(v);
+    }
+}
+
+/// The first `n` values as a list (fewer if the stream ends).
+public fn take(it, n) {
+    let out = [];
+    let i = 0;
+    while i < n {
+        let v = next(it);
+        if v == null {
+            return out;
+        }
+        out.push(v);
+        i = i + 1;
+    }
+    close(it);
+    return out;
+}
+
+/// A generator of `f(v)` for every value of `it`. (The private alias exists
+/// because `map` names a builtin constructor inside this module.)
+fn map_gen(it, f) {
+    return gen(fn(emit) {
+        while true {
+            let v = next(it);
+            if v == null {
+                return;
+            }
+            emit(f(v));
+        }
+    });
+}
+
+/// A generator of the values of `it` for which `pred(v)` holds.
+fn filter_gen(it, pred) {
+    return gen(fn(emit) {
+        while true {
+            let v = next(it);
+            if v == null {
+                return;
+            }
+            if pred(v) {
+                emit(v);
+            }
+        }
+    });
+}
+
+/// Public wrappers for the (builtin-clashing) names.
+public fn map(it, f) {
+    return map_gen(it, f);
+}
+
+public fn filter(it, pred) {
+    return filter_gen(it, pred);
+}
+
+/// A generator of integers `a .. b-1` (two-argument form) or `0 .. n-1`.
+public fn range_gen(a, b = null) {
+    if b == null {
+        b = a;
+        a = 0;
+    }
+    return gen(fn(emit) {
+        let i = a;
+        while i < b {
+            emit(i);
+            i = i + 1;
+        }
+    });
+}
+
+/// Release an abandoned generator: wakes its body, which unwinds without
+/// emitting again. Safe to call twice; a no-op after the stream ended.
+public fn close(it) {
+    it["cancel"].send(true);
+    // Wake a body parked waiting for the ack, then drain its final null so
+    // the task can exit instead of parking on the send.
+    it["ack"].send(true);
+    it["out"].recv();
+}

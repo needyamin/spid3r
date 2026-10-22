@@ -130,6 +130,8 @@ fn main() {
 - **`stdlib/semver.matrix`**: Semantic-version parsing, spec-correct comparison (prerelease
   ordering included), and comparator-range `satisfies`.
 - **`stdlib/uuid.matrix`**: RFC 9562 version-4 UUIDs from the runtime entropy source.
+- **`stdlib/gen.matrix`**: Generators (`gen`/`next`/`collect`/`take`/`map`/`filter`/`range_gen`/
+  `close`) — lazy, composable streams; infinite producers cost nothing until consumed.
 - **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort_by, group_by, inner_join).
 - **`stdlib/stats.matrix`** & **`stdlib/ml.matrix`**: Regression, classification, clustering, PCA, and distributions.
 
