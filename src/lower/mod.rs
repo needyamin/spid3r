@@ -106,6 +106,8 @@ fn program_needs_lowering(p: &Program) -> bool {
 
 fn stmt_needs_lowering(s: &Stmt) -> bool {
     match s {
+        // `yield` is rewritten by `fn_proto`'s generator pass.
+        Stmt::Yield { .. } => true,
         Stmt::Import { .. } | Stmt::Interface(_) | Stmt::Break { .. } | Stmt::Continue { .. } => {
             false
         }
@@ -353,6 +355,17 @@ impl Lower {
     /// Lower one statement into one or more statements (a prelude plus itself).
     fn stmt(&mut self, s: &Stmt) -> Vec<Stmt> {
         match s {
+            // `fn_proto` rewrites generator bodies before lowering them, so
+            // this arm is only reached for a `yield` outside a function
+            // declaration; keep the emit form so it still means something.
+            Stmt::Yield { value, span } => {
+                let call = Expr::Call {
+                    callee: Box::new(Expr::Ident("emit".to_string(), span.clone())),
+                    args: vec![(**value).clone()],
+                    span: span.clone(),
+                };
+                self.stmt(&Stmt::Expr(call))
+            }
             Stmt::Fn(f) => {
                 let mut out = vec![Stmt::Fn(self.fn_proto(f))];
                 out.retain(|_| true);
@@ -555,6 +568,47 @@ impl Lower {
     }
 
     fn fn_proto(&mut self, f: &FnProto) -> FnProto {
+        // A function containing `yield` becomes a generator: its body moves
+        // into an `emit` closure handed to stdlib/gen.matrix, and the function
+        // returns the generator object. The backends never see `yield`.
+        if contains_yield(&f.body.stmts) {
+            let mut body = f.body.clone();
+            body.stmts = replace_yields(std::mem::take(&mut body.stmts));
+            let emit = crate::ast::Param {
+                name: "emit".to_string(),
+                ty: None,
+                default: None,
+                span: f.span.clone(),
+            };
+            let inner = crate::ast::Expr::Fn(Box::new(FnProto {
+                vis: crate::ast::Vis::Private,
+                is_async: false,
+                name: None,
+                params: vec![emit],
+                ret: None,
+                body,
+                span: f.span.clone(),
+            }));
+            let gen_call = crate::ast::Expr::Method {
+                object: Box::new(crate::ast::Expr::Ident("__gen".to_string(), f.span.clone())),
+                name: "gen".to_string(),
+                args: vec![inner],
+                span: f.span.clone(),
+            };
+            let wrapped = crate::ast::Stmt::Return {
+                value: Some(gen_call),
+                span: f.span.clone(),
+            };
+            let mut out = f.clone();
+            out.body = crate::ast::Block {
+                stmts: vec![wrapped],
+                span: f.body.span.clone(),
+            };
+            return FnProto {
+                body: self.block(&out.body),
+                ..out
+            };
+        }
         FnProto {
             body: self.block(&f.body),
             ..f.clone()
@@ -1581,4 +1635,131 @@ fn let_stmt(name: &str, value: Expr, span: Span) -> Stmt {
 /// call sites that mean "spill this expression" read as such.
 fn let_null(name: &str, value: Expr, span: Span) -> Stmt {
     let_stmt(name, value, span)
+}
+
+/// Does this statement list contain a `yield` (recursively)?
+fn contains_yield(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        Stmt::Yield { .. } => true,
+        Stmt::If {
+            then, elifs, els, ..
+        } => {
+            contains_yield(&then.stmts)
+                || elifs.iter().any(|(_, b)| contains_yield(&b.stmts))
+                || els
+                    .as_ref()
+                    .map(|b| contains_yield(&b.stmts))
+                    .unwrap_or(false)
+        }
+        Stmt::While { body, .. }
+        | Stmt::ForIn { body, .. }
+        | Stmt::ForC { body, .. }
+        | Stmt::Block(body) => contains_yield(&body.stmts),
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+            ..
+        } => {
+            contains_yield(&body.stmts)
+                || catch
+                    .as_ref()
+                    .map(|c| contains_yield(&c.body.stmts))
+                    .unwrap_or(false)
+                || finally
+                    .as_ref()
+                    .map(|b| contains_yield(&b.stmts))
+                    .unwrap_or(false)
+        }
+        _ => false,
+    })
+}
+
+/// Rewrite `yield v;` into `emit(v);` throughout a generator body.
+fn replace_yields(stmts: Vec<Stmt>) -> Vec<Stmt> {
+    stmts
+        .into_iter()
+        .map(|s| match s {
+            Stmt::Yield { value, span } => Stmt::Expr(Expr::Call {
+                callee: Box::new(Expr::Ident("emit".to_string(), span.clone())),
+                args: vec![*value],
+                span,
+            }),
+            Stmt::If {
+                cond,
+                then,
+                elifs,
+                els,
+                span,
+            } => Stmt::If {
+                cond,
+                then: crate::ast::Block {
+                    stmts: replace_yields(then.stmts),
+                    span: then.span,
+                },
+                elifs: elifs
+                    .into_iter()
+                    .map(|(c, b)| {
+                        (
+                            c,
+                            crate::ast::Block {
+                                stmts: replace_yields(b.stmts),
+                                span: b.span,
+                            },
+                        )
+                    })
+                    .collect(),
+                els: els.map(|b| crate::ast::Block {
+                    stmts: replace_yields(b.stmts),
+                    span: b.span,
+                }),
+                span,
+            },
+            Stmt::While { cond, body, span } => Stmt::While {
+                cond,
+                body: crate::ast::Block {
+                    stmts: replace_yields(body.stmts),
+                    span: body.span,
+                },
+                span,
+            },
+            Stmt::ForIn {
+                var,
+                var2,
+                iter,
+                body,
+                span,
+            } => Stmt::ForIn {
+                var,
+                var2,
+                iter,
+                body: crate::ast::Block {
+                    stmts: replace_yields(body.stmts),
+                    span: body.span,
+                },
+                span,
+            },
+            Stmt::ForC {
+                init,
+                cond,
+                post,
+                body,
+                span,
+            } => Stmt::ForC {
+                init,
+                cond,
+                post,
+                body: crate::ast::Block {
+                    stmts: replace_yields(body.stmts),
+                    span: body.span,
+                },
+                span,
+            },
+            Stmt::Block(b) => Stmt::Block(crate::ast::Block {
+                stmts: replace_yields(b.stmts),
+                span: b.span,
+            }),
+            other => other,
+        })
+        .collect()
 }

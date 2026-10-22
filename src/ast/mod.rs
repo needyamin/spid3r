@@ -127,6 +127,11 @@ pub struct ClassDecl {
     /// `public` marks the class as a module export; `private` is the default.
     pub vis: Vis,
     pub name: String,
+    /// `abstract class C` - cannot be instantiated directly.
+    pub is_abstract: bool,
+    /// Names of methods declared `abstract fn m(...);` in this class. A
+    /// concrete subclass must implement them (the checker enforces it).
+    pub abstracts: Vec<String>,
     pub parent: Option<String>,
     pub interfaces: Vec<String>,
     pub fields: Vec<FieldDecl>,
@@ -238,6 +243,13 @@ pub enum Stmt {
         callable: Expr,
         span: Span,
     },
+    /// `yield expr;` - emits one value from a generator. `crate::lower`
+    /// rewrites the enclosing function into the stdlib/gen.matrix form, so no
+    /// backend ever sees this node.
+    Yield {
+        value: Box<Expr>,
+        span: Span,
+    },
     Try {
         body: Block,
         catch: Option<CatchClause>,
@@ -265,6 +277,7 @@ impl Stmt {
             | Stmt::Break { span }
             | Stmt::Continue { span }
             | Stmt::Spawn { span, .. }
+            | Stmt::Yield { span, .. }
             | Stmt::Try { span, .. }
             | Stmt::Throw { span, .. } => span,
             Stmt::Fn(f) => &f.span,

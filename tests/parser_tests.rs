@@ -142,6 +142,7 @@ fn every_statement_form_parses() {
             Stmt::Break { .. } => "break",
             Stmt::Continue { .. } => "continue",
             Stmt::Block(_) => "block",
+            Stmt::Yield { .. } => "yield",
             Stmt::Expr(_) => "expr",
             Stmt::Spawn { .. } => "spawn",
             Stmt::Try { .. } => "try",

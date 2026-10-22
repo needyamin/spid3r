@@ -433,6 +433,15 @@ fn resolve_module_path(
 fn compile_stmt(compilers: &mut Vec<Compiler>, ci: usize, stmt: &Stmt) -> Result<(), Diagnostic> {
     compilers[ci].chunk.set_span(stmt.span().clone());
     match stmt {
+        // `crate::lower` rewrites generators; a `yield` here is a pipeline bug.
+        Stmt::Yield { span, .. } => {
+            return Err(Diagnostic::at(
+                Phase::Vm,
+                span.clone(),
+                "internal error: a `yield` reached the bytecode compiler \
+                 without lowering (this is a bug in spid3r)",
+            ))
+        }
         // `crate::lower` expands these before compilation.
         Stmt::LetTuple { span, .. } => {
             return Err(Diagnostic::at(

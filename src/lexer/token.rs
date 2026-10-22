@@ -27,6 +27,10 @@ pub enum Keyword {
     Finally,
     Throw,
     Class,
+    /// `abstract class C` / `abstract fn m();`
+    Abstract,
+    /// `yield expr;` inside a generator function.
+    Yield,
     Interface,
     New,
     SelfKw,
@@ -71,6 +75,8 @@ impl Keyword {
             Keyword::Finally => "finally",
             Keyword::Throw => "throw",
             Keyword::Class => "class",
+            Keyword::Abstract => "abstract",
+            Keyword::Yield => "yield",
             Keyword::Interface => "interface",
             Keyword::New => "new",
             Keyword::SelfKw => "self",
@@ -114,6 +120,8 @@ impl Keyword {
             "finally" => Keyword::Finally,
             "throw" => Keyword::Throw,
             "class" => Keyword::Class,
+            "abstract" => Keyword::Abstract,
+            "yield" => Keyword::Yield,
             "interface" => Keyword::Interface,
             "new" => Keyword::New,
             "self" => Keyword::SelfKw,
@@ -165,6 +173,8 @@ pub enum TokenKind {
     Ge,
 
     Assign,
+    /// `@` - the decorator marker (`@memo fn f() {}`).
+    At,
     PlusEq,
     MinusEq,
     StarEq,

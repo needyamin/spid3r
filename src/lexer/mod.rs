@@ -213,6 +213,7 @@ impl<'a> Lexer<'a> {
             b'*' => self.two(b'=', TokenKind::StarEq, TokenKind::Star),
             b'/' => self.two(b'=', TokenKind::SlashEq, TokenKind::Slash),
             b'%' => self.two(b'=', TokenKind::PercentEq, TokenKind::Percent),
+            b'@' => TokenKind::At,
             b'=' => {
                 // `=>` before `=`/`==`: a match arm separator.
                 if self.peek() == Some(b'>') {

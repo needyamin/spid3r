@@ -20,6 +20,9 @@ pub struct Parser {
     /// then gets a synthetic `import "bigint" as __bigint` so the desugared
     /// `__bigint.from_string("123")` resolves.
     saw_bigint_lit: bool,
+    /// Set when the source uses `yield`: the program then gets a synthetic
+    /// `import "gen" as __gen` (see `crate::lower`'s generator rewrite).
+    saw_yield: bool,
     depth: usize,
     /// Depth of `if`-expression branch blocks. Inside one, a trailing
     /// expression may omit its `;`, because it is the branch's value:
@@ -40,6 +43,7 @@ pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
     let mut p = Parser {
         toks,
         saw_bigint_lit: false,
+        saw_yield: false,
         pos: 0,
         depth: 0,
         value_block_depth: 0,
@@ -156,6 +160,38 @@ impl Parser {
         let mut stmts = Vec::new();
         let mut seen_non_import = false;
         while !self.at(&TokenKind::Eof) {
+            if self.at(&TokenKind::At) {
+                seen_non_import = true;
+                let decs = self.parse_decorators()?;
+                let decl = self.parse_declaration()?;
+                let name = match &decl {
+                    Stmt::Fn(f) => f.name.clone(),
+                    Stmt::Class(c) => Some(c.name.clone()),
+                    _ => None,
+                };
+                let Some(name) = name else {
+                    return Err(
+                        self.err_here("a decorator must precede a function or a class declaration")
+                    );
+                };
+                stmts.push(decl);
+                // Bottom-up, like Python: the last decorator is applied first.
+                for dec in decs.into_iter().rev() {
+                    let sp = self.prev_span();
+                    let call = Expr::Call {
+                        callee: Box::new(dec),
+                        args: vec![Expr::Ident(name.clone(), sp.clone())],
+                        span: sp.clone(),
+                    };
+                    stmts.push(Stmt::Expr(Expr::Assign {
+                        target: Box::new(Expr::Ident(name.clone(), sp.clone())),
+                        op: crate::ast::AssignOp::Assign,
+                        value: Box::new(call),
+                        span: sp,
+                    }));
+                }
+                continue;
+            }
             if self.at_kw(Keyword::Import) {
                 if seen_non_import {
                     return Err(self.err_here("import must appear before other declarations"));
@@ -165,6 +201,21 @@ impl Parser {
                 seen_non_import = true;
                 stmts.push(self.parse_declaration()?);
             }
+        }
+        if self.saw_yield {
+            stmts.insert(
+                0,
+                Stmt::Import {
+                    path: "gen".to_string(),
+                    alias: Some("__gen".to_string()),
+                    span: Span {
+                        file: std::sync::Arc::from("<yield>"),
+                        line: 0,
+                        col: 0,
+                        len: 0,
+                    },
+                },
+            );
         }
         if self.saw_bigint_lit {
             // A big-integer literal needs the bigint module. Inject the
@@ -184,6 +235,37 @@ impl Parser {
             );
         }
         Ok(Program { stmts })
+    }
+
+    /// `@name` or `@name(args)`, one or more in a row.
+    fn parse_decorators(&mut self) -> SpidResult<Vec<Expr>> {
+        let mut out = Vec::new();
+        while self.at(&TokenKind::At) {
+            self.pos += 1;
+            let sp = self.span();
+            let mut dec = match self.kind().clone() {
+                TokenKind::Ident(name) => {
+                    self.pos += 1;
+                    Expr::Ident(name, sp.clone())
+                }
+                _ => {
+                    return Err(self.err_here(
+                        "a decorator must be a name or a call, e.g. `@memo` or `@cache(10)`",
+                    ))
+                }
+            };
+            if self.at(&TokenKind::LParen) {
+                let args = self.parse_args()?;
+                let span = join(sp, self.prev_span());
+                dec = Expr::Call {
+                    callee: Box::new(dec),
+                    args,
+                    span,
+                };
+            }
+            out.push(dec);
+        }
+        Ok(out)
     }
 
     fn parse_import(&mut self) -> SpidResult<Stmt> {
@@ -227,7 +309,14 @@ impl Parser {
             TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => Ok(Stmt::Fn(
                 self.parse_fn(false, if had_vis { Some(vis) } else { None })?,
             )),
-            TokenKind::Kw(Keyword::Class) => Ok(Stmt::Class(self.parse_class(vis)?)),
+            TokenKind::Kw(Keyword::Class) => Ok(Stmt::Class(self.parse_class(vis, false)?)),
+            TokenKind::Kw(Keyword::Abstract) => {
+                self.pos += 1;
+                if !self.at_kw(Keyword::Class) {
+                    return Err(self.err_here("`abstract` must be followed by `class`"));
+                }
+                Ok(Stmt::Class(self.parse_class(vis, true)?))
+            }
             TokenKind::Kw(Keyword::Interface) => Ok(Stmt::Interface(self.parse_interface(vis)?)),
             TokenKind::Kw(Keyword::Enum) => Ok(Stmt::Enum(self.parse_enum(vis)?)),
             TokenKind::Kw(Keyword::Let) | TokenKind::Kw(Keyword::Const) => {
@@ -319,6 +408,8 @@ impl Parser {
         if name.is_none() && !allow_anon {
             return Err(self.err_here("a function declaration needs a name"));
         }
+        // `fn first<T>(xs: [T]) -> T` - type parameters are erased.
+        self.skip_type_params()?;
         let params = self.parse_params()?;
         let ret = if self.eat(&TokenKind::Arrow) {
             Some(self.parse_type()?)
@@ -409,9 +500,33 @@ impl Parser {
 
     // ---- classes and interfaces ----------------------------------------
 
-    fn parse_class(&mut self, vis: Vis) -> SpidResult<ClassDecl> {
+    /// Skip a `<T, U>` type-parameter list (erased: Spid3r is dynamically
+    /// typed, so parameters document intent and the checker records nothing).
+    fn skip_type_params(&mut self) -> SpidResult<()> {
+        if !self.at(&TokenKind::Lt) {
+            return Ok(());
+        }
+        self.pos += 1;
+        let mut depth = 1usize;
+        while depth > 0 {
+            match self.kind() {
+                TokenKind::Lt => depth += 1,
+                TokenKind::Gt => depth -= 1,
+                TokenKind::Eof => {
+                    return Err(self.err_here("unterminated type parameter list"));
+                }
+                _ => {}
+            }
+            self.pos += 1;
+        }
+        Ok(())
+    }
+
+    fn parse_class(&mut self, vis: Vis, is_abstract: bool) -> SpidResult<ClassDecl> {
         let start = self.expect_kw(Keyword::Class)?;
         let (name, _) = self.expect_ident()?;
+        // `class Box<T>` - type parameters are erased (see skip_type_params).
+        self.skip_type_params()?;
         let parent = if self.eat_kw(Keyword::Extends) {
             Some(self.expect_ident()?.0)
         } else {
@@ -427,6 +542,7 @@ impl Parser {
         self.expect(&TokenKind::LBrace, "'{' to open the class body")?;
         let mut fields = Vec::new();
         let mut methods = Vec::new();
+        let mut abstracts: Vec<String> = Vec::new();
         while !self.at(&TokenKind::RBrace) {
             if self.at(&TokenKind::Eof) {
                 return Err(self.err_here("unterminated class body"));
@@ -451,6 +567,32 @@ impl Parser {
                     vis,
                     ty,
                     span: fspan,
+                });
+            } else if self.eat_kw(Keyword::Abstract) {
+                // `abstract fn m(params);` - no body. A concrete subclass
+                // must implement it (the checker enforces that).
+                self.eat_kw(Keyword::Fn);
+                let (mname, mspan) = self.expect_ident()?;
+                let params = self.parse_params()?;
+                let ret = if self.eat(&TokenKind::Colon) {
+                    Some(self.parse_type()?)
+                } else {
+                    None
+                };
+                self.expect(&TokenKind::Semi, "';' after an abstract method")?;
+                let semi = self.prev_span();
+                abstracts.push(mname.clone());
+                methods.push(FnProto {
+                    vis,
+                    is_async: false,
+                    name: Some(mname),
+                    params,
+                    ret,
+                    body: Block {
+                        stmts: Vec::new(),
+                        span: semi.clone(),
+                    },
+                    span: join(mspan, semi),
                 });
             } else if self.at_kw(Keyword::Fn) || self.at_kw(Keyword::Async) {
                 let mut m = self.parse_fn(false, None)?;
@@ -482,6 +624,8 @@ impl Parser {
         }
         let end = self.expect_kw_rbrace()?;
         Ok(ClassDecl {
+            is_abstract,
+            abstracts,
             vis,
             name,
             parent,
@@ -616,6 +760,17 @@ impl Parser {
 
     fn parse_statement(&mut self) -> SpidResult<Stmt> {
         match self.kind() {
+            TokenKind::Kw(Keyword::Yield) => {
+                let sp = self.expect_kw(Keyword::Yield)?;
+                self.saw_yield = true;
+                let value = self.parse_expr()?;
+                self.expect(&TokenKind::Semi, "';' after yield")?;
+                let span = join(sp, self.prev_span());
+                Ok(Stmt::Yield {
+                    value: Box::new(value),
+                    span,
+                })
+            }
             TokenKind::Kw(Keyword::Let) if matches!(self.peek_kind(1), TokenKind::LParen) => {
                 self.parse_let_tuple(Vis::Private)
             }
@@ -1704,6 +1859,7 @@ impl Parser {
                                 pos: 0,
                                 depth: 0,
                                 saw_bigint_lit: false,
+                                saw_yield: false,
                                 value_block_depth: 0,
                             };
                             match sub.parse_expr() {

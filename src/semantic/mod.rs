@@ -45,11 +45,17 @@ struct FuncInfo {
     ret: Option<TypeExpr>,
 }
 
+#[derive(Clone)]
 struct ClassInfo {
     parent: Option<String>,
     interfaces: Vec<String>,
     fields: HashMap<String, (Vis, Option<TypeExpr>)>,
     methods: HashMap<String, MethodInfo>,
+    /// `abstract class` - cannot be instantiated.
+    is_abstract: bool,
+    /// Methods declared `abstract fn m();` here; a concrete subclass must
+    /// provide them.
+    abstracts: Vec<String>,
 }
 
 #[derive(Default)]
@@ -801,8 +807,72 @@ impl Checker {
                         interfaces: c.interfaces.clone(),
                         fields,
                         methods,
+                        is_abstract: c.is_abstract,
+                        abstracts: c.abstracts.clone(),
                     },
                 );
+            }
+        }
+
+        // Abstract contracts: every concrete class must implement the
+        // abstract methods it inherits (walking up through intermediate
+        // classes, which may implement some of them).
+        let mut class_spans: HashMap<String, Span> = HashMap::new();
+        for s in &program.stmts {
+            if let Stmt::Class(c) = s {
+                class_spans.insert(c.name.clone(), c.span.clone());
+            }
+        }
+        let names: Vec<String> = self.classes.keys().cloned().collect();
+        for name in names {
+            let Some(ci) = self.classes.get(&name).cloned() else {
+                continue;
+            };
+            if ci.is_abstract {
+                continue;
+            }
+            // Required: (declaring class, method) pairs from the ancestors.
+            let mut required: Vec<(String, String)> = Vec::new();
+            let mut cur = ci.parent.clone();
+            while let Some(p) = cur {
+                let Some(pc) = self.classes.get(&p).cloned() else {
+                    break;
+                };
+                for a in &pc.abstracts {
+                    required.push((p.clone(), a.clone()));
+                }
+                cur = pc.parent.clone();
+            }
+            for (owner, method) in required {
+                let mut found = false;
+                let mut walk = Some(name.clone());
+                while let Some(cn) = walk {
+                    if cn == owner {
+                        break;
+                    }
+                    let Some(cc) = self.classes.get(&cn).cloned() else {
+                        break;
+                    };
+                    // A concrete definition (not the abstract declaration).
+                    if cc.methods.contains_key(&method) && !cc.abstracts.contains(&method) {
+                        found = true;
+                        break;
+                    }
+                    walk = cc.parent.clone();
+                }
+                if !found {
+                    let sp = class_spans
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_else(|| Span::new(std::sync::Arc::from("<abstract>"), 0, 0, 0));
+                    return Err(self.err(
+                        &sp,
+                        format!(
+                            "class '{}' must implement the abstract method '{}' from '{}'",
+                            name, method, owner
+                        ),
+                    ));
+                }
             }
         }
         for s in &program.stmts {
@@ -1246,6 +1316,9 @@ impl Checker {
 
     fn check_stmt(&mut self, s: &Stmt) -> SpidResult<()> {
         match s {
+            // `yield v;` - the value is checked; `crate::lower` turns the
+            // enclosing function into a generator.
+            Stmt::Yield { value, .. } => self.check_expr(value),
             // Variants were registered in pass 1; a variant declaration carries
             // no body to check.
             Stmt::Enum(_) => Ok(()),
@@ -2867,6 +2940,21 @@ impl Checker {
                     return Err(self.err(span, format!("unknown class '{}'", class)));
                 }
                 if self.classes.contains_key(class) {
+                    if self
+                        .classes
+                        .get(class)
+                        .map(|c| c.is_abstract)
+                        .unwrap_or(false)
+                    {
+                        return Err(self.err(
+                            span,
+                            format!(
+                                "cannot instantiate the abstract class '{}' (subclass it and \
+                                 implement its abstract methods)",
+                                class
+                            ),
+                        ));
+                    }
                     if let Some(mi) = self.method_sig(class, "new") {
                         if Self::has_named_args(args) {
                             let names = mi.param_names.clone();

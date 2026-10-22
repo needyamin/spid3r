@@ -201,7 +201,8 @@ fn unterminated_string_and_bad_escape_and_bad_char() {
     let e = lex_err(r#""\q""#);
     assert_eq!(e.phase, Phase::Lexer);
     assert!(e.message.contains("unknown escape"), "{}", e.message);
-    let e = lex_err("@");
+    // `@` is the decorator marker now; `~` is still an unknown character.
+    let e = lex_err("~");
     assert_eq!(e.phase, Phase::Lexer);
 }
 

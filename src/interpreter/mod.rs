@@ -411,6 +411,12 @@ impl Interp {
 
     pub fn exec_stmt(&self, s: &Stmt, env: &Env) -> Flow {
         match s {
+            // `crate::lower` rewrites `yield` into the generator form; seeing
+            // one here is a pipeline bug.
+            Stmt::Yield { span, .. } => self.rt(
+                span,
+                "internal error: a `yield` reached the interpreter without lowering",
+            ),
             // `crate::lower` turns an enum into constructor functions; a backend
             // must never see the declaration itself.
             Stmt::LetTuple { span, .. } => Flow::Error(crate::diagnostics::Diagnostic::at(

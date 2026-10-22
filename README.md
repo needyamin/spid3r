@@ -131,7 +131,8 @@ fn main() {
   ordering included), and comparator-range `satisfies`.
 - **`stdlib/uuid.matrix`**: RFC 9562 version-4 UUIDs from the runtime entropy source.
 - **`stdlib/gen.matrix`**: Generators (`gen`/`next`/`collect`/`take`/`map`/`filter`/`range_gen`/
-  `close`) — lazy, composable streams; infinite producers cost nothing until consumed.
+  `close`) — lazy, composable streams; infinite producers cost nothing until consumed. `yield`
+  is language syntax: a function containing it becomes a generator (lowered into this module).
 - **`stdlib/event.matrix`**: An event loop over the `tcp_poll` readiness primitive — one task
   multiplexes any number of connections (`start`/`on_readable`/`remove`/`stop`/`run`).
 - **`stdlib/rational.matrix`**: exact fractions (`1/3 + 1/6 == 1/2`), reduced, with operators and a
