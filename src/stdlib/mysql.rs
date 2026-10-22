@@ -232,10 +232,7 @@ fn column_value(text: Option<String>, type_code: u8) -> Value {
 type ResultSet = (Vec<(String, u8)>, Vec<Vec<Option<String>>>);
 
 /// Read a resultset (or an OK) after COM_QUERY, up to EOF/OK.
-fn read_resultset(
-    stream: &mut TcpStream,
-    seq: &mut u8,
-) -> Result<ResultSet, String> {
+fn read_resultset(stream: &mut TcpStream, seq: &mut u8) -> Result<ResultSet, String> {
     let first = read_packet(stream, seq)?;
     match first[0] {
         0x00 => return Ok((Vec::new(), Vec::new())), // OK, no resultset
