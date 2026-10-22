@@ -134,11 +134,14 @@ fn main() {
   `close`) — lazy, composable streams; infinite producers cost nothing until consumed.
 - **`stdlib/event.matrix`**: An event loop over the `tcp_poll` readiness primitive — one task
   multiplexes any number of connections (`start`/`on_readable`/`remove`/`stop`/`run`).
+- **`stdlib/rational.matrix`**: exact fractions (`1/3 + 1/6 == 1/2`), reduced, with operators and a
+  decimal rendering — the `fractions.Fraction` role.
 - **`stdlib/bigint.matrix` / `stdlib/decimal.matrix` / `stdlib/complex.matrix`**: arbitrary-precision
   integers, exact fixed-point decimals (money math: `0.10 + 0.20 == 0.30`), and complex numbers —
   pure Spid3r on top of the 64-bit `int` (which now raises on overflow instead of wrapping).
   They support **operator overloading** — a value carrying `__add__`/`__sub__`/`__mul__`/`__div__`
-  handles `a + b` — so `dec.from_string("0.10") + dec.from_string("0.20")` is exactly `0.30`.
+  handles `a + b` — so `dec.from_string("0.10") + dec.from_string("0.20")` is exactly `0.30`, and a
+  trailing `n` on an integer literal makes it arbitrary-precision (`123456789012345678901234567890n`).
 - **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort_by, group_by, inner_join).
 - **`stdlib/stats.matrix`** & **`stdlib/ml.matrix`**: Regression, classification, clustering, PCA, and distributions.
 

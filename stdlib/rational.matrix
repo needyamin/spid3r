@@ -1,0 +1,134 @@
+// stdlib/rational.matrix - exact rational numbers, written in Spid3r.
+//
+//   import "rational" as q;
+//
+//   let a = q.of(1, 3);
+//   let b = q.of(1, 6);
+//   println(q.to_string(a + b));       // 1/2   (exact, reduced)
+//   println(q.to_decimal(a, 6));       // 0.333333
+//
+// A value is `{ num: bigint, den: bigint }` in lowest terms with a positive
+// denominator - the role Python's `fractions.Fraction` plays. Arithmetic is
+// exact; `to_decimal` renders a rounded decimal at a chosen precision.
+//
+// Built on stdlib/bigint.matrix.
+
+import "bigint" as bi;
+
+/// Greatest common divisor of two non-negative bigints.
+fn gcd(a, b) {
+    let x = bi.abs(a);
+    let y = bi.abs(b);
+    while not bi.is_zero(y) {
+        let qr = bi.divmod(x, y);
+        x = y;
+        y = qr[1];
+    }
+    return x;
+}
+
+fn build(num, den) {
+    if bi.is_zero(den) {
+        throw "rational: zero denominator";
+    }
+    // Normalize: positive denominator, lowest terms.
+    if den["sign"] < 0 {
+        num = bi.neg(num);
+        den = bi.neg(den);
+    }
+    let g = gcd(num, den);
+    if not bi.is_zero(g) and not (len(g["limbs"]) == 1 and g["limbs"][0] == 1) {
+        num = bi.divmod(num, g)[0];
+        den = bi.divmod(den, g)[0];
+    }
+    let r = map("num", num, "den", den);
+    // Operator methods (hidden from display): `a + b` etc. dispatch here.
+    r["__add__"] = add;
+    r["__sub__"] = sub;
+    r["__mul__"] = mul;
+    r["__div__"] = div;
+    r["__display__"] = to_string(r);
+    return r;
+}
+
+/// From two ints (or bigints).
+public fn of(num, den = 1) {
+    return build(bi.from_int(num), bi.from_int(den));
+}
+
+/// From a decimal string like "1.25" (exact: 5/4).
+public fn from_string(s) {
+    let text = s.trim();
+    let dot = text.index_of(".");
+    if dot < 0 {
+        return build(bi.from_string(text), bi.from_int(1));
+    }
+    let scale = len(text) - dot - 1;
+    let digits = text.slice(0, dot) + text.slice(dot + 1, len(text));
+    let ten = bi.pow(bi.from_int(10), scale);
+    return build(bi.from_string(digits), ten);
+}
+
+public fn add(a, b) {
+    return build(
+        bi.add(bi.mul(a["num"], b["den"]), bi.mul(b["num"], a["den"])),
+        bi.mul(a["den"], b["den"])
+    );
+}
+
+public fn sub(a, b) {
+    return build(
+        bi.sub(bi.mul(a["num"], b["den"]), bi.mul(b["num"], a["den"])),
+        bi.mul(a["den"], b["den"])
+    );
+}
+
+public fn mul(a, b) {
+    return build(bi.mul(a["num"], b["num"]), bi.mul(a["den"], b["den"]));
+}
+
+public fn div(a, b) {
+    if bi.is_zero(b["num"]) {
+        throw "rational.div: division by zero";
+    }
+    return build(bi.mul(a["num"], b["den"]), bi.mul(a["den"], b["num"]));
+}
+
+public fn neg(a) {
+    return build(bi.neg(a["num"]), a["den"]);
+}
+
+public fn abs(a) {
+    return build(bi.abs(a["num"]), a["den"]);
+}
+
+public fn cmp(a, b) {
+    return bi.cmp(bi.mul(a["num"], b["den"]), bi.mul(b["num"], a["den"]));
+}
+
+/// "3/4" (or "5" for whole numbers).
+public fn to_string(a) {
+    let n = bi.to_string(a["num"]);
+    let d = bi.to_string(a["den"]);
+    if d == "1" {
+        return n;
+    }
+    return n + "/" + d;
+}
+
+/// Decimal rendering truncated to `places` digits after the point.
+public fn to_decimal(a, places = 6) {
+    let scale = bi.pow(bi.from_int(10), places);
+    let scaled = bi.divmod(bi.mul(a["num"], scale), a["den"])[0];
+    let neg_flag = scaled["sign"] < 0;
+    let digits = bi.to_string(bi.abs(scaled));
+    while len(digits) <= places {
+        digits = "0" + digits;
+    }
+    let cut = len(digits) - places;
+    let out = digits.slice(0, cut) + "." + digits.slice(cut, len(digits));
+    if neg_flag {
+        return "-" + out;
+    }
+    return out;
+}

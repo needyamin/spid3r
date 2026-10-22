@@ -18,6 +18,7 @@ public fn of(re, im = 0) {
     z["__sub__"] = sub;
     z["__mul__"] = mul;
     z["__div__"] = div;
+    z["__display__"] = to_string(z);
     return z;
 }
 

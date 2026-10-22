@@ -408,14 +408,30 @@ impl<'a> Lexer<'a> {
             }
             TokenKind::Float(v)
         } else {
-            match stripped.parse::<i64>() {
-                Ok(v) => TokenKind::Int(v),
-                Err(_) => {
-                    return Err(err_at(
-                        crate::diagnostics::Phase::Lexer,
-                        span,
-                        format!("integer '{}' is out of i64 range", text),
-                    ))
+            // A trailing `n` marks a big-integer literal BEFORE the i64 range
+            // check: the whole point is that the digits do not fit an i64.
+            // `n` must not be the start of an identifier (`1next`).
+            let is_suffix = self.peek() == Some(b'n')
+                && !matches!(self.peek_at(1), Some(c)
+                    if (c as char).is_ascii_alphanumeric() || c == b'_');
+            if is_suffix {
+                self.bump();
+                let digits: String = stripped.replace('_', "");
+                TokenKind::BigIntLit(digits)
+            } else {
+                match stripped.parse::<i64>() {
+                    Ok(v) => TokenKind::Int(v),
+                    Err(_) => {
+                        return Err(err_at(
+                            crate::diagnostics::Phase::Lexer,
+                            span,
+                            format!(
+                                "integer '{}' is out of i64 range (add an `n` suffix for a \
+                                 big integer)",
+                                text
+                            ),
+                        ))
+                    }
                 }
             }
         };

@@ -171,8 +171,10 @@ fn main() {
     assert_eq(cx.to_string(z1 + z2), "4.0+1.0i");
     assert_eq(cx.to_string(z1 * z2), "5.0+5.0i");
 
-    // The dunder methods stay out of the value's visible shape.
-    assert_eq(string(a).starts_with("map{units:"), true);
+    // Values display as their numeric form (a precomputed __display__),
+    // not as the internal map.
+    assert_eq(string(a), "0.10");
+    assert_eq(string(cx.of(1, 2)), "1.0+2.0i");
     return 0;
 }
 "#;
@@ -180,4 +182,38 @@ fn main() {
 #[test]
 fn operator_overloading_on_both_engines() {
     both(OPERATORS);
+}
+
+const LITERALS_AND_RATIONALS: &str = r#"
+import "bigint" as bi;
+import "rational" as q;
+
+fn main() {
+    // Big-integer literals: the digits do not fit an i64.
+    let big = 123456789012345678901234567890n;
+    assert_eq(string(big), "123456789012345678901234567890");
+    assert_eq(bi.to_string(big), "123456789012345678901234567890");
+    let two = 2n;
+    assert_eq(string(two * two), "4");
+    // A plain int literal is still an int.
+    assert_eq(string(42 + 1), "43");
+
+    // Exact rationals (Python's fractions.Fraction role).
+    let a = q.of(1, 3);
+    let b = q.of(1, 6);
+    assert_eq(q.to_string(a + b), "1/2");
+    assert_eq(q.to_string(a - b), "1/6");
+    assert_eq(q.to_string(a * q.of(3, 2)), "1/2");
+    assert_eq(q.to_string(a / b), "2");
+    assert_eq(q.to_decimal(a, 6), "0.333333");
+    assert_eq(q.to_string(q.from_string("1.25")), "5/4");
+    assert_eq(q.to_string(q.of(4, 2)), "2");
+    assert_eq(q.cmp(a, b), 1);
+    return 0;
+}
+"#;
+
+#[test]
+fn bigint_literals_and_rationals_on_both_engines() {
+    both(LITERALS_AND_RATIONALS);
 }

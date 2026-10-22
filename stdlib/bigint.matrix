@@ -35,6 +35,7 @@ fn normalize(sign, limbs) {
     m["__sub__"] = sub;
     m["__mul__"] = mul;
     m["__div__"] = div;
+    m["__display__"] = to_string(m);
     return m;
 }
 

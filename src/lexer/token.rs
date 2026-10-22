@@ -135,6 +135,10 @@ impl Keyword {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TokenKind {
     Int(i64),
+    /// A big-integer literal (`123456789012345678901234567890n`): the digits,
+    /// already validated as decimal. The parser desugars it into
+    /// `__bigint.from_string("<digits>")` and injects the import.
+    BigIntLit(String),
     Float(f64),
     Str(String),
     /// A string literal containing `{name}` interpolation holes.

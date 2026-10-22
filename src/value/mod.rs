@@ -1114,6 +1114,16 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
         }
         Value::Map(d) => {
             let entries = d.lock().unwrap().entries.clone();
+            // A value type may carry a precomputed display string
+            // (`__display__`): bigint/decimal/rational/complex set it so they
+            // print as "0.30" instead of their internal map.
+            for (k, v) in &entries {
+                if k.display() == "__display__" {
+                    if let Value::Str(s) = v {
+                        return s.to_string();
+                    }
+                }
+            }
             // Keys starting with `__` are internal (operator methods such as
             // `__add__`); they are not part of the value's visible shape.
             let body = entries

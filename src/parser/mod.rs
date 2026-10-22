@@ -16,6 +16,10 @@ const MAX_PARSE_DEPTH: usize = 64;
 pub struct Parser {
     toks: Vec<Token>,
     pos: usize,
+    /// Set when the source uses a big-integer literal (`123n`): the program
+    /// then gets a synthetic `import "bigint" as __bigint` so the desugared
+    /// `__bigint.from_string("123")` resolves.
+    saw_bigint_lit: bool,
     depth: usize,
     /// Depth of `if`-expression branch blocks. Inside one, a trailing
     /// expression may omit its `;`, because it is the branch's value:
@@ -35,6 +39,7 @@ pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
     }
     let mut p = Parser {
         toks,
+        saw_bigint_lit: false,
         pos: 0,
         depth: 0,
         value_block_depth: 0,
@@ -160,6 +165,23 @@ impl Parser {
                 seen_non_import = true;
                 stmts.push(self.parse_declaration()?);
             }
+        }
+        if self.saw_bigint_lit {
+            // A big-integer literal needs the bigint module. Inject the
+            // import first so the module loader sees it like any other.
+            stmts.insert(
+                0,
+                Stmt::Import {
+                    path: "bigint".to_string(),
+                    alias: Some("__bigint".to_string()),
+                    span: Span {
+                        file: std::sync::Arc::from("<bigint-literal>"),
+                        line: 0,
+                        col: 0,
+                        len: 0,
+                    },
+                },
+            );
         }
         Ok(Program { stmts })
     }
@@ -1467,6 +1489,16 @@ impl Parser {
             TokenKind::Int(v) => {
                 self.pos += 1;
                 Ok(Expr::Int(v, sp))
+            }
+            TokenKind::BigIntLit(digits) => {
+                self.pos += 1;
+                self.saw_bigint_lit = true;
+                Ok(Expr::Method {
+                    object: Box::new(Expr::Ident("__bigint".to_string(), sp.clone())),
+                    name: "from_string".to_string(),
+                    args: vec![Expr::Str(digits, sp.clone())],
+                    span: sp,
+                })
             }
             TokenKind::Float(v) => {
                 self.pos += 1;
