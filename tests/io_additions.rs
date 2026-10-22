@@ -169,8 +169,57 @@ fn main() {
 }
 "#;
 
+/// Can this *host* deliver a multicast datagram to itself?
+///
+/// Multicast needs a route for the group. The macOS CI runner has been seen
+/// without one (the send fails outright), which has nothing to do with our
+/// plumbing. Probe with std sockets first — a real round trip on the same
+/// group and interface the test uses — and skip with a notice when the host
+/// cannot do it. When the probe succeeds, the Spidr test below must pass, so a
+/// regression in `udp_join_multicast`/`udp_send_to`/`udp_recv_from` still
+/// fails the build.
+fn host_can_deliver_multicast() -> bool {
+    use std::net::{Ipv4Addr, UdpSocket};
+    use std::time::Duration;
+    let group = Ipv4Addr::new(239, 10, 20, 30);
+    let Ok(recv) = UdpSocket::bind("0.0.0.0:0") else {
+        return false;
+    };
+    if recv
+        .join_multicast_v4(&group, &Ipv4Addr::UNSPECIFIED)
+        .is_err()
+    {
+        eprintln!("skipping multicast test: cannot join 239.10.20.30 on this host");
+        return false;
+    }
+    let Ok(local) = recv.local_addr() else {
+        return false;
+    };
+    let Ok(send) = UdpSocket::bind("0.0.0.0:0") else {
+        return false;
+    };
+    let _ = send.set_multicast_ttl_v4(1);
+    let target = format!("{}:{}", group, local.port());
+    if let Err(e) = send.send_to(b"probe", target.as_str()) {
+        eprintln!("skipping multicast test: host cannot send to {target} ({e})");
+        return false;
+    }
+    let _ = recv.set_read_timeout(Some(Duration::from_millis(500)));
+    let mut buf = [0u8; 16];
+    match recv.recv_from(&mut buf) {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!("skipping multicast test: no datagram came back from {target} ({e})");
+            false
+        }
+    }
+}
+
 #[test]
 fn udp_multicast_delivers_on_both_engines() {
+    if !host_can_deliver_multicast() {
+        return;
+    }
     assert_eq!(run_tree(MULTICAST_CODE).unwrap(), 0);
     assert_eq!(run_vm(MULTICAST_CODE).unwrap(), 0);
 }

@@ -910,9 +910,8 @@ impl<'ctx> Ir<'ctx> {
             None => self.builder.position_at_end(entry),
         }
         self.builder.build_store(slot, value).unwrap();
-        match cur {
-            Some(b) => self.builder.position_at_end(b),
-            None => {}
+        if let Some(b) = cur {
+            self.builder.position_at_end(b);
         }
     }
 

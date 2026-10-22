@@ -179,7 +179,14 @@ jobs:
         shell: bash
         run: |
           echo "### Native failures" >> "$GITHUB_STEP_SUMMARY"
-          grep -E "FAILED|panicked at|test result:" cargo_test_native.txt >> "$GITHUB_STEP_SUMMARY" || true
+          grep -E "FAILED|panicked at|test result:|^error" cargo_test_native.txt >> "$GITHUB_STEP_SUMMARY" || true
+          tail -n 60 cargo_test_native.txt >> "$GITHUB_STEP_SUMMARY" || true
+          # Annotations are readable from the check-runs API. Without this a
+          # compile error under `--features native` surfaced only as
+          # "Process completed with exit code 101" with no visible cause.
+          grep -E "^error(\[|:)|FAILED$|panicked at" cargo_test_native.txt | head -8 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done || true
 
       # Tree-vs-native over every shipped example, with per-step timeouts so a
       # wedged AOT build cannot eat the job (see the script header).

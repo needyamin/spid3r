@@ -575,11 +575,17 @@ fn n_tcp_set_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String
 /// behind an evented server: one task can watch many connections instead of
 /// blocking on each in turn.
 ///
-/// The probe reads ahead into the connection's pending buffer, so polling
-/// never loses data - the next `tcp_read` hands the probed bytes over first.
-/// `writable` lists the connections that are open for writing; without a
-/// platform readiness syscall the runtime reports them optimistically (a
-/// connected socket accepts writes until the peer stops reading).
+/// On platforms with a readiness syscall the wait is done by the kernel
+/// (`poll(2)` / `WSAPoll`), asking about *readability only* — a connected
+/// socket is nearly always writable, so including POLLOUT would make the call
+/// return immediately and never actually wait for data. Elsewhere (wasm32) the
+/// portable probe loop reads ahead into the connection's pending buffer, so
+/// polling never loses data either way: the next `tcp_read` hands the probed
+/// bytes over first.
+///
+/// `writable` lists the connections that are open for writing. It is reported
+/// optimistically on every platform (a connected socket accepts writes until
+/// the peer stops reading), because the wait is on readability.
 fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     const WHO: &str = "tcp_poll";
     arity(WHO, &args, 2)?;
@@ -1220,7 +1226,6 @@ mod sys {
         pub revents: i16,
     }
     pub const POLLIN: i16 = 0x0001;
-    pub const POLLOUT: i16 = 0x0004;
     extern "system" {
         pub fn WSAPoll(fd_array: *mut PollFd, fds: u32, timeout: i32) -> i32;
     }
@@ -1235,7 +1240,6 @@ mod sys {
         pub revents: i16,
     }
     pub const POLLIN: i16 = 0x0001;
-    pub const POLLOUT: i16 = 0x0004;
     #[cfg(target_os = "macos")]
     pub type Nfds = u32;
     #[cfg(not(target_os = "macos"))]
@@ -1263,7 +1267,10 @@ fn kernel_poll(conns: &[(i64, Arc<Conn>)], timeout_ms: i32) -> Option<Vec<(i64, 
                 let sock = c.stream.lock().unwrap().as_raw_socket() as usize;
                 sys::PollFd {
                     fd: sock,
-                    events: sys::POLLIN | sys::POLLOUT,
+                    // Readability only. A connected socket is nearly always
+                    // writable, so asking for POLLOUT as well makes the call
+                    // return at once and it never actually waits for data.
+                    events: sys::POLLIN,
                     revents: 0,
                 }
             })
@@ -1278,7 +1285,7 @@ fn kernel_poll(conns: &[(i64, Arc<Conn>)], timeout_ms: i32) -> Option<Vec<(i64, 
                 let fd = c.stream.lock().unwrap().as_raw_fd();
                 sys::PollFd {
                     fd,
-                    events: sys::POLLIN | sys::POLLOUT,
+                    events: sys::POLLIN, // see the Windows arm above
                     revents: 0,
                 }
             })
@@ -1297,7 +1304,9 @@ fn kernel_poll(conns: &[(i64, Arc<Conn>)], timeout_ms: i32) -> Option<Vec<(i64, 
         // POLLERR/POLLHUP/POLLNVAL (0x8/0x10/0x20) mean the socket is done:
         // report it readable so the caller's read sees EOF.
         let readable = rev & sys::POLLIN != 0 || rev & 0x18 != 0;
-        let writable = rev & sys::POLLOUT != 0;
+        // POLLOUT was not requested, so report writability optimistically:
+        // the handle resolved above, so the socket is open for writing.
+        let writable = true;
         out.push((*id, readable, writable));
     }
     Some(out)
