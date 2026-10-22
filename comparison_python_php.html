@@ -116,7 +116,16 @@ web processes are different workloads than this CLI loop.
 <h3>3.4 Ecosystem — the biggest realistic difference</h3>
 <ul>
   <li><span class="tag t-no">NO</span><strong>Remote package registry.</strong> <code>spid3r install</code> works from a local registry/vendor dir only; no HTTP registry, no package signing, no transitive resolution. Python: ~600k packages on PyPI one <code>pip install</code> away; PHP: Packagist/Composer. Spid3r: <strong>zero third-party packages installable from anywhere</strong>. Everything you want — requests, numpy, pandas, pillow, lxml, symfony, laravel, SQLAlchemy, pytest — you would have to write yourself. <strong>This is the single largest gap.</strong></li>
-  <li><span class="tag t-no">NO</span><strong>Database breadth</strong> — SQLite only. No MySQL/MariaDB/Postgres/Redis/MongoDB drivers. PHP/Python connect to everything.</li>
+  <li><span class="tag t-part">PARTIAL</span><strong>Database breadth</strong> — four drivers now ship, all
+  zero-dependency and all speaking the real wire protocols: <strong>Redis</strong> (RESP2), <strong>PostgreSQL</strong>
+  (protocol v3: trust, cleartext, MD5 and SCRAM-SHA-256 auth, simple query, text rows typed by OID),
+  <strong>MySQL/MariaDB</strong> (protocol 41, <code>mysql_native_password</code> plus the
+  <code>caching_sha2_password</code> fast path, <code>COM_QUERY</code> resultsets) and the pre-existing SQLite.
+  Each was tested against a protocol-accurate server that <em>verifies the client's auth maths</em> with
+  <code>hashlib</code>/<code>hmac</code> (<code>tools/db_test_servers.py</code>, driven by
+  <code>tests/db_drivers.rs</code>). <em>Still absent: MongoDB, TLS (<code>sslmode</code> is refused rather than
+  silently downgraded), <code>caching_sha2_password</code> full auth (needs RSA/TLS), prepared statements, and
+  connection pooling.</em></li>
   <li><span class="tag t-no">NO</span><strong>Web-serving stack</strong> — no FastCGI/WSGI integration, no production server, no sessions beyond DIY JWT/cookies, no multipart file-upload parsing, no middleware ecosystem. A real CMS in Spid3r today means building all of that.</li>
 </ul>
 

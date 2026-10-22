@@ -34,7 +34,7 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
 
 /// PBKDF2-HMAC-SHA256 with an arbitrary output length (the existing native
 /// only produces one 32-byte block).
-fn pbkdf2(pw: &[u8], salt: &[u8], iters: u32, dklen: usize) -> Vec<u8> {
+pub(crate) fn pbkdf2(pw: &[u8], salt: &[u8], iters: u32, dklen: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(dklen);
     let mut block: u32 = 1;
     while out.len() < dklen {

@@ -8,9 +8,13 @@ pub mod compress;
 pub mod csv;
 pub mod datetime;
 pub mod db;
+pub mod digest;
 pub mod kdf;
 pub mod media;
+pub mod mysql;
 pub mod net;
+pub mod postgres;
+pub mod redis;
 pub mod regex;
 pub mod serialize;
 pub mod signal;
@@ -143,6 +147,9 @@ pub fn native_defs() -> Vec<NativeDef> {
     defs.extend(argon2::native_defs());
     defs.extend(bcrypt::native_defs());
     defs.extend(media::native_defs());
+    defs.extend(redis::native_defs());
+    defs.extend(postgres::native_defs());
+    defs.extend(mysql::native_defs());
     defs
 }
 
@@ -890,7 +897,7 @@ fn n_hmac_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 }
 
 /// HMAC-SHA256 (RFC 2104) over a 64-byte block.
-fn hmac_sha256_bytes(key: &[u8], msg: &[u8]) -> [u8; 32] {
+pub(crate) fn hmac_sha256_bytes(key: &[u8], msg: &[u8]) -> [u8; 32] {
     const BLOCK: usize = 64;
     let mut k = [0u8; BLOCK];
     if key.len() > BLOCK {
@@ -1076,7 +1083,11 @@ pub(crate) fn base64_encode_bytes(data: &[u8], alphabet: &[u8; 64], pad: bool) -
     out
 }
 
-fn base64_decode_str(text: &str, alphabet: &[u8; 64], who: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn base64_decode_str(
+    text: &str,
+    alphabet: &[u8; 64],
+    who: &str,
+) -> Result<Vec<u8>, String> {
     // Padding ('=') is accepted only as a 0/1/2-character suffix; its count
     // is implied by the data length, so it is stripped and not validated
     // beyond position (the RFC's canonical encoders never emit it for the
