@@ -1,0 +1,41 @@
+// stdlib/uuid.matrix - UUID v4 generation, in Spid3r.
+//
+//   import "uuid" as u;
+//
+//   println(u.uuid_v4());   // "3f2504e0-4f89-41d3-9a0c-0305e82c3301"-shaped
+//
+// Version 4 per RFC 9562: 122 random bits, with the version nibble (4) and
+// variant bits (10xx) set. Entropy comes from the runtime's `random_int`,
+// which is seeded per thread from real OS entropy.
+
+const HEX = "0123456789abcdef";
+
+fn hex_digit() {
+    let r = random_int(0, 15);
+    return HEX.slice(r, r + 1);
+}
+
+/// A fresh random UUID v4 string.
+public fn uuid_v4() {
+    let group_lens = [8, 4, 4, 4, 12];
+    let out = "";
+    let g = 0;
+    while g < 5 {
+        let k = 0;
+        while k < group_lens[g] {
+            out = out + hex_digit();
+            k = k + 1;
+        }
+        if g < 4 {
+            out = out + "-";
+        }
+        g = g + 1;
+    }
+    // Version 4: the first digit of the third group (index 14) is '4'.
+    out = out.slice(0, 14) + "4" + out.slice(15, len(out));
+    // Variant 10xx: the first digit of the fourth group (index 19) is 8..b.
+    let r = 8 + random_int(0, 3);
+    let variant = HEX.slice(r, r + 1);
+    out = out.slice(0, 19) + variant + out.slice(20, len(out));
+    return out;
+}

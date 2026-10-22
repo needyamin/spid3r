@@ -78,6 +78,8 @@ rather than an infinity or a panic.
 | `pbkdf2_sha256(password, salt, iterations)` | PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte key as lowercase hex. `salt` is a string or bytes; `iterations` clamped to 1..=10_000_000. The primitive for password storage: store `(salt, iterations, hash)`. |
 | `base64_encode(data)` / `base64_decode(text)` | RFC 4648 standard alphabet (+/, padded). `data` is a string or bytes; `decode` returns bytes. |
 | `base64_url_encode(data)` / `base64_url_decode(text)` | URL-safe alphabet (-_, unpadded) — the JWT form. |
+| `hex_encode(data)` / `hex_decode(text)` | Lowercase hex (two digits per byte); `decode` returns bytes and rejects odd lengths / non-hex characters. |
+| `base32_encode(data)` / `base32_decode(text)` | RFC 4648 standard alphabet (A-Z2-7, padded); `decode` returns bytes. |
 
 ## Conversions
 

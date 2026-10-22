@@ -86,6 +86,10 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("base64_decode", n_base64_decode),
         ("base64_url_encode", n_base64_url_encode),
         ("base64_url_decode", n_base64_url_decode),
+        ("hex_encode", n_hex_encode),
+        ("hex_decode", n_hex_decode),
+        ("base32_encode", n_base32_encode),
+        ("base32_decode", n_base32_decode),
         ("int", n_int),
         ("float", n_float),
         ("string", n_string),
@@ -1081,6 +1085,145 @@ fn n_base64_url_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Stri
     let text = want_str(&args[0], "base64_url_decode")?;
     let data = base64_decode_str(&text, B64_URL, "base64_url_decode")?;
     Ok(Value::Bytes(new_ref(data)))
+}
+
+// ------------------------------------------------------------------ hex/base32
+
+const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
+const B32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/// `hex_encode(data)` — lowercase hex, two digits per byte. Accepts a string
+/// (its UTF-8 bytes) or a bytes value.
+fn n_hex_encode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("hex_encode expects 1 argument, got {}", args.len()));
+    }
+    let data = want_b64_input(&args[0], "hex_encode")?;
+    let mut out = String::with_capacity(data.len() * 2);
+    for b in &data {
+        out.push(HEX_LOWER[(b >> 4) as usize] as char);
+        out.push(HEX_LOWER[(b & 0x0f) as usize] as char);
+    }
+    Ok(Value::Str(out.into()))
+}
+
+/// `hex_decode(text)` — bytes. Rejects odd lengths and non-hex characters.
+fn n_hex_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!("hex_decode expects 1 argument, got {}", args.len()));
+    }
+    let text = want_str(&args[0], "hex_decode")?;
+    let bytes = text.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return Err(format!("hex_decode: odd length ({})", bytes.len()));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i < bytes.len() {
+        let hi = hex_val(bytes[i])
+            .ok_or_else(|| format!("hex_decode: '{}' is not a hex digit", bytes[i] as char))?;
+        let lo = hex_val(bytes[i + 1])
+            .ok_or_else(|| format!("hex_decode: '{}' is not a hex digit", bytes[i + 1] as char))?;
+        out.push(hi * 16 + lo);
+        i += 2;
+    }
+    Ok(Value::Bytes(new_ref(out)))
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// `base32_encode(data)` — RFC 4648 standard alphabet, padded. Accepts a
+/// string or bytes.
+fn n_base32_encode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "base32_encode expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let data = want_b64_input(&args[0], "base32_encode")?;
+    let mut out = String::with_capacity(data.len().div_ceil(5) * 8);
+    for chunk in data.chunks(5) {
+        // Pack up to 5 bytes into a 40-bit buffer, then emit eight 5-bit
+        // groups, padding the tail per the RFC 4648 table.
+        let mut buf = [0u8; 5];
+        buf[..chunk.len()].copy_from_slice(chunk);
+        let bits: u64 = (buf[0] as u64) << 32
+            | (buf[1] as u64) << 24
+            | (buf[2] as u64) << 16
+            | (buf[3] as u64) << 8
+            | (buf[4] as u64);
+        let keep = match chunk.len() {
+            1 => 2,
+            2 => 4,
+            3 => 5,
+            4 => 7,
+            _ => 8,
+        };
+        for k in 0..8 {
+            if k < keep {
+                let v = ((bits >> (35 - 5 * k)) & 0x1f) as usize;
+                out.push(B32_ALPHABET[v] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    Ok(Value::Str(out.into()))
+}
+
+/// `base32_decode(text)` — bytes. Rejects bad lengths and non-alphabet
+/// characters (padding optional but must be trailing).
+fn n_base32_decode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 1 {
+        return Err(format!(
+            "base32_decode expects 1 argument, got {}",
+            args.len()
+        ));
+    }
+    let text = want_str(&args[0], "base32_decode")?;
+    let raw = text.as_bytes();
+    if raw.is_empty() {
+        return Ok(Value::Bytes(new_ref(Vec::new())));
+    }
+    if raw.len() % 8 != 0 {
+        return Err(format!(
+            "base32_decode: length {} is not a multiple of 8",
+            raw.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(raw.len() / 8 * 5);
+    let mut bits: u64 = 0;
+    let mut nbits = 0u32;
+    for &b in raw {
+        if b == b'=' {
+            break; // padding: stop consuming
+        }
+        let v = b32_val(b)
+            .ok_or_else(|| format!("base32_decode: '{}' is not a base32 character", b as char))?;
+        bits = (bits << 5) | v as u64;
+        nbits += 5;
+        if nbits >= 8 {
+            nbits -= 8;
+            out.push((bits >> nbits) as u8);
+        }
+    }
+    Ok(Value::Bytes(new_ref(out)))
+}
+
+fn b32_val(b: u8) -> Option<u8> {
+    match b {
+        b'A'..=b'Z' => Some(b - b'A'),
+        b'2'..=b'7' => Some(b - b'2' + 26),
+        _ => None,
+    }
 }
 
 // ------------------------------------------------------------- conversions

@@ -125,6 +125,11 @@ fn main() {
 - **`stdlib/web.matrix`**: Full web framework with routing, cookies, templates, and JWT.
 - **`stdlib/assert.matrix`**: Test assertions (`eq/ne/is_true/near/contains/throws/is_ok/is_err`,
   `done()` returns the failure count as the exit code) — a pytest/PHPUnit-shaped mini suite.
+- **`stdlib/toml.matrix`**: TOML-subset parser (tables, arrays of tables, dotted keys, arrays,
+  inline tables, literal strings) returning nested maps.
+- **`stdlib/semver.matrix`**: Semantic-version parsing, spec-correct comparison (prerelease
+  ordering included), and comparator-range `satisfies`.
+- **`stdlib/uuid.matrix`**: RFC 9562 version-4 UUIDs from the runtime entropy source.
 - **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort_by, group_by, inner_join).
 - **`stdlib/stats.matrix`** & **`stdlib/ml.matrix`**: Regression, classification, clustering, PCA, and distributions.
 

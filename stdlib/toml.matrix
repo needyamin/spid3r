@@ -1,0 +1,454 @@
+// stdlib/toml.matrix - a TOML-subset parser, written in Spid3r.
+//
+//   import "toml";
+//
+//   let cfg = toml_parse("
+//   title = \"my app\"
+//   [server]
+//   port = 8080
+//   hosts = [\"a\", \"b\"]
+//   [[workers]]
+//   name = \"w1\"
+//   ");
+//   println(cfg["server"]["port"]);        // 8080
+//   println(toml_get(cfg, "server.port")); // 8080
+//
+// Supported: comments (#), `key = value`, [tables], [[arrays of tables]],
+// dotted keys, basic strings ("..." with \n \t \" \\ escapes) and literal
+// strings ('...'), integers (with _ separators), floats, booleans, arrays
+// (nested, multi-line, with comments), and inline tables { k = v }.
+// Dates and times are returned as strings. Multi-line strings (""") are not
+// supported and fail with a clear error.
+//
+// Malformed input throws with a line number. The scanner is module state, so
+// toml_parse is not reentrant - fine for configuration-sized input.
+
+let SRC = "";
+let POS = 0;
+let LINE = 1;
+
+fn fail(msg) {
+    throw "toml: line " + string(LINE) + ": " + msg;
+}
+
+fn peek() {
+    if POS >= len(SRC) {
+        return null;
+    }
+    return SRC.slice(POS, POS + 1);
+}
+
+fn peek_at(k) {
+    if POS + k >= len(SRC) {
+        return null;
+    }
+    return SRC.slice(POS + k, POS + k + 1);
+}
+
+fn advance() {
+    let c = SRC.slice(POS, POS + 1);
+    POS = POS + 1;
+    if c == "\n" {
+        LINE = LINE + 1;
+    }
+    return c;
+}
+
+fn eof() {
+    return POS >= len(SRC);
+}
+
+fn is_space(c) {
+    return c == " " or c == "\t";
+}
+
+/// Skip spaces and tabs (newlines are structural here).
+fn skip_inline_ws() {
+    while true {
+        let c = peek();
+        if c == null or not is_space(c) {
+            return;
+        }
+        advance();
+    }
+}
+
+/// Skip whitespace, newlines, and comments - used inside arrays and inline
+/// tables where the grammar allows line breaks.
+fn skip_ws_and_comments() {
+    while true {
+        let c = peek();
+        if c == null {
+            return;
+        }
+        if is_space(c) or c == "\n" or c == "\r" {
+            advance();
+            continue;
+        }
+        if c == "#" {
+            while peek() != null and peek() != "\n" {
+                advance();
+            }
+            continue;
+        }
+        return;
+    }
+}
+
+fn is_bare_char(c) {
+    if c == null {
+        return false;
+    }
+    let letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+    return letters.contains(c);
+}
+
+/// A bare or quoted key; quoted keys allow dots inside.
+fn parse_key() {
+    let c = peek();
+    if c == "\"" {
+        let s = parse_basic_string();
+        return s;
+    }
+    if c == "'" {
+        let s = parse_literal_string();
+        return s;
+    }
+    let out = "";
+    while true {
+        let k = peek();
+        if k == null or not is_bare_char(k) {
+            break;
+        }
+        out = out + advance();
+    }
+    if out == "" {
+        fail("expected a key");
+    }
+    return out;
+}
+
+/// A dotted key path: `a.b.c` -> ["a", "b", "c"].
+fn parse_key_path() {
+    let parts = [];
+    while true {
+        parts.push(parse_key());
+        skip_inline_ws();
+        if peek() == "." {
+            advance();
+            skip_inline_ws();
+            continue;
+        }
+        return parts;
+    }
+}
+
+fn parse_escape() {
+    let c = advance();
+    if c == "n" {
+        return "\n";
+    }
+    if c == "t" {
+        return "\t";
+    }
+    if c == "r" {
+        return "\r";
+    }
+    if c == "\"" {
+        return "\"";
+    }
+    if c == "\\" {
+        return "\\";
+    }
+    fail("unknown escape \\" + c);
+}
+
+fn parse_basic_string() {
+    advance(); // opening quote
+    let out = "";
+    while true {
+        let c = peek();
+        if c == null {
+            fail("unterminated string");
+        }
+        if c == "\"" {
+            advance();
+            return out;
+        }
+        if c == "\\" {
+            advance();
+            out = out + parse_escape();
+            continue;
+        }
+        out = out + advance();
+    }
+}
+
+fn parse_literal_string() {
+    advance(); // opening quote
+    let out = "";
+    while true {
+        let c = peek();
+        if c == null {
+            fail("unterminated string");
+        }
+        if c == "'" {
+            advance();
+            return out;
+        }
+        out = out + advance();
+    }
+}
+
+/// A bare token (number, bool, or date) up to a delimiter.
+fn parse_bare() {
+    let out = "";
+    while true {
+        let c = peek();
+        if c == null or c == "," or c == "]" or c == "}" or c == "\n" or c == "\r" or c == "#" {
+            break;
+        }
+        out = out + advance();
+    }
+    return out.trim();
+}
+
+fn parse_number_or_bare(raw) {
+    let text = raw.replace("_", "");
+    if text == "true" {
+        return true;
+    }
+    if text == "false" {
+        return false;
+    }
+    // Integers: optional sign, digits only.
+    let body = text;
+    if body.starts_with("+") or body.starts_with("-") {
+        body = body.slice(1, len(body));
+    }
+    let digits = "0123456789";
+    let all_digits = len(body) > 0;
+    let i = 0;
+    while i < len(body) {
+        if not digits.contains(body.slice(i, i + 1)) {
+            all_digits = false;
+        }
+        i = i + 1;
+    }
+    if all_digits {
+        return int(text);
+    }
+    // Floats (and exponents): try the float parser; it rejects junk.
+    let f = float(text);
+    if f != null {
+        return f;
+    }
+    // Dates/times and anything else bare stay strings.
+    if len(text) > 0 {
+        let first = text.slice(0, 1);
+        if digits.contains(first) {
+            return text;
+        }
+    }
+    fail("unrecognized value '" + raw + "'");
+}
+
+fn parse_array() {
+    advance(); // [
+    let out = [];
+    while true {
+        skip_ws_and_comments();
+        let c = peek();
+        if c == null {
+            fail("unterminated array");
+        }
+        if c == "]" {
+            advance();
+            return out;
+        }
+        out.push(parse_value());
+        skip_ws_and_comments();
+        let d = peek();
+        if d == "," {
+            advance();
+            continue;
+        }
+        if d == "]" {
+            advance();
+            return out;
+        }
+        fail("expected ',' or ']' in array");
+    }
+}
+
+fn parse_inline_table() {
+    advance(); // {
+    let out = map();
+    skip_inline_ws();
+    if peek() == "}" {
+        advance();
+        return out;
+    }
+    while true {
+        skip_inline_ws();
+        let path = parse_key_path();
+        skip_inline_ws();
+        if peek() != "=" {
+            fail("expected '=' in inline table");
+        }
+        advance();
+        skip_inline_ws();
+        let v = parse_value();
+        set_path(out, path, v);
+        skip_inline_ws();
+        let c = peek();
+        if c == "," {
+            advance();
+            continue;
+        }
+        if c == "}" {
+            advance();
+            return out;
+        }
+        fail("expected ',' or '}' in inline table");
+    }
+}
+
+fn parse_value() {
+    let c = peek();
+    if c == "\"" {
+        if peek_at(1) == "\"" and peek_at(2) == "\"" {
+            fail("multi-line strings are not supported");
+        }
+        return parse_basic_string();
+    }
+    if c == "'" {
+        return parse_literal_string();
+    }
+    if c == "[" {
+        return parse_array();
+    }
+    if c == "{" {
+        return parse_inline_table();
+    }
+    let raw = parse_bare();
+    if raw == "" {
+        fail("expected a value");
+    }
+    return parse_number_or_bare(raw);
+}
+
+/// Set a dotted path inside `m`, creating intermediate tables.
+fn set_path(m, parts, value) {
+    let cur = m;
+    let n = len(parts);
+    let i = 0;
+    while i < n - 1 {
+        let part = parts[i];
+        if not cur.contains(part) {
+            cur[part] = map();
+        }
+        cur = cur[part];
+        i = i + 1;
+    }
+    cur[parts[n - 1]] = value;
+}
+
+/// Resolve a table header path to its map, creating intermediate tables.
+/// The final segment is created fresh by the caller for [[arrays]].
+fn table_at(root, parts, make_last) {
+    let cur = root;
+    let n = len(parts);
+    let i = 0;
+    while i < n - 1 {
+        let part = parts[i];
+        if not cur.contains(part) {
+            cur[part] = map();
+        }
+        cur = cur[part];
+        i = i + 1;
+    }
+    let last = parts[n - 1];
+    if make_last {
+        // [[array of tables]]: append a fresh table to the array at `last`.
+        if not cur.contains(last) {
+            cur[last] = [];
+        }
+        let arr = cur[last];
+        let fresh = map();
+        arr.push(fresh);
+        return fresh;
+    }
+    if not cur.contains(last) {
+        cur[last] = map();
+    }
+    return cur[last];
+}
+
+/// Parse a TOML document (subset - see the header comment) into a map.
+/// Throws with a line number on malformed input.
+public fn toml_parse(text) {
+    SRC = text;
+    POS = 0;
+    LINE = 1;
+    let root = map();
+    let current = root;
+    while true {
+        skip_ws_and_comments();
+        if eof() {
+            return root;
+        }
+        let c = peek();
+        if c == "[" {
+            advance();
+            let array_of_tables = false;
+            if peek() == "[" {
+                advance();
+                array_of_tables = true;
+            }
+            skip_inline_ws();
+            let parts = parse_key_path();
+            skip_inline_ws();
+            let closing = "]";
+            if array_of_tables {
+                closing = "]]";
+            }
+            if not SRC.slice(POS, POS + len(closing)).starts_with(closing) {
+                fail("expected '" + closing + "'");
+            }
+            let k = 0;
+            while k < len(closing) {
+                advance();
+                k = k + 1;
+            }
+            current = table_at(root, parts, array_of_tables);
+            continue;
+        }
+        // key = value
+        let parts = parse_key_path();
+        skip_inline_ws();
+        if peek() != "=" {
+            fail("expected '=' after key");
+        }
+        advance();
+        skip_inline_ws();
+        let v = parse_value();
+        set_path(current, parts, v);
+    }
+}
+
+/// Dot-path lookup: `toml_get(cfg, "server.port")`. Returns null when any
+/// segment is missing.
+public fn toml_get(m, path) {
+    let parts = path.split(".");
+    let cur = m;
+    let i = 0;
+    while i < len(parts) {
+        if cur == null {
+            return null;
+        }
+        cur = cur[parts[i]];
+        i = i + 1;
+    }
+    return cur;
+}
