@@ -28,10 +28,14 @@ static REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Guards against installing the handler twice.
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(any(unix, windows))]
 const SIGINT: i32 = 2;
 #[cfg(unix)]
 const SIGTERM: i32 = 15;
 
+// wasm32-unknown-unknown has no signals and no libc to link against: the
+// declaration itself would become an unresolved import and fail the wasm build.
+#[cfg(any(unix, windows))]
 extern "C" {
     /// The C runtime's `signal()`. Declared here rather than pulling in a
     /// crate: the standard library does not expose it and this is the only
@@ -39,6 +43,7 @@ extern "C" {
     fn signal(signum: i32, handler: usize) -> usize;
 }
 
+#[cfg(any(unix, windows))]
 extern "C" fn on_signal(_sig: i32) {
     if REQUESTED.swap(true, Ordering::SeqCst) {
         // Second signal: the drain is not finishing. Stop it.
@@ -47,16 +52,23 @@ extern "C" fn on_signal(_sig: i32) {
 }
 
 fn install() {
-    if INSTALLED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    // SAFETY: the handler stores to an atomic and, on the second signal, calls
-    // abort(); both are async-signal-safe.
-    let handler = on_signal as extern "C" fn(i32);
-    unsafe {
-        signal(SIGINT, handler as usize);
-        #[cfg(unix)]
-        signal(SIGTERM, handler as usize);
+    // Inverted so that the wasm build (where the body below is compiled out)
+    // does not end in a bare `return` that clippy flags as needless.
+    if !INSTALLED.swap(true, Ordering::SeqCst) {
+        #[cfg(any(unix, windows))]
+        {
+            // SAFETY: the handler stores to an atomic and, on the second
+            // signal, calls abort(); both are async-signal-safe.
+            let handler = on_signal as extern "C" fn(i32);
+            unsafe {
+                signal(SIGINT, handler as usize);
+                #[cfg(unix)]
+                signal(SIGTERM, handler as usize);
+            }
+        }
+        // Everywhere else (wasm) there is nothing to install: the flag is
+        // still settable with `request_shutdown()`, which is what an embedding
+        // host or a browser calls instead of sending a signal.
     }
 }
 

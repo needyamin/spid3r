@@ -521,13 +521,22 @@ fn main() {
     // 2. A task actively running: collecting would race it. The task stays
     //    busy on the clock, not on an iteration count, so this holds in debug
     //    and release builds alike.
+    //
+    //    It also *announces* itself before burning the clock, and the window is
+    //    seconds rather than the old fixed `sleep_ms(100)`: a fixed sleep only
+    //    says "the scheduler probably got around to it", which is exactly the
+    //    assumption that failed on a loaded macOS runner (the task finished
+    //    before main asked, so the collect succeeded and the expected
+    //    "refused-while-running" line was missing).
+    let ready = channel();
     let busy = spawn fn() {
+        ready.send(1);
         let t0 = now();
-        while (now() - t0 < 1500) {
+        while (now() - t0 < 3000) {
         }
         return 1;
     };
-    sleep_ms(100);
+    ready.recv();
     try {
         gc_collect();
         println("swept-while-running");
