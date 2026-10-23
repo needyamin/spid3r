@@ -1095,11 +1095,7 @@ impl Parser {
                     }
                     if name == "_" {
                         Ok(Pattern::Wild)
-                    } else if name
-                        .chars()
-                        .next()
-                        .map_or(false, |c| c.is_uppercase())
-                    {
+                    } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
                         // A bare PascalCase identifier is a *payload-less enum
                         // variant* pattern (e.g. `Point` for
                         // `enum Shape { ..., Point }`), not a catch-all bind.
