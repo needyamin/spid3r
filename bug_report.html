@@ -430,8 +430,24 @@ injection in developer-facing output.</p>
   the guard now checks <code>cfg!(feature = "native")</code> as well as the presence of
   <code>LLVM-C.dll</code> and skips cleanly. All three clippy variants, rustfmt, and the full suite
   (837 passed / 0 failed with default features; 805 / 0 with <code>--no-default-features</code>, the 32
-  GUI-feature tests excluded) pass locally after the corrections; the corrected push is verified green
-  below.</p>
+  GUI-feature tests excluded) pass locally after the corrections.</p>
+  <p><strong>Verified CI result.</strong> The corrected push (<code>a238430</code>) is green on GitHub
+  Actions — run
+  <a href="https://github.com/needyamin/spid3r/actions/runs/40001409053">40001409053</a>,
+  <strong>8/8 jobs succeeded</strong>:</p>
+  <table>
+    <thead><tr><th>Job</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Core Toolchain &amp; Differential (ubuntu-latest)</td><td><span class="badge b-ok">success</span></td></tr>
+      <tr><td>Core Toolchain &amp; Differential (windows-latest)</td><td><span class="badge b-ok">success</span></td></tr>
+      <tr><td>Core Toolchain &amp; Differential (macos-latest)</td><td><span class="badge b-ok">success</span></td></tr>
+      <tr><td>Native AOT Differential (LLVM)</td><td><span class="badge b-ok">success</span></td></tr>
+      <tr><td>WebAssembly Runtime (wasm32-unknown-unknown)</td><td><span class="badge b-ok">success</span></td></tr>
+      <tr><td>GUI Feature (ubuntu-latest)</td><td><span class="badge b-ok">success</span></td></tr>
+      <tr><td>GUI Feature (windows-latest)</td><td><span class="badge b-ok">success</span></td></tr>
+      <tr><td>GUI Feature (macos-latest)</td><td><span class="badge b-ok">success</span></td></tr>
+    </tbody>
+  </table>
 </div>
 
 <hr>
