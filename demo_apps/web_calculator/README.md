@@ -30,28 +30,18 @@ from the repository root (the `gui` feature is on by default):
 
 ```powershell
 cargo build --release
-.\target\release\spid3r.exe gui calculator\calculator.matrix
+.\target\release\spid3r.exe gui demo_apps\web_calculator\calculator.matrix
 ```
 
-With the installer, run `spid3r gui calculator\calculator.matrix` from the install directory
-(`%LOCALAPPDATA%\Programs\Spid3r`).
+With the installer, run `spid3r gui demo_apps\web_calculator\calculator.matrix` from the
+repository root (or from the install directory, adjusting the script path).
 
 On Windows, the window needs the WebView2 runtime, which ships with Windows 11 and Microsoft Edge.
 
 To replay the UI without opening a window (this prints the JavaScript sent to the page):
 
 ```powershell
-.\target\release\spid3r.exe gui calculator\calculator.matrix --dry-run
-```
-
-## Test the logic
-
-The math lives in `engine.matrix`, which makes no GUI calls, so its tests run with any
-`spid3r` build on both engines:
-
-```powershell
-spid3r run calculator\engine_test.matrix
-spid3r run --engine vm calculator\engine_test.matrix
+.\target\release\spid3r.exe gui demo_apps\web_calculator\calculator.matrix --dry-run
 ```
 
 ## Files
@@ -60,7 +50,7 @@ spid3r run --engine vm calculator\engine_test.matrix
 |---|---|
 | `calculator.matrix` | GUI layer: builds the page, forwards clicks and keys, and renders state |
 | `engine.matrix` | Calculator state machine and number formatting (pure Spid3r) |
-| `engine_test.matrix` | 42 checks covering input, arithmetic, chaining, errors, formatting, and history |
+| `index.html` | The page the GUI backend loads (markup, styles, and the key-forwarding script) |
 
 ## How it works
 

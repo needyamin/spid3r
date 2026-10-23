@@ -1325,7 +1325,7 @@
           <span class="badge">gradual typing</span>
           <span class="badge">task-based concurrency</span>
           <span class="badge">zero-dependency core</span>
-          <span class="badge">685 tests · 25/25 examples agree</span>
+          <span class="badge">862 tests · 25/25 examples agree</span>
         </div>
         <div class="cta">
           <a class="btn" href="#quickstart">Get started</a>
@@ -4299,7 +4299,8 @@ serde   = { version = "^1.0" }                               # local registry ($
             <code>#</code> comments). When commands run out, the program runs to completion.
           </div>
           <div class="card"><span class="t">spid3r lsp</span>Language Server Protocol over stdio — diagnostics,
-            hover, go-to-definition, outline, completion and formatting in any LSP editor. It reuses the same lexer,
+            hover, go-to-definition, outline, completion, formatting, rename, find-references, semantic
+            highlighting and quick-fix code actions in any LSP editor. It reuses the same lexer,
             parser, checker and formatter as the CLI, so the editor can never disagree with
             <code>spid3r check</code>.
           </div>
@@ -4411,7 +4412,7 @@ serde   = { version = "^1.0" }                               # local registry ($
           </tr>
           <tr>
             <td><code>initialize</code> / <code>initialized</code></td>
-            <td>Advertises hover, definition, documentSymbol, completion, formatting, and full-document sync</td>
+            <td>Advertises hover, definition, references, rename, documentSymbol, completion, formatting, full-document sync, semantic tokens and code actions</td>
           </tr>
           <tr>
             <td><code>textDocument/didOpen</code> · <code>didChange</code> · <code>didClose</code></td>
@@ -4436,6 +4437,22 @@ serde   = { version = "^1.0" }                               # local registry ($
           <tr>
             <td><code>textDocument/formatting</code></td>
             <td>The canonical <code>spid3r fmt</code> layout as a whole-document edit</td>
+          </tr>
+          <tr>
+            <td><code>textDocument/references</code></td>
+            <td>Every use of the binding under the cursor in the open file</td>
+          </tr>
+          <tr>
+            <td><code>textDocument/rename</code></td>
+            <td>Renames the declaration and its references (the replacement must lex as one identifier)</td>
+          </tr>
+          <tr>
+            <td><code>textDocument/semanticTokens/full</code></td>
+            <td>Delta-encoded tokens over the whole file: keywords and literals from the token kind, identifiers classified through the symbol index, <code>declaration</code> / <code>readonly</code> modifiers</td>
+          </tr>
+          <tr>
+            <td><code>textDocument/codeAction</code></td>
+            <td>Quick fixes the checker can prove: rename an unused binding to <code>_name</code>, delete an unused import, insert a missing stdlib <code>import</code></td>
           </tr>
         </table>
         <p>Positions are <em>character</em>-based, matching Spid3r spans, so the conversion to LSP's 0-based
@@ -4703,7 +4720,7 @@ EmbeddedModule ::= key:str  public:str[]  VmFunc</code></pre>
 
 
         <p>Because correctness means <em>the engines agree</em>, Spid3r is verified differentially.
-          As of this revision, the test suite passes <strong>685 tests</strong> (<strong>669</strong> without the
+          As of this revision, the test suite passes <strong>862 tests</strong> (<strong>846</strong> without the
           optional backends, plus <strong>10</strong> GUI and <strong>6</strong> AOT tests), and
           <code>spid3r test</code> reports <strong>25 ok, 0 failed</strong> over the 25
           <code>examples/*.matrix</code> files (24 programs + 1 shared library module). The counts come from

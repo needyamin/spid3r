@@ -22,8 +22,19 @@ spid3r gui demo_apps/native_calculator/calculator.matrix
 
 ## Standalone Native GUI Application (`calculator.exe`)
 
-The standalone binary [calculator.exe](file:///c:/Users/needyamin/OneDrive/Desktop/GaliLang/calculator.exe) in the project root is a genuine Windows GUI executable (`windows_subsystem`).
+`main.rs` in this directory is a small Rust launcher wired into the build as the
+`calculator` binary target (`required-features = ["gui"]`), so the calculator can be
+shipped as a standalone Windows executable:
 
-- Double-click **`calculator.exe`** in Windows Explorer or run `.\calculator.exe` to immediately launch the Native Desktop GUI Calculator window.
-- No terminal window, no command-line prompt, and no external dependencies required.
+```bash
+cargo build --bin calculator
+.\target\debug\calculator.exe        # run from the repository root
+```
+
+The launcher is `#![windows_subsystem = "windows"]`, so double-clicking the binary in
+File Explorer opens the calculator window directly — no terminal window and no
+command-line prompt. It locates `demo_apps/native_calculator/calculator.matrix` next
+to the executable (for an installed layout) or relative to the current directory, so
+run it from the repository root. On Windows the window needs the WebView2 runtime,
+which ships with Windows 11 and Microsoft Edge.
 

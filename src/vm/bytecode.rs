@@ -740,6 +740,18 @@ fn put_value(b: &mut Vec<u8>, v: &Value) {
             b.push(2);
             put_str(b, s);
         }
+        // A constant default parameter may be a bool or null
+        // (`fn f(a, b = null)`), and an upvalue cell can hold either, so the
+        // serializer has to carry them: it used to panic here, which made
+        // `spid3r compile` crash on any module with such a default (e.g.
+        // `stdlib/gen.matrix`'s `range_gen(a, b = null)`).
+        Value::Bool(x) => {
+            b.push(3);
+            b.push(u8::from(*x));
+        }
+        Value::Null => {
+            b.push(4);
+        }
         other => panic!("bytecode: cannot serialize constant {:?}", other),
     }
 }
@@ -1010,6 +1022,8 @@ impl<'a> Reader<'a> {
                 Ok(Value::Float(f64::from_bits(u64::from_le_bytes(a))))
             }
             2 => Ok(Value::Str(self.str()?.into())),
+            3 => Ok(Value::Bool(self.u8()? != 0)),
+            4 => Ok(Value::Null),
             _ => Err(err(
                 Phase::Vm,
                 format!("invalid file format: corrupt constant tag {}", tag),
@@ -1767,5 +1781,45 @@ mod tests {
         // A too-short buffer and a wrong magic are rejected by the deserializer.
         assert!(deserialize_vmfunc(b"short").is_err());
         assert!(deserialize_vmfunc(b"NOTSPID3R\x01\x00").is_err());
+    }
+
+    #[test]
+    fn bool_and_null_defaults_round_trip() {
+        // `fn f(a, b = null, c = true)` — a constant default that is a bool or
+        // null used to panic in `put_value` ("cannot serialize constant
+        // Value(null)"), so `spid3r compile` crashed on any module carrying
+        // such a default (`stdlib/gen.matrix`'s `range_gen(a, b = null)` is
+        // one, which is what the desktop showcase hit). Serialize a function
+        // whose defaults cover every literal shape and read it back.
+        let mut chunk = Chunk::new();
+        chunk.emit(OpCode::Null);
+        chunk.emit(OpCode::Return);
+        let f = VmFunc {
+            name: Some("pick".into()),
+            arity: 3,
+            min_arity: 1,
+            defaults: vec![
+                Value::Int(7),
+                Value::Bool(true),
+                Value::Null,
+                Value::Bool(false),
+            ],
+            is_async: false,
+            chunk: std::sync::Arc::new(chunk),
+            upvalues: Vec::new(),
+            own_upvalues: 0,
+            globals: None,
+            debug_locals: Vec::new(),
+        };
+        let bytes = serialize_vmfunc(&f);
+        let back = deserialize_vmfunc(&bytes).expect("bool/null defaults must round-trip");
+        assert_eq!(back.name.as_deref(), Some("pick"));
+        assert_eq!(back.arity, 3);
+        assert_eq!(back.min_arity, 1);
+        assert_eq!(back.defaults.len(), 4, "every default must survive");
+        assert!(matches!(back.defaults[0], Value::Int(7)));
+        assert!(matches!(back.defaults[1], Value::Bool(true)));
+        assert!(matches!(back.defaults[2], Value::Null));
+        assert!(matches!(back.defaults[3], Value::Bool(false)));
     }
 }

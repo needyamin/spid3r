@@ -22,7 +22,7 @@ Hello, Spid3r!
 - **Zero-Dependency Core**: Pure Rust. Builds in seconds without LLVM or external C libraries.
 - **Dual Engine Parity**: Reference tree-walking interpreter and optimizing bytecode VM with identical output.
 - **Rich Standard Library**: Built-in HTTP/TCP, Web framework, DataFrames, ML/Stats, CSV, JSON, Regex, and 20+ data structures.
-- **Editor Support**: Language Server Protocol (`spid3r lsp`) with diagnostics, hover, go-to-definition, and formatting — reusing the exact same checker as `spid3r check`.
+- **Editor Support**: Language Server Protocol (`spid3r lsp`) with diagnostics, hover, go-to-definition, rename, find-references, semantic highlighting, quick-fix code actions and formatting — reusing the exact same checker as `spid3r check`.
 - **Multi-Target**: Run via CLI, compile to native machine code (LLVM), embed in Rust, bundle as Desktop GUI, or export as standalone offline WebAssembly.
 
 ---
@@ -194,7 +194,7 @@ cargo build
 
 ### Testing
 ```bash
-# Run all core unit and integration tests (696 total: 680 core + 10 GUI + 6 AOT).
+# Run all core unit and integration tests (862 total: 846 core + 10 GUI + 6 AOT).
 # Canonical counts: bash tools/count_tests.sh
 cargo test --no-default-features
 

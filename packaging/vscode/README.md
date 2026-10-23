@@ -13,6 +13,10 @@ ships with the compiler: `spid3r lsp`.
 | Outline | Document symbols — classes, interfaces, enums, functions, fields, parameters |
 | Completion | Symbols from the current file plus the keyword list |
 | Formatting | The canonical `spid3r fmt` layout, as a whole-document edit |
+| Rename | Renames the declaration and its references (replacement must lex as one identifier) |
+| Find references | Every use of the binding under the cursor |
+| Semantic highlighting | Delta-encoded semantic tokens over the whole file |
+| Code actions | Quick fixes: rename an unused binding to `_name`, delete an unused import, insert a missing stdlib `import` |
 
 The extension is a thin client. All of the behaviour lives in the compiler, so
 the editor and the command line can never disagree.
