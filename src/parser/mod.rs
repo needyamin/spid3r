@@ -51,6 +51,38 @@ pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
     p.parse_program()
 }
 
+/// Parse one expression from source.
+///
+/// The debugger's `print`/`watch`/`repl` need to evaluate a fragment against
+/// an existing environment; `parse_program` would require a whole program.
+/// Trailing input is an error: `x = 1` is a statement, not an expression, and
+/// ignoring the tail would evaluate something the user did not type.
+pub fn parse_expression(src: &str, file: std::sync::Arc<str>) -> SpidResult<Expr> {
+    let toks = crate::lexer::Lexer::new(src, file).tokenize()?;
+    if toks.is_empty() {
+        return Err(crate::diagnostics::Diagnostic::new(
+            Phase::Parser,
+            "empty expression",
+        ));
+    }
+    let mut p = Parser {
+        toks,
+        saw_bigint_lit: false,
+        saw_yield: false,
+        pos: 0,
+        depth: 0,
+        value_block_depth: 0,
+    };
+    let e = p.parse_expr()?;
+    if !p.at(&TokenKind::Eof) {
+        return Err(crate::diagnostics::Diagnostic::new(
+            Phase::Parser,
+            "trailing input after the expression",
+        ));
+    }
+    Ok(e)
+}
+
 impl Parser {
     // ---- token helpers -------------------------------------------------
 

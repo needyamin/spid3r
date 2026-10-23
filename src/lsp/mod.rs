@@ -806,6 +806,9 @@ struct Doc {
     decls: Vec<Decl>,
     tokens: Vec<Token>,
     ranges: Vec<(usize, usize)>,
+    /// Kept for semantic tokens: comments have no token, so the only way to
+    /// colour them is the lexer's side-channel.
+    comments: Vec<Comment>,
 }
 
 fn analyze(text: &str) -> Doc {
@@ -850,6 +853,7 @@ fn analyze(text: &str) -> Doc {
     let file_extent = whole_extent(text);
     let decls = build_index(&program, &comments, file_extent);
     Doc {
+        comments,
         text: text.to_string(),
         program,
         diags,
@@ -1402,6 +1406,388 @@ fn publish_diagnostics(out: &mut impl Write, uri: &str, doc: &Doc) {
     );
 }
 
+// ---------------------------------------------------------- semantic tokens
+
+/// Token types this server reports, in legend order.
+///
+/// The **index** into this array is what goes on the wire, so the order is
+/// part of the protocol: changing it breaks every client's theme mapping.
+/// These are the standard LSP types (semanticTokens legend), not invented ones.
+const TOKEN_TYPES: &[&str] = &[
+    "type",       // 0
+    "class",      // 1
+    "enum",       // 2
+    "interface",  // 3
+    "parameter",  // 4
+    "variable",   // 5
+    "property",   // 6
+    "enumMember", // 7
+    "function",   // 8
+    "method",     // 9
+    "keyword",    // 10
+    "comment",    // 11
+    "string",     // 12
+    "number",     // 13
+    "operator",   // 14
+    "decorator",  // 15
+];
+
+/// Modifier bits, in legend order: bit 0 = declaration, bit 1 = readonly.
+const MOD_DECLARATION: u32 = 1;
+const MOD_READONLY: u32 = 2;
+
+fn sym_token_type(k: SymKind) -> u32 {
+    match k {
+        SymKind::Function => 8,
+        SymKind::Method => 9,
+        SymKind::Class => 1,
+        SymKind::Interface => 3,
+        SymKind::Enum => 2,
+        SymKind::Variant => 7,
+        SymKind::Field => 6,
+        SymKind::Let | SymKind::Const => 5,
+        SymKind::Parameter => 4,
+    }
+}
+
+/// Is this identifier token the *name* of the declaration?
+///
+/// `def_span` covers the whole declaration (`fn f(x) { ... }` starts at `fn`),
+/// so an exact position comparison never matches. The name is the first
+/// occurrence of the declared name inside that span on its first line, which is
+/// true for `fn`, `class`, `let`, parameters and fields alike.
+fn is_decl_name(doc: &Doc, d: &Decl, span: &Span) -> bool {
+    if d.def_span.line != span.line || d.name.is_empty() {
+        return false;
+    }
+    let line: Vec<char> = line_at(&doc.text, d.def_span.line.saturating_sub(1))
+        .chars()
+        .collect();
+    let name: Vec<char> = d.name.chars().collect();
+    let start = d.def_span.col.saturating_sub(1) as usize;
+    let mut i = start;
+    while i + name.len() <= line.len() {
+        if line[i..i + name.len()] == name[..] {
+            return (i as u32 + 1) == span.col;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// The declaration a token names or refers to.
+///
+/// `resolve` answers "what does this *use* refer to", which misses the
+/// declaration site itself: a parameter's extent is its function's body, so the
+/// parameter token in the signature is not inside it. Falling back to a name
+/// match on the declaration line covers that - and also `fn new()`, where the
+/// lexer sees `new` as a keyword but the author meant a method name.
+fn decl_for_token<'a>(doc: &'a Doc, span: &Span, text: &str) -> Option<&'a Decl> {
+    // `Span` is 1-based, `Pos` (and every extent) is 0-based - the same
+    // conversion `position_of` performs for wire positions.
+    let pos = (span.line.saturating_sub(1), span.col.saturating_sub(1));
+    if let Some(d) = resolve(doc, text, pos) {
+        return Some(d);
+    }
+    doc.decls
+        .iter()
+        .find(|d| d.name == text && is_decl_name(doc, d, span))
+}
+
+fn is_operator_lexeme(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| "+-*/%=<>!&|^~?:".contains(c))
+}
+
+/// `textDocument/semanticTokens/full`.
+///
+/// The lexer already produced every token with a span, and the symbol index
+/// already resolved names, so this is a classification pass rather than a new
+/// analysis: keywords and literals come from the token kind, identifiers from
+/// `resolve`, and operators from the lexeme. Punctuation is skipped - colouring
+/// brackets is noise, and every client dims it anyway.
+///
+/// Output is the LSP's delta encoding: 5 integers per token
+/// (`deltaLine, deltaStartChar, length, tokenType, modifiers`), relative to
+/// the previous token, which is why the list must be sorted first.
+fn semantic_tokens_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
+    let uri = uri_of(params);
+    let doc = match docs.get(&uri) {
+        Some(d) => d,
+        None => return Json::Obj(vec![("data".into(), Json::Arr(vec![]))]),
+    };
+
+    // (line, char, length) are 1-based here, matching Span.
+    let mut items: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
+    let mut after_dot = false;
+    for (i, tok) in doc.tokens.iter().enumerate() {
+        let span = &tok.span;
+        let lexeme = doc
+            .ranges
+            .get(i)
+            .map(|(a, b)| &doc.text[*a..*b])
+            .unwrap_or("");
+        let mut modifiers = 0u32;
+        let kind = match &tok.kind {
+            TokenKind::Kw(_) => {
+                // `fn new()`: a keyword spelling that is really a method name.
+                decl_for_token(doc, span, lexeme)
+                    .filter(|d| is_decl_name(doc, d, span))
+                    .map(|d| sym_token_type(d.kind))
+                    .or(Some(10))
+            }
+            TokenKind::Int(_) | TokenKind::Float(_) | TokenKind::BigIntLit(_) => Some(13),
+            TokenKind::Str(_) | TokenKind::InterpStr(_) => Some(12),
+            TokenKind::Ident(name) => {
+                let resolved = decl_for_token(doc, span, name);
+                if resolved.is_some_and(|d| is_decl_name(doc, d, span)) {
+                    modifiers |= MOD_DECLARATION;
+                }
+                if resolved.is_some_and(|d| d.kind == SymKind::Const) {
+                    modifiers |= MOD_READONLY;
+                }
+                if after_dot {
+                    // `obj.member`: the index cannot know the receiver's type,
+                    // so prefer a declared method/field name and fall back to
+                    // `property` (the honest answer for a dynamic language).
+                    Some(match resolved.map(|d| d.kind) {
+                        Some(SymKind::Method) => 9,
+                        Some(SymKind::Field) => 6,
+                        _ => 6,
+                    })
+                } else {
+                    Some(resolved.map(|d| sym_token_type(d.kind)).unwrap_or(5))
+                }
+            }
+            _ if is_operator_lexeme(lexeme) => Some(14),
+            _ => None,
+        };
+        after_dot = matches!(tok.kind, TokenKind::Dot);
+        let Some(kind) = kind else { continue };
+        // A multi-line token (a triple-quoted string is not a thing here, but
+        // an interpolated literal can contain a newline) must be clipped to its
+        // first line: the wire format has no way to express a span.
+        let first_line_len = lexeme.chars().take_while(|c| *c != '\n').count() as u32;
+        let len = span.len.min(first_line_len.max(1));
+        items.push((span.line, span.col, len, kind, modifiers));
+    }
+
+    for c in &doc.comments {
+        let len = c.text.chars().count() as u32;
+        if len > 0 {
+            items.push((c.line, c.col, len, 11, 0));
+        }
+    }
+
+    items.sort_by_key(|(l, c, _, _, _)| (*l, *c));
+
+    let mut data: Vec<Json> = Vec::with_capacity(items.len() * 5);
+    let mut prev_line = 0u32;
+    let mut prev_char = 0u32;
+    for (line, col, len, kind, mods) in items {
+        let l = line.saturating_sub(1);
+        let c = col.saturating_sub(1);
+        let line_text = line_at(&doc.text, l);
+        let start = char_to_utf16_col(line_text, c);
+        let end = char_to_utf16_col(line_text, c + len);
+        let delta_line = l - prev_line;
+        let delta_char = if delta_line == 0 {
+            start - prev_char
+        } else {
+            start
+        };
+        data.push(Json::Int(delta_line as i64));
+        data.push(Json::Int(delta_char as i64));
+        data.push(Json::Int((end - start) as i64));
+        data.push(Json::Int(kind as i64));
+        data.push(Json::Int(mods as i64));
+        prev_line = l;
+        prev_char = start;
+    }
+    Json::Obj(vec![("data".into(), Json::Arr(data))])
+}
+
+// ------------------------------------------------------------ code actions
+
+/// Module names the loader can resolve, for the "add the missing import" fix.
+fn stdlib_module_names() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for dir in crate::modules::default_module_dirs() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x == "matrix").unwrap_or(false) {
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    out.push(stem.to_string());
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn one_edit(uri: &str, range: Json, new_text: &str) -> Json {
+    Json::Obj(vec![(
+        "changes".into(),
+        Json::Obj(vec![(
+            uri.to_string(),
+            Json::Arr(vec![Json::Obj(vec![
+                ("range".into(), range),
+                ("newText".into(), Json::Str(new_text.to_string())),
+            ])]),
+        )]),
+    )])
+}
+
+fn diagnostic_of(doc: &Doc, d: &Diagnostic) -> Json {
+    let severity = match d.severity {
+        Severity::Error => 1,
+        Severity::Warning => 2,
+    };
+    let range = match &d.span {
+        Some(s) => span_range(&doc.text, s),
+        None => span_range(&doc.text, &Span::new(Arc::from("<lsp>"), 1, 1, 0)),
+    };
+    Json::Obj(vec![
+        ("range".into(), range),
+        ("severity".into(), Json::Int(severity)),
+        ("source".into(), Json::Str("spid3r".into())),
+        ("message".into(), Json::Str(d.message.clone())),
+    ])
+}
+
+/// `textDocument/codeAction` — quick fixes derived from our own diagnostics.
+///
+/// Three fixes, each one something the checker can prove is safe:
+///
+///   * `unused variable/parameter` -> rename it to `_name`, which is the
+///     documented way to say "intentionally unused" (the lint skips `_`);
+///   * `unused import` -> delete the whole line;
+///   * `unknown name 'x'` where `x` is a stdlib module -> insert
+///     `import "x";`, which is almost always what the author meant.
+///
+/// A fix is only offered when the edit is mechanical. Anything that needs
+/// judgement (moving a declaration, changing a signature) is left to the
+/// author - a code action that guesses is worse than no code action.
+fn code_actions_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
+    let uri = uri_of(params);
+    let doc = match docs.get(&uri) {
+        Some(d) => d,
+        None => return Json::Arr(vec![]),
+    };
+    // The client sends the selected range; a cursor has start == end. Compare
+    // on lines, which is what "the diagnostic under the cursor" means.
+    let (from, to) = match params.get("range") {
+        Some(r) => (
+            r.get("start")
+                .and_then(|s| s.get("line"))
+                .and_then(|l| l.as_i())
+                .unwrap_or(0),
+            r.get("end")
+                .and_then(|s| s.get("line"))
+                .and_then(|l| l.as_i())
+                .unwrap_or(0),
+        ),
+        None => (0, i64::MAX),
+    };
+    let modules = stdlib_module_names();
+    let mut actions: Vec<Json> = Vec::new();
+
+    for d in &doc.diags {
+        let Some(span) = d.span.clone() else { continue };
+        let line = span.line as i64 - 1;
+        if line < from || line > to {
+            continue;
+        }
+        let msg = d.message.as_str();
+
+        if let Some(name) = msg
+            .strip_prefix("unused variable '")
+            .or_else(|| msg.strip_prefix("unused parameter '"))
+            .and_then(|r| r.strip_suffix("'"))
+        {
+            // The span points at the identifier; replace exactly that token so
+            // a `let x = 1;` keeps its initialiser.
+            actions.push(Json::Obj(vec![
+                (
+                    "title".into(),
+                    Json::Str(format!("Rename '{}' to '_{}'", name, name)),
+                ),
+                ("kind".into(), Json::Str("quickfix".into())),
+                ("diagnostics".into(), Json::Arr(vec![diagnostic_of(doc, d)])),
+                (
+                    "edit".into(),
+                    one_edit(&uri, span_range(&doc.text, &span), &format!("_{}", name)),
+                ),
+            ]));
+        }
+
+        if msg.starts_with("unused import '") {
+            let l = span.line.saturating_sub(1);
+            let start = Json::Obj(vec![
+                ("line".into(), Json::Int(l as i64)),
+                ("character".into(), Json::Int(0)),
+            ]);
+            let end = Json::Obj(vec![
+                ("line".into(), Json::Int(l as i64 + 1)),
+                ("character".into(), Json::Int(0)),
+            ]);
+            actions.push(Json::Obj(vec![
+                ("title".into(), Json::Str("Remove unused import".into())),
+                ("kind".into(), Json::Str("quickfix".into())),
+                ("diagnostics".into(), Json::Arr(vec![diagnostic_of(doc, d)])),
+                (
+                    "edit".into(),
+                    one_edit(
+                        &uri,
+                        Json::Obj(vec![("start".into(), start), ("end".into(), end)]),
+                        "",
+                    ),
+                ),
+            ]));
+        }
+
+        if let Some(name) = msg
+            .strip_prefix("unknown name '")
+            .and_then(|r| r.strip_suffix("'"))
+        {
+            if modules.iter().any(|m| m == name) {
+                // Insert after the last existing import, or at the very top.
+                let mut insert_line = 0u32;
+                for (i, text) in doc.text.split('\n').enumerate() {
+                    if text.trim_start().starts_with("import ") {
+                        insert_line = i as u32 + 1;
+                    }
+                }
+                let at = Json::Obj(vec![
+                    ("line".into(), Json::Int(insert_line as i64)),
+                    ("character".into(), Json::Int(0)),
+                ]);
+                actions.push(Json::Obj(vec![
+                    (
+                        "title".into(),
+                        Json::Str(format!("Add import \"{}\"", name)),
+                    ),
+                    ("kind".into(), Json::Str("quickfix".into())),
+                    ("diagnostics".into(), Json::Arr(vec![diagnostic_of(doc, d)])),
+                    (
+                        "edit".into(),
+                        one_edit(
+                            &uri,
+                            Json::Obj(vec![("start".into(), at.clone()), ("end".into(), at)]),
+                            &format!("import \"{}\";\n", name),
+                        ),
+                    ),
+                ]));
+            }
+        }
+    }
+    Json::Arr(actions)
+}
+
 fn capabilities() -> Json {
     Json::Obj(vec![
         (
@@ -1424,6 +1810,35 @@ fn capabilities() -> Json {
                     ]),
                 ),
                 ("documentFormattingProvider".into(), Json::Bool(true)),
+                (
+                    "semanticTokensProvider".into(),
+                    Json::Obj(vec![
+                        (
+                            "legend".into(),
+                            Json::Obj(vec![
+                                (
+                                    "tokenTypes".into(),
+                                    Json::Arr(
+                                        TOKEN_TYPES
+                                            .iter()
+                                            .map(|t| Json::Str((*t).to_string()))
+                                            .collect(),
+                                    ),
+                                ),
+                                (
+                                    "tokenModifiers".into(),
+                                    Json::Arr(vec![
+                                        Json::Str("declaration".into()),
+                                        Json::Str("readonly".into()),
+                                    ]),
+                                ),
+                            ]),
+                        ),
+                        ("full".into(), Json::Bool(true)),
+                        ("range".into(), Json::Bool(false)),
+                    ]),
+                ),
+                ("codeActionProvider".into(), Json::Bool(true)),
                 (
                     "publishDiagnosticsProvider".into(),
                     Json::Obj(vec![("relatedInformation".into(), Json::Bool(false))]),
@@ -1548,6 +1963,16 @@ pub fn cmd_lsp() -> i32 {
             "textDocument/formatting" => {
                 if is_request {
                     send_result(&mut out, &id, formatting_result(&docs, &params));
+                }
+            }
+            "textDocument/semanticTokens/full" => {
+                if is_request {
+                    send_result(&mut out, &id, semantic_tokens_result(&docs, &params));
+                }
+            }
+            "textDocument/codeAction" => {
+                if is_request {
+                    send_result(&mut out, &id, code_actions_result(&docs, &params));
                 }
             }
             _ => {

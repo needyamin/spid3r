@@ -35,6 +35,7 @@ fn func_with(chunk: Chunk) -> VmFunc {
         chunk: Arc::new(chunk),
         upvalues: Vec::new(),
         own_upvalues: 0,
+        debug_locals: Vec::new(),
     }
 }
 
@@ -146,6 +147,7 @@ fn deeply_nested_bytecode_hits_the_depth_limit() {
             upvalues: Vec::new(),
             own_upvalues: 0,
             chunk: Arc::new(inner),
+            debug_locals: Vec::new(),
         }));
         inner = outer;
     }

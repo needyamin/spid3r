@@ -170,6 +170,16 @@ impl Interp {
         interp
     }
 
+    /// The global environment this interpreter installed its builtins into.
+    ///
+    /// The debugger uses it to evaluate `print`/`watch` expressions: it binds
+    /// the paused frame's locals as globals and evaluates there, so a watch can
+    /// use anything the program can (`len(x)`, `json_write(v)`, a closure it
+    /// closed over, ...) without a second evaluator existing.
+    pub(crate) fn globals(&self) -> &Env {
+        &self.globals
+    }
+
     /// A module-side interpreter: its own globals, module mode, sharing the
     /// scheduler and the module cache with the importer.
     pub fn module_interp(

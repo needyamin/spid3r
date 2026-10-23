@@ -164,6 +164,9 @@ fn main() {
   headers, CORS, gzip, ETag/304, body limits, Basic auth, rate limiting — composable with `app.use_next`.
 - **`stdlib/fastcgi.matrix`**: a FastCGI responder (records, PARAMS, STDIN/STDOUT, END_REQUEST, keep-conn) so
   nginx/Apache can front a Spid3r app exactly like php-fpm.
+- **`stdlib/mock.matrix`** & **`stdlib/testkit.matrix`**: test doubles (`stub`, `mock0..mock3` with recorded
+  calls and assertions) and a fixture runner (a temp directory per case, before/after hooks, failure
+  isolation, timing, `done()` exit code).
 - **`stdlib/tz.matrix`**: IANA time zones from a generated tzdata 2026e table (343 zones + 255 links,
   transitions authoritative 1900–2100): `tz_iso`, `tz_parts_of`, `tz_make`, `tz_day_bounds` (23/24/25-hour
   days), `tz_add_days` (wall-clock preserving across DST), `tz_http_date`. `format_datetime` gained

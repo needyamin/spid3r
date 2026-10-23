@@ -34,6 +34,20 @@ pub struct Chunk {
     pub modules: Vec<EmbeddedModule>,
 }
 
+/// One local binding's lifetime, for the debugger.
+///
+/// `slot` indexes the frame's slot array; `from`/`to` are bytecode offsets
+/// (half-open) during which the name is live. Deliberately **not** serialized:
+/// a `.matrixc` artifact carries no source, so `spid3r debug` compiles from
+/// source and only that path needs (or gets) these names.
+#[derive(Clone, Debug)]
+pub struct DebugLocal {
+    pub name: String,
+    pub slot: u8,
+    pub from: usize,
+    pub to: usize,
+}
+
 /// A compiled function as stored in a `Chunk`'s function pool.
 #[derive(Clone, Debug)]
 pub struct VmFuncProto {
@@ -49,6 +63,9 @@ pub struct VmFuncProto {
     pub own_upvalues: u8,
     /// Shared: cloning a prototype (closure creation) is an `Arc` bump.
     pub chunk: std::sync::Arc<Chunk>,
+    /// Debugger-only: local names and their live ranges. Empty after a
+    /// `.matrixc` round trip.
+    pub debug_locals: Vec<DebugLocal>,
 }
 
 /// A class as stored in a `Chunk`'s class pool. The runtime `VmClass` is built
@@ -1122,6 +1139,8 @@ fn get_func_proto(r: &mut Reader) -> SpidResult<VmFuncProto> {
         upvalues,
         own_upvalues,
         chunk,
+        // Not serialized: see `DebugLocal`.
+        debug_locals: Vec::new(),
     })
 }
 
@@ -1201,6 +1220,8 @@ fn get_vmfunc(r: &mut Reader) -> SpidResult<VmFunc> {
         chunk,
         upvalues,
         own_upvalues,
+        // A `.matrixc` artifact carries no source, so no names either.
+        debug_locals: Vec::new(),
     })
 }
 

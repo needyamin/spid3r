@@ -65,6 +65,8 @@ struct TryInfo {
 struct Compiler {
     chunk: Chunk,
     locals: Vec<Local>,
+    /// Local names and live ranges, for the debugger (`spid3r debug`).
+    debug_locals: Vec<crate::vm::bytecode::DebugLocal>,
     scope_depth: usize,
     is_global: bool,
     /// Enclosing-frame slot indices for this function's own upvalues, in order.
@@ -90,6 +92,7 @@ impl Compiler {
         Compiler {
             chunk: Chunk::new(),
             locals: Vec::new(),
+            debug_locals: Vec::new(),
             scope_depth: 0,
             is_global: true,
             upvalues: Vec::new(),
@@ -106,6 +109,7 @@ impl Compiler {
         Compiler {
             chunk: Chunk::new(),
             locals: Vec::new(),
+            debug_locals: Vec::new(),
             scope_depth: 0,
             is_global: false,
             upvalues: Vec::new(),
@@ -151,6 +155,15 @@ impl Compiler {
             if l.depth == self.scope_depth {
                 let was_captured = l.is_captured;
                 let slot = (self.locals.len() - 1) as u8;
+                let now = self.chunk.code.len();
+                if let Some(d) = self
+                    .debug_locals
+                    .iter_mut()
+                    .rev()
+                    .find(|d| d.slot == slot && d.to == usize::MAX)
+                {
+                    d.to = now;
+                }
                 self.locals.pop();
                 if was_captured {
                     // The scope that owned the binding is gone: stop routing
@@ -171,6 +184,12 @@ impl Compiler {
     /// Reserve a parameter slot. Params occupy slots 0..arity and are tracked
     /// alongside locals so `add_local` slot math stays correct.
     fn add_param(&mut self, name: &str) {
+        self.debug_locals.push(crate::vm::bytecode::DebugLocal {
+            name: name.to_string(),
+            slot: self.locals.len() as u8,
+            from: 0,
+            to: usize::MAX,
+        });
         self.locals.push(Local {
             name: name.to_string(),
             depth: 0,
@@ -191,6 +210,12 @@ impl Compiler {
             ));
         }
         let slot = self.locals.len() as u8;
+        self.debug_locals.push(crate::vm::bytecode::DebugLocal {
+            name: name.to_string(),
+            slot,
+            from: self.chunk.code.len(),
+            to: usize::MAX,
+        });
         self.locals.push(Local {
             name: name.to_string(),
             depth: self.scope_depth,
@@ -393,6 +418,7 @@ fn compile_one(
         chunk: std::sync::Arc::new(chunk),
         upvalues: Vec::new(),
         own_upvalues,
+        debug_locals: Vec::new(),
     };
     Ok((func, public))
 }
@@ -1033,6 +1059,7 @@ fn compile_function(
         is_async: proto.is_async,
         upvalues: c.upvalues,
         own_upvalues: c.own_upvalues,
+        debug_locals: c.debug_locals,
         chunk: std::sync::Arc::new(c.chunk),
     })
 }

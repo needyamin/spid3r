@@ -269,12 +269,23 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     let mut file: Option<String> = None;
     let mut no_opt = false;
     let mut prof = false;
+    let mut coverage = false;
+    let mut coverage_out: Option<String> = None;
     let mut script_args: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--no-opt" => no_opt = true,
             "--prof" => prof = true,
+            "--coverage" => coverage = true,
+            "--coverage-out" => {
+                i += 1;
+                match args.get(i) {
+                    Some(p) => coverage_out = Some(p.clone()),
+                    None => return Err(usage("--coverage-out needs a file path")),
+                }
+                coverage = true;
+            }
             "--engine" => {
                 i += 1;
                 match args.get(i) {
@@ -322,32 +333,62 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                     "--prof is a VM-engine feature; rerun with --engine vm",
                 ));
             }
+            if coverage {
+                return Err(usage(
+                    "--coverage is a VM-engine feature; rerun with --engine vm",
+                ));
+            }
             run_tree(&file)
         }
         "vm" => {
             let (program, file_name) = front_end(&file)?;
             let dirs = modules::default_module_dirs();
-            let (result, report) = if no_opt {
+            let (result, report, cov) = if no_opt {
                 let (script, _public) =
                     crate::vm::compile_program_unoptimized(&program, &file, &dirs)?;
                 let mut vm = Vm::new(file_name, dirs);
                 if prof {
                     vm.enable_profiling();
                 }
+                if coverage {
+                    vm.enable_coverage();
+                }
                 let r = vm.run_compiled(Arc::new(script));
                 let report = vm.profiling_report();
-                (r, report)
+                let cov = vm
+                    .coverage()
+                    .map(|c| (c.report(), c.lcov()))
+                    .unwrap_or_default();
+                (r, report, cov)
             } else {
                 let mut vm = Vm::new(file_name, dirs);
                 if prof {
                     vm.enable_profiling();
                 }
+                if coverage {
+                    vm.enable_coverage();
+                }
                 let r = vm.run_program(&program);
                 let report = vm.profiling_report();
-                (r, report)
+                let cov = vm
+                    .coverage()
+                    .map(|c| (c.report(), c.lcov()))
+                    .unwrap_or_default();
+                (r, report, cov)
             };
             if prof {
                 eprint!("{}", report);
+            }
+            if coverage {
+                // The table goes to stderr so a program's stdout stays exactly
+                // what it would be without the flag (differential tests rely
+                // on that).
+                eprint!("{}", cov.0);
+                if let Some(path) = &coverage_out {
+                    if let Err(e) = std::fs::write(path, &cov.1) {
+                        eprintln!("cannot write coverage to '{}': {}", path, e);
+                    }
+                }
             }
             result
         }

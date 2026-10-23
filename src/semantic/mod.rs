@@ -312,6 +312,8 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "write_file",
     "file_exists",
     "file_delete",
+    "dir_create",
+    "dir_remove",
     "sleep_ms",
     "now",
     "env",

@@ -696,6 +696,7 @@ fn bytecode_deserializer_rejects_truncated_constants_huge_counts_and_negative_ju
         chunk: Arc::new(chunk),
         upvalues: Vec::new(),
         own_upvalues: 0,
+        debug_locals: Vec::new(),
     };
     let valid_bytes = serialize_vmfunc(&func);
     for cut in 0..valid_bytes.len() {

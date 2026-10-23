@@ -501,6 +501,37 @@ access-log last.
 opts: `log` (true), `watch_signals` (true). The request map is the same one the HTTP server builds, so
 `web_app().handle` plugs straight in.
 
+## 14. `mock.matrix` — test doubles
+
+| Function | Description |
+|---|---|
+| `stub(value)` / `stub_throws(msg)` | A callable that ignores its arguments (accepts 0–4) and returns `value`, or throws. |
+| `mock0/mock1/mock2/mock3(impl)` | A recording double: returns `{call, log}`. Arity-specific because a closure sees only the parameters it declares. |
+| `mock_list(impl)` | The variadic form: the callable takes the arguments as one list. |
+| `mock_calls(m)` / `mock_count(m)` / `mock_args(m, i)` / `mock_last_args(m)` / `mock_result(m, i)` | The recording. |
+| `mock_called_with(m, args)` / `mock_assert_called_with(m, args)` | Exact-argument matching. |
+| `mock_assert_called_once(m)` / `mock_assert_not_called(m)` / `mock_assert_count(m, n)` | Call-count assertions. |
+| `mock_reset(m)` | Clear the log, keep the implementation. |
+
+## 15. `testkit.matrix` — fixtures and a test runner
+
+| Function | Description |
+|---|---|
+| `test_suite(name)` | A suite: `case(name, fn(ctx))`, `skip(name, reason)`, `before_each(hook)`, `after_each(hook)`, `run()`, `done()`. |
+| `tmpdir(tag)` / `with_tmpdir(tag, fn(dir))` | A unique temp directory (removed by the second, even on a throw). |
+| `fixture_write(dir, name, text)` | Write a fixture file, return its path. |
+| `temp_root()` | `TEMP`, `TMPDIR` or `TMP`. |
+
+Each case gets a fresh `ctx` with `dir` (created before, deleted after), `name` and `suite`. A case that
+throws is reported and the suite continues; `done()` returns the failure count, which `main` should return.
+
+## 16. Coverage — `spid3r run --coverage`
+
+`spid3r run --engine vm --coverage [--coverage-out lcov.info] prog.matrix` collects per-line hit counts in the
+VM dispatch loop and prints a percentage table to **stderr** (stdout stays the program's own, so differential
+tests are unaffected). `--coverage-out` writes standard LCOV. VM only: the tree engine has no instruction
+stream to hook, and the flag says so instead of reporting a number for a different engine.
+
 ## Notes
 
 - `print`/`println` use each value's `display` form; collections render like

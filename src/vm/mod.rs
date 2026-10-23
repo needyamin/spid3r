@@ -11,6 +11,7 @@
 
 pub mod bytecode;
 mod compiler;
+mod coverage;
 mod debug;
 mod opt;
 
@@ -170,6 +171,9 @@ pub struct Vm {
     stop: usize,
     /// Active debugger session (`spid3r debug`); `None` in normal runs.
     debug: Option<DebugState>,
+    /// Line coverage (`spid3r run --coverage`); `None` in normal runs, so the
+    /// hot loop pays one `Option` check per instruction when disabled.
+    coverage: Option<coverage::Coverage>,
     /// Opcode profiler (`spid3r run --prof`); `None` in normal runs, so the
     /// hot loop pays a single well-predicted `Option` check per instruction.
     prof: Option<Profiler>,
@@ -267,6 +271,7 @@ impl Vm {
             depth: 0,
             stop: 0,
             debug: None,
+            coverage: None,
             prof: None,
             invoke_cache: HashMap::new(),
             slot_pool: Vec::with_capacity(16),
@@ -305,6 +310,7 @@ impl Vm {
             depth: 0,
             stop: 0,
             debug: None,
+            coverage: None,
             prof: None,
             invoke_cache: HashMap::new(),
             slot_pool: Vec::with_capacity(8),
@@ -357,6 +363,9 @@ impl Vm {
             }
         }
         validate_chunk(&script.chunk)?;
+        if let Some(c) = self.coverage.as_mut() {
+            c.instrument(&script.chunk);
+        }
         let result = (|| {
             self.call_vfunc_frame(script, Vec::new(), None)
                 .map_err(|e| e.to_diag())?;
@@ -557,6 +566,27 @@ impl Vm {
         self.prof = Some(Profiler::default());
     }
 
+    /// Collect line coverage for the next run.
+    pub fn enable_coverage(&mut self) {
+        self.coverage = Some(coverage::Coverage::default());
+    }
+
+    /// Credit the instruction the innermost frame is about to execute.
+    fn coverage_hit(&mut self) {
+        let Some(f) = self.frames.last() else {
+            return;
+        };
+        let span = f.func.chunk.span_at(f.ip);
+        if let Some(c) = self.coverage.as_mut() {
+            c.record(&span.file, span.line);
+        }
+    }
+
+    /// The coverage collected so far, if any.
+    pub fn coverage(&self) -> Option<&coverage::Coverage> {
+        self.coverage.as_ref()
+    }
+
     /// The profiling report: total instructions and per-opcode counts, hot
     /// opcodes first. Empty (and stderr-silent) unless profiling was enabled.
     pub fn profiling_report(&self) -> String {
@@ -613,6 +643,9 @@ impl Vm {
             if self.debug.is_some() {
                 self.flush_pending_str();
                 self.debug_hook()?;
+            }
+            if self.coverage.is_some() {
+                self.coverage_hit();
             }
             let ip = self.frames[nf].ip;
             self.frames[nf].inst_ip = ip;
@@ -2438,6 +2471,7 @@ impl Vm {
             chunk: fproto.chunk.clone(),
             upvalues,
             own_upvalues: fproto.own_upvalues,
+            debug_locals: fproto.debug_locals.clone(),
         })
     }
 
@@ -3030,6 +3064,7 @@ impl Vm {
                     upvalues: Vec::new(),
                     own_upvalues: 0,
                     chunk: std::sync::Arc::new(Chunk::new()),
+                    debug_locals: Vec::new(),
                 })
             })
     }

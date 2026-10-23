@@ -258,11 +258,47 @@ in <code>stdlib/yaml.matrix</code> (bind the logical to a local first) and writt
 <code>docs/VM_NOTES.md</code>; fixing it belongs in <code>src/vm/compiler.rs</code> with a new row in
 <code>tests/engine_matrix.rs</code>.</p>
 
-<h3>3.6 Tooling gaps</h3>
+<h3>3.6 Tooling gaps (state after the 2026-10-24 passes)</h3>
 <ul>
-  <li><span class="tag t-no">NO</span><strong>LSP semantic tokens / code actions</strong> — hover, diagnostics, symbols, formatting, <em>rename and find-references</em> work (2026-10-22).</li>
-  <li><span class="tag t-part">PARTIAL</span><strong>Test tooling</strong> — an assertions framework (<code>stdlib/assert.matrix</code>) and an opcode profiler (<code>run --prof</code>) shipped 2026-10-22; <code>spid3r test</code> still compares stdout only (no mocking, no fixtures, no coverage).</li>
-  <li><span class="tag t-no">NO</span><strong>Interactive debugging depth</strong> (breakpoints, watches, REPL-in-frame — a line debugger exists; xdebug/pdb-level tooling does not).</li>
+  <li><span class="tag t-yes">CLOSED</span><strong>LSP semantic tokens / code actions</strong> — both shipped.
+  <code>textDocument/semanticTokens/full</code> answers with the standard 16-type legend, delta-encoded:
+  keywords and literals from the token kind, identifiers classified through the same symbol index hover
+  uses (function / class / method / parameter / variable / property / enumMember), comments from the lexer's
+  side-channel, and <code>declaration</code>/<code>readonly</code> modifiers. Two details that took real work:
+  a parameter's index extent is its function body, so the token in the signature resolves through a
+  declaration-name fallback; and <code>fn new()</code> lexes as a keyword, so a keyword spelling that names a
+  declaration is coloured as that declaration.
+  <code>textDocument/codeAction</code> offers the three fixes the checker can <em>prove</em>: rename an unused
+  binding to <code>_name</code> (the documented "intentionally unused" spelling), delete an unused import
+  line, and add a missing <code>import "x";</code> when the unknown name is a stdlib module.
+  <em>Still absent:</em> incremental and range-based token sync (full only), and any action that would need
+  judgement — a quick fix that guesses is worse than none.</li>
+  <li><span class="tag t-yes">CLOSED</span><strong>Test tooling</strong> — the three named gaps are filled.
+  <strong>Mocking:</strong> <code>stdlib/mock.matrix</code> — <code>stub</code>/<code>stub_throws</code> for
+  inert doubles, <code>mock0</code>..<code>mock3</code>/<code>mock_list</code> for recording ones (a closure
+  cannot carry named state and there is no <code>arguments</code> object, so a mock is a <code>{call, log}</code>
+  handle and the constructors are arity-specific), with <code>mock_called_with</code>,
+  <code>mock_assert_called_once</code> and friends.
+  <strong>Fixtures:</strong> <code>stdlib/testkit.matrix</code> — a suite with a fresh temp directory per case,
+  <code>before_each</code>/<code>after_each</code>, failure isolation (one throwing case does not stop the
+  run), per-case timing, <code>skip</code>, and a <code>done()</code> exit code, plus <code>with_tmpdir</code>
+  which cleans up even when the body throws.
+  <strong>Coverage:</strong> <code>spid3r run --engine vm --coverage [--coverage-out lcov.info]</code> —
+  per-line hit counts collected in the dispatch loop (the VM already stores a span per instruction),
+  a percentage table on stderr and standard LCOV for <code>genhtml</code>/Codecov. The denominator is the set
+  of lines some instruction was emitted for, so comments and blank lines do not dilute the number.
+  <em>Still absent:</em> branch coverage, coverage on the tree engine (no instruction stream to hook — the
+  flag refuses rather than lying), parallel test execution, a <code>--filter</code>, and JUnit XML output.</li>
+  <li><span class="tag t-yes">CLOSED</span><strong>Interactive debugging depth</strong> — the line debugger
+  gained the three things it was missing. <code>print &lt;expr&gt;</code> evaluates in the paused frame;
+  <code>watch &lt;expr&gt;</code> re-evaluates at every pause (and validates at registration, so a broken watch
+  fails once, not at every stop); <code>repl</code> evaluates expressions until an empty line or a debugger
+  command. That needed real debug info: the compiler now records each local's name, slot and live byte range,
+  so <code>locals</code> prints <code>nums = [1, 2, 3, 4]</code> instead of <code>[0] (stack)</code>, and a name
+  that has gone out of scope fails instead of showing a stale slot. Evaluation reuses the tree interpreter
+  with the live locals bound as globals — no second evaluator to keep in sync with the language.
+  <em>Still absent:</em> DAP (so no VS Code attach — this is a stdin debugger, scripted with
+  <code>--commands</code>), conditional breakpoints, and debugging the tree engine.</li>
 </ul>
 
 <h2>4. Bottom line (no sugar-coating)</h2>
@@ -285,7 +321,9 @@ zones</strong> (tzdata 2026e, 343 zones + 255 links, 1900–2100) and <strong>Un
 folding</strong> (UCD 15.1), both regenerable from <code>tools/</code> and both checked against CPython. The
 web-serving stack followed: multipart uploads that survive binary content, server-side sessions with real
 rotation and revocation, a middleware library, a keep-alive server with a graceful drain, and a FastCGI
-responder so nginx can front an app the way it fronts php-fpm.
+responder so nginx can front an app the way it fronts php-fpm. The last pass closed the tooling gaps: LSP
+semantic tokens and quick fixes, mocking/fixtures/line-coverage for tests, and a debugger with in-frame
+<code>print</code>, watches and a REPL.
 <strong>What still blocks real-world use, honestly:</strong> (1) <strong>no package registry</strong>
 — the ecosystem gap is the largest and only time plus registry work change it; (2) no suspension-based async executor (<code>async</code>/<code>await</code> are join-based; readiness itself is a kernel wakeup now, but via <code>poll(2)</code>/<code>WSAPoll</code> — O(n) per call, no epoll/kqueue); (3) databases beyond
 SQLite — Redis, PostgreSQL and MySQL/MariaDB clients now ship, but MongoDB, TLS, prepared statements and
@@ -305,25 +343,34 @@ differences that matter; the ecosystem remains the largest.
 </div>
 
 <p class="src">Generated 2026-10-22 from live measurements (benchmark harness, best of 3, release
-build) and source inspection of the repository (Spid3r 1.0.0). Probe evidence: overflow and
-generator probes, native-function registry scan, engine-matrix results, real HTTPS fetch under
-<code>--features tls</code>. §3.5 was re-verified the same day by running each claim on both the tree and
-VM engines: TOML (tables/arrays-of-tables/inline/dotted), PBKDF2 / <code>sha256("abc")</code> / <code>hmac_sha256</code> /
-<code>base32</code> cross-checked against CPython's <code>hashlib</code>, <code>bigint</code> 2¹²⁸ and 25!,
-<code>stats</code> mean/median/percentile/pearson/normal_cdf, <code>ml</code> linear-regression fit + R²,
-<code>vector</code> dot/norm/cumsum/diff/argmin/argmax/std, <code>matrix</code> det/inverse/solve/matmul/hadamard/
-trace/eigen_sym, <code>.npy</code> round-trips for both shapes, <code>decimal</code>/<code>rational</code>/
-<code>complex</code> exact arithmetic, bigint mixed operands (<code>100n * 2</code>, <code>100n + "41"</code>) and the
-negative-value workarounds, a dataframe CSV round-trip, a combining-mark length check, and — for the features
-added after that pass — gzip/zlib/DEFLATE interop <em>in both directions</em> against CPython's
-<code>zlib</code> at level 9 (five payloads, every SHA-256 compared), scrypt against
-<code>hashlib.scrypt</code> and the RFC 7914 vectors, <code>fft</code> against a direct DFT, the distribution
-family against <code>statistics</code>/<code>math</code>, and TOML/XML parse→write→parse round-trips. Plus thirteen
-negative probes (<code>gzip_compress</code>, <code>zlib_deflate</code>, <code>yaml_parse</code>, <code>xml_parse</code>,
-<code>smtp_send</code>, <code>ssh_connect</code>, <code>ftp_connect</code>, <code>image_load</code>,
-<code>pdf_write</code>, <code>bcrypt_hash</code>, <code>argon2_hash</code>, <code>tz_convert</code>,
-<code>locale_format</code>) that all fail as unknown names. Claims that could not be re-run here are labelled as
-limits rather than features.</p>
+build) and source inspection of the repository (Spid3r 1.0.0); §3.4–§3.6 were rewritten on 2026-10-24 after
+three implementation passes, each verified against an outside implementation rather than against itself.
+Probe evidence: overflow and generator probes, native-function registry scan, engine-matrix results, real
+HTTPS fetch under <code>--features tls</code>. §3.5 was re-verified the same day by running each claim on both
+the tree and VM engines: TOML (tables/arrays-of-tables/inline/dotted), PBKDF2 / <code>sha256("abc")</code> /
+<code>hmac_sha256</code> / <code>base32</code> cross-checked against CPython's <code>hashlib</code>,
+<code>bigint</code> 2¹²⁸ and 25!, <code>stats</code> mean/median/percentile/pearson/normal_cdf, <code>ml</code>
+linear-regression fit + R², <code>vector</code> dot/norm/cumsum/diff/argmin/argmax/std, <code>matrix</code>
+det/inverse/solve/matmul/hadamard/trace/eigen_sym, <code>.npy</code> round-trips for both shapes,
+<code>decimal</code>/<code>rational</code>/<code>complex</code> exact arithmetic, bigint mixed operands
+(<code>100n * 2</code>, <code>100n + "41"</code>) and the negative-value workarounds, a dataframe CSV
+round-trip, and gzip/zlib/DEFLATE interop <em>in both directions</em> against CPython's <code>zlib</code> at
+level 9 (five payloads, every SHA-256 compared), scrypt against <code>hashlib.scrypt</code> and the RFC 7914
+vectors, <code>fft</code> against a direct DFT, the distribution family against
+<code>statistics</code>/<code>math</code>, and TOML/XML parse→write→parse round-trips.
+<strong>The 2026-10-24 passes</strong> were verified the same way: SMTP and FTP against protocol-accurate
+servers written in Spid3r (a fake SMTP server that checks the AUTH maths and asserts dot-stuffing, a fake FTP
+server that moves <code>0x00/0x80/0xC8/0xFF</code> through RETR and STOR and compares bytes), the time-zone
+table against CPython's <code>zoneinfo</code> at every transition ±1 s and on a monthly sweep of 1900–2100,
+Unicode normalization against <code>unicodedata.normalize</code> and <code>str.casefold</code> over 1470
+generated assertions, the web stack over real sockets (multipart with binary content, keep-alive, session
+rotation and revocation, a hand-built FastCGI client), and the tooling through the shipped CLI (LCOV output,
+mock/testkit programs on both engines, scripted debugger sessions). Two mutation checks back the corpus: with
+composition disabled, and with the transition search off by one, the Unicode/tz assertions fail immediately.
+Probes that named <code>smtp_send</code>, <code>ftp_connect</code>, <code>tz_convert</code> or
+<code>locale_format</code> as "unknown names" are now out of date: SMTP, FTP and time zones ship (see §3.4 and
+§3.5), while locale data does not. Claims that could not be re-run here are labelled as limits rather than
+features.</p>
 
 </body>
 </html>

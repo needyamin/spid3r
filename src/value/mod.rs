@@ -53,6 +53,9 @@ pub struct VmFunc {
     /// `None` on prototypes built before the VM fills it in (the compiler's
     /// and the bytecode reader's paths); the VM then uses its current map.
     pub globals: Option<Arc<Mutex<HashMap<String, Value>>>>,
+    /// Local names and live ranges, for the debugger. Empty for a function
+    /// that came from a `.matrixc` artifact (the format carries no source).
+    pub debug_locals: Vec<crate::vm::bytecode::DebugLocal>,
 }
 
 /// A class compiled to bytecode. Mirrors `ClassData` but methods are `VmFunc`.

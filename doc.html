@@ -3536,7 +3536,7 @@ fn main() {
         <h2 id="first-party-stdlib">First-Party Standard Libraries (<code>./stdlib/</code>)</h2>
 
 
-        <p class="lead">Spid3r ships with <strong>27 zero-dependency first-party standard libraries</strong> in
+        <p class="lead">Spid3r ships with <strong>29 zero-dependency first-party standard libraries</strong> in
           <code>./stdlib/</code> (automatically searched by the module loader, and compiled into the WebAssembly
           build so <code>import</code> works in a browser). Every module runs with 100% feature parity across the
           tree-walking interpreter and the bytecode VM.
@@ -3548,6 +3548,7 @@ fn main() {
           <tr><td><code>web</code>, <code>http</code></td><td>Express-style routing, middleware, cookies, JWT, templates, static files, an HTTP server/client</td></tr>
           <tr><td><code>smtp</code>, <code>ftp</code>, <code>ssh</code></td><td>ESMTP client + RFC 5322/MIME message builder, FTP client (EPSV/PASV, MLSD, byte-exact transfers), and SSH/SFTP via the system OpenSSH client with a validated argv</td></tr>
           <tr><td><code>multipart</code>, <code>session</code>, <code>middleware</code>, <code>fastcgi</code></td><td>binary-safe file uploads, server-side sessions with rotation, a middleware library (CORS, gzip, ETag, rate limit, auth), and a FastCGI responder for nginx/Apache</td></tr>
+          <tr><td><code>mock</code>, <code>testkit</code></td><td>test doubles that record calls, and a fixture runner (temp dir per case, hooks, failure isolation) — with <code>run --coverage</code> for line coverage</td></tr>
           <tr><td><code>tz</code>, <code>unicode</code></td><td>IANA time zones (tzdata 2026e, 343 zones, 1900–2100) with DST-correct day bounds; UAX #15 normalization, case folding and three-strength comparison (UCD 15.1)</td></tr>
           <tr><td><code>dataframe</code></td><td>frames from records/CSV, select/filter/sort/group_by/join, describe</td></tr>
           <tr><td><code>stats</code></td><td>descriptive statistics, correlation, t-test/chi-square, and the distribution family (<code>normal_quantile</code>, binomial, Poisson, exponential)</td></tr>

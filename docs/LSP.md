@@ -36,6 +36,8 @@ CLI can never disagree about whether a file is correct.
 | `textDocument/documentSymbol` | → client | Outline tree: functions, classes (with methods and fields), interfaces, enums (with variants), `let`/`const` |
 | `textDocument/completion` | → client | Every symbol in the file plus the keyword list |
 | `textDocument/formatting` | → client | One whole-document `TextEdit`, from the same formatter as `spid3r fmt` |
+| `textDocument/semanticTokens/full` | → client | Delta-encoded tokens over the whole file (legend below) |
+| `textDocument/codeAction` | → client | Quick fixes for the diagnostics under the cursor |
 | anything else | → client | `-32601 method not supported` |
 
 `textDocumentSync` is advertised as `1` (**Full**): the client sends the entire
@@ -115,11 +117,60 @@ reply verbatim; useful when debugging a client handshake by hand.
 
 ## Not implemented
 
-- Incremental (`textDocumentSync` kinds 2/3) sync.
-- Cross-file navigation, workspace symbols, `signatureHelp`, `codeAction`,
-  `semanticTokens`, `debug` adapter.
+- Incremental (`textDocumentSync` kinds 2/3) sync, and range-based semantic
+  tokens (`semanticTokens/range`) — tokens are computed for the whole file.
+- Cross-file navigation, workspace symbols, `signatureHelp`, `inlayHint`, the
+  `debug` adapter (DAP).
 - `window/logMessage` / telemetry: the server is silent unless it is answering
   a request or publishing diagnostics.
+
+## Semantic tokens
+
+`textDocument/semanticTokens/full` returns the LSP's delta encoding: five
+integers per token (`deltaLine, deltaStartChar, length, tokenType,
+modifiers`), sorted by position. The legend is fixed and its **order is the
+protocol** — index 0 is `type`, 1 is `class`, and so on — so clients map themes
+by position, not by name:
+
+| # | type | # | type |
+|---|---|---|---|
+| 0 | `type` | 8 | `function` |
+| 1 | `class` | 9 | `method` |
+| 2 | `enum` | 10 | `keyword` |
+| 3 | `interface` | 11 | `comment` |
+| 4 | `parameter` | 12 | `string` |
+| 5 | `variable` | 13 | `number` |
+| 6 | `property` | 14 | `operator` |
+| 7 | `enumMember` | 15 | `decorator` |
+
+Modifiers: bit 0 = `declaration`, bit 1 = `readonly` (a `const`).
+
+Classification is not a second analysis. Keywords and literals come from the
+token kind; identifiers are resolved through the same symbol index `hover`
+uses; comments come from the lexer's side-channel (they are not tokens). Two
+cases needed care:
+
+- a parameter's index extent is its function's body, so the token in the
+  signature is outside its own extent — the server falls back to matching the
+  declared name on the declaration line;
+- `fn new()` lexes `new` as a keyword, so a keyword spelling that names a
+  declaration is coloured as that declaration.
+
+Punctuation is deliberately skipped (brackets carry no meaning to a reader).
+
+## Code actions
+
+`textDocument/codeAction` returns quick fixes for the diagnostics whose line
+falls inside the requested range. Only mechanical edits are offered:
+
+| Trigger | Fix |
+|---|---|
+| `unused variable 'x'` / `unused parameter 'x'` | rename to `_x` (the documented "intentionally unused" spelling) |
+| `unused import 'x'` | delete the line |
+| `unknown name 'x'` where `x` is a stdlib module | insert `import "x";` after the last import |
+
+Anything that needs judgement — moving a declaration, changing a signature — is
+not offered: a quick fix that guesses is worse than no quick fix.
 
 ## References & rename (file-scoped)
 

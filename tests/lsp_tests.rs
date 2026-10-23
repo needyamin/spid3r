@@ -923,3 +923,217 @@ fn rename_rejects_an_invalid_identifier() {
     );
     s.finish();
 }
+
+// ------------------------------------------------------- semantic tokens
+
+/// Decode the LSP's delta encoding back into absolute tokens:
+/// `(line, char, length, type, modifiers)`, all 0-based.
+fn decode_tokens(data: &[J]) -> Vec<(i64, i64, i64, i64, i64)> {
+    let nums: Vec<i64> = data.iter().filter_map(|v| v.as_i()).collect();
+    assert_eq!(nums.len() % 5, 0, "semantic token data must be 5-tuples");
+    let mut out = Vec::new();
+    let (mut line, mut ch) = (0i64, 0i64);
+    for chunk in nums.chunks(5) {
+        line += chunk[0];
+        ch = if chunk[0] == 0 {
+            ch + chunk[1]
+        } else {
+            chunk[1]
+        };
+        out.push((line, ch, chunk[2], chunk[3], chunk[4]));
+    }
+    out
+}
+
+/// The legend index of each type, mirroring the server's advertised order.
+fn type_index(name: &str) -> i64 {
+    match name {
+        "type" => 0,
+        "class" => 1,
+        "enum" => 2,
+        "interface" => 3,
+        "parameter" => 4,
+        "variable" => 5,
+        "property" => 6,
+        "enumMember" => 7,
+        "function" => 8,
+        "method" => 9,
+        "keyword" => 10,
+        "comment" => 11,
+        "string" => 12,
+        "number" => 13,
+        "operator" => 14,
+        other => panic!("unknown token type in test: {}", other),
+    }
+}
+
+#[test]
+fn semantic_tokens_classify_keywords_functions_and_literals() {
+    let mut s = Session::start();
+    let src = "// counts things\nfn double(n) {\n  return n * 2;\n}\n";
+    s.open(URI, src);
+    let result = s.request(
+        "textDocument/semanticTokens/full",
+        &format!("{{\"textDocument\":{{\"uri\":\"{}\"}}}}", URI),
+    );
+    let tokens = decode_tokens(
+        result
+            .get("data")
+            .and_then(|d| d.as_arr())
+            .expect("data array"),
+    );
+
+    let at = |line: i64, ch: i64| {
+        tokens
+            .iter()
+            .find(|(l, c, _, _, _)| *l == line && *c == ch)
+            .copied()
+            .unwrap_or_else(|| panic!("no token at {}:{} in {:?}", line, ch, tokens))
+    };
+
+    // line 0: the comment, in full.
+    assert_eq!(at(0, 0).3, type_index("comment"));
+    assert_eq!(at(0, 0).2, "// counts things".len() as i64);
+    // line 1: `fn` keyword, `double` a function declaration, `n` a parameter.
+    assert_eq!(at(1, 0).3, type_index("keyword"));
+    assert_eq!(at(1, 3).3, type_index("function"));
+    assert_eq!(
+        at(1, 3).4 & 1,
+        1,
+        "a declaration carries the declaration bit"
+    );
+    assert_eq!(at(1, 10).3, type_index("parameter"));
+    // line 2: `return` keyword, `n` a variable use, `*` an operator, `2` a number.
+    assert_eq!(at(2, 2).3, type_index("keyword"));
+    assert_eq!(at(2, 9).3, type_index("parameter"));
+    assert_eq!(at(2, 11).3, type_index("operator"));
+    assert_eq!(at(2, 13).3, type_index("number"));
+    s.finish();
+}
+
+#[test]
+fn semantic_tokens_mark_a_class_and_its_methods() {
+    let mut s = Session::start();
+    let src = "class Box {\n  public fn new() {\n    return 1;\n  }\n}\n";
+    s.open(URI, src);
+    let result = s.request(
+        "textDocument/semanticTokens/full",
+        &format!("{{\"textDocument\":{{\"uri\":\"{}\"}}}}", URI),
+    );
+    let tokens = decode_tokens(
+        result
+            .get("data")
+            .and_then(|d| d.as_arr())
+            .expect("data array"),
+    );
+    let find = |needle: &str| {
+        tokens
+            .iter()
+            .find(|(l, c, len, _, _)| {
+                let line = src.lines().nth(*l as usize).unwrap_or("");
+                let start = *c as usize;
+                line.chars()
+                    .skip(start)
+                    .take(*len as usize)
+                    .collect::<String>()
+                    == needle
+            })
+            .copied()
+            .unwrap_or_else(|| panic!("no token spelled '{}' in {:?}", needle, tokens))
+    };
+    assert_eq!(find("Box").3, type_index("class"));
+    assert_eq!(find("new").3, type_index("method"));
+    s.finish();
+}
+
+// ---------------------------------------------------------- code actions
+
+#[test]
+fn code_action_renames_an_unused_variable() {
+    let mut s = Session::start();
+    // `unused` is reported on line 1; the fix is to prefix it with `_`.
+    let src = "fn main() {\n  let unused = 1;\n  return 0;\n}\n";
+    s.open(URI, src);
+    let actions = s.request(
+        "textDocument/codeAction",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"range\":{{\"start\":{{\"line\":1,\"character\":0}},\"end\":{{\"line\":1,\"character\":6}}}},\"context\":{{\"diagnostics\":[]}}}}",
+            URI
+        ),
+    );
+    let list = actions.as_arr().expect("an array of actions");
+    assert!(
+        !list.is_empty(),
+        "an unused variable must offer a quick fix"
+    );
+    let first = &list[0];
+    assert_eq!(first.get("kind").and_then(|k| k.as_str()), Some("quickfix"));
+    let text = first
+        .get("edit")
+        .and_then(|e| e.get("changes"))
+        .and_then(|c| c.get(URI))
+        .and_then(|a| a.as_arr())
+        .and_then(|a| a.first())
+        .and_then(|e| e.get("newText"))
+        .and_then(|t| t.as_str())
+        .expect("an edit with newText");
+    assert_eq!(text, "_unused");
+    s.finish();
+}
+
+#[test]
+fn code_action_adds_a_missing_stdlib_import() {
+    let mut s = Session::start();
+    // `yaml` is a stdlib module, so `yaml.parse(...)` without an import is a
+    // mechanical fix: add the import.
+    let src = "fn main() {\n  let cfg = yaml.parse(\"a: 1\");\n  return 0;\n}\n";
+    s.open(URI, src);
+    let actions = s.request(
+        "textDocument/codeAction",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"range\":{{\"start\":{{\"line\":1,\"character\":0}},\"end\":{{\"line\":1,\"character\":10}}}},\"context\":{{\"diagnostics\":[]}}}}",
+            URI
+        ),
+    );
+    let list = actions.as_arr().expect("an array of actions");
+    let import_action = list
+        .iter()
+        .find(|a| {
+            a.get("title")
+                .and_then(|t| t.as_str())
+                .map(|t| t.contains("import"))
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("expected an import quick fix, got {:?}", list));
+    let text = import_action
+        .get("edit")
+        .and_then(|e| e.get("changes"))
+        .and_then(|c| c.get(URI))
+        .and_then(|a| a.as_arr())
+        .and_then(|a| a.first())
+        .and_then(|e| e.get("newText"))
+        .and_then(|t| t.as_str())
+        .expect("an edit with newText");
+    assert_eq!(text, "import \"yaml\";\n");
+    s.finish();
+}
+
+#[test]
+fn code_action_is_empty_away_from_a_diagnostic() {
+    let mut s = Session::start();
+    let src = "fn main() {\n  let unused = 1;\n  return 0;\n}\n";
+    s.open(URI, src);
+    let actions = s.request(
+        "textDocument/codeAction",
+        &format!(
+            "{{\"textDocument\":{{\"uri\":\"{}\"}},\"range\":{{\"start\":{{\"line\":3,\"character\":0}},\"end\":{{\"line\":3,\"character\":0}}}},\"context\":{{\"diagnostics\":[]}}}}",
+            URI
+        ),
+    );
+    assert_eq!(
+        actions.as_arr().map(|a| a.len()),
+        Some(0),
+        "no diagnostic on that line means no quick fix"
+    );
+    s.finish();
+}

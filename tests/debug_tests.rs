@@ -199,3 +199,91 @@ fn unknown_command_is_reported_without_aborting() {
     );
     assert!(out.contains("commands: continue"), "help missing:\n{}", out);
 }
+
+// --------------------------------------------------- print / watch / repl
+
+const FRAME_PROGRAM: &str = "fn total(items) {\n  let sum = 0;\n  for it in items {\n    sum = sum + it;\n  }\n  return sum;\n}\n\nfn main() {\n  let nums = list(1, 2, 3, 4);\n  let t = total(nums);\n  println(\"total=\" + string(t));\n  return 0;\n}\n";
+
+#[test]
+fn locals_are_reported_by_name() {
+    let s = Session::new("locals_names");
+    let prog = s.write("prog.matrix", FRAME_PROGRAM);
+    let cmds = s.write("cmds.txt", "locals\nquit\n");
+    let (code, out, _) = s.run(&prog, &["--break", "12", "--commands", &cmds]);
+    assert_eq!(code, 3);
+    // The compiler records local names, so the debugger shows `nums = ...`
+    // instead of a bare slot index.
+    assert!(
+        out.contains("nums = [1, 2, 3, 4]"),
+        "locals by name:/n{}",
+        out
+    );
+    assert!(out.contains("t = 10"), "locals by name:/n{}", out);
+}
+
+#[test]
+fn print_evaluates_in_the_paused_frame() {
+    let s = Session::new("print_frame");
+    let prog = s.write("prog.matrix", FRAME_PROGRAM);
+    let cmds = s.write(
+        "cmds.txt",
+        "print t\nprint t * 2\nprint len(nums)\nprint nums[1]\nquit\n",
+    );
+    let (code, out, _) = s.run(&prog, &["--break", "12", "--commands", &cmds]);
+    assert_eq!(code, 3);
+    assert!(out.contains("\n10\n"), "print t:/n{}", out);
+    assert!(out.contains("\n20\n"), "print t * 2:\n{}", out);
+    assert!(out.contains("\n4\n"), "print len(nums):\n{}", out);
+    assert!(out.contains("\n2\n"), "print nums[1]:\n{}", out);
+}
+
+#[test]
+fn a_local_out_of_scope_is_not_visible() {
+    let s = Session::new("scope");
+    let prog = s.write("prog.matrix", FRAME_PROGRAM);
+    // Break at the `return`, after the loop body's scope has ended: `sum` is
+    // still live, `it` is not. A stale slot would answer with the last value.
+    let cmds = s.write("cmds.txt", "print sum\nprint it\nquit\n");
+    let (code, out, _) = s.run(&prog, &["--break", "6", "--commands", &cmds]);
+    assert_eq!(code, 3);
+    assert!(out.contains("\n10\n"), "sum at the return://n{}", out);
+    assert!(
+        out.contains("error: unknown name 'it'"),
+        "out-of-scope local should not resolve://n{}",
+        out
+    );
+}
+
+#[test]
+fn watch_is_re_evaluated_at_every_pause() {
+    let s = Session::new("watch");
+    let prog = s.write("prog.matrix", FRAME_PROGRAM);
+    // Watch is added at the first pause; the second pause must print it.
+    let cmds = s.write("cmds.txt", "watch t\nwatch len(nums)\ncontinue\nquit\n");
+    let (code, out, _) = s.run(&prog, &["--break", "12,13", "--commands", &cmds]);
+    assert_eq!(code, 3);
+    assert!(out.contains("watch[0] = t"), "watch registered:/n{}", out);
+    assert!(out.contains("watch[0] t = 10"), "watch value:/n{}", out);
+    assert!(
+        out.contains("watch[1] len(nums) = 4"),
+        "watch value:/n{}",
+        out
+    );
+}
+
+#[test]
+fn repl_evaluates_expressions_until_a_command() {
+    let s = Session::new("repl");
+    let prog = s.write("prog.matrix", FRAME_PROGRAM);
+    let cmds = s.write("cmds.txt", "repl\nlen(nums) + 100\nnums[0] * 5\ncontinue\n");
+    let (code, out, _) = s.run(&prog, &["--break", "12", "--commands", &cmds]);
+    // `continue` inside the REPL leaves it and resumes, so the program finishes.
+    assert_eq!(code, 0);
+    assert!(out.contains("\n104\n"), "repl expression:/n{}", out);
+    assert!(out.contains("\n5\n"), "repl expression:/n{}", out);
+    assert!(
+        out.contains("total=10"),
+        "program should run to the end:/n{}",
+        out
+    );
+}

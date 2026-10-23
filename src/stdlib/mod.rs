@@ -58,6 +58,8 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("write_file", n_write_file),
         ("file_exists", n_file_exists),
         ("file_delete", n_file_delete),
+        ("dir_create", n_dir_create),
+        ("dir_remove", n_dir_remove),
         ("sleep_ms", n_sleep_ms),
         ("now", n_now),
         ("env", n_env),
@@ -1993,6 +1995,42 @@ fn n_bytes_concat(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         }
     }
     Ok(Value::Bytes(new_ref(out)))
+}
+
+/// `dir_create(path)` -> `ok(true)` when created, `ok(false)` when it already
+/// existed, `err(msg)` otherwise. Creates parents.
+fn n_dir_create(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let path = want_str(&one("dir_create", &args)?, "dir_create")?;
+    if std::path::Path::new(&path).is_dir() {
+        return collections::construct("ok", vec![Value::Bool(false)]);
+    }
+    match std::fs::create_dir_all(&path) {
+        Ok(()) => collections::construct("ok", vec![Value::Bool(true)]),
+        Err(e) => collections::construct(
+            "err",
+            vec![Value::Str(
+                format!("cannot create '{}': {}", path, e).into(),
+            )],
+        ),
+    }
+}
+
+/// `dir_remove(path)` -> `ok(true)` when removed, `ok(false)` when absent.
+/// Recursive: a test fixture that leaves a directory behind is a bug.
+fn n_dir_remove(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let path = want_str(&one("dir_remove", &args)?, "dir_remove")?;
+    if !std::path::Path::new(&path).exists() {
+        return collections::construct("ok", vec![Value::Bool(false)]);
+    }
+    match std::fs::remove_dir_all(&path) {
+        Ok(()) => collections::construct("ok", vec![Value::Bool(true)]),
+        Err(e) => collections::construct(
+            "err",
+            vec![Value::Str(
+                format!("cannot remove '{}': {}", path, e).into(),
+            )],
+        ),
+    }
 }
 
 fn n_read_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
