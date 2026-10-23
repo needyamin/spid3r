@@ -23,6 +23,19 @@ fn ok_job(counter: Arc<AtomicUsize>) -> Box<dyn FnOnce() -> TaskOutcome + Send +
     })
 }
 
+/// `join()` returns the moment a job's result is published; the worker then
+/// decrements `live_tasks` a few instructions later (see `task_finished` in
+/// `src/sched/mod.rs`, and the same settle noted in
+/// `shared_scheduler_restarts_after_shutdown`). Poll the pool's live count until
+/// it settles to zero so the assertion is authoritative instead of racing the
+/// worker thread on a loaded runner (windows-latest CI, in particular).
+fn settle_live_tasks(sched: &Scheduler, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while sched.live_tasks() != 0 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// The ready queue must never exceed its bound, and a producer must actually
 /// park when it is full (backpressure, not silent growth): with one worker and
 /// a cap of one, a second spawn blocks until the worker frees a slot, and every
@@ -117,6 +130,10 @@ fn shutdown_joins_all_workers() {
         h.join().expect("job must succeed");
     }
     assert_eq!(done.load(Ordering::SeqCst), 16);
+    // The worker decrements `live_tasks` only after publishing the result that
+    // `join()` waits on, so give the pool a moment to settle (see
+    // `settle_live_tasks`).
+    settle_live_tasks(&sched, Duration::from_secs(5));
     assert_eq!(sched.live_tasks(), 0);
 
     assert!(sched.shutdown(), "a drained pool must shut down cleanly");
@@ -227,6 +244,9 @@ fn spawning_on_a_stopped_pool_runs_the_job_instead_of_hanging() {
         .join()
         .expect("a job spawned after shutdown must still complete");
     assert_eq!(done.load(Ordering::SeqCst), 1);
+    // Same settle as `shutdown_joins_all_workers`: `join()` returns before the
+    // worker decrements `live_tasks` (see `settle_live_tasks`).
+    settle_live_tasks(&sched, Duration::from_secs(5));
     assert_eq!(sched.live_tasks(), 0);
     assert_eq!(sched.queued_jobs(), 0);
 }
