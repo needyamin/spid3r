@@ -1095,6 +1095,23 @@ impl Parser {
                     }
                     if name == "_" {
                         Ok(Pattern::Wild)
+                    } else if name
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_uppercase())
+                    {
+                        // A bare PascalCase identifier is a *payload-less enum
+                        // variant* pattern (e.g. `Point` for
+                        // `enum Shape { ..., Point }`), not a catch-all bind.
+                        // Classifying it as `Bind` silently matched every
+                        // value and returned the first arm's body regardless of
+                        // the actual variant (see tests/language_surface.rs
+                        // `Point => 0` and the stage3_match regression test).
+                        Ok(Pattern::Variant {
+                            name,
+                            args: Vec::new(),
+                            span: sp,
+                        })
                     } else {
                         Ok(Pattern::Bind(name))
                     }

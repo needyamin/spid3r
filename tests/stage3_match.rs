@@ -51,6 +51,19 @@ fn a_variant_constructs_a_tagged_value_and_match_reads_it() {
     both("match_basic", &src, "12\n12\n0");
 }
 
+/// Regression: a bare PascalCase identifier in a pattern is a *payload-less
+/// enum variant*, not a catch-all bind. Before the fix `Red`/`Green`/`Blue`
+/// were parsed as bindings, which match *every* value, so the first arm's body
+/// (`"red"`) was returned for all three inputs instead of the matched variant.
+#[test]
+fn bare_variant_pattern_is_not_a_catch_all_bind() {
+    both(
+        "match_bare_variant",
+        "enum Color { Red, Green, Blue }\nfn pick(c) {\n    return match (c) {\n        Red => \"red\",\n        Green => \"green\",\n        Blue => \"blue\",\n    };\n}\nfn main() {\n    println(pick(Red()));\n    println(pick(Green()));\n    println(pick(Blue()));\n    return 0;\n}\n",
+        "red\ngreen\nblue",
+    );
+}
+
 /// Arms are tried top to bottom, and a failed *guard* falls through to the next
 /// arm rather than failing the match.
 #[test]
