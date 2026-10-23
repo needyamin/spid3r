@@ -586,6 +586,7 @@ impl Lower {
                 name: None,
                 params: vec![emit],
                 ret: None,
+                type_params: Vec::new(),
                 body,
                 span: f.span.clone(),
             }));
@@ -851,6 +852,7 @@ impl Lower {
                     })
                     .collect(),
                 ret: None,
+                type_params: Vec::new(),
                 body: Block {
                     stmts: body,
                     span: span.clone(),

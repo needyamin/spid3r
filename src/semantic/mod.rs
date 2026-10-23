@@ -119,6 +119,10 @@ struct Checker {
     warnings: Vec<Diagnostic>,
     /// Extra module search roots for embedded runs (host `add_module_dir`).
     module_dirs: Vec<std::path::PathBuf>,
+    /// Erased generic parameter names, innermost last. A declaration's own
+    /// `type_params` are pushed while its body (and its annotations) are
+    /// checked, so `-> T` resolves as a type name instead of "unknown type".
+    type_params: Vec<Vec<String>>,
 }
 
 pub fn check(program: &Program, is_main: bool) -> SpidResult<()> {
@@ -256,6 +260,7 @@ impl Checker {
             variant_enum: HashMap::new(),
             externals: HashSet::new(),
             module_dirs: Vec::new(),
+            type_params: Vec::new(),
         }
     }
 }
@@ -1494,6 +1499,9 @@ impl Checker {
                 Ok(())
             }
             Stmt::Fn(f) => {
+                // Erased generics: make the parameter names visible to the
+                // return-type annotation and the body (so `-> T` resolves).
+                self.type_params.push(f.type_params.clone());
                 if f.params.iter().any(|p| p.name == "self") {
                     return Err(self.err(&f.span, "self is only allowed in methods"));
                 }
@@ -1579,16 +1587,19 @@ impl Checker {
                 self.pop_scope();
                 self.in_async = was_async;
                 self.fn_depth -= 1;
+                self.type_params.pop();
                 r
             }
             Stmt::Class(c) => {
                 self.current_class = Some(c.name.clone());
+                self.type_params.push(c.type_params.clone());
                 // method bodies: self + fields in scope
                 for m in &c.methods {
                     self.fn_depth += 1;
                     let was_async = self.in_async;
                     self.in_async = m.is_async;
                     self.push_scope();
+                    self.type_params.push(m.type_params.clone());
                     let is_ctor = m.name.as_deref() == Some("new");
                     if is_ctor {
                         // constructor parameters do not include self, but the
@@ -1660,11 +1671,13 @@ impl Checker {
                     let r = self.check_stmts(&m.body.stmts);
                     self.current_ret = saved_ret;
                     self.pop_scope();
+                    self.type_params.pop();
                     self.in_async = was_async;
                     self.fn_depth -= 1;
                     r?;
                 }
                 self.current_class = None;
+                self.type_params.pop();
                 Ok(())
             }
             Stmt::Interface(_) => Ok(()),
@@ -2474,6 +2487,8 @@ impl Checker {
         if TYPES.iter().any(|t| t.eq_ignore_ascii_case(name))
             || self.classes.contains_key(name)
             || self.interfaces.contains_key(name)
+            // An erased generic parameter is in scope for its own declaration.
+            || self.type_params.iter().any(|level| level.iter().any(|p| p == name))
         {
             Ok(())
         } else {

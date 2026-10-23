@@ -408,8 +408,8 @@ impl Parser {
         if name.is_none() && !allow_anon {
             return Err(self.err_here("a function declaration needs a name"));
         }
-        // `fn first<T>(xs: [T]) -> T` - type parameters are erased.
-        self.skip_type_params()?;
+        // `fn first<T>(xs: [T]) -> T` - the names are captured, then erased.
+        let type_params = self.parse_type_params()?;
         let params = self.parse_params()?;
         let ret = if self.eat(&TokenKind::Arrow) {
             Some(self.parse_type()?)
@@ -424,6 +424,7 @@ impl Parser {
             name,
             params,
             ret,
+            type_params,
             body,
             span,
         })
@@ -502,16 +503,22 @@ impl Parser {
 
     /// Skip a `<T, U>` type-parameter list (erased: Spid3r is dynamically
     /// typed, so parameters document intent and the checker records nothing).
-    fn skip_type_params(&mut self) -> SpidResult<()> {
+    /// `fn first<T>(xs)` - the names are captured (and then erased) so the
+    /// checker can resolve `-> T` as a type name. Nested angle brackets
+    /// (`Map<K, V>`) are balanced, not parsed as constraints.
+    fn parse_type_params(&mut self) -> SpidResult<Vec<String>> {
         if !self.at(&TokenKind::Lt) {
-            return Ok(());
+            return Ok(Vec::new());
         }
         self.pos += 1;
+        let mut names = Vec::new();
         let mut depth = 1usize;
         while depth > 0 {
             match self.kind() {
                 TokenKind::Lt => depth += 1,
                 TokenKind::Gt => depth -= 1,
+                TokenKind::Comma if depth == 1 => {}
+                TokenKind::Ident(name) if depth == 1 => names.push(name.clone()),
                 TokenKind::Eof => {
                     return Err(self.err_here("unterminated type parameter list"));
                 }
@@ -519,14 +526,14 @@ impl Parser {
             }
             self.pos += 1;
         }
-        Ok(())
+        Ok(names)
     }
 
     fn parse_class(&mut self, vis: Vis, is_abstract: bool) -> SpidResult<ClassDecl> {
         let start = self.expect_kw(Keyword::Class)?;
         let (name, _) = self.expect_ident()?;
-        // `class Box<T>` - type parameters are erased (see skip_type_params).
-        self.skip_type_params()?;
+        // `class Box<T>` - the names are captured, then erased.
+        let type_params = self.parse_type_params()?;
         let parent = if self.eat_kw(Keyword::Extends) {
             Some(self.expect_ident()?.0)
         } else {
@@ -588,6 +595,7 @@ impl Parser {
                     name: Some(mname),
                     params,
                     ret,
+                    type_params: Vec::new(),
                     body: Block {
                         stmts: Vec::new(),
                         span: semi.clone(),
@@ -612,6 +620,7 @@ impl Parser {
                     name: Some("new".to_string()),
                     params,
                     ret: None,
+                    type_params: Vec::new(),
                     body,
                     span: join(sp, body_span),
                 });
@@ -630,6 +639,7 @@ impl Parser {
             name,
             parent,
             interfaces,
+            type_params,
             fields,
             methods,
             span: join(start, end),

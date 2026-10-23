@@ -158,11 +158,17 @@ fn first<T>(xs) { return xs[0]; }
 
 fn identity<T>(x) { return x; }
 
+// An erased-generic return annotation was once rejected with "unknown type 'T'":
+// the parameter name is captured by the parser but the checker must put it in
+// scope for the body and the annotation to resolve. (Regression guard.)
+fn head<T>(xs) -> T { return xs[0]; }
+
 fn main() {
     let b = new Box(7);
     assert_eq(b.get(), 7);
     assert_eq(first([3, 4, 5]), 3);
     assert_eq(identity("x"), "x");
+    assert_eq(head([9, 8, 7]), 9);
     return 0;
 }
 "#;
