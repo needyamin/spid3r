@@ -1,0 +1,235 @@
+// stdlib/unicode.matrix - normalization, case folding and comparison,
+// written in Spid3r on top of the Unicode natives.
+//
+//   import "unicode";
+//
+//   unicode_nfc("e" + chr(769)) == "é";        // true - canonical equivalence
+//   unicode_nfd("é").len() == 2;               // "e" + combining acute
+//   unicode_caseless_equal("STRASSE", "straße"); // true
+//   unicode_compare("café", "cafe", 1) == 0;   // primary strength ignores accents
+//   unicode_slug("Crème Brûlée") == "creme-brulee";
+//
+// The algorithm is UAX #15 (NFC/NFD/NFKC/NFKD) and UAX #31 case folding,
+// implemented as natives over tables generated from the UCD; see
+// src/stdlib/unicode.rs and tools/gen_unicode_tables.py. Nothing here
+// re-implements the algorithm - this module is the vocabulary on top.
+//
+// ---------------------------------------------------------------------------
+// What "comparison" means here, precisely.
+//
+// Unicode collation (UCA) is driven by DUCET, a multi-megabyte table of
+// weights with per-locale tailoring (Swedish sorts å/ä/ö after z; German
+// phonebook sorts ö as oe). That table is not in this repository and is not
+// shipped here, so this module does **not** pretend to implement it.
+//
+// What it does implement is the three-level strength model from UTS #10,
+// using code points as the within-level order:
+//
+//   strength 1 (primary)   case- and accent-insensitive: "cafe" == "café"
+//   strength 2 (secondary) case-insensitive, accents matter: "café" != "cafe"
+//   strength 3 (tertiary)  exact: NFC codepoint order
+//
+// That covers the cases that actually break applications - matching, search,
+// deduplication, sorting a name column so "Émile" lands next to "Emile" - and
+// it is deterministic across engines and platforms, which locale-dependent
+// `strcoll` is not. If you need Swedish or German-phonebook ordering, that is
+// a locale tailoring layer and it does not exist yet; the doc says so instead
+// of shipping an approximation under the name "collation".
+// ---------------------------------------------------------------------------
+
+// ------------------------------------------------------------ forms
+
+/// Canonical composition (the form to store and compare).
+public fn unicode_nfc(text) {
+    return unicode_normalize(text, "NFC");
+}
+
+/// Canonical decomposition (the form to inspect, count or strip).
+public fn unicode_nfd(text) {
+    return unicode_normalize(text, "NFD");
+}
+
+/// Compatibility composition: "ﬁ" -> "fi", "①" -> "1", full-width -> ASCII.
+public fn unicode_nfkc(text) {
+    return unicode_normalize(text, "NFKC");
+}
+
+/// Compatibility decomposition.
+public fn unicode_nfkd(text) {
+    return unicode_normalize(text, "NFKD");
+}
+
+/// True when `text` is already in the given form (no normalization needed).
+public fn unicode_is_nfc(text) {
+    return unicode_is_normalized(text, "NFC");
+}
+
+/// Canonical equivalence: two strings that render identically and mean the
+/// same thing, regardless of how they were encoded.
+public fn unicode_equal(a, b) {
+    return unicode_nfc(a) == unicode_nfc(b);
+}
+
+// ------------------------------------------------------------ folding
+
+/// Default caseless matching (UAX #31): casefold, then compare canonically.
+///
+/// This is the correct way to compare identifiers and search terms. Note that
+/// it is *not* `lower()`: "ß" folds to "ss" and "İ" folds to "i" + combining
+/// dot, which is why `lower()` gives the wrong answer for Turkish and German.
+public fn unicode_caseless_equal(a, b) {
+    return unicode_nfc(unicode_casefold(unicode_nfc(a)))
+        == unicode_nfc(unicode_casefold(unicode_nfc(b)));
+}
+
+/// Case-folded, accent-stripped form: the key for a forgiving search index.
+///
+/// "Café" and "CAFE" both become "cafe", while "café" and "cafe" stay
+/// distinguishable through `unicode_caseless_equal` when that matters.
+public fn unicode_search_key(text) {
+    return unicode_casefold(unicode_strip_marks(text));
+}
+
+// ------------------------------------------------------------ comparison
+
+fn strength_of(level) {
+    if level == null {
+        return 3;
+    }
+    let n = int(level);
+    if n < 1 or n > 3 {
+        throw "unicode: strength must be 1 (primary), 2 (secondary) or 3 (tertiary)";
+    }
+    return n;
+}
+
+/// The sort key for a string at a given strength.
+///
+/// Returned as a list of code points so it can be cached, compared, or fed to
+/// `sort_by` - building the key once and sorting on it is the only way to sort
+/// a list without re-normalizing on every comparison.
+public fn unicode_sort_key(text, level = 3) {
+    let strength = strength_of(level);
+    if strength == 1 {
+        return unicode_search_key(text).chars().map(fn(c) { return ord(c); });
+    }
+    if strength == 2 {
+        return unicode_casefold(unicode_nfc(text)).chars().map(fn(c) { return ord(c); });
+    }
+    return unicode_nfc(text).chars().map(fn(c) { return ord(c); });
+}
+
+/// Compare two sort keys (both already built) lexicographically.
+public fn unicode_compare_keys(ka, kb) {
+    let n = min(len(ka), len(kb));
+    let i = 0;
+    while i < n {
+        if ka[i] < kb[i] {
+            return -1;
+        }
+        if ka[i] > kb[i] {
+            return 1;
+        }
+        i += 1;
+    }
+    if len(ka) < len(kb) {
+        return -1;
+    }
+    if len(ka) > len(kb) {
+        return 1;
+    }
+    return 0;
+}
+
+/// Compare two strings: -1, 0 or 1, at the given strength (default 3).
+public fn unicode_compare(a, b, level = 3) {
+    return unicode_compare_keys(unicode_sort_key(a, level), unicode_sort_key(b, level));
+}
+
+/// Sort a list of strings by the given strength (returns a new list).
+public fn unicode_sort(strings, level = 3) {
+    let keyed = list();
+    let i = 0;
+    for s in strings {
+        keyed.push(map("key", unicode_sort_key(s, level), "value", s, "at", i));
+        i += 1;
+    }
+    keyed.sort_by(fn(a, b) {
+        let c = unicode_compare_keys(a["key"], b["key"]);
+        if c != 0 {
+            return c;
+        }
+        return a["at"] - b["at"];
+    });
+    let out = list();
+    for e in keyed {
+        out.push(e["value"]);
+    }
+    return out;
+}
+
+// ------------------------------------------------------------ helpers
+
+/// How many user-perceived characters a string has, approximately.
+///
+/// This counts base characters plus one per combining-mark run (a character
+/// with combining class 0 starts a new cluster). That is correct for accented
+/// text and for scripts that use marks, but it is **not** UAX #29 grapheme
+/// clustering: emoji ZWJ sequences and regional-indicator flags count as more
+/// than one, because those need the GraphemeBreakProperty table.
+public fn unicode_cluster_len(text) {
+    let n = 0;
+    for c in text.chars() {
+        if unicode_combining_class(c) == 0 {
+            n += 1;
+        }
+    }
+    return n;
+}
+
+/// A URL slug: NFKD, strip marks, lowercase, runs of non-alphanumerics to "-".
+///
+/// ASCII-only by design - the result is safe in a path segment without
+/// percent-encoding. Text with no Latin base letters (e.g. Chinese) becomes an
+/// empty string; that is deliberate, because inventing a transliteration
+/// ("ni hao") is a different feature with a much larger table.
+public fn unicode_slug(text) {
+    let folded = unicode_strip_marks(unicode_casefold(unicode_nfkd(text)));
+    let out = "";
+    let pending_dash = false;
+    for c in folded.chars() {
+        let o = ord(c);
+        let alnum = (o >= 48 and o <= 57) or (o >= 97 and o <= 122);
+        if alnum {
+            if pending_dash and out != "" {
+                out = out + "-";
+            }
+            pending_dash = false;
+            out = out + c;
+        } else {
+            pending_dash = true;
+        }
+    }
+    return out;
+}
+
+/// Truncate to at most `n` user-perceived characters without splitting a
+/// base character from its combining marks.
+public fn unicode_truncate(text, n) {
+    if n <= 0 {
+        return "";
+    }
+    let count = 0;
+    let out = "";
+    for c in text.chars() {
+        let starts = unicode_combining_class(c) == 0;
+        if starts and count >= n {
+            break;
+        }
+        if starts {
+            count += 1;
+        }
+        out = out + c;
+    }
+    return out;
+}

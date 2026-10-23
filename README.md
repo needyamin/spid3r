@@ -155,6 +155,14 @@ fn main() {
 - **`stdlib/ssh.matrix`**: `ssh_exec` and SFTP (`sftp_get`/`put`/`batch`) by driving the system OpenSSH client
   with a validated argv — no shell, no `ProxyCommand`, `BatchMode=yes`, host keys verified by default. Not a
   protocol implementation: a hand-rolled SSH stack is a security hole, not a feature.
+- **`stdlib/tz.matrix`**: IANA time zones from a generated tzdata 2026e table (343 zones + 255 links,
+  transitions authoritative 1900–2100): `tz_iso`, `tz_parts_of`, `tz_make`, `tz_day_bounds` (23/24/25-hour
+  days), `tz_add_days` (wall-clock preserving across DST), `tz_http_date`. `format_datetime` gained
+  `%z`/`%Z`/`%a`/`%b`/`%j` and friends.
+- **`stdlib/unicode.matrix`**: UAX #15 NFC/NFD/NFKC/NFKD and full case folding from UCD 15.1 tables —
+  `unicode_equal("é", "e" + U+0301)` is true, `unicode_caseless_equal("STRASSE", "straße")` is true,
+  `unicode_nfkc("ﬁ") == "fi"` — plus three-strength comparison, sort keys, `unicode_search_key` and
+  `unicode_slug`. Not UCA/DUCET: ordering within a level is by code point, with no locale tailoring.
 
 ---
 

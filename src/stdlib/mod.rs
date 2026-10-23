@@ -18,6 +18,9 @@ pub mod redis;
 pub mod regex;
 pub mod serialize;
 pub mod signal;
+pub mod tz;
+pub mod unicode;
+mod unicode_tables;
 
 use std::cell::Cell;
 use std::sync::Arc;
@@ -150,6 +153,8 @@ pub fn native_defs() -> Vec<NativeDef> {
     defs.extend(redis::native_defs());
     defs.extend(postgres::native_defs());
     defs.extend(mysql::native_defs());
+    defs.extend(unicode::native_defs());
+    defs.extend(tz::native_defs());
     defs
 }
 

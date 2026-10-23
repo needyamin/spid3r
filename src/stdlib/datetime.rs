@@ -96,12 +96,71 @@ pub fn datetime_from_parts(
     Ok(sec)
 }
 
-/// Format an epoch timestamp with strftime-like specifiers:
-/// %Y (4-digit year), %m (2-digit month), %d (2-digit day),
-/// %H (2-digit hour 24h), %M (2-digit minute), %S (2-digit second),
-/// %w (weekday 0=Sun), %F (%Y-%m-%d), %T (%H:%M:%S), %% (%)
-pub fn format_datetime(epoch_sec: i64, fmt_str: &str) -> String {
-    let (year, month, day, hour, minute, second, weekday) = datetime_parts(epoch_sec);
+const DAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAY_NAMES_LONG: [&str; 7] = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+];
+const MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+const MONTH_NAMES_LONG: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+/// Cumulative days before each month in a non-leap year.
+const DAYS_BEFORE_MONTH: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+
+fn is_leap(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// `+HHMM`, or `+HHMMSS` when the offset has a seconds component (historical
+/// LMT offsets such as +02:27:16 do, and dropping the seconds would round a
+/// timestamp by up to a minute).
+fn format_offset(offset_secs: i32) -> String {
+    let sign = if offset_secs < 0 { '-' } else { '+' };
+    let a = offset_secs.unsigned_abs();
+    let (h, m, s) = (a / 3600, (a % 3600) / 60, a % 60);
+    if s == 0 {
+        format!("{}{:02}{:02}", sign, h, m)
+    } else {
+        format!("{}{:02}{:02}{:02}", sign, h, m, s)
+    }
+}
+
+/// Format an already-localized timestamp with strftime-like specifiers.
+///
+/// `local_epoch` is the instant *after* the zone offset has been applied;
+/// `offset_secs` and `abbr` are only used by `%z` and `%Z`. `format_datetime`
+/// calls this with UTC, so a caller that has no zone still gets `%z` = `+0000`.
+///
+/// %Y (4-digit year), %m (2-digit month), %d (2-digit day), %e (space-padded
+/// day), %H (24h hour), %I (12h hour), %M (minute), %S (second), %p (AM/PM),
+/// %a/%A (short/long weekday), %b/%B (short/long month), %j (day of year),
+/// %w (weekday 0=Sun), %u (ISO weekday 1=Mon), %z (+HHMM[SS]), %Z (zone
+/// abbreviation), %F (%Y-%m-%d), %T (%H:%M:%S), %% (%).
+pub fn format_parts(local_epoch: i64, offset_secs: i32, abbr: &str, fmt_str: &str) -> String {
+    let (year, month, day, hour, minute, second, weekday) = datetime_parts(local_epoch);
+    let month_idx = (month as usize).saturating_sub(1).min(11);
+    let day_of_year =
+        DAYS_BEFORE_MONTH[month_idx] + day + if is_leap(year) && month > 2 { 1 } else { 0 };
+    let iso_weekday = if weekday == 0 { 7 } else { weekday };
     let mut out = String::new();
     let chars: Vec<char> = fmt_str.chars().collect();
     let mut i = 0;
@@ -112,10 +171,24 @@ pub fn format_datetime(epoch_sec: i64, fmt_str: &str) -> String {
                 'Y' => out.push_str(&format!("{:04}", year)),
                 'm' => out.push_str(&format!("{:02}", month)),
                 'd' => out.push_str(&format!("{:02}", day)),
+                'e' => out.push_str(&format!("{:2}", day)),
                 'H' => out.push_str(&format!("{:02}", hour)),
+                'I' => {
+                    let h12 = if hour % 12 == 0 { 12 } else { hour % 12 };
+                    out.push_str(&format!("{:02}", h12));
+                }
+                'p' => out.push_str(if hour < 12 { "AM" } else { "PM" }),
                 'M' => out.push_str(&format!("{:02}", minute)),
                 'S' => out.push_str(&format!("{:02}", second)),
+                'a' => out.push_str(DAY_NAMES[(weekday as usize).min(6)]),
+                'A' => out.push_str(DAY_NAMES_LONG[(weekday as usize).min(6)]),
+                'b' => out.push_str(MONTH_NAMES[month_idx]),
+                'B' => out.push_str(MONTH_NAMES_LONG[month_idx]),
+                'j' => out.push_str(&format!("{:03}", day_of_year)),
                 'w' => out.push_str(&weekday.to_string()),
+                'u' => out.push_str(&iso_weekday.to_string()),
+                'z' => out.push_str(&format_offset(offset_secs)),
+                'Z' => out.push_str(abbr),
                 'F' => out.push_str(&format!("{:04}-{:02}-{:02}", year, month, day)),
                 'T' => out.push_str(&format!("{:02}:{:02}:{:02}", hour, minute, second)),
                 '%' => out.push('%'),
@@ -130,6 +203,12 @@ pub fn format_datetime(epoch_sec: i64, fmt_str: &str) -> String {
         i += 1;
     }
     out
+}
+
+/// Format an epoch timestamp as UTC. See `format_parts` for the specifiers;
+/// `%z` is always `+0000` and `%Z` is `UTC`.
+pub fn format_datetime(epoch_sec: i64, fmt_str: &str) -> String {
+    format_parts(epoch_sec, 0, "UTC", fmt_str)
 }
 
 #[cfg(test)]

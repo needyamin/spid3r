@@ -474,6 +474,19 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "datetime_parts",
     "datetime_from_parts",
     "format_datetime",
+    // time zones (src/stdlib/tz.rs) and Unicode (src/stdlib/unicode.rs)
+    "tz_names",
+    "tz_info",
+    "tz_parts",
+    "tz_from_parts",
+    "tz_format",
+    "tz_version",
+    "unicode_normalize",
+    "unicode_is_normalized",
+    "unicode_casefold",
+    "unicode_strip_marks",
+    "unicode_combining_class",
+    "unicode_version",
     // sqlite database (src/stdlib/db.rs)
     "db_open",
 ];

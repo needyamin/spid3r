@@ -27,7 +27,10 @@ use std::sync::Arc;
 fn run_tree(src: &str) -> Result<i32, Diagnostic> {
     let program = parser::parse_file(src, Arc::from("mail_ftp_test.matrix"))?;
     semantic::check_file(&program, true, "mail_ftp_test.matrix")?;
-    let interp = Interp::new(Arc::from("mail_ftp_test.matrix"), modules::default_module_dirs());
+    let interp = Interp::new(
+        Arc::from("mail_ftp_test.matrix"),
+        modules::default_module_dirs(),
+    );
     interp.run_program(&program)
 }
 

@@ -1,0 +1,216 @@
+// stdlib/tz.matrix - IANA time zones, written in Spid3r on top of the
+// generated tz database.
+//
+//   import "tz";
+//
+//   tz_iso("Europe/Berlin", 1761000000);        // "2025-10-21T00:40:00+02:00"
+//   tz_offset("America/New_York", 1761000000);  // -14400
+//   tz_parts_of("Asia/Shanghai", now());        // {year: .., hour: .., offset: 28800, ..}
+//   tz_make("Asia/Shanghai", 2025, 10, 21, 8, 0, 0);   // -> unix seconds
+//   tz_day_bounds("Asia/Shanghai", now());      // {start, end} for the local day
+//
+// The table (src/stdlib/tzdata.bin) is generated from the IANA tz database by
+// tools/gen_tzdata.py: 343 canonical zones plus 255 links, transitions
+// authoritative from 1900 to 2100, and every zone verified against CPython's
+// `zoneinfo` at every transition ±1 s plus a monthly sweep of the whole range.
+// tz_data_version() reports the release (e.g. "2026e").
+//
+// Ambiguity policy, stated once: a local time that occurs twice (the hour
+// repeated when DST ends) resolves to the **earlier** instant, and a local
+// time that does not exist (skipped when DST starts) is pushed forward by the
+// size of the gap. That is what CPython's `fold=0` and java.time do, and it is
+// the only policy that never fails on a timestamp a user typed.
+//
+// Not provided: a locale database. Month and weekday names in %a/%b/%A/%B are
+// English; translated names, first-day-of-week and locale number formats are
+// CLDR data and are not in this repository.
+//
+// The natives this module wraps are tz_names, tz_info, tz_parts, tz_from_parts,
+// tz_format and tz_version. The wrappers below deliberately use different
+// names: a module function with the same name as a native shadows it inside
+// this module, so `fn tz_parts(...)` could not call `tz_parts(...)`.
+
+// ------------------------------------------------------------ names
+
+/// Every known zone and link, sorted. `prefix` filters ("Asia/" for Asia).
+public fn tz_zones(prefix) {
+    let all = tz_names();
+    if prefix == null or prefix == "" {
+        return all;
+    }
+    let out = list();
+    for name in all {
+        if name.starts_with(prefix) {
+            out.push(name);
+        }
+    }
+    return out;
+}
+
+/// True when the zone (or a link to it) exists.
+public fn tz_valid(zone) {
+    return tz_info(zone, 0).is_ok();
+}
+
+/// The IANA tz database release the table was built from ("2026e").
+public fn tz_data_version() {
+    return tz_version();
+}
+
+// ------------------------------------------------------------ offsets
+
+fn info_of(zone, ts) {
+    let r = tz_info(zone, ts);
+    if r.is_err() {
+        throw "tz: " + r.unwrap_err();
+    }
+    return r.unwrap();
+}
+
+/// UTC offset in seconds east of Greenwich at that instant.
+public fn tz_offset(zone, ts) {
+    return info_of(zone, ts)["offset"];
+}
+
+/// The zone abbreviation in effect ("CET", "CEST", "EDT", "+0545").
+public fn tz_abbr(zone, ts) {
+    return info_of(zone, ts)["abbr"];
+}
+
+/// True when daylight saving time is in effect at that instant.
+public fn tz_is_dst(zone, ts) {
+    return info_of(zone, ts)["isdst"];
+}
+
+/// Difference between two zones' offsets at the same instant, in seconds.
+public fn tz_diff(zone_a, zone_b, ts) {
+    return tz_offset(zone_a, ts) - tz_offset(zone_b, ts);
+}
+
+// ------------------------------------------------------------ civil time
+
+/// Civil parts for a zone: year, month, day, hour, minute, second, weekday
+/// (0 = Sunday), offset, abbr, isdst.
+public fn tz_parts_of(zone, ts) {
+    let r = tz_parts(zone, ts);
+    if r.is_err() {
+        throw "tz: " + r.unwrap_err();
+    }
+    return r.unwrap();
+}
+
+/// A wall-clock time in `zone` -> unix seconds.
+///
+/// Ambiguous times resolve to the earlier instant; times inside a DST gap are
+/// pushed forward past the gap.
+public fn tz_make(zone, year, month, day, hour, minute, second) {
+    let r = tz_from_parts(zone, year, month, day, hour, minute, second);
+    if r.is_err() {
+        throw "tz: " + r.unwrap_err();
+    }
+    return r.unwrap();
+}
+
+/// Convert a wall-clock time from one zone to another: same instant, the
+/// other zone's civil parts.
+public fn tz_wall_in(from_zone, to_zone, year, month, day, hour, minute, second) {
+    return tz_parts_of(
+        to_zone,
+        tz_make(from_zone, year, month, day, hour, minute, second)
+    );
+}
+
+/// The [start, end) instants of the local calendar day containing `ts`.
+///
+/// The length is 23, 24 or 25 hours - a DST transition day really is shorter
+/// or longer, and pretending otherwise is how "daily" reports lose an hour.
+public fn tz_day_bounds(zone, ts) {
+    let p = tz_parts_of(zone, ts);
+    let start = tz_make(zone, p["year"], p["month"], p["day"], 0, 0, 0);
+    // Advance one calendar day in local terms, then resolve midnight again:
+    // adding 86400 would land on 23:00 or 01:00 across a transition.
+    let next_local = datetime_from_parts(p["year"], p["month"], p["day"], 0, 0, 0) + 86400;
+    let np = datetime_parts(next_local);
+    let end = tz_make(zone, np["year"], np["month"], np["day"], 0, 0, 0);
+    return map("start", start, "end", end, "hours", (end - start) / 3600);
+}
+
+// ------------------------------------------------------------ formatting
+
+fn offset_with_colon(offset_secs) {
+    let sign = "+";
+    let a = offset_secs;
+    if a < 0 {
+        sign = "-";
+        a = -a;
+    }
+    let h = a / 3600;
+    let m = (a % 3600) / 60;
+    let s = a % 60;
+    if s == 0 {
+        return sign + pad2(h) + ":" + pad2(m);
+    }
+    return sign + pad2(h) + ":" + pad2(m) + ":" + pad2(s);
+}
+
+fn pad2(n) {
+    let s = string(n);
+    if len(s) < 2 {
+        return "0" + s;
+    }
+    return s;
+}
+
+/// ISO 8601 with the zone offset: "2025-10-21T00:40:00+02:00".
+public fn tz_iso(zone, ts) {
+    let p = tz_parts_of(zone, ts);
+    return string(p["year"])
+        + "-"
+        + pad2(p["month"])
+        + "-"
+        + pad2(p["day"])
+        + "T"
+        + pad2(p["hour"])
+        + ":"
+        + pad2(p["minute"])
+        + ":"
+        + pad2(p["second"])
+        + offset_with_colon(p["offset"]);
+}
+
+/// An RFC 7231 IMF-fixdate in GMT - the only date format an HTTP header may
+/// carry, regardless of the server's zone.
+public fn tz_http_date(ts) {
+    return format_datetime(ts, "%a, %d %b %Y %H:%M:%S GMT");
+}
+
+/// A human-readable line: "Tue 2025-10-21 00:40 CEST +0200".
+///
+/// Note that this goes through `tz_format`, not `format_datetime`: the latter
+/// is UTC-only and would print the zone's local wall time labelled "UTC
+/// +0000", which is exactly the bug this module exists to remove.
+public fn tz_describe(zone, ts) {
+    return tz_format(zone, ts, "%a %Y-%m-%d %H:%M:%S %Z %z");
+}
+
+// ------------------------------------------------------------ arithmetic
+
+/// Shift a timestamp by whole days in a zone, keeping the wall clock.
+///
+/// "Two days from now, same time of day" is not `ts + 172800` in a zone with
+/// DST: adding 48 hours can land at 11:00 instead of 12:00. This goes through
+/// the civil calendar so the wall clock is preserved.
+public fn tz_add_days(zone, ts, days) {
+    let p = tz_parts_of(zone, ts);
+    let local = datetime_from_parts(p["year"], p["month"], p["day"], p["hour"], p["minute"], p["second"]);
+    let moved = datetime_parts(local + days * 86400);
+    return tz_make(
+        zone,
+        moved["year"],
+        moved["month"],
+        moved["day"],
+        p["hour"],
+        p["minute"],
+        p["second"]
+    );
+}

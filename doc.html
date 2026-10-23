@@ -3536,7 +3536,7 @@ fn main() {
         <h2 id="first-party-stdlib">First-Party Standard Libraries (<code>./stdlib/</code>)</h2>
 
 
-        <p class="lead">Spid3r ships with <strong>21 zero-dependency first-party standard libraries</strong> in
+        <p class="lead">Spid3r ships with <strong>23 zero-dependency first-party standard libraries</strong> in
           <code>./stdlib/</code> (automatically searched by the module loader, and compiled into the WebAssembly
           build so <code>import</code> works in a browser). Every module runs with 100% feature parity across the
           tree-walking interpreter and the bytecode VM.
@@ -3547,6 +3547,7 @@ fn main() {
           <tr><th>module</th><th>what it gives you</th></tr>
           <tr><td><code>web</code>, <code>http</code></td><td>Express-style routing, middleware, cookies, JWT, templates, static files, an HTTP server/client</td></tr>
           <tr><td><code>smtp</code>, <code>ftp</code>, <code>ssh</code></td><td>ESMTP client + RFC 5322/MIME message builder, FTP client (EPSV/PASV, MLSD, byte-exact transfers), and SSH/SFTP via the system OpenSSH client with a validated argv</td></tr>
+          <tr><td><code>tz</code>, <code>unicode</code></td><td>IANA time zones (tzdata 2026e, 343 zones, 1900–2100) with DST-correct day bounds; UAX #15 normalization, case folding and three-strength comparison (UCD 15.1)</td></tr>
           <tr><td><code>dataframe</code></td><td>frames from records/CSV, select/filter/sort/group_by/join, describe</td></tr>
           <tr><td><code>stats</code></td><td>descriptive statistics, correlation, t-test/chi-square, and the distribution family (<code>normal_quantile</code>, binomial, Poisson, exponential)</td></tr>
           <tr><td><code>ml</code></td><td>linear/logistic regression, kNN, k-means, PCA, metrics</td></tr>
@@ -3730,6 +3731,44 @@ fn main() {
           <code>allow_plaintext_auth: true</code>, and <code>smtp_connect(..., map("tls", true))</code> fails with
           an explanation instead of silently downgrading — which makes them clients for a local relay, not for a
           public mail provider.
+        </div>
+
+        <h3>6. <code>stdlib/tz.matrix</code> &amp; <code>stdlib/unicode.matrix</code> — Time Zones and Normalization</h3>
+        <p>Both are thin, readable layers over generated tables: a 208 KB tzdata blob and the UCD 15.1 tables.
+          Nothing here is hand-maintained, and both generators verify their output against CPython before
+          writing it.
+        </p>
+        <pre data-lang="spid3r"><code>import "tz";
+import "unicode";
+
+fn main() {
+    // Time zones: tzdata 2026e, 343 zones + 255 links, 1900-2100.
+    tz_iso("Europe/Berlin", 1761000000);       // "2025-10-21T00:40:00+02:00"
+    tz_format("America/New_York", 1761000000, "%a %H:%M %Z %z");  // "Mon 18:40 EDT -0400"
+    tz_make("Asia/Shanghai", 2025, 10, 21, 8, 0, 0);              // wall clock -> unix
+    tz_day_bounds("America/New_York", tz_make("America/New_York", 2026, 3, 8, 12, 0, 0))["hours"]; // 23
+    tz_add_days("Europe/Berlin", ts, 1);       // same wall clock across a DST change
+    tz_http_date(1761000000);                  // "Mon, 20 Oct 2025 22:40:00 GMT"
+
+    // Unicode: canonical equivalence and case folding are real now.
+    unicode_equal("é", "e" + chr(769));        // true
+    unicode_casefold("straße");                // "strasse"
+    unicode_caseless_equal("STRASSE", "straße"); // true
+    unicode_nfkc("ﬁ①Ａ");                       // "fi1A"
+    unicode_slug("Crème Brûlée");              // "creme-brulee"
+
+    // Comparison at three strengths: primary ignores case and accents.
+    unicode_compare("café", "cafe", 1);        // 0
+    unicode_compare("café", "cafe", 2);        // 1
+    unicode_sort(["émile", "Emile", "Zoe"], 1);
+}</code></pre>
+        <div class="callout note"><b>What is not implemented, precisely</b>
+          Collation is <em>not</em> UCA/DUCET: within a strength the order is code points, so <code>é</code>
+          sorts after <code>z</code>, and there is no per-locale tailoring (Swedish å/ä/ö after z, German
+          phonebook ö = oe) — that needs the multi-megabyte DUCET table. Month and weekday names are English
+          (<code>%a</code>/<code>%b</code>); there is no CLDR data, so no translated names or locale number
+          formats. <code>unicode_cluster_len</code> counts base characters plus marks, not UAX #29 grapheme
+          clusters, so emoji ZWJ sequences count as several.
         </div>
 
         <div class="chapter-nav bottom-nav"><a class="nav-btn prev-btn" href="#stdlib">❮ Previous</a><span

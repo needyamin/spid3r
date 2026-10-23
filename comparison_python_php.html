@@ -192,11 +192,30 @@ verdict; the detail is what you would actually hit.</p>
   independent Python decoder. <strong>WAV</strong> reads and writes PCM (8/16/24/32-bit).
   <strong>PDF</strong> writes multi-page Helvetica documents with a correct xref. <em>Missing: JPEG (a baseline
   decoder is its own project) and any audio codec beyond PCM.</em></li>
-  <li><span class="tag t-no">NO</span><strong>Timezone database / locale / Unicode normalization</strong> —
-  unchanged. <code>format_datetime</code> is UTC-only (<code>%Y %m %d %H %M %S %w %F %T %%</code>, no
-  <code>%z</code>), there is no IANA tz conversion or locale collation, and strings have no NFC/NFD layer:
-  <code>"e" + U+0301</code> has <code>len == 2</code>, precomposed <code>"é"</code> has <code>len == 1</code>,
-  and they compare unequal. These need generated Unicode/tzdata tables; nothing here is stubbed.</li>
+  <li><span class="tag t-part">PARTIAL</span><strong>Time zones, Unicode normalization, locale</strong> — the first
+  two now ship, both from generated tables and both verified against CPython. <strong>Time zones:</strong>
+  <code>stdlib/tz.matrix</code> over a 208 KB generated blob (<code>tools/gen_tzdata.py</code>) — 343 canonical
+  zones plus 255 links from tzdata 2026e, transitions authoritative 1900–2100, with <code>tz_format</code>,
+  <code>tz_parts</code>, <code>tz_from_parts</code>, <code>tz_iso</code>, <code>tz_day_bounds</code> (a DST day
+  really is 23 or 25 hours) and <code>tz_add_days</code> (keeps the wall clock across a transition). The
+  generator does not copy TZif: modern builds are <em>slim</em> — Europe/Berlin's last explicit transition is
+  1996 — so it parses the POSIX TZ footer and synthesises every transition to 2100, then checks all 343 zones
+  against CPython's <code>zoneinfo</code> at every transition ±1 s and on a monthly sweep of the whole range.
+  <code>format_datetime</code> gained
+  <code>%z</code>/<code>%Z</code>/<code>%a</code>/<code>%A</code>/<code>%b</code>/<code>%B</code>/<code>%j</code>/<code>%e</code>/<code>%I</code>/<code>%p</code>/<code>%u</code>.
+  <strong>Unicode:</strong> <code>stdlib/unicode.matrix</code> implements UAX #15 NFC/NFD/NFKC/NFKD (recursive
+  decomposition, canonical ordering, composition with the blocking rule, algorithmic Hangul) and full case
+  folding, over tables generated from UCD 15.1 by <code>tools/gen_unicode_tables.py</code>. The example this
+  document used to cite now behaves: <code>"e" + U+0301</code> and precomposed <code>"é"</code> compare
+  <em>equal</em> (<code>unicode_equal</code>), <code>unicode_caseless_equal("STRASSE", "straße")</code> is true,
+  and <code>unicode_nfkc("ﬁ") == "fi"</code>. Comparison exposes the three UTS #10 strengths — primary
+  (case- and accent-insensitive), secondary (accent-sensitive) and tertiary (exact) — with sort keys and a
+  stable <code>unicode_sort</code>. <em>The honest limits:</em> this is <strong>not</strong> UCA/DUCET.
+  Within a level the order is code points, so <code>é</code> sorts after <code>z</code>, and there is no
+  per-locale tailoring (Swedish å/ä/ö after z, German phonebook ö = oe). That needs the multi-megabyte DUCET
+  table, so it is stated rather than approximated. There is also no CLDR: month and weekday names are English
+  and per-locale number/date patterns do not exist. Grapheme counting is mark-based
+  (<code>unicode_cluster_len</code>), not UAX #29, so an emoji ZWJ sequence counts as several characters.</li>
   <li><span class="tag t-part">PARTIAL</span><strong>Math/science stack.</strong> 1-D <code>vector</code>, 2-D
   <code>matrix</code>, <code>fft</code>/<code>ifft</code>, <code>stats</code> (descriptive through t-test,
   chi-square and the distribution family), <code>ml</code> (linear/logistic, kNN, k-means, PCA, metrics),
@@ -234,15 +253,19 @@ generators. Later the same day the database gap narrowed from "SQLite only" to t
 that verifies the client's authentication maths. The transport gap closed next: <strong>SMTP</strong> (RFC 5321
 plus an RFC 5322/MIME builder) and <strong>FTP</strong> (RFC 959, EPSV/PASV, byte-exact transfers through new
 streaming natives) are real clients, and <strong>SSH/SFTP</strong> drive the system OpenSSH client through a
-validated argv — no TLS stream yet, so the two network clients are cleartext-only by construction.
+validated argv — no TLS stream yet, so the two network clients are cleartext-only by construction. The last
+library gap in this section closed with generated data rather than hand-written tables: <strong>IANA time
+zones</strong> (tzdata 2026e, 343 zones + 255 links, 1900–2100) and <strong>Unicode normalization and case
+folding</strong> (UCD 15.1), both regenerable from <code>tools/</code> and both checked against CPython.
 <strong>What still blocks real-world use, honestly:</strong> (1) <strong>no package registry</strong>
 — the ecosystem gap is the largest and only time plus registry work change it; (2) no suspension-based async executor (<code>async</code>/<code>await</code> are join-based; readiness itself is a kernel wakeup now, but via <code>poll(2)</code>/<code>WSAPoll</code> — O(n) per call, no epoll/kqueue); (3) databases beyond
 SQLite — Redis, PostgreSQL and MySQL/MariaDB clients now ship, but MongoDB, TLS, prepared statements and
 pooling do not; (4) SMTP, FTP and SSH clients now ship — SMTP and FTP are real protocol implementations but cleartext only
 (no TLS stream native, so no STARTTLS/AUTH TLS and credentials need an explicit opt-in), and SSH is a hardened
-wrapper around the system OpenSSH client rather than a native stack — while there is still no timezone
-database, locale collation or Unicode
-normalization; (5) generics are <em>erased</em> (parsed, not
+wrapper around the system OpenSSH client rather than a native stack — and time zones and Unicode normalization
+now ship too (tzdata 2026e through 2100; UCD 15.1 NFC/NFD/NFKC/NFKD plus case folding), but collation is a
+three-strength model ordered by code points rather than UCA/DUCET, and there is no CLDR locale data;
+(5) generics are <em>erased</em> (parsed, not
 enforced) and the numeric stack is teaching-scale — no N-d arrays, no broadcasting, no BLAS — even though
 bigint has literal syntax (<code>123n</code>) and the maths is exact where it exists; (6) no JPEG or audio
 codec beyond PCM (PNG, WAV and PDF writing do work);
