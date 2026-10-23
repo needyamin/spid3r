@@ -167,6 +167,37 @@ type Pos = (u32, u32);
 /// Used for scope regions, where a name is visible.
 type Extent = (u32, u32, u32, u32);
 
+/// LSP measures `character` in UTF-16 code units; Spid3r spans count Unicode
+/// scalar values. The two differ as soon as an astral character (emoji, rare
+/// CJK) appears earlier on the line, so every position crossing the wire is
+/// converted here. Without this a client (VS Code) applies hover/rename edits
+/// a couple of units early and corrupts the user's file.
+fn line_at(text: &str, line_no: u32) -> &str {
+    text.split('\n').nth(line_no as usize).unwrap_or("")
+}
+
+/// Char column on `line` -> UTF-16 code-unit column.
+fn char_to_utf16_col(line: &str, char_col: u32) -> u32 {
+    line.chars()
+        .take(char_col as usize)
+        .map(|c| c.len_utf16() as u32)
+        .sum()
+}
+
+/// UTF-16 code-unit column on `line` -> char column.
+fn utf16_to_char_col(line: &str, utf16_col: u32) -> u32 {
+    let mut units = 0u32;
+    let mut chars = 0u32;
+    for c in line.chars() {
+        if units >= utf16_col {
+            break;
+        }
+        units += c.len_utf16() as u32;
+        chars += 1;
+    }
+    chars
+}
+
 fn cmp_pos(a: Pos, b: Pos) -> std::cmp::Ordering {
     a.0.cmp(&b.0).then(a.1.cmp(&b.1))
 }
@@ -187,23 +218,27 @@ fn extent_size(e: Extent) -> u64 {
 }
 
 /// A Spid3r `Span` (1-based line/col, `len` in characters, single line) as an
-/// LSP `Range`.
-fn span_range(s: &Span) -> Json {
+/// LSP `Range`. Columns are converted from Spid3r's char counts to the UTF-16
+/// code units the protocol specifies.
+fn span_range(text: &str, s: &Span) -> Json {
     let line = s.line.saturating_sub(1);
     let col = s.col.saturating_sub(1);
+    let line_text = line_at(text, line);
+    let start = char_to_utf16_col(line_text, col);
+    let end = char_to_utf16_col(line_text, col + s.len);
     Json::Obj(vec![
         (
             "start".into(),
             Json::Obj(vec![
                 ("line".into(), Json::Int(i64::from(line))),
-                ("character".into(), Json::Int(i64::from(col))),
+                ("character".into(), Json::Int(i64::from(start))),
             ]),
         ),
         (
             "end".into(),
             Json::Obj(vec![
                 ("line".into(), Json::Int(i64::from(line))),
-                ("character".into(), Json::Int(i64::from(col + s.len))),
+                ("character".into(), Json::Int(i64::from(end))),
             ]),
         ),
     ])
@@ -226,6 +261,8 @@ fn whole_extent(text: &str) -> Extent {
 /// A full-document `Range`, for formatting edits.
 fn full_range(text: &str) -> Json {
     let e = whole_extent(text);
+    let last_line_text = line_at(text, e.2);
+    let end_char = char_to_utf16_col(last_line_text, e.3);
     Json::Obj(vec![
         (
             "start".into(),
@@ -238,7 +275,7 @@ fn full_range(text: &str) -> Json {
             "end".into(),
             Json::Obj(vec![
                 ("line".into(), Json::Int(i64::from(e.2))),
-                ("character".into(), Json::Int(i64::from(e.3))),
+                ("character".into(), Json::Int(i64::from(end_char))),
             ]),
         ),
     ])
@@ -868,13 +905,17 @@ fn uri_of(params: &Json) -> String {
         .to_string()
 }
 
-fn position_of(params: &Json) -> Pos {
+/// The cursor position from a request, converted from the protocol's UTF-16
+/// columns to Spid3r's char columns (the inverse of `span_range`).
+fn position_of(params: &Json, text: &str) -> Pos {
     params
         .get("position")
         .map(|p| {
             let line = p.get("line").and_then(|l| l.as_i()).unwrap_or(0);
             let ch = p.get("character").and_then(|c| c.as_i()).unwrap_or(0);
-            (line.max(0) as u32, ch.max(0) as u32)
+            let line = line.max(0) as u32;
+            let ch = ch.max(0) as u32;
+            (line, utf16_to_char_col(line_at(text, line), ch))
         })
         .unwrap_or((0, 0))
 }
@@ -885,7 +926,7 @@ fn hover_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
         Some(d) => d,
         None => return Json::Null,
     };
-    let pos = position_of(params);
+    let pos = position_of(params, &doc.text);
     let (name, span) = match ident_at(doc, pos) {
         Some(x) => x,
         None => return Json::Null,
@@ -918,7 +959,7 @@ fn hover_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
                 ("value".into(), Json::Str(value)),
             ]),
         ),
-        ("range".into(), span_range(&span)),
+        ("range".into(), span_range(&doc.text, &span)),
     ])
 }
 
@@ -928,7 +969,7 @@ fn definition_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
         Some(d) => d,
         None => return Json::Null,
     };
-    let pos = position_of(params);
+    let pos = position_of(params, &doc.text);
     let (name, _) = match ident_at(doc, pos) {
         Some(x) => x,
         None => return Json::Null,
@@ -939,7 +980,7 @@ fn definition_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
     };
     Json::Arr(vec![Json::Obj(vec![
         ("uri".into(), Json::Str(uri)),
-        ("range".into(), span_range(&decl.def_span)),
+        ("range".into(), span_range(&doc.text, &decl.def_span)),
     ])])
 }
 
@@ -1008,7 +1049,7 @@ fn references_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
         Some(d) => d,
         None => return Json::Null,
     };
-    let pos = position_of(params);
+    let pos = position_of(params, &doc.text);
     let (name, _) = match ident_at(doc, pos) {
         Some(x) => x,
         None => return Json::Null,
@@ -1029,7 +1070,7 @@ fn references_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
         }
         locs.push(Json::Obj(vec![
             ("uri".into(), Json::Str(uri.clone())),
-            ("range".into(), span_range(&span)),
+            ("range".into(), span_range(&doc.text, &span)),
         ]));
     }
     Json::Arr(locs)
@@ -1041,7 +1082,7 @@ fn rename_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
         Some(d) => d,
         None => return Json::Null,
     };
-    let pos = position_of(params);
+    let pos = position_of(params, &doc.text);
     let (name, _) = match ident_at(doc, pos) {
         Some(x) => x,
         None => return Json::Null,
@@ -1073,7 +1114,7 @@ fn rename_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
         .into_iter()
         .map(|(span, _is_decl)| {
             Json::Obj(vec![
-                ("range".into(), span_range(&span)),
+                ("range".into(), span_range(&doc.text, &span)),
                 ("newText".into(), Json::Str(new_name.to_string())),
             ])
         })
@@ -1084,12 +1125,12 @@ fn rename_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
     )])
 }
 
-fn symbol(name: &str, kind: SymKind, span: &Span, children: Vec<Json>) -> Json {
+fn symbol(name: &str, kind: SymKind, span: &Span, children: Vec<Json>, text: &str) -> Json {
     let mut obj = vec![
         ("name".into(), Json::Str(name.to_string())),
         ("kind".into(), Json::Int(kind_num(kind))),
-        ("range".into(), span_range(span)),
-        ("selectionRange".into(), span_range(span)),
+        ("range".into(), span_range(text, span)),
+        ("selectionRange".into(), span_range(text, span)),
     ];
     if !children.is_empty() {
         obj.push(("children".into(), Json::Arr(children)));
@@ -1103,47 +1144,50 @@ fn document_symbol_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
         Some(d) => d,
         None => return Json::Arr(vec![]),
     };
+    let text = &doc.text;
     let mut out: Vec<Json> = Vec::new();
     for s in &doc.program.stmts {
         match s {
             Stmt::Fn(f) => {
                 if let Some(name) = &f.name {
-                    out.push(symbol(name, SymKind::Function, &f.span, vec![]));
+                    out.push(symbol(name, SymKind::Function, &f.span, vec![], text));
                 }
             }
             Stmt::Class(c) => {
                 let mut children = Vec::new();
                 for m in &c.methods {
                     if let Some(n) = &m.name {
-                        children.push(symbol(n, SymKind::Method, &m.span, vec![]));
+                        children.push(symbol(n, SymKind::Method, &m.span, vec![], text));
                     }
                 }
                 for f in &c.fields {
-                    children.push(symbol(&f.name, SymKind::Field, &f.span, vec![]));
+                    children.push(symbol(&f.name, SymKind::Field, &f.span, vec![], text));
                 }
-                out.push(symbol(&c.name, SymKind::Class, &c.span, children));
+                out.push(symbol(&c.name, SymKind::Class, &c.span, children, text));
             }
             Stmt::Interface(i) => {
                 let children = i
                     .methods
                     .iter()
-                    .map(|(n, _, _, sp)| symbol(n, SymKind::Method, sp, vec![]))
+                    .map(|(n, _, _, sp)| symbol(n, SymKind::Method, sp, vec![], text))
                     .collect();
-                out.push(symbol(&i.name, SymKind::Interface, &i.span, children));
+                out.push(symbol(&i.name, SymKind::Interface, &i.span, children, text));
             }
             Stmt::Enum(e) => {
                 let children = e
                     .variants
                     .iter()
-                    .map(|v| symbol(&v.name, SymKind::Variant, &v.span, vec![]))
+                    .map(|v| symbol(&v.name, SymKind::Variant, &v.span, vec![], text))
                     .collect();
-                out.push(symbol(&e.name, SymKind::Enum, &e.span, children));
+                out.push(symbol(&e.name, SymKind::Enum, &e.span, children, text));
             }
-            Stmt::Let { name, span, .. } => out.push(symbol(name, SymKind::Let, span, vec![])),
-            Stmt::Const { name, span, .. } => out.push(symbol(name, SymKind::Const, span, vec![])),
+            Stmt::Let { name, span, .. } => out.push(symbol(name, SymKind::Let, span, vec![], text)),
+            Stmt::Const { name, span, .. } => {
+                out.push(symbol(name, SymKind::Const, span, vec![], text))
+            }
             Stmt::LetTuple { names, span, .. } => {
                 for n in names {
-                    out.push(symbol(n, SymKind::Let, span, vec![]));
+                    out.push(symbol(n, SymKind::Let, span, vec![], text));
                 }
             }
             _ => {}
@@ -1264,6 +1308,14 @@ fn read_message(r: &mut impl BufRead) -> Option<String> {
         }
     }
     let len = content_length?;
+    // Cap the frame before allocating: a hostile/broken client can name a
+    // 256 GiB Content-Length in a 30-byte header and abort the process on
+    // the allocation instead of ending the session cleanly. 64 MiB is far
+    // above any real LSP document frame.
+    const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
+    if len > MAX_FRAME_BYTES {
+        return None;
+    }
     let mut buf = vec![0u8; len];
     if r.read_exact(&mut buf).is_err() {
         return None;
@@ -1327,8 +1379,8 @@ fn publish_diagnostics(out: &mut impl Write, uri: &str, doc: &Doc) {
                 message.push_str(h);
             }
             let range = match &d.span {
-                Some(s) => span_range(s),
-                None => span_range(&Span::new(Arc::from(uri), 1, 1, 0)),
+                Some(s) => span_range(&doc.text, s),
+                None => span_range(&doc.text, &Span::new(Arc::from(uri), 1, 1, 0)),
             };
             Json::Obj(vec![
                 ("range".into(), range),

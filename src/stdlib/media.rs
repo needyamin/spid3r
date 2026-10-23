@@ -134,9 +134,26 @@ pub fn png_decode(bytes: &[u8]) -> Result<Image, String> {
     let bytes_per_sample = if bit_depth == 16 { 2 } else { 1 };
     let bpp = channels * bytes_per_sample;
 
+    // Bound the pixel buffer with checked arithmetic BEFORE allocating: a
+    // 69-byte PNG can claim 100000x100000 16-bit RGBA (80 GB) and the old
+    // code allocated the buffer before ever comparing it against the
+    // (tiny) decompressed data, aborting the process on the failed alloc.
+    // A real image's pixel buffer is never larger than its decompressed
+    // IDAT stream plus one filter byte per row, so 256 MiB (the same cap
+    // `unzlib_bytes` enforces on `raw`) is a safe ceiling.
+    const MAX_PIXEL_BYTES: usize = 256 * 1024 * 1024;
+    let total = width
+        .checked_mul(height)
+        .and_then(|v| v.checked_mul(channels))
+        .and_then(|v| v.checked_mul(bytes_per_sample))
+        .ok_or("png: image dimensions are implausible")?;
+    if total > MAX_PIXEL_BYTES {
+        return Err("png: image is too large to decode".to_string());
+    }
+
     // 16-bit images keep two bytes per sample, so the unfiltered buffer is
     // twice the 8-bit size (this used to be sized for 8 bits and panicked).
-    let mut pixels = vec![0u8; width * height * channels * bytes_per_sample];
+    let mut pixels = vec![0u8; total];
     if interlace == 0 {
         let need = height * (1 + width * bpp);
         if raw.len() < need {

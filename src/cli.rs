@@ -779,21 +779,17 @@ fn cmd_test(args: &[String]) -> Result<i32, Diagnostic> {
         let is_program = has_main_fn(&path);
         let result: Result<(), String> = if is_program {
             // Differential test: all three engines must produce identical stdout.
-            let tree = run_capture(
-                &bin,
-                &["run", "--engine", "tree", f.as_os_str().to_str().unwrap()],
-            );
-            let vm = run_capture(
-                &bin,
-                &["run", "--engine", "vm", f.as_os_str().to_str().unwrap()],
-            );
+            // `to_str_lossy` (not `to_str().unwrap()`): a file whose name is not
+            // valid UTF-8 is still a legal test file on POSIX, and `has_main_fn`
+            // already read it through the lossy path — panicking here would be
+            // inconsistent with that decision.
+            let arg = f.to_string_lossy().to_string();
+            let tree = run_capture(&bin, &["run", "--engine", "tree", &arg]);
+            let vm = run_capture(&bin, &["run", "--engine", "vm", &arg]);
             let tc = std::env::temp_dir()
                 .join(format!("spid3r_test_{}.matrixc", name.replace('.', "_")));
             let tc = tc.to_string_lossy().to_string();
-            let compiled = run_capture(
-                &bin,
-                &["compile", f.as_os_str().to_str().unwrap(), "-o", &tc],
-            );
+            let compiled = run_capture(&bin, &["compile", &arg, "-o", &tc]);
             let exec_out = match &compiled {
                 Ok(_) => run_capture(&bin, &["exec", &tc]),
                 Err(e) => Err(e.clone()),

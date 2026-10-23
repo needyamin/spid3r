@@ -185,17 +185,18 @@ fn alloc_payload(json: String) -> *mut u8 {
     let mut buf = Vec::with_capacity(4 + bytes.len());
     buf.extend_from_slice(&len.to_le_bytes());
     buf.extend_from_slice(&bytes);
-    let ptr = buf.as_mut_ptr();
-    std::mem::forget(buf);
-    ptr
+    // `into_boxed_slice` is the one constructor that guarantees capacity ==
+    // len, which is what makes the matching `spid3r_wasm_free` sound.
+    let boxed = buf.into_boxed_slice();
+    Box::into_raw(boxed) as *mut u8
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_wasm_alloc(len: usize) -> *mut u8 {
-    let mut buf = Vec::with_capacity(len);
-    let ptr = buf.as_mut_ptr();
-    std::mem::forget(buf);
-    ptr
+    // Same exact-capacity guarantee as `alloc_payload`: the buffer is freed by
+    // `spid3r_wasm_free` as a boxed slice of exactly `len` bytes.
+    let boxed = vec![0u8; len].into_boxed_slice();
+    Box::into_raw(boxed) as *mut u8
 }
 
 /// Free a heap-allocated buffer previously allocated by `spid3r_wasm_alloc` or returned by a WebAssembly entrypoint.
@@ -206,7 +207,10 @@ pub extern "C" fn spid3r_wasm_alloc(len: usize) -> *mut u8 {
 #[no_mangle]
 pub unsafe extern "C" fn spid3r_wasm_free(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {
-        let _ = Vec::from_raw_parts(ptr, len, len);
+        // Rebuild the boxed slice exactly as allocated. Both allocation
+        // paths go through `into_boxed_slice`, so the layout (align 1,
+        // size `len`) always matches and the deallocation is sound.
+        drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len)));
     }
 }
 

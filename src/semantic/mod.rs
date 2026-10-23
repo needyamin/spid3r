@@ -1539,8 +1539,21 @@ impl Checker {
                 self.fn_depth += 1;
                 let was_async = self.in_async;
                 self.in_async = f.is_async;
+                // `break`/`continue` are lexically scoped to the loops of the
+                // function they appear in: entering a function body starts a
+                // fresh loop context (the tree engine raises "break outside a
+                // loop" at runtime for this shape; without the reset the
+                // checker accepts it and the VM compiler then panics on a
+                // `break` bound for an enclosing loop it cannot see).
+                let was_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
                 self.push_scope();
                 let mut names = HashSet::new();
+                if f.params.len() > 255 {
+                    return Err(self.err(
+                        &f.span,
+                        "too many parameters in one function (max 255)",
+                    ));
+                }
                 for p in &f.params {
                     if !names.insert(p.name.clone()) {
                         return Err(self.err(&p.span, format!("duplicate parameter '{}'", p.name)));
@@ -1586,6 +1599,7 @@ impl Checker {
                 self.current_ret = saved_ret;
                 self.pop_scope();
                 self.in_async = was_async;
+                self.loop_depth = was_loop_depth;
                 self.fn_depth -= 1;
                 self.type_params.pop();
                 r
@@ -1595,9 +1609,17 @@ impl Checker {
                 self.type_params.push(c.type_params.clone());
                 // method bodies: self + fields in scope
                 for m in &c.methods {
+                    if m.params.len() > 255 {
+                        return Err(self.err(
+                            &m.span,
+                            "too many parameters in one function (max 255)",
+                        ));
+                    }
                     self.fn_depth += 1;
                     let was_async = self.in_async;
                     self.in_async = m.is_async;
+                    // Fresh loop context per method body (see Stmt::Fn).
+                    let was_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
                     self.push_scope();
                     self.type_params.push(m.type_params.clone());
                     let is_ctor = m.name.as_deref() == Some("new");
@@ -1673,6 +1695,7 @@ impl Checker {
                     self.pop_scope();
                     self.type_params.pop();
                     self.in_async = was_async;
+                    self.loop_depth = was_loop_depth;
                     self.fn_depth -= 1;
                     r?;
                 }
@@ -2590,8 +2613,18 @@ impl Checker {
                 self.fn_depth += 1;
                 let was_async = self.in_async;
                 self.in_async = f.is_async;
+                // Fresh loop context: a `break` inside a function literal is
+                // never bound to a loop outside the literal (see the Stmt::Fn
+                // path for the full rationale).
+                let was_loop_depth = std::mem::replace(&mut self.loop_depth, 0);
                 self.push_scope();
                 let mut names = HashSet::new();
+                if f.params.len() > 255 {
+                    return Err(self.err(
+                        &f.span,
+                        "too many parameters in one function (max 255)",
+                    ));
+                }
                 for p in &f.params {
                     if !names.insert(p.name.clone()) {
                         return Err(self.err(&p.span, format!("duplicate parameter '{}'", p.name)));
@@ -2627,6 +2660,7 @@ impl Checker {
                 self.current_ret = saved_ret;
                 self.pop_scope();
                 self.in_async = was_async;
+                self.loop_depth = was_loop_depth;
                 self.fn_depth -= 1;
                 r
             }

@@ -53,6 +53,14 @@ fn get_conn(id: i64, who: &str) -> Result<Arc<Conn>, String> {
 
 const MAX_PACKET_PAYLOAD: usize = 16_777_215;
 
+/// First byte of a wire packet. A hostile or broken server can send a
+/// zero-length packet; indexing it directly panics the client process.
+fn head_byte(p: &[u8]) -> Result<u8, String> {
+    p.first()
+        .copied()
+        .ok_or_else(|| "mysql: empty packet".to_string())
+}
+
 /// Read one logical packet, following the 16 MiB continuation rule.
 fn read_packet(stream: &mut TcpStream, seq: &mut u8) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
@@ -162,10 +170,15 @@ fn lenenc_bytes(payload: &[u8], at: usize) -> Result<(Vec<u8>, usize), String> {
         return Ok((Vec::new(), next)); // NULL, caller distinguishes if needed
     }
     let len = len as usize;
-    if next + len > payload.len() {
+    // `next + len` must not wrap: a length prefix near u64::MAX used to wrap
+    // past the bounds check and panic on the slice below.
+    let end = next
+        .checked_add(len)
+        .ok_or("mysql: length prefix overflows the packet size")?;
+    if end > payload.len() {
         return Err("mysql: truncated length-encoded string".to_string());
     }
-    Ok((payload[next..next + len].to_vec(), next + len))
+    Ok((payload[next..end].to_vec(), end))
 }
 
 // ---------------------------------------------------------------- auth math
@@ -234,7 +247,7 @@ type ResultSet = (Vec<(String, u8)>, Vec<Vec<Option<String>>>);
 /// Read a resultset (or an OK) after COM_QUERY, up to EOF/OK.
 fn read_resultset(stream: &mut TcpStream, seq: &mut u8) -> Result<ResultSet, String> {
     let first = read_packet(stream, seq)?;
-    match first[0] {
+    match head_byte(&first)? {
         0x00 => return Ok((Vec::new(), Vec::new())), // OK, no resultset
         0xFF => return Err(err_message(&first)),
         0xFB => return Err("mysql: LOAD DATA LOCAL INFILE is not supported".to_string()),
@@ -243,10 +256,10 @@ fn read_resultset(stream: &mut TcpStream, seq: &mut u8) -> Result<ResultSet, Str
     // First packet: the column count as a length-encoded integer.
     let (ncols, _) = lenenc_int(&first, 0)?;
 
-    let mut columns: Vec<(String, u8)> = Vec::with_capacity(ncols as usize);
+    let mut columns: Vec<(String, u8)> = Vec::with_capacity((ncols as usize).min(1024));
     for _ in 0..ncols {
         let def = read_packet(stream, seq)?;
-        if def[0] == 0xFF {
+        if head_byte(&def)? == 0xFF {
             return Err(err_message(&def));
         }
         // catalog, schema, table, org_table, name, org_name, then fixed part.
@@ -259,19 +272,23 @@ fn read_resultset(stream: &mut TcpStream, seq: &mut u8) -> Result<ResultSet, Str
         at = next;
         let (_, after_org) = lenenc_bytes(&def, at)?; // org_name
                                                       // After org_name: filler(1) + charset(2) + column_length(4) + type(1).
-        let type_code = def[after_org + 7];
+        let type_at = after_org + 7;
+        if type_at >= def.len() {
+            return Err("mysql: truncated column definition".to_string());
+        }
+        let type_code = def[type_at];
         columns.push((String::from_utf8_lossy(&name).into_owned(), type_code));
     }
     // EOF after the column definitions (CLIENT_DEPRECATE_EOF is not requested).
     let eof = read_packet(stream, seq)?;
-    if eof[0] != 0xFE && eof[0] != 0x00 {
+    if head_byte(&eof)? != 0xFE && head_byte(&eof)? != 0x00 {
         return Err("mysql: expected EOF after column definitions".to_string());
     }
 
     let mut rows = Vec::new();
     loop {
         let pkt = read_packet(stream, seq)?;
-        match pkt[0] {
+        match head_byte(&pkt)? {
             0xFE if pkt.len() < 9 => return Ok((columns, rows)), // EOF
             0xFF => return Err(err_message(&pkt)),
             0x00 => return Ok((columns, rows)), // OK (some servers answer this)
@@ -317,10 +334,11 @@ fn err_message(pkt: &[u8]) -> String {
 }
 
 fn ok_affected(pkt: &[u8]) -> Result<u64, String> {
-    if pkt[0] == 0xFF {
+    let head = head_byte(pkt)?;
+    if head == 0xFF {
         return Err(err_message(pkt));
     }
-    if pkt[0] != 0x00 && pkt[0] != 0xFE {
+    if head != 0x00 && head != 0xFE {
         return Err("mysql: expected an OK packet".to_string());
     }
     let (affected, _) = lenenc_int(pkt, 1)?;
@@ -457,11 +475,14 @@ fn n_mysql_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
     // --- auth result, including AuthSwitchRequest ---
     loop {
         let pkt = read_packet(&mut stream, &mut seq)?;
-        match pkt[0] {
+        match head_byte(&pkt)? {
             0x00 => break, // OK
             0xFE => {
                 // AuthSwitchRequest: plugin name NUL + new nonce (NUL-ended).
                 let (plugin, next) = cstr(&pkt, 1)?;
+                if next > pkt.len() {
+                    return Err("mysql: truncated AuthSwitchRequest".to_string());
+                }
                 let mut new_nonce = pkt[next..].to_vec();
                 if new_nonce.last() == Some(&0) {
                     new_nonce.pop();
@@ -580,12 +601,13 @@ fn n_mysql_exec(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     write_packet(&mut stream, &mut seq, &payload)?;
     // Drain a possible resultset, then report the final OK's affected count.
     let first = read_packet(&mut stream, &mut seq)?;
-    if first[0] == 0xFF {
+    let head = head_byte(&first)?;
+    if head == 0xFF {
         return Ok(Value::Result(Err(Box::new(Value::Str(
             err_message(&first).into(),
         )))));
     }
-    if first[0] == 0x00 || first[0] == 0xFE && first.len() < 9 {
+    if head == 0x00 || head == 0xFE && first.len() < 9 {
         return Ok(Value::Result(Ok(Box::new(Value::Int(
             ok_affected(&first)? as i64,
         )))));
@@ -612,7 +634,7 @@ fn read_resultset_from_first(
     let _ = read_packet(stream, seq)?; // EOF
     loop {
         let pkt = read_packet(stream, seq)?;
-        match pkt[0] {
+        match head_byte(&pkt)? {
             0xFE if pkt.len() < 9 => return Ok((Vec::new(), Vec::new())),
             0xFF => return Err(err_message(&pkt)),
             _ => continue,
@@ -648,6 +670,9 @@ fn n_mysql_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 }
 
 fn cstr(payload: &[u8], at: usize) -> Result<(String, usize), String> {
+    if at > payload.len() {
+        return Err("mysql: truncated string in packet".to_string());
+    }
     let end = payload[at..]
         .iter()
         .position(|&b| b == 0)

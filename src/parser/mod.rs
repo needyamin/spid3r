@@ -948,7 +948,13 @@ impl Parser {
         let mut els = None;
         if self.eat_kw(Keyword::Else) {
             if self.at_kw(Keyword::If) {
-                let nested = self.parse_if_expr()?;
+                // Each `else if` nests another value-position `if`; count the
+                // nesting against the depth budget (the statement form is an
+                // iterative loop and needs no budget).
+                self.depth += 1;
+                let nested = self.parse_if_expr();
+                self.depth -= 1;
+                let nested = nested?;
                 let span = nested.span().clone();
                 els = Some(Block {
                     stmts: vec![Stmt::Expr(nested)],
@@ -1023,6 +1029,17 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> SpidResult<Pattern> {
+        // `Name(...)` recurses on its arguments with no other depth-guarded
+        // call in between, so the budget is enforced here.
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(err_at(
+                Phase::Parser,
+                self.span(),
+                format!("nesting deeper than {} levels", MAX_PARSE_DEPTH),
+            ));
+        }
+        self.depth += 1;
+        let res = (|| {
         match self.kind().clone() {
             TokenKind::Ident(name) => {
                 let sp = self.span();
@@ -1063,6 +1080,9 @@ impl Parser {
             _ => Err(self
                 .err_here("expected a pattern: `_`, a name to bind, a literal, or `Variant(...)`")),
         }
+        })();
+        self.depth -= 1;
+        res
     }
 
     fn parse_if(&mut self) -> SpidResult<Stmt> {
@@ -1867,10 +1887,14 @@ impl Parser {
                             let mut sub = Parser {
                                 toks,
                                 pos: 0,
-                                depth: 0,
+                                // Inherit the parent's nesting budget: each
+                                // hole used to start a fresh parser at depth 0,
+                                // so a chain of nested holes never tripped
+                                // MAX_PARSE_DEPTH and overflowed the stack.
+                                depth: self.depth,
                                 saw_bigint_lit: false,
                                 saw_yield: false,
-                                value_block_depth: 0,
+                                value_block_depth: self.value_block_depth,
                             };
                             match sub.parse_expr() {
                                 Ok(e) if sub.at(&TokenKind::Eof) => Some((e, sub.saw_bigint_lit)),

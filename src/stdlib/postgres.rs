@@ -54,6 +54,11 @@ fn get_stream(id: i64, who: &str) -> Result<Arc<Mutex<TcpStream>>, String> {
 
 // ------------------------------------------------------------------ framing
 
+/// Hard cap on one server message. A hostile server can otherwise name a
+/// 4 GiB length in a 5-byte header and abort the client on the allocation
+/// before a single byte is read.
+const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
 /// One server message: type byte + payload.
 struct Message {
     kind: u8,
@@ -71,6 +76,13 @@ fn read_message<R: Read>(stream: &mut R) -> Result<Message, String> {
         return Err(format!(
             "postgres: message '{}' has an impossible length",
             kind as char
+        ));
+    }
+    if len - 4 > MAX_MESSAGE_BYTES {
+        return Err(format!(
+            "postgres: message '{}' is too large ({} bytes)",
+            kind as char,
+            len
         ));
     }
     let payload = {
@@ -107,6 +119,9 @@ fn write_startup(stream: &mut TcpStream, payload: &[u8]) -> Result<(), String> {
 
 /// A C-string inside a payload: bytes up to the NUL, and how far it read.
 fn cstr(payload: &[u8], at: usize) -> Result<(String, usize), String> {
+    if at > payload.len() {
+        return Err("postgres: truncated message".to_string());
+    }
     let end = payload[at..]
         .iter()
         .position(|&b| b == 0)
@@ -116,6 +131,52 @@ fn cstr(payload: &[u8], at: usize) -> Result<(String, usize), String> {
         String::from_utf8_lossy(&payload[at..end]).into_owned(),
         end + 1,
     ))
+}
+
+/// Big-endian u16 at `at`. A hostile or broken server can send a message
+/// shorter than the fixed fields the reader expects; indexing it directly
+/// panics the client process.
+fn be16(payload: &[u8], at: usize) -> Result<u16, String> {
+    let end = at
+        .checked_add(2)
+        .ok_or("postgres: message offset overflow")?;
+    if end > payload.len() {
+        return Err("postgres: truncated message".to_string());
+    }
+    Ok(u16::from_be_bytes([payload[at], payload[end - 1]]))
+}
+
+/// Big-endian u32 at `at`, with the same truncation guarantee as `be16`.
+fn be32(payload: &[u8], at: usize) -> Result<u32, String> {
+    let end = at
+        .checked_add(4)
+        .ok_or("postgres: message offset overflow")?;
+    if end > payload.len() {
+        return Err("postgres: truncated message".to_string());
+    }
+    Ok(u32::from_be_bytes([
+        payload[at],
+        payload[at + 1],
+        payload[at + 2],
+        payload[end - 1],
+    ]))
+}
+
+/// `n` bytes at `at`, with the same truncation guarantee as `be16`.
+fn slice_at(payload: &[u8], at: usize, n: usize) -> Result<&[u8], String> {
+    let end = at.checked_add(n).ok_or("postgres: message offset overflow")?;
+    if end > payload.len() {
+        return Err("postgres: truncated message".to_string());
+    }
+    Ok(&payload[at..end])
+}
+
+/// Everything from `at` to the end, with the same truncation guarantee.
+fn rest(payload: &[u8], at: usize) -> Result<&[u8], String> {
+    if at > payload.len() {
+        return Err("postgres: truncated message".to_string());
+    }
+    Ok(&payload[at..])
 }
 
 // --------------------------------------------------------------------- auth
@@ -276,41 +337,31 @@ fn simple_query(stream: &mut TcpStream, sql: &str) -> Result<Value, String> {
         match msg.kind {
             b'T' => {
                 // RowDescription
-                let ncols = u16::from_be_bytes([msg.payload[0], msg.payload[1]]) as usize;
+                let ncols = be16(&msg.payload, 0)? as usize;
                 columns.clear();
                 let mut at = 2usize;
                 for _ in 0..ncols {
                     let (name, next) = cstr(&msg.payload, at)?;
                     // After the name: table oid(4) + attnum(2) + type oid(4)
                     // + typlen(2) + typmod(4) + format(2) = 18 bytes.
-                    let type_oid = u32::from_be_bytes([
-                        msg.payload[next + 6],
-                        msg.payload[next + 7],
-                        msg.payload[next + 8],
-                        msg.payload[next + 9],
-                    ]);
+                    let type_oid = be32(&msg.payload, next + 6)?;
                     columns.push((name, type_oid));
                     at = next + 18;
                 }
             }
             b'D' => {
-                let ncols = u16::from_be_bytes([msg.payload[0], msg.payload[1]]) as usize;
-                let mut row = Vec::with_capacity(ncols);
+                let ncols = be16(&msg.payload, 0)? as usize;
+                let mut row = Vec::with_capacity(ncols.min(1024));
                 let mut at = 2usize;
                 for _ in 0..ncols {
-                    let len = i32::from_be_bytes([
-                        msg.payload[at],
-                        msg.payload[at + 1],
-                        msg.payload[at + 2],
-                        msg.payload[at + 3],
-                    ]);
+                    let len = be32(&msg.payload, at)? as i32;
                     at += 4;
                     if len < 0 {
                         row.push(None); // NULL
                     } else {
                         let len = len as usize;
                         row.push(Some(
-                            String::from_utf8_lossy(&msg.payload[at..at + len]).into_owned(),
+                            String::from_utf8_lossy(slice_at(&msg.payload, at, len)?).into_owned(),
                         ));
                         at += len;
                     }
@@ -413,12 +464,7 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         let msg = read_message(&mut stream)?;
         match msg.kind {
             b'R' => {
-                let code = i32::from_be_bytes([
-                    msg.payload[0],
-                    msg.payload[1],
-                    msg.payload[2],
-                    msg.payload[3],
-                ]);
+                let code = be32(&msg.payload, 0)? as i32;
                 match code {
                     0 => {} // AuthenticationOk
                     3 => {
@@ -429,7 +475,7 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                     }
                     5 => {
                         // MD5Password: 4-byte salt follows the code.
-                        let salt = &msg.payload[4..8];
+                        let salt = slice_at(&msg.payload, 4, 4)?;
                         let response = md5_password(&password, &user, salt);
                         let mut p = response.as_bytes().to_vec();
                         p.push(0);
@@ -450,14 +496,12 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                         if cont.kind != b'R' {
                             return Err(format!("{}: expected SASLContinue, got '{}'", WHO, cont.kind as char));
                         }
-                        let ccode = i32::from_be_bytes([
-                            cont.payload[0], cont.payload[1], cont.payload[2], cont.payload[3],
-                        ]);
+                        let ccode = be32(&cont.payload, 0)? as i32;
                         if ccode != 11 {
                             return Err(format!("{}: expected SASLContinue (11), got {}", WHO, ccode));
                         }
                         let server_first =
-                            String::from_utf8_lossy(&cont.payload[4..]).into_owned();
+                            String::from_utf8_lossy(rest(&cont.payload, 4)?).into_owned();
                         let fin_msg = scram_client_final(
                             &password,
                             &server_first,
@@ -471,15 +515,14 @@ fn n_pg_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
                         if fin.kind != b'R' {
                             return Err(format!("{}: expected SASLFinal, got '{}'", WHO, fin.kind as char));
                         }
-                        let fcode = i32::from_be_bytes([
-                            fin.payload[0], fin.payload[1], fin.payload[2], fin.payload[3],
-                        ]);
+                        let fcode = be32(&fin.payload, 0)? as i32;
                         if fcode != 12 {
                             return Err(format!("{}: expected SASLFinal (12), got {}", WHO, fcode));
                         }
                         // Verify the server signature: v=<base64>. This proves
                         // the server holds the same password-derived key.
-                        let final_text = String::from_utf8_lossy(&fin.payload[4..]).into_owned();
+                        let final_text =
+                            String::from_utf8_lossy(rest(&fin.payload, 4)?).into_owned();
                         let server_sig_b64 = final_text
                             .strip_prefix("v=")
                             .ok_or_else(|| format!("{}: SASLFinal without a server signature", WHO))?;

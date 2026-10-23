@@ -452,9 +452,22 @@ fn n_argon2(ctx_args: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             )),
         }
     };
-    let passes = int_arg(2, "passes")? as u32;
-    let memory = int_arg(3, "memory_kib")? as u32;
-    let lanes = int_arg(4, "lanes")? as u32;
+    // The raw `as` casts below silently wrap negatives (-1 -> u32::MAX /
+    // usize::MAX), which either never terminates (passes = 2^32-1) or
+    // aborts the allocator (out_len = usize::MAX). Validate like scrypt
+    // does: strictly positive, with sane upper bounds.
+    let positive = |v: i64, name: &str| -> Result<u32, String> {
+        if v <= 0 {
+            return Err(format!("argon2: {} must be positive, got {}", name, v));
+        }
+        if v > u32::MAX as i64 {
+            return Err(format!("argon2: {} is implausibly large: {}", name, v));
+        }
+        Ok(v as u32)
+    };
+    let passes = positive(int_arg(2, "passes")?, "passes")?;
+    let memory = positive(int_arg(3, "memory_kib")?, "memory_kib")?;
+    let lanes = positive(int_arg(4, "lanes")?, "lanes")?;
     let variant_name = match &args[5] {
         Value::Str(s) => s.to_string(),
         other => {
@@ -476,7 +489,14 @@ fn n_argon2(ctx_args: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         }
     };
     let out_len = if args.len() >= 7 {
-        int_arg(6, "out_len")? as usize
+        let v = int_arg(6, "out_len")?;
+        if v <= 0 || v > 1024 {
+            return Err(format!(
+                "argon2: out_len must be between 1 and 1024, got {}",
+                v
+            ));
+        }
+        v as usize
     } else {
         32
     };

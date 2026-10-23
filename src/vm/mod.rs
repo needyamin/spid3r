@@ -580,6 +580,17 @@ impl Vm {
                     self.fail("task cancelled");
                     continue;
                 }
+                // Cycle collection at the VM's periodic poll point — the VM's
+                // analogue of the interpreter's statement boundary (the trigger
+                // docs/GC.md's design specifies for both engines). Without it a
+                // VM program that allocates cyclic garbage in a loop leaks every
+                // cell until process exit (the tree engine collects them; the
+                // VM never did). Safe here: an instruction boundary holds every
+                // live value as a strong `Value` reference (frame slots, Rust
+                // locals), so each is an external root; `maybe_collect` itself
+                // no-ops unless the allocation threshold is reached and this is
+                // the only thread executing Spid3r code.
+                crate::value::gc::maybe_collect();
             }
             if let Some(mut err) = self.error.take() {
                 self.flush_pending_str();

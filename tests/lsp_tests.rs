@@ -422,6 +422,56 @@ fn a_clean_file_publishes_no_diagnostics() {
 }
 
 #[test]
+fn positions_are_utf16_code_units_not_unicode_scalars() {
+    // LSP counts characters in UTF-16 code units; Spid3r internally counts
+    // Unicode scalars. The three emoji between `let a = "` and the rest of
+    // the line are three scalars but SIX UTF-16 units, so every column after
+    // them used to be reported three units too small — an editor would then
+    // place the cursor, the hover, and the rename on the wrong character.
+    let mut s = Session::start();
+    let src = "let a = \"\u{1f600}\u{1f600}\u{1f600}\"; let x: int = \"bad\";\n";
+    let diags = s.open(URI, src);
+    let first = diags
+        .as_arr()
+        .expect("a diagnostics array")
+        .first()
+        .expect("one diagnostic");
+    // The diagnostic covers the string literal `"bad"` (5 chars, 31..36).
+    let start = first
+        .get("range")
+        .and_then(|r| r.get("start"))
+        .expect("a start position");
+    assert_eq!(start.get("line").and_then(|l| l.as_i()), Some(0));
+    assert_eq!(start.get("character").and_then(|c| c.as_i()), Some(31));
+    let end = first
+        .get("range")
+        .and_then(|r| r.get("end"))
+        .expect("an end position");
+    assert_eq!(end.get("character").and_then(|c| c.as_i()), Some(36));
+
+    // The outline must use the same convention: `x` starts 18 units in
+    // (9 + 6 + 3), not 15 scalars in.
+    let result = s.request(
+        "textDocument/documentSymbol",
+        &format!("{{\"textDocument\":{{\"uri\":\"{}\"}}}}", URI),
+    );
+    let x = result
+        .as_arr()
+        .expect("a symbol array")
+        .iter()
+        .find(|sym| sym.get("name").and_then(|n| n.as_str()) == Some("x"))
+        .expect("an x symbol");
+    assert_eq!(
+        x.get("range")
+            .and_then(|r| r.get("start"))
+            .and_then(|p| p.get("character"))
+            .and_then(|c| c.as_i()),
+        Some(18)
+    );
+    s.finish();
+}
+
+#[test]
 fn editing_a_file_republishes_diagnostics() {
     let mut s = Session::start();
     s.open(URI, "fn main() {\n  let x: int = \"hello\"\n}\n");

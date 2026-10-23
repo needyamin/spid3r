@@ -165,6 +165,12 @@ impl<'a> Reader<'a> {
     fn new(data: &'a [u8]) -> Self {
         Reader { data, pos: 0 }
     }
+    /// Bytes not yet consumed. A container's element count can never exceed
+    /// this (every element occupies at least one input byte), so it bounds
+    /// any capacity hint derived from a length prefix.
+    fn remaining(&self) -> usize {
+        self.data.len() - self.pos
+    }
     fn byte(&mut self) -> Result<u8, String> {
         if self.pos >= self.data.len() {
             return Err("unexpected end of input".to_string());
@@ -174,11 +180,17 @@ impl<'a> Reader<'a> {
         Ok(b)
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8], String> {
-        if self.pos + n > self.data.len() {
+        // `pos + n` must not wrap: a length prefix of 2^64-9 with pos=9 used to
+        // wrap to 0, pass the bounds check, and panic on the slice below.
+        let end = self
+            .pos
+            .checked_add(n)
+            .ok_or_else(|| "length prefix overflows the input size".to_string())?;
+        if end > self.data.len() {
             return Err("unexpected end of input".to_string());
         }
-        let s = &self.data[self.pos..self.pos + n];
-        self.pos += n;
+        let s = &self.data[self.pos..end];
+        self.pos = end;
         Ok(s)
     }
     fn u16be(&mut self) -> Result<u16, String> {
@@ -260,7 +272,7 @@ fn msgpack_decode_from(r: &mut Reader, depth: usize) -> Result<Value, String> {
         }
         0xdc => {
             let n = r.u16be()? as usize;
-            let mut items = Vec::with_capacity(n);
+            let mut items = Vec::with_capacity(n.min(r.remaining()));
             for _ in 0..n {
                 items.push(msgpack_decode_from(r, depth + 1)?);
             }
@@ -268,7 +280,7 @@ fn msgpack_decode_from(r: &mut Reader, depth: usize) -> Result<Value, String> {
         }
         0xdd => {
             let n = r.u32be()? as usize;
-            let mut items = Vec::with_capacity(n);
+            let mut items = Vec::with_capacity(n.min(r.remaining()));
             for _ in 0..n {
                 items.push(msgpack_decode_from(r, depth + 1)?);
             }
@@ -276,7 +288,7 @@ fn msgpack_decode_from(r: &mut Reader, depth: usize) -> Result<Value, String> {
         }
         0xde => {
             let n = r.u16be()? as usize;
-            let mut pairs = Vec::with_capacity(n);
+            let mut pairs = Vec::with_capacity(n.min(r.remaining()));
             for _ in 0..n {
                 let k = mp_key(msgpack_decode_from(r, depth + 1)?);
                 let v = msgpack_decode_from(r, depth + 1)?;
@@ -286,7 +298,7 @@ fn msgpack_decode_from(r: &mut Reader, depth: usize) -> Result<Value, String> {
         }
         0xdf => {
             let n = r.u32be()? as usize;
-            let mut pairs = Vec::with_capacity(n);
+            let mut pairs = Vec::with_capacity(n.min(r.remaining()));
             for _ in 0..n {
                 let k = mp_key(msgpack_decode_from(r, depth + 1)?);
                 let v = msgpack_decode_from(r, depth + 1)?;
@@ -301,7 +313,7 @@ fn msgpack_decode_from(r: &mut Reader, depth: usize) -> Result<Value, String> {
                 Value::Int(b as i8 as i64) // negative fixint
             } else if (0x80..0x90).contains(&b) {
                 let n = (b & 0x0f) as usize;
-                let mut pairs = Vec::with_capacity(n);
+                let mut pairs = Vec::with_capacity(n.min(r.remaining()));
                 for _ in 0..n {
                     let k = mp_key(msgpack_decode_from(r, depth + 1)?);
                     let v = msgpack_decode_from(r, depth + 1)?;
@@ -310,7 +322,7 @@ fn msgpack_decode_from(r: &mut Reader, depth: usize) -> Result<Value, String> {
                 build_map(pairs)
             } else if (0x90..0xa0).contains(&b) {
                 let n = (b & 0x0f) as usize;
-                let mut items = Vec::with_capacity(n);
+                let mut items = Vec::with_capacity(n.min(r.remaining()));
                 for _ in 0..n {
                     items.push(msgpack_decode_from(r, depth + 1)?);
                 }
@@ -476,7 +488,7 @@ fn cbor_decode_from(r: &mut Reader, depth: usize) -> Result<Value, String> {
         }
         4 => {
             let n = value as usize;
-            let mut items = Vec::with_capacity(n);
+            let mut items = Vec::with_capacity(n.min(r.remaining()));
             for _ in 0..n {
                 items.push(cbor_decode_from(r, depth + 1)?);
             }
@@ -484,7 +496,7 @@ fn cbor_decode_from(r: &mut Reader, depth: usize) -> Result<Value, String> {
         }
         5 => {
             let n = value as usize;
-            let mut pairs = Vec::with_capacity(n);
+            let mut pairs = Vec::with_capacity(n.min(r.remaining()));
             for _ in 0..n {
                 let k = mp_key(cbor_decode_from(r, depth + 1)?);
                 let v = cbor_decode_from(r, depth + 1)?;

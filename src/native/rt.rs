@@ -436,6 +436,21 @@ fn spid3r_call_inner(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mu
     let callee = to_owned(f);
     match callee {
         Value::Cfn(c) => {
+            // Arity-check BEFORE entering generated code. The prologue loads
+            // `argv[offset + i]` for every declared parameter, so a short
+            // call reads past the argv array and the garbage is later
+            // dereferenced as a `*mut Value` (observed: SIGSEGV). The
+            // semantic checker only validates statically-known callees, so
+            // dynamic calls (`fs[0](1)`) reach here unchecked. `min_arity`
+            // covers trailing constant defaults, which the prologue fills.
+            if argc < c.min_arity || argc > c.arity {
+                return rt_throw(&format!(
+                    "{} expects {} argument(s), got {}",
+                    c.name.as_deref().unwrap_or("<fn>"),
+                    c.arity,
+                    argc
+                ));
+            }
             enter_call();
             let r = unsafe { (c.code)(c.env, argc, argv) };
             leave_call();

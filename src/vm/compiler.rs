@@ -529,23 +529,41 @@ fn compile_stmt(compilers: &mut Vec<Compiler>, ci: usize, stmt: &Stmt) -> Result
             compilers[ci].chunk.set_span(span.clone());
             compilers[ci].chunk.emit(OpCode::Return);
         }
-        Stmt::Break { .. } => {
+        Stmt::Break { span } => {
+            // The semantic checker rejects `break` outside a loop (and scopes
+            // the loop context per function body), so this is defense in
+            // depth: emit a clean diagnostic instead of panicking on a
+            // program that slipped past the checker.
+            if compilers[ci].loops.is_empty() {
+                return Err(Diagnostic::at(
+                    Phase::Vm,
+                    span.clone(),
+                    "break outside a loop",
+                ));
+            }
             emit_loop_exit(compilers, ci)?;
             let pos = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
             compilers[ci]
                 .loops
                 .last_mut()
-                .expect("break outside loop")
+                .expect("loop stack checked above")
                 .break_patches
                 .push(pos);
         }
-        Stmt::Continue { .. } => {
+        Stmt::Continue { span } => {
+            if compilers[ci].loops.is_empty() {
+                return Err(Diagnostic::at(
+                    Phase::Vm,
+                    span.clone(),
+                    "continue outside a loop",
+                ));
+            }
             emit_loop_exit(compilers, ci)?;
             let pos = emit_jump(&mut compilers[ci].chunk, OpCode::Jump);
             compilers[ci]
                 .loops
                 .last_mut()
-                .expect("continue outside loop")
+                .expect("loop stack checked above")
                 .continue_patches
                 .push(pos);
         }
@@ -895,14 +913,18 @@ fn compile_try(
         compilers[ci].chunk.emit(OpCode::EndTry);
         let _ = finally_target;
         let _end = compilers[ci].chunk.here();
-        compilers[ci].chunk.patch_i16(
+        patch_try_offset(
+            &mut compilers[ci].chunk,
             try_pos + 3,
-            (catch_target as i64 - operand_end as i64) as i16,
-        );
-        compilers[ci].chunk.patch_i16(
+            operand_end,
+            catch_target,
+        )?;
+        patch_try_offset(
+            &mut compilers[ci].chunk,
             try_pos + 5,
-            (finally_target as i64 - operand_end as i64) as i16,
-        );
+            operand_end,
+            finally_target,
+        )?;
         patch_jump(&mut compilers[ci].chunk, success_jump, finally_target)?;
         patch_jump(&mut compilers[ci].chunk, catch_jump, finally_target)?;
     } else {
@@ -916,14 +938,18 @@ fn compile_try(
         }
         compilers[ci].chunk.emit(OpCode::EndTry);
         let _end = compilers[ci].chunk.here();
-        compilers[ci].chunk.patch_i16(
+        patch_try_offset(
+            &mut compilers[ci].chunk,
             try_pos + 3,
-            (finally_target as i64 - operand_end as i64) as i16,
-        );
-        compilers[ci].chunk.patch_i16(
+            operand_end,
+            finally_target,
+        )?;
+        patch_try_offset(
+            &mut compilers[ci].chunk,
             try_pos + 5,
-            (finally_target as i64 - operand_end as i64) as i16,
-        );
+            operand_end,
+            finally_target,
+        )?;
         patch_jump(&mut compilers[ci].chunk, success_jump, finally_target)?;
     }
     Ok(())
@@ -1584,6 +1610,26 @@ fn patch_jump(chunk: &mut Chunk, operand_pos: usize, target: usize) -> Result<()
     let diff = target as i64 - (operand_pos as i64 + 2);
     // Jump offsets are 2-byte i16 operands; a function body larger than 32 KiB
     // would previously wrap silently and produce a mis-jumping chunk.
+    let off = i16::try_from(diff).map_err(|_| {
+        Diagnostic::new(
+            Phase::Vm,
+            "function body too large: bytecode exceeds the 32 KiB jump range (split the function)",
+        )
+    })?;
+    chunk.patch_i16(operand_pos, off);
+    Ok(())
+}
+
+/// Same range guarantee as `patch_jump`, for the try/catch/finally handler
+/// offsets (also 2-byte i16 operands): a try body larger than 32 KiB used to
+/// wrap the offset silently and route the handler to a corrupt target.
+fn patch_try_offset(
+    chunk: &mut Chunk,
+    operand_pos: usize,
+    from: usize,
+    target: usize,
+) -> Result<(), Diagnostic> {
+    let diff = target as i64 - from as i64;
     let off = i16::try_from(diff).map_err(|_| {
         Diagnostic::new(
             Phase::Vm,

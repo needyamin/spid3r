@@ -484,7 +484,14 @@ impl Formatter<'_> {
     }
 
     fn indent(&mut self) {
-        for _ in 0..self.depth {
+        // Cap the indent depth. Each line emits `depth * 4` spaces, so an
+        // unbounded depth makes the output quadratic in the input: a 360 KB
+        // file nested 20 000 levels deep formatted to 1.6 GB (and the LSP
+        // `textDocument/formatting` response inherited the amplification).
+        // The parser itself rejects nesting deeper than MAX_PARSE_DEPTH, so
+        // no program the language accepts is affected by the cap.
+        const MAX_INDENT_DEPTH: usize = 64;
+        for _ in 0..self.depth.min(MAX_INDENT_DEPTH) {
             self.out.push_str(INDENT);
         }
     }

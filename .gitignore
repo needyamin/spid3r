@@ -73,3 +73,6 @@ desktop.ini
 # History/planning/audit artifacts parked in _dustbin/ instead of deleted.
 # Never committed, never pushed. See _dustbin/README.md for contents + restore.
 /_dustbin/
+
+# --- Audit probe evidence (local only; 1.6 GB, regenerable) ---------------------
+/audit/

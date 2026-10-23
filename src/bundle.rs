@@ -195,7 +195,7 @@ fn bundle_wasm(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic> {
   </script>
 </body>
 </html>"#,
-            stem,
+            escape_markup(stem),
             user_html_custom,
             // HTML end tags are case-insensitive and tolerate whitespace, so
             // a plain `</script>` replace is not enough to keep the program
@@ -285,7 +285,7 @@ fn bundle_wasm(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic> {
   </script>
 </body>
 </html>"#,
-            stem
+            escape_markup(stem)
         );
         fs::write(out_dir.join("index.html"), index_html).map_err(|e| {
             Diagnostic::new(
@@ -300,6 +300,25 @@ fn bundle_wasm(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic> {
 
 fn default_wasm_html_template(_stem: &str) -> String {
     String::new()
+}
+
+/// Escape text interpolated into generated HTML/XML. The source *program* is
+/// escaped at its embedding sites; the file stem used to come through raw,
+/// which let a POSIX filename containing `<`, `>` or `"` break out of the
+/// `<title>` element or the Android `android:label` attribute.
+fn escape_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // ------------------------------------------------------------- DESKTOP BUNDLER
@@ -492,7 +511,8 @@ fn bundle_android(opts: &BundleOptions, src: &str) -> Result<PathBuf, Diagnostic
         </activity>
     </application>
 </manifest>"#,
-        app_name, stem
+        app_name,
+        escape_markup(stem)
     );
     fs::write(
         out_dir
