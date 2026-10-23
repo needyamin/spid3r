@@ -9,6 +9,130 @@
 //   - template engine with HTML escaping (escape_html, render_template)
 //   - cookie parser and setter (parse_cookies, set_cookie)
 //   - JWT sign and verify (jwt_sign, jwt_verify) using HMAC-SHA256 and base64
+//   - wrapping middleware (use_next) and a production serve loop (listen)
+
+// The production connection loop (keep-alive, limits, graceful shutdown) lives
+// in http.matrix; this module owns routing and the response vocabulary.
+import "http";
+
+// ------------------------------------------------------------ response headers
+
+/// The first value of a response header, case-insensitively, or null.
+///
+/// `headers` is a map in the common case, but a list of `{name, value}` pairs
+/// once a response carries two headers with the same name (two Set-Cookie
+/// lines). Every helper here accepts both shapes.
+public fn response_header(res, name) {
+    if res == null or type_of(res) != "map" or not res.has("headers") {
+        return null;
+    }
+    let h = res["headers"];
+    let want = string(name).lower();
+    if type_of(h) == "map" {
+        for k in h.keys() {
+            if k.lower() == want {
+                return string(h[k]);
+            }
+        }
+        return null;
+    }
+    if type_of(h) == "list" {
+        for e in h {
+            if string(e["name"]).lower() == want {
+                return string(e["value"]);
+            }
+        }
+    }
+    return null;
+}
+
+/// Set (or replace) a response header, keeping the map/list shape intact.
+public fn response_set_header(res, name, value) {
+    if res == null or type_of(res) != "map" {
+        return res;
+    }
+    let v = string(value);
+    if not res.has("headers") or res["headers"] == null {
+        res.set("headers", map(name, v));
+        return res;
+    }
+    let h = res["headers"];
+    let want = string(name).lower();
+    if type_of(h) == "map" {
+        let found = null;
+        for k in h.keys() {
+            if k.lower() == want {
+                found = k;
+            }
+        }
+        if found != null {
+            h[found] = v;
+        } else {
+            h[name] = v;
+        }
+        return res;
+    }
+    if type_of(h) == "list" {
+        for e in h {
+            if string(e["name"]).lower() == want {
+                e["value"] = v;
+                return res;
+            }
+        }
+        h.push(map("name", name, "value", v));
+    }
+    return res;
+}
+
+/// Append a response header, keeping any existing ones with the same name.
+///
+/// This is what a second Set-Cookie needs: replacing would silently log the
+/// user out of whichever session was set first.
+public fn response_add_header(res, name, value) {
+    if res == null or type_of(res) != "map" {
+        return res;
+    }
+    let v = string(value);
+    if not res.has("headers") or res["headers"] == null {
+        res.set("headers", map(name, v));
+        return res;
+    }
+    let h = res["headers"];
+    if type_of(h) == "map" {
+        if h.has(name) {
+            let out = list();
+            for k in h.keys() {
+                out.push(map("name", k, "value", h[k]));
+            }
+            out.push(map("name", name, "value", v));
+            res.set("headers", out);
+            return res;
+        }
+        h[name] = v;
+        return res;
+    }
+    if type_of(h) == "list" {
+        h.push(map("name", name, "value", v));
+    }
+    return res;
+}
+
+/// Add a value to `Vary` without dropping the ones already there.
+///
+/// `Vary` is a list, and two middlewares both legitimately need to add to it
+/// (CORS adds `origin`, compression adds `accept-encoding`). Overwriting -
+/// which `response_set_header` does - would silently break caching for one of
+/// them.
+public fn response_add_vary(res, value) {
+    let cur = response_header(res, "vary");
+    if cur == null or cur == "" {
+        return response_set_header(res, "vary", value);
+    }
+    if cur.lower().contains(string(value).lower()) {
+        return res;
+    }
+    return response_set_header(res, "vary", cur + ", " + string(value));
+}
 
 // ------------------------------------------------------------ response helpers
 
@@ -105,7 +229,8 @@ fn with_cookies(res) {
     return res;
 }
 
-fn to_response(value) {
+/// Normalize whatever a handler returned into a response map.
+public fn to_response(value) {
     if value == null {
         return map("__http_response", true, "status", 204, "headers", map(), "body", "");
     }
@@ -351,13 +476,33 @@ fn match_route(pattern_parts, path_parts) {
     return some(params);
 }
 
+/// Run `nexts[i..]` around `final`, threading `next` through each middleware.
+fn run_nexts(nexts, i, req, final) {
+    if i >= len(nexts) {
+        return to_response(final(req));
+    }
+    let next = fn(r) {
+        return run_nexts(nexts, i + 1, r, final);
+    };
+    return to_response(nexts[i](req, next));
+}
+
 public class WebApp {
     public let routes;
     public let middlewares;
+    public let nexts;
+    /// Serve tuning, passed through to http.serve_listener: keep_alive,
+    /// idle_timeout_ms, timeout_ms, max_requests_per_conn, max_body_bytes,
+    /// drain_ms, access_log, on_error.
+    public let opts;
+    private let listener;
 
     public fn new() {
         self.routes = list();
         self.middlewares = list();
+        self.nexts = list();
+        self.opts = map();
+        self.listener =-1;
     }
 
     public fn route(self, method, path, handler) {
@@ -397,10 +542,26 @@ public class WebApp {
         self.route("DELETE", path, handler);
     }
 
+    /// A before-hook: `fn(req)` returns a response to stop, or null to
+    /// continue. It cannot see or modify the response.
     public fn use(self, middleware) {
         self.middlewares.push(middleware);
     }
 
+    /// Wrapping middleware: `fn(req, next)`. `next(req)` runs the rest of the
+    /// chain and returns the normalized response, so this form can rewrite it
+    /// (gzip, etag, cookies, logging).
+    ///
+    /// There are two methods rather than one because Spid3r has no arity
+    /// introspection: `use` and `use_next` are distinguishable at the call
+    /// site, while `use(fn(req, next))` could only be detected by calling it
+    /// and catching the arity error, which would also swallow real errors.
+    public fn use_next(self, middleware) {
+        self.nexts.push(middleware);
+    }
+
+    /// Dispatch one request through the wrapping middleware, the before-hooks
+    /// and the router, in that order.
     public fn handle(self, req) {
         if not req.has("params") {
             req.set("params", map());
@@ -411,7 +572,17 @@ public class WebApp {
         if not req.has("cookies") {
             req.set("cookies", parse_cookies(req));
         }
+        if len(self.nexts) == 0 {
+            return self.dispatch(req);
+        }
+        let app = self;
+        return run_nexts(self.nexts, 0, req, fn(r) {
+            return app.dispatch(r);
+        });
+    }
 
+    /// Routing plus before-hooks, with no wrapping middleware.
+    public fn dispatch(self, req) {
         // Run middlewares
         for mw in self.middlewares {
             let m_res = mw(req);
@@ -531,34 +702,35 @@ public class WebApp {
         self.route("GET", prefix + "/*", handler);
     }
 
+    /// Bind and serve with the production loop: keep-alive, an idle timeout,
+    /// request and body limits, error isolation and a graceful drain on
+    /// Ctrl+C/SIGTERM. Returns when the listener is closed.
     public fn listen(self, addr) {
-        let listener = tcp_listen(addr);
-        if listener.is_err() {
-            return listener;
-        }
-        let l = listener.unwrap();
-        println("Spid3r web_app listening on http://" + addr);
-        while true {
-            let conn = tcp_accept(l);
-            if conn.is_err() {
-                continue;
-            }
-            let s = conn.unwrap();
-            let app = self;
-            spawn fn() {
-                let req_res = http_read_request(s);
-                if req_res.is_ok() {
-                    let req = req_res.unwrap();
-                    let res = app.handle(req);
-                    let status = res["status"];
-                    let headers = res["headers"];
-                    let body = res["body"];
-                    http_write_response(s, status, headers, body);
-                }
-                tcp_close(s);
-            };
-        }
+        let real = self.bind(addr);
+        println("Spid3r web_app listening on http://" + real);
+        let app = self;
+        serve_listener(self.listener, fn(req) {
+            return app.handle(req);
+        }, self.opts, -1);
         return ok(null);
+    }
+
+    /// Stop accepting; a blocked `listen()` drains and returns.
+    public fn close(self) {
+        if self.listener >= 0 {
+            tcp_close(self.listener);
+        }
+        return true;
+    }
+
+    /// Bind without serving (port 0 picks a free port); returns the address.
+    public fn bind(self, addr) {
+        let r = tcp_listen(addr);
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        self.listener = r.unwrap();
+        return tcp_local_addr(self.listener).unwrap();
     }
 }
 

@@ -98,6 +98,15 @@ rather than an infinity or a panic.
 | `json_parse(text)` | Parse JSON into Spid3r values (including `\uXXXX` escapes and surrogate pairs); nesting is capped at 512 levels. |
 | `json_write(value)` | Serialize a value to a JSON string. Non-finite floats are an error; nesting is capped at 512 levels (self-referential containers get a clean error, not a hang). |
 
+## Process & entropy
+
+| Function | Description |
+|---|---|
+| `random_bytes(n)` | `ok(bytes)` from the OS CSPRNG (`/dev/urandom`, `RtlGenRandom`). **Use this for tokens.** `random_int` is xorshift seeded from the clock — fine for sampling, unsuitable for anything an attacker can guess at. |
+| `shutdown_requested()` | True once SIGINT (or SIGTERM on Unix) has been seen, or `request_shutdown()` was called. Installs the handler on first call; a second signal aborts the process. |
+| `request_shutdown()` | Set the flag (an admin endpoint, a supervisor, a test). |
+| `reset_shutdown()` | Clear the flag. |
+
 ## Networking & HTTP
 
 Built directly on `std::net` with zero third-party dependencies. Sockets are represented as integer handles.
@@ -113,6 +122,9 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 | `tcp_local_addr(handle)` | Bound local address string (`ok("127.0.0.1:port")`). |
 | `tcp_peer_addr(conn_id)` | Peer remote address string (`ok("ip:port")`). |
 | `tcp_set_timeout(conn_id, ms)` | Set socket read/write timeout in milliseconds (`0` disables). |
+| `tcp_read_exact(conn_id, n)` | Block until `n` bytes arrive (or the peer closes); `ok(bytes)`. The primitive for length-prefixed framing (FastCGI records, binary protocols). |
+| `tcp_write_bytes(conn_id, bytes)` | Write raw bytes; `ok(bytes_written)`. |
+| `bytes_concat([b1, b2, ...])` | Join bytes/strings into one `bytes` value. `+` is not defined on bytes, and pushing ints one at a time is O(n) allocations. |
 | `tcp_recv_to_file(conn_id, path)` | Stream the connection to a file until the peer closes; `ok(bytes_written)`. The bytes never pass through a Spid3r string, so a binary download is byte-exact (`tcp_read` is UTF-8 **lossy** and would replace `0x80`/`0xFF` with U+FFFD). A partial file is left on a read error, deliberately. |
 | `tcp_send_file(conn_id, path)` | Stream a file to the connection; `ok(bytes_written)`. Leaves the handle open — the caller closes it (FIN is what an FTP data connection needs). |
 | `tcp_poll([conn_ids], timeout_ms)` | Readiness wait: blocks until at least one listed connection is readable/writable or the timeout expires (`0` = do not wait); returns `ok(map("readable", [...], "writable", [...]))` with connection ids. Backed by the platform readiness call (`WSAPoll` on Windows, `poll(2)` on Unix) — the OS wakes the caller the moment a socket is ready, and nothing is read ahead. A probe-loop fallback covers a failed platform call. |
@@ -433,6 +445,61 @@ contain `@`, and `ProxyCommand` cannot be expressed at all — unknown option ke
 tailoring and no CLDR data (month/weekday names are English). That is stated, not approximated.
 
 ---
+
+## 10. `multipart.matrix` — file uploads
+
+| Function | Description |
+|---|---|
+| `multipart_parse(body_bytes, content_type)` | Native: `ok({boundary, parts})`; each part is `{name, filename, content_type, headers, data, size, text}`. |
+| `multipart_build(boundary, parts)` | Native: encode parts back into a body (clients, tests). |
+| `multipart_form(req)` | `ok({fields, files, parts, boundary})` from a request (reads `body_bytes`, not the lossy `body`). |
+| `multipart_file(form, name)` / `multipart_field(form, name, dflt)` | Lookups. |
+| `multipart_safe_name(filename)` | Basename only, control characters dropped, Windows-illegal characters replaced, `.`/`..` rejected. |
+| `multipart_save(part, dir, opts?)` / `multipart_save_all(form, dir, opts?)` | Write to `dir`; a collision becomes `name-1.ext` unless `overwrite: true`. |
+
+Requests now carry `body_bytes` alongside `body`: the string view is lossy UTF-8, so an uploaded PNG must be
+read from the bytes.
+
+## 11. `session.matrix` — server-side sessions
+
+| Function | Description |
+|---|---|
+| `session_store(secret, opts?)` | `ok(SessionManager)`. opts: `cookie_name` ("sid"), `ttl` (86400), `idle` (1800), `dir`, `secure`, `same_site` ("Lax"). Secret must be ≥16 chars. |
+| `store.middleware()` | `fn(req, next)`: loads or creates `req["session"]`, saves after the handler, sets the cookie for a new session. |
+| `store.load(req)` / `store.start(req, data)` / `store.save(s)` | Explicit control. `start` always mints a new ID (fixation defence). |
+| `store.destroy(req)` / `store.destroy_id(id)` | Revoke; `destroy` returns the clearing cookie. |
+| `store.flash(s, key, v)` / `store.flash_take(s, key)` | One-shot data across a redirect. |
+| `store.count()` / `store.prune()` | Live rows; drop expired ones. |
+
+## 12. `middleware.matrix` — the middleware library
+
+Every function returns `fn(req, next)`; register with `app.use_next(...)`. Order matters: recover first,
+access-log last.
+
+| Function | Description |
+|---|---|
+| `mw_recover(opts?)` | A throwing handler becomes a 500 (message logged, never sent). |
+| `mw_request_id(opts?)` | `req["request_id"]` + `x-request-id` response header. |
+| `mw_access_log(opts?)` | method, path, status, duration, bytes, remote. `skip` ignores prefixes like `/healthz`. |
+| `mw_security_headers(opts?)` | nosniff, frame-options, referrer-policy, COOP, optional CSP/HSTS. |
+| `mw_cors(opts?)` | Origin/methods/headers/credentials, and a real preflight answer (204). |
+| `mw_gzip(opts?)` | gzip text-ish responses above `min_bytes` when the client accepts it; adds `Vary`. |
+| `mw_etag(opts?)` | Weak ETag from the body hash; `If-None-Match` becomes a 304. |
+| `mw_body_limit(max_bytes)` | 413 before the handler runs. |
+| `mw_basic_auth(user, password)` | `secure_compare`, 401 with `WWW-Authenticate`. |
+| `mw_rate_limit(opts?)` | Fixed-window per remote address; 429 with `Retry-After`. |
+| `mw_chain([...])` | Compose several into one. |
+
+## 13. `fastcgi.matrix` — the nginx/Apache front door
+
+| Function | Description |
+|---|---|
+| `fastcgi_serve(addr, dispatch, opts?)` | Listen and serve FastCGI forever. |
+| `fastcgi_serve_on(listener, dispatch, opts?)` | Same, on a listener you bound (port 0 in tests). |
+| `fastcgi_connection(conn, dispatch, opts?)` | Handle one connection (keep-connection honoured). |
+
+opts: `log` (true), `watch_signals` (true). The request map is the same one the HTTP server builds, so
+`web_app().handle` plugs straight in.
 
 ## Notes
 

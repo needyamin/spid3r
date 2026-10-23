@@ -1,0 +1,433 @@
+// stdlib/fastcgi.matrix - a FastCGI responder, written in Spid3r.
+//
+//   import "fastcgi";
+//   import "web";
+//
+//   let app = web_app();
+//   app.get("/", fn(req) { return "hello from behind nginx"; });
+//
+//   // nginx:  location / { fastcgi_pass 127.0.0.1:9000; include fastcgi_params; }
+//   fastcgi_serve("127.0.0.1:9000", fn(req) { return app.handle(req); }, map());
+//
+// This is the deployment story PHP has with php-fpm: the process speaks the
+// FastCGI protocol, the reverse proxy (nginx, Apache mod_proxy_fcgi, Caddy)
+// owns TLS, static files, compression and connection handling, and the app is
+// a plain request -> response function.
+//
+// That "plain function" is the WSGI analogue. WSGI itself is a Python calling
+// convention (`app(environ, start_response)`); the equivalent here is
+// `fn(req) -> response`, which is exactly what `web_app().handle` is, and what
+// both the HTTP server and this responder drive. There is no separate adapter
+// layer because there is nothing to adapt: one request map in, one response
+// map out.
+//
+// Protocol (FastCGI 1.0), all of it implemented here over `tcp_read_exact` /
+// `tcp_write_bytes` because the framing is binary:
+//
+//   record  := version(1) type(1) requestId(2) contentLength(2)
+//              paddingLength(1) reserved(1) content padding
+//   PARAMS  := repeated (nameLen valueLen name value), lengths 1 byte if the
+//              high bit is clear, else 4 bytes with the high bit set
+//   BEGIN_REQUEST := role(2) flags(1) reserved(5); flags&1 = keep connection
+//   END_REQUEST   := appStatus(4) protocolStatus(1) reserved(3)
+//
+// One request at a time per connection (multiplexing is legal in FastCGI and
+// nobody implements it); keep-alive is supported when the client asks for it.
+
+import "web";
+
+const VERSION = 1;
+const T_BEGIN = 1;
+const T_ABORT = 2;
+const T_END = 3;
+const T_PARAMS = 4;
+const T_STDIN = 5;
+const T_STDOUT = 6;
+const T_STDERR = 7;
+const T_DATA = 8;
+const T_GET_VALUES = 9;
+const T_GET_VALUES_RESULT = 10;
+const T_UNKNOWN = 11;
+
+const ROLE_RESPONDER = 1;
+const PROTO_COMPLETE = 0;
+const PROTO_UNKNOWN_ROLE = 3;
+const MAX_CONTENT = 65535;
+
+fn opt(m, key, dflt) {
+    if m == null or type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+/// Bytes -> text. `bytes.to_string()` returns a result because it validates
+/// UTF-8; a header value that is not UTF-8 becomes "" rather than throwing
+/// inside the responder.
+fn bytes_text(b) {
+    let r = b.to_string();
+    if r.is_err() {
+        return "";
+    }
+    return r.unwrap();
+}
+
+fn u16(hi, lo) {
+    return int(hi) * 256 + int(lo);
+}
+
+/// `[hi, lo]` for a 16-bit value.
+fn split_u16(n) {
+    let v = int(n);
+    return list((v / 256) | 0, v % 256);
+}
+
+// ------------------------------------------------------------ records
+
+/// Build one FastCGI record.
+fn record(kind, req_id, content) {
+    let head = bytes(
+        [
+            VERSION,
+            kind,
+            (req_id / 256) | 0,
+            req_id % 256,
+            (len(content) / 256) | 0,
+            len(content) % 256,
+            0,
+            0
+        ]
+    );
+    return bytes_concat([head, content]);
+}
+
+/// Read one record: `ok({type, id, content})`, or `err("eof")` at the end.
+fn read_record(conn) {
+    let h = tcp_read_exact(conn, 8);
+    if h.is_err() {
+        return err("eof");
+    }
+    let b = h.unwrap();
+    if len(b) < 8 {
+        return err("eof");
+    }
+    if b[0] != VERSION {
+        return err("fastcgi: unsupported protocol version " + string(b[0]));
+    }
+    let kind = b[1];
+    let req_id = u16(b[2], b[3]);
+    let clen = u16(b[4], b[5]);
+    let plen = b[6];
+    let content = bytes();
+    if clen > 0 {
+        let c = tcp_read_exact(conn, clen);
+        if c.is_err() {
+            return err("eof");
+        }
+        content = c.unwrap();
+    }
+    if plen > 0 {
+        tcp_read_exact(conn, plen);
+    }
+    return ok(map("type", kind, "id", req_id, "content", content));
+}
+
+// ------------------------------------------------------------ name-value pairs
+
+/// Decode a PARAMS record into `{name: value}`.
+fn decode_params(data, into) {
+    let i = 0;
+    let n = len(data);
+    while i < n {
+        let nl = 0;
+        let first = data[i];
+        if first < 128 {
+            nl = first;
+            i += 1;
+        } else {
+            if i + 3 >= n {
+                break;
+            }
+            nl = (first - 128) * 16777216 + data[i + 1] * 65536 + data[i + 2] * 256 + data[i + 3];
+            i += 4;
+        }
+        if i >= n {
+            break;
+        }
+        let vl = 0;
+        let f2 = data[i];
+        if f2 < 128 {
+            vl = f2;
+            i += 1;
+        } else {
+            if i + 3 >= n {
+                break;
+            }
+            vl = (f2 - 128) * 16777216 + data[i + 1] * 65536 + data[i + 2] * 256 + data[i + 3];
+            i += 4;
+        }
+        if i + nl + vl > n {
+            break;
+        }
+        let name = bytes_text(data.slice(i, i + nl));
+        i += nl;
+        let value = bytes_text(data.slice(i, i + vl));
+        i += vl;
+        into[name] = value;
+    }
+    return into;
+}
+
+// ------------------------------------------------------------ request mapping
+
+/// FastCGI params -> the same request map the HTTP server produces.
+fn request_from(env, body) {
+    let headers = map();
+    for k in env.keys() {
+        if k.starts_with("HTTP_") {
+            let name = k.slice(5, len(k)).lower().replace("_", "-");
+            headers[name] = env[k];
+        }
+    }
+    if env.has("CONTENT_TYPE") {
+        headers["content-type"] = env["CONTENT_TYPE"];
+    }
+    if env.has("CONTENT_LENGTH") {
+        headers["content-length"] = env["CONTENT_LENGTH"];
+    }
+    let script = string(opt(env, "SCRIPT_NAME", ""));
+    let path_info = string(opt(env, "PATH_INFO", ""));
+    let path = script + path_info;
+    if path == "" {
+        path = "/";
+    }
+    let raw_query = string(opt(env, "QUERY_STRING", ""));
+    return map(
+        "method",
+        string(opt(env, "REQUEST_METHOD", "GET")).upper(),
+        "path",
+        path,
+        "query",
+        parse_query(raw_query),
+        "raw_query",
+        raw_query,
+        "version",
+        string(opt(env, "SERVER_PROTOCOL", "HTTP/1.1")),
+        "headers",
+        headers,
+        "body",
+        bytes_text(body),
+        "body_bytes",
+        body,
+        "remote",
+        string(opt(env, "REMOTE_ADDR", "")),
+        "params",
+        map(),
+        "env",
+        env
+    );
+}
+
+// ------------------------------------------------------------ response mapping
+
+fn header_lines(headers) {
+    let out = list();
+    if type_of(headers) == "map" {
+        for k in headers.keys() {
+            out.push(k + ": " + string(headers[k]));
+        }
+        return out;
+    }
+    if type_of(headers) == "list" {
+        for e in headers {
+            out.push(string(e["name"]) + ": " + string(e["value"]));
+        }
+    }
+    return out;
+}
+
+/// A response map -> the CGI-style byte stream (`Status:` + headers + body).
+fn encode_response(res) {
+    if res == null {
+        res = map("status", 204, "headers", map(), "body", "");
+    }
+    if type_of(res) != "map" {
+        res = to_response(res);
+    }
+    let status = 200;
+    if res.has("status") {
+        status = res["status"];
+    }
+    let headers = map();
+    if res.has("headers") {
+        headers = res["headers"];
+    }
+    let body = "";
+    if res.has("body") {
+        body = res["body"];
+    }
+    let head = list();
+    // 204/304 must not carry a body, and nginx will strip one anyway.
+    if status != 200 or not headers.has("status") {
+        head.push("Status: " + string(status));
+    }
+    for line in header_lines(headers) {
+        head.push(line);
+    }
+    let text = head.join(chr(13) + chr(10)) + chr(13) + chr(10);
+    return bytes_concat([text, body]);
+}
+
+// ------------------------------------------------------------ serving
+
+/// Write `data` as one or more STDOUT records, then the empty terminator.
+fn write_stdout(conn, req_id, data) {
+    let n = len(data);
+    let i = 0;
+    while i < n {
+        let end = min(i + MAX_CONTENT, n);
+        let chunk = data.slice(i, end);
+        tcp_write_bytes(conn, record(T_STDOUT, req_id, chunk));
+        i = end;
+    }
+    tcp_write_bytes(conn, record(T_STDOUT, req_id, bytes()));
+    return true;
+}
+
+fn end_request(conn, req_id, status) {
+    let body = bytes([0, 0, 0, 0, status, 0, 0, 0]);
+    tcp_write_bytes(conn, record(T_END, req_id, body));
+    return true;
+}
+
+/// Handle one request on a connection. Returns `ok(keep_conn)`.
+fn handle_request(conn, dispatch, opts, begin) {
+    let req_id = begin["id"];
+    let content = begin["content"];
+    let role = u16(content[0], content[1]);
+    let flags = content[2];
+    let keep = (flags % 2) == 1;
+    if role != ROLE_RESPONDER {
+        end_request(conn, req_id, PROTO_UNKNOWN_ROLE);
+        return ok(false);
+    }
+
+    let env = map();
+    let body = list();
+    let running = true;
+    while running {
+        let r = read_record(conn);
+        if r.is_err() {
+            return ok(false);
+        }
+        let rec = r.unwrap();
+        if rec["id"] != req_id {
+            // Multiplexing is not supported; ignore other requests' records.
+            continue;
+        }
+        if rec["type"] == T_PARAMS {
+            if len(rec["content"]) == 0 {
+                continue;
+            }
+            decode_params(rec["content"], env);
+        } elif rec["type"] == T_STDIN {
+            if len(rec["content"]) == 0 {
+                running = false;
+            } else {
+                body.push(rec["content"]);
+            }
+        } elif rec["type"] == T_ABORT {
+            return ok(false);
+        } elif rec["type"] == T_GET_VALUES {
+            // The server asks for our limits; answering keeps some proxies happy.
+            let nul = chr(0);
+            let answer = "FCGI_MAX_CONNS=100" + nul + "FCGI_MAX_REQS=100" + nul + "FCGI_MPXS_CONNS=0" + nul;
+            tcp_write_bytes(conn, record(T_GET_VALUES_RESULT, 0, bytes_concat([answer])));
+        }
+    }
+
+    let stdin_bytes = bytes_concat(body);
+    let req = request_from(env, stdin_bytes);
+    let res = null;
+    try {
+        res = dispatch(req);
+    } catch(e) {
+        if opt(opts, "log", true) {
+            eprint("[fcgi] handler error: " + string(e) + "\n");
+        }
+        res = json_response(500, map("error", "internal server error"));
+    }
+    write_stdout(conn, req_id, encode_response(res));
+    end_request(conn, req_id, PROTO_COMPLETE);
+    return ok(keep);
+}
+
+/// Serve one connection until the client stops sending requests.
+public fn fastcgi_connection(conn, dispatch, opts) {
+    while true {
+        let r = read_record(conn);
+        if r.is_err() {
+            return true;
+        }
+        let rec = r.unwrap();
+        if rec["type"] == T_BEGIN {
+            let keep = handle_request(conn, dispatch, opts, rec);
+            if keep.is_err() or keep.unwrap() != true {
+                return true;
+            }
+        }
+        // Records that arrive outside a request (a stray GET_VALUES) are
+        // ignored rather than answered: the client already gave up.
+    }
+    return true;
+}
+
+/// `fastcgi_serve(addr, dispatch, opts)` - listen on `addr` and serve forever.
+public fn fastcgi_serve(addr, dispatch, opts) {
+    let l = tcp_listen(addr);
+    if l.is_err() {
+        throw l.unwrap_err();
+    }
+    return fastcgi_serve_on(l.unwrap(), dispatch, opts);
+}
+
+/// Serve on an already-bound listener (port 0 tests, or a socket the caller
+/// configured). Returns when the listener is closed.
+///
+/// opts: `log` (true), `drain_ms` (5000).
+public fn fastcgi_serve_on(listener, dispatch, opts) {
+    let stopping = map("v", false);
+    if opt(opts, "watch_signals", true) {
+        spawn fn() {
+            while not stopping["v"] {
+                if shutdown_requested() {
+                    tcp_close(listener);
+                    return 0;
+                }
+                sleep_ms(200);
+            }
+            return 0;
+        };
+    }
+    let real = tcp_local_addr(listener).unwrap();
+    if opt(opts, "log", true) {
+        eprint("[fcgi] listening on " + real + "\n");
+    }
+    while true {
+        let c = tcp_accept(listener);
+        if c.is_err() {
+            break;
+        }
+        let conn = c.unwrap();
+        spawn fn() {
+            fastcgi_connection(conn, dispatch, opts);
+            tcp_close(conn);
+            return 0;
+        };
+    }
+    stopping["v"] = true;
+    return true;
+}

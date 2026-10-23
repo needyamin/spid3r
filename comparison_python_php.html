@@ -126,7 +126,33 @@ web processes are different workloads than this CLI loop.
   <code>tests/db_drivers.rs</code>). <em>Still absent: MongoDB, TLS (<code>sslmode</code> is refused rather than
   silently downgraded), <code>caching_sha2_password</code> full auth (needs RSA/TLS), prepared statements, and
   connection pooling.</em></li>
-  <li><span class="tag t-no">NO</span><strong>Web-serving stack</strong> — no FastCGI/WSGI integration, no production server, no sessions beyond DIY JWT/cookies, no multipart file-upload parsing, no middleware ecosystem. A real CMS in Spid3r today means building all of that.</li>
+  <li><span class="tag t-part">PARTIAL</span><strong>Web-serving stack</strong> — the pieces ship now; what is
+  still missing is the ecosystem around them, not the mechanisms.
+  <strong>Multipart uploads:</strong> <code>multipart_parse</code> is a native (an uploaded PNG is not text —
+  <code>req["body"]</code> has been through a lossy UTF-8 decode, so requests now carry
+  <code>body_bytes</code> too), with <code>stdlib/multipart.matrix</code> on top:
+  <code>multipart_form</code>, <code>multipart_file</code>, <code>multipart_save</code> and a filename sanitiser
+  that strips paths and Windows-illegal characters. <strong>Sessions:</strong> <code>stdlib/session.matrix</code>
+  is a server-side store — opaque IDs from the OS CSPRNG (<code>random_bytes</code>, not the xorshift behind
+  <code>random_int</code>), an HMAC-signed cookie checked with <code>secure_compare</code>, absolute and idle
+  timeouts, ID rotation on login (session-fixation defence), revocation that actually revokes, flash data, and
+  an optional file-backed store. <strong>Middleware:</strong> <code>stdlib/middleware.matrix</code> provides
+  recover, request-id, access-log, security headers, CORS with real preflight, gzip, ETag/304, body limits,
+  Basic auth and a rate limiter, composable around a new <code>fn(req, next)</code> contract
+  (<code>app.use_next</code>) so a middleware can rewrite the response.
+  <strong>Server:</strong> <code>http.serve_listener</code> does keep-alive with an idle timeout, request and
+  body limits, error isolation (a throwing handler is a 500, not a dropped connection), an access log, and a
+  graceful drain on Ctrl+C/SIGTERM via a new <code>shutdown_requested</code> native — the same loop now backs
+  both <code>HttpServer</code> and <code>WebApp</code>, where before each had its own one-request-per-connection
+  loop.
+  <strong>FastCGI:</strong> <code>stdlib/fastcgi.matrix</code> is a real FastCGI responder (records, PARAMS
+  name-value pairs, STDIN/STDOUT, END_REQUEST, keep-connection), so nginx or Apache can front an app exactly
+  the way php-fpm is fronted. The WSGI analogue is the app itself: <code>fn(req) -&gt; response</code> is what
+  both the HTTP server and the responder drive, so there is no adapter layer to write.
+  <em>Still missing:</em> no third-party middleware or template ecosystem (that is a package registry problem,
+  §3.4), no WebSocket/SSE integration in the framework, no HTTP/2, no built-in multipart <em>streaming</em>
+  (a body is buffered up to the 8 MiB limit before parsing), and sessions are single-process: a file-backed
+  store assumes one writer, and a multi-server deployment needs a database.</li>
 </ul>
 
 <h3>3.5 Standard library gaps (state after the 2026-10-24 implementation pass)</h3>
@@ -256,7 +282,10 @@ streaming natives) are real clients, and <strong>SSH/SFTP</strong> drive the sys
 validated argv — no TLS stream yet, so the two network clients are cleartext-only by construction. The last
 library gap in this section closed with generated data rather than hand-written tables: <strong>IANA time
 zones</strong> (tzdata 2026e, 343 zones + 255 links, 1900–2100) and <strong>Unicode normalization and case
-folding</strong> (UCD 15.1), both regenerable from <code>tools/</code> and both checked against CPython.
+folding</strong> (UCD 15.1), both regenerable from <code>tools/</code> and both checked against CPython. The
+web-serving stack followed: multipart uploads that survive binary content, server-side sessions with real
+rotation and revocation, a middleware library, a keep-alive server with a graceful drain, and a FastCGI
+responder so nginx can front an app the way it fronts php-fpm.
 <strong>What still blocks real-world use, honestly:</strong> (1) <strong>no package registry</strong>
 — the ecosystem gap is the largest and only time plus registry work change it; (2) no suspension-based async executor (<code>async</code>/<code>await</code> are join-based; readiness itself is a kernel wakeup now, but via <code>poll(2)</code>/<code>WSAPoll</code> — O(n) per call, no epoll/kqueue); (3) databases beyond
 SQLite — Redis, PostgreSQL and MySQL/MariaDB clients now ship, but MongoDB, TLS, prepared statements and

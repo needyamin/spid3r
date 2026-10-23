@@ -1,0 +1,247 @@
+// stdlib/multipart.matrix - multipart/form-data handling, written in Spid3r.
+//
+//   import "multipart";
+//
+//   app.post("/upload", fn(req) {
+//       let form = multipart_form(req).unwrap();
+//       let note = form["fields"]["note"];          // a text field
+//       let files = form["files"];                  // uploaded files
+//       for f in files {
+//           let saved = multipart_save(f, "./uploads", map()).unwrap();
+//           println(saved["path"] + " (" + string(saved["size"]) + " bytes)");
+//       }
+//       return json_response(200, map("ok", true));
+//   });
+//
+// The byte-level parsing is the `multipart_parse` native, because an uploaded
+// PNG is not text: `req["body"]` has already been through a lossy UTF-8
+// decode, so this module reads `req["body_bytes"]` instead and hands back each
+// part's content as `bytes` with a `text` view alongside it.
+//
+// A part is `{name, filename, content_type, headers, data, size, text}`:
+//   filename      null for a normal field, the client's filename for a file
+//   data          the exact bytes (use `write_bytes` / `multipart_save`)
+//   text          lossy UTF-8 of `data` (form fields; not for binaries)
+
+fn opt(m, key, dflt) {
+    if m == null or type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+/// True when the request carries a `multipart/*` body.
+public fn multipart_is(req) {
+    if not req.has("headers") {
+        return false;
+    }
+    let h = req["headers"];
+    if type_of(h) != "map" or not h.has("content-type") {
+        return false;
+    }
+    return string(h["content-type"]).lower().starts_with("multipart/");
+}
+
+/// Parse a request's multipart body.
+///
+/// Returns `ok({fields, files, parts, boundary})`:
+///   fields   map of name -> string (parts without a filename)
+///   files    list of parts that carry a filename
+///   parts    every part in wire order
+public fn multipart_form(req) {
+    if not multipart_is(req) {
+        return err("multipart_form: request is not multipart/form-data");
+    }
+    let ctype = req["headers"]["content-type"];
+    let body = null;
+    if req.has("body_bytes") {
+        body = req["body_bytes"];
+    } elif req.has("body") {
+        body = req["body"];
+    } else {
+        return err("multipart_form: request has no body");
+    }
+    let parsed = multipart_parse(body, ctype);
+    if parsed.is_err() {
+        return parsed;
+    }
+    let p = parsed.unwrap();
+    let fields = map();
+    let files = list();
+    for part in p["parts"] {
+        if part["filename"] == null {
+            fields[part["name"]] = part["text"];
+        } else {
+            files.push(part);
+        }
+    }
+    return ok(
+        map(
+            "fields",
+            fields,
+            "files",
+            files,
+            "parts",
+            p["parts"],
+            "boundary",
+            p["boundary"]
+        )
+    );
+}
+
+/// The first uploaded file called `name`, or null.
+public fn multipart_file(form, name) {
+    for f in form["files"] {
+        if f["name"] == name {
+            return f;
+        }
+    }
+    return null;
+}
+
+/// A text field, or `dflt` when absent.
+public fn multipart_field(form, name, dflt) {
+    if form["fields"].has(name) {
+        return form["fields"][name];
+    }
+    return dflt;
+}
+
+/// A filename reduced to something safe to join onto a directory.
+///
+/// Takes the basename (both separators, so a Windows client cannot smuggle a
+/// path), drops control characters, replaces the characters Windows forbids,
+/// and refuses `.`/`..`/empty. Returns "" when nothing usable is left, which
+/// callers must treat as "reject the upload".
+public fn multipart_safe_name(name) {
+    if name == null {
+        return "";
+    }
+    let s = string(name);
+    // Basename: cut at the last '/' or '\'.
+    let cut = -1;
+    let i = 0;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "/" or c == "\\" {
+            cut = i;
+        }
+        i += 1;
+    }
+    if cut >= 0 {
+        s = s.slice(cut + 1, len(s));
+    }
+    let out = "";
+    for c in s.chars() {
+        let o = ord(c);
+        if o < 32 or o == 127 {
+            continue;
+        }
+        if c == "<" or c == ">" or c == ":" or c == "\"" or c == "|" or c == "?" or c == "*" {
+            out = out + "_";
+        } else {
+            out = out + c;
+        }
+    }
+    // Windows silently strips trailing dots and spaces, which turns "a." into
+    // "a" and ".." into something else entirely. Normalise here.
+    while out != "" and (out.ends_with(".") or out.ends_with(" ")) {
+        out = out.slice(0, len(out) - 1);
+    }
+    out = out.trim();
+    if out == "" or out == "." or out == ".." {
+        return "";
+    }
+    if len(out) > 120 {
+        // Keep the extension so the file still opens.
+        let dot = -1;
+        let j = 0;
+        while j < len(out) {
+            if out.slice(j, j + 1) == "." {
+                dot = j;
+            }
+            j += 1;
+        }
+        if dot > 0 and len(out) - dot <= 16 {
+            let ext = out.slice(dot, len(out));
+            out = out.slice(0, 120 - len(ext)) + ext;
+        } else {
+            out = out.slice(0, 120);
+        }
+    }
+    return out;
+}
+
+/// Write one uploaded file into `dir` and return
+/// `ok({path, name, size, content_type})`.
+///
+/// opts: `overwrite` (false). Without it a colliding name becomes
+/// `report-1.pdf`, `report-2.pdf`, ... rather than silently replacing the
+/// previous upload. `dir` must already exist - there is no mkdir native.
+public fn multipart_save(part, dir, opts) {
+    let name = multipart_safe_name(part["filename"]);
+    if name == "" {
+        return err("multipart_save: the upload has no usable filename");
+    }
+    let base = string(dir);
+    if not base.ends_with("/") and not base.ends_with("\\") {
+        base = base + "/";
+    }
+    let path = base + name;
+    if file_exists(path) and opt(opts, "overwrite", false) != true {
+        let stem = name;
+        let ext = "";
+        let dot = -1;
+        let i = 0;
+        while i < len(name) {
+            if name.slice(i, i + 1) == "." {
+                dot = i;
+            }
+            i += 1;
+        }
+        if dot > 0 {
+            stem = name.slice(0, dot);
+            ext = name.slice(dot, len(name));
+        }
+        let n = 1;
+        while file_exists(path) and n < 1000 {
+            path = base + stem + "-" + string(n) + ext;
+            n += 1;
+        }
+        if file_exists(path) {
+            return err("multipart_save: no free filename for " + name);
+        }
+    }
+    let w = write_bytes(path, part["data"]);
+    if w.is_err() {
+        return w;
+    }
+    return ok(
+        map(
+            "path",
+            path,
+            "name",
+            name,
+            "size",
+            part["size"],
+            "content_type",
+            part["content_type"]
+        )
+    );
+}
+
+/// Save every uploaded file, returning `ok(list of saved)` or the first error.
+public fn multipart_save_all(form, dir, opts) {
+    let out = list();
+    for f in form["files"] {
+        let r = multipart_save(f, dir, opts);
+        if r.is_err() {
+            return r;
+        }
+        out.push(r.unwrap());
+    }
+    return ok(out);
+}

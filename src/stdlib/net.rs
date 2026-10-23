@@ -48,6 +48,8 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("tcp_peer_addr", n_tcp_peer_addr),
         ("tcp_set_timeout", n_tcp_set_timeout),
         ("tcp_poll", n_tcp_poll),
+        ("tcp_read_exact", n_tcp_read_exact),
+        ("tcp_write_bytes", n_tcp_write_bytes),
         ("tcp_recv_to_file", n_tcp_recv_to_file),
         ("tcp_send_file", n_tcp_send_file),
         ("ws_connect", n_ws_connect),
@@ -477,6 +479,64 @@ fn n_tcp_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     {
         Ok(()) => ok(Value::Int(text.len() as i64)),
         Err(e) => err(io_msg("tcp_write", &e)),
+    }
+}
+
+/// `tcp_read_exact(conn, n)` -> `ok(bytes)`.
+///
+/// Blocks until `n` bytes have arrived or the peer closes (a short result means
+/// EOF). This is the primitive a length-prefixed protocol needs: `tcp_read`
+/// returns whatever happened to be in the socket buffer and decodes it as
+/// UTF-8, which is useless for a FastCGI record header.
+fn n_tcp_read_exact(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "tcp_read_exact";
+    arity(WHO, &args, 2)?;
+    let id = want_int(&args[0], WHO)?;
+    let n = want_int(&args[1], WHO)?;
+    if !(0..=MAX_READ_BYTES).contains(&n) {
+        return Err(format!(
+            "{}: n must be between 0 and {}",
+            WHO, MAX_READ_BYTES
+        ));
+    }
+    let conn = get_stream(id, WHO)?;
+    let mut out: Vec<u8> = Vec::with_capacity(n as usize);
+    {
+        let mut pending = conn.pending.lock().unwrap();
+        if !pending.is_empty() {
+            let take = pending.len().min(n as usize);
+            out.extend_from_slice(&pending[..take]);
+            pending.drain(..take);
+        }
+    }
+    let mut stream = conn.stream.lock().unwrap();
+    let mut buf = vec![0u8; 64 * 1024];
+    while out.len() < n as usize {
+        let want = ((n as usize) - out.len()).min(buf.len());
+        match stream.read(&mut buf[..want]) {
+            Ok(0) => break,
+            Ok(k) => out.extend_from_slice(&buf[..k]),
+            Err(e) => return err(io_msg(WHO, &e)),
+        }
+    }
+    ok(Value::Bytes(new_ref(out)))
+}
+
+/// `tcp_write_bytes(conn, bytes)` -> `ok(bytes_written)`.
+fn n_tcp_write_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "tcp_write_bytes";
+    arity(WHO, &args, 2)?;
+    let id = want_int(&args[0], WHO)?;
+    let data = match &args[1] {
+        Value::Bytes(b) => b.lock().unwrap().clone(),
+        Value::Str(s) => s.as_bytes().to_vec(),
+        other => return Err(format!("{} expects bytes, found {}", WHO, type_name(other))),
+    };
+    let conn = get_stream(id, WHO)?;
+    let mut stream = conn.stream.lock().unwrap();
+    match stream.write_all(&data).and_then(|_| stream.flush()) {
+        Ok(()) => ok(Value::Int(data.len() as i64)),
+        Err(e) => err(io_msg(WHO, &e)),
     }
 }
 
@@ -1825,6 +1885,13 @@ fn read_request(stream: &TcpStream) -> Result<Value, String> {
             "body".to_string(),
             str_val(String::from_utf8_lossy(&body).into_owned()),
         ),
+        // The same bytes without a UTF-8 round trip. A multipart upload of a
+        // PNG is not text: `body` would replace every invalid sequence with
+        // U+FFFD, so file uploads must read this field.
+        (
+            "body_bytes".to_string(),
+            Value::Bytes(new_ref(body.clone())),
+        ),
         ("remote".to_string(), str_val(remote)),
     ])
 }
@@ -1868,7 +1935,17 @@ fn reason_phrase(status: i64) -> &'static str {
 /// `content-type` defaults to `text/plain; charset=utf-8`.
 fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     const WHO: &str = "http_write_response";
-    arity(WHO, &args, 4)?;
+    if !(4..=5).contains(&args.len()) {
+        return Err(format!(
+            "{} expects 4 or 5 arguments, got {}",
+            WHO,
+            args.len()
+        ));
+    }
+    // The fifth argument keeps the connection open. Without it the response
+    // always closes, which is the safe default for a server that does not
+    // implement keep-alive (and what every earlier caller relies on).
+    let keep_alive = matches!(args.get(4), Some(Value::Bool(true)));
     let id = want_int(&args[0], WHO)?;
     let status = want_int(&args[1], WHO)?;
     if !(100..=999).contains(&status) {
@@ -1900,8 +1977,9 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
         out.push_str("content-type: text/plain; charset=utf-8\r\n");
     }
     out.push_str(&format!(
-        "content-length: {}\r\nconnection: close\r\nserver: spid3r\r\n\r\n",
-        body_len
+        "content-length: {}\r\nconnection: {}\r\nserver: spid3r\r\n\r\n",
+        body_len,
+        if keep_alive { "keep-alive" } else { "close" }
     ));
     let mut bytes = out.into_bytes();
     match body_raw {

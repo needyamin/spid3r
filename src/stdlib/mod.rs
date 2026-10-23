@@ -9,14 +9,17 @@ pub mod csv;
 pub mod datetime;
 pub mod db;
 pub mod digest;
+pub mod entropy;
 pub mod kdf;
 pub mod media;
+pub mod multipart;
 pub mod mysql;
 pub mod net;
 pub mod postgres;
 pub mod redis;
 pub mod regex;
 pub mod serialize;
+pub mod shutdown;
 pub mod signal;
 pub mod tz;
 pub mod unicode;
@@ -54,6 +57,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("read_file", n_read_file),
         ("write_file", n_write_file),
         ("file_exists", n_file_exists),
+        ("file_delete", n_file_delete),
         ("sleep_ms", n_sleep_ms),
         ("now", n_now),
         ("env", n_env),
@@ -124,6 +128,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("gc_collect", n_gc_collect),
         ("gc_live_cells", n_gc_live_cells),
         ("read_bytes", n_read_bytes),
+        ("bytes_concat", n_bytes_concat),
         ("write_bytes", n_write_bytes),
         ("save_npy", n_save_npy),
         ("load_npy", n_load_npy),
@@ -150,6 +155,9 @@ pub fn native_defs() -> Vec<NativeDef> {
     defs.extend(argon2::native_defs());
     defs.extend(bcrypt::native_defs());
     defs.extend(media::native_defs());
+    defs.extend(multipart::native_defs());
+    defs.extend(shutdown::native_defs());
+    defs.extend(entropy::native_defs());
     defs.extend(redis::native_defs());
     defs.extend(postgres::native_defs());
     defs.extend(mysql::native_defs());
@@ -1938,6 +1946,54 @@ fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
 }
 
 // ------------------------------------------------------------------ binary bytes & npy
+
+/// `file_delete(path)` -> `ok(true)` when removed, `ok(false)` when it did not
+/// exist, `err(msg)` on any other failure.
+///
+/// A file-backed store has to be able to revoke: truncating instead of
+/// deleting leaves junk behind forever, and there is no shell to fall back on.
+fn n_file_delete(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let path = want_str(&one("file_delete", &args)?, "file_delete")?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => collections::construct("ok", vec![Value::Bool(true)]),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            collections::construct("ok", vec![Value::Bool(false)])
+        }
+        Err(e) => collections::construct(
+            "err",
+            vec![Value::Str(
+                format!("cannot delete '{}': {}", path, e).into(),
+            )],
+        ),
+    }
+}
+
+/// `bytes_concat([b1, b2, ...])` -> `ok(bytes)`.
+///
+/// The one operation a byte-oriented protocol needs and the language cannot
+/// express: `+` is not defined on `bytes`, and building a large payload by
+/// pushing one int at a time is O(n) Value allocations.
+fn n_bytes_concat(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let v = one("bytes_concat", &args)?;
+    let items = match &v {
+        Value::List(l) | Value::VecDyn(l) => l.lock().unwrap().items.clone(),
+        other => vec![other.clone()],
+    };
+    let mut out: Vec<u8> = Vec::new();
+    for item in items {
+        match item {
+            Value::Bytes(b) => out.extend_from_slice(&b.lock().unwrap()),
+            Value::Str(s) => out.extend_from_slice(s.as_bytes()),
+            other => {
+                return Err(format!(
+                    "bytes_concat expects bytes or strings, found {}",
+                    crate::value::type_name(&other)
+                ))
+            }
+        }
+    }
+    Ok(Value::Bytes(new_ref(out)))
+}
 
 fn n_read_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let path = want_str(&one("read_bytes", &args)?, "read_bytes")?;

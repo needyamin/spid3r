@@ -155,6 +155,15 @@ fn main() {
 - **`stdlib/ssh.matrix`**: `ssh_exec` and SFTP (`sftp_get`/`put`/`batch`) by driving the system OpenSSH client
   with a validated argv — no shell, no `ProxyCommand`, `BatchMode=yes`, host keys verified by default. Not a
   protocol implementation: a hand-rolled SSH stack is a security hole, not a feature.
+- **`stdlib/multipart.matrix`**: `multipart/form-data` parsing over the request's raw bytes —
+  `multipart_form`/`multipart_file`/`multipart_save`, with a filename sanitiser (a PNG survives the upload
+  byte for byte).
+- **`stdlib/session.matrix`**: server-side sessions: opaque CSPRNG IDs, HMAC-signed cookie, absolute + idle
+  timeouts, rotation on login, real revocation, flash data, optional file-backed store.
+- **`stdlib/middleware.matrix`**: `fn(req, next)` middleware — recover, request-id, access-log, security
+  headers, CORS, gzip, ETag/304, body limits, Basic auth, rate limiting — composable with `app.use_next`.
+- **`stdlib/fastcgi.matrix`**: a FastCGI responder (records, PARAMS, STDIN/STDOUT, END_REQUEST, keep-conn) so
+  nginx/Apache can front a Spid3r app exactly like php-fpm.
 - **`stdlib/tz.matrix`**: IANA time zones from a generated tzdata 2026e table (343 zones + 255 links,
   transitions authoritative 1900–2100): `tz_iso`, `tz_parts_of`, `tz_make`, `tz_day_bounds` (23/24/25-hour
   days), `tz_add_days` (wall-clock preserving across DST), `tz_http_date`. `format_datetime` gained

@@ -1,0 +1,453 @@
+// stdlib/middleware.matrix - the middleware library, written in Spid3r.
+//
+//   import "middleware" as mw;
+//   import "session";
+//
+//   let app = web_app();
+//   app.use_next(mw.mw_recover(map()));          // first: catches everything after it
+//   app.use_next(mw.mw_request_id(map()));
+//   app.use_next(mw.mw_security_headers(map()));
+//   app.use_next(mw.mw_cors(map("origin", "https://app.example.com")));
+//   app.use_next(store.middleware());
+//   app.use_next(mw.mw_gzip(map()));
+//   app.use_next(mw.mw_etag(map()));
+//   app.use_next(mw.mw_access_log(map()));       // last: sees the final status
+//
+// Every function here returns a `fn(req, next)` middleware. `next(req)` runs
+// the rest of the chain and returns a **normalized response map**
+// (`{__http_response, status, headers, body}`), so a middleware can inspect and
+// rewrite the response on the way out - which is what gzip, etag and the
+// session cookie need.
+//
+// Order matters and is not symmetric: a middleware registered before another
+// sees the request first and the response last. Put `mw_recover` first so it
+// wraps everything, and `mw_access_log` last so it records the final status
+// after gzip and etag have run.
+//
+// The chain is built with `app.use_next(...)`; `app.use(fn(req))` remains the
+// old "before hook" form for handlers that never need the response.
+
+import "web";
+
+// ------------------------------------------------------------ response helpers
+
+fn opt(m, key, dflt) {
+    if m == null or type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+fn header_of(req, name) {
+    if not req.has("headers") or type_of(req["headers"]) != "map" {
+        return null;
+    }
+    let h = req["headers"];
+    if h.has(name) {
+        return string(h[name]);
+    }
+    let lower = name.lower();
+    for k in h.keys() {
+        if k.lower() == lower {
+            return string(h[k]);
+        }
+    }
+    return null;
+}
+
+fn body_of(res) {
+    if not res.has("body") {
+        return "";
+    }
+    return res["body"];
+}
+
+fn status_of(res) {
+    if not res.has("status") {
+        return 200;
+    }
+    return int(res["status"]);
+}
+
+fn is_bytes(v) {
+    return type_of(v) == "bytes";
+}
+
+fn body_len(v) {
+    if is_bytes(v) {
+        return len(v);
+    }
+    return len(string(v));
+}
+
+fn body_text(v) {
+    if is_bytes(v) {
+        return string(v);
+    }
+    return string(v);
+}
+
+// ------------------------------------------------------------ chain
+
+/// Run `middlewares[i..]` around `final`, threading `next` through each.
+fn run_chain(middlewares, i, req, final) {
+    if i >= len(middlewares) {
+        return to_response(final(req));
+    }
+    let next = fn(r) {
+        return run_chain(middlewares, i + 1, r, final);
+    };
+    let out = middlewares[i](req, next);
+    return to_response(out);
+}
+
+/// Compose a list of `fn(req, next)` middlewares into one.
+public fn mw_chain(middlewares) {
+    let list_mw = middlewares;
+    return fn(req, next) {
+        return run_chain(list_mw, 0, req, next);
+    };
+}
+
+// ------------------------------------------------------------ error isolation
+
+/// Turn a thrown handler into a 500 instead of a dropped connection.
+///
+/// The exception text is logged, never sent: a stack trace or a database error
+/// in a response body is an information leak. opts: `log` (true).
+public fn mw_recover(opts) {
+    let log = opt(opts, "log", true);
+    return fn(req, next) {
+        try {
+            return next(req);
+        } catch(e) {
+            if log {
+                eprint(
+                    "[web] 500 "
+                        + string(opt(req, "method", "?"))
+                        + " "
+                        + string(opt(req, "path", "?"))
+                        + ": "
+                        + string(e)
+                        + "\n"
+                );
+            }
+            return json_response(500, map("error", "internal server error"));
+        }
+    };
+}
+
+// ------------------------------------------------------------ identity & logging
+
+/// Give every request an ID: reuse the client's `x-request-id` or mint one.
+///
+/// It lands on `req["request_id"]` and in the response header, so a log line
+/// and a browser report can be matched without guessing.
+public fn mw_request_id(opts) {
+    let header = opt(opts, "header", "x-request-id");
+    return fn(req, next) {
+        let id = header_of(req, header);
+        if id == null or id == "" or len(id) > 128 {
+            id = hex_encode(random_bytes(8).unwrap());
+        }
+        req.set("request_id", id);
+        let res = next(req);
+        response_set_header(res, header, id);
+        return res;
+    };
+}
+
+/// One line per request: method, path, status, duration, bytes.
+///
+/// opts: `log` (true), `skip` (list of path prefixes to ignore, e.g.
+/// ["/healthz"]).
+public fn mw_access_log(opts) {
+    let enabled = opt(opts, "log", true);
+    let skip = opt(opts, "skip", list());
+    return fn(req, next) {
+        let path = string(opt(req, "path", "/"));
+        for prefix in skip {
+            if path.starts_with(prefix) {
+                return next(req);
+            }
+        }
+        let start = now_ms();
+        let res = next(req);
+        if enabled {
+            eprint(
+                "[web] "
+                    + string(opt(req, "method", "?"))
+                    + " "
+                    + path
+                    + " -> "
+                    + string(status_of(res))
+                    + " ("
+                    + string(now_ms() - start)
+                    + " ms, "
+                    + string(body_len(body_of(res)))
+                    + " B, "
+                    + string(opt(req, "remote", "-"))
+                    + ")\n"
+            );
+        }
+        return res;
+    };
+}
+
+// ------------------------------------------------------------ headers
+
+/// Response headers every browser-facing app should send.
+///
+/// opts: `csp` (null), `frame_options` ("DENY"), `referrer` ("no-referrer"),
+/// `hsts` (null - only set it once you are certain about TLS).
+public fn mw_security_headers(opts) {
+    let frame = opt(opts, "frame_options", "DENY");
+    let referrer = opt(opts, "referrer", "no-referrer");
+    let csp = opt(opts, "csp", null);
+    let hsts = opt(opts, "hsts", null);
+    return fn(req, next) {
+        let res = next(req);
+        response_set_header(res, "x-content-type-options", "nosniff");
+        response_set_header(res, "x-frame-options", frame);
+        response_set_header(res, "referrer-policy", referrer);
+        response_set_header(res, "cross-origin-opener-policy", "same-origin");
+        if csp != null {
+            response_set_header(res, "content-security-policy", csp);
+        }
+        if hsts != null {
+            response_set_header(res, "strict-transport-security", hsts);
+        }
+        return res;
+    };
+}
+
+/// CORS with an explicit origin, and a real preflight answer.
+///
+/// `origin` defaults to "*"; set it to one origin when `credentials` is true
+/// (a wildcard and credentials are incompatible - the browser rejects it).
+public fn mw_cors(opts) {
+    let origin = opt(opts, "origin", "*");
+    let methods = opt(opts, "methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    let headers = opt(opts, "headers", "content-type, authorization, x-request-id");
+    let credentials = opt(opts, "credentials", false);
+    let max_age = opt(opts, "max_age", 600);
+    return fn(req, next) {
+        let method = string(opt(req, "method", "GET")).upper();
+        if method == "OPTIONS" and header_of(req, "access-control-request-method") != null {
+            let pre = map("__http_response", true, "status", 204, "headers", map(), "body", "");
+            response_set_header(pre, "access-control-allow-origin", origin);
+            response_set_header(pre, "access-control-allow-methods", methods);
+            response_set_header(pre, "access-control-allow-headers", headers);
+            response_set_header(pre, "access-control-max-age", string(max_age));
+            if credentials {
+                response_set_header(pre, "access-control-allow-credentials", "true");
+            }
+            response_add_vary(pre, "origin");
+            response_add_vary(pre, "access-control-request-headers");
+            return pre;
+        }
+        let res = next(req);
+        response_set_header(res, "access-control-allow-origin", origin);
+        if credentials {
+            response_set_header(res, "access-control-allow-credentials", "true");
+        }
+        response_add_vary(res, "origin");
+        return res;
+    };
+}
+
+// ------------------------------------------------------------ body transforms
+
+fn compressible(ctype, types) {
+    if ctype == null {
+        return false;
+    }
+    let c = string(ctype).lower();
+    for t in types {
+        if c.starts_with(t) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// gzip a text-ish response when the client asked for it.
+///
+/// opts: `min_bytes` (1024), `types` (list of content-type prefixes).
+/// Already-encoded and empty bodies are left alone; `vary: accept-encoding`
+/// is always added so caches do not serve the wrong form.
+public fn mw_gzip(opts) {
+    let min_bytes = int(opt(opts, "min_bytes", 1024));
+    let types = opt(
+        opts,
+        "types",
+        list(
+            "text/",
+            "application/json",
+            "application/javascript",
+            "application/xml",
+            "image/svg+xml"
+        )
+    );
+    return fn(req, next) {
+        let accepts = header_of(req, "accept-encoding");
+        let res = next(req);
+        response_add_vary(res, "accept-encoding");
+        if accepts == null or not string(accepts).lower().contains("gzip") {
+            return res;
+        }
+        if status_of(res) < 200 or status_of(res) >= 300 {
+            return res;
+        }
+        if response_header(res, "content-encoding") != null {
+            return res;
+        }
+        let body = body_of(res);
+        if body_len(body) < min_bytes {
+            return res;
+        }
+        if not compressible(response_header(res, "content-type"), types) {
+            return res;
+        }
+        let packed = gzip_compress(body);
+        res.set("body", packed);
+        response_set_header(res, "content-encoding", "gzip");
+        response_add_vary(res, "accept-encoding");
+        return res;
+    };
+}
+
+fn short_hash(body) {
+    return sha256(body_text(body)).slice(0, 16);
+}
+
+/// Add a weak ETag and answer `If-None-Match` with 304.
+///
+/// The body is hashed, so the tag changes exactly when the bytes change. A 304
+/// must not carry a body; the server writes the empty one.
+public fn mw_etag(opts) {
+    // Weak by default: the tag is a hash of the body, so it is byte-exact, but
+    // a strong tag also promises semantic equivalence across encodings, which
+    // only the origin knows.
+    let weak = opt(opts, "weak", true);
+    return fn(req, next) {
+        let res = next(req);
+        if status_of(res) != 200 {
+            return res;
+        }
+        let body = body_of(res);
+        if body_len(body) == 0 {
+            return res;
+        }
+        let tag = short_hash(body);
+        if weak {
+            tag = "W/\"" + tag + "\"";
+        } else {
+            tag = "\"" + tag + "\"";
+        }
+        let inm = header_of(req, "if-none-match");
+        if inm != null and (string(inm) == tag or string(inm) == "*") {
+            let not_modified = map(
+                "__http_response",
+                true,
+                "status",
+                304,
+                "headers",
+                map(),
+                "body",
+                ""
+            );
+            response_set_header(not_modified, "etag", tag);
+            return not_modified;
+        }
+        response_set_header(res, "etag", tag);
+        return res;
+    };
+}
+
+/// Reject a request whose declared body is larger than `max_bytes`.
+public fn mw_body_limit(max_bytes) {
+    let limit = int(max_bytes);
+    return fn(req, next) {
+        let cl = header_of(req, "content-length");
+        if cl != null {
+            let n = int(cl);
+            if n != null and n > limit {
+                return json_response(
+                    413,
+                    map("error", "payload too large", "limit", limit)
+                );
+            }
+        }
+        return next(req);
+    };
+}
+
+// ------------------------------------------------------------ access control
+
+/// HTTP Basic auth over a single credential pair.
+///
+/// Compared with `secure_compare`, so the check does not leak the length of a
+/// shared prefix. Basic auth is only as good as the transport: put it behind
+/// TLS, or use it for internal tooling.
+public fn mw_basic_auth(user, password) {
+    let want = base64_encode(string(user) + ":" + string(password));
+    return fn(req, next) {
+        let auth = header_of(req, "authorization");
+        let ok = false;
+        if auth != null and string(auth).starts_with("Basic ") {
+            let given = string(auth).slice(6, len(string(auth))).trim();
+            ok = secure_compare(given, want);
+        }
+        if not ok {
+            let res = json_response(401, map("error", "authentication required"));
+            response_set_header(res, "www-authenticate", "Basic realm=\"restricted\", charset=\"UTF-8\"");
+            return res;
+        }
+        return next(req);
+    };
+}
+
+/// A fixed-window rate limit per client address.
+///
+/// opts: `limit` (60 requests), `window` (60 seconds), `key` (fn(req) -> string,
+/// defaults to the remote address). Fixed windows let a client burst up to
+/// 2x the limit across a boundary; that is the price of not storing per-key
+/// token buckets, and it is the right trade for abuse control rather than
+/// billing-grade quotas.
+public fn mw_rate_limit(opts) {
+    let limit = int(opt(opts, "limit", 60));
+    let window = int(opt(opts, "window", 60));
+    let key_fn = opt(opts, "key", null);
+    // Shared across requests: collections are reference types, so the closure
+    // mutates this one map.
+    let buckets = map();
+    return fn(req, next) {
+        let key = string(opt(req, "remote", "unknown"));
+        if key_fn != null {
+            key = string(key_fn(req));
+        }
+        let now = unix_time();
+        let b = null;
+        if buckets.has(key) {
+            b = buckets[key];
+        }
+        if b == null or b["reset"] <= now {
+            b = map("count", 0, "reset", now + window);
+            buckets[key] = b;
+        }
+        b["count"] = b["count"] + 1;
+        if b["count"] > limit {
+            let res = json_response(
+                429,
+                map("error", "too many requests", "limit", limit, "window", window)
+            );
+            response_set_header(res, "retry-after", string(b["reset"] - now));
+            return res;
+        }
+        return next(req);
+    };
+}

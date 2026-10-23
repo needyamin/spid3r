@@ -137,12 +137,16 @@ public class HttpServer {
     private let middleware;
     private let listener;
     public let logging;
+    /// Serve tuning: keep_alive, idle_timeout_ms, timeout_ms,
+    /// max_requests_per_conn, max_body_bytes, drain_ms, access_log, on_error.
+    public let opts;
 
     fn new() {
         self.routes = list();
         self.middleware = list();
         self.listener =-1;
         self.logging = true;
+        self.opts = map();
     }
 
     /// Register `handler` for `method` ("GET", "POST", ..., or "*" for any).
@@ -233,36 +237,30 @@ public class HttpServer {
     }
 
     /// Accept connections on a bound server. `max_connections < 0` serves
-    /// forever; otherwise returns after that many connections are handled.
+    /// forever; otherwise returns after that many connections are accepted.
+    ///
+    /// Tuning lives in `server.opts` (a map, read at serve time):
+    ///   keep_alive (true), idle_timeout_ms (5000), timeout_ms (30000),
+    ///   max_requests_per_conn (100), max_body_bytes (8 MiB), drain_ms (5000),
+    ///   access_log (true), on_error (null -> 500 JSON)
     public fn serve(self, max_connections) {
         if self.listener < 0 {
             throw "HttpServer.serve: call bind() or listen() first";
         }
         let app = self;
-        let listener = self.listener;
-        let tasks = list();
-        let count = 0;
-        while max_connections < 0 or count < max_connections {
-            let c = tcp_accept(listener);
-            if c.is_err() {
-                // Closed by close(): stop. Anything else: keep serving.
-                if c.unwrap_err().contains("closed") or c.unwrap_err().contains("not open") {
-                    break;
-                }
-                continue;
-            }
-            let conn = c.unwrap();
-            let t = spawn fn() {
-                handle_connection(app, conn);
-                return null;
-            };
-            count += 1;
-            if max_connections >= 0 {
-                tasks.push(t);
-            }
-        }
-        join_all(tasks);
+        let count = serve_listener(self.listener, fn(req) {
+            return app.dispatch(req);
+        }, with_logging(self.opts, self.logging), max_connections);
         return count;
+    }
+
+    /// Stop accepting and drain. Safe to call from another task (an admin
+    /// endpoint, or a supervisor that saw a file appear).
+    public fn shutdown(self) {
+        if self.listener >= 0 {
+            tcp_close(self.listener);
+        }
+        return true;
     }
 
     /// Bind and serve forever.
@@ -274,52 +272,248 @@ public class HttpServer {
 
     /// Stop accepting connections; a blocked serve() returns.
     public fn close(self) {
-        if self.listener >= 0 {
-            tcp_close(self.listener);
-            self.listener =-1;
+        return self.shutdown();
+    }
+}
+
+// ------------------------------------------------------------ the server loop
+
+/// `server.logging` predates `opts`; honour it unless opts says otherwise.
+fn with_logging(opts, logging) {
+    if opts != null and type_of(opts) == "map" and opts.has("access_log") {
+        return opts;
+    }
+    let out = map();
+    if opts != null and type_of(opts) == "map" {
+        for k in opts.keys() {
+            out[k] = opts[k];
         }
-        return null;
     }
+    out["access_log"] = logging;
+    return out;
 }
 
-async fn join_all(tasks) {
-    for t in tasks {
-        await t;
+fn opt(m, key, dflt) {
+    if m == null or type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+fn header_of(req, name) {
+    if not req.has("headers") or type_of(req["headers"]) != "map" {
+        return null;
+    }
+    let h = req["headers"];
+    if h.has(name) {
+        return string(h[name]);
     }
     return null;
 }
 
-/// One connection = one request (the runtime always sends
-/// `connection: close`).
-fn handle_connection(app, conn) {
-    tcp_set_timeout(conn, 30000);
-    let start = now();
-    let r = http_read_request(conn);
-    if r.is_err() {
-        http_write_response(conn, 400, map(), "400 Bad Request");
-        tcp_close(conn);
-        return null;
+/// Does this request allow the connection to stay open?
+fn wants_keep_alive(req) {
+    let c = header_of(req, "connection");
+    if c != null {
+        let v = c.lower();
+        if v.contains("close") {
+            return false;
+        }
+        if v.contains("keep-alive") {
+            return true;
+        }
     }
-    let req = r.unwrap();
-    let res = null;
-    try {
-        res = app.dispatch(req);
-    } catch(e) {
-        eprint(
-            "[http] handler error on " + req["method"] + " " + req["path"] + ": " + string(e) + "\n"
-        );
-        res = http_text(500, "500 Internal Server Error");
+    // HTTP/1.1 keeps alive by default; HTTP/1.0 does not unless it asked.
+    return string(opt(req, "version", "HTTP/1.1")) != "HTTP/1.0";
+}
+
+fn bump(counter, delta) {
+    let g = counter.lock();
+    g["n"] = g["n"] + delta;
+    counter.unlock();
+    return g["n"];
+}
+
+fn inflight_count(counter) {
+    let g = counter.lock();
+    let n = g["n"];
+    counter.unlock();
+    return n;
+}
+
+/// The production accept loop, shared by `HttpServer` and `WebApp`.
+///
+/// What it does that a bare `while tcp_accept` does not:
+///   * **keep-alive** - several requests per connection, bounded by
+///     `max_requests_per_conn` and an idle timeout between them;
+///   * **graceful shutdown** - `shutdown_requested()` (Ctrl+C / SIGTERM) closes
+///     the listener, then the loop waits up to `drain_ms` for in-flight
+///     connections before returning;
+///   * **error isolation** - a throwing dispatcher answers 500 and keeps the
+///     connection sane instead of dropping it mid-response;
+///   * **limits** - a body larger than `max_body_bytes` is rejected with 413
+///     before the handler runs.
+///
+/// Returns the number of accepted connections.
+public fn serve_listener(listener, dispatch, opts, max_connections) {
+    let keep_alive = opt(opts, "keep_alive", true);
+    let idle = int(opt(opts, "idle_timeout_ms", 5000));
+    let io_timeout = int(opt(opts, "timeout_ms", 30000));
+    let max_reqs = int(opt(opts, "max_requests_per_conn", 100));
+    let max_body = int(opt(opts, "max_body_bytes", 8 * 1024 * 1024));
+    let drain_ms = int(opt(opts, "drain_ms", 5000));
+    let access_log = opt(opts, "access_log", true);
+    let on_error = opt(opts, "on_error", null);
+    // A process-global signal flag stops *every* server in the process, which
+    // is right for a standalone app and wrong for an embedded one (or a test
+    // suite running several servers). opt out with watch_signals: false.
+    let watch_signals = opt(opts, "watch_signals", true);
+
+    let counter = mutex(map("n", 0));
+    let stopping = map("v", false);
+
+    // Ctrl+C / SIGTERM: close the listener so the blocking accept returns.
+    if watch_signals {
+        spawn fn() {
+            while not stopping["v"] {
+                if shutdown_requested() {
+                    tcp_close(listener);
+                    return 0;
+                }
+                sleep_ms(200);
+            }
+            return 0;
+        };
     }
-    let body = res["body"];
-    if req["method"] == "HEAD" {
-        body = "";
+
+    let accepted = 0;
+    while max_connections < 0 or accepted < max_connections {
+        let c = tcp_accept(listener);
+        if c.is_err() {
+            break;
+        }
+        let conn = c.unwrap();
+        accepted += 1;
+        bump(counter, 1);
+        spawn fn() {
+            handle_connection(conn, dispatch, keep_alive, idle, io_timeout, max_reqs, max_body, access_log, on_error);
+            bump(counter, -1);
+            return 0;
+        };
     }
-    http_write_response(conn, res["status"], res["headers"], body);
+    stopping["v"] = true;
+
+    // Drain: give in-flight requests a bounded window to finish.
+    let waited = 0;
+    while waited < drain_ms and inflight_count(counter) > 0 {
+        sleep_ms(50);
+        waited += 50;
+    }
+    return accepted;
+}
+
+/// Serve one connection: up to `max_reqs` requests, then close.
+fn handle_connection(conn, dispatch, keep_alive, idle, io_timeout, max_reqs, max_body, access_log, on_error) {
+    tcp_set_timeout(conn, io_timeout);
+    let served = 0;
+    while served < max_reqs {
+        let start = now_ms();
+        let read = http_read_request(conn);
+        if read.is_err() {
+            // A malformed first request deserves an answer; an idle timeout or
+            // a peer that hung up does not.
+            if served == 0 and not read.unwrap_err().contains("timed out") {
+                http_write_response(conn, 400, map(), "400 Bad Request", false);
+            }
+            break;
+        }
+        let req = read.unwrap();
+        let declared = header_of(req, "content-length");
+        if declared != null and int(declared) != null and int(declared) > max_body {
+            http_write_response(
+                conn,
+                413,
+                map("content-type", "application/json; charset=utf-8"),
+                json_write(map("error", "payload too large", "limit", max_body)),
+                false
+            );
+            break;
+        }
+        let res = null;
+        try {
+            res = dispatch(req);
+        } catch(e) {
+            eprint(
+                "[http] handler error on "
+                    + string(opt(req, "method", "?"))
+                    + " "
+                    + string(opt(req, "path", "?"))
+                    + ": "
+                    + string(e)
+                    + "\n"
+            );
+            if on_error != null {
+                try {
+                    res = on_error(req, e);
+                } catch(_e) {
+                    res = null;
+                }
+            }
+            if res == null {
+                res = map(
+                    "__http_response",
+                    true,
+                    "status",
+                    500,
+                    "headers",
+                    map("content-type", "application/json; charset=utf-8"),
+                    "body",
+                    json_write(map("error", "internal server error"))
+                );
+            }
+        }
+        let status = 200;
+        let headers = map();
+        let body = "";
+        if type_of(res) == "map" and res.has("__http_response") {
+            status = res["status"];
+            headers = res["headers"];
+            body = res["body"];
+        } else {
+            // A dispatcher that returned a bare value: answer as text.
+            status = 200;
+            body = string(res);
+        }
+        let more = keep_alive and wants_keep_alive(req) and served + 1 < max_reqs;
+        let head = string(opt(req, "method", "GET")) == "HEAD";
+        if head {
+            body = "";
+        }
+        http_write_response(conn, status, headers, body, more);
+        served += 1;
+        if access_log {
+            eprint(
+                "[http] "
+                    + string(opt(req, "method", "GET"))
+                    + " "
+                    + string(opt(req, "path", "/"))
+                    + " -> "
+                    + string(status)
+                    + " ("
+                    + string(now_ms() - start)
+                    + " ms)\n"
+            );
+        }
+        if not more {
+            break;
+        }
+        // Idle timeout between requests: a keep-alive connection that goes
+        // quiet is closed instead of holding a worker forever.
+        tcp_set_timeout(conn, idle);
+    }
     tcp_close(conn);
-    if app.logging {
-        println(
-            "[http] " + req["method"] + " " + req["path"] + " -> " + string(res["status"]) + " (" + string(now() - start) + " ms)"
-        );
-    }
-    return null;
+    return true;
 }
