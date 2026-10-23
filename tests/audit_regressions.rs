@@ -2583,3 +2583,30 @@ fn opt_dynamic_if_chain_unaffected() {
         "two\ndone\n",
     );
 }
+
+#[test]
+fn eprint_reaches_stderr_not_stdout() {
+    // `eprint(x)` is documented as "print to standard error", but the native
+    // shared `emit_output` with `print`/`println`, so it landed on stdout and
+    // polluted the captured output of anything that diffed streams. Run both
+    // engines and assert the split: stdout must carry only `println`, stderr
+    // only `eprint`.
+    let src = r#"fn main() {
+    println("out-line");
+    eprint("err-line");
+    return 0;
+}
+"#;
+    for engine in ["tree", "vm"] {
+        let path = std::env::temp_dir().join(format!("spid3r_audit_eprint_{}.matrix", engine));
+        std::fs::write(&path, src).expect("write");
+        let o = Command::new(bin())
+            .args(["run", "--engine", engine, path.to_str().unwrap()])
+            .output()
+            .expect("spawn");
+        let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+        assert_eq!(stdout, "out-line\n", "[{}] stdout", engine);
+        assert_eq!(stderr, "err-line", "[{}] stderr", engine);
+    }
+}

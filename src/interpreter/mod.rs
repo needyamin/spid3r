@@ -1412,17 +1412,38 @@ impl Interp {
         method: &str,
         span: &Span,
     ) -> Option<Result<Value, Flow>> {
-        if !matches!(l, Value::Map(_) | Value::Instance(_)) {
-            return None;
+        match l {
+            // A map carries the dunder as a value.
+            Value::Map(_) => {
+                let f = self.field_get(l, method, span).ok()?;
+                if !matches!(
+                    f,
+                    Value::Function(_)
+                        | Value::Native(_)
+                        | Value::NativeClosure(_)
+                        | Value::Class(_)
+                ) {
+                    return None;
+                }
+                Some(self.call_value(f, vec![l.clone(), r.clone()], span))
+            }
+            // A class instance carries it as a *method*, and `field_get` only
+            // sees declared fields - so operator overloading on a class never
+            // dispatched (the documented "a map or a class instance" was only
+            // half true). Resolve the method through the class chain and call
+            // it on the instance, exactly like `obj.op(x)`.
+            Value::Instance(inst) => {
+                let has = {
+                    let ib = inst.lock().unwrap();
+                    Self::find_method(&ib.class, method).is_some()
+                };
+                if !has {
+                    return None;
+                }
+                Some(self.call_instance_method(inst, method, vec![r.clone()], span))
+            }
+            _ => None,
         }
-        let f = self.field_get(l, method, span).ok()?;
-        if !matches!(
-            f,
-            Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::Class(_)
-        ) {
-            return None;
-        }
-        Some(self.call_value(f, vec![l.clone(), r.clone()], span))
     }
 
     /// Unary counterpart of [`Self::operator_call`]: `__neg__` receives just
@@ -1754,7 +1775,13 @@ impl Interp {
                 "super is not available: this class has no parent class",
             ));
         }
-        let class = match environment::get(&self.globals, parent) {
+        // Resolve the parent in the *calling* scope first: a class defined in
+        // an imported module lives in that module's globals, not in the
+        // script's (which only receives the module's `public` names). Falling
+        // back to `self.globals` keeps the script case working unchanged.
+        let found =
+            environment::get(env, parent).or_else(|| environment::get(&self.globals, parent));
+        let class = match found {
             Some(Value::Class(c)) => c,
             Some(_) => return Err(self.rt(span, format!("'{}' is not a class", parent))),
             None => return Err(self.rt(span, format!("unknown class '{}'", parent))),

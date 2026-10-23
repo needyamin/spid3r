@@ -1638,6 +1638,26 @@ impl Checker {
                             self.err(&m.span, "too many parameters in one function (max 255)")
                         );
                     }
+                    // `abstract fn m(params);` is a *declaration*: the body is
+                    // empty, so binding `self` and the parameters would only
+                    // produce an "unused variable 'self'" warning for a method
+                    // that has no code to use anything. Check the signature
+                    // and move on - a concrete subclass supplies the body.
+                    let is_decl = m
+                        .name
+                        .as_deref()
+                        .is_some_and(|n| c.abstracts.iter().any(|a| a == n));
+                    if is_decl {
+                        for p in &m.params {
+                            if let Some(t) = &p.ty {
+                                self.check_type_name(&t.name, &t.span)?;
+                            }
+                        }
+                        if let Some(ret) = &m.ret {
+                            self.check_type_name(&ret.name, &ret.span)?;
+                        }
+                        continue;
+                    }
                     self.fn_depth += 1;
                     let was_async = self.in_async;
                     self.in_async = m.is_async;

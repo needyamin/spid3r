@@ -197,3 +197,69 @@ fn a_failing_file_reports_only_the_error() {
         err
     );
 }
+
+/// An `abstract fn m(self);` declaration has no body, so binding `self` (and
+/// the parameters) only produced an "unused variable 'self'" warning for a
+/// method that could not possibly use it. Every abstract method in a program
+/// warned, which trained people to ignore the lint.
+#[test]
+fn an_abstract_declaration_does_not_warn_about_self() {
+    let path = write(
+        "abstract_decl",
+        "abstract class Shape {\n\
+         public let id;\n\
+         fn new(id) {\n\
+         self.id = id;\n\
+         }\n\
+         abstract fn area(self);\n\
+         public fn label(self) {\n\
+         return \"shape:\" + self.id;\n\
+         }\n\
+         }\n\
+         class Square extends Shape {\n\
+         public let side;\n\
+         fn new(id, side) {\n\
+         super(id);\n\
+         self.side = side;\n\
+         }\n\
+         public fn area(self) {\n\
+         return self.side * self.side;\n\
+         }\n\
+         }\n\
+         fn main() {\n\
+         let s = new Square(\"a\", 3);\n\
+         return s.label() == \"shape:a\" and s.area() == 9;\n\
+         }\n",
+    );
+    let (code, _, err) = check(&path, &[]);
+    assert_eq!(code, 0, "{}", err);
+    assert!(
+        !err.contains("unused"),
+        "an abstract declaration must not be linted:\n{}",
+        err
+    );
+}
+
+/// The lint still fires for a *concrete* method that ignores its receiver -
+/// exempting the declaration must not exempt real code.
+#[test]
+fn a_concrete_method_that_ignores_self_still_warns() {
+    let path = write(
+        "concrete_self",
+        "class A {\n\
+         public fn hi(self) {\n\
+         return 1;\n\
+         }\n\
+         }\n\
+         fn main() {\n\
+         return new A().hi();\n\
+         }\n",
+    );
+    let (code, _, err) = check(&path, &[]);
+    assert_eq!(code, 0, "{}", err);
+    assert!(
+        err.contains("unused variable 'self'"),
+        "expected the lint to survive:\n{}",
+        err
+    );
+}

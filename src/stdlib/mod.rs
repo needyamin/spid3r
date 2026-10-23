@@ -257,6 +257,23 @@ fn emit_output(s: &str) {
     }
 }
 
+/// Same capture semantics as [`emit_output`], but the uncaptured destination is
+/// standard error: `eprint` is documented as "print to standard error", and an
+/// embedding host reads the captured buffer for both streams anyway.
+fn emit_err(s: &str) {
+    let captured = CAPTURE_OUTPUT.with(|c| {
+        if let Some(buf) = c.borrow_mut().as_mut() {
+            buf.push_str(s);
+            true
+        } else {
+            false
+        }
+    });
+    if !captured {
+        eprint!("{}", s);
+    }
+}
+
 fn n_print(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     emit_output(&join_display(&args));
     Ok(Value::Null)
@@ -330,7 +347,7 @@ fn n_assert_eq(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 }
 
 fn n_eprint(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    emit_output(&join_display(&args));
+    emit_err(&join_display(&args));
     Ok(Value::Null)
 }
 

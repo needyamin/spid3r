@@ -992,9 +992,15 @@ impl Vm {
                         .cloned()
                         .unwrap_or(Value::Null);
                     let args = self.pop_n(argc);
-                    // The parent class is a global.
+                    // The parent class lives in the globals of the module
+                    // that *defined* this class - which is the executing
+                    // frame's map, not the VM's top-level one. A module's
+                    // classes are not installed in the importer's globals, so
+                    // looking in `self.globals` found nothing and `super()`
+                    // failed for every class defined in an imported module.
                     let class = {
-                        let g = self.globals.lock().unwrap();
+                        let g = self.frames[nf].globals.clone();
+                        let g = g.lock().unwrap();
                         match g.get(&parent) {
                             Some(Value::VClass(c)) => Some(c.clone()),
                             _ => None,

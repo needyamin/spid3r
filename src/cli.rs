@@ -883,6 +883,18 @@ fn cmd_test(args: &[String]) -> Result<i32, Diagnostic> {
 /// differential (tree == vm, both exit 0); files without `fn main` are
 /// libraries and only get the semantic check. Prints the per-test lines and
 /// returns (ok, failed) for the caller's summary.
+/// Render a tree-vs-vm output divergence for `spid3r test`.
+///
+/// Kept as a function rather than an inline `format!` so the layout is
+/// assertable: the message once opened with a literal `//n`, which welded the
+/// heading onto the first line of tree's output and made the diff unreadable.
+fn differ_report(tree: &str, vm: &str) -> String {
+    format!(
+        "outputs differ:\n--- tree ---\n{}\n--- vm ---\n{}",
+        tree, vm
+    )
+}
+
 fn project_test_in(dir: &Path, opts: &TestOpts) -> Result<(usize, usize), Diagnostic> {
     let tests = dir.join("tests");
     if !tests.is_dir() {
@@ -922,12 +934,9 @@ fn project_test_in(dir: &Path, opts: &TestOpts) -> Result<(usize, usize), Diagno
             let vm = run_capture_in(&bin, &["run", "--engine", "vm", &path], Some(dir));
             match (tree, vm) {
                 (Ok(t), Ok(v)) if t == v => Ok(()),
-                (Ok(t), Ok(v)) => Err(format!(
-                    "outputs differ://n--- tree ---\n{}\n--- vm ---\n{}",
-                    t, v
-                )),
+                (Ok(t), Ok(v)) => Err(differ_report(&t, &v)),
                 (Err(tree), Err(vm)) => Err(format!(
-                    "both engines failed://n--- tree ---\n{}\n--- vm ---\n{}",
+                    "both engines failed:\n--- tree ---\n{}\n--- vm ---\n{}",
                     tree, vm
                 )),
                 other => Err(format!(
@@ -1628,4 +1637,46 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         println!("perf gate passed");
     }
     Ok(EXIT_OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::differ_report;
+
+    #[test]
+    fn differ_report_is_readable() {
+        // The differential message once opened with a literal `//n` instead of
+        // a newline, which welded "--- tree ---" onto the first line of tree's
+        // output and made the diff unreadable. Assert the layout directly.
+        let msg = differ_report("a\nb", "a\nc");
+        let lines: Vec<&str> = msg.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "outputs differ:",
+                "--- tree ---",
+                "a",
+                "b",
+                "--- vm ---",
+                "a",
+                "c"
+            ],
+            "unexpected layout: {:?}",
+            msg
+        );
+        assert!(
+            !msg.contains("//n"),
+            "must not contain a literal //n: {}",
+            msg
+        );
+
+        // Captured output ends in a newline, so the separator keeps a blank
+        // line between the last output line and the next heading.
+        let msg = differ_report("a\n", "b\n");
+        assert!(
+            msg.contains("a\n\n--- vm ---"),
+            "no blank separator: {:?}",
+            msg
+        );
+    }
 }
