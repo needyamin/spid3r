@@ -165,20 +165,30 @@ jobs:
       # playground.html loads its LOCAL siblings (docs/html/spid3r.js +
       # docs/html/spid3r_wasm_data.js) via relative <script> tags and prefers
       # the embedded base64 module over fetching a .wasm file, so the
-      # docs/html copies are what visitors actually run. The steps above only
-      # read the binary directly, which once let the docs/html copy sit five
-      # rebuilds behind (its stdlib preset could not import anything) and the
-      # web/ copy three behind. Run the embedded paths, then fail if any
-      # committed copy differs from the freshly built module: every copy must
-      # be the deployed binary, byte for byte.
+      # docs/html copies are what visitors actually run. They once sat five
+      # rebuilds behind (its stdlib preset could not import anything) while
+      # the web/ copy sat three behind, because every check read
+      # web/spid3r.wasm directly and never saw the drift. Two guards, neither
+      # assuming the CI build is byte-reproducible with a developer machine:
+      #   1. behavioral — the COMMITTED embedded module must produce exactly
+      #      what the fresh build produces on every preset and engine.
+      #   2. self-consistency — on the committed tree, both embedded copies
+      #      must equal the committed binary byte for byte, the two binary and
+      #      two SDK copies must match each other, and regenerating the data
+      #      files must change nothing.
+      # (A committed deployment set that is uniformly one commit old is a
+      # process risk — rebuild before committing — not something CI can see.)
       - name: Verify the embedded wasm copies are current
         run: |
+          cp target/wasm32-unknown-unknown/release/spid3r_lang.wasm "$RUNNER_TEMP/fresh_spid3r.wasm"
+          node tools/test_wasm_embedded.js --against "$RUNNER_TEMP/fresh_spid3r.wasm"
+          git checkout -- web/spid3r.wasm docs/html/spid3r.wasm web/spid3r_wasm_data.js docs/html/spid3r_wasm_data.js
           node tools/test_wasm_embedded.js
-          cmp -s web/spid3r.js docs/html/spid3r.js
-          cp web/spid3r.wasm docs/html/spid3r.wasm
+          cmp web/spid3r.wasm docs/html/spid3r.wasm
+          cmp web/spid3r.js docs/html/spid3r.js
           node tools/gen_wasm_data.js
           node tools/gen_wasm_data.js docs/html/spid3r_wasm_data.js
-          git diff --exit-code web/spid3r.wasm docs/html/spid3r.wasm web/spid3r_wasm_data.js docs/html/spid3r_wasm_data.js
+          git diff --exit-code web/spid3r_wasm_data.js docs/html/spid3r_wasm_data.js
 
   # CI-02: the native/AOT backend joins the GATED differential (previously the
   # AOT subset only ran where a developer happened to have LLVM installed).
