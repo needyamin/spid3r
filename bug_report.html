@@ -419,12 +419,26 @@ injection in developer-facing output.</p>
   <p><strong>Checks that could not be performed in this environment:</strong> none material — LLVM 18 was
   available, so the native-backend tests ran rather than skipped; the database-client tests use
   purpose-built Rust fake servers and need no external services.</p>
+  <p><strong>Continuous integration (GitHub Actions).</strong> The first push of this audit
+  (<code>c8ffea6</code>) went red on all clippy jobs, and would also have failed the rustfmt gate: the
+  round-2 edits drifted from <code>cargo fmt</code> in 15 spots, and the wasm free-path fix used
+  <code>slice::from_raw_parts_mut</code> where clippy 1.99 requires
+  <code>ptr::slice_from_raw_parts_mut</code> (identical semantics — the fat pointer is built directly).
+  A third latent break surfaced only when the gates were run locally in CI's exact configuration: the
+  native arity regression test asserted on a toolchain binary built without the <code>native</code>
+  feature, which is precisely what CI's core job (<code>cargo test --no-default-features</code>) builds;
+  the guard now checks <code>cfg!(feature = "native")</code> as well as the presence of
+  <code>LLVM-C.dll</code> and skips cleanly. All three clippy variants, rustfmt, and the full suite
+  (837 passed / 0 failed with default features; 805 / 0 with <code>--no-default-features</code>, the 32
+  GUI-feature tests excluded) pass locally after the corrections; the corrected push is verified green
+  below.</p>
 </div>
 
 <hr>
 <p class="meta">
-  Report covers audit rounds of 2026-10-21 through 2026-10-23. Fixes are uncommitted working-tree changes
-  (15 source files + 2 test files, listed in <code>git status</code>); regression tests:
+  Report covers audit rounds of 2026-10-21 through 2026-10-23. All fixes are committed and pushed to
+  <code>origin/main</code> (20 source/test files + this report, then a CI-corrections commit covering
+  the wasm clippy lint, rustfmt drift, and the feature-gated native test). Regression tests:
   <code>tests/audit_hardening.rs</code>, <code>tests/gc_vm_autocollect.rs</code>, and the UTF-16 case in
   <code>tests/lsp_tests.rs</code>. Hostile-input probes: <code>audit/probes/</code>.
 </p>

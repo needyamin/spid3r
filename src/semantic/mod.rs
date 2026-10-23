@@ -1549,10 +1549,7 @@ impl Checker {
                 self.push_scope();
                 let mut names = HashSet::new();
                 if f.params.len() > 255 {
-                    return Err(self.err(
-                        &f.span,
-                        "too many parameters in one function (max 255)",
-                    ));
+                    return Err(self.err(&f.span, "too many parameters in one function (max 255)"));
                 }
                 for p in &f.params {
                     if !names.insert(p.name.clone()) {
@@ -1610,10 +1607,9 @@ impl Checker {
                 // method bodies: self + fields in scope
                 for m in &c.methods {
                     if m.params.len() > 255 {
-                        return Err(self.err(
-                            &m.span,
-                            "too many parameters in one function (max 255)",
-                        ));
+                        return Err(
+                            self.err(&m.span, "too many parameters in one function (max 255)")
+                        );
                     }
                     self.fn_depth += 1;
                     let was_async = self.in_async;
@@ -2620,10 +2616,7 @@ impl Checker {
                 self.push_scope();
                 let mut names = HashSet::new();
                 if f.params.len() > 255 {
-                    return Err(self.err(
-                        &f.span,
-                        "too many parameters in one function (max 255)",
-                    ));
+                    return Err(self.err(&f.span, "too many parameters in one function (max 255)"));
                 }
                 for p in &f.params {
                     if !names.insert(p.name.clone()) {

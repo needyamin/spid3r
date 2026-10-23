@@ -1040,46 +1040,47 @@ impl Parser {
         }
         self.depth += 1;
         let res = (|| {
-        match self.kind().clone() {
-            TokenKind::Ident(name) => {
-                let sp = self.span();
-                self.pos += 1;
-                // `Name(...)` is a variant pattern; a bare identifier binds.
-                if self.at(&TokenKind::LParen) {
+            match self.kind().clone() {
+                TokenKind::Ident(name) => {
+                    let sp = self.span();
                     self.pos += 1;
-                    let mut args = Vec::new();
-                    while !self.at(&TokenKind::RParen) {
-                        args.push(self.parse_pattern()?);
-                        if !self.eat(&TokenKind::Comma) {
-                            break;
+                    // `Name(...)` is a variant pattern; a bare identifier binds.
+                    if self.at(&TokenKind::LParen) {
+                        self.pos += 1;
+                        let mut args = Vec::new();
+                        while !self.at(&TokenKind::RParen) {
+                            args.push(self.parse_pattern()?);
+                            if !self.eat(&TokenKind::Comma) {
+                                break;
+                            }
                         }
+                        self.expect(&TokenKind::RParen, "')' after the variant's fields")?;
+                        return Ok(Pattern::Variant {
+                            name,
+                            args,
+                            span: sp,
+                        });
                     }
-                    self.expect(&TokenKind::RParen, "')' after the variant's fields")?;
-                    return Ok(Pattern::Variant {
-                        name,
-                        args,
-                        span: sp,
-                    });
+                    if name == "_" {
+                        Ok(Pattern::Wild)
+                    } else {
+                        Ok(Pattern::Bind(name))
+                    }
                 }
-                if name == "_" {
-                    Ok(Pattern::Wild)
-                } else {
-                    Ok(Pattern::Bind(name))
+                TokenKind::Int(_)
+                | TokenKind::Float(_)
+                | TokenKind::Str(_)
+                | TokenKind::InterpStr(_)
+                | TokenKind::Kw(Keyword::True)
+                | TokenKind::Kw(Keyword::False)
+                | TokenKind::Kw(Keyword::Null) => {
+                    let e = self.parse_primary()?;
+                    Ok(Pattern::Literal(e))
                 }
+                _ => Err(self.err_here(
+                    "expected a pattern: `_`, a name to bind, a literal, or `Variant(...)`",
+                )),
             }
-            TokenKind::Int(_)
-            | TokenKind::Float(_)
-            | TokenKind::Str(_)
-            | TokenKind::InterpStr(_)
-            | TokenKind::Kw(Keyword::True)
-            | TokenKind::Kw(Keyword::False)
-            | TokenKind::Kw(Keyword::Null) => {
-                let e = self.parse_primary()?;
-                Ok(Pattern::Literal(e))
-            }
-            _ => Err(self
-                .err_here("expected a pattern: `_`, a name to bind, a literal, or `Variant(...)`")),
-        }
         })();
         self.depth -= 1;
         res

@@ -57,8 +57,7 @@ fn run_engine(engine: &str, name: &str, src: &str) -> (i32, String) {
     let _ = std::fs::remove_file(&path);
     (
         out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).to_string()
-            + &String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr),
     )
 }
 
@@ -66,7 +65,11 @@ fn run_engine(engine: &str, name: &str, src: &str) -> (i32, String) {
 fn reject_both(name: &str, src: &str, needle: &str) {
     for engine in ["tree", "vm"] {
         let (code, out) = run_engine(engine, name, src);
-        assert_eq!(code, 1, "[{}] {} should exit 1, got {}:\n{}", name, engine, code, out);
+        assert_eq!(
+            code, 1,
+            "[{}] {} should exit 1, got {}:\n{}",
+            name, engine, code, out
+        );
         assert!(
             out.contains(needle),
             "[{}] {} output missing {:?}:\n{}",
@@ -82,7 +85,11 @@ fn reject_both(name: &str, src: &str, needle: &str) {
 fn accept_both(name: &str, src: &str, expected: &str) {
     for engine in ["tree", "vm"] {
         let (code, out) = run_engine(engine, name, src);
-        assert_eq!(code, 0, "[{}] {} should exit 0, got {}:\n{}", name, engine, code, out);
+        assert_eq!(
+            code, 0,
+            "[{}] {} should exit 0, got {}:\n{}",
+            name, engine, code, out
+        );
         assert_eq!(out, expected, "[{}] {} stdout", name, engine);
     }
 }
@@ -192,8 +199,19 @@ fn more_than_255_parameters_is_rejected() {
     // Locals and parameters live in 1-byte VM slots; a 300-parameter
     // function used to compile with silently truncated slot indices.
     let params: Vec<String> = (1..=300).map(|i| format!("p{} = 1", i)).collect();
-    let src = format!("fn f({}) {{\n    return 0;\n}}\nfn main() {{\n    f({});\n    return 0;\n}}\n", params.join(", "), (1..=300).map(|i| format!("{}", i)).collect::<Vec<_>>().join(", "));
-    reject_both("too_many_params", &src, "too many parameters in one function (max 255)");
+    let src = format!(
+        "fn f({}) {{\n    return 0;\n}}\nfn main() {{\n    f({});\n    return 0;\n}}\n",
+        params.join(", "),
+        (1..=300)
+            .map(|i| format!("{}", i))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    reject_both(
+        "too_many_params",
+        &src,
+        "too many parameters in one function (max 255)",
+    );
 }
 
 // =====================================================================
@@ -578,9 +596,9 @@ fn mysql_empty_packet_is_a_clean_error() {
         port
     );
     for (label, res) in [("tree", run_tree(&src)), ("vm", run_vm(&src))] {
-        let err = res.err().unwrap_or_else(|| {
-            panic!("[mysql_empty] {} engine accepted a hostile server", label)
-        });
+        let err = res
+            .err()
+            .unwrap_or_else(|| panic!("[mysql_empty] {} engine accepted a hostile server", label));
         assert!(
             err.message.contains("mysql: empty packet"),
             "[mysql_empty] {} wrong error: {}",
@@ -631,7 +649,7 @@ fn spawn_fake_postgres_oversized() -> u16 {
             stream.set_nodelay(true).ok();
             let mut sink = [0u8; 8192];
             let _ = stream.read(&mut sink); // StartupMessage
-            // 'E' (ErrorResponse) + u32 length 0x7FFFFFFF + a few bytes.
+                                            // 'E' (ErrorResponse) + u32 length 0x7FFFFFFF + a few bytes.
             let mut msg = vec![b'E'];
             msg.extend_from_slice(&0x7fffffffu32.to_be_bytes());
             msg.extend_from_slice(b"S\0ERROR\0C\0XX000\0M\0boom\0\0");
@@ -658,12 +676,9 @@ fn postgres_oversized_message_is_a_clean_error() {
         port
     );
     for (label, res) in [("tree", run_tree(&src)), ("vm", run_vm(&src))] {
-        let err = res.err().unwrap_or_else(|| {
-            panic!(
-                "[pg_oversized] {} engine accepted a hostile server",
-                label
-            )
-        });
+        let err = res
+            .err()
+            .unwrap_or_else(|| panic!("[pg_oversized] {} engine accepted a hostile server", label));
         assert!(
             err.message.contains("is too large"),
             "[pg_oversized] {} wrong error: {}",
@@ -677,9 +692,17 @@ fn postgres_oversized_message_is_a_clean_error() {
 // Native backend: arity check instead of an out-of-bounds read
 // =====================================================================
 
-/// The native backend links `LLVM-C.dll` beside the compiler; skip without it.
+/// The native test needs two things: the `spid3r` binary under test must have
+/// been compiled with the `native` feature (CI's core job builds with
+/// `--no-default-features` and must skip), and `LLVM-C.dll` must be locatable
+/// next to it. `cfg!` is faithful here because cargo compiles every target of
+/// one invocation — bin and test — with the same feature set.
 fn native_available() -> bool {
-    bin().parent()
+    if !cfg!(feature = "native") {
+        return false;
+    }
+    bin()
+        .parent()
         .map(|d| d.join("LLVM-C.dll"))
         .map(|d| d.is_file())
         .unwrap_or(false)
@@ -689,7 +712,9 @@ fn native_available() -> bool {
 fn native_short_call_is_a_clean_error_not_a_segfault() {
     if !native_available() {
         eprintln!(
-            "skip: LLVM-C.dll not found next to {} (build with SPID3R_LLVM_BIN_DIR set)",
+            "skip: native backend unavailable (feature `native` off in this \
+             build, or LLVM-C.dll not found next to {}; build with \
+             SPID3R_LLVM_BIN_DIR set)",
             bin().display()
         );
         return;

@@ -112,7 +112,10 @@ fn main() {
 /// timing, yet is >100x below the pre-fix leak.
 #[test]
 fn vm_engine_auto_collects_cyclic_garbage() {
-    let path = std::env::temp_dir().join(format!("spid3r_vm_gc_autocollect_{}.matrix", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "spid3r_vm_gc_autocollect_{}.matrix",
+        std::process::id()
+    ));
     std::fs::write(&path, VM_CYCLE_CHURN).expect("write probe");
     for engine in ["tree", "vm"] {
         let out = run_gc_on(engine, &path, Duration::from_secs(60))

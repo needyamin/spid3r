@@ -210,7 +210,9 @@ pub unsafe extern "C" fn spid3r_wasm_free(ptr: *mut u8, len: usize) {
         // Rebuild the boxed slice exactly as allocated. Both allocation
         // paths go through `into_boxed_slice`, so the layout (align 1,
         // size `len`) always matches and the deallocation is sound.
-        drop(Box::from_raw(std::slice::from_raw_parts_mut(ptr, len)));
+        // `slice_from_raw_parts_mut` yields the `*mut [u8]` fat pointer
+        // directly, so `Box::from_raw` rebuilds the very same `Box<[u8]>`.
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
     }
 }
 

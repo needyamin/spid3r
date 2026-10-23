@@ -81,8 +81,7 @@ fn read_message<R: Read>(stream: &mut R) -> Result<Message, String> {
     if len - 4 > MAX_MESSAGE_BYTES {
         return Err(format!(
             "postgres: message '{}' is too large ({} bytes)",
-            kind as char,
-            len
+            kind as char, len
         ));
     }
     let payload = {
@@ -164,7 +163,9 @@ fn be32(payload: &[u8], at: usize) -> Result<u32, String> {
 
 /// `n` bytes at `at`, with the same truncation guarantee as `be16`.
 fn slice_at(payload: &[u8], at: usize, n: usize) -> Result<&[u8], String> {
-    let end = at.checked_add(n).ok_or("postgres: message offset overflow")?;
+    let end = at
+        .checked_add(n)
+        .ok_or("postgres: message offset overflow")?;
     if end > payload.len() {
         return Err("postgres: truncated message".to_string());
     }

@@ -1181,7 +1181,9 @@ fn document_symbol_result(docs: &HashMap<String, Doc>, params: &Json) -> Json {
                     .collect();
                 out.push(symbol(&e.name, SymKind::Enum, &e.span, children, text));
             }
-            Stmt::Let { name, span, .. } => out.push(symbol(name, SymKind::Let, span, vec![], text)),
+            Stmt::Let { name, span, .. } => {
+                out.push(symbol(name, SymKind::Let, span, vec![], text))
+            }
             Stmt::Const { name, span, .. } => {
                 out.push(symbol(name, SymKind::Const, span, vec![], text))
             }
