@@ -432,6 +432,8 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "tcp_peer_addr",
     "tcp_set_timeout",
     "tcp_poll",
+    "tcp_recv_to_file",
+    "tcp_send_file",
     "ws_connect",
     "ws_accept",
     "ws_send",

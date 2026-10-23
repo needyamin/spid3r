@@ -1,0 +1,1102 @@
+// stdlib/smtp.matrix - an SMTP/ESMTP client (RFC 5321) and an RFC 5322
+// message builder, written in Spid3r.
+//
+//   import "smtp";
+//
+//   let msg = smtp_message(map(
+//       "from", "builds@example.com",
+//       "to", ["ops@example.com"],
+//       "subject", "Deploy 42 is live",
+//       "text", "All green.",
+//       "attachments", [map("path", "build.log")]
+//   ));
+//   let r = smtp_send(map("host", "127.0.0.1", "port", 2525), msg);
+//   if r.is_err() { eprint(r.unwrap_err() + "\n"); }
+//
+// Step by step, when you need control over the dialogue:
+//
+//   let c = smtp_connect("127.0.0.1", 2525, map()).unwrap();
+//   c.hello("client.example.com");        // EHLO, falling back to HELO
+//   c.auth_plain("user", "pass");         // needs allow_plaintext_auth
+//   let receipt = c.send(msg).unwrap();   // envelope comes from the message
+//   c.quit();
+//
+// A message is `{headers: [line, ...], body, envelope_from, envelope_to}`.
+// `smtp_message` builds it; `smtp_render` turns it into the DATA payload;
+// `smtp_header` adds or replaces a header line.
+//
+// ---------------------------------------------------------------------------
+// The honest part: this client speaks cleartext SMTP.
+//
+// The runtime has no TLS *stream* native. `http_fetch` builds one internally
+// for https:// (feature `tls`), but a script cannot wrap an arbitrary
+// `tcp_connect` handle in TLS, and there is no STARTTLS upgrade. Two
+// consequences are enforced in code rather than left to the reader:
+//
+//   1. `smtp_connect(..., map("tls", true))` fails immediately, with an
+//      explanation. It never silently downgrades to cleartext.
+//   2. Credentials require `allow_plaintext_auth: true`. Without it
+//      auth_plain/auth_login throw, because a password on the wire is a leak,
+//      not a style question.
+//
+// So today this is a client for a local relay - localhost, a sidecar, a test
+// server - which is exactly where cleartext SMTP is normal. Reaching a public
+// provider needs the TLS stream native first (docs/STANDARD_LIBRARY.md).
+// ---------------------------------------------------------------------------
+
+const CR = 13;
+const LF = 10;
+const MAX_LINE = 65536;
+const MAX_HEADER_LINE = 998;
+
+fn crlf() {
+    return chr(CR) + chr(LF);
+}
+
+// ------------------------------------------------------------ small helpers
+
+fn opt(m, key, dflt) {
+    if m == null {
+        return dflt;
+    }
+    if type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+fn as_list(v) {
+    if v == null {
+        return list();
+    }
+    if type_of(v) == "list" {
+        return v;
+    }
+    return list(v);
+}
+
+fn is_ascii(text) {
+    for c in text.chars() {
+        let o = ord(c);
+        if o > 126 or o < 9 {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn is_digits(s) {
+    if s == "" {
+        return false;
+    }
+    for c in s.chars() {
+        let o = ord(c);
+        if o < 48 or o > 57 {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// UTF-8 length of a one-character string. `len()` counts characters, which is
+/// not what a 76-column encoded word needs.
+fn utf8_len(c) {
+    let o = ord(c);
+    if o < 128 {
+        return 1;
+    }
+    if o < 2048 {
+        return 2;
+    }
+    if o < 65536 {
+        return 3;
+    }
+    return 4;
+}
+
+/// Longest line in `text`, counted in characters.
+fn longest_line(text) {
+    let best = 0;
+    for line in text.split("\n") {
+        if len(line) > best {
+            best = len(line);
+        }
+    }
+    return best;
+}
+
+/// Reject anything that could start a new header line. This is the whole
+/// defence against header injection: an attacker-controlled Subject that
+/// contains "\r\nBcc: victim@example.com" must fail loudly here.
+fn header_safe(name, value) {
+    let s = string(value);
+    if s.contains(chr(CR)) or s.contains(chr(LF)) {
+        throw "header '" + name + "' contains a line break (header injection refused)";
+    }
+    if len(s) > MAX_HEADER_LINE {
+        throw "header '" + name + "' is longer than " + string(MAX_HEADER_LINE) + " characters";
+    }
+    return s;
+}
+
+/// A quoted-string parameter, for filenames and boundary values.
+fn quoted(text) {
+    let s = header_safe("parameter", text);
+    s = s.replace("\\", "\\\\");
+    s = s.replace("\"", "\\\"");
+    return "\"" + s + "\"";
+}
+
+fn hex2(n) {
+    const DIGITS = "0123456789ABCDEF";
+    let hi = 0;
+    let lo = n;
+    while lo >= 16 {
+        lo = lo - 16;
+        hi = hi + 1;
+    }
+    return DIGITS.slice(hi, hi + 1) + DIGITS.slice(lo, lo + 1);
+}
+
+/// RFC 3986 percent-encoding of a string's UTF-8 bytes, for RFC 2231
+/// parameters (`filename*=UTF-8''...`). A Chinese filename is a normal thing
+/// to attach, and raw UTF-8 in a header is not legal.
+fn percent_encode(text) {
+    let out = "";
+    for c in text.chars() {
+        let o = ord(c);
+        if o < 128 {
+            let keep = false;
+            if o >= 48 and o <= 57 {
+                keep = true;
+            }
+            if o >= 65 and o <= 90 {
+                keep = true;
+            }
+            if o >= 97 and o <= 122 {
+                keep = true;
+            }
+            if c == "-" or c == "." or c == "_" or c == "~" {
+                keep = true;
+            }
+            if keep {
+                out = out + c;
+            } else {
+                out = out + "%" + hex2(o);
+            }
+        } elif o < 2048 {
+            out = out + "%" + hex2(192 | (o >> 6));
+            out = out + "%" + hex2(128 | (o & 63));
+        } elif o < 65536 {
+            out = out + "%" + hex2(224 | (o >> 12));
+            out = out + "%" + hex2(128 | ((o >> 6) & 63));
+            out = out + "%" + hex2(128 | (o & 63));
+        } else {
+            out = out + "%" + hex2(240 | (o >> 18));
+            out = out + "%" + hex2(128 | ((o >> 12) & 63));
+            out = out + "%" + hex2(128 | ((o >> 6) & 63));
+            out = out + "%" + hex2(128 | (o & 63));
+        }
+    }
+    return out;
+}
+
+/// `name="x.txt"` for ASCII, `name*=UTF-8''x%20y` otherwise (RFC 2231).
+fn filename_param(key, name) {
+    let s = header_safe("filename", name);
+    if is_ascii(s) {
+        return key + "=" + quoted(s);
+    }
+    return key + "*=UTF-8''" + percent_encode(s);
+}
+
+fn pad2(n) {
+    let s = string(n);
+    if len(s) < 2 {
+        return "0" + s;
+    }
+    return s;
+}
+
+// ------------------------------------------------------------ RFC 2047 text
+
+/// Encode one chunk as an RFC 2047 "B" encoded word.
+fn encoded_word(chunk) {
+    return "=?UTF-8?B?" + base64_encode(chunk) + "?=";
+}
+
+/// Encode a header value that may contain non-ASCII text.
+///
+/// Pure ASCII passes through untouched. Anything else becomes one or more
+/// encoded words separated by CRLF + space: each word is an independent
+/// token, so folding between them is legal and keeps every line short. Chunks
+/// are cut on character boundaries, never inside a UTF-8 sequence.
+fn header_text(name, value) {
+    let s = header_safe(name, value);
+    if is_ascii(s) {
+        return s;
+    }
+    let words = list();
+    let chunk = "";
+    let bytes = 0;
+    for c in s.chars() {
+        let n = utf8_len(c);
+        if bytes + n > 42 and chunk != "" {
+            words.push(encoded_word(chunk));
+            chunk = "";
+            bytes = 0;
+        }
+        chunk = chunk + c;
+        bytes = bytes + n;
+    }
+    if chunk != "" {
+        words.push(encoded_word(chunk));
+    }
+    return words.join(crlf() + " ");
+}
+
+// ------------------------------------------------------------ addresses
+
+/// Split `"Ada Lovelace <ada@example.com>"` into (name, email).
+fn split_address(v) {
+    if type_of(v) == "map" {
+        return map("name", opt(v, "name", null), "email", opt(v, "email", ""));
+    }
+    let s = string(v).trim();
+    let lt = s.index_of("<");
+    if lt >= 0 {
+        let gt = s.index_of(">");
+        if gt < lt {
+            throw "unterminated angle address: " + s;
+        }
+        return map("name", s.slice(0, lt).trim(), "email", s.slice(lt + 1, gt).trim());
+    }
+    return map("name", null, "email", s);
+}
+
+fn check_email(addr) {
+    if addr == "" {
+        throw "empty email address";
+    }
+    if addr.contains(chr(CR)) or addr.contains(chr(LF)) {
+        throw "email address contains a line break";
+    }
+    for bad in [" ", "<", ">", ",", ";", "\"", "\\"] {
+        if addr.contains(bad) {
+            throw "invalid email address: " + addr;
+        }
+    }
+    let at = addr.index_of("@");
+    if at <= 0 or at == len(addr) - 1 {
+        throw "invalid email address (needs local@domain): " + addr;
+    }
+    return addr;
+}
+
+fn envelope_addr(v) {
+    return check_email(split_address(v)["email"]);
+}
+
+/// Render `Name <addr>` with the display name quoted when it needs it.
+fn format_address(v) {
+    let a = split_address(v);
+    let email = check_email(a["email"]);
+    let name = a["name"];
+    if name == null or name == "" {
+        return email;
+    }
+    let shown = header_text("display name", name);
+    let needs_quotes = false;
+    for ch in [",", ";", "<", ">", ":", "@", ".", "\"", "(", ")", "[", "]"] {
+        if name.contains(ch) {
+            needs_quotes = true;
+        }
+    }
+    // An encoded word is already a single atom and must not be quoted.
+    if needs_quotes and is_ascii(name) {
+        shown = quoted(name);
+    }
+    return shown + " <" + email + ">";
+}
+
+fn address_list(values) {
+    let out = list();
+    for v in as_list(values) {
+        out.push(format_address(v));
+    }
+    return out.join(", ");
+}
+
+// ------------------------------------------------------------ MIME parts
+
+fn b64_block(data) {
+    let s = base64_encode(data);
+    let out = list();
+    let i = 0;
+    let n = len(s);
+    while i < n {
+        out.push(s.slice(i, min(i + 76, n)));
+        i = i + 76;
+    }
+    return out.join(crlf());
+}
+
+fn guess_type(name) {
+    let lower = string(name).lower();
+    if lower.ends_with(".txt") or lower.ends_with(".log") or lower.ends_with(".md") {
+        return "text/plain";
+    }
+    if lower.ends_with(".html") or lower.ends_with(".htm") {
+        return "text/html";
+    }
+    if lower.ends_with(".csv") {
+        return "text/csv";
+    }
+    if lower.ends_with(".json") {
+        return "application/json";
+    }
+    if lower.ends_with(".xml") {
+        return "application/xml";
+    }
+    if lower.ends_with(".pdf") {
+        return "application/pdf";
+    }
+    if lower.ends_with(".png") {
+        return "image/png";
+    }
+    if lower.ends_with(".jpg") or lower.ends_with(".jpeg") {
+        return "image/jpeg";
+    }
+    if lower.ends_with(".gif") {
+        return "image/gif";
+    }
+    if lower.ends_with(".zip") {
+        return "application/zip";
+    }
+    if lower.ends_with(".gz") {
+        return "application/gzip";
+    }
+    if lower.ends_with(".eml") {
+        return "message/rfc822";
+    }
+    return "application/octet-stream";
+}
+
+/// Pick a transfer encoding for a text body: 7bit when it is plain ASCII with
+/// short lines, base64 otherwise (which also caps line length at 76).
+fn encode_text(text) {
+    let body = text;
+    let enc = "7bit";
+    if not is_ascii(text) or longest_line(text) > 900 {
+        enc = "base64";
+        body = b64_block(text);
+    }
+    return map("encoding", enc, "body", body);
+}
+
+/// A *part* of a multipart body: it carries its own headers, because inside a
+/// multipart the top-level Content-Type describes the container, not this.
+fn text_part(text, ctype) {
+    let e = encode_text(text);
+    return "Content-Type: "
+        + ctype
+        + "; charset=utf-8"
+        + crlf()
+        + "Content-Transfer-Encoding: "
+        + e["encoding"]
+        + crlf()
+        + crlf()
+        + e["body"];
+}
+
+fn attachment_part(a) {
+    let name = opt(a, "name", "attachment.bin");
+    let data = null;
+    if a.has("path") {
+        let r = read_bytes(a["path"]);
+        if r.is_err() {
+            throw "cannot read attachment '" + string(a["path"]) + "': " + r.unwrap_err();
+        }
+        data = r.unwrap();
+    } elif a.has("data") {
+        data = a["data"];
+    } elif a.has("content") {
+        data = a["content"];
+    } else {
+        throw "attachment needs one of 'path', 'data' or 'content'";
+    }
+    let ctype = opt(a, "content_type", guess_type(name));
+    return "Content-Type: "
+        + ctype
+        + "; "
+        + filename_param("name", name)
+        + crlf()
+        + "Content-Transfer-Encoding: base64"
+        + crlf()
+        + "Content-Disposition: attachment; "
+        + filename_param("filename", name)
+        + crlf()
+        + crlf()
+        + b64_block(data);
+}
+
+fn multipart_body(boundary, parts) {
+    let text = "";
+    for p in parts {
+        text = text + "--" + boundary + crlf() + p + crlf();
+    }
+    return text + "--" + boundary + "--" + crlf();
+}
+
+fn nested_multipart(subtype, boundary, parts) {
+    return "Content-Type: multipart/"
+        + subtype
+        + "; boundary="
+        + quoted(boundary)
+        + crlf()
+        + crlf()
+        + multipart_body(boundary, parts);
+}
+
+fn new_boundary(tag) {
+    return "=_spid3r_"
+        + tag
+        + "_"
+        + string(now_ms())
+        + "_"
+        + string(random_int(0, 999999));
+}
+
+// ------------------------------------------------------------ message
+
+fn rfc5322_date(ts) {
+    let days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let months = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    ];
+    let p = datetime_parts(ts);
+    return days[p["weekday"]]
+        + ", "
+        + pad2(p["day"])
+        + " "
+        + months[p["month"] - 1]
+        + " "
+        + string(p["year"])
+        + " "
+        + pad2(p["hour"])
+        + ":"
+        + pad2(p["minute"])
+        + ":"
+        + pad2(p["second"])
+        + " +0000";
+}
+
+fn message_id(from_addr) {
+    let at = from_addr.index_of("@");
+    let domain = "localhost";
+    if at > 0 and at < len(from_addr) - 1 {
+        domain = from_addr.slice(at + 1, len(from_addr));
+    }
+    return "<"
+        + string(now_ms())
+        + "."
+        + string(random_int(0, 999999))
+        + "."
+        + string(random_int(0, 999999))
+        + "@"
+        + domain
+        + ">";
+}
+
+/// Build a message from a spec map.
+///
+/// Keys: from, to, cc, bcc, reply_to, subject, text, html, attachments,
+/// headers (extra map), date (unix seconds), message_id.
+///
+/// `to`/`cc`/`bcc` take a string, a list of strings, or a list of
+/// `{name, email}` maps. Bcc addresses go into the envelope only - they never
+/// appear in a header, which is the entire point of Bcc.
+public fn smtp_message(spec) {
+    if spec == null or type_of(spec) != "map" {
+        throw "smtp_message expects a spec map";
+    }
+    if not spec.has("from") {
+        throw "smtp_message: 'from' is required";
+    }
+    let from_addr = envelope_addr(spec["from"]);
+    let to = as_list(opt(spec, "to", null));
+    let cc = as_list(opt(spec, "cc", null));
+    let bcc = as_list(opt(spec, "bcc", null));
+    let rcpts = list();
+    for v in to {
+        rcpts.push(envelope_addr(v));
+    }
+    for v in cc {
+        rcpts.push(envelope_addr(v));
+    }
+    for v in bcc {
+        rcpts.push(envelope_addr(v));
+    }
+    if len(rcpts) == 0 {
+        throw "smtp_message: at least one recipient (to/cc/bcc) is required";
+    }
+
+    let headers = list();
+    headers.push("From: " + format_address(spec["from"]));
+    if len(to) > 0 {
+        headers.push("To: " + address_list(to));
+    }
+    if len(cc) > 0 {
+        headers.push("Cc: " + address_list(cc));
+    }
+    if opt(spec, "reply_to", null) != null {
+        headers.push("Reply-To: " + address_list(opt(spec, "reply_to", null)));
+    }
+    headers.push("Subject: " + header_text("Subject", opt(spec, "subject", "")));
+    headers.push("Date: " + rfc5322_date(opt(spec, "date", unix_time())));
+    headers.push("Message-ID: " + header_safe("Message-ID", opt(spec, "message_id", message_id(from_addr))));
+    headers.push("MIME-Version: 1.0");
+
+    let text = opt(spec, "text", null);
+    let html = opt(spec, "html", null);
+    let attachments = as_list(opt(spec, "attachments", null));
+    let has_text = text != null;
+    let has_html = html != null;
+
+    // Innermost content: text, html, or both as multipart/alternative.
+    //
+    // The distinction that matters: a *part* of a multipart carries its own
+    // Content-Type/Content-Transfer-Encoding headers, while a single-part
+    // message states them once at the top and its body has no headers at all.
+    // Getting that wrong produces a message whose headers show up as text.
+    let body = "";
+    let content_type = "";
+    let transfer = null;
+    if len(attachments) > 0 {
+        let inner = list();
+        if has_text and has_html {
+            let b1 = new_boundary("alt");
+            inner.push(
+                nested_multipart(
+                    "alternative",
+                    b1,
+                    [
+                        text_part(string(text), "text/plain"),
+                        text_part(string(html), "text/html")
+                    ]
+                )
+            );
+        } elif has_html {
+            inner.push(text_part(string(html), "text/html"));
+        } else {
+            inner.push(text_part(string(opt(spec, "text", "")), "text/plain"));
+        }
+        for a in attachments {
+            inner.push(attachment_part(a));
+        }
+        let b0 = new_boundary("mix");
+        body = multipart_body(b0, inner);
+        content_type = "multipart/mixed; boundary=" + quoted(b0);
+    } elif has_text and has_html {
+        let b1 = new_boundary("alt");
+        body = multipart_body(
+            b1,
+            [text_part(string(text), "text/plain"), text_part(string(html), "text/html")]
+        );
+        content_type = "multipart/alternative; boundary=" + quoted(b1);
+    } else {
+        let plain = "";
+        if has_html {
+            plain = string(html);
+            content_type = "text/html; charset=utf-8";
+        } else {
+            // No body at all is legal (headers only); an empty text part is
+            // still something every MTA can parse.
+            plain = string(opt(spec, "text", ""));
+            content_type = "text/plain; charset=utf-8";
+        }
+        let e = encode_text(plain);
+        body = e["body"];
+        transfer = e["encoding"];
+    }
+    headers.push("Content-Type: " + content_type);
+    if transfer != null {
+        headers.push("Content-Transfer-Encoding: " + transfer);
+    }
+
+    let extra = opt(spec, "headers", null);
+    if extra != null and type_of(extra) == "map" {
+        for name in extra {
+            headers.push(header_safe(name, name) + ": " + header_safe(name, extra[name]));
+        }
+    }
+
+    return map(
+        "headers",
+        headers,
+        "body",
+        body,
+        "envelope_from",
+        from_addr,
+        "envelope_to",
+        rcpts
+    );
+}
+
+/// Render a message map into the exact text that follows DATA (no
+/// dot-stuffing - `send` does that, because only the transport knows where
+/// the terminator goes).
+public fn smtp_render(msg) {
+    if msg == null or type_of(msg) != "map" {
+        throw "smtp_render expects a message map";
+    }
+    let headers = list();
+    for line in msg["headers"] {
+        headers.push(header_safe("header", line));
+    }
+    return headers.join(crlf()) + crlf() + crlf() + msg["body"];
+}
+
+/// Add or replace a header line, e.g. `smtp_header(msg, "X-Build", "42")`.
+public fn smtp_header(msg, name, value) {
+    let line = header_safe(name, name) + ": " + header_safe(name, value);
+    let prefix = header_safe(name, name) + ":";
+    let out = list();
+    let replaced = false;
+    for h in msg["headers"] {
+        if h.starts_with(prefix) and not replaced {
+            out.push(line);
+            replaced = true;
+        } else {
+            out.push(h);
+        }
+    }
+    if not replaced {
+        out.push(line);
+    }
+    msg["headers"] = out;
+    return msg;
+}
+
+// ------------------------------------------------------------ wire helpers
+
+/// Convert every line ending to CRLF (the wire format). A bare LF left in a
+/// DATA payload is a protocol violation that some servers accept and others
+/// reject, so this is not cosmetic.
+fn normalize_newlines(text) {
+    let t = string(text).replace(chr(CR) + chr(LF), "\n");
+    t = t.replace(chr(CR), "\n");
+    return t.split("\n").join(crlf());
+}
+
+/// RFC 5321 4.5.2: a line consisting of a single "." ends DATA, so a content
+/// line that starts with "." gets one more.
+fn dot_stuff(text) {
+    let out = list();
+    for line in normalize_newlines(text).split(crlf()) {
+        if line.starts_with(".") {
+            out.push("." + line);
+        } else {
+            out.push(line);
+        }
+    }
+    return out.join(crlf());
+}
+
+fn parse_capabilities(lines) {
+    let caps = map();
+    let first = true;
+    for line in lines {
+        if first {
+            // "250-fake.local": the server's identity, not a capability.
+            first = false;
+            continue;
+        }
+        // Every continuation line carries the same "250-"/"250 " prefix.
+        let t = line.slice(min(4, len(line)), len(line)).trim();
+        if t == "" {
+            continue;
+        }
+        let sp = t.index_of(" ");
+        if sp < 0 {
+            caps[t.upper()] = "";
+        } else {
+            caps[t.slice(0, sp).upper()] = t.slice(sp + 1, len(t)).trim();
+        }
+    }
+    return caps;
+}
+
+fn contains_code(codes, code) {
+    for c in codes {
+        if c == code {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// The three-digit status that opens every reply line.
+fn reply_code(line) {
+    if len(line) < 3 {
+        throw "malformed reply: " + line;
+    }
+    let head = line.slice(0, 3);
+    if not is_digits(head) {
+        throw "malformed reply code in: " + line;
+    }
+    return int(head);
+}
+
+// ------------------------------------------------------------ client
+
+public class SmtpClient {
+    private let conn;
+    private let buf;
+    private let host;
+    private let port;
+    private let opts;
+    private let caps;
+    private let greeting;
+    private let closed;
+
+    fn new(host, port, opts) {
+        self.host = host;
+        self.port = port;
+        self.opts = opts;
+        self.buf = "";
+        self.caps = map();
+        self.greeting = "";
+        self.closed = false;
+        let tls = opt(opts, "tls", false);
+        if tls == true {
+            throw "TLS requested, but this build has no TLS stream native: http_fetch "
+                + "does https internally, while a tcp_connect handle cannot be wrapped "
+                + "and STARTTLS cannot be negotiated. Refusing to downgrade to cleartext.";
+        }
+        let r = tcp_connect(host + ":" + string(port));
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        self.conn = r.unwrap();
+        tcp_set_timeout(self.conn, opt(opts, "timeout_ms", 30000));
+        let rep = self.read_reply();
+        if rep["code"] != 220 {
+            tcp_close(self.conn);
+            self.closed = true;
+            throw "server rejected the connection: " + string(rep["code"]) + " " + rep["text"];
+        }
+        self.greeting = rep["text"];
+        // A failed handshake must not leak the socket: close it here, because
+        // the caller only ever sees the thrown message.
+        try {
+            self.hello(opt(opts, "helo", "localhost"));
+        } catch(e) {
+            self.close();
+            throw e;
+        }
+    }
+
+    /// Read one (possibly multi-line) reply. Throws on transport failure.
+    fn read_reply(self) {
+        let lines = list();
+        let code = -1;
+        let text = "";
+        let first = true;
+        while true {
+            let line = self.read_line();
+            if first {
+                code = reply_code(line);
+                first = false;
+            }
+            lines.push(line);
+            if len(line) > 3 and line.slice(3, 4) == "-" {
+                if len(lines) > 200 {
+                    throw "reply has more than 200 continuation lines";
+                }
+                continue;
+            }
+            text = line.slice(min(4, len(line)), len(line));
+            break;
+        }
+        return map("code", code, "text", text, "lines", lines);
+    }
+
+    fn read_line(self) {
+        while true {
+            let idx = self.buf.index_of(crlf());
+            if idx >= 0 {
+                let line = self.buf.slice(0, idx);
+                self.buf = self.buf.slice(idx + 2, len(self.buf));
+                return line;
+            }
+            if len(self.buf) > MAX_LINE {
+                throw "reply line exceeds " + string(MAX_LINE) + " bytes";
+            }
+            let r = tcp_read(self.conn, 4096);
+            if r.is_err() {
+                throw r.unwrap_err();
+            }
+            let chunk = r.unwrap();
+            if chunk == "" {
+                throw "connection closed by the server";
+            }
+            self.buf = self.buf + chunk;
+        }
+    }
+
+    fn write(self, text) {
+        let r = tcp_write(self.conn, text);
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        return true;
+    }
+
+    /// Send one command line and require one of `codes`.
+    fn command(self, line, codes) {
+        self.write(line + crlf());
+        let rep = self.read_reply();
+        if not contains_code(codes, rep["code"]) {
+            throw string(rep["code"]) + " " + rep["text"];
+        }
+        return rep;
+    }
+
+    /// EHLO with a HELO fallback for ancient servers.
+    public fn hello(self, name) {
+        self.write("EHLO " + header_safe("EHLO", name) + crlf());
+        let rep = self.read_reply();
+        if rep["code"] == 250 {
+            self.caps = parse_capabilities(rep["lines"]);
+            return self.caps;
+        }
+        self.write("HELO " + header_safe("HELO", name) + crlf());
+        let r2 = self.read_reply();
+        if r2["code"] != 250 {
+            throw "EHLO/HELO rejected: " + string(r2["code"]) + " " + r2["text"];
+        }
+        self.caps = map();
+        return self.caps;
+    }
+
+    public fn capabilities(self) {
+        return self.caps;
+    }
+
+    public fn supports(self, cap) {
+        return self.caps.has(string(cap).upper());
+    }
+
+    public fn greeting_text(self) {
+        return self.greeting;
+    }
+
+    fn require_plaintext_auth_allowed(self, what) {
+        if self.supports("STARTTLS") {
+            // The server offers an upgrade we cannot take. Saying so is better
+            // than pretending the channel is protected.
+            throw what
+                + ": server offers STARTTLS but this build cannot negotiate TLS; "
+                + "refusing to send credentials in the clear";
+        }
+        if opt(self.opts, "allow_plaintext_auth", false) != true {
+            throw what
+                + ": refusing to send credentials over an unencrypted connection. "
+                + "Pass map(\"allow_plaintext_auth\", true) only for a trusted local relay; "
+                + "this build has no TLS stream native.";
+        }
+        return true;
+    }
+
+    public fn auth_plain(self, user, password) {
+        self.require_plaintext_auth_allowed("AUTH PLAIN");
+        let token = base64_encode(chr(0) + string(user) + chr(0) + string(password));
+        self.write("AUTH PLAIN " + token + crlf());
+        let rep = self.read_reply();
+        if rep["code"] == 235 {
+            return true;
+        }
+        // 501/504: the server does not accept an initial response.
+        if rep["code"] == 501 or rep["code"] == 504 {
+            self.command("AUTH PLAIN", [334]);
+            self.command(token, [235]);
+            return true;
+        }
+        throw "AUTH PLAIN failed: " + string(rep["code"]) + " " + rep["text"];
+    }
+
+    public fn auth_login(self, user, password) {
+        self.require_plaintext_auth_allowed("AUTH LOGIN");
+        self.command("AUTH LOGIN", [334]);
+        self.command(base64_encode(string(user)), [334]);
+        self.command(base64_encode(string(password)), [235]);
+        return true;
+    }
+
+    /// Send a message built by `smtp_message`. The envelope comes from the
+    /// message (`envelope_from` / `envelope_to`), so Bcc recipients are
+    /// delivered without appearing in any header.
+    public fn send(self, msg) {
+        try {
+            let from = msg["envelope_from"];
+            let rcpts = msg["envelope_to"];
+            let payload = dot_stuff(smtp_render(msg));
+            while payload.ends_with(crlf()) {
+                payload = payload.slice(0, len(payload) - 2);
+            }
+            self.command("MAIL FROM:<" + from + ">", [250]);
+            for r in rcpts {
+                self.command("RCPT TO:<" + r + ">", [250, 251]);
+            }
+            self.command("DATA", [354]);
+            self.write(payload + crlf() + "." + crlf());
+            let rep = self.read_reply();
+            if rep["code"] != 250 {
+                throw string(rep["code"]) + " " + rep["text"];
+            }
+            return ok(
+                map(
+                    "code",
+                    rep["code"],
+                    "text",
+                    rep["text"],
+                    "recipients",
+                    len(rcpts),
+                    "bytes",
+                    len(payload)
+                )
+            );
+        } catch(e) {
+            self.safe_reset();
+            return err("smtp: " + string(e));
+        }
+    }
+
+    /// Send a raw DATA payload (already a complete message). For the rare case
+    /// where the caller builds its own MIME tree.
+    public fn send_raw(self, from, rcpts, text) {
+        try {
+            let list_rcpts = as_list(rcpts);
+            if len(list_rcpts) == 0 {
+                throw "send_raw needs at least one recipient";
+            }
+            let payload = dot_stuff(text);
+            while payload.ends_with(crlf()) {
+                payload = payload.slice(0, len(payload) - 2);
+            }
+            self.command("MAIL FROM:<" + envelope_addr(from) + ">", [250]);
+            for r in list_rcpts {
+                self.command("RCPT TO:<" + envelope_addr(r) + ">", [250, 251]);
+            }
+            self.command("DATA", [354]);
+            self.write(payload + crlf() + "." + crlf());
+            let rep = self.read_reply();
+            if rep["code"] != 250 {
+                throw string(rep["code"]) + " " + rep["text"];
+            }
+            return ok(map("code", rep["code"], "text", rep["text"]));
+        } catch(e) {
+            self.safe_reset();
+            return err("smtp: " + string(e));
+        }
+    }
+
+    /// A failed transaction leaves the session mid-state; RSET gets it back
+    /// to a usable one. If the connection itself is gone this fails too, and
+    /// that is fine - the caller already has the real error.
+    fn safe_reset(self) {
+        if self.closed {
+            return false;
+        }
+        try {
+            self.command("RSET", [250]);
+        } catch(_e) {
+            return false;
+        }
+        return true;
+    }
+
+    public fn noop(self) {
+        self.command("NOOP", [250]);
+        return true;
+    }
+
+    public fn reset(self) {
+        self.command("RSET", [250]);
+        return true;
+    }
+
+    /// Verify an address without sending (`VRFY`). Many servers disable this
+    /// and answer 252, which is not a verdict either way.
+    public fn verify(self, addr) {
+        let rep = self.command("VRFY " + check_email(addr), [250, 251, 252]);
+        return map("code", rep["code"], "text", rep["text"]);
+    }
+
+    public fn quit(self) {
+        if self.closed {
+            return true;
+        }
+        try {
+            self.command("QUIT", [221]);
+        } catch(_e) {
+            // A server that hangs up without a 221 is common enough; the
+            // transaction already succeeded or already failed.
+        }
+        self.close();
+        return true;
+    }
+
+    public fn close(self) {
+        if not self.closed {
+            tcp_close(self.conn);
+            self.closed = true;
+        }
+        return true;
+    }
+}
+
+// ------------------------------------------------------------ entry points
+
+/// `smtp_connect(host, port, opts)` -> `ok(SmtpClient)` / `err(msg)`.
+///
+/// opts: timeout_ms (30000), helo ("localhost"), allow_plaintext_auth (false),
+/// tls (false - and true always fails, because there is no TLS stream).
+public fn smtp_connect(host, port, opts) {
+    try {
+        return ok(new SmtpClient(string(host), int(port), opts));
+    } catch(e) {
+        return err("smtp_connect: " + string(e));
+    }
+}
+
+/// Connect, optionally authenticate, send one message, and quit.
+///
+/// config: host ("127.0.0.1"), port (25), user, password, plus every option
+/// `smtp_connect` accepts.
+public fn smtp_send(config, msg) {
+    let host = opt(config, "host", "127.0.0.1");
+    let port = opt(config, "port", 25);
+    let c = smtp_connect(host, port, config);
+    if c.is_err() {
+        return c;
+    }
+    let client = c.unwrap();
+    try {
+        let user = opt(config, "user", null);
+        if user != null {
+            client.auth_plain(user, opt(config, "password", ""));
+        }
+        let r = client.send(msg);
+        client.quit();
+        return r;
+    } catch(e) {
+        client.close();
+        return err("smtp: " + string(e));
+    }
+}

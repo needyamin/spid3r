@@ -48,6 +48,8 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("tcp_peer_addr", n_tcp_peer_addr),
         ("tcp_set_timeout", n_tcp_set_timeout),
         ("tcp_poll", n_tcp_poll),
+        ("tcp_recv_to_file", n_tcp_recv_to_file),
+        ("tcp_send_file", n_tcp_send_file),
         ("ws_connect", n_ws_connect),
         ("ws_accept", n_ws_accept),
         ("ws_send", n_ws_send),
@@ -476,6 +478,96 @@ fn n_tcp_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         Ok(()) => ok(Value::Int(text.len() as i64)),
         Err(e) => err(io_msg("tcp_write", &e)),
     }
+}
+
+/// `tcp_recv_to_file(conn, path)` -> `ok(bytes)`; reads until the peer closes
+/// the connection and writes the payload straight to `path`.
+///
+/// This exists because `tcp_read` hands back a **string**: the stream is
+/// decoded as UTF-8 and invalid sequences become U+FFFD, which is fine for
+/// HTTP/SMTP/FTP control channels and fatal for a binary download. Here the
+/// bytes never enter a `Value::Str` - they go from the socket buffer to the
+/// file in 64 KiB chunks - so `FTP RETR` (and any other binary body) is
+/// byte-exact and needs memory proportional to one chunk, not to the file.
+///
+/// A partial file is left behind on a read error, which is deliberate: the
+/// caller gets `err` and can delete it, rather than silently receiving a
+/// truncated file that looks complete.
+fn n_tcp_recv_to_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("tcp_recv_to_file", &args, 2)?;
+    let id = want_int(&args[0], "tcp_recv_to_file")?;
+    let path = want_str(&args[1], "tcp_recv_to_file")?;
+    let conn = get_stream(id, "tcp_recv_to_file")?;
+    let mut file = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => return err(format!("tcp_recv_to_file '{}': {}", path, e)),
+    };
+    let mut total: u64 = 0;
+    // Bytes a readiness probe read ahead come first (they are already off the
+    // socket, so the read loop below would never see them).
+    let ahead = {
+        let mut p = conn.pending.lock().unwrap();
+        std::mem::take(&mut *p)
+    };
+    if !ahead.is_empty() {
+        if let Err(e) = file.write_all(&ahead) {
+            return err(format!("tcp_recv_to_file '{}': {}", path, e));
+        }
+        total += ahead.len() as u64;
+    }
+    let mut stream = conn.stream.lock().unwrap();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if let Err(e) = file.write_all(&buf[..n]) {
+                    return err(format!("tcp_recv_to_file '{}': {}", path, e));
+                }
+                total += n as u64;
+            }
+            Err(e) => return err(io_msg("tcp_recv_to_file", &e)),
+        }
+    }
+    if let Err(e) = file.flush() {
+        return err(format!("tcp_recv_to_file '{}': {}", path, e));
+    }
+    ok(Value::Int(total as i64))
+}
+
+/// `tcp_send_file(conn, path)` -> `ok(bytes)`; streams a file to the peer.
+///
+/// The counterpart of `tcp_recv_to_file`: binary upload (`FTP STOR`) without
+/// a UTF-8 round trip. The handle is left open on purpose - the caller decides
+/// when to half-close it (`tcp_close` sends FIN, which is what an FTP data
+/// connection needs so the server stops reading).
+fn n_tcp_send_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("tcp_send_file", &args, 2)?;
+    let id = want_int(&args[0], "tcp_send_file")?;
+    let path = want_str(&args[1], "tcp_send_file")?;
+    let conn = get_stream(id, "tcp_send_file")?;
+    let mut file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) => return err(format!("tcp_send_file '{}': {}", path, e)),
+    };
+    let mut stream = conn.stream.lock().unwrap();
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => return err(format!("tcp_send_file '{}': {}", path, e)),
+        };
+        if let Err(e) = stream.write_all(&buf[..n]) {
+            return err(io_msg("tcp_send_file", &e));
+        }
+        total += n as u64;
+    }
+    if let Err(e) = stream.flush() {
+        return err(io_msg("tcp_send_file", &e));
+    }
+    ok(Value::Int(total as i64))
 }
 
 /// `tcp_close(handle)` -> `true` if the handle was open. Closing a listener

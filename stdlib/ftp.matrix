@@ -1,0 +1,917 @@
+// stdlib/ftp.matrix - an FTP client (RFC 959 plus the EPSV/MLSD extensions),
+// written in Spid3r.
+//
+//   import "ftp";
+//
+//   let f = ftp_connect("127.0.0.1", 2121, map("user", "anonymous")).unwrap();
+//   println(f.pwd().unwrap());
+//   f.retr("pub/report.pdf", "report.pdf").unwrap();
+//   for e in f.list("pub").unwrap() {
+//       println(e["type"] + " " + string(e["size"]) + " " + e["name"]);
+//   }
+//   f.quit();
+//
+// The control channel is line-framed ASCII over `tcp_*`; the data channel is
+// opened per transfer with EPSV (preferred) or PASV, and file bodies move
+// through `tcp_recv_to_file` / `tcp_send_file`, which copy socket bytes to and
+// from disk without decoding them as UTF-8. `tcp_read` is UTF-8 *lossy*, so a
+// script-level read loop would silently corrupt any binary download - that is
+// why the transfer primitives are natives.
+//
+// ---------------------------------------------------------------------------
+// The honest part: cleartext only, and credentials need an opt-in.
+//
+// FTP sends USER/PASS as plain text and this build has no TLS stream native
+// (see stdlib/smtp.matrix for the same constraint), so `AUTH TLS` cannot be
+// negotiated. Therefore:
+//
+//   * anonymous login works out of the box (it is what FTP is still used for);
+//   * any other login requires `allow_plaintext_auth: true`, and if the server
+//     advertises `AUTH TLS` the attempt is refused with an explanation rather
+//     than quietly sending the password anyway.
+// ---------------------------------------------------------------------------
+
+const CR = 13;
+const LF = 10;
+const MAX_LINE = 65536;
+const MAX_LISTING = 8 * 1024 * 1024;
+
+fn crlf() {
+    return chr(CR) + chr(LF);
+}
+
+// ------------------------------------------------------------ helpers
+
+fn opt(m, key, dflt) {
+    if m == null {
+        return dflt;
+    }
+    if type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+fn is_digits(s) {
+    if s == "" {
+        return false;
+    }
+    for c in s.chars() {
+        let o = ord(c);
+        if o < 48 or o > 57 {
+            return false;
+        }
+    }
+    return true;
+}
+
+fn reply_code(line) {
+    if len(line) < 3 {
+        throw "malformed reply: " + line;
+    }
+    let head = line.slice(0, 3);
+    if not is_digits(head) {
+        throw "malformed reply code in: " + line;
+    }
+    return int(head);
+}
+
+fn contains_code(codes, code) {
+    for c in codes {
+        if c == code {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn as_list(v) {
+    if v == null {
+        return list();
+    }
+    if type_of(v) == "list" {
+        return v;
+    }
+    return list(v);
+}
+
+/// Split on spaces, dropping empty fields.
+fn tokens(line) {
+    let out = list();
+    for t in line.split(" ") {
+        if t != "" {
+            out.push(t);
+        }
+    }
+    return out;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// ------------------------------------------------------------ LIST parsing
+
+/// A Unix `ls -l` line: `-rw-r--r-- 1 owner group 1234 Jan 01 12:00 name`.
+///
+/// The size is found by locating the month token and taking the field before
+/// it, which survives servers that omit the group column (a real difference
+/// between wu-ftpd, vsftpd and IIS) and names that contain spaces.
+fn parse_unix_list(line) {
+    let t = tokens(line);
+    let mode = t[0];
+    let kind = "other";
+    if mode.starts_with("d") {
+        kind = "dir";
+    } elif mode.starts_with("-") {
+        kind = "file";
+    } elif mode.starts_with("l") {
+        kind = "link";
+    }
+    let month_at = -1;
+    let i = 1;
+    while i < len(t) {
+        for m in MONTHS {
+            if t[i] == m and month_at < 0 {
+                month_at = i;
+            }
+        }
+        i += 1;
+    }
+    let size = null;
+    let name = "";
+    let modified = null;
+    if month_at >= 1 {
+        if is_digits(t[month_at - 1]) {
+            size = int(t[month_at - 1]);
+        }
+        if month_at + 2 < len(t) {
+            modified = t[month_at] + " " + t[month_at + 1] + " " + t[month_at + 2];
+            let rest = list();
+            let j = month_at + 3;
+            while j < len(t) {
+                rest.push(t[j]);
+                j += 1;
+            }
+            name = rest.join(" ");
+        }
+    }
+    if name == "" {
+        // Not a shape we recognise; keep the raw line so the caller can still
+        // show it instead of losing the entry.
+        name = line;
+    }
+    return map(
+        "name",
+        name,
+        "type",
+        kind,
+        "size",
+        size,
+        "mode",
+        mode,
+        "modified",
+        modified,
+        "raw",
+        line
+    );
+}
+
+/// A DOS/IIS line: `01-01-24  12:00PM       <DIR>          name`.
+fn parse_dos_list(line) {
+    let t = tokens(line);
+    let kind = "file";
+    let size = null;
+    let name_at = 3;
+    if len(t) >= 4 and t[2] == "<DIR>" {
+        kind = "dir";
+        name_at = 3;
+    } elif len(t) >= 4 and is_digits(t[2]) {
+        size = int(t[2]);
+        name_at = 3;
+    } elif len(t) >= 3 {
+        name_at = 2;
+    }
+    let rest = list();
+    let j = name_at;
+    while j < len(t) {
+        rest.push(t[j]);
+        j += 1;
+    }
+    return map(
+        "name",
+        rest.join(" "),
+        "type",
+        kind,
+        "size",
+        size,
+        "mode",
+        "",
+        "modified",
+        t[0] + " " + t[1],
+        "raw",
+        line
+    );
+}
+
+fn looks_dos(line) {
+    if len(line) < 8 {
+        return false;
+    }
+    let t = tokens(line);
+    if len(t) < 2 {
+        return false;
+    }
+    let d = t[0];
+    if not d.contains("-") {
+        return false;
+    }
+    let parts = d.split("-");
+    if len(parts) != 3 {
+        return false;
+    }
+    return is_digits(parts[0]) and is_digits(parts[1]) and is_digits(parts[2]);
+}
+
+/// An MLSD line: `type=file;size=123;modify=20240101120000; name`.
+fn parse_mlsd(line) {
+    let sp = line.index_of(" ");
+    if sp < 0 {
+        return map(
+            "name",
+            line,
+            "type",
+            "other",
+            "size",
+            null,
+            "mode",
+            "",
+            "modified",
+            null,
+            "raw",
+            line
+        );
+    }
+    let facts = line.slice(0, sp);
+    let name = line.slice(sp + 1, len(line));
+    let kind = "other";
+    let size = null;
+    let modified = null;
+    for fact in facts.split(";") {
+        let eq = fact.index_of("=");
+        if eq < 0 {
+            continue;
+        }
+        let k = fact.slice(0, eq).lower();
+        let v = fact.slice(eq + 1, len(fact));
+        if k == "type" {
+            if v == "file" {
+                kind = "file";
+            } elif v == "dir" or v == "cdir" or v == "pdir" {
+                kind = "dir";
+            } elif v == "os.unix=slink" or v == "slink" {
+                kind = "link";
+            } else {
+                kind = v;
+            }
+        } elif k == "size" {
+            if is_digits(v) {
+                size = int(v);
+            }
+        } elif k == "modify" {
+            modified = v;
+        }
+    }
+    return map(
+        "name",
+        name,
+        "type",
+        kind,
+        "size",
+        size,
+        "mode",
+        "",
+        "modified",
+        modified,
+        "raw",
+        line
+    );
+}
+
+fn parse_listing(text, mlsd) {
+    let entries = list();
+    for raw in text.split("\n") {
+        let line = raw.replace(chr(CR), "");
+        if line.trim() == "" {
+            continue;
+        }
+        if mlsd {
+            entries.push(parse_mlsd(line));
+        } elif looks_dos(line) {
+            entries.push(parse_dos_list(line));
+        } else {
+            entries.push(parse_unix_list(line));
+        }
+    }
+    return entries;
+}
+
+// ------------------------------------------------------------ client
+
+/// The port out of an EPSV reply: `229 ... (|||6446|)`.
+fn epsv_port(rep) {
+    let open = rep.index_of("(");
+    let close = rep.index_of(")");
+    if open < 0 or close < open {
+        throw "cannot parse the extended passive reply: " + rep;
+    }
+    let inner = rep.slice(open + 1, close);
+    // The delimiter is whatever character appears first: "(|||6446|)".
+    let delim = inner.slice(0, 1);
+    let parts = inner.split(delim);
+    for p in parts {
+        if is_digits(p) {
+            return int(p);
+        }
+    }
+    throw "cannot parse the extended passive reply: " + rep;
+}
+
+/// Drain a data connection as text (listings only - binary bodies must use
+/// `tcp_recv_to_file`, because this path decodes UTF-8 and loses bytes).
+fn read_all_text(data) {
+    let text = "";
+    while true {
+        let r = tcp_read(data, 8192);
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        let chunk = r.unwrap();
+        if chunk == "" {
+            break;
+        }
+        text = text + chunk;
+        if len(text) > MAX_LISTING {
+            throw "listing exceeds " + string(MAX_LISTING) + " bytes";
+        }
+    }
+    return text;
+}
+
+public class FtpClient {
+    private let conn;
+    private let buf;
+    private let host;
+    private let port;
+    private let opts;
+    private let features;
+    private let last;
+    private let closed;
+
+    fn new(host, port, opts) {
+        self.host = host;
+        self.port = port;
+        self.opts = opts;
+        self.buf = "";
+        self.features = map();
+        self.last = null;
+        self.closed = false;
+        let r = tcp_connect(host + ":" + string(port));
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        self.conn = r.unwrap();
+        tcp_set_timeout(self.conn, opt(opts, "timeout_ms", 30000));
+        let rep = self.read_reply();
+        if rep["code"] != 220 {
+            self.close();
+            throw "server rejected the connection: " + string(rep["code"]) + " " + rep["text"];
+        }
+        // FEAT is optional (RFC 2389); a server that answers 500 is not broken.
+        try {
+            let f = self.command("FEAT", [211, 500, 502]);
+            if f["code"] == 211 {
+                self.features = parse_features(f["lines"]);
+            }
+        } catch(_e) {
+            self.features = map();
+        }
+        // A refused login must not leak the socket: the caller only ever sees
+        // the thrown message.
+        try {
+            self.login(opt(opts, "user", "anonymous"), opt(opts, "password", "anonymous@"));
+            self.type(opt(opts, "type", "I"));
+        } catch(e) {
+            self.close();
+            throw e;
+        }
+    }
+
+    fn read_line(self) {
+        while true {
+            let idx = self.buf.index_of(crlf());
+            if idx >= 0 {
+                let line = self.buf.slice(0, idx);
+                self.buf = self.buf.slice(idx + 2, len(self.buf));
+                return line;
+            }
+            if len(self.buf) > MAX_LINE {
+                throw "reply line exceeds " + string(MAX_LINE) + " bytes";
+            }
+            let r = tcp_read(self.conn, 4096);
+            if r.is_err() {
+                throw r.unwrap_err();
+            }
+            let chunk = r.unwrap();
+            if chunk == "" {
+                throw "connection closed by the server";
+            }
+            self.buf = self.buf + chunk;
+        }
+    }
+
+    /// A reply is one line, or a multi-line reply opened by `123-...`.
+    ///
+    /// FTP is *not* SMTP here: in a `FEAT` reply only the first and last lines
+    /// carry a status code, and the feature names in between are bare lines
+    /// (`211-Features:` / ` EPSV` / `211 End`). Treating a bare line as the end
+    /// of the reply desynchronises the session, so continuation is decided by
+    /// the opening code, not by the shape of the current line.
+    fn read_reply(self) {
+        let lines = list();
+        let code = -1;
+        let text = "";
+        let first = true;
+        while true {
+            let line = self.read_line();
+            if first {
+                code = reply_code(line);
+                first = false;
+            }
+            lines.push(line);
+            let tag = string(code);
+            if line.starts_with(tag + " ") {
+                text = line.slice(min(4, len(line)), len(line));
+                break;
+            }
+            if len(lines) > 200 {
+                throw "reply has more than 200 lines";
+            }
+        }
+        self.last = map("code", code, "text", text, "lines", lines);
+        return self.last;
+    }
+
+    fn write(self, text) {
+        let r = tcp_write(self.conn, text);
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        return true;
+    }
+
+    fn command(self, line, codes) {
+        self.write(line + crlf());
+        let rep = self.read_reply();
+        if not contains_code(codes, rep["code"]) {
+            throw string(rep["code"]) + " " + rep["text"];
+        }
+        return rep;
+    }
+
+    /// Read the reply that closes a transfer (the 226 the server sends once
+    /// the data connection is finished). This is not a command: sending
+    /// anything here would desynchronise the session.
+    fn expect(self, codes) {
+        let rep = self.read_reply();
+        if not contains_code(codes, rep["code"]) {
+            throw string(rep["code"]) + " " + rep["text"];
+        }
+        return rep;
+    }
+
+    fn login(self, user, password) {
+        let anonymous = user == "anonymous" or user == "ftp";
+        if not anonymous {
+            if self.features.has("AUTH TLS") {
+                throw "server offers AUTH TLS but this build cannot negotiate TLS; "
+                    + "refusing to send the password in the clear";
+            }
+            if opt(self.opts, "allow_plaintext_auth", false) != true {
+                throw "refusing to send credentials over an unencrypted connection; "
+                    + "pass map(\"allow_plaintext_auth\", true) for a trusted server, "
+                    + "or use \"anonymous\" (this build has no TLS stream native)";
+            }
+        }
+        let rep = self.command("USER " + user, [230, 331, 332]);
+        if rep["code"] == 230 {
+            return true;
+        }
+        if rep["code"] == 332 {
+            throw "server wants an account (ACCT), which this client does not send";
+        }
+        self.command("PASS " + password, [230, 202]);
+        return true;
+    }
+
+    public fn features(self) {
+        return self.features;
+    }
+
+    public fn supports(self, feature) {
+        return self.features.has(string(feature).upper());
+    }
+
+    public fn last_reply(self) {
+        return self.last;
+    }
+
+    public fn type(self, mode) {
+        let m = string(mode).upper();
+        if m != "I" and m != "A" {
+            throw "type must be \"I\" (binary) or \"A\" (ASCII)";
+        }
+        self.command("TYPE " + m, [200]);
+        return true;
+    }
+
+    // -------------------------------------------------------- data channel
+
+    fn pasv_address(self, rep) {
+        let open = rep.index_of("(");
+        let close = rep.index_of(")");
+        if open < 0 or close < open {
+            // Some servers omit the parentheses: "227 ... 127,0,0,1,7,138".
+            open = 3;
+            close = len(rep);
+        }
+        let inner = rep.slice(open + 1, close);
+        let parts = inner.split(",");
+        if len(parts) != 6 {
+            throw "cannot parse the passive address: " + rep;
+        }
+        let nums = list();
+        for p in parts {
+            let t = p.trim();
+            if not is_digits(t) {
+                throw "cannot parse the passive address: " + rep;
+            }
+            nums.push(int(t));
+        }
+        let advertised = string(nums[0])
+            + "."
+            + string(nums[1])
+            + "."
+            + string(nums[2])
+            + "."
+            + string(nums[3]);
+        let data_host = opt(self.opts, "pasv_host", null);
+        if data_host == null {
+            // 0.0.0.0 means "same host you are already talking to"; connecting
+            // to it literally fails, and trusting any other advertised address
+            // is how FTP bounce works, so the control host is the safe default.
+            data_host = advertised;
+            if advertised == "0.0.0.0" {
+                data_host = self.host;
+            }
+        }
+        return map("host", data_host, "port", nums[4] * 256 + nums[5]);
+    }
+
+    /// Open the data connection. EPSV when the server advertises it (it works
+    /// through NAT and needs no address parsing), PASV otherwise.
+    fn open_data(self) {
+        if self.supports("EPSV") or opt(self.opts, "epsv", true) == true {
+            let rep = self.command("EPSV", [229, 500, 502, 522]);
+            if rep["code"] == 229 {
+                let port = epsv_port(rep["lines"][0]);
+                let r = tcp_connect(self.host + ":" + string(port));
+                if r.is_err() {
+                    throw r.unwrap_err();
+                }
+                return r.unwrap();
+            }
+        }
+        let rep = self.command("PASV", [227]);
+        let addr = self.pasv_address(rep["lines"][0]);
+        let r = tcp_connect(addr["host"] + ":" + string(addr["port"]));
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        return r.unwrap();
+    }
+
+    // -------------------------------------------------------- transfers
+
+    /// Download `remote` to `local`. Returns the byte count.
+    public fn retr(self, remote, local) {
+        try {
+            let data = self.open_data();
+            self.command("RETR " + remote, [125, 150]);
+            let got = null;
+            try {
+                got = tcp_recv_to_file(data, local);
+            } catch(_e) {
+                tcp_close(data);
+                throw _e;
+            }
+            tcp_close(data);
+            if got.is_err() {
+                throw got.unwrap_err();
+            }
+            self.expect([226, 250]);
+            return ok(got.unwrap());
+        } catch(e) {
+            return err("ftp retr: " + string(e));
+        }
+    }
+
+    /// Download `remote` as text. Only for ASCII/UTF-8 files - use `retr` for
+    /// anything binary, because this path decodes the bytes as UTF-8.
+    public fn retr_text(self, remote) {
+        try {
+            let data = self.open_data();
+            self.command("RETR " + remote, [125, 150]);
+            let text = read_all_text(data);
+            tcp_close(data);
+            self.expect([226, 250]);
+            return ok(text);
+        } catch(e) {
+            return err("ftp retr_text: " + string(e));
+        }
+    }
+
+    /// Upload `local` to `remote`. Returns the byte count.
+    public fn stor(self, local, remote) {
+        try {
+            let data = self.open_data();
+            self.command("STOR " + remote, [125, 150]);
+            let sent = tcp_send_file(data, local);
+            tcp_close(data);
+            if sent.is_err() {
+                throw sent.unwrap_err();
+            }
+            self.expect([226, 250]);
+            return ok(sent.unwrap());
+        } catch(e) {
+            return err("ftp stor: " + string(e));
+        }
+    }
+
+    /// Upload a string as a file (text mode, UTF-8 encoded).
+    public fn stor_text(self, remote, text) {
+        try {
+            let data = self.open_data();
+            self.command("STOR " + remote, [125, 150]);
+            let w = tcp_write(data, string(text));
+            tcp_close(data);
+            if w.is_err() {
+                throw w.unwrap_err();
+            }
+            self.expect([226, 250]);
+            return ok(w.unwrap());
+        } catch(e) {
+            return err("ftp stor_text: " + string(e));
+        }
+    }
+
+    /// List a directory. MLSD when the server has it (machine-readable, no
+    /// locale guessing), LIST otherwise. Each entry is
+    /// `{name, type, size, mode, modified, raw}`.
+    public fn list(self, path) {
+        try {
+            let mlsd = self.supports("MLSD");
+            let cmd = "LIST";
+            if mlsd {
+                cmd = "MLSD";
+            }
+            if path != null and path != "" {
+                cmd = cmd + " " + path;
+            }
+            let data = self.open_data();
+            self.command(cmd, [125, 150]);
+            let text = read_all_text(data);
+            tcp_close(data);
+            self.expect([226, 250]);
+            return ok(parse_listing(text, mlsd));
+        } catch(e) {
+            return err("ftp list: " + string(e));
+        }
+    }
+
+    /// Names only (NLST).
+    public fn names(self, path) {
+        try {
+            let cmd = "NLST";
+            if path != null and path != "" {
+                cmd = cmd + " " + path;
+            }
+            let data = self.open_data();
+            self.command(cmd, [125, 150]);
+            let text = read_all_text(data);
+            tcp_close(data);
+            self.expect([226, 250]);
+            let out = list();
+            for raw in text.split("\n") {
+                let name = raw.replace(chr(CR), "");
+                if name != "" {
+                    out.push(name);
+                }
+            }
+            return ok(out);
+        } catch(e) {
+            return err("ftp names: " + string(e));
+        }
+    }
+
+    // -------------------------------------------------------- control ops
+
+    public fn pwd(self) {
+        try {
+            let rep = self.command("PWD", [257]);
+            return ok(unquote_path(rep["lines"][0]));
+        } catch(e) {
+            return err("ftp pwd: " + string(e));
+        }
+    }
+
+    public fn cwd(self, path) {
+        try {
+            self.command("CWD " + path, [250]);
+            return ok(true);
+        } catch(e) {
+            return err("ftp cwd: " + string(e));
+        }
+    }
+
+    public fn cdup(self) {
+        try {
+            self.command("CDUP", [200, 250]);
+            return ok(true);
+        } catch(e) {
+            return err("ftp cdup: " + string(e));
+        }
+    }
+
+    public fn mkd(self, path) {
+        try {
+            let rep = self.command("MKD " + path, [257]);
+            return ok(unquote_path(rep["lines"][0]));
+        } catch(e) {
+            return err("ftp mkd: " + string(e));
+        }
+    }
+
+    public fn rmd(self, path) {
+        try {
+            self.command("RMD " + path, [250]);
+            return ok(true);
+        } catch(e) {
+            return err("ftp rmd: " + string(e));
+        }
+    }
+
+    public fn dele(self, path) {
+        try {
+            self.command("DELE " + path, [250]);
+            return ok(true);
+        } catch(e) {
+            return err("ftp dele: " + string(e));
+        }
+    }
+
+    public fn rename(self, from, to) {
+        try {
+            self.command("RNFR " + from, [350]);
+            self.command("RNTO " + to, [250]);
+            return ok(true);
+        } catch(e) {
+            return err("ftp rename: " + string(e));
+        }
+    }
+
+    public fn size(self, path) {
+        try {
+            let rep = self.command("SIZE " + path, [213]);
+            let t = rep["text"].trim();
+            if not is_digits(t) {
+                throw "unexpected SIZE reply: " + rep["text"];
+            }
+            return ok(int(t));
+        } catch(e) {
+            return err("ftp size: " + string(e));
+        }
+    }
+
+    public fn noop(self) {
+        try {
+            self.command("NOOP", [200]);
+            return ok(true);
+        } catch(e) {
+            return err("ftp noop: " + string(e));
+        }
+    }
+
+    public fn quit(self) {
+        if self.closed {
+            return true;
+        }
+        try {
+            self.command("QUIT", [221]);
+        } catch(_e) {
+            // A server that just hangs up is normal at this point.
+        }
+        self.close();
+        return true;
+    }
+
+    public fn close(self) {
+        if not self.closed {
+            tcp_close(self.conn);
+            self.closed = true;
+        }
+        return true;
+    }
+}
+
+/// `257 "/pub" is the current directory` -> `/pub`, with `""` unescaped.
+fn unquote_path(line) {
+    let first = line.index_of("\"");
+    if first < 0 {
+        return line.slice(min(4, len(line)), len(line)).trim();
+    }
+    let last = -1;
+    let i = first + 1;
+    while i < len(line) {
+        if line.slice(i, i + 1) == "\"" {
+            last = i;
+        }
+        i += 1;
+    }
+    if last <= first {
+        return line.slice(first + 1, len(line));
+    }
+    return line.slice(first + 1, last).replace("\"\"", "\"");
+}
+
+fn parse_features(lines) {
+    let feats = map();
+    let first = true;
+    for line in lines {
+        if first {
+            first = false;
+            continue;
+        }
+        let t = line.trim();
+        if t == "" {
+            continue;
+        }
+        // The closing line of a FEAT reply is `211 End`, not a feature name.
+        if is_digits(t.slice(0, 1)) {
+            continue;
+        }
+        let sp = t.index_of(" ");
+        if sp < 0 {
+            feats[t.upper()] = "";
+        } else {
+            feats[t.slice(0, sp).upper()] = t.slice(sp + 1, len(t)).trim();
+        }
+    }
+    return feats;
+}
+
+// ------------------------------------------------------------ entry points
+
+/// `ftp_connect(host, port, opts)` -> `ok(FtpClient)` / `err(msg)`.
+///
+/// opts: user ("anonymous"), password ("anonymous@"), timeout_ms (30000),
+/// type ("I"), epsv (true), pasv_host (null), allow_plaintext_auth (false).
+public fn ftp_connect(host, port, opts) {
+    try {
+        return ok(new FtpClient(string(host), int(port), opts));
+    } catch(e) {
+        return err("ftp_connect: " + string(e));
+    }
+}
+
+/// Connect, run `fn(client)`, and quit - the shape most scripts want.
+///
+///   let r = ftp_with("host", 21, map(), fn(f) {
+///       return f.retr("a.txt", "a.txt");
+///   });
+public fn ftp_with(host, port, opts, body) {
+    let c = ftp_connect(host, port, opts);
+    if c.is_err() {
+        return c;
+    }
+    let client = c.unwrap();
+    try {
+        let r = body(client);
+        client.quit();
+        return r;
+    } catch(e) {
+        client.close();
+        return err("ftp: " + string(e));
+    }
+}

@@ -3536,7 +3536,7 @@ fn main() {
         <h2 id="first-party-stdlib">First-Party Standard Libraries (<code>./stdlib/</code>)</h2>
 
 
-        <p class="lead">Spid3r ships with <strong>18 zero-dependency first-party standard libraries</strong> in
+        <p class="lead">Spid3r ships with <strong>21 zero-dependency first-party standard libraries</strong> in
           <code>./stdlib/</code> (automatically searched by the module loader, and compiled into the WebAssembly
           build so <code>import</code> works in a browser). Every module runs with 100% feature parity across the
           tree-walking interpreter and the bytecode VM.
@@ -3546,6 +3546,7 @@ fn main() {
         <table>
           <tr><th>module</th><th>what it gives you</th></tr>
           <tr><td><code>web</code>, <code>http</code></td><td>Express-style routing, middleware, cookies, JWT, templates, static files, an HTTP server/client</td></tr>
+          <tr><td><code>smtp</code>, <code>ftp</code>, <code>ssh</code></td><td>ESMTP client + RFC 5322/MIME message builder, FTP client (EPSV/PASV, MLSD, byte-exact transfers), and SSH/SFTP via the system OpenSSH client with a validated argv</td></tr>
           <tr><td><code>dataframe</code></td><td>frames from records/CSV, select/filter/sort/group_by/join, describe</td></tr>
           <tr><td><code>stats</code></td><td>descriptive statistics, correlation, t-test/chi-square, and the distribution family (<code>normal_quantile</code>, binomial, Poisson, exponential)</td></tr>
           <tr><td><code>ml</code></td><td>linear/logistic regression, kNN, k-means, PCA, metrics</td></tr>
@@ -3689,6 +3690,47 @@ fn main() {
 }</code></pre>
 
 
+
+        <h3>5. <code>stdlib/smtp.matrix</code>, <code>stdlib/ftp.matrix</code>, <code>stdlib/ssh.matrix</code> — Mail, Files, Remote Shell</h3>
+        <p>Three transport clients built on the same <code>tcp_*</code> primitives as the HTTP stack. SMTP and FTP
+          speak their wire protocols directly; SSH drives the system OpenSSH client through
+          <code>exec_capture</code>, because a hand-rolled key exchange is a security hole rather than a feature.
+        </p>
+        <pre data-lang="spid3r"><code>import "smtp";
+import "ftp";
+import "ssh";
+
+fn main() {
+    // Mail: an RFC 5322 message with an HTML alternative and an attachment.
+    let msg = smtp_message(map(
+        "from", "builds@example.com",
+        "to", ["ops@example.com"],
+        "bcc", ["audit@example.com"],
+        "subject", "Deploy 42 is live",
+        "text", "All green.",
+        "html", "&lt;p&gt;All green.&lt;/p&gt;",
+        "attachments", [map("path", "build.log")]
+    ));
+    let r = smtp_send(map("host", "127.0.0.1", "port", 2525), msg);
+
+    // Files: binary-exact transfers (EPSV, MLSD when available).
+    let f = ftp_connect("files.example.com", 21, map("user", "anonymous")).unwrap();
+    f.retr("pub/report.pdf", "report.pdf").unwrap();
+    for e in f.list("pub").unwrap() { println(e["type"] + " " + e["name"]); }
+    f.quit();
+
+    // Remote shell: a validated argv, no shell, host keys verified by default.
+    let out = ssh_exec("deploy@example.com", "systemctl --user restart api",
+                       map("key", "~/.ssh/id_ed25519")).unwrap();
+    if out["code"] != 0 { eprint(out["stderr"]); }
+}</code></pre>
+        <div class="callout note"><b>Cleartext by construction</b>
+          There is no TLS <em>stream</em> native (the HTTPS client builds one internally), so SMTP and FTP cannot
+          negotiate STARTTLS or AUTH TLS. Both refuse to send credentials unless the caller passes
+          <code>allow_plaintext_auth: true</code>, and <code>smtp_connect(..., map("tls", true))</code> fails with
+          an explanation instead of silently downgrading — which makes them clients for a local relay, not for a
+          public mail provider.
+        </div>
 
         <div class="chapter-nav bottom-nav"><a class="nav-btn prev-btn" href="#stdlib">❮ Previous</a><span
             class="chapter-badge">End of Chapter 19</span><a class="nav-btn next-btn" href="#networking">Next ❯</a>

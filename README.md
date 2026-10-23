@@ -145,6 +145,16 @@ fn main() {
   trailing `n` on an integer literal makes it arbitrary-precision (`123456789012345678901234567890n`).
 - **`stdlib/dataframe.matrix`**: Pandas-style columnar table operations (filter, sort_by, group_by, inner_join).
 - **`stdlib/stats.matrix`** & **`stdlib/ml.matrix`**: Regression, classification, clustering, PCA, and distributions.
+- **`stdlib/smtp.matrix`**: ESMTP client (RFC 5321 — EHLO capabilities, AUTH PLAIN/LOGIN, MAIL/RCPT/DATA,
+  dot-stuffing) and an RFC 5322 message builder with multipart/alternative, attachments, encoded-word
+  subjects and Bcc. Cleartext only: credentials need `allow_plaintext_auth: true`, and `tls: true` fails
+  rather than silently downgrading.
+- **`stdlib/ftp.matrix`**: FTP client (RFC 959 + EPSV/MLSD) with `retr`/`stor`/`list`/`pwd`/`cwd`/`mkd`/`dele`/
+  `rename`/`size`. Binary transfers stream through `tcp_recv_to_file`/`tcp_send_file`, so a download is
+  byte-exact instead of UTF-8-lossy.
+- **`stdlib/ssh.matrix`**: `ssh_exec` and SFTP (`sftp_get`/`put`/`batch`) by driving the system OpenSSH client
+  with a validated argv — no shell, no `ProxyCommand`, `BatchMode=yes`, host keys verified by default. Not a
+  protocol implementation: a hand-rolled SSH stack is a security hole, not a feature.
 
 ---
 

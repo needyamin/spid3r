@@ -113,6 +113,8 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 | `tcp_local_addr(handle)` | Bound local address string (`ok("127.0.0.1:port")`). |
 | `tcp_peer_addr(conn_id)` | Peer remote address string (`ok("ip:port")`). |
 | `tcp_set_timeout(conn_id, ms)` | Set socket read/write timeout in milliseconds (`0` disables). |
+| `tcp_recv_to_file(conn_id, path)` | Stream the connection to a file until the peer closes; `ok(bytes_written)`. The bytes never pass through a Spid3r string, so a binary download is byte-exact (`tcp_read` is UTF-8 **lossy** and would replace `0x80`/`0xFF` with U+FFFD). A partial file is left on a read error, deliberately. |
+| `tcp_send_file(conn_id, path)` | Stream a file to the connection; `ok(bytes_written)`. Leaves the handle open — the caller closes it (FIN is what an FTP data connection needs). |
 | `tcp_poll([conn_ids], timeout_ms)` | Readiness wait: blocks until at least one listed connection is readable/writable or the timeout expires (`0` = do not wait); returns `ok(map("readable", [...], "writable", [...]))` with connection ids. Backed by the platform readiness call (`WSAPoll` on Windows, `poll(2)` on Unix) — the OS wakes the caller the moment a socket is ready, and nothing is read ahead. A probe-loop fallback covers a failed platform call. |
 | `udp_bind(addr)` | Bind a UDP socket (`port 0` = ephemeral); returns `ok(handle)`. |
 | `udp_local_addr(handle)` | Local address string (`ok("ip:port")`). |
@@ -306,6 +308,60 @@ Machine learning models and evaluation metrics built on native `matrix` (`solve`
 | `mse(y_true, y_pred)` | `(vec, vec) -> float` | Mean squared error. |
 | `rmse(y_true, y_pred)` | `(vec, vec) -> float` | Root mean squared error. |
 | `r2_score(y_true, y_pred)` | `(vec, vec) -> float` | Coefficient of determination $R^2 \in (-\infty, 1.0]$. |
+
+---
+
+## 5. `smtp.matrix` — Mail (RFC 5321 + RFC 5322)
+
+An ESMTP client and a message builder. Transport is `tcp_*`; **there is no TLS stream native**, so this
+client is cleartext-only and says so instead of downgrading silently.
+
+| Function | Description |
+|---|---|
+| `smtp_connect(host, port, opts?)` | Connect, read the greeting, send `EHLO` (falling back to `HELO`). `ok(SmtpClient)` / `err(msg)`. opts: `timeout_ms` (30000), `helo` ("localhost"), `allow_plaintext_auth` (false), `tls` (false — **`true` always fails**, because STARTTLS cannot be negotiated). |
+| `smtp_message(spec)` | Build `{headers, body, envelope_from, envelope_to}`. spec: `from`, `to`, `cc`, `bcc`, `reply_to`, `subject`, `text`, `html`, `attachments` (list of `{path}` / `{data}` / `{content}` + optional `name`, `content_type`), `headers`, `date`, `message_id`. Chooses `text/plain`, `multipart/alternative`, or `multipart/mixed`; encodes non-ASCII bodies as base64, subjects as RFC 2047 encoded words, non-ASCII filenames as RFC 2231; **rejects** header injection and malformed addresses rather than escaping them. Bcc appears in the envelope only. |
+| `smtp_render(msg)` | The exact DATA payload (CRLF, no dot-stuffing — `send` does that). |
+| `smtp_header(msg, name, value)` | Add or replace one header line. |
+| `smtp_send(config, msg)` | Connect, optionally `AUTH PLAIN` (`user`/`password`), send, quit. `ok(receipt)` with `code`, `text`, `recipients`, `bytes`. |
+
+`SmtpClient` methods: `hello(name)`, `capabilities()`, `supports(cap)`, `auth_plain(user, pass)`,
+`auth_login(user, pass)`, `send(msg)`, `send_raw(from, rcpts, text)`, `noop()`, `reset()`, `verify(addr)`,
+`quit()`, `close()`. Every method returns `ok`/`err` except the authentication ones, which throw with an
+explanation when the channel is cleartext.
+
+## 6. `ftp.matrix` — FTP (RFC 959 + EPSV/MLSD)
+
+| Function | Description |
+|---|---|
+| `ftp_connect(host, port, opts?)` | Greeting, `FEAT`, login, `TYPE`. opts: `user` ("anonymous"), `password`, `timeout_ms`, `type` ("I"), `epsv` (true), `pasv_host`, `allow_plaintext_auth` (false). |
+| `ftp_with(host, port, opts, fn(client) { ... })` | Connect, run the callback, quit (or close on error). |
+| `retr(remote, local)` / `stor(local, remote)` | Binary transfers through `tcp_recv_to_file` / `tcp_send_file`; `ok(bytes)`. |
+| `retr_text(remote)` / `stor_text(remote, text)` | Text transfers (UTF-8; use the binary pair for anything else). |
+| `list(path?)` / `names(path?)` | `MLSD` when advertised, otherwise `LIST` (Unix and DOS shapes parsed); entries are `{name, type, size, mode, modified, raw}`. |
+| `pwd()`, `cwd(p)`, `cdup()`, `mkd(p)`, `rmd(p)`, `dele(p)`, `rename(a, b)`, `size(p)`, `type(m)`, `noop()`, `quit()`, `close()` | Control-channel operations, each returning `ok(...)`/`err(msg)`. |
+
+Non-anonymous logins require `allow_plaintext_auth: true`, and are refused outright when the server advertises
+`AUTH TLS` (the upgrade cannot be taken).
+
+## 7. `ssh.matrix` — SSH/SFTP via the system OpenSSH client
+
+Not a protocol implementation on purpose: key exchange, host-key signatures, AEAD ciphers and userauth are a
+project, and a half-finished SSH client is a security hole. This module builds a validated argv and runs
+`ssh` / `sftp` with `exec_capture` — no shell, fixed option whitelist, `BatchMode=yes`, host keys verified by
+default.
+
+| Function | Description |
+|---|---|
+| `ssh_exec(host, command, opts?)` | Run a remote command; `ok({code, stdout, stderr})` (255 = transport/auth failure). |
+| `sftp_get(host, remote, local, opts?)` / `sftp_put(host, local, remote, opts?)` | Batch-mode transfers. |
+| `sftp_batch(host, commands, opts?)` | Run a list of sftp batch commands (or one multi-line string); stops at the first failure. |
+| `sftp_mkdir` / `sftp_remove` / `sftp_list` | Directory operations. |
+| `ssh_argv(host, command, opts?)` / `sftp_argv(host, opts?)` | The exact argv, public because argument construction *is* the security boundary (and is unit-tested). |
+| `ssh_version()` | `ok("OpenSSH_9.6p1 ...")` or `err` when OpenSSH is absent. |
+
+opts: `user`, `port` (22), `key`, `known_hosts`, `connect_timeout` (10), `strict_host_key`
+(`"yes"` default / `"accept-new"` / `"no"`), `compression`, `verbose`. A host may not start with `-` or
+contain `@`, and `ProxyCommand` cannot be expressed at all — unknown option keys are ignored, never forwarded.
 
 ---
 

@@ -1,0 +1,417 @@
+// stdlib/ssh.matrix - SSH and SFTP, by driving the system OpenSSH client.
+//
+//   import "ssh";
+//
+//   let r = ssh_exec("deploy@example.com", "systemctl --user restart api", map(
+//       "key", "~/.ssh/id_ed25519"
+//   ));
+//   if r.is_ok() {
+//       let out = r.unwrap();
+//       println(out["stdout"]);
+//       if out["code"] != 0 { eprint(out["stderr"]); }
+//   }
+//
+//   sftp_get("deploy@example.com", "/var/log/api.log", "api.log", map()).unwrap();
+//   sftp_put("deploy@example.com", "dist.tar.gz", "/tmp/dist.tar.gz", map()).unwrap();
+//
+// ---------------------------------------------------------------------------
+// Why this shells out instead of implementing the protocol
+//
+// SSH is not "a library function". A conforming client needs: a key-exchange
+// (curve25519-sha256 / ecdh), host-key signature verification (ed25519 /
+// ecdsa / rsa-sha2), an AEAD cipher (chacha20-poly1305 or aes-gcm), a MAC for
+// the non-AEAD suites, userauth, and channel multiplexing - each one a place
+// where a subtle mistake silently removes the security you thought you had.
+// Spid3r's stdlib has sha256/hmac/pbkdf2 and nothing else in that list, so a
+// hand-rolled client would be a half-finished one, and a half-finished SSH
+// client is a vulnerability, not a feature.
+//
+// So this module does the honest thing: it builds an argv for the OpenSSH
+// client that is already on the machine and runs it with `exec_capture`. What
+// it adds is not the protocol - it is the part scripts get wrong:
+//
+//   * every value is validated before it becomes an argument (no `-o`
+//     injection, no leading `-` host that turns into a flag, no control
+//     characters, no `user@host` smuggling);
+//   * there is no shell anywhere: `Command::args` gets an argv vector, so
+//     nothing in the host, path or command is word-split or expanded;
+//   * the option set is a fixed whitelist - `ProxyCommand` and friends, which
+//     would be local command execution, cannot be expressed at all;
+//   * `BatchMode=yes` is always set, so a missing key fails instead of
+//     hanging a script on a password prompt;
+//   * host keys are verified by default (`StrictHostKeyChecking=yes`);
+//     downgrading is an explicit, visible option value.
+//
+// The one thing that is *not* contained: the remote command runs under the
+// remote login shell, so anything you put in it is interpreted there. Quote it
+// for that shell yourself. That is inherent to `ssh host command`, not a
+// property of this wrapper.
+// ---------------------------------------------------------------------------
+
+// ------------------------------------------------------------ validation
+
+fn fail(msg) {
+    throw "ssh: " + msg;
+}
+
+fn is_alnum(c) {
+    let o = ord(c);
+    if o >= 48 and o <= 57 {
+        return true;
+    }
+    if o >= 65 and o <= 90 {
+        return true;
+    }
+    if o >= 97 and o <= 122 {
+        return true;
+    }
+    return false;
+}
+
+fn has_control(s) {
+    for c in s.chars() {
+        let o = ord(c);
+        if o < 32 or o == 127 {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// A host may be a name, an IPv4 literal, or an IPv6 literal (`::1`, `[::1]`).
+/// Anything that could be read as an option, or that carries a `@` (which
+/// would let `user@` be smuggled in and override the validated user), is out.
+fn check_host(host) {
+    let h = string(host).trim();
+    if h == "" {
+        fail("host must not be empty");
+    }
+    if h.starts_with("-") {
+        fail("host must not start with '-' (it would be parsed as an option)");
+    }
+    if h.contains("@") {
+        fail("host must not contain '@'; pass the user in opts[\"user\"] instead");
+    }
+    for c in h.chars() {
+        if is_alnum(c) {
+            continue;
+        }
+        if c == "." or c == "-" or c == "_" or c == ":" or c == "[" or c == "]" {
+            continue;
+        }
+        fail("host contains an illegal character: " + c);
+    }
+    return h;
+}
+
+fn check_user(user) {
+    let u = string(user);
+    if u == "" {
+        fail("user must not be empty");
+    }
+    if u.starts_with("-") {
+        fail("user must not start with '-'");
+    }
+    for c in u.chars() {
+        if is_alnum(c) {
+            continue;
+        }
+        if c == "." or c == "-" or c == "_" {
+            continue;
+        }
+        fail("user contains an illegal character: " + c);
+    }
+    return u;
+}
+
+fn check_port(port) {
+    let p = int(port);
+    if p < 1 or p > 65535 {
+        fail("port must be between 1 and 65535");
+    }
+    return p;
+}
+
+fn opt(m, key, dflt) {
+    if m == null {
+        return dflt;
+    }
+    if type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+fn as_list(v) {
+    if v == null {
+        return list();
+    }
+    if type_of(v) == "list" {
+        return v;
+    }
+    return list(v);
+}
+
+/// `~/x` is expanded here because there is no shell to do it: `-i ~/key` would
+/// otherwise be a literal path starting with a tilde.
+fn expand_home(path) {
+    let p = string(path);
+    if not p.starts_with("~") {
+        return p;
+    }
+    // `env` returns an option, not a nullable string: `env("HOME") == null` is
+    // false even when the variable is unset, so unwrap explicitly.
+    let home = null;
+    let h = env("HOME");
+    if h.is_some() {
+        home = h.unwrap();
+    } else {
+        let u = env("USERPROFILE");
+        if u.is_some() {
+            home = u.unwrap();
+        }
+    }
+    if home == null {
+        fail("cannot expand '~': neither HOME nor USERPROFILE is set");
+    }
+    if p == "~" {
+        return home;
+    }
+    if not p.starts_with("~/") and not p.starts_with("~\\") {
+        fail("cannot expand '~user' paths; use an absolute path");
+    }
+    return home + p.slice(1, len(p));
+}
+
+fn check_path(path, what) {
+    let p = expand_home(path);
+    if p == "" {
+        fail(what + " must not be empty");
+    }
+    if p.starts_with("-") {
+        fail(what + " must not start with '-'");
+    }
+    if has_control(p) {
+        fail(what + " contains a control character");
+    }
+    return p;
+}
+
+fn strict_mode(v) {
+    let s = string(v).lower();
+    if s == "yes" or s == "accept-new" or s == "no" {
+        return s;
+    }
+    fail("strict_host_key must be \"yes\" (default), \"accept-new\" or \"no\"");
+}
+
+fn check_command(command) {
+    let c = string(command);
+    if c.contains(chr(0)) {
+        fail("command contains a NUL byte");
+    }
+    return c;
+}
+
+// ------------------------------------------------------------ argv building
+
+/// The connection options shared by `ssh` and `sftp`.
+fn common_options(opts) {
+    let args = list();
+    // BatchMode first: a script must never block on an interactive prompt.
+    args.push("-o");
+    args.push("BatchMode=yes");
+    let strict = strict_mode(opt(opts, "strict_host_key", "yes"));
+    args.push("-o");
+    args.push("StrictHostKeyChecking=" + strict);
+    let timeout = int(opt(opts, "connect_timeout", 10));
+    if timeout < 1 or timeout > 3600 {
+        fail("connect_timeout must be between 1 and 3600 seconds");
+    }
+    args.push("-o");
+    args.push("ConnectTimeout=" + string(timeout));
+    let key = opt(opts, "key", null);
+    if key != null {
+        let k = check_path(key, "key");
+        if not file_exists(k) {
+            fail("private key not found: " + k);
+        }
+        args.push("-i");
+        args.push(k);
+    }
+    let known_hosts = opt(opts, "known_hosts", null);
+    if known_hosts != null {
+        args.push("-o");
+        args.push("UserKnownHostsFile=" + check_path(known_hosts, "known_hosts"));
+    }
+    if opt(opts, "compression", false) == true {
+        args.push("-C");
+    }
+    if opt(opts, "verbose", false) == true {
+        args.push("-v");
+    }
+    let port = check_port(opt(opts, "port", 22));
+    if port != 22 {
+        args.push("-p");
+        args.push(string(port));
+    }
+    let user = opt(opts, "user", null);
+    if user != null {
+        args.push("-l");
+        args.push(check_user(user));
+    }
+    return args;
+}
+
+/// The exact argv handed to `ssh`. Public because argument construction is the
+/// security boundary of this module and deserves to be testable without a
+/// network or an ssh binary.
+///
+///   ssh_argv("host", "uptime", map("user", "deploy"))
+///   -> ["-o","BatchMode=yes", ..., "--","host","uptime"]
+public fn ssh_argv(host, command, opts) {
+    let h = check_host(host);
+    let args = common_options(opts);
+    // `--` ends option parsing, so a host can never be reinterpreted as a flag
+    // even if a future validation rule lets something odd through.
+    args.push("--");
+    args.push(h);
+    if command != null {
+        args.push(check_command(command));
+    }
+    return args;
+}
+
+/// The exact argv handed to `sftp` (batch mode reads its commands from stdin).
+public fn sftp_argv(host, opts) {
+    let h = check_host(host);
+    let args = common_options(opts);
+    args.push("-b");
+    args.push("-");
+    args.push("--");
+    args.push(h);
+    return args;
+}
+
+// ------------------------------------------------------------ running
+
+fn run(bin, args, stdin_text) {
+    let r = exec_capture(bin, args, stdin_text);
+    if r.is_err() {
+        fail(
+            "cannot run the OpenSSH client ('"
+                + bin
+                + "'); install it and put it on PATH ("
+                + r.unwrap_err()
+                + ")"
+        );
+    }
+    return r.unwrap();
+}
+
+/// Run a command on `host`. Returns `ok({code, stdout, stderr})`.
+///
+/// `code` is the remote exit status. OpenSSH itself uses 255 for a transport
+/// or authentication failure, with the reason on stderr.
+public fn ssh_exec(host, command, opts) {
+    try {
+        let out = run("ssh", ssh_argv(host, command, opts), null);
+        return ok(out);
+    } catch(e) {
+        return err(string(e));
+    }
+}
+
+/// Open an interactive shell over ssh? Not possible here: `exec_capture` owns
+/// the child's stdin for the duration of the call. Use `ssh_exec` for batch
+/// work, or drive a pty-aware client yourself.
+public fn ssh_supports_interactive() {
+    return false;
+}
+
+// ------------------------------------------------------------ sftp
+
+fn sftp_quote(path, what) {
+    let p = check_path(path, what);
+    if p.contains("\"") {
+        fail(what + " must not contain a double quote");
+    }
+    if has_control(p) {
+        fail(what + " contains a control character");
+    }
+    // sftp's batch parser splits on whitespace but honours double quotes.
+    if p.contains(" ") {
+        return "\"" + p + "\"";
+    }
+    return p;
+}
+
+/// Run a list of sftp batch commands (or one multi-line string) and return
+/// `ok({code, stdout, stderr})`. Batch mode stops at the first failing
+/// command, which is what a script wants.
+public fn sftp_batch(host, commands, opts) {
+    try {
+        let text = "";
+        if type_of(commands) == "string" {
+            text = commands;
+        } else {
+            for c in as_list(commands) {
+                text = text + check_command(c) + "\n";
+            }
+        }
+        if text == "" {
+            fail("sftp_batch needs at least one command");
+        }
+        let out = run("sftp", sftp_argv(host, opts), text);
+        return ok(out);
+    } catch(e) {
+        return err(string(e));
+    }
+}
+
+public fn sftp_get(host, remote, local, opts) {
+    return sftp_batch(
+        host,
+        "get " + sftp_quote(remote, "remote path") + " " + sftp_quote(local, "local path"),
+        opts
+    );
+}
+
+public fn sftp_put(host, local, remote, opts) {
+    return sftp_batch(
+        host,
+        "put " + sftp_quote(local, "local path") + " " + sftp_quote(remote, "remote path"),
+        opts
+    );
+}
+
+public fn sftp_mkdir(host, remote, opts) {
+    return sftp_batch(host, "mkdir " + sftp_quote(remote, "remote path"), opts);
+}
+
+public fn sftp_remove(host, remote, opts) {
+    return sftp_batch(host, "rm " + sftp_quote(remote, "remote path"), opts);
+}
+
+public fn sftp_list(host, remote, opts) {
+    let path = "";
+    if remote != null {
+        path = " " + sftp_quote(remote, "remote path");
+    }
+    return sftp_batch(host, "ls -l" + path, opts);
+}
+
+/// The client version (`ssh -V` prints it on stderr), or `err` when OpenSSH is
+/// not installed. Useful as a capability probe at startup.
+public fn ssh_version() {
+    try {
+        let out = run("ssh", ["-V"], null);
+        let text = out["stderr"] + out["stdout"];
+        return ok(text.trim());
+    } catch(e) {
+        return err(string(e));
+    }
+}

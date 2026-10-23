@@ -129,7 +129,7 @@ web processes are different workloads than this CLI loop.
   <li><span class="tag t-no">NO</span><strong>Web-serving stack</strong> — no FastCGI/WSGI integration, no production server, no sessions beyond DIY JWT/cookies, no multipart file-upload parsing, no middleware ecosystem. A real CMS in Spid3r today means building all of that.</li>
 </ul>
 
-<h3>3.5 Standard library gaps (state after the 2026-10-22 implementation pass)</h3>
+<h3>3.5 Standard library gaps (state after the 2026-10-24 implementation pass)</h3>
 <p class="src">Each line was checked by running it on the tree and VM engines, and the interoperable formats
 were checked against an outside implementation (CPython's <code>zlib</code>/<code>zipfile</code>/<code>hashlib</code>,
 OpenSSL's <code>ARGON2*</code>, the OpenBSD bcrypt vectors, a from-scratch Python PNG decoder). The tag is the
@@ -153,11 +153,34 @@ verdict; the detail is what you would actually hit.</p>
   canonical field-1 varint-150 message encodes to <code>08 96 01</code>). <em>Not there: a <code>.proto</code>
   compiler (this is the wire codec a generated stub would emit), XML Schema validation, and YAML anchors/tags —
   those are rejected, not silently ignored.</em></li>
-  <li><span class="tag t-no">NO</span><strong>Email/SMTP, SSH, FTP</strong> clients — still absent. The
-  transport is there (<code>tcp_*</code>, <code>udp_*</code>, <code>http_fetch</code>,
-  <code>spawn_process</code>), so an SMTP dialogue can be written by hand, but no client ships. <strong>This is
-  the largest remaining gap in this section.</strong> SSH in particular is not a library function: key
-  exchange, ciphers, MACs, userauth and channels are a project, and a half-finished one is a security hole.</li>
+  <li><span class="tag t-part">PARTIAL</span><strong>Email/SMTP, FTP, SSH</strong> — all three clients ship now,
+  and each was tested against a protocol-accurate peer rather than a mock of itself.
+  <code>stdlib/smtp.matrix</code> is a real ESMTP client (RFC 5321: EHLO with capability parsing and a HELO
+  fallback, AUTH PLAIN/LOGIN including the no-initial-response path, MAIL/RCPT/DATA, dot-stuffing, RSET after a
+  failed transaction) plus an RFC 5322 builder: multipart/alternative and multipart/mixed, 7bit or base64
+  parts chosen per body, RFC 2047 encoded-word subjects folded on character boundaries, RFC 2231 filenames,
+  Bcc in the envelope only, and header injection <em>rejected</em> instead of escaped.
+  <code>stdlib/ftp.matrix</code> speaks RFC 959 with EPSV/PASV data connections, MLSD/LIST/NLST parsing (Unix
+  and DOS listing shapes), and RETR/STOR/SIZE/CWD/PWD/MKD/RMD/DELE/RNFR-RNTO. Its binary transfers go through
+  a new native pair, <code>tcp_recv_to_file</code>/<code>tcp_send_file</code>, because <code>tcp_read</code> is
+  UTF-8 <em>lossy</em> — a script-level read loop would silently corrupt any download, which is the sort of bug
+  that ships. Both are exercised on the tree and VM engines against a fake server written in Spid3r
+  (<code>tests/mail_ftp_tests.rs</code>), and the FTP test pushes 0x00/0x80/0xC8/0xFF through RETR and STOR and
+  compares the bytes.
+  <em>The honest limit: no TLS.</em> There is still no TLS <em>stream</em> native — <code>http_fetch</code>
+  builds one internally for https:// — so neither client can negotiate STARTTLS or AUTH TLS. Both therefore
+  refuse credentials on a cleartext channel unless the caller passes <code>allow_plaintext_auth: true</code>,
+  and <code>smtp_connect(..., map("tls", true))</code> fails with an explanation instead of downgrading. That
+  makes them clients for a local relay or a test server, not for a public provider.
+  <strong>SSH is deliberately not reimplemented.</strong> <code>stdlib/ssh.matrix</code> drives the system
+  OpenSSH client through <code>exec_capture</code> (<code>ssh_exec</code>,
+  <code>sftp_get/put/batch/mkdir/remove/list</code>) and adds what scripts get wrong: a validated argv with no
+  shell anywhere, a fixed option whitelist that cannot express <code>ProxyCommand</code> (local command
+  execution), rejection of hosts starting with <code>-</code> or carrying <code>@</code>,
+  <code>BatchMode=yes</code> so a missing key fails instead of hanging on a prompt, and
+  <code>StrictHostKeyChecking=yes</code> unless an explicit, validated value says otherwise. Writing
+  curve25519/ed25519/ChaCha20-Poly1305 to avoid a process spawn would be exactly the half-finished client this
+  document used to warn about.</li>
   <li><span class="tag t-yes">CLOSED</span><strong>Password hashing.</strong> <code>pbkdf2_sha256</code>,
   <code>scrypt</code> (RFC 7914), <code>bcrypt_hash</code>/<code>bcrypt_verify</code> (Blowfish tables
   regenerated from the hex digits of pi and asserted against the published constants; two OpenBSD vectors
@@ -208,11 +231,17 @@ bcrypt and Argon2 (d/i/id), PNG/WAV/PDF, FFT and the distribution family, sparse
 operators, alongside the earlier TOML, semver, UUID, PBKDF2, assertions, profiler, LSP rename/references and
 generators. Later the same day the database gap narrowed from "SQLite only" to three real drivers — Redis
 (RESP2), PostgreSQL (v3, all four auth methods) and MySQL/MariaDB (protocol 41) — each tested against a server
-that verifies the client's authentication maths.
+that verifies the client's authentication maths. The transport gap closed next: <strong>SMTP</strong> (RFC 5321
+plus an RFC 5322/MIME builder) and <strong>FTP</strong> (RFC 959, EPSV/PASV, byte-exact transfers through new
+streaming natives) are real clients, and <strong>SSH/SFTP</strong> drive the system OpenSSH client through a
+validated argv — no TLS stream yet, so the two network clients are cleartext-only by construction.
 <strong>What still blocks real-world use, honestly:</strong> (1) <strong>no package registry</strong>
 — the ecosystem gap is the largest and only time plus registry work change it; (2) no suspension-based async executor (<code>async</code>/<code>await</code> are join-based; readiness itself is a kernel wakeup now, but via <code>poll(2)</code>/<code>WSAPoll</code> — O(n) per call, no epoll/kqueue); (3) databases beyond
 SQLite — Redis, PostgreSQL and MySQL/MariaDB clients now ship, but MongoDB, TLS, prepared statements and
-pooling do not; (4) no SMTP/SSH/FTP clients, and no timezone database, locale collation or Unicode
+pooling do not; (4) SMTP, FTP and SSH clients now ship — SMTP and FTP are real protocol implementations but cleartext only
+(no TLS stream native, so no STARTTLS/AUTH TLS and credentials need an explicit opt-in), and SSH is a hardened
+wrapper around the system OpenSSH client rather than a native stack — while there is still no timezone
+database, locale collation or Unicode
 normalization; (5) generics are <em>erased</em> (parsed, not
 enforced) and the numeric stack is teaching-scale — no N-d arrays, no broadcasting, no BLAS — even though
 bigint has literal syntax (<code>123n</code>) and the maths is exact where it exists; (6) no JPEG or audio
