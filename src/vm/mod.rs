@@ -1423,6 +1423,8 @@ impl Vm {
                         }
                         other => self.fail(format!("{} is not callable", type_name(&other))),
                     }
+                    // Cancellation point after the call returns (S-23).
+                    self.cancel_guard_vm();
                 }
                 OpCode::Invoke => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
@@ -1779,6 +1781,9 @@ impl Vm {
                             self.error = Some(err);
                         }
                     }
+                    // Cancellation point after the method returns (S-23):
+                    // `join`, socket reads and friends block inside here.
+                    self.cancel_guard_vm();
                 }
                 OpCode::IndexGet => {
                     self.frames[nf].ip = ip + 1;
@@ -2115,6 +2120,8 @@ impl Vm {
                             type_name(&other)
                         )),
                     }
+                    // Cancellation point after the blocking join/recv (S-23).
+                    self.cancel_guard_vm();
                 }
                 OpCode::Spawn => {
                     self.frames[nf].ip = ip + 1;
@@ -3114,6 +3121,22 @@ impl Vm {
             span: self.cur_span(),
             trace: Vec::new(),
         });
+    }
+
+    /// Cancellation point after a blocking operation returns (audit S-23,
+    /// VM half). The loop poll counts *instructions*, so a body that blocks
+    /// — `sleep_ms`, a socket read with a timeout, `join`, `recv` — burns
+    /// wall-clock time the poll cannot see: a cancelled task kept running for
+    /// `poll_interval × body cost` (measured 2.1 s for a 5 ms sleeper on a
+    /// fast desktop; >3 s on a slow macOS CI runner, where the tree engine
+    /// stops within one sleep). Checking here bounds the latency to a single
+    /// operation, mirroring the native backend's `cancel_guard`. A real error
+    /// from the operation wins: cancellation is sticky, so the next operation
+    /// re-raises it.
+    fn cancel_guard_vm(&mut self) {
+        if self.error.is_none() && crate::sched::current_task_cancelled() {
+            self.fail("task cancelled");
+        }
     }
 }
 
