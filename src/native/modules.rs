@@ -48,9 +48,20 @@ fn flatten_stmts(
     for s in stmts {
         if let Stmt::Import { path, alias, .. } = s {
             if alias.is_some() {
+                // Documented native gap (report.html F-2): a module namespace
+                // needs mangled globals + a frozen-map constructor that the
+                // AOT backend does not have yet. The contract requires an
+                // unsupported construct to be REJECTED at compile time with a
+                // clean `error[usage]` diagnostic (exit 2) — never silently
+                // mis-compiled — so this is a usage error, not a semantic one.
                 return Err(Diagnostic::new(
-                    Phase::Semantic,
-                    "'import as alias' is not supported by the native backend yet; run it with --engine vm".to_string(),
+                    Phase::Usage,
+                    format!(
+                        "'{} as {}' is not supported by the native backend yet; \
+                         run it with --engine vm or use a plain import",
+                        path,
+                        alias.as_deref().unwrap_or("?")
+                    ),
                 ));
             }
             let resolved = resolve_module(importer_file, path)?;

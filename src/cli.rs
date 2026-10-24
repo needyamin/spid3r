@@ -646,7 +646,17 @@ fn compile_file(file: &str, out: Option<&str>, opts: CompileOptions) -> Result<i
     }
     let bytes = serialize_vmfunc(&script);
     let out_path = match out {
-        Some(o) => o.to_string(),
+        Some(o) => {
+            // An extensionless `-o` path used to write an unidentifiable
+            // bytecode blob that `exec` and every doc referred to as
+            // `.matrixc` (F-2). Respect an explicit extension; add the
+            // canonical one when the user gave none.
+            if Path::new(o).extension().is_none() {
+                format!("{}.matrixc", o)
+            } else {
+                o.to_string()
+            }
+        }
         None => {
             if opts.entry {
                 // Project build: target/<package>.matrixc.
