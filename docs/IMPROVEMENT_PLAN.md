@@ -1,11 +1,11 @@
 # Spid3r improvement plan — closing the verified gaps
 
 Status: live planning doc (2026-10-22). Feeds from the measured comparison
-(`comparison_python_php.html`): every entry below is a verified gap, not a
+([comparison_python_php.html](html/comparison_python_php.html)): every entry below is a verified gap, not a
 guess. Phases: **NOW** (self-contained, implementable immediately) · **NEXT**
 (designed, roughly one focused session each) · **DESIGN** (needs a design
 round or ecosystem build-out). Owned items reference the architect report's
-issue IDs (report parked in `_dustbin/architect_report.txt`).
+issue IDs (documented in `docs/AUDIT_REPORT.md` and `docs/ROADMAP.md`).
 
 ## NOW — executed 2026-10-22
 

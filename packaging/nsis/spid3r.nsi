@@ -5,15 +5,15 @@
 ;    * installs the toolchain to %LOCALAPPDATA%\Programs\Spid3r
 ;    * adds that directory to the CURRENT USER's PATH (new cmd/PowerShell
 ;      windows can run `spid3r` directly)
-;    * registers an uninstaller in "Apps & features"
-;    * optional: examples + docs (and the GUI calculator demo), and a .matrix
+;    * creates Start Menu shortcuts in Programs\Spid3r
+;    * optional: desktop shortcuts, examples, benchmarks, docs, and .matrix
 ;      file association
+;    * registers uninstaller and complete metadata in "Apps & features"
 ;
 ;  Build:  `cargo build --release` on Windows runs this script from build.rs,
-;          passing APPVERSION (Cargo.toml), WITH_GUI, and SPID3R_EXE.
+;          passing APPVERSION (Cargo.toml), WITH_GUI, SPID3R_EXE, and optionally
+;          CALCULATOR_EXE.
 ;          Manual: makensis spid3r.nsi (from this directory, after a release build)
-;  Files are taken straight from the repository (README, docs, examples,
-;  calculator); there is no staging step.
 ;  Test:   Spid3r-Setup-<ver>.exe /S /D=C:\some\dir
 ; ============================================================================
 
@@ -24,12 +24,11 @@ Unicode true
 !ifndef WITH_GUI
 !define WITH_GUI 1
 !endif
-; WITH_NATIVE=1 (the native LLVM backend) also needs LLVM_DLL, LLVM_LIB, and
-; RUNTIME_LIB: LLVM-C.dll, LLVM-C.lib, and the spid3r_lang.lib runtime staticlib
-; (named after the lib target, so its cdylib does not collide with spid3r.pdb).
+
 !ifndef WITH_NATIVE
 !define WITH_NATIVE 1
 !endif
+
 !ifndef LLVM_DLL
 !define LLVM_DLL "C:\Program Files\LLVM\bin\LLVM-C.dll"
 !endif
@@ -45,11 +44,16 @@ Unicode true
 !ifndef SPID3R_EXE
 !define SPID3R_EXE     "..\..\target\release\spid3r.exe"
 !endif
+!ifndef CALCULATOR_EXE
+!define CALCULATOR_EXE "..\..\target\release\calculator.exe"
+!endif
 
 !define APPNAME        "Spid3r"
 !define PUBLISHER      "ANSNEW TECH."
 !define UNINSTKEY      "Software\Microsoft\Windows\CurrentVersion\Uninstall\Spid3r"
-!define DOCSURL        "https://needyamin.github.io/spid3r/doc.html"
+!define DOCSURL        "https://needyamin.github.io/spid3r/docs/html/doc.html"
+!define REPOURL        "https://github.com/needyamin/spid3r"
+
 !ifndef HWND_BROADCAST
 !define HWND_BROADCAST 0xFFFF
 !endif
@@ -63,12 +67,13 @@ InstallDir "$LOCALAPPDATA\Programs\Spid3r"
 InstallDirRegKey HKCU "Software\Spid3r" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
+
 !if ${WITH_NATIVE} == 1
-BrandingText "Spid3r — pure Rust toolchain with GUI and native compiler"
+BrandingText "Spid3r Programming Language — Dual-Engine VM & Native AOT Compiler"
 !else if ${WITH_GUI} == 1
-BrandingText "Spid3r — pure Rust toolchain with GUI support"
+BrandingText "Spid3r Programming Language — Dual-Engine VM with Webview GUI"
 !else
-BrandingText "Spid3r — pure Rust, no runtime dependencies"
+BrandingText "Spid3r Programming Language — Zero-Dependency Core Toolchain"
 !endif
 
 ; ----------------------------------------------------------------- UI ------
@@ -85,9 +90,10 @@ BrandingText "Spid3r — pure Rust, no runtime dependencies"
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_TITLE "Spid3r is installed"
+
+!define MUI_FINISHPAGE_TITLE "Spid3r is ready"
 !if ${WITH_GUI} == 1
-!define FINISH_GUI      "$\r$\n    spid3r gui demo_apps\web_calculator\calculator.matrix"
+!define FINISH_GUI      "$\r$\n    spid3r gui examples\demo_apps\web_calculator\calculator.matrix"
 !define FINISH_GUI_NOTE " GUI programs need the WebView2 runtime (included with Windows 11 and Microsoft Edge)."
 !else
 !define FINISH_GUI      ""
@@ -100,9 +106,9 @@ BrandingText "Spid3r — pure Rust, no runtime dependencies"
 !define FINISH_NATIVE      ""
 !define FINISH_NATIVE_NOTE ""
 !endif
-!define MUI_FINISHPAGE_TEXT "Open a NEW terminal (cmd or PowerShell) in $INSTDIR and run:$\r$\n$\r$\n    spid3r version$\r$\n    spid3r run examples\hello.matrix${FINISH_GUI}${FINISH_NATIVE}$\r$\n$\r$\nThe installer added $INSTDIR to your user PATH; Windows only picks that up in terminals started after installation.${FINISH_GUI_NOTE}${FINISH_NATIVE_NOTE}"
+!define MUI_FINISHPAGE_TEXT "Spid3r has been installed to $INSTDIR and added to your user PATH.$\r$\n$\r$\nStart Menu shortcuts have been created in 'Spid3r'.$\r$\n$\r$\nRun in a NEW terminal window:$\r$\n    spid3r version$\r$\n    spid3r run examples\hello.matrix${FINISH_GUI}${FINISH_NATIVE}$\r$\n$\r$\n${FINISH_GUI_NOTE}${FINISH_NATIVE_NOTE}"
 !define MUI_FINISHPAGE_SHOWREADME "${DOCSURL}"
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "Open the online Spid3r documentation"
+!define MUI_FINISHPAGE_SHOWREADME_TEXT "Open online Spid3r documentation"
 !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 !insertmacro MUI_PAGE_FINISH
 
@@ -121,6 +127,11 @@ Section "Spid3r compiler & runtime (required)" SecCore
   File "${LLVM_LIB}"
   File "${RUNTIME_LIB}"
 !endif
+!if ${WITH_GUI} == 1
+!if /FileExists "${CALCULATOR_EXE}"
+  File "${CALCULATOR_EXE}"
+!endif
+!endif
   File "assets\spid3r.ico"
   SetOutPath "$INSTDIR\stdlib"
   File /r "..\..\stdlib\*.*"
@@ -137,18 +148,31 @@ Section "Spid3r compiler & runtime (required)" SecCore
 
   WriteRegStr HKCU "Software\Spid3r" "InstallDir" "$INSTDIR"
 
+  ; --- Start Menu shortcuts ---
+  CreateDirectory "$SMPROGRAMS\Spid3r"
+  CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Command Shell.lnk" "$SYSDIR\cmd.exe" '/K "spid3r version & echo Welcome to Spid3r! Type spid3r --help for commands."' "$INSTDIR\spid3r.ico" 0
+!if ${WITH_GUI} == 1
+!if /FileExists "${CALCULATOR_EXE}"
+  CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Calculator.lnk" "$INSTDIR\calculator.exe" "" "$INSTDIR\spid3r.ico" 0
+!endif
+!endif
+  CreateShortCut "$SMPROGRAMS\Spid3r\Uninstall Spid3r.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\uninstall.exe" 0
+
   ; --- Apps & features entry ---
-  WriteRegStr HKCU "${UNINSTKEY}" "DisplayName"     "${APPNAME} ${APPVERSION}"
-  WriteRegStr HKCU "${UNINSTKEY}" "DisplayVersion"  "${APPVERSION}"
-  WriteRegStr HKCU "${UNINSTKEY}" "Publisher"       "${PUBLISHER}"
-  WriteRegStr HKCU "${UNINSTKEY}" "DisplayIcon"     "$INSTDIR\spid3r.ico"
-  WriteRegStr HKCU "${UNINSTKEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "${UNINSTKEY}" "HelpLink"        "${DOCSURL}"
-  WriteRegStr HKCU "${UNINSTKEY}" "URLInfoAbout"    "${DOCSURL}"
-  WriteRegStr HKCU "${UNINSTKEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegStr HKCU "${UNINSTKEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
-  WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify" 1
-  WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair" 1
+  WriteRegStr   HKCU "${UNINSTKEY}" "DisplayName"          "${APPNAME} ${APPVERSION}"
+  WriteRegStr   HKCU "${UNINSTKEY}" "DisplayVersion"       "${APPVERSION}"
+  WriteRegStr   HKCU "${UNINSTKEY}" "Publisher"            "${PUBLISHER}"
+  WriteRegStr   HKCU "${UNINSTKEY}" "DisplayIcon"          "$INSTDIR\spid3r.ico"
+  WriteRegStr   HKCU "${UNINSTKEY}" "InstallLocation"      "$INSTDIR"
+  WriteRegStr   HKCU "${UNINSTKEY}" "HelpLink"             "${DOCSURL}"
+  WriteRegStr   HKCU "${UNINSTKEY}" "URLInfoAbout"         "${DOCSURL}"
+  WriteRegStr   HKCU "${UNINSTKEY}" "URLUpdateInfo"        "${REPOURL}"
+  WriteRegStr   HKCU "${UNINSTKEY}" "Comments"             "Spid3r programming language runtime, compiler, and tools"
+  WriteRegDWORD HKCU "${UNINSTKEY}" "EstimatedSize"        35000
+  WriteRegStr   HKCU "${UNINSTKEY}" "UninstallString"      '"$INSTDIR\uninstall.exe"'
+  WriteRegStr   HKCU "${UNINSTKEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
+  WriteRegDWORD HKCU "${UNINSTKEY}" "NoModify"             1
+  WriteRegDWORD HKCU "${UNINSTKEY}" "NoRepair"             1
 SectionEnd
 
 ; ------------------------------------------------------- prerequisites -----
@@ -212,43 +236,61 @@ buildtools_done:
 SectionEnd
 !endif
 
-Section "Examples, documentation & reference" SecDocs
+Section "Examples, documentation & benchmarks" SecDocs
   SetOutPath "$INSTDIR"
   File "..\..\README.md"
   SetOutPath "$INSTDIR\docs"
   File /r "..\..\docs\*.*"
   SetOutPath "$INSTDIR\examples"
   File /r "..\..\examples\*.*"
+  SetOutPath "$INSTDIR\benchmarks"
+  File /r "..\..\benchmarks\*.*"
+
+  ; --- Documentation shortcuts in Start Menu ---
+  CreateDirectory "$SMPROGRAMS\Spid3r"
+  CreateShortCut "$SMPROGRAMS\Spid3r\Developer Guide.lnk" "$INSTDIR\docs\html\doc.html" "" "$INSTDIR\spid3r.ico" 0
+  CreateShortCut "$SMPROGRAMS\Spid3r\WebAssembly Playground.lnk" "$INSTDIR\docs\html\playground.html" "" "$INSTDIR\spid3r.ico" 0
+  CreateShortCut "$SMPROGRAMS\Spid3r\Benchmarks Dashboard.lnk" "$INSTDIR\docs\html\benchmarks.html" "" "$INSTDIR\spid3r.ico" 0
+SectionEnd
+
+Section /o "Desktop shortcuts" SecDesktop
+  CreateShortCut "$DESKTOP\Spid3r Shell.lnk" "$SYSDIR\cmd.exe" '/K "spid3r version"' "$INSTDIR\spid3r.ico" 0
 !if ${WITH_GUI} == 1
-  SetOutPath "$INSTDIR\demo_apps\web_calculator"
-  File /r "..\..\demo_apps\web_calculator\*.*"
-  SetOutPath "$INSTDIR\demo_apps\native_calculator"
-  File /r "..\..\demo_apps\native_calculator\*.*"
+!if /FileExists "${CALCULATOR_EXE}"
+  CreateShortCut "$DESKTOP\Spid3r Calculator.lnk" "$INSTDIR\calculator.exe" "" "$INSTDIR\spid3r.ico" 0
+!endif
 !endif
 SectionEnd
 
 Section "Associate .matrix files with Spid3r" SecAssoc
   WriteRegStr HKCU "Software\Classes\.matrix" "" "Spid3r.Matrix"
-  WriteRegStr HKCU "Software\Classes\Spid3r.Matrix" "" "Spid3r program"
+  WriteRegStr HKCU "Software\Classes\.matrix" "Content Type" "text/plain"
+  WriteRegStr HKCU "Software\Classes\.matrix" "PerceivedType" "text"
+  WriteRegStr HKCU "Software\Classes\Spid3r.Matrix" "" "Spid3r Program"
   WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\DefaultIcon" "" "$INSTDIR\spid3r.ico"
   WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\shell\open\command" "" '"$INSTDIR\spid3r.exe" run "%1"'
+  WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\shell\run" "" "Run with Spid3r"
+  WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\shell\run\command" "" '"$INSTDIR\spid3r.exe" run "%1"'
+  WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\shell\check" "" "Check Syntax (spid3r check)"
+  WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\shell\check\command" "" '"$INSTDIR\spid3r.exe" check "%1"'
+!if ${WITH_GUI} == 1
+  WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\shell\gui" "" "Run with GUI (spid3r gui)"
+  WriteRegStr HKCU "Software\Classes\Spid3r.Matrix\shell\gui\command" "" '"$INSTDIR\spid3r.exe" gui "%1"'
+!endif
   System::Call 'shell32::SHChangeNotify(l 0x08000000, l 0, p 0, p 0)'
 SectionEnd
 
 ; --------------------------------------------------------- descriptions ----
 !if ${WITH_NATIVE} == 1
-LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui / build (native executables via LLVM), plus automatic PATH registration."
+LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui / build (native executables via LLVM), standalone calculator app, and PATH registration."
 !else if ${WITH_GUI} == 1
-LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui, plus automatic PATH registration."
+LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui, standalone calculator app, and PATH registration."
 !else
 LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl, plus automatic PATH registration."
 !endif
-!if ${WITH_GUI} == 1
-LangString DESC_SecDocs  ${LANG_ENGLISH} "The example programs, the GUI calculator demo, and the documentation folder. The developer reference is online at ${DOCSURL}."
-!else
-LangString DESC_SecDocs  ${LANG_ENGLISH} "The example programs and the documentation folder. The developer reference is online at ${DOCSURL}."
-!endif
-LangString DESC_SecAssoc ${LANG_ENGLISH} "Double-clicking a .matrix source file runs it with ``spid3r run``."
+LangString DESC_SecDocs  ${LANG_ENGLISH} "The 25 example programs, full benchmark suite, and local documentation (Developer Guide, Playground, Benchmarks dashboard)."
+LangString DESC_SecDesktop ${LANG_ENGLISH} "Creates convenient shortcuts on your desktop for quick terminal access and the standalone calculator."
+LangString DESC_SecAssoc ${LANG_ENGLISH} "Associates .matrix source files with Spid3r and registers Explorer context menu actions (Run, Check syntax, GUI)."
 !ifdef WEBVIEW2_SETUP
 LangString DESC_SecWebView2 ${LANG_ENGLISH} "Installs the Microsoft Edge WebView2 runtime that spid3r gui windows use, only if it is missing (Windows 11 and Microsoft Edge already include it)."
 !endif
@@ -257,15 +299,16 @@ LangString DESC_SecBuildTools ${LANG_ENGLISH} "Downloads and installs Microsoft 
 !endif
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecCore}  $(DESC_SecCore)
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecCore}     $(DESC_SecCore)
 !ifdef WEBVIEW2_SETUP
   !insertmacro MUI_DESCRIPTION_TEXT ${SecWebView2} $(DESC_SecWebView2)
 !endif
 !if ${WITH_NATIVE} == 1
   !insertmacro MUI_DESCRIPTION_TEXT ${SecBuildTools} $(DESC_SecBuildTools)
 !endif
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecDocs}  $(DESC_SecDocs)
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecAssoc} $(DESC_SecAssoc)
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDocs}     $(DESC_SecDocs)
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop}  $(DESC_SecDesktop)
+  !insertmacro MUI_DESCRIPTION_TEXT ${SecAssoc}    $(DESC_SecAssoc)
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
 ; ------------------------------------------------------------ uninstall ----
@@ -283,24 +326,28 @@ Section "Uninstall"
   DeleteRegKey HKCU "Software\Classes\Spid3r.Matrix"
   System::Call 'shell32::SHChangeNotify(l 0x08000000, l 0, p 0, p 0)'
 
+  ; --- Start Menu & Desktop shortcuts ---
+  RMDir /r "$SMPROGRAMS\Spid3r"
+  Delete "$DESKTOP\Spid3r Shell.lnk"
+  Delete "$DESKTOP\Spid3r Calculator.lnk"
+
   ; --- uninstall entry + install record ---
   DeleteRegKey HKCU "${UNINSTKEY}"
   DeleteRegKey HKCU "Software\Spid3r"
 
   ; --- files ---
   Delete "$INSTDIR\spid3r.exe"
+  Delete "$INSTDIR\calculator.exe"
   Delete "$INSTDIR\LLVM-C.dll"
   Delete "$INSTDIR\LLVM-C.lib"
   Delete "$INSTDIR\spid3r_lang.lib"
   Delete "$INSTDIR\spid3r.lib"
   Delete "$INSTDIR\spid3r.ico"
   Delete "$INSTDIR\README.md"
-  Delete "$INSTDIR\doc.html"          ; shipped by installers before the docs moved online
   Delete "$INSTDIR\uninstall.exe"
   RMDir /r "$INSTDIR\docs"
   RMDir /r "$INSTDIR\stdlib"
   RMDir /r "$INSTDIR\examples"
-  RMDir /r "$INSTDIR\demo_apps"
-  RMDir /r "$INSTDIR\calculator"
+  RMDir /r "$INSTDIR\benchmarks"
   RMDir "$INSTDIR"
 SectionEnd

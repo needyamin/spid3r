@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spid3r DataLab Studio</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card-bg: rgba(22, 30, 49, 0.7);
+      --border: rgba(255, 255, 255, 0.1);
+      --primary: #38bdf8;
+      --primary-glow: rgba(56, 189, 248, 0.3);
+      --accent: #818cf8;
+      --accent-glow: rgba(129, 140, 248, 0.3);
+      --success: #34d399;
+      --danger: #f87171;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    }
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.12) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(129, 140, 248, 0.1) 0px, transparent 50%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+    }
+    header {
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(12px);
+      background: rgba(11, 15, 25, 0.8);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+    }
+    .brand-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #38bdf8, #818cf8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.2rem;
+      color: #0b0f19;
+      box-shadow: 0 0 20px var(--primary-glow);
+    }
+    .brand h1 {
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .brand span {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: block;
+    }
+    .engine-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      padding: 0.4rem 0.85rem;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      color: var(--primary);
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.6; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.15); }
+      100% { opacity: 0.6; transform: scale(0.9); }
+    }
+    nav.tabs {
+      display: flex;
+      gap: 0.5rem;
+      padding: 1rem 2rem 0;
+    }
+    .tab-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      padding: 0.65rem 1.25rem;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .tab-btn:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .tab-btn.active {
+      color: var(--primary);
+      background: rgba(56, 189, 248, 0.1);
+      border-color: rgba(56, 189, 248, 0.3);
+    }
+    main {
+      flex: 1;
+      padding: 1.5rem 2rem 2.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+      animation: fadeIn 0.25s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1.6fr;
+      gap: 1.5rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+    .card h2 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--text);
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .metric-card {
+      background: rgba(11, 15, 25, 0.6);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem;
+      text-align: center;
+    }
+    .metric-card .label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.4rem;
+    }
+    .metric-card .value {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--primary);
+    }
+    textarea, input[type="text"] {
+      width: 100%;
+      background: rgba(11, 15, 25, 0.8);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      padding: 0.75rem;
+      font-size: 0.9rem;
+      font-family: monospace;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    textarea:focus, input[type="text"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 10px var(--primary-glow);
+    }
+    .btn-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin: 1rem 0;
+    }
+    .btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.6rem 1.1rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.25);
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #38bdf8, #0284c7);
+      border: none;
+      color: #0b0f19;
+      font-weight: 700;
+      box-shadow: 0 4px 15px var(--primary-glow);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #7dd3fc, #0369a1);
+      transform: translateY(-1px);
+    }
+    canvas {
+      width: 100%;
+      height: 320px;
+      background: rgba(11, 15, 25, 0.85);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-top: 1rem;
+      display: block;
+    }
+    .matrix-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      max-width: 260px;
+      margin: 1rem 0;
+    }
+    .matrix-input {
+      text-align: center;
+      font-size: 1.1rem;
+      font-weight: 700;
+      padding: 0.8rem;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.65rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+    .badge-success { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+    .badge-info { background: rgba(56, 189, 248, 0.15); color: var(--primary); }
+    footer {
+      padding: 1rem 2rem;
+      border-top: 1px solid var(--border);
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="brand-icon">S</div>
+      <div>
+        <h1>Spid3r DataLab Studio</h1>
+        <span>Native Desktop GUI Architecture</span>
+      </div>
+    </div>
+    <div class="engine-badge">
+      <div class="pulse-dot"></div>
+      <span id="engine-status">Connected to Spid3r Native Tree Engine</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" onclick="switchTab('stats')">Statistical Analysis</button>
+    <button class="tab-btn" onclick="switchTab('regression')">Linear Regression ML</button>
+    <button class="tab-btn" onclick="switchTab('matrix')">Matrix 2x2 Decomposition</button>
+  </nav>
+
+  <main>
+    <!-- TAB 1: STATISTICAL ANALYSIS -->
+    <div id="tab-stats" class="tab-content active">
+      <div class="grid">
+        <div class="card">
+          <h2>Data Vector Input</h2>
+          <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0.75rem;">
+            Enter comma or whitespace-separated numbers to run statistical reduction kernels on Spid3r.
+          </p>
+          <textarea id="stats-input" rows="5">14.2, 22.5, 18.9, 31.4, 25.0, 42.1, 38.6, 51.2, 47.8, 63.5, 59.1, 68.4</textarea>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="computeStats()">Compute Statistics</button>
+            <button class="btn" onclick="loadPreset('gaussian')">Preset: Normal</button>
+            <button class="btn" onclick="loadPreset('growth')">Preset: Growth</button>
+          </div>
+          <div style="font-size:0.8rem; color:var(--text-muted); margin-top:1rem;">
+            Total Spid3r Computations: <strong id="stats-calc-count" style="color:var(--primary);">0</strong>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Statistical Reductions (Spid3r stdlib/stats)</h2>
+          <div class="metric-grid">
+            <div class="metric-card">
+              <div class="label">Sample Size (N)</div>
+              <div class="value" id="stat-n">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Mean (μ)</div>
+              <div class="value" id="stat-mean">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Median</div>
+              <div class="value" id="stat-median">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Std Dev (σ)</div>
+              <div class="value" id="stat-std">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Variance (σ²)</div>
+              <div class="value" id="stat-var">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Interquartile (IQR)</div>
+              <div class="value" id="stat-iqr">-</div>
+            </div>
+          </div>
+          <h2 style="font-size:0.95rem; margin-bottom:0.5rem;">Sample Distribution Histogram</h2>
+          <canvas id="stats-canvas" width="600" height="260"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: LINEAR REGRESSION ML -->
+    <div id="tab-regression" class="tab-content">
+      <div class="grid">
+        <div class="card">
+          <h2>Training Coordinates (X, Y)</h2>
+          <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0.75rem;">
+            Click on the canvas to add training coordinates, or edit the JSON matrix points below:
+          </p>
+          <textarea id="regression-input" rows="6">[[1, 2.5], [2, 3.8], [3, 5.1], [4, 7.2], [5, 8.9], [6, 11.2], [7, 13.5], [8, 14.8]]</textarea>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="computeRegression()">Fit Linear Model</button>
+            <button class="btn" onclick="loadRegressionPreset('linear')">Reset Sample</button>
+            <button class="btn" onclick="clearRegressionPoints()">Clear Points</button>
+          </div>
+          <div style="margin-top:1.25rem;">
+            <div style="font-size:0.85rem; margin-bottom:0.5rem; color:var(--text-muted);">Predict Y for custom X:</div>
+            <div style="display:flex; gap:0.5rem;">
+              <input type="text" id="predict-x" value="10" style="max-width:120px;">
+              <button class="btn" onclick="predictCustom()">Predict</button>
+              <div id="predict-result" style="display:flex; align-items:center; font-weight:700; color:var(--primary); font-size:1.1rem; padding-left:0.5rem;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Fitted Model (Spid3r stdlib/ml)</h2>
+          <div class="metric-grid">
+            <div class="metric-card">
+              <div class="label">Slope (m)</div>
+              <div class="value" id="reg-slope">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Intercept (b)</div>
+              <div class="value" id="reg-intercept">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">R² Score</div>
+              <div class="value" id="reg-r2">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Equation</div>
+              <div class="value" id="reg-eq" style="font-size:1rem; font-family:monospace;">-</div>
+            </div>
+          </div>
+          <h2 style="font-size:0.95rem; margin-bottom:0.5rem;">Regression Plot (Click canvas to add points)</h2>
+          <canvas id="regression-canvas" width="600" height="280"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: MATRIX 2x2 DECOMPOSITION -->
+    <div id="tab-matrix" class="tab-content">
+      <div class="grid">
+        <div class="card">
+          <h2>Matrix Parameters [2x2]</h2>
+          <p style="color:var(--text-muted); font-size:0.85rem;">
+            Provide coefficients for real matrix A:
+          </p>
+          <div class="matrix-grid">
+            <input type="text" class="matrix-input" id="m-a11" value="4">
+            <input type="text" class="matrix-input" id="m-a12" value="2">
+            <input type="text" class="matrix-input" id="m-a21" value="1">
+            <input type="text" class="matrix-input" id="m-a22" value="3">
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="computeMatrix()">Decompose Matrix</button>
+            <button class="btn" onclick="setMatrixPreset(5, 2, 2, 2)">Symmetric</button>
+            <button class="btn" onclick="setMatrixPreset(2, -1, 0, 3)">Diagonalizable</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Matrix Characteristics</h2>
+          <div class="metric-grid">
+            <div class="metric-card">
+              <div class="label">Determinant |A|</div>
+              <div class="value" id="mat-det">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Trace Tr(A)</div>
+              <div class="value" id="mat-trace">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Eigenvalue λ₁</div>
+              <div class="value" id="mat-e1">-</div>
+            </div>
+            <div class="metric-card">
+              <div class="label">Eigenvalue λ₂</div>
+              <div class="value" id="mat-e2">-</div>
+            </div>
+          </div>
+          <div style="margin-top:1.5rem; background:rgba(11,15,25,0.6); padding:1.25rem; border-radius:12px; border:1px solid var(--border);">
+            <h3 style="font-size:0.95rem; margin-bottom:0.75rem;">Inverse Matrix A⁻¹</h3>
+            <div id="mat-inverse-display" style="font-family:monospace; font-size:1.1rem; color:var(--accent);">
+              Compute to view inverse matrix
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    Spid3r Language GUI Runtime &bull; Tao Native Window + Wry WebKit/WebView2 Architecture &bull; 2026
+  </footer>
+
+  <script>
+    // -----------------------------------------------------------------------
+    // Spid3r Native Bridge Interaction
+    // -----------------------------------------------------------------------
+    function emitToSpid3r(event, payload) {
+      if (window.spid3r && typeof window.spid3r.emit === 'function') {
+        window.spid3r.emit(event, typeof payload === 'string' ? payload : JSON.stringify(payload));
+      } else {
+        console.warn('Spid3r native bridge not detected, using simulation fallback.');
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // UI Event Callbacks called by Spid3r (gui_eval)
+    // -----------------------------------------------------------------------
+    window.renderStats = function(res) {
+      document.getElementById('stat-n').textContent = res.count;
+      document.getElementById('stat-mean').textContent = Number(res.mean).toFixed(2);
+      document.getElementById('stat-median').textContent = Number(res.median).toFixed(2);
+      document.getElementById('stat-std').textContent = Number(res.std_dev).toFixed(2);
+      document.getElementById('stat-var').textContent = Number(res.variance).toFixed(2);
+      document.getElementById('stat-iqr').textContent = Number(res.iqr).toFixed(2);
+      document.getElementById('stats-calc-count').textContent = res.total_calcs;
+      drawHistogram(res.dataset, res.mean, res.std_dev);
+    };
+
+    window.lastRegressionModel = null;
+    window.renderRegression = function(res) {
+      window.lastRegressionModel = res;
+      document.getElementById('reg-slope').textContent = Number(res.slope).toFixed(3);
+      document.getElementById('reg-intercept').textContent = Number(res.intercept).toFixed(3);
+      document.getElementById('reg-r2').textContent = Number(res.r2).toFixed(4);
+      const sign = res.intercept >= 0 ? '+' : '-';
+      document.getElementById('reg-eq').textContent = `y = ${Number(res.slope).toFixed(2)}x ${sign} ${Math.abs(Number(res.intercept)).toFixed(2)}`;
+      drawRegressionPlot(res.points, res.slope, res.intercept);
+      predictCustom();
+    };
+
+    window.renderMatrix = function(res) {
+      document.getElementById('mat-det').textContent = Number(res.det).toFixed(2);
+      document.getElementById('mat-trace').textContent = Number(res.trace).toFixed(2);
+      document.getElementById('mat-e1').textContent = res.eigen1 !== null ? Number(res.eigen1).toFixed(3) : 'Complex';
+      document.getElementById('mat-e2').textContent = res.eigen2 !== null ? Number(res.eigen2).toFixed(3) : 'Complex';
+      
+      const invDisplay = document.getElementById('mat-inverse-display');
+      if (res.invertible && res.inverse) {
+        invDisplay.innerHTML = `
+          ┌ &nbsp; ${Number(res.inverse.a11).toFixed(3)} &nbsp; ${Number(res.inverse.a12).toFixed(3)} &nbsp; ┐<br>
+          └ &nbsp; ${Number(res.inverse.a21).toFixed(3)} &nbsp; ${Number(res.inverse.a22).toFixed(3)} &nbsp; ┘
+        `;
+      } else {
+        invDisplay.innerHTML = '<span style="color:var(--danger)">Singular Matrix (Determinant = 0, No Inverse)</span>';
+      }
+    };
+
+    // -----------------------------------------------------------------------
+    // UI Triggers
+    // -----------------------------------------------------------------------
+    function computeStats() {
+      const raw = document.getElementById('stats-input').value;
+      const nums = raw.split(/[\s,]+/).filter(Boolean).map(Number).filter(n => !isNaN(n));
+      if (nums.length === 0) return;
+      emitToSpid3r('compute_stats', nums.join(','));
+    }
+
+    function computeRegression() {
+      try {
+        const points = JSON.parse(document.getElementById('regression-input').value);
+        emitToSpid3r('regression', points.map(p => p[0] + ',' + p[1]).join('|'));
+      } catch (e) {
+        alert('Invalid coordinates JSON format.');
+      }
+    }
+
+    function computeMatrix() {
+      const payload = [
+        document.getElementById('m-a11').value,
+        document.getElementById('m-a12').value,
+        document.getElementById('m-a21').value,
+        document.getElementById('m-a22').value
+      ].join(',');
+      emitToSpid3r('matrix_op', payload);
+    }
+
+    function predictCustom() {
+      if (!window.lastRegressionModel) return;
+      const x = parseFloat(document.getElementById('predict-x').value);
+      if (isNaN(x)) return;
+      const y = window.lastRegressionModel.slope * x + window.lastRegressionModel.intercept;
+      document.getElementById('predict-result').textContent = `→ y ≈ ${y.toFixed(2)}`;
+    }
+
+    function loadPreset(type) {
+      if (type === 'gaussian') {
+        document.getElementById('stats-input').value = '45, 48, 50, 50, 51, 52, 53, 53, 53, 54, 55, 56, 58, 62';
+      } else if (type === 'growth') {
+        document.getElementById('stats-input').value = '10, 15, 23, 35, 53, 80, 122, 185, 280, 425';
+      }
+      computeStats();
+    }
+
+    function loadRegressionPreset(type) {
+      document.getElementById('regression-input').value = '[[1, 2.5], [2, 3.8], [3, 5.1], [4, 7.2], [5, 8.9], [6, 11.2], [7, 13.5], [8, 14.8]]';
+      computeRegression();
+    }
+
+    function clearRegressionPoints() {
+      document.getElementById('regression-input').value = '[]';
+      const canvas = document.getElementById('regression-canvas');
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function setMatrixPreset(a, b, c, d) {
+      document.getElementById('m-a11').value = a;
+      document.getElementById('m-a12').value = b;
+      document.getElementById('m-a21').value = c;
+      document.getElementById('m-a22').value = d;
+      computeMatrix();
+    }
+
+    function switchTab(id) {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+      event.target.classList.add('active');
+      document.getElementById('tab-' + id).classList.add('active');
+      if (id === 'regression' && window.lastRegressionModel) {
+        drawRegressionPlot(window.lastRegressionModel.points, window.lastRegressionModel.slope, window.lastRegressionModel.intercept);
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Canvas Visualizations
+    // -----------------------------------------------------------------------
+    function drawHistogram(data, mean, std) {
+      const canvas = document.getElementById('stats-canvas');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      if (!data || data.length === 0) return;
+      const min = Math.min(...data);
+      const max = Math.max(...data);
+      const binsCount = 8;
+      const binWidth = (max - min) / binsCount || 1;
+      const bins = new Array(binsCount).fill(0);
+
+      data.forEach(val => {
+        let idx = Math.floor((val - min) / binWidth);
+        if (idx >= binsCount) idx = binsCount - 1;
+        bins[idx]++;
+      });
+
+      const maxBin = Math.max(...bins, 1);
+      const pad = 40;
+      const barW = (w - pad * 2) / binsCount;
+
+      // Draw bars
+      bins.forEach((cnt, i) => {
+        const barH = (cnt / maxBin) * (h - pad * 2);
+        const x = pad + i * barW;
+        const y = h - pad - barH;
+
+        const grad = ctx.createLinearGradient(0, y, 0, h - pad);
+        grad.addColorStop(0, '#38bdf8');
+        grad.addColorStop(1, '#0284c7');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x + 4, y, barW - 8, barH);
+
+        // Labels
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(cnt, x + barW / 2, y - 6);
+        ctx.fillText((min + i * binWidth).toFixed(1), x + barW / 2, h - pad + 15);
+      });
+
+      // Axis
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.beginPath();
+      ctx.moveTo(pad, h - pad);
+      ctx.lineTo(w - pad, h - pad);
+      ctx.stroke();
+    }
+
+    function drawRegressionPlot(points, slope, intercept) {
+      const canvas = document.getElementById('regression-canvas');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const pad = 40;
+      let maxX = 10;
+      let maxY = 20;
+
+      if (points && points.length > 0) {
+        maxX = Math.max(...points.map(p => p[0]), 5) * 1.15;
+        maxY = Math.max(...points.map(p => p[1]), 5) * 1.15;
+      }
+
+      function toScreenX(x) { return pad + (x / maxX) * (w - pad * 2); }
+      function toScreenY(y) { return h - pad - (y / maxY) * (h - pad * 2); }
+
+      // Grid
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 5; i++) {
+        const gx = pad + (i / 5) * (w - pad * 2);
+        const gy = pad + (i / 5) * (h - pad * 2);
+        ctx.beginPath(); ctx.moveTo(gx, pad); ctx.lineTo(gx, h - pad); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(w - pad, gy); ctx.stroke();
+      }
+
+      // Regression Line
+      if (slope !== undefined && intercept !== undefined) {
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 3;
+        ctx.shadowColor = 'rgba(56, 189, 248, 0.6)';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.moveTo(toScreenX(0), toScreenY(intercept));
+        ctx.lineTo(toScreenX(maxX), toScreenY(slope * maxX + intercept));
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+
+      // Data Points
+      if (points) {
+        points.forEach(pt => {
+          const sx = toScreenX(pt[0]);
+          const sy = toScreenY(pt[1]);
+          ctx.fillStyle = '#818cf8';
+          ctx.beginPath();
+          ctx.arc(sx, sy, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        });
+      }
+    }
+
+    // Canvas click to add points
+    document.getElementById('regression-canvas').addEventListener('click', function(e) {
+      const rect = this.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+      const pad = 40;
+      const w = this.width;
+      const h = this.height;
+
+      let maxX = 10;
+      let maxY = 20;
+      let points = [];
+      try { points = JSON.parse(document.getElementById('regression-input').value); } catch(err){}
+
+      if (points.length > 0) {
+        maxX = Math.max(...points.map(p => p[0]), 5) * 1.15;
+        maxY = Math.max(...points.map(p => p[1]), 5) * 1.15;
+      }
+
+      const x = Math.max(0, ((clickX - pad) / (w - pad * 2)) * maxX);
+      const y = Math.max(0, ((h - pad - clickY) / (h - pad * 2)) * maxY);
+
+      points.push([Number(x.toFixed(1)), Number(y.toFixed(1))]);
+      document.getElementById('regression-input').value = JSON.stringify(points);
+      computeRegression();
+    });
+
+    // Handlers will receive initial state from Spid3r backend on ready
+    window.addEventListener('DOMContentLoaded', () => {
+      console.log('Spid3r GUI client DOM loaded and ready.');
+    });
+  </script>
+</body>
+</html>

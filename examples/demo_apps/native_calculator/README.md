@@ -7,7 +7,7 @@ A flagship native calculator application for Windows and cross-platform desktop,
 To launch the real desktop GUI window with interactive mouse buttons, keypad, display, and history tape:
 
 ```bash
-spid3r gui demo_apps/native_calculator/calculator.matrix
+spid3r gui examples/demo_apps/native_calculator/calculator.matrix
 ```
 
 ### GUI Features
@@ -33,7 +33,7 @@ cargo build --bin calculator
 
 The launcher is `#![windows_subsystem = "windows"]`, so double-clicking the binary in
 File Explorer opens the calculator window directly — no terminal window and no
-command-line prompt. It locates `demo_apps/native_calculator/calculator.matrix` next
+command-line prompt. It locates `examples/demo_apps/native_calculator/calculator.matrix` next
 to the executable (for an installed layout) or relative to the current directory, so
 run it from the repository root. On Windows the window needs the WebView2 runtime,
 which ships with Windows 11 and Microsoft Edge.

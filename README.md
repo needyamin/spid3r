@@ -317,8 +317,10 @@ spid3r pack -o dist/my_project.tar
 
 | Guide | Description |
 |---|---|
-| [Interactive Developer Guide](https://needyamin.github.io/spid3r/doc.html) | Single-page searchable guide with full API reference and cheatsheets |
+| [Interactive Developer Guide](docs/html/doc.html) | Single-page searchable guide with full API reference and cheatsheets |
 | [WebAssembly Playground](docs/html/playground.html) | Run and test Spid3r directly in your web browser |
+| [Security & Robustness Audit](docs/html/bug_report.html) | Complete 27-finding audit report and regression verification suite |
+| [Python & PHP Comparison](docs/html/comparison_python_php.html) | Measured & verified benchmark comparison against Python 3.13 and PHP 8.3 |
 | [Language Grammar](docs/GRAMMAR.md) | Formal EBNF grammar and precedence rules |
 | [Standard Library Reference](docs/STANDARD_LIBRARY.md) | Complete list of built-in functions and modules |
 | [Data Structures](docs/DATA_STRUCTURES.md) | Methods and usage for all 20+ built-in collections |
@@ -327,7 +329,7 @@ spid3r pack -o dist/my_project.tar
 | [Webview GUI Guide](docs/GUI.md) | Building native desktop GUI apps |
 | [Garbage Collection](docs/GC.md) | Memory management and cycle collector architecture |
 | [Example Programs](examples/) | 24 runnable sample programs (+1 shared library module) |
-| [Demos](demo_apps/) | Native Windows GUI Calculator & Web Calculator |
+| [Demos](examples/demo_apps/) | Native Windows GUI Calculator & Web Calculator |
 
 ---
 

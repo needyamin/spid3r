@@ -70,7 +70,8 @@
   Project: <code>Spid3r</code> v1.0.0 (language toolchain: tree interpreter + bytecode VM + LLVM native backend)<br>
   Repository: <code>C:/Users/needyamin/OneDrive/Desktop/GaliLang</code> &nbsp;·&nbsp;
   Audit window: 2026-10-21 → 2026-10-24 &nbsp;·&nbsp; Report generated: 2026-10-24<br>
-  Test baseline at start: 814 passing &nbsp;·&nbsp; Round-4 final: <strong>871 tests (854 core + 10 gui + 7 aot), 0 failing</strong>
+  Test baseline at start: 814 passing &nbsp;·&nbsp; Round-4 final: 871 tests (854 core + 10 gui + 7 aot), 0 failing
+  &nbsp;·&nbsp; Round-5 final: <strong>874 tests (857 core + 10 gui + 7 aot), 0 failing</strong>
 </p>
 
 <div class="note">
@@ -84,7 +85,7 @@
 
 <h2 id="summary">1. Executive summary</h2>
 <p>
-  The audit found <strong>24 confirmed defects</strong>, all of which are now <strong>fixed and pinned by
+  The audit found <strong>27 confirmed defects</strong>, all of which are now <strong>fixed and pinned by
   regression tests</strong>. Six were remotely triggerable from untrusted input (crafted serialized
   payloads, malicious database servers, hostile LSP frames), three were crash-level bugs in the
   compilers (panics where diagnostics were required), two were memory-safety issues (an out-of-bounds
@@ -94,9 +95,11 @@
   removed operator overloading from the native backend entirely (breaking the stdlib numeric types
   under AOT), one made the tree engine reject a legal unary operator the VM accepted, one let a
   cancelled task run for seconds to minutes after cancellation on <strong>both</strong> the native
-  backend and the bytecode VM, one implemented a documented-monotonic clock on the wall clock, and the
-  remainder were
-  correctness, resource-exhaustion, or spec-conformance defects.
+  backend and the bytecode VM, one implemented a documented-monotonic clock on the wall clock, one
+  silently corrupted every string concatenation whose literal contained an unmatched brace (destroying
+  the shipped GUI demos' HTML), one made the entire <code>spid3r gui</code> command panic on every
+  platform, one crashed the standalone calculator launcher on the 1 MiB main-thread stack in debug
+  builds, and the remainder were correctness, resource-exhaustion, or spec-conformance defects.
 </p>
 <p>
   No finding remains open that is not explicitly documented as an accepted design trade-off in
@@ -111,7 +114,7 @@
   <ol>
     <li><a href="#methodology">Methodology</a></li>
     <li><a href="#table">Findings summary table</a></li>
-    <li><a href="#findings">Detailed findings (S-1 … S-24)</a></li>
+    <li><a href="#findings">Detailed findings (S-1 … S-27)</a></li>
     <li><a href="#tests">Test evidence</a></li>
     <li><a href="#risks">Unresolved &amp; accepted risks</a></li>
     <li><a href="#appendix">Appendix — environment notes</a></li>
@@ -166,6 +169,9 @@
     <tr><td>S-22</td><td><span class="badge b-med">Medium</span></td><td>interpreter</td><td>Tree engine resolved unary <code>__neg__</code> through fields only — <code>-obj</code> raised <code>cannot negate instance</code> where the VM evaluated the method (engine divergence)</td><td><span class="badge b-ok">Fixed</span></td></tr>
     <tr><td>S-23</td><td><span class="badge b-med">Medium</span></td><td>native + vm</td><td>Native and VM cancellation polls counted <em>iterations</em>/<em>instructions</em> (2048), not time: a cancelled task in a blocking loop kept running for <code>2048 × body&nbsp;cost</code> — 3.5 s for a 1 ms sleeper on native, 2.1 s for a 5 ms sleeper on the VM</td><td><span class="badge b-ok">Fixed</span></td></tr>
     <tr><td>S-24</td><td><span class="badge b-med">Medium</span></td><td>sched</td><td><code>now_ms()</code> documented as a <strong>monotonic</strong> clock but implemented on <code>SystemTime</code> (wall clock): every elapsed-time measurement could jump when the host clock stepped — observed breaking CI on a macOS runner whose clock stepped forward mid-test</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-25</td><td><span class="badge b-med">Medium</span></td><td>lexer + parser</td><td>Interpolation-hole scan swallowed the string boundary: <code>"a{b" + "c}d"</code> silently became one corrupted string — corrupted the HTML/CSS/JS of both shipped GUI calculator demos</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-26</td><td><span class="badge b-high">High</span></td><td>gui</td><td><code>spid3r gui</code> panicked unconditionally (tao 0.34 off-main-thread event loop) — the entire GUI command was unusable on every platform, debug and release</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-27</td><td><span class="badge b-med">Medium</span></td><td>demo app</td><td>Standalone <code>calculator.exe</code> (debug) overflowed the 1 MiB main-thread stack: winit/wry/WebView2 debug frames do not fit — the README's documented run path aborted with no diagnostic</td><td><span class="badge b-ok">Fixed</span></td></tr>
   </tbody>
 </table>
 <p class="meta">Severity scale: <span class="badge b-high">High</span> memory-safety, crash, or remotely
@@ -451,11 +457,58 @@ injection in developer-facing output.</p>
   </dl>
 </div>
 
+<div class="finding med" id="s25">
+  <h3>S-25 &nbsp;<span class="badge b-med">Medium</span>&nbsp; Interpolation-hole scan swallowed the string boundary</h3>
+  <div class="loc">src/lexer/mod.rs — <code>try_interp_expr()</code> &nbsp;·&nbsp; src/parser/mod.rs — new <code>hole_is_expression()</code> &nbsp;·&nbsp; <code>Lexer::with_depth</code>, <code>MAX_INTERP_DEPTH = 32</code></div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>A string literal containing <code>{</code> without a matching <code>}</code> <em>in the same literal</em> silently destroyed string concatenation: <code>"a{b" + "c}d"</code> evaluated to the single corrupted string <code>a{b" + "c}d</code> — the raw source text of the concatenation survived inside the value. No error, no warning; the program just computed the wrong thing.</dd>
+    <dt>Repro</dt><dd><code>println("a{b" + "c}d");</code> prints <code>a{b" + "c}d</code> instead of <code>a{bc}d</code>. The multi-line form (the one that matters in practice) is any CSS/HTML/JS literal split across concatenated lines — every such literal in <code>examples/demo_apps/*/calculator.matrix</code> contains an unclosed <code>{</code>.</dd>
+    <dt>Root cause</dt><dd><code>try_interp_expr</code> scans for a hole's closing <code>}</code> while tracking nested braces and quoted strings. It cannot distinguish a quote that belongs to the hole from the closing quote of the literal being lexed: the literal's closing quote looks like the <em>start</em> of a quoted region inside the hole, so the scan enters quote mode and keeps going — past the quote, the newline, the <code>+</code>, and the next literal's opening quote — until it finds a <code>}</code> that lives lines away. The parser's existing fallback (a hole that does not parse becomes literal text <code>{…}</code>) then turned the runaway capture into a silent corruption instead of an error.</dd>
+    <dt>Found by</dt><dd>The GUI verification pass: <code>spid3r gui … --dry-run</code> replays the JavaScript sent to the page, and the replay showed the calculator's HTML arriving corrupted (<code>padding:18px;" + "box-shadow…</code>) — the demos' styling and bridge script were broken in the real window too, not just the replay. Isolated to a minimal repro, then traced to the hole scan.</dd>
+    <dt>Fix</dt><dd>A capture that closes is accepted only when it also parses as exactly one expression: <code>parser::hole_is_expression(raw, depth)</code> re-lexes and parses the capture through the same path the real compilation uses. A runaway capture is <em>never</em> a valid expression (the stray quote splits an identifier sequence), so rejecting it makes the <code>{</code> literal, the literal ends at its real closing quote, and concatenation survives. The re-lex recursion is depth-guarded (<code>MAX_INTERP_DEPTH = 32</code>, <code>Lexer::with_depth</code>) so a pathological <code>{a{a{a…}}}</code> cannot overflow the stack. Holes that already worked — <code>{name}</code>, <code>{len(xs)}</code>, <code>{f("x")}</code>, <code>{a + "x"}</code> — pass validation identically, and the unparseable-hole fallback is untouched, so <code>"{not a hole}"</code> still renders as the same literal text.</dd>
+    <dt>Tests</dt><dd><code>tests/lexer_tests.rs</code>: <code>unmatched_brace_does_not_swallow_the_string_boundary</code> (one-literal, two-literal, multi-line, CSS-shaped, and one-line-concatenation shapes), <code>working_hole_forms_still_lex</code> (quotes inside brackets, balanced depth-0 quotes, brace inside a hole's own string, path/call holes, template text, the literal-text fallback), <code>concat_across_braces_end_to_end</code> (parser-level). All three were verified failing pre-fix via <code>git stash push src/lexer/mod.rs</code>. End-to-end: the showcase suite (383 checks) re-run unchanged on all three backends, and both calculator dry-runs now emit byte-clean HTML.</dd>
+  </dl>
+</div>
+
+<div class="finding high" id="s26">
+  <h3>S-26 &nbsp;<span class="badge b-high">High</span>&nbsp; <code>spid3r gui</code> panicked on every platform</h3>
+  <div class="loc">src/gui/window.rs — <code>open()</code>, event-loop construction &nbsp;·&nbsp; root cause interaction: src/cli.rs — the <code>spid3r-&lt;cmd&gt;</code> worker thread (~line 118)</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>Every <code>spid3r gui file.matrix</code> invocation aborted with a panic instead of opening a window — on Windows, Linux, and macOS, in debug and release alike:</dd>
+    <dd><pre>thread 'spid3r-gui' panicked at tao-0.34.8/.../event_loop.rs:181:
+Initializing the event loop outside of the main thread is a significant
+cross-platform compatibility hazard. If you absolutely need to create an
+EventLoop on a different thread, you can use the
+`EventLoopBuilderExtWindows::any_thread` function.</pre></dd>
+    <dt>Repro</dt><dd><code>spid3r gui examples/demo_apps/web_calculator/calculator.matrix</code> — exit 101, no window. (<code>--dry-run</code> worked, which is why the GUI test suite was green while the product surface was dead: every GUI test replays the bridge without a window.)</dd>
+    <dt>Root cause</dt><dd>The CLI deliberately runs every subcommand on a dedicated 512 MiB worker thread named <code>spid3r-&lt;cmd&gt;</code> — the guard that keeps deep-but-valid AST recursion a clean error instead of a <code>STATUS_STACK_OVERFLOW</code> abort on the 1 MiB main stack. tao 0.34.8 checks at <code>EventLoop::new</code> that the loop is built on the main thread and <strong>panics</strong> (a plain <code>panic!</code>, not a debug assertion) unless <code>EventLoopBuilderExtWindows::with_any_thread(true)</code> was set. The GUI backend predates that check and never set the flag, so the worker-thread design and the tao upgrade collided.</dd>
+    <dt>Fix</dt><dd><code>window::open</code> builds the event loop with <code>with_any_thread(true)</code> on Windows (the platform whose tao impl enforces the check), split into <code>cfg(windows)</code> / <code>cfg(not(windows))</code> arms so the shared <code>let mut builder</code> cannot trip <code>unused_mut</code> on the Linux/macOS clippy gates.</dd>
+    <dt>Tests</dt><dd>Smoke test (launch → sleep → assert alive → close) on all four paths: <code>spid3r gui</code> debug and release, and <code>calculator.exe</code> debug and release — every one aborted or was unverifiable before the fix; all four open the window after. The existing <code>tests/gui_tests.rs</code> (10 tests, dry-run based) continues to pass and now also guards the CLI argument surface.</dd>
+  </dl>
+</div>
+
+<div class="finding med" id="s27">
+  <h3>S-27 &nbsp;<span class="badge b-med">Medium</span>&nbsp; Debug <code>calculator.exe</code> overflowed the main-thread stack</h3>
+  <div class="loc">examples/demo_apps/native_calculator/main.rs — <code>main()</code> &nbsp;·&nbsp; interaction with src/cli.rs worker-thread design (see S-26)</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>The standalone calculator launcher — built and run exactly as its README documents (<code>cargo build --bin calculator</code> then <code>target/debug/calculator.exe</code>) — aborted immediately with <code>thread 'main' has overflowed its stack</code>. No window, no diagnostic. The release build of the same binary worked, which made the fault profile-dependent and easy to miss.</dd>
+    <dt>Repro</dt><dd><code>cargo build --bin calculator &amp;&amp; ./target/debug/calculator.exe</code> — instant stack overflow; <code>cargo build --release --bin calculator</code> opens the window fine.</dd>
+    <dt>Root cause</dt><dd><code>main()</code> called <code>spid3r_lang::gui::cmd_gui</code> directly on the main thread, whose stack is the 1 MiB linker default. The tao event loop plus winit/wry/WebView2 call chains fit in release builds (optimized frames are far smaller) but not in debug builds — the same frame-count pressure the CLI's 512 MiB worker thread exists to absorb, which the launcher bypassed by calling the GUI entry point inline.</dd>
+    <dt>Fix</dt><dd>The launcher now runs the GUI on a 64 MiB worker thread on Windows (where the <code>#![windows_subsystem]</code> binary ships), keeping the direct main-thread call elsewhere — tao requires the main thread for the event loop on platforms that enforce it, and <code>window::open</code>'s <code>any_thread</code> (S-26) makes the worker safe on Windows.</dd>
+    <dt>Tests</dt><dd>Smoke test before/after: pre-fix the debug binary aborted with a stack overflow (verified against the pre-fix build via <code>git stash</code>); post-fix it opens the window and stays alive. Release verified unaffected. The calculator engine itself is separately covered by the 42-check headless suite (see §5).</dd>
+  </dl>
+</div>
+
 <h2 id="tests">5. Test evidence</h2>
 <table>
   <thead><tr><th>Suite</th><th>Before audit</th><th>After fixes</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td>Full workspace (<code>cargo test</code>, default features)</td><td>814 passed / 0 failed</td><td><strong>871 passed / 0 failed</strong> (854 core + 10 gui + 7 aot)</td><td>+1 <code>gc_vm_autocollect</code> (S-17), +21 <code>audit_hardening</code>, +1 LSP UTF-16, +7 <code>deadlock_tests</code> (S-18/S-19), +1 <code>native_operator_overloading_matches_tree</code> (S-21); full suite re-run after every fix. <code>tools/count_tests.sh</code> is the canonical counter</td></tr>
+    <tr><td>Full workspace (<code>cargo test</code>, default features)</td><td>814 passed / 0 failed</td><td><strong>874 passed / 0 failed</strong> (857 core + 10 gui + 7 aot; 890 measured including in-<code>src</code> unit tests)</td><td>Round 4: +1 <code>gc_vm_autocollect</code> (S-17), +21 <code>audit_hardening</code>, +1 LSP UTF-16, +7 <code>deadlock_tests</code> (S-18/S-19), +1 <code>native_operator_overloading_matches_tree</code> (S-21). Round 5: +3 <code>lexer_tests</code> (S-25). Full suite re-run after every fix. <code>tools/count_tests.sh</code> is the canonical counter</td></tr>
+    <tr><td><code>tests/lexer_tests.rs</code> (round-5 additions)</td><td>—</td><td>3 / 3</td><td>S-25: boundary shapes (one-literal, two-literal, multi-line, CSS-shaped, one-line concat), the working hole forms (quotes in brackets, balanced depth-0 quotes, brace inside a hole's string, path/call holes, template text, literal fallback), and a parser-level end-to-end case — each verified failing pre-fix via <code>git stash</code></td></tr>
+    <tr><td>Showcase differential (<code>spid3r-showcase</code>, 383 checks × 11 sections)</td><td>—</td><td>383 / 383 on tree, VM, and compiled bytecode</td><td>Round-5 re-verification: <code>spid3r run main.matrix</code>, <code>--engine vm</code>, and <code>compile</code>+<code>exec</code> all 383/383; <code>spid3r test</code> 11/11 sections tree==VM</td></tr>
+    <tr><td>Live web stack (new — <code>showcase/live/</code>)</td><td>—</td><td>34 / 34 on both engines, + 8/8 parallel</td><td>Real TCP socket server written in Spid3r (routes, params, all methods, query, redirect, cookies, JWT, <code>recover</code>→500, gzip, ETag/304, static files) driven by a raw-socket HTTP/1.1 client also written in Spid3r; plus an 8-way parallel-request probe exercising the scheduler's per-connection tasks</td></tr>
+    <tr><td>Calculator engine (new — <code>showcase/live/calc_engine_test.matrix</code>)</td><td>—</td><td>42 / 42 on both engines</td><td>Headless suite over <code>examples/demo_apps/*/engine.matrix</code>: desk-calculator chaining, repeated <code>=</code>, <code>5 + =</code>, percent, unary ops, backspace/CE/C, 16-digit cap, separators, 10-decimal and scientific formatting, all three error messages, overflow, and the 8-entry history with recall</td></tr>
+    <tr><td>Wasm playground deployment</td><td>—</td><td>25 presets × 2 engines, both copies current</td><td>Round-5: the committed <code>web/spid3r.wasm</code> predated the S-25 fix, so it was rebuilt and redeployed to <code>web/</code> and <code>docs/html/</code> (embedded base64 regenerated — 3 254 473 bytes) and verified with <code>test_wasm_embedded.js --against</code> (behavioral), self-consistency, and <code>test_playground_presets.js</code></td></tr>
     <tr><td><code>tests/audit_hardening.rs</code> (new)</td><td>—</td><td>21 / 21</td><td>All round-2 fixes; includes Rust fake MySQL/PG servers (no Python dependency)</td></tr>
     <tr><td><code>tests/lsp_tests.rs</code></td><td>23</td><td>24</td><td>Added <code>positions_are_utf16_code_units_not_unicode_scalars</code></td></tr>
     <tr><td><code>tests/gc_vm_autocollect.rs</code> (new)</td><td>—</td><td>1 / 1</td><td>Pins S-17; ~11 s</td></tr>
@@ -491,6 +544,20 @@ injection in developer-facing output.</p>
   semantic differences.
 </p>
 <p>
+  <strong>Round-5 verification pass (S-25 … S-27).</strong> A full verification pass over the real-world
+  showcase and both GUI demos was run on the round-4 tree. The showcase passed 383/383 on all three
+  backends and 11/11 sections tree==VM — and the GUI dry-run replay exposed S-25: the HTML the
+  calculator demos send to the webview was corrupted at every CSS/JS literal. Three new defects were
+  found and fixed (S-25 silent string-corruption, S-26 total <code>spid3r gui</code> panic, S-27 debug
+  launcher stack overflow), each pinned by tests, and the wasm deployment was rebuilt because the
+  committed module predated the S-25 fix. The pass also added the live web and calculator-engine
+  suites listed above (76 checks, both engines, all green), and confirmed the calculator engine's
+  documented behaviors — including two that look like bugs but are pinned as intentional:
+  <code>format_number</code> returns no thousands separators (the display path adds them via
+  <code>pretty</code>), and the expression line shows the settled chained step
+  (<code>5 × 4 =</code> for <code>2 + 3 × 4 =</code>), not the original keystrokes.
+</p>
+<p>
   <strong>CI outcome.</strong> The round-4 tree went red on CI three times before going green, and each
   failure taught something different. (1) The first push failed all three "Core Toolchain &amp;
   Differential" jobs at the <em>Rustfmt</em> gate — hand-formatted audit edits drifting off the rustfmt
@@ -504,6 +571,28 @@ injection in developer-facing output.</p>
   failure reporter's grep so the conformance lines reach the annotations is what named the case and
   engine. (3) With <code>cancel_guard_vm</code> in place (VM latency 2132 ms → 2–4 ms), every job
   passes: 3 × core, 3 × GUI, WebAssembly, and Native AOT Differential.
+</p>
+<p>
+  <strong>Round-5 CI correction.</strong> The S-25…S-27 push (<code>0729dad</code>) went red on
+  <em>every</em> clippy job — core, GUI, and WebAssembly on all three platforms — from a single line:
+  <code>hole_is_expression</code> used <code>matches!(x, Ok(_))</code>, which clippy 1.99 rejects as
+  <code>redundant_pattern_matching</code> under <code>-D warnings</code>. It had passed locally because
+  the local gate was <code>cargo test</code>, which never runs clippy — the same class of miss as the
+  round-4 rustfmt drift, one gate over. The "Report test failures" steps failed as a pure knock-on
+  effect (no test log exists when clippy reddens the run first), and the Native AOT job — which runs
+  the suite <em>with</em> the native backend — passed throughout, confirming the defect was never in
+  the compiled backends. A second latent break was fixed in the same commit before it could fire: the
+  shared <code>let mut builder</code> in <code>window.rs</code> was only mutated under
+  <code>cfg(windows)</code>, so the Linux/macOS GUI clippy gates would have failed next with
+  <code>unused_mut</code>. Every gate was then reproduced locally in CI's exact configuration —
+  clippy ×3 feature combinations, <code>cargo test --no-default-features</code> (857/857),
+  <code>gui_tests</code> (10/10), <code>spid3r test</code> (25/25, tree==vm==exec),
+  <code>spid3r fmt --check</code>, and <code>native_diff.sh</code> over all examples (22 pass / 0
+  fail / 3 skip — the documented <code>import as alias</code> limitation). The corrected push
+  (<code>4a59b0c</code>) is green: run
+  <a href="https://github.com/needyamin/spid3r/actions/runs/40109263465">40109263465</a>,
+  <strong>8/8 jobs succeeded</strong> — the same eight jobs as round 4, all re-verified on the
+  round-5 tree.
 </p>
 
 <h2 id="risks">6. Unresolved &amp; accepted risks</h2>
@@ -587,6 +676,12 @@ injection in developer-facing output.</p>
       <tr><td>GUI Feature (macos-latest)</td><td><span class="badge b-ok">success</span></td></tr>
     </tbody>
   </table>
+  <p>The round-5 tree repeats the result — run
+  <a href="https://github.com/needyamin/spid3r/actions/runs/40109263465">40109263465</a> on
+  <code>4a59b0c</code>, <strong>8/8 jobs succeeded</strong> (the same eight jobs, re-verified after the
+  S-25…S-27 fixes and the clippy correction). The intervening <code>0729dad</code> run failed all
+  clippy jobs from the single <code>matches!</code> line described above; its Native AOT job passed,
+  which is what ruled the compiled backends out as the cause.</p>
 </div>
 
 <hr>
@@ -595,11 +690,28 @@ injection in developer-facing output.</p>
   <code>origin/main</code> (round 1–2: 20 source/test files + this report, then a CI-corrections commit
   covering the wasm clippy lint, rustfmt drift, and the feature-gated native test; round 3: the scheduler
   deadlock work in <code>src/sched/mod.rs</code> + 4 engine call sites, <code>stdlib/toml.matrix</code>,
-  <code>tests/deadlock_tests.rs</code>, and the <code>audit/probes_r3/</code> probe battery). Regression
+  <code>tests/deadlock_tests.rs</code>, and the <code>audit/probes_r3/</code> probe battery; round 4:
+  operator overloading on the native backend, the tree-engine unary fix, the cancellation guards, and the
+  monotonic clock; round 5: <code>src/lexer/mod.rs</code> + <code>src/parser/mod.rs</code> (S-25),
+  <code>src/gui/window.rs</code> (S-26), <code>examples/demo_apps/native_calculator/main.rs</code> (S-27),
+  <code>tests/lexer_tests.rs</code>, the rebuilt wasm deployment set, and a CI-corrections commit
+  clearing the clippy gates). Regression
   tests: <code>tests/audit_hardening.rs</code>, <code>tests/gc_vm_autocollect.rs</code>,
-  <code>tests/deadlock_tests.rs</code>, and the UTF-16 case in <code>tests/lsp_tests.rs</code>.
+  <code>tests/deadlock_tests.rs</code>, <code>tests/lexer_tests.rs</code>, and the UTF-16 case in
+  <code>tests/lsp_tests.rs</code>.
   Hostile-input probes: <code>audit/probes/</code> (rounds 1–2) and <code>audit/probes_r3/</code>
   (round 3, run via <code>tools/run_r3.sh</code>).
+</p>
+<p class="meta">
+  Round-5 verification on the final tree: the real-world showcase passes <strong>383/383 checks</strong>
+  on the tree engine, the bytecode VM, and compiled bytecode, with <strong>11/11 sections tree==VM</strong>;
+  the live web suite passes <strong>34/34 on both engines</strong> over a real socket with 8/8 parallel
+  requests; the calculator engine suite passes <strong>42/42 on both engines</strong>; both GUI demos
+  replay byte-clean through <code>spid3r gui --dry-run</code> and open a real window on all four launch
+  paths; the wasm playground passes <strong>25 presets on both engines</strong> against the fresh build;
+  and the full Rust suite passes <strong>874 canonical tests (857 core + 10 gui + 7 aot), 0 failing</strong>
+  — mirrored by CI run
+  <a href="https://github.com/needyamin/spid3r/actions/runs/40109263465">40109263465</a>, 8/8 jobs green.
 </p>
 <p class="meta">
   Round-3 re-verification on a freshly built release binary (the scheduler fixes are Rust-side and

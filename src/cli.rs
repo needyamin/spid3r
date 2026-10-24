@@ -63,9 +63,7 @@ COMMANDS:
                                            three-engine differential
     bench [--engine tree|vm] [--runs N] [--compare] [--gate] [files...]
                                            Time benchmarks/*.matrix (best of N);
-                                           the shipped set lives in
-                                           _dustbin/benchmarks/ — copy it back
-                                           to the project root to run it
+                                           shipped suite lives in benchmarks/
     fmt [--check] [files...]               Canonical formatting (in place);
                                            --check exits 1 if any file differs
     lsp                                    Language Server over stdio
@@ -1265,7 +1263,7 @@ fn cmd_install(args: &[String]) -> Result<i32, Diagnostic> {
 /// place; with `--check`, nothing is written and the command exits 1 when any
 /// file is not yet formatted (CI mode). With no files given, formats every
 /// `.matrix` file under examples/ and benchmarks/ (the latter when present —
-/// the shipped set lives in _dustbin/benchmarks/).
+/// the shipped set lives in benchmarks/).
 fn cmd_fmt(args: &[String]) -> Result<i32, Diagnostic> {
     let mut check = false;
     let mut files: Vec<String> = Vec::new();
@@ -1416,7 +1414,7 @@ fn bench_iters(stem: &str) -> Option<u64> {
 /// the WORST single-run rate observed on reference hardware (best-of-5
 /// release numbers are several times higher still) — they exist to catch
 /// CATASTROPHIC regressions (a 3x+ slowdown) on shared CI runners, not small
-/// drift; _dustbin/ROADMAP.md's table is the record for real tuning. A benchmark file
+/// drift; docs/ROADMAP.md's table is the record for real tuning. A benchmark file
 /// added to BENCH_ITERS without a floor simply is not gated.
 const BENCH_FLOORS: &[(&str, u64)] = &[
     ("arith", 6_000_000),
@@ -1484,9 +1482,7 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         if !dir.is_dir() {
             return Err(Diagnostic::new(
                 Phase::Usage,
-                "no benchmarks/ directory here (the shipped set lives in \
-                 _dustbin/benchmarks/ — copy it back to the project root), \
-                 or pass benchmark files explicitly",
+                "no benchmarks/ directory found, or pass benchmark files explicitly",
             ));
         }
         let mut found: Vec<String> = std::fs::read_dir(&dir)

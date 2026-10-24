@@ -114,8 +114,9 @@ fn windows_installer() {
         "README.md",
         "docs",
         "examples",
+        "benchmarks",
         "stdlib",
-        "demo_apps",
+        "examples/demo_apps",
         "packaging/nsis/spid3r.nsi",
         "packaging/nsis/LICENSE.txt",
         "packaging/nsis/assets",
@@ -175,14 +176,12 @@ fn windows_installer() {
     let mut build = Command::new(cargo);
     build
         .current_dir(&root)
-        .args([
-            "build",
-            "--release",
-            "--bin",
-            "spid3r",
-            "--lib",
-            "--no-default-features",
-        ])
+        .args(["build", "--release", "--bin", "spid3r"]);
+    if gui {
+        build.args(["--bin", "calculator"]);
+    }
+    build
+        .args(["--lib", "--no-default-features"])
         .arg("--target")
         .arg(&triple)
         .arg("--target-dir")
@@ -204,6 +203,7 @@ fn windows_installer() {
     }
     let release_dir = nested_dir.join(&triple).join("release");
     let exe = release_dir.join("spid3r.exe");
+    let calc_exe = release_dir.join("calculator.exe");
     if native {
         native_files.push(("RUNTIME_LIB", release_dir.join("spid3r_lang.lib")));
     }
@@ -221,6 +221,9 @@ fn windows_installer() {
         .arg(format!("/DWITH_GUI={}", if gui { 1 } else { 0 }))
         .arg(format!("/DWITH_NATIVE={}", if native { 1 } else { 0 }))
         .arg(format!("/DSPID3R_EXE={}", exe.display()));
+    if gui && calc_exe.is_file() {
+        nsis.arg(format!("/DCALCULATOR_EXE={}", calc_exe.display()));
+    }
     for (name, path) in &native_files {
         nsis.arg(format!("/D{name}={}", path.display()));
     }

@@ -30,10 +30,10 @@ from the repository root (the `gui` feature is on by default):
 
 ```powershell
 cargo build --release
-.\target\release\spid3r.exe gui demo_apps\web_calculator\calculator.matrix
+.\target\release\spid3r.exe gui examples\demo_apps\web_calculator\calculator.matrix
 ```
 
-With the installer, run `spid3r gui demo_apps\web_calculator\calculator.matrix` from the
+With the installer, run `spid3r gui examples\demo_apps\web_calculator\calculator.matrix` from the
 repository root (or from the install directory, adjusting the script path).
 
 On Windows, the window needs the WebView2 runtime, which ships with Windows 11 and Microsoft Edge.
@@ -41,7 +41,7 @@ On Windows, the window needs the WebView2 runtime, which ships with Windows 11 a
 To replay the UI without opening a window (this prints the JavaScript sent to the page):
 
 ```powershell
-.\target\release\spid3r.exe gui demo_apps\web_calculator\calculator.matrix --dry-run
+.\target\release\spid3r.exe gui examples\demo_apps\web_calculator\calculator.matrix --dry-run
 ```
 
 ## Files

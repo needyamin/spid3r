@@ -704,7 +704,7 @@
     </div>
 
     <div class="nav-actions">
-      <a href="../../doc.html" class="btn" title="Back to Developer Documentation">
+      <a href="doc.html" class="btn" title="Back to Developer Documentation">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
         Docs
       </a>
@@ -712,7 +712,7 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         Live REPL
       </a>
-      <a href="../../demo_apps/web_calculator/index.html" class="btn" title="Interactive Web Calculator Demo">
+      <a href="../../examples/demo_apps/web_calculator/index.html" class="btn" title="Interactive Web Calculator Demo">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="16" y1="14" x2="16" y2="18"/><path d="M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M8 18h.01M12 18h.01"/></svg>
         Web Calculator
       </a>
@@ -738,7 +738,7 @@
     </div>
     <div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;">
       <a href="playground.html" class="btn btn-primary" style="font-size:0.82rem;">⚡ Open Live REPL</a>
-      <a href="../../demo_apps/web_calculator/index.html" class="btn" style="font-size:0.82rem;">🧮 Web Calculator</a>
+      <a href="../../examples/demo_apps/web_calculator/index.html" class="btn" style="font-size:0.82rem;">🧮 Web Calculator</a>
       <button class="btn" onclick="openNativeModal()" style="font-size:0.82rem;">💻 Native Calculator</button>
     </div>
   </div>
@@ -1405,8 +1405,8 @@ fn main() {
   }
 
   function copyNativeCmd() {
-    navigator.clipboard.writeText("spid3r gui demo_apps/native_calculator/calculator.matrix").then(() => {
-      showToast("Copied: spid3r gui demo_apps/native_calculator/calculator.matrix");
+    navigator.clipboard.writeText("spid3r gui examples/demo_apps/native_calculator/calculator.matrix").then(() => {
+      showToast("Copied: spid3r gui examples/demo_apps/native_calculator/calculator.matrix");
     });
   }
 
@@ -1566,18 +1566,18 @@ fn main() {
     
     <div style="background:#06080e;border:1px solid rgba(56,189,248,0.3);border-radius:10px;padding:0.9rem;margin-bottom:0.75rem;">
       <div style="font-size:0.75rem;color:var(--cyan);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">1. Native Desktop GUI Window (Recommended)</div>
-      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#38bdf8;display:block;">spid3r gui demo_apps/native_calculator/calculator.matrix</code>
+      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#38bdf8;display:block;">spid3r gui examples/demo_apps/native_calculator/calculator.matrix</code>
       <small style="color:var(--text-muted);font-size:0.75rem;display:block;margin-top:0.25rem;">Opens a native Windows desktop GUI application with mouse, buttons, and history.</small>
     </div>
 
     <div style="background:#06080e;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:0.9rem;margin-bottom:0.75rem;">
       <div style="font-size:0.75rem;color:var(--text-muted);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">2. Terminal CLI Interactive REPL</div>
-      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run demo_apps/native_calculator/cli_calculator.matrix</code>
+      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run examples/demo_apps/native_calculator/calculator.matrix</code>
     </div>
 
     <div style="background:#06080e;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:0.9rem;margin-bottom:1.25rem;">
       <div style="font-size:0.75rem;color:var(--text-muted);font-weight:700;margin-bottom:0.35rem;text-transform:uppercase;">3. Direct CLI Expression Math</div>
-      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run demo_apps/native_calculator/cli_calculator.matrix 25 + 75</code>
+      <code style="font-family:var(--font-mono);font-size:0.82rem;color:#f1f5f9;display:block;">spid3r run examples/demo_apps/native_calculator/calculator.matrix 25 + 75</code>
     </div>
 
     <div style="display:flex;justify-content:flex-end;gap:0.75rem;">

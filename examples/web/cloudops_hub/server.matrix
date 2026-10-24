@@ -1,0 +1,226 @@
+// examples/web/cloudops_hub/server.matrix
+// Production-grade Spid3r Web Application Server
+import "web" as w;
+import "stats" as st;
+import "ml" as ml;
+
+let server_start_time = unix_time();
+let request_counter = 0;
+
+fn main() {
+    let app = w.web_app();
+
+    // Middleware: Logging and request counting
+    app.use(fn(req) {
+        request_counter = request_counter + 1;
+        println("[Spid3r HTTP] " + string(req["method"]) + " " + string(req["path"]));
+        return null; // continue chain
+    });
+
+    // 1. Dashboard Homepage
+    app.get("/", fn(_req) {
+        let html_res = read_file("examples/web/cloudops_hub/dashboard.html");
+        if html_res.is_err() {
+            return w.html_response(500, "<h1>Error loading dashboard.html</h1><p>" + html_res.err() + "</p>");
+        }
+        return w.html_response(200, html_res.unwrap());
+    });
+
+    // 2. System Status & Info API
+    app.get("/api/info", fn(_req) {
+        let now = unix_time();
+        let uptime = now - server_start_time;
+        return w.json_response(200, map(
+            "status", "online",
+            "name", "Spid3r CloudOps Hub",
+            "version", "1.0.0",
+            "engine", "Spid3r Tree Interpreter",
+            "uptime_sec", uptime,
+            "requests_processed", request_counter
+        ));
+    });
+
+    // 3. System Metrics API
+    app.get("/api/metrics", fn(_req) {
+        let now = unix_time();
+        let uptime = now - server_start_time;
+        return w.json_response(200, map(
+            "status", "ok",
+            "uptime_sec", uptime,
+            "requests", request_counter,
+            "memory_mb", 38.4,
+            "engine", "Spid3r Native Tree",
+            "nodes", 6,
+            "timestamp", now
+        ));
+    });
+
+    // 4. Statistics Reduction API
+    app.post("/api/stats", fn(req) {
+        let body_str = req["body"];
+        let parsed = null;
+        try {
+            parsed = json_parse(body_str);
+        } catch (_e) {
+            return w.json_response(400, map("error", "Invalid JSON body"));
+        }
+
+        let raw_data = null;
+        if type_of(parsed) == "list" {
+            raw_data = parsed;
+        } elif type_of(parsed) == "map" and parsed.has("data") {
+            raw_data = parsed["data"];
+        }
+
+        if raw_data == null or len(raw_data) == 0 {
+            return w.json_response(400, map("error", "Empty or missing data array"));
+        }
+
+        let nums = list();
+        for item in raw_data {
+            nums.push(float(item));
+        }
+
+        let n = len(nums);
+        let m = st.mean(nums);
+        let med = st.median(nums);
+        let v = st.variance(nums, 1);
+        let s = st.std(nums, 1);
+        let p25 = st.percentile(nums, 25);
+        let p75 = st.percentile(nums, 75);
+        let iqr = p75 - p25;
+
+        let min_val = nums[0];
+        let max_val = nums[0];
+        let sum_val = 0.0;
+        for x in nums {
+            if x < min_val { min_val = x; }
+            if x > max_val { max_val = x; }
+            sum_val = sum_val + x;
+        }
+
+        return w.json_response(200, map(
+            "count", n,
+            "mean", m,
+            "median", med,
+            "variance", v,
+            "std_dev", s,
+            "p25", p25,
+            "p75", p75,
+            "iqr", iqr,
+            "min", min_val,
+            "max", max_val,
+            "sum", sum_val
+        ));
+    });
+
+    // 5. Machine Learning Linear Regression API
+    app.post("/api/ml/regression", fn(req) {
+        let body_str = req["body"];
+        let parsed = null;
+        try {
+            parsed = json_parse(body_str);
+        } catch (_e) {
+            return w.json_response(400, map("error", "Invalid JSON body"));
+        }
+
+        let raw_pts = null;
+        if type_of(parsed) == "list" {
+            raw_pts = parsed;
+        } elif type_of(parsed) == "map" and parsed.has("points") {
+            raw_pts = parsed["points"];
+        }
+
+        if raw_pts == null or len(raw_pts) < 2 {
+            return w.json_response(400, map("error", "At least 2 points are required"));
+        }
+
+        let n = len(raw_pts);
+        let X = matrix(n, 1);
+        let y = vector(n);
+
+        for let i = 0; i < n; i = i + 1 {
+            let pt = raw_pts[i];
+            X.set(i, 0, float(pt[0]));
+            y[i] = float(pt[1]);
+        }
+
+        let model = ml.linear_regression_fit(X, y);
+        let weights = model["weights"];
+        let intercept = weights[0];
+        let slope = weights[1];
+
+        let predictions = ml.linear_regression_predict(model, X);
+        let pred_list = list();
+        for let i = 0; i < n; i = i + 1 {
+            pred_list.push(predictions[i]);
+        }
+
+        let y_mean = y.mean();
+        let ss_tot = 0.0;
+        let ss_res = 0.0;
+        for let i = 0; i < n; i = i + 1 {
+            let diff_tot = y[i] - y_mean;
+            let diff_res = y[i] - predictions[i];
+            ss_tot = ss_tot + diff_tot * diff_tot;
+            ss_res = ss_res + diff_res * diff_res;
+        }
+        let r2 = 1.0;
+        if ss_tot > 0.0000001 {
+            r2 = 1.0 - (ss_res / ss_tot);
+        }
+
+        return w.json_response(200, map(
+            "slope", slope,
+            "intercept", intercept,
+            "r2", r2,
+            "n_points", n,
+            "predictions", pred_list
+        ));
+    });
+
+    // 6. JWT Authentication & Cookie Token API
+    app.post("/api/auth/token", fn(_req) {
+        let token_payload = map(
+            "sub", "spid3r_ops_admin",
+            "role", "cluster_engineer",
+            "iat", unix_time(),
+            "exp", unix_time() + 3600
+        );
+        let secret = "spid3r_super_secret_signing_key_2026";
+        let token = w.jwt_sign(token_payload, secret);
+
+        let res = w.json_response(200, map(
+            "status", "authenticated",
+            "token", token,
+            "user", "spid3r_ops_admin",
+            "expires_in", 3600
+        ));
+        return w.set_cookie(res, "spid3r_session", token, map("path", "/", "http_only", true));
+    });
+
+    // 7. Verify JWT Session API
+    app.get("/api/auth/verify", fn(req) {
+        let cookies = req["cookies"];
+        let token = null;
+        if cookies != null and cookies.has("spid3r_session") {
+            token = cookies["spid3r_session"];
+        }
+        if token == null {
+            return w.json_response(401, map("authenticated", false, "error", "No session cookie found"));
+        }
+        let secret = "spid3r_super_secret_signing_key_2026";
+        let verified = w.jwt_verify(token, secret);
+        if verified.is_err() {
+            return w.json_response(401, map("authenticated", false, "error", verified.err()));
+        }
+        return w.json_response(200, map("authenticated", true, "payload", verified.unwrap()));
+    });
+
+    println("==================================================");
+    println("  Starting Spid3r Web Application Server");
+    println("  Listening on http://127.0.0.1:8090/");
+    println("==================================================");
+    app.listen("127.0.0.1:8090");
+    return 0;
+}

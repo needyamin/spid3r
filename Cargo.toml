@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "calculator"
-path = "demo_apps/native_calculator/main.rs"
+path = "examples/demo_apps/native_calculator/main.rs"
 required-features = ["gui"]
 
 

@@ -84,15 +84,21 @@ first-time compilation takes noticeably longer than the core toolchain; use
 
 On Windows, `cargo build --release` also writes `Spid3r-Setup-<version>.exe`
 (version from `Cargo.toml`) to the repository root. A build script runs before
-its own crate is compiled, so `build.rs` first builds a release `spid3r.exe`
-with the same features into `target/installer/`, then runs NSIS on
-`packaging/nsis/spid3r.nsi`. Release builds therefore compile `spid3r` twice
-when sources change.
+its own crate is compiled, so `build.rs` first builds release binaries
+(`spid3r.exe` and, when `gui` is enabled, `calculator.exe`) into `target/installer/`,
+then runs NSIS on `packaging/nsis/spid3r.nsi`.
 
 - NSIS 3.x is found in `packaging/nsis/nsis/nsis-3.10/` (the portable zip) or
   on `PATH`; when it is missing, the step is skipped with a `cargo:warning`.
-- The installer packs the binary plus `README.md`, `docs/`, `examples/`, and
-  (with `gui`) the `calculator/` demo, straight from the repository.
+- The installer packs `spid3r.exe` plus (with `gui`) the standalone native
+  `calculator.exe` desktop app, `stdlib/`, `README.md`, `docs/` (developer guide,
+  WASM playground, benchmarks dashboard), `examples/` (including `demo_apps/`), and
+  `benchmarks/` (the 9 canonical benchmark scripts and dataset).
+- Creates a dedicated **Spid3r** Start Menu group with shortcuts for the Command
+  Shell, Developer Guide, WebAssembly Playground, Benchmarks Dashboard, Desktop Calculator,
+  and Uninstaller, plus an optional Desktop Shortcuts component.
+- Registers `.matrix` file associations with Windows Explorer context menu actions
+  ("Run with Spid3r", "Check Syntax", and "Run with GUI").
 - With `native`, it also ships `LLVM-C.dll` (loaded by `spid3r.exe`),
   `LLVM-C.lib`, and the `spid3r_lang.lib` runtime staticlib, which `spid3r build`
   links into every program. Users still need MSVC Build Tools with the

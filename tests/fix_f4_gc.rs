@@ -5,7 +5,7 @@
 //! re-scanned the whole graph every fixed 1024 allocations, and `track()`
 //! pruned the whole registry on EVERY allocation once it held >8192 entries.
 //! A ~100k-deep build already blew past 60 s on both engines (audit probes
-//! p07/p07b, F-4 in _dustbin/audit_notes/runtime_security_audit.md). The fix amortizes
+//! p07/p07b, F-4 in docs/AUDIT_REPORT.md). The fix amortizes
 //! both (exponential backoff on the collect threshold, watermark doubling on
 //! the registry prune), so the build is linear again. This test pins a
 //! 400k-deep build completing in under 10 s per engine with the auto-GC on.
