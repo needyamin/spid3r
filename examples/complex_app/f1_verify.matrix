@@ -1,0 +1,29 @@
+// examples/complex_app/f1_verify.matrix — end-to-end verification of the
+// bounded-repeat quantifier fix (report.html F-1).
+fn main() {
+    // The original field-test failure: all IDs were rejected.
+    println(regex_match("^ACC-[0-9]{4}$", "ACC-1001"));
+    println(regex_match("^ACC-[0-9]{4}$", "ACC-12"));
+    println(regex_match("^ACC-[0-9]{4}$", "XX-9999"));
+    println(regex_match("^ACC-[0-9]{4}$", "ACC-7777"));
+    // Ranges, open-ended, up-to.
+    println(regex_match("^a{2,4}$", "aaa"));
+    println(regex_match("^a{2,}$", "aaaa"));
+    println(regex_match("^a{,2}$", "aa"));
+    // Groups and classes under repeat.
+    println(regex_match("^(ab){3}$", "ababab"));
+    println(regex_match("^[A-Z]{2}-[0-9]{4}$", "NX-2049"));
+    // Extraction and replacement honor the counts.
+    println(regex_find_all("[0-9]{2,3}", "1 22 333 4444").join("|"));
+    println(regex_replace("o{2}", "zoo keep", "0"));
+    // Literal fallback for malformed braces is preserved.
+    println(regex_match("a{2", "xa{2"));
+    let lit = "a" + "{" + "x}";   // "{x}" in a bare string is an interpolation hole
+    let txt = "a" + "{" + "x}";
+    println(regex_match(lit, txt));
+    // The old silent-wrong-answer is gone.
+    println(regex_match("a{2}", "a{2}"));
+    println(regex_match("a{2}", "aa"));
+    println("== f1 verified ==");
+    return 0;
+}

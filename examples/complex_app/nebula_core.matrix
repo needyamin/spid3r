@@ -1,0 +1,594 @@
+// =====================================================================
+// examples/complex_app/nebula_core.matrix
+//
+// Nebula Bank Core — a deterministic banking-core simulation written to
+// exercise the language surface end to end:
+//
+//   * classes + inheritance + interfaces (polymorphic dispatch)
+//   * all five arithmetic dunders (__add__ __sub__ __mul__ __div__ __neg__)
+//   * enums + match (variant, binding, `_` and guard arms)
+//   * closures and higher-order functions (map/filter/reduce/comparators)
+//   * hand-rolled algorithms: merge sort with a comparator closure, BST,
+//     memoized recursion
+//   * result/error handling: ok/err, try/catch/finally, throw
+//   * JSON round trip, regex validation
+//   * ref cells + weak pointers
+//   * task concurrency: spawn + channel + mutex (deterministic aggregation)
+//   * the cycle collector: churn + kept-cycle survival + explicit collect
+//   * the bigint module (factorial 30, 2^96)
+//
+// Determinism contract: every printed value derives from fixed seeds and
+// insertion-ordered maps, so the three engines must agree byte for byte:
+//   spid3r run nebula_core.matrix            (tree)
+//   spid3r run --engine vm nebula_core.matrix
+//   spid3r compile nebula_core.matrix -o nebula_core && ./nebula_core
+// =====================================================================
+
+import "bigint";
+
+// --------------------------------------------------------------------
+// 0. Deterministic randomness (Lehmer RNG — no host clock anywhere)
+// --------------------------------------------------------------------
+
+fn make_rng(start) {
+    let s = ref(start);
+    return fn() {
+        let v = (s.get() * 48271) % 2147483647;
+        s.set(v);
+        return v;
+    };
+}
+
+// --------------------------------------------------------------------
+// 1. Money: a value type with operator overloading (integer cents only)
+// --------------------------------------------------------------------
+
+class Money {
+    public let cents;
+    fn new(c) {
+        self.cents = c;
+    }
+    public fn __add__(self, other) {
+        return Money(self.cents + other.cents);
+    }
+    public fn __sub__(self, other) {
+        return Money(self.cents - other.cents);
+    }
+    public fn __mul__(self, k) {
+        return Money(self.cents * k);
+    }
+    public fn __div__(self, k) {
+        return Money(self.cents / k);
+    }
+    public fn __neg__(self) {
+        return Money(-self.cents);
+    }
+    public fn text(self) -> string {
+        let c = self.cents;
+        let sign = "";
+        if (c < 0) {
+            sign = "-";
+            c = -c;
+        }
+        return sign + string(c / 100) + "." + string(c % 100).pad_left(2, "0");
+    }
+}
+
+// --------------------------------------------------------------------
+// 2. Transactions: enums + match (variant, binding, `_` and guard arms)
+// --------------------------------------------------------------------
+
+enum TxKind { Deposit, Withdraw, Fee, Interest }
+
+enum Ledger {
+    Entry(c, memo),
+}
+
+fn kind_label(k) -> string {
+    return match (k) {
+        Deposit() => "DEP",
+        Withdraw() => "WD",
+        Fee() => "FEE",
+        Interest() => "INT",
+    };
+}
+
+fn compliance_rule(kind, cents) -> string {
+    return match (kind) {
+        Withdraw() if (cents > 100000) => "large-withdrawal-review",
+        Withdraw() => "routine",
+        Deposit() if (cents > 500000) => "aml-flag",
+        Deposit() => "routine",
+        Fee() => "fee-booked",
+        Interest() => "interest-booked",
+    };
+}
+
+fn describe(entry) -> string {
+    return match (entry) {
+        Entry(c, memo) if (c < 0) => "debit  " + memo + " " + string(c),
+        Entry(c, memo) => "credit " + memo + " " + string(c),
+    };
+}
+
+// --------------------------------------------------------------------
+// 3. Account hierarchy + interface (overriding withdraw in Checking)
+// --------------------------------------------------------------------
+
+interface Auditable {
+    fn audit_line(self) -> string;
+}
+
+class Account {
+    public let id;
+    public let owner;
+    public let balance;
+    fn new(id, owner, opening) {
+        self.id = id;
+        self.owner = owner;
+        self.balance = opening;
+    }
+    public fn deposit(self, m) {
+        self.balance = self.balance + m;
+        return ok(self.balance);
+    }
+    public fn withdraw(self, m) {
+        if (m.cents > self.balance.cents) {
+            throw "insufficient funds: have " + self.balance.text() + ", want " + m.text();
+        }
+        self.balance = self.balance - m;
+        return ok(self.balance);
+    }
+    public fn audit_line(self) -> string {
+        return "ACCT " + self.id + " " + self.owner + " " + self.balance.text();
+    }
+}
+
+class Savings extends Account implements Auditable {
+    public let rate_bp;
+    fn new(id, owner, opening, rate_bp) {
+        self.id = id;
+        self.owner = owner;
+        self.balance = opening;
+        self.rate_bp = rate_bp;
+    }
+    // integer interest: cents * basis_points / 10000
+    public fn accrue(self) {
+        let inc = Money((self.balance.cents * self.rate_bp) / 10000);
+        self.balance = self.balance + inc;
+        return inc;
+    }
+    public fn audit_line(self) -> string {
+        return "SAV " + self.id + " rate=" + string(self.rate_bp) + "bp " + self.balance.text();
+    }
+}
+
+class Checking extends Account implements Auditable {
+    public let overdraft;
+    fn new(id, owner, opening, overdraft) {
+        self.id = id;
+        self.owner = owner;
+        self.balance = opening;
+        self.overdraft = overdraft;
+    }
+    // overriding the base rule: an overdraft floor is allowed here
+    public fn withdraw(self, m) {
+        if (m.cents > self.balance.cents + self.overdraft) {
+            throw "overdraft limit exceeded: have " + self.balance.text() + ", want " + m.text();
+        }
+        self.balance = self.balance - m;
+        return ok(self.balance);
+    }
+    public fn audit_line(self) -> string {
+        return "CHK " + self.id + " od=" + string(self.overdraft) + " " + self.balance.text();
+    }
+}
+
+// --------------------------------------------------------------------
+// 4. The Bank: insertion-ordered registry, closures, statements
+// --------------------------------------------------------------------
+
+class Bank {
+    public let name;
+    public let accounts;
+    public let journal;
+    fn new(name) {
+        self.name = name;
+        self.accounts = map();
+        self.journal = list();
+    }
+    public fn open(self, acc) {
+        self.accounts.set(acc.id, acc);
+        self.journal.push("open " + acc.id + " (" + acc.owner + ")");
+        return acc;
+    }
+    public fn get(self, id) {
+        return self.accounts.get(id);
+    }
+    public fn holdings(self) {
+        let total = Money(0);
+        for acc in self.accounts.values() {
+            total = total + acc.balance;
+        }
+        return total;
+    }
+    public fn top_by_balance(self, n) {
+        // hand-rolled merge sort with a comparator closure (b before a)
+        let values = self.accounts.values();
+        let sorted = merge_sort(values, fn(b, a) {
+            return b.balance.cents > a.balance.cents;
+        });
+        let out = list();
+        let i = 0;
+        while (i < n and i < sorted.len()) {
+            out.push(sorted.get(i).id);
+            i = i + 1;
+        }
+        return out;
+    }
+    public fn statement(self) {
+        let lines = list();
+        for acc in self.accounts.values() {
+            lines.push(acc.audit_line());
+        }
+        return lines;
+    }
+}
+
+// --------------------------------------------------------------------
+// 5. Algorithms: merge sort, BST, memoized recursion
+// --------------------------------------------------------------------
+
+fn merge(a, b, before) {
+    let out = list();
+    let i = 0;
+    let j = 0;
+    while (i < a.len() and j < b.len()) {
+        if (before(b.get(j), a.get(i))) {
+            out.push(b.get(j));
+            j = j + 1;
+        } else {
+            out.push(a.get(i));
+            i = i + 1;
+        }
+    }
+    while (i < a.len()) {
+        out.push(a.get(i));
+        i = i + 1;
+    }
+    while (j < b.len()) {
+        out.push(b.get(j));
+        j = j + 1;
+    }
+    return out;
+}
+
+fn merge_sort(xs, before) {
+    if (xs.len() <= 1) {
+        return xs.clone();
+    }
+    let mid = xs.len() / 2;
+    let left = merge_sort(xs.slice(0, mid), before);
+    let right = merge_sort(xs.slice(mid, xs.len()), before);
+    return merge(left, right, before);
+}
+
+class BNode {
+    public let key;
+    public let left;
+    public let right;
+    fn new(key) {
+        self.key = key;
+        self.left = null;
+        self.right = null;
+    }
+}
+
+fn bst_insert(root, key) {
+    if (root == null) {
+        return BNode(key);
+    }
+    if (key < root.key) {
+        root.left = bst_insert(root.left, key);
+    } else if (key > root.key) {
+        root.right = bst_insert(root.right, key);
+    }
+    return root;
+}
+
+fn bst_height(n) {
+    if (n == null) {
+        return 0;
+    }
+    let l = bst_height(n.left);
+    let r = bst_height(n.right);
+    if (l > r) {
+        return l + 1;
+    }
+    return r + 1;
+}
+
+fn bst_inorder(n, out) {
+    if (n == null) {
+        return out;
+    }
+    bst_inorder(n.left, out);
+    out.push(n.key);
+    bst_inorder(n.right, out);
+    return out;
+}
+
+fn to_strs(xs) {
+    let out = list();
+    for x in xs {
+        out.push(string(x));
+    }
+    return out;
+}
+
+fn fib_memo(n, memo) {
+    if (n < 2) {
+        return n;
+    }
+    let key = string(n);
+    if (memo.has(key)) {
+        return memo.get(key);
+    }
+    let v = fib_memo(n - 1, memo) + fib_memo(n - 2, memo);
+    memo.set(key, v);
+    return v;
+}
+
+// --------------------------------------------------------------------
+// 6. GC churn target: two-node cycles allocated and abandoned in bulk
+// --------------------------------------------------------------------
+
+class Cycler {
+    public let link;
+    public let val;
+    fn new(v) {
+        self.val = v;
+        self.link = null;
+    }
+}
+
+fn churn_cycles(rounds) {
+    let k = 0;
+    while (k < rounds) {
+        let x = Cycler(k);
+        let y = Cycler(k + 1);
+        x.link = y;
+        y.link = x;
+        k = k + 1;
+    }
+    return k;
+}
+
+// --------------------------------------------------------------------
+// 7. Concurrency worker: each branch computes a payroll total from its
+//    own seeded RNG, bumps a mutex-guarded shared counter, and ships one
+//    message. All printing happens in main — order-independent by design.
+// --------------------------------------------------------------------
+
+fn branch_worker(ch, guard, shared, branch_name, seed) {
+    let rand = make_rng(seed);
+    let sum = 0;
+    let k = 0;
+    while (k < 5) {
+        sum = sum + rand() % 1000;
+        k = k + 1;
+    }
+    guard.lock();
+    shared.set(shared.get() + sum);
+    guard.unlock();
+    ch.send(map("branch", branch_name, "total", sum));
+}
+
+// =====================================================================
+// main
+// =====================================================================
+
+fn main() {
+    println("== Nebula Bank Core ==");
+
+    // ---- 1. Money & operator overloading ----------------------------
+    println("--- 1. money & operators");
+    let fee = Money(250);
+    let opening = Money(123456);
+    let bonus = Money(5000) * 3;
+    let net = opening + bonus - fee;
+    let reversed = -net;
+    let split = net / 4;
+    println("opening={opening.text()} bonus={bonus.text()}");
+    println("net={net.text()} reversed={reversed.text()} quarter={split.text()}");
+
+    // ---- 2. enums, match, compliance rules ---------------------------
+    println("--- 2. enum + match");
+    let lbl = kind_label(Deposit()) + " " + kind_label(Withdraw()) + " " + kind_label(Fee()) + " " + kind_label(Interest());
+    println("labels: {lbl}");
+    println("rule withdraw 250000: {compliance_rule(Withdraw(), 250000)}");
+    println("rule deposit  700000: {compliance_rule(Deposit(), 700000)}");
+    println("rule deposit   10000: {compliance_rule(Deposit(), 10000)}");
+    println("ledger: {describe(Entry(-2500, "card-fee"))}");
+    println("ledger: {describe(Entry(99000, "salary"))}");
+
+    // ---- 3. open accounts, polymorphic operations, errors ------------
+    println("--- 3. accounts (inheritance + interface)");
+    let bank = Bank("Nebula");
+    let alice = bank.open(Savings("ACC-1001", "alice", Money(200000), 250));
+    let bob = bank.open(Checking("ACC-1002", "bob", Money(50000), 30000));
+    let cara = bank.open(Savings("ACC-1003", "cara", Money(750000), 120));
+
+    println(alice.audit_line());
+    println(bob.audit_line());
+    println(cara.audit_line());
+
+    // overdraft: the base class would refuse, Checking allows the floor
+    try {
+        bob.withdraw(Money(60000));
+        println("bob overdraft draw: ok");
+    } catch(e) {
+        println("unexpected: {e}");
+    } finally {
+        println("audit hook: overdraft attempted");
+    }
+    try {
+        alice.withdraw(Money(1000000));
+        println("unexpected: alice draw passed");
+    } catch(e) {
+        println("savings rejects: {e}");
+    }
+    let bal_line = bob.balance.text() + " / " + alice.balance.text();
+    println("after draws: {bal_line}");
+
+    // interest accrual on savings only
+    let inc_a = alice.accrue();
+    let inc_c = cara.accrue();
+    println("interest alice={inc_a.text()} cara={inc_c.text()}");
+
+    // result values: ok/err with unwrap
+    let dep = cara.deposit(Money(12500));
+    let dep_line = string(dep.is_ok()) + " " + dep.unwrap().text();
+    println("cara deposit ok: {dep_line}");
+
+    // ---- 4. closures, sorting, BST, memoization -----------------------
+    println("--- 4. algorithms");
+    println("statement:");
+    for line in bank.statement() {
+        println("  {line}");
+    }
+    let top2 = bank.top_by_balance(2).join(", ");
+    println("top by balance: {top2}");
+    let hold_text = bank.holdings().text();
+    println("holdings: {hold_text}");
+
+    let xs = list(38, 7, 91, 7, 12, 60, 3, 38);
+    let asc = merge_sort(xs, fn(a, b) { return a < b; });
+    let desc = merge_sort(xs, fn(a, b) { return a > b; });
+    let asc_line = to_strs(asc).join(",");
+    let desc_line = to_strs(desc).join(",");
+    let filt_line = to_strs(xs.filter(fn(x) { return x % 2 == 0; })).join(",");
+    let red = xs.reduce(0, fn(acc, x) { return acc + x; });
+    println("sorted asc:  {asc_line}");
+    println("sorted desc: {desc_line}");
+    println("filtered: {filt_line}");
+    println("reduced:  {red}");
+
+    let root = null;
+    for k in list(50, 30, 70, 20, 40, 60, 80, 35) {
+        root = bst_insert(root, k);
+    }
+    println("bst height: {string(bst_height(root))}");
+    let ino = bst_inorder(root, list());
+    let ino_line = to_strs(ino).join(",");
+    println("bst inorder: {ino_line}");
+
+    let memo = map();
+    println("fib(40) memoized: {string(fib_memo(40, memo))}");
+
+    // ---- 5. numeric semantics (deliberate parity probes) --------------
+    println("--- 5. numeric semantics");
+    println("int div: {string(7 / 2)} {string(-7 / 2)} mod: {string(-7 % 3)} {string(7 % -3)}");
+    println("floats: {string(0.1 + 0.2)} {string(1.0)}");
+    let two = from_int(2);
+    println("2^96 = {to_string(pow(two, 96))}");
+    let acc30 = from_int(1);
+    let k30 = 2;
+    while (k30 <= 30) {
+        acc30 = mul(acc30, from_int(k30));
+        k30 = k30 + 1;
+    }
+    println("30! = {to_string(acc30)}");
+
+    // ---- 6. concurrency: spawn + channel + mutex -----------------------
+    println("--- 6. concurrent payroll (spawn + channel + mutex)");
+    let ch = channel();
+    let guard = mutex(0);
+    let shared = ref(0);
+    let branches = list("north", "south", "east", "west");
+    spawn fn() { branch_worker(ch, guard, shared, "north", 101); };
+    spawn fn() { branch_worker(ch, guard, shared, "south", 202); };
+    spawn fn() { branch_worker(ch, guard, shared, "east", 303); };
+    spawn fn() { branch_worker(ch, guard, shared, "west", 404); };
+    let received = map();
+    let got = 0;
+    while (got < branches.len()) {
+        let m = ch.recv();
+        received.set(m.get("branch"), m.get("total"));
+        got = got + 1;
+    }
+    for bname in branches {
+        println("branch {bname} payroll {received.get(bname)}");
+    }
+    println("mutex-guarded ledger total: {shared.get()}");
+
+    // ---- 7. JSON round trip --------------------------------------------
+    println("--- 7. json round trip");
+    let snapshot = map(
+        "bank", bank.name,
+        "accounts", bank.accounts.len(),
+        "holdings_cents", bank.holdings().cents,
+        "top", bank.top_by_balance(2)
+    );
+    let encoded = json_write(snapshot);
+    println("json: {encoded}");
+    let back = json_parse(encoded);
+    let rt_ok = back.get("holdings_cents") == snapshot.get("holdings_cents");
+    println("roundtrip holdings match: {string(rt_ok)}");
+    try {
+        json_parse("{\"broken\": ");
+        println("malformed json: no error?");
+    } catch(e) {
+        println("malformed json rejected: {e}");
+    }
+
+    // ---- 8. regex validation -------------------------------------------
+    println("--- 8. regex");
+    // Bounded-repeat quantifiers work since F-1 was fixed (report.html):
+    // {4} reaches the regex engine as a quantifier (bare-integer string
+    // interpolation holes like {2} were removed in the same fix).
+    for id in list("ACC-1001", "ACC-12", "XX-9999", "acc-7777", "ACC-7777") {
+        if (regex_match("^ACC-[0-9]{4}$", id)) {
+            println("id ok: {id}");
+        } else {
+            println("id rejected: {id}");
+        }
+    }
+    let memo_line = "transfers: 120, 45, 7";
+    println("amounts: {regex_find_all("[0-9]+", memo_line).join("|")}");
+    println("masked:  {regex_replace("[0-9]", memo_line, "*")}");
+
+    // ---- 9. ref cells + weak pointers ----------------------------------
+    println("--- 9. ref & weak");
+    let ops = ref(0);
+    ops.set(ops.get() + 1);
+    ops.set(ops.get() + 41);
+    let wops = weak(ops);
+    println("ops={ops.get()} weak alive: {string(deref(wops) != null)}");
+
+    // ---- 10. cycle collector: churn + kept cycle -----------------------
+    // Live-cell counts are engine-internal (tree 380 / vm 159 / native
+    // 300462 for this exact workload) and exempt from byte-parity by the
+    // adopted GC observability policy (ENGINE_CONTRACT exemption #4,
+    // docs/GC.md; was report.html F-3). This section prints only the
+    // portably-true facts.
+    println("--- 10. cycle collector");
+    let kept1 = Cycler(4242);
+    let kept2 = Cycler(4243);
+    kept1.link = kept2;
+    kept2.link = kept1;
+    let made = churn_cycles(150000);
+    println("churned {made} cycles");
+    let kept_ok = kept1.link.val == 4243 and kept1.link.link.val == 4242;
+    println("kept cycle intact: {string(kept_ok)}");
+    gc_collect();
+    println("gc_collect() completed");
+
+    // ---- 11. journal & exit ---------------------------------------------
+    println("--- 11. journal");
+    for entry in bank.journal {
+        println("  {entry}");
+    }
+    println("== done ==");
+    return 0;
+}

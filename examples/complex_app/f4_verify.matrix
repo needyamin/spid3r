@@ -1,0 +1,71 @@
+// examples/complex_app/f4_verify.matrix — F-4 end-to-end verification:
+// the null-safe dot `?.` reads a missing map key as null on ALL THREE
+// engines (byte-identical stdout), while every other field failure keeps
+// its exact old semantics.
+//
+// Semantics table (post-fix):
+//   m?.k           key exists     -> value           (unchanged)
+//   m?.missing     map, no key    -> null            (THE F-4 FIX)
+//   m?.missing ?? d  -> d                            (the idiom now works)
+//   z?.k           z == null      -> null            (unchanged)
+//   m?.a?.b        chain, miss mid -> null           (NEW)
+//   m.get("x")     missing        -> still throws    (unchanged)
+//   m.missing      plain dot      -> still throws    (unchanged)
+//   inst?.missing  instance w/o field -> still throws (unchanged)
+//   (5)?.x         non-fieldable  -> still throws    (unchanged)
+
+class Box {
+    public let v;
+    fn new(v) { self.v = v; }
+}
+
+fn main() {
+    let m = map("a", 1);
+    println("1 exists: {m?.a}");
+    println("2 missing: {m?.missing}");
+    println("3 idiom: {m?.missing ?? -1}");
+    let z = null;
+    println("4 null recv: {z?.k}");
+    println("5 null idiom: " + string(z?.k ?? "fb"));
+    let n = map("a", map("b", 42));
+    println("6 chain ok: {n?.a?.b}");
+    println("7 chain miss mid: {n?.x?.b}");
+    println("8 chain miss leaf: {n?.a?.x}");
+
+    println("9 get still throws:");
+    try {
+        m.get("missing");
+        println("   no throw?");
+    } catch(e) {
+        println("   caught: {e}");
+    }
+
+    println("10 dot still throws:");
+    try {
+        let w = m.missing;
+        println("   no throw?");
+    } catch(e) {
+        println("   caught: {e}");
+    }
+
+    println("11 instance miss still throws:");
+    try {
+        let b = new Box(3);
+        let h = map("o", b);
+        let q = h["o"]?.nope;
+        println("   no throw? {q}");
+    } catch(e) {
+        println("   caught: {e}");
+    }
+
+    println("12 non-fieldable still throws:");
+    try {
+        let q = (5)?.x;
+        println("   no throw? {q}");
+    } catch(e) {
+        println("   caught: {e}");
+    }
+
+    println("== done ==");
+    return 0;
+}

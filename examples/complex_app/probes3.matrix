@@ -1,0 +1,37 @@
+// examples/complex_app/probes3.matrix — hostile probes: these pin engine
+// DIVERGENCES on purpose (see report.html F-8/F-9). Every statement is
+// isolated so a failure here is itself the recorded observation.
+
+fn deep(n) {
+    if (n == 0) {
+        return 0;
+    }
+    return 1 + deep(n - 1);
+}
+
+fn main() {
+    // F-4 (fixed 2026-10-25): the null-safe dot reads a missing map key as
+    // null on every engine now — all three engines print "returned: null".
+    let m = map("a", 1);
+    try {
+        let v = m?.x;
+        println("safe-miss returned: " + string(v));
+    } catch(e) {
+        println("safe-miss threw (wrong after F-4): " + e);
+    }
+
+    // F-9: call-depth overflow — catchable on tree/vm, fatal on native?
+    try {
+        println("deep(50000) = " + string(deep(50000)));
+    } catch(e) {
+        println("deep caught: " + e);
+    }
+    println("after deep probe (reached = catch worked)");
+
+    // depth sensitivity: find a depth all engines survive
+    println("deep(500) = " + string(deep(500)));
+    println("deep(5000) = " + string(deep(5000)));
+
+    println("== probes3 done ==");
+    return 0;
+}

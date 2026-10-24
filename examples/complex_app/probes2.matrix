@@ -1,0 +1,51 @@
+// examples/complex_app/probes2.matrix — second probe round (portable part):
+// shift limits, char round-trips, null-safe chains (catchable forms only).
+
+fn main() {
+    // --- shift overflow ---
+    try {
+        let s = 1 << 64;
+        println("shift64: " + string(s));
+    } catch(e) {
+        println("shift64 caught: " + e);
+    }
+    println("shift63 sign: " + string(1 << 62));
+
+    // --- astral char round trip ---
+    let code = ord("🌍");
+    println("ord emoji: " + string(code));
+    println("chr back: " + chr(code));
+    println("chr roundtrip: " + string(chr(ord("A")) == "A"));
+
+    // --- null-safe chains (existing keys) ---
+    let m = map("a", map("b", 42));
+    println("safe chain: " + string(m?.a?.b));
+
+    // FIXED (F-4, 2026-10-25): m?.x on a map WITHOUT key x now reads null on
+    // every engine, so the m?.k ?? fallback idiom protects map reads.
+
+    // --- escapes in literals ---
+    // NOTE: there is no \\uXXXX / \\u{...} escape in string literals (report.html F-7):
+    // "unknown escape '\\u'" — non-ASCII must be pasted as raw UTF-8.
+    println("escapes: a\tb\\c\"d");
+
+    // --- integer parsing edges ---
+    println("int parse: " + string(int("42")));
+    try {
+        println("int float-str: " + string(int("42.9")));
+    } catch(e) {
+        println("int float-str caught: " + e);
+    }
+
+    // --- long string build ---
+    let parts = list();
+    let i = 0;
+    while (i < 2000) {
+        parts.push("x");
+        i = i + 1;
+    }
+    println("joined len: " + string(parts.join("").len()));
+
+    println("== probes2 done ==");
+    return 0;
+}

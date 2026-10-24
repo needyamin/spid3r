@@ -1,0 +1,60 @@
+// examples/complex_app/probes4.matrix — pin exactly which runtime error
+// paths the native backend's try/catch intercepts. Every block below is
+// caught on ALL THREE engines and "end reached" prints (the F-9 fix made
+// the native paths catchable; the F-4 fix made `m2?.nope` read null instead
+// of throwing, so that block no longer throws anywhere).
+
+fn main() {
+    try {
+        throw "user-throw";
+    } catch(e) {
+        println("user throw caught: " + e);
+    }
+
+    try {
+        json_parse("{nope");
+    } catch(e) {
+        println("json error caught: " + e);
+    }
+
+    try {
+        let v = none.unwrap();
+        println("none unwrap: no throw?");
+    } catch(e) {
+        println("none unwrap caught: " + e);
+    }
+
+    try {
+        let m = map("a", 1);
+        let v = m.get("missing");
+        println("get-missing: no throw?");
+    } catch(e) {
+        println("get-missing caught: " + e);
+    }
+
+    // F-4: `?.` on a missing map key reads as null now — no throw anywhere
+    try {
+        let m2 = map("a", 1);
+        let w = m2?.nope;
+        println("safe-miss: no throw? " + string(w == null));
+    } catch(e) {
+        println("safe-miss caught (wrong after F-4): " + e);
+    }
+
+    try {
+        let z = 1 / 0;
+        println("div0: no throw?");
+    } catch(e) {
+        println("div0 caught: " + e);
+    }
+
+    try {
+        let o = 9223372036854775807 + 1;
+        println("overflow: no throw?");
+    } catch(e) {
+        println("overflow caught: " + e);
+    }
+
+    println("end reached");
+    return 0;
+}

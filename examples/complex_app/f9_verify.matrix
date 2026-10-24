@@ -1,0 +1,94 @@
+// examples/complex_app/f9_verify.matrix — F-9 end-to-end verification:
+// runtime error paths that used to abort the native process with exit 70
+// must now be catchable on ALL THREE engines, byte-identical stdout.
+//
+// NOTE (F-4 fix, 2026-10-25): `m?.missing` no longer throws on ANY engine —
+// the null-safe dot reads a missing map key as null — so the safe-dot path
+// below pins that instead; the catchable missing-key error is exercised by
+// the plain-dot path (2).
+//
+// Paths exercised:
+//   1. `m?.nope`    safe-dot on a map missing the key -> null  (F-4 semantics)
+//   2. `m.nope`     plain dot on a map missing the key (rt.rs field_get map arm)
+//   3. unbounded recursion -> call-depth limit       (rt.rs enter_call)
+//   4. depth counter unwinds correctly after the catch (recursion works again)
+//   5. calling a non-callable value                   (call dispatch)
+//   6. instance field read/write on a missing field   (field_get/field_set)
+
+fn boom(n) {
+    return boom(n + 1);
+}
+
+fn down(n) {
+    if n <= 0 {
+        return 0;
+    }
+    return down(n - 1) + 1;
+}
+
+class Box {
+    let x;
+    fn new(v) { self.x = v; }
+}
+
+fn main() {
+    // 1. safe-dot missing key reads as null now (F-4), it does not throw
+    try {
+        let m = map("a", 1);
+        let v = m?.nope;
+        println("1 safe-dot null: " + string(v == null));
+    } catch(e) {
+        println("1 caught (wrong after F-4): " + e);
+    }
+
+    // 2. plain-dot missing key
+    try {
+        let m2 = map("a", 1);
+        let w = m2.nope;
+        println("2: no throw?");
+    } catch(e) {
+        println("2 caught: " + e);
+    }
+
+    // 3. stack overflow is a catchable runtime error now (F-9b)
+    try {
+        boom(0);
+        println("3: no throw?");
+    } catch(e) {
+        println("3 caught: " + e);
+    }
+
+    // 4. the depth counter unwound: recursion works after the catch
+    println("4 depth ok: {down(8)}");
+
+    // 5. non-callable value
+    try {
+        let f = 42;
+        f(1);
+        println("5: no throw?");
+    } catch(e) {
+        println("5 caught: " + e);
+    }
+
+    // 6. missing instance field, read and write — reached through an index
+    // so the semantic checker cannot type the receiver (the runtime path)
+    try {
+        let b = new Box(3);
+        let h = map("obj", b);
+        let q = h["obj"].missing;
+        println("6r: no throw?");
+    } catch(e) {
+        println("6r caught: " + e);
+    }
+    try {
+        let b2 = new Box(3);
+        let h2 = map("obj", b2);
+        h2["obj"].missing = 5;
+        println("6w: no throw?");
+    } catch(e) {
+        println("6w caught: " + e);
+    }
+
+    println("end reached");
+    return 0;
+}

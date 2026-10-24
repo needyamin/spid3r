@@ -1,0 +1,145 @@
+// examples/complex_app/probes.matrix
+// Semantic edge-case probes for cross-engine parity. Every line is labeled;
+// all three engines must print identical output. (Engine-internal values like
+// gc_live_cells() are deliberately NOT printed — see report.html F-3.)
+
+fn make_adders() {
+    // classic late-capture question: do closures capture the variable or the
+    // value at creation time?
+    let out = list();
+    let i = 0;
+    while (i < 3) {
+        let j = i;
+        out.push(fn() { return j * 10; });
+        i = i + 1;
+    }
+    return out;
+}
+
+fn to_strs(xs) {
+    let out = list();
+    for x in xs {
+        out.push(string(x));
+    }
+    return out;
+}
+
+fn main() {
+    // --- equality & identity ---
+    let m1 = map("a", 1, "b", 2);
+    let m2 = map("a", 1, "b", 2);
+    println("map==map: " + string(m1 == m2));
+    let l1 = list(1, 2);
+    let l2 = list(1, 2);
+    println("list==list: " + string(l1 == l2));
+    println("instance==itself: " + string(m1 == m1));
+
+    // --- unicode strings ---
+    let u = "héllo 🌍";
+    println("unicode len: " + string(u.len()));
+    println("unicode upper: " + u.upper());
+    println("unicode idx: " + u.slice(0, 1));
+
+    // --- sort stability with duplicate keys ---
+    let pairs = list("b1", "a2", "b3", "a4");
+    let by_first = pairs; // sorted() has no comparator; test default on strings
+    println("sorted strings: " + to_strs(by_first.sorted()).join(","));
+
+    // --- late capture ---
+    let adders = make_adders();
+    println("capture0: " + string(adders.get(0)()));
+    println("capture1: " + string(adders.get(1)()));
+    println("capture2: " + string(adders.get(2)()));
+
+    // --- checked arithmetic ---
+    try {
+        let big = 9223372036854775807 + 1;
+        println("overflow: no error?");
+    } catch(e) {
+        println("overflow caught: " + e);
+    }
+    try {
+        let z = 1 / 0;
+        println("div0: no error?");
+    } catch(e) {
+        println("div0 caught: " + e);
+    }
+    try {
+        let s = "a" + 1;
+        println("str+int: no error?");
+    } catch(e) {
+        println("str+int caught: " + e);
+    }
+
+    // --- float edges ---
+    println("float mul: " + string(2.5 * 2));
+    println("float pow-ish: " + string(1e2));
+    println("is_inf 1e308*10: " + string(is_inf(1e308 * 10)));
+    println("nan!=nan: " + string(nan() != nan()));
+
+    // --- bitwise & shifts ---
+    println("and: " + string(6 & 3));
+    println("or: " + string(8 | 1));
+    println("xor: " + string(6 ^ 3));
+    println("shift: " + string(1 << 10));
+    println("shift precedence: " + string(1 << 2 + 1));
+
+    // --- index assignment ---
+    let xs = list(1, 2, 3);
+    xs[0] = 99;
+    println("list idx-assign: " + to_strs(xs).join(","));
+    let mm = map();
+    mm["k"] = 7;
+    println("map idx-assign: " + string(mm["k"]));
+    println("map dot-read: " + string(mm.k));
+
+    // --- string compare & ops ---
+    println("str lt: " + string("abc" < "abd"));
+    println("str idx neg: " + "abc"[-1]);
+    println("str repeat: " + "ab".repeat(3));
+    println("str contains: " + string("hello".contains("ell")));
+
+    // --- type_of ---
+    println("type_of: " + type_of(1) + " " + type_of(1.5) + " " + type_of("s") + " " + type_of(true) + " " + type_of(null) + " " + type_of(m1));
+
+    // --- option/null coalescing ---
+    let no = none;
+    println("none ?? 5: " + string((no ?? 5) == none));
+    println("null ?? 5: " + string((null ?? 5)));
+
+    // --- interpolation multiple holes ---
+    let who = "world";
+    let n2 = 3;
+    println("hello {who} x{n2}!");
+
+    // --- chained ternary-substitute: if expression ---
+    let grade = if (92 > 90) { "A" } else { "B" };
+    println("if-expr: " + grade);
+
+    // --- for-in over string ---
+    let chars = list();
+    for c in "ab€" {
+        chars.push(c);
+    }
+    println("for-in string: " + chars.join("|"));
+
+    // --- negative slice ---
+    println("slice tail: " + "abcdef".slice(3, 6));
+    println("list slice: " + to_strs(list(1, 2, 3, 4).slice(1, 3)).join(","));
+
+    // --- map iteration is insertion-ordered ---
+    let om = map();
+    om.set("z", 1);
+    om.set("a", 2);
+    om.set("m", 3);
+    println("map order: " + to_strs(om.keys()).join(","));
+
+    // --- priority queue stable ties ---
+    let pq = priority_queue();
+    pq.push("first", 5);
+    pq.push("second", 5);
+    println("pq tie: " + pq.pop() + " then " + pq.pop());
+
+    println("== probes done ==");
+    return 0;
+}

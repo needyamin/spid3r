@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spid3r — Complex Application Field Test (Nebula Bank Core)</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a202c; --muted: #5a6472; --line: #e2e8f0;
+    --card: #f7fafc; --accent: #2b6cb0;
+    --high: #c53030; --high-bg: #fff5f5;
+    --med: #b7791f; --med-bg: #fffff0;
+    --low: #2b6cb0; --low-bg: #ebf8ff;
+    --ok: #276749; --ok-bg: #f0fff4;
+    --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.2px; }
+  h2 { font-size: 21px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 2px solid var(--line); }
+  h3 { font-size: 17px; margin: 26px 0 8px; }
+  p { margin: 10px 0; }
+  code, .mono { font-family: var(--mono); font-size: 12.5px; background: #edf2f7; border-radius: 4px; padding: 1px 5px; }
+  pre { font-family: var(--mono); font-size: 12.5px; background: #1a202c; color: #e2e8f0;
+        padding: 14px 16px; border-radius: 8px; overflow-x: auto; line-height: 1.5; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--card); font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13.5px; margin-bottom: 24px; }
+  .meta code { background: none; padding: 0; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+           padding: 2px 8px; border-radius: 999px; text-transform: uppercase; white-space: nowrap; }
+  .b-high { color: var(--high); background: var(--high-bg); border: 1px solid #feb2b2; }
+  .b-med  { color: var(--med);  background: var(--med-bg);  border: 1px solid #f6e05e; }
+  .b-low  { color: var(--low);  background: var(--low-bg);  border: 1px solid #90cdf4; }
+  .b-ok   { color: var(--ok);   background: var(--ok-bg);   border: 1px solid #9ae6b4; }
+  .finding { border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px;
+             padding: 16px 20px; margin: 18px 0; background: #fff; }
+  .finding.high { border-left-color: var(--high); }
+  .finding.med  { border-left-color: var(--med); }
+  .finding.low  { border-left-color: var(--low); }
+  .finding h3 { margin: 0 0 4px; font-size: 16px; }
+  .loc { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .finding p, .finding ul { margin: 7px 0; }
+  .finding ul { padding-left: 22px; }
+  .kv { display: grid; grid-template-columns: 96px 1fr; gap: 2px 12px; margin: 8px 0; font-size: 13.5px; }
+  .kv dt { color: var(--muted); font-weight: 600; }
+  .kv dd { margin: 0; }
+  .note { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin: 14px 0; font-size: 13.5px; }
+  .oklist { columns: 2; font-size: 13.5px; }
+  .oklist li { margin: 2px 0; }
+  hr { border: none; border-top: 1px solid var(--line); margin: 36px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Spid3r — Complex Application Field Test</h1>
+<p class="meta">
+  Application: <code>Nebula Bank Core</code> (<code>examples/complex_app/nebula_core.matrix</code>)
+  &nbsp;·&nbsp; Date: 2026-10-25 &nbsp;·&nbsp; Build: current tree (debug)<br>
+  Engines exercised: tree interpreter · bytecode VM · LLVM native (AOT) &nbsp;·&nbsp;
+  Probes: <code>probes.matrix</code>, <code>probes2.matrix</code>, <code>probes3.matrix</code>, <code>probes4.matrix</code><br>
+  Method: write one deterministic 560-line application covering the whole language surface, run it on all
+  three engines, require byte-identical stdout, then probe every semantic edge the application did not touch.
+</p>
+
+<div class="note">
+  <strong>Bottom line.</strong> The application runs <strong>byte-identically on all three engines</strong>
+  (exit 0, verified) after two portability adjustments that are themselves recorded findings — and the
+  probe rounds found <strong>9 issues</strong>: <strong>3 High</strong>, <strong>1 Medium</strong>,
+  <strong>5 Low</strong>. The two most serious were (a) the regex engine silently treating
+  <code>{n}</code>/<code>{n,m}</code> quantifiers as literal braces and (b) the native backend's
+  <code>try/catch</code> failing to intercept two runtime error paths. <strong>F-1, F-9 and F-4 were
+  all fixed on 2026-10-25</strong> (F-1: engine + lexer layers; F-9: native runtime error channel;
+  F-4: <code>?.</code> now reads a missing map key as null — the <code>m?.k ?? fallback</code> idiom
+  works), and <strong>F-3 was resolved the same day by
+  adopting the GC observability policy</strong> (ENGINE_CONTRACT exemption #4). The low batch has
+  started too: <strong>F-5 (trailing commas) and F-2 (<code>-o</code> extension + alias-rejection
+  shape) are fixed/addressed</strong>. The rest remain open.
+  The 39-check probe battery is
+  otherwise identical on tree, VM and native —
+  including dunders, inheritance, interfaces, enums/match guards, closures, checked arithmetic,
+  unicode handling, insertion-ordered maps and deterministic concurrency.
+</div>
+
+<h2 id="app">1. The application</h2>
+<p>
+  <code>Nebula Bank Core</code> is a deterministic banking-core simulation: a <code>Money</code> value type
+  with all five arithmetic dunders, an <code>Account → Savings/Checking</code> hierarchy with an
+  <code>Auditable</code> interface and an overridden <code>withdraw</code>, a <code>Bank</code> registry over
+  insertion-ordered maps, enum + <code>match</code> compliance rules with guards, hand-rolled merge sort
+  with a comparator closure, a BST, memoized recursion, <code>ok/err</code> results with
+  <code>try/catch/finally</code>, four concurrent branch workers (spawn + channel + mutex) whose
+  aggregation is order-independent by construction, a JSON round trip, regex validation, <code>ref</code>/
+  <code>weak</code> cells, a 150 000-cycle garbage churn, and bigint arithmetic (2^96, 30!).
+  Every value printed derives from fixed seeds and insertion-ordered containers — no host clock, no
+  scheduler-order dependence.
+</p>
+<table>
+  <thead><tr><th>Concept</th><th>Where in the app</th><th>3-engine result</th></tr></thead>
+  <tbody>
+    <tr><td>Operator overloading (5 dunders)</td><td><code>Money.__add__/__sub__/__mul__/__div__/__neg__</code></td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>Inheritance + override + interface</td><td><code>Account → Savings/Checking</code>, <code>Auditable</code></td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>Enums + match + guards</td><td><code>TxKind</code>, <code>Ledger.Entry(c, memo)</code>, <code>compliance_rule</code></td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>Closures / higher-order fns</td><td>comparator closures, <code>map/filter/reduce</code>, seeded RNG factory</td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>Algorithms</td><td>merge sort, BST insert/inorder/height, memoized fib(40) = 102334155</td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>Error handling</td><td><code>throw</code>, <code>try/catch/finally</code>, <code>ok/err/unwrap</code>, malformed JSON</td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>Concurrency</td><td>4 × <code>spawn</code> + <code>channel</code> + <code>mutex</code>, deterministic aggregation</td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>JSON round trip</td><td><code>json_write</code>/<code>json_parse</code> of a nested snapshot</td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>Regex</td><td>ID validation, <code>find_all</code>, <code>replace</code></td><td><span class="badge b-ok">Identical</span> (after F-1 workaround)</td></tr>
+    <tr><td>ref / weak</td><td>counter cell + weak observation</td><td><span class="badge b-ok">Identical</span></td></tr>
+    <tr><td>GC churn</td><td>150 000 abandoned cycles + kept cycle integrity</td><td><span class="badge b-ok">Portable subset</span> (see F-3)</td></tr>
+    <tr><td>bigint</td><td>2^96, 30!</td><td><span class="badge b-ok">Identical</span> (plain import; see F-2)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="parity">2. Parity verification</h2>
+<table>
+  <thead><tr><th>Run</th><th>tree</th><th>vm</th><th>native (AOT)</th><th>stdout byte-identical</th></tr></thead>
+  <tbody>
+    <tr><td><code>nebula_core.matrix</code> (560 lines, ~90 output lines)</td><td>exit 0</td><td>exit 0</td><td>exit 0</td><td><span class="badge b-ok">Yes — all three</span></td></tr>
+    <tr><td><code>probes.matrix</code> — 39 semantic checks</td><td>exit 0</td><td>exit 0</td><td>exit 0</td><td><span class="badge b-ok">Yes — all three</span></td></tr>
+    <tr><td><code>probes2.matrix</code> — shift limits, ord/chr, escapes, strict int parse</td><td>exit 0</td><td>exit 0</td><td>exit 0</td><td><span class="badge b-ok">Yes — all three</span></td></tr>
+    <tr><td><code>probes4.matrix</code> — catchability matrix (7 error paths)</td><td>exit 0, all 7 caught</td><td>exit 0, all 7 caught</td><td>exit 0, all 7 caught <span class="badge b-ok">Fixed by F-9 fix</span> (was: <strong>exit 70</strong>, 4/7 caught)</td><td><span class="badge b-ok">Yes — all three (post-F-9-fix)</span></td></tr>
+    <tr><td><code>probes3.matrix</code> — hostile: safe-dot miss, deep recursion</td><td>exit 1 (uncaught deep(5000) outside try)</td><td>exit 1 (same)</td><td>exit 1 (same uncaught flow; the safe-dot miss itself is now catchable) <span class="badge b-ok">Fixed by F-9 fix</span></td><td><span class="badge b-ok">Yes — all three (post-F-9-fix)</span></td></tr>
+  </tbody>
+</table>
+<p class="meta">Parity criterion per docs/ENGINE_CONTRACT.md: byte-identical stdout and the same exit code;
+stderr compared for phase + first line only.</p>
+
+<h2 id="findings">3. Findings</h2>
+
+<div class="finding high">
+  <h3>F-1 &nbsp;<span class="badge b-high">High</span>&nbsp; Regex bounded-repeat quantifiers are silently treated as literal braces &nbsp;<span class="badge b-ok">Fixed 2026-10-25</span></h3>
+  <div class="loc">src/stdlib/regex.rs — <code>RegexNode</code> (9–23), <code>parse_piece</code> (100–117), literal <code>Char</code> arm (242) · src/lexer/mod.rs — <code>try_interp_expr</code> (digit-hole rejection)</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd><code>regex_match("^[0-9]{4}$", "5555")</code> returned <strong>false</strong>; <code>regex_match("a{2}", "a{2}")</code> returned <strong>true</strong> — the pattern <code>{4}</code> matched the four literal characters <code>{</code> <code>4</code> <code>}</code>, so every pattern using <code>{n}</code> or <code>{n,m}</code> silently validated the wrong thing. No error, no warning, all three engines agreed on the wrong answer.</dd>
+    <dt>Repro</dt><dd>Found by the field-test app: its ID validator (<code>^ACC-[0-9]{4}$</code>) rejected <em>every</em> ID including valid ones; minimized with <code>^[0-9]{4}$</code> on <code>"5555"</code> → false, while <code>^[0-9]+$</code> → true and <code>a{2}</code> vs <code>a{2}</code> → true (literal).</dd>
+    <dt>Root cause</dt><dd>Two layers. (1) The regex AST had only <code>Star/Plus/Quest</code> nodes; <code>parse_piece</code> consumed <code>* + ?</code> and nothing else, so <code>{</code> fell through to the literal-character arm. (2) The string layer treated bare-integer braces as interpolation holes — <code>"A{2}B"</code> printed <code>A2B</code> — so even a fixed engine could never receive <code>{4}</code> from source, and there is no brace escape to work around it.</dd>
+    <dt>Fix</dt><dd>(1) <code>parse_piece</code> now parses <code>{n}</code>, <code>{n,}</code>, <code>{n,m}</code>, <code>{,m}</code> and expands them at AST level (<code>a{2,4}</code> → <code>aa(a(a)?)?</code>), with a 1000-count cap (RE2-style) that errors instead of blowing up, and PCRE-style literal fallback for malformed braces (<code>a{</code>, <code>a{x}</code>, <code>a{2</code>, <code>{}</code>). (2) The lexer's <code>try_interp_expr</code> rejects bare-integer holes (<code>{2}</code> stays literal text), restoring the ability to write quantifier braces while keeping <code>{name}</code>, <code>{f(x)}</code>, <code>{-1}</code>, <code>{arr[0]}</code> holes working. <em>Behavior change:</em> <code>"A{2}B"</code> now prints <code>A{2}B</code> (it printed <code>A2B</code>).</dd>
+    <dt>Tests</dt><dd>Five new unit tests in <code>src/stdlib/regex.rs</code> (exact/range/open/zero repeats, groups and classes under repeat, malformed-brace fallback, limit errors); lib suite 140/140, <code>lexer_tests</code> 19/19 (S-25 pins intact), parser/fmt/diagnostics/match/engine_matrix 48/48. End-to-end on all three engines (<code>examples/complex_app/f1_verify.matrix</code>): every repro line now correct and byte-identical on tree, VM and native — <code>^ACC-[0-9]{4}$</code> accepts <code>ACC-1001</code>/rejects <code>ACC-12</code>, <code>(ab){3}</code> matches, <code>regex_replace("o{2}", …)</code> works, and the field-test app's validator (<code>nebula_core.matrix</code> §8, restored to <code>{4}</code>) runs 3-engine byte-identical with correct accept/reject results.</dd>
+  </dl>
+</div>
+
+<div class="finding high">
+  <h3>F-9 &nbsp;<span class="badge b-high">High</span>&nbsp; Native backend: two runtime errors escape <code>try/catch</code> and abort the process (exit 70) &nbsp;<span class="badge b-ok">Fixed 2026-10-25</span></h3>
+  <div class="loc">src/native/rt.rs — <code>abort()</code> (~55–59, ends in <code>process::exit(70)</code>), safe-dot missing-key path at <code>rt.rs:1010</code> (<code>None =&gt; abort(...)</code>)</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>On the native backend, <code>m?.missing</code> and call-depth overflow raised <em>inside a try block</em> are <strong>not caught</strong>: stdout stops mid-program, stderr shows one <code>error[runtime]</code> line, exit code <strong>70</strong>. The same programs on tree and VM catch both errors and exit 0.</dd>
+    <dt>Repro</dt><dd><code>probes4.matrix</code>: 7 error paths in individual try/catch blocks. tree and VM catch all 7 and print <code>end reached</code>. Native catches 4 (user <code>throw</code>, <code>json_parse</code>, <code>none.unwrap()</code>, <code>map.get("missing")</code>), then <strong>dies at <code>m2?.nope</code></strong> with <code>error[runtime]: missing key 'nope'</code>, exit 70. A separate probe (<code>deep(50000)</code> in a try) dies identically at the stack-overflow error on native while tree/VM catch it.</dd>
+    <dt>Root cause</dt><dd>The native runtime's null-safe-dot/field path calls <code>abort(&amp;format!("missing key '{}'", name))</code> directly instead of routing the error through the runtime's catchable error channel; <code>abort()</code> prints and <code>std::process::exit(70)</code>s. Tree and VM raise the same message as a normal <code>VmError</code>/<code>RuntimeError</code> (src/vm/mod.rs:1850, src/interpreter/mod.rs:1378) that <code>catch</code> receives.</dd>
+    <dt>Impact</dt><dd>Same program, different error semantics per engine — a direct violation of the engine contract's "same exit code / never silent divergence" rule, and a fatal DoS for native servers that guard untrusted-map access with <code>try/catch</code>. Distinct exit codes (1 vs 70) also break scripts.</dd>
+    <dt>Fix (2026-10-25)</dt><dd>All script-level <code>abort()</code> sites in <code>src/native/rt.rs</code> were routed through the catchable pending-throw channel (<code>rt_throw</code>), which the generated <code>spid3r_threw</code> guards already intercept: (a) <code>spid3r_field_get</code>/<code>spid3r_field_set</code> — missing map key ("missing key 'x'", the <code>m?.x</code> path), missing instance field (wording switched to the tree engine's exact <code>no_field_error</code> text); (b) call-depth overflow — <code>enter_call()</code> now returns <code>bool</code> and every call site raises the catchable <code>"stack overflow: call depth limit reached"</code> <em>without entering generated code</em>, and the depth counter unwinds normally as frames return (recursion works again after a catch); (c) same class, same channel: "int is not callable" in the call dispatcher, wrong-arity callbacks (<code>check_arity</code> now returns <code>Option&lt;String&gt;</code>), and constructor arity errors (<code>new X expects ...</code>). <code>abort()</code> (exit 70) is now reserved for genuinely unrecoverable internal states: null value/string/upvalue pointers, unknown opcodes, class-registration races.</dd>
+    <dt>Verification</dt><dd><code>probes4.matrix</code>: all 7 paths caught on native, exit 0, stdout byte-identical to tree/VM. New end-to-end probe <code>examples/complex_app/f9_verify.matrix</code> (8 checks: safe-dot miss, plain-dot miss, recursion overflow caught, depth counter unwound and reusable after the catch, non-callable, instance-field read + write): byte-identical on all three engines, exit 0. New regression pin <code>tests/native_catchability.rs</code> asserts exit codes and byte-identical stdout on tree + VM + native (native arm skipped without LLVM). Suites: lib 140/140, native_tests 7/7, engine_matrix 5/5 (AOT arms), clippy + rustfmt clean; nebula_core.matrix re-verified byte-identical exit 0 on all three engines.</dd>
+  </dl>
+</div>
+
+<div class="finding high">
+  <h3>F-3 &nbsp;<span class="badge b-high">High</span>&nbsp; <code>gc_live_cells()</code> is engine-divergent and the native arena never collects cycles mid-run &nbsp;<span class="badge b-ok">Resolved 2026-10-25 (policy adopted)</span></h3>
+  <div class="loc">src/value/gc.rs (<code>gc_live_cells</code>) · native arena model (docs/NATIVE.md, audit §5 residual risk)</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>The identical workload (150 000 abandoned two-node cycles, one kept cycle, no explicit <code>gc_collect()</code>) reports live cells: <strong>tree 380 → 128 after collect; VM 159 → 45; native 300 462 → 300 462</strong>. On native, <code>gc_collect()</code> completes but reclaims nothing: cyclic garbage is only released at process exit. A program that prints <code>gc_live_cells()</code> — a public builtin — can never satisfy the byte-identical-stdout contract.</dd>
+    <dt>Repro</dt><dd>Run <code>nebula_core.matrix</code> section 10 on all three engines (numbers above); the app now prints only portable verdicts, with this finding referenced inline.</dd>
+    <dt>Root cause</dt><dd>Live-cell counts are per-implementation bookkeeping (refcount + mark-sweep cells on tree/VM vs arena allocations on native), and the native backend's arena design (an accepted residual risk in the audit) has no mid-run cycle reclamation by construction. Mechanically: every native value handle is a <code>Box&lt;Value&gt;</code> leaked for the whole process, and each handle's inner <code>Arc</code> is a strong reference from outside the tracked set — so on native <em>every</em> cell has <code>external &gt; 0</code>, every cell is a root, and the shared external-reference mark-sweep correctly keeps everything alive. The collector is not broken; there is nothing it is allowed to free.</dd>
+    <dt>Impact</dt><dd>(a) Contract conflict: <code>gc_live_cells()</code> is unusable in any cross-engine program or benchmark; (b) long-running native services that allocate cyclic garbage (object graphs, parent/child links) grow without bound until exit — the exact leak S-17 fixed for the VM; (c) misleading parity-test failures for anyone asserting on it.</dd>
+    <dt>Resolution (2026-10-25)</dt><dd>Policy decided and adopted, per this card's original recommendation. <strong>Decision:</strong> <code>gc_live_cells()</code> and the swept count are <strong>engine-internal memory observability</strong>, exempt from byte-parity as <strong>ENGINE_CONTRACT exemption #4</strong>. The portable subset — both builtins exist on every engine and return <code>int</code>, <code>gc_collect()</code> completes safely (on native it reclaims nothing <em>by construction</em>), and live data always survives a collection — is the parity bar for programs using these builtins. Documented in <code>docs/GC.md</code> (new "The native backend" section, including why mid-run reclamation requires handle-lifetime management in codegen before the existing collector can reclaim — the recorded design path for future work), <code>docs/NATIVE.md</code> (memory model), and <code>docs/STANDARD_LIBRARY.md</code> (builtin rows rewritten). Not done: native arena reclamation itself (out of scope without the codegen handle-lifetime work; documented as future work, not a flag).</dd>
+    <dt>Verification</dt><dd>New pin <code>tests/gc_portability.rs</code>: the churn probe (20 000 abandoned cycles + kept cycle) prints only portable facts and its stdout is byte-identical on tree, VM and native, exit 0. Live probes confirmed the documented semantics: <code>gc_collect()</code>/<code>gc_live_cells()</code> return <code>int</code> and complete safely on all three engines; the kept cycle survives everywhere. <code>nebula_core.matrix</code> re-verified byte-identical on all three engines after the section-10 comment update.</dd>
+  </dl>
+</div>
+
+<div class="finding med">
+  <h3>F-4 &nbsp;<span class="badge b-med">Medium</span>&nbsp; <code>?.</code> on a missing map key throws — the <code>m?.k ?? fallback</code> idiom does not protect reads &nbsp;<span class="badge b-ok">Fixed 2026-10-25</span></h3>
+  <div class="loc">src/lower/mod.rs (was: rewrote <code>OptField</code> away) · src/interpreter/mod.rs · src/vm/compiler.rs + bytecode.rs (new <code>FieldGetSoft</code> opcode) + src/vm/mod.rs · src/native/ir.rs + rt.rs (<code>spid3r_field_get_soft</code>) · docs/STANDARD_LIBRARY.md (<code>m?.k</code> "null-safe dot")</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd><code>m?.x</code> on a map without key <code>x</code> raised <code>error[runtime]: missing key 'x'</code> instead of evaluating to <code>null</code>, on <strong>all three engines</strong>. Consequently <code>m?.x?.y ?? default</code>, the idiom users reach for, still threw. <code>??</code> only coalesces <code>null</code>, and <code>none ?? 5</code> stays <code>none</code> (PHP-style), so neither operator rescued a missing key.</dd>
+    <dt>Repro</dt><dd><code>let m = map("a", 1); println(m?.x ?? -1);</code> → uncaught <code>missing key 'x'</code>. Contrast <code>m.get("a")</code> → 1, and <code>m?.a?.b</code> works when every key exists.</dd>
+    <dt>Root cause</dt><dd><code>?.</code> guarded only a <em>null receiver</em>: <code>lower</code> rewrote <code>obj?.field</code> to <code>if obj != null { t = obj.field }</code> — and the inner read was a <em>plain</em> field access, so key lookup ran the same throwing path as <code>get</code>. The docs' phrase "null-safe dot" invited the wrong expectation.</dd>
+    <dt>Impact</dt><dd>False sense of safety in exactly the code shape (untrusted map access) where it matters; combined with F-9 it turned a lookup miss on native into a process kill.</dd>
+    <dt>Fix (2026-10-25)</dt><dd>Semantics decision: <code>?.</code> now guards a null receiver <strong>and</strong> a missing map key — both read as <code>null</code>, so <code>m?.k ?? fallback</code> and chains (<code>m?.a?.b</code>) work. Everything else keeps plain-<code>.</code> semantics: an instance without the field and a non-fieldable type still raise the same catchable errors, and <code>m.get(k)</code> still throws — a missing key is normal data variation for a map, a missing field is still a loud bug. Implementation: <code>Expr::OptField</code> is now a first-class operation instead of being lowered away — the tree interpreter evaluates it directly; the VM compiles it to the new additive <code>FieldGetSoft</code> opcode (byte 58, no format-version bump per docs/BYTECODE_STABILITY.md); native calls the new <code>spid3r_field_get_soft</code> trampoline (null/map arms soften, everything else delegates to <code>spid3r_field_get</code>). <em>Behavior change:</em> <code>m?.missing</code> reads <code>null</code> on every engine (was: throw); probes pinning the old throw (probes3/4, f9_verify, native_catchability) were updated.</dd>
+    <dt>Verification</dt><dd>New end-to-end probe <code>examples/complex_app/f4_verify.matrix</code> (12-row semantics table: exists/missing/idiom/null/chains + the four still-throwing paths): byte-identical on tree, VM and native, exit 0. New pin <code>tests/f4_opt_field.rs</code> asserts the table on all three engines. Prior pins re-verified: stage2b_hoisting (receiver evaluated once, chains with <code>??</code>), language_surface, engine_matrix — all green. Full parity protocol re-run: nebula_core + all probes byte-identical on three engines.</dd>
+  </dl>
+</div>
+
+<div class="finding low">
+  <h3>F-2 &nbsp;<span class="badge b-low">Low</span>&nbsp; Native backend gaps: aliased imports rejected; <code>compile -o</code> writes an extensionless bytecode blob on Windows &nbsp;<span class="badge b-ok">Addressed 2026-10-25 — (b) fixed; (a) contract-shaped + documented</span></h3>
+  <div class="loc">src/cli.rs (<code>compile_file</code> -o handling) · src/native/modules.rs (alias rejection) · docs/BUILDING.md · docs/NATIVE.md</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>(a) <code>import "bigint" as bi;</code> fails under AOT: <code>'import as alias' is not supported by the native backend yet; run it with --engine vm</code> — a clean, honest diagnostic, but the plain-import route silently changes call sites (<code>bi.mul</code> → <code>mul</code>), and the rejection was phased <code>error[semantic]</code> (exit 1) instead of the contract's <code>error[usage]</code> (exit 2) for unsupported constructs. (b) <code>spid3r compile -o out</code> writes an <em>extensionless</em> PE-less blob (header <code>SPID3R\x02…</code>, 362 856 bytes) that Windows refuses to execute until renamed; <code>compile</code> (bytecode) vs <code>build</code> (native) is easy to confuse, and docs' <code>./out</code> flow only works on Unix.</dd>
+    <dt>Repro</dt><dd>App runbook: <code>spid3r build nebula_core.matrix -o x.exe</code> succeeds; <code>spid3r compile … -o x</code> yields the bytecode blob. Aliased import verified with the native build.</dd>
+    <dt>Fix (2026-10-25)</dt><dd><strong>(b) fixed:</strong> <code>compile -o</code> appends the canonical <code>.matrixc</code> extension when the given path has none (<code>-o x</code> writes <code>x.matrixc</code>); an explicit extension is used verbatim; the resolved path is printed. Works on every platform. <strong>(a) reshaped + documented:</strong> a full AOT module-namespace implementation (mangled globals + a scope-aware rename pass + a frozen-map constructor) is a feature-sized change, so the documented-gap route was chosen — which is what the engine contract prescribes ("a construct a backend cannot run must be <strong>rejected at compile time with a clean <code>error[usage]</code> diagnostic</strong>"). The rejection now uses <code>Phase::Usage</code> (<code>error[usage]</code>, <strong>exit 2</strong>, matching class-in-function), names the exact import (<code>'bigint as bi' is not supported…</code>), and the gap is documented in <code>docs/NATIVE.md</code> (Modules + the rejected-constructs table) and <code>docs/BUILDING.md</code> (new "compile vs build" + "Native backend limits" sections).</dd>
+    <dt>Verification</dt><dd>New pin <code>tests/f2_cli_outputs.rs</code>: extensionless <code>-o</code> produces <code>&lt;out&gt;.matrixc</code> (not a blob), prints the resolved path, and the artifact runs under <code>exec</code>; an explicit extension is verbatim; the aliased-import program runs on <code>--engine vm</code> (exit 0) and is rejected by <code>build</code> with exit 2 + <code>error[usage]</code> + the documented message. Live probes confirmed both before pinning.</dd>
+  </dl>
+</div>
+
+<div class="finding low">
+  <h3>F-5 &nbsp;<span class="badge b-low">Low</span>&nbsp; Trailing commas: allowed in match arms, rejected in call arguments &nbsp;<span class="badge b-ok">Fixed 2026-10-25</span></h3>
+  <div class="loc">src/parser/mod.rs — <code>parse_args</code> (calls, incl. <code>map(...)</code>/<code>tuple(...)</code> constructors and named arguments), list-literal loop, <code>parse_let_tuple</code> destructuring</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd><code>map("a", 1, "b", 2,)</code> → <code>error[parser]: unexpected ')'</code> while <code>match</code> arms accept a trailing comma. Multi-line constructors — the natural place to leave one — are exactly where the parser refuses.</dd>
+    <dt>Fix (2026-10-25)</dt><dd>Every comma-separated parse loop now follows the match-arm policy — a trailing comma before the closer is accepted and ignored: call arguments (positional <em>and</em> named), list literals, and <code>let</code>-destructuring (the tuple literal already allowed it). No grammar ambiguity: the closer token (<code>)</code> / <code>]</code>) cannot start an expression, so the lookahead is exact.</dd>
+    <dt>Verification</dt><dd>New pin <code>tests/f5_trailing_comma.rs</code> (calls incl. multi-line <code>map(...)</code>, list literals, destructuring, tuple, single-element <code>[9,]</code>, and no-trailing-comma calls): byte-identical on tree, VM and native, exit 0. Parser/fmt/lib suites and the full parity protocol re-run green.</dd>
+  </dl>
+</div>
+
+<div class="finding low">
+  <h3>F-6 &nbsp;<span class="badge b-low">Low</span>&nbsp; <code>list.join</code> refuses non-string elements</h3>
+  <div class="loc">stdlib list methods — <code>join</code></div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd><code>[1, 2, 3].join(",")</code> → <code>error[runtime]: join needs strings, found int</code>. Every program that prints an int list needs a <code>to_strs</code> shim (the field-test app needed one; both probe files needed one).</dd>
+    <dt>Suggested fix</dt><dd>Auto-stringify elements via the shared display function (consistent with <code>string(x)</code>) or add <code>join_any</code>/<code>fmt_join</code>. Keep a strict variant if the type discipline matters for embedded use.</dd>
+  </dl>
+</div>
+
+<div class="finding low">
+  <h3>F-7 &nbsp;<span class="badge b-low">Low</span>&nbsp; No <code>\u</code> escape in string literals</h3>
+  <div class="loc">lexer — string escape scan</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd><code>"\u{1F600}"</code> → <code>error[lexer]: unknown escape '\u'</code>. The JSON parser accepts <code>\uXXXX</code> with surrogate pairs, yet source code cannot spell a non-ASCII character without pasting raw UTF-8 — awkward in editors/CI with ASCII-only policies.</dd>
+    <dt>Suggested fix</dt><dd>Support <code>\u{1F600}</code> (and/or <code>\uXXXX</code> with surrogate pairing) in the lexer's escape scan; low risk, closes a surprising asymmetry with the JSON layer.</dd>
+  </dl>
+</div>
+
+<div class="finding low">
+  <h3>F-8 &nbsp;<span class="badge b-low">Low</span>&nbsp; <code>json_parse</code> end-of-input diagnostic leaks Rust internals</h3>
+  <div class="loc">src/stdlib — JSON reader</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd><code>json_parse("{\"broken\": ")</code> → <code>json_parse: unexpected character None</code>. "None" is Rust's <code>Option::None</code> Debug formatting; the message should say "unexpected end of input". Similar phrasing appears for truncated arrays.</dd>
+    <dt>Suggested fix</dt><dd>Map the <code>None</code> EOF case to a dedicated message in the JSON reader's error constructor.</dd>
+  </dl>
+</div>
+
+<h2 id="good">4. What worked flawlessly (byte-identical on all three engines)</h2>
+<ul class="oklist">
+  <li>All five arithmetic dunders + constructor returns</li>
+  <li>Inheritance, method override, interface dispatch by name</li>
+  <li>Enum matching with guards, bindings and nesting</li>
+  <li>Per-iteration closure capture (0/10/20, not 30/30/30)</li>
+  <li>Checked arithmetic: overflow, div-by-zero, shift-range errors — identical messages</li>
+  <li>Unicode scalar semantics: <code>len</code>, <code>upper</code>, <code>slice</code>, <code>ord</code>/<code>chr</code> astral round-trip</li>
+  <li>Insertion-ordered maps; structural <code>==</code> on maps/lists</li>
+  <li>Stable <code>priority_queue</code> ties; <code>if</code>-expressions</li>
+  <li><code>and</code>/<code>or</code> short-circuit semantics</li>
+  <li>ref/weak/deref</li>
+  <li>spawn + channel + mutex aggregation deterministic</li>
+  <li>JSON round trip incl. nested structures</li>
+  <li>Float formatting: <code>0.30000000000000004</code>, <code>5.0</code></li>
+  <li>bigint 2^96 and 30! exact</li>
+  <li>Big-string build (2 000 parts) and slicing</li>
+  <li>Error value passthrough: <code>throw</code> crosses <code>catch</code> unchanged</li>
+</ul>
+
+<h2 id="recs">5. Recommendations, in priority order</h2>
+<ol>
+  <li><strong>F-1</strong> — implement or reject <code>{n}</code>/<code>{n,m}</code> regex quantifiers. Silent wrong answers in validation are the most dangerous class found; this is a ~1-hour parser+compiler change plus table tests. <span class="badge b-ok">Done 2026-10-25</span></li>
+  <li><strong>F-9</strong> — route native recoverable errors through the catchable channel (delete the <code>abort()</code> on the safe-dot path); add a native catchability matrix to <code>tests/</code>. <span class="badge b-ok">Done 2026-10-25 — tests/native_catchability.rs</span></li>
+  <li><strong>F-3</strong> — write the GC observability policy into <code>docs/GC.md</code> + <code>ENGINE_CONTRACT.md</code> (carve <code>gc_live_cells</code> out of parity, or normalize it), and consider arena reclamation for long-running native processes. <span class="badge b-ok">Done 2026-10-25 — exemption #4 adopted; tests/gc_portability.rs</span></li>
+  <li><strong>F-4</strong> — decide <code>?.</code> semantics on missing keys and align docs; today the documented null-safe idiom is a trap. <span class="badge b-ok">Done 2026-10-25 — <code>?.</code> reads a missing map key as null; tests/f4_opt_field.rs</span></li>
+  <li><strong>F-2 / F-5 / F-6 / F-7 / F-8</strong> — small ergonomics batch: alias imports or doc note; trailing commas; <code>join</code> auto-stringify; <code>\u</code> escapes; JSON EOF message. <span class="badge b-ok">F-2 done 2026-10-25 — <code>-o</code> extension + contract-shaped alias rejection (tests/f2_cli_outputs.rs)</span> <span class="badge b-ok">F-5 done 2026-10-25 — trailing commas in calls/lists/destructuring (tests/f5_trailing_comma.rs)</span></li>
+</ol>
+
+<div class="note">
+  <strong>Note on scope.</strong> This field test produced evidence, not fixes: at run time none of the
+  findings above were patched in the toolchain (the application itself was adjusted to avoid the traps,
+  each adjustment referencing its finding). F-1, F-9 and F-4 were subsequently fixed on 2026-10-25, and
+  F-3 was resolved by adopting the GC observability policy — see the Fix/Verification/Resolution rows
+  on their cards. Severity scale: <span class="badge b-high">High</span>
+  silently wrong results, process abort, or contract-violating divergence ·
+  <span class="badge b-med">Medium</span> dangerous idiom / semantics trap ·
+  <span class="badge b-low">Low</span> ergonomics, diagnostics, developer-facing gaps.
+</div>
+
+<h2 id="appendix">Appendix — artifacts &amp; commands</h2>
+<pre>examples/complex_app/nebula_core.matrix   the application (560 lines, deterministic)
+examples/complex_app/probes.matrix       39 semantic parity checks
+examples/complex_app/probes2.matrix      resource/escape/chain probes (portable part)
+examples/complex_app/probes3.matrix      hostile probes: safe-dot miss, deep recursion
+examples/complex_app/probes4.matrix      catchability matrix (7 error paths)
+examples/complex_app/cheatsheet.md       verified language cheat sheet (research notes)
+
+spid3r run examples/complex_app/nebula_core.matrix
+spid3r run --engine vm examples/complex_app/nebula_core.matrix
+spid3r build examples/complex_app/nebula_core.matrix -o nebula_native.exe
+nebula_native.exe                        # byte-identical stdout, exit 0</pre>
+<p class="meta">
+  Generated 2026-10-25 against the current working tree (Spid3r v1.0.0, debug profile, Windows).
+  All parity claims were verified by capturing stdout separately from stderr and comparing bytes;
+  test counts and timings are from the same session.
+</p>
+
+</div>
+</body>
+</html>
