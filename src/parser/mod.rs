@@ -927,6 +927,11 @@ impl Parser {
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
+            // A trailing comma before `)` is allowed, matching the
+            // match-arm / call-argument / tuple-literal policy (F-5).
+            if self.at(&TokenKind::RParen) {
+                break;
+            }
         }
         self.expect(&TokenKind::RParen, "')' after the names")?;
         self.expect(&TokenKind::Assign, "'=' before the value")?;
@@ -1725,11 +1730,20 @@ impl Parser {
                         if !self.eat(&TokenKind::Comma) {
                             break;
                         }
+                        // A trailing comma before `)` is allowed, matching the
+                        // match-arm and tuple-literal policy (F-5).
+                        if self.at(&TokenKind::RParen) {
+                            break;
+                        }
                         continue;
                     }
                 }
                 args.push(self.parse_expr()?);
                 if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                // Same trailing-comma rule for positional arguments.
+                if self.at(&TokenKind::RParen) {
                     break;
                 }
             }
@@ -1817,6 +1831,11 @@ impl Parser {
                     loop {
                         items.push(self.parse_expr()?);
                         if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                        // A trailing comma before `]` is allowed, matching the
+                        // match-arm and call-argument policy (F-5).
+                        if self.at(&TokenKind::RBracket) {
                             break;
                         }
                     }
