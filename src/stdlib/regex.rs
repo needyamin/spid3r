@@ -1,8 +1,15 @@
 //! Zero-dependency Thompson NFA regex engine.
 //!
-//! Supports literals, '.', '*', '+', '?', '^', '$', character classes '[abc]',
-//! ranges '[a-z]', negations '[^...]', escapes '\d', '\w', '\s', '\D', '\W', '\S',
-//! alternation '|', and grouping '()'. Linear time execution with no exponential backtracking.
+//! Supports literals, '.', '*', '+', '?', '{n}', '{n,}', '{n,m}', '^', '$',
+//! character classes '[abc]', ranges '[a-z]', negations '[^...]', escapes
+//! '\d', '\w', '\s', '\D', '\W', '\S', alternation '|', and grouping '()'.
+//! Linear time execution with no exponential backtracking.
+//!
+//! Bounded repeats are expanded at parse time (`a{2,4}` becomes `aa(a(a)?)?`,
+//! `a{2,}` becomes `aa a*`), so the NFA compiler needs no extra state kind.
+//! A `{` that does not form a valid quantifier (`a{`, `a{x}`, `a{2`, `{}`)
+//! is a literal character, as in PCRE; a well-formed count beyond
+//! [`MAX_REPEAT`] is a compile error rather than a silent blowup.
 
 #[derive(Clone, Debug, PartialEq)]
 enum RegexNode {
@@ -26,6 +33,11 @@ enum RegexNode {
 /// recursion guard). Without it, a pathological `((((…` pattern recurses the
 /// pattern parser without bound and overflows the call stack.
 const MAX_REGEX_DEPTH: u32 = 512;
+
+/// Maximum repetition count for `{n}`/`{n,}`/`{n,m}` quantifiers. The
+/// expansion is unrolled into copies at parse time, so a hostile `a{99999999}`
+/// must not allocate a billion states; 1000 matches RE2's default bound.
+const MAX_REPEAT: u32 = 1000;
 
 struct Parser<'a> {
     chars: Vec<char>,
@@ -112,8 +124,127 @@ impl<'a> Parser<'a> {
                 self.next();
                 Ok(RegexNode::Quest(Box::new(atom)))
             }
+            // `{n}` / `{n,}` / `{n,m}` — expanded into copies + Quest/Star. A
+            // `{` that does not form a valid quantifier is left unconsumed so
+            // the next `parse_atom` treats it as a literal character (PCRE's
+            // malformed-brace rule); a well-formed but oversized count is an
+            // error, never a silent blowup.
+            Some('{') => match self.parse_brace_repeat()? {
+                Some((min, max)) => Self::expand_repeat(atom, min, max),
+                None => Ok(atom),
+            },
             _ => Ok(atom),
         }
+    }
+
+    /// Parse a bounded-repeat quantifier at the current position (which must
+    /// be `{`). Returns `None` — with the position rewound — when the shape is
+    /// not a valid quantifier (`{}`, `{,}`, `{x}`, `{2`, `a{2,x}` …), leaving
+    /// the brace to be consumed as a literal. Accepted forms: `{n}`, `{n,}`,
+    /// `{n,m}`, `{,m}` (= `{0,m}`).
+    fn parse_brace_repeat(&mut self) -> Result<Option<(u32, Option<u32>)>, String> {
+        let start = self.pos;
+        self.next(); // consume '{'
+        let min_digits = self.take_digits();
+        let max_digits = if self.peek() == Some(',') {
+            self.next();
+            Some(self.take_digits())
+        } else {
+            None
+        };
+        if self.peek() != Some('}') {
+            self.pos = start;
+            return Ok(None);
+        }
+        self.next(); // consume '}'
+                     // `{}` and `{,}` are literals, not quantifiers.
+        if min_digits.is_empty() && max_digits.as_deref().is_none_or(|d| d.is_empty()) {
+            self.pos = start;
+            return Ok(None);
+        }
+        let (min, max) = match max_digits {
+            // `{n}` — exact count.
+            None => {
+                let min = Self::parse_count(&min_digits)?;
+                (min, Some(min))
+            }
+            Some(d) => {
+                if d.is_empty() {
+                    // `{n,}` — min or more.
+                    let min = Self::parse_count(&min_digits)?;
+                    (min, None)
+                } else if min_digits.is_empty() {
+                    // `{,m}` — up to m.
+                    (0, Some(Self::parse_count(&d)?))
+                } else {
+                    // `{n,m}` — between n and m.
+                    let min = Self::parse_count(&min_digits)?;
+                    let max = Self::parse_count(&d)?;
+                    if max < min {
+                        return Err(format!(
+                            "regex repeat range: max {max} is smaller than min {min}"
+                        ));
+                    }
+                    (min, Some(max))
+                }
+            }
+        };
+        if min > MAX_REPEAT || matches!(max, Some(m) if m > MAX_REPEAT) {
+            return Err(format!("regex repeat count exceeds max {MAX_REPEAT}"));
+        }
+        Ok(Some((min, max)))
+    }
+
+    fn take_digits(&mut self) -> String {
+        let mut digits = String::new();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                digits.push(c);
+                self.next();
+            } else {
+                break;
+            }
+        }
+        digits
+    }
+
+    fn parse_count(digits: &str) -> Result<u32, String> {
+        digits
+            .parse::<u32>()
+            .map_err(|_| format!("regex repeat count '{digits}' is out of range"))
+    }
+
+    /// Expand `atom{min,max}` into plain Concat/Quest/Star nodes.
+    fn expand_repeat(atom: RegexNode, min: u32, max: Option<u32>) -> Result<RegexNode, String> {
+        let mut items: Vec<RegexNode> = Vec::new();
+        for _ in 0..min {
+            items.push(atom.clone());
+        }
+        match max {
+            // `{n,}`: n copies then an unbounded tail.
+            None => items.push(RegexNode::Star(Box::new(atom))),
+            Some(max) => {
+                // `{n,m}`: (m - n) further copies nested in optionals, built
+                // from the inside out: `a{2,4}` → `a a (a (a)?)?`.
+                let mut acc: Option<RegexNode> = None;
+                for _ in 0..(max - min) {
+                    acc = Some(match acc {
+                        None => RegexNode::Quest(Box::new(atom.clone())),
+                        Some(inner) => {
+                            RegexNode::Quest(Box::new(RegexNode::Concat(vec![atom.clone(), inner])))
+                        }
+                    });
+                }
+                if let Some(q) = acc {
+                    items.push(q);
+                }
+            }
+        }
+        Ok(match items.len() {
+            0 => RegexNode::Empty,
+            1 => items.pop().unwrap(),
+            _ => RegexNode::Concat(items),
+        })
     }
 
     fn parse_atom(&mut self) -> Result<RegexNode, String> {
@@ -735,5 +866,87 @@ mod tests {
     fn test_classes_and_anchors() {
         assert!(regex_match(r"^[a-zA-Z_]\w*$", "valid_var_1").unwrap());
         assert!(!regex_match(r"^[a-zA-Z_]\w*$", "1invalid").unwrap());
+    }
+
+    // -----------------------------------------------------------------
+    // Bounded-repeat quantifiers {n} / {n,} / {n,m} (field-test finding F-1:
+    // they used to match literal brace characters — see docs/html/report.html)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_repeat_exact() {
+        assert!(regex_match(r"^[0-9]{4}$", "5555").unwrap());
+        assert!(!regex_match(r"^[0-9]{4}$", "555").unwrap());
+        assert!(!regex_match(r"^[0-9]{4}$", "55555").unwrap());
+        assert!(regex_match(r"^a{2}$", "aa").unwrap());
+        assert!(!regex_match(r"^a{2}$", "a").unwrap());
+        assert!(!regex_match(r"^a{2}$", "aaa").unwrap());
+    }
+
+    #[test]
+    fn test_repeat_range() {
+        assert!(regex_match(r"^a{2,4}$", "aa").unwrap());
+        assert!(regex_match(r"^a{2,4}$", "aaa").unwrap());
+        assert!(regex_match(r"^a{2,4}$", "aaaa").unwrap());
+        assert!(!regex_match(r"^a{2,4}$", "a").unwrap());
+        assert!(!regex_match(r"^a{2,4}$", "aaaaa").unwrap());
+        // `{,m}` is `{0,m}`.
+        assert!(regex_match(r"^a{,2}$", "").unwrap());
+        assert!(regex_match(r"^a{,2}$", "aa").unwrap());
+        assert!(!regex_match(r"^a{,2}$", "aaa").unwrap());
+    }
+
+    #[test]
+    fn test_repeat_open_ended() {
+        assert!(regex_match(r"^a{2,}$", "aa").unwrap());
+        assert!(regex_match(r"^a{2,}$", "aaaaaa").unwrap());
+        assert!(!regex_match(r"^a{2,}$", "a").unwrap());
+        assert!(regex_match(r"^(ab){2,}$", "ababab").unwrap());
+    }
+
+    #[test]
+    fn test_repeat_zero_and_groups() {
+        // `{0}` and `{0,1}` degenerate forms.
+        assert!(regex_match(r"^ab{0}c$", "ac").unwrap());
+        assert!(regex_match(r"^ab{0,1}c$", "abc").unwrap());
+        assert!(regex_match(r"^ab{0,1}c$", "ac").unwrap());
+        // Repeats over groups and classes.
+        assert!(regex_match(r"^(ab){2}$", "abab").unwrap());
+        assert!(!regex_match(r"^(ab){2}$", "ab").unwrap());
+        assert!(regex_match(r"^[ab]{3}$", "aba").unwrap());
+        assert!(!regex_match(r"^[ab]{3}$", "abc").unwrap());
+        // Longest match within the range is still reported.
+        assert_eq!(regex_find(r"a{1,3}", "aaaa").unwrap(), Some("aaa".into()));
+        assert_eq!(
+            regex_find_all(r"\d{2,3}", "1 22 333 4444").unwrap(),
+            vec!["22".to_string(), "333".to_string(), "444".to_string()]
+        );
+        assert_eq!(regex_replace(r"o{2}", "zoo keep", "0").unwrap(), "z0 keep");
+    }
+
+    #[test]
+    fn test_repeat_malformed_braces_stay_literal() {
+        // PCRE rule: a `{` that does not form a valid quantifier is literal.
+        assert!(regex_match(r"a{2", "xa{2").unwrap());
+        assert!(regex_match(r"a{x}", "a{x}").unwrap());
+        assert!(regex_match(r"a{}", "a{}").unwrap());
+        assert!(regex_match(r"a{,}", "a{,}").unwrap());
+        assert!(regex_match(r"a{2,x}", "a{2,x}").unwrap());
+        assert!(regex_match(r"^\{2\}$", "{2}").unwrap());
+        // The old silent-wrong-answer shape is gone.
+        assert!(!regex_match("a{2}", "a{2}").unwrap());
+        assert!(regex_match("a{2}", "aa").unwrap());
+    }
+
+    #[test]
+    fn test_repeat_limits_are_errors_not_blowups() {
+        let e = regex_match("a{1001}", "aaa").unwrap_err();
+        assert!(e.contains("exceeds max"), "got: {e}");
+        let e = regex_match("a{2,1001}", "aaa").unwrap_err();
+        assert!(e.contains("exceeds max"), "got: {e}");
+        let e = regex_match("a{3,2}", "aaa").unwrap_err();
+        assert!(e.contains("smaller than min"), "got: {e}");
+        // At the cap it still compiles and works.
+        assert!(regex_match(r"^a{1000}$", &"a".repeat(1000)).unwrap());
     }
 }

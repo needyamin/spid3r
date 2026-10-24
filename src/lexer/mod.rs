@@ -1,7 +1,8 @@
 //! The Spid3r lexer. Every token carries file, line, and column.
 
 use crate::diagnostics::{err_at, Span, SpidResult};
-use crate::lexer::token::{Keyword, Token, TokenKind};
+use crate::lexer::token as tok_mod;
+use tok_mod::{Keyword, Token, TokenKind};
 
 pub mod token;
 
@@ -505,6 +506,18 @@ impl<'a> Lexer<'a> {
                                 self.col = col;
                                 return None;
                             }
+                            // A bare integer hole (`{2}`) is rejected: it only
+                            // ever renders a constant, and it is exactly the
+                            // shape regex bounded-repeat quantifiers
+                            // (`"\\d{4}"`) need inside pattern strings, which
+                            // have no other way to spell a literal brace
+                            // (field-test finding F-1, docs/html/report.html).
+                            if raw.trim().bytes().all(|b| b.is_ascii_digit()) {
+                                self.pos = pos;
+                                self.line = line;
+                                self.col = col;
+                                return None;
+                            }
                             // The scan may have run past the end of the string
                             // literal (its closing quote looks like the start
                             // of a quoted region inside the hole). Such a
@@ -569,7 +582,7 @@ impl<'a> Lexer<'a> {
         self.bump(); // opening quote
         let mut s = String::new();
         // Interpolation holes seen so far; empty means a plain string literal.
-        let mut pieces: Vec<crate::lexer::token::InterpPiece> = Vec::new();
+        let mut pieces: Vec<tok_mod::InterpPiece> = Vec::new();
         loop {
             let c = match self.peek() {
                 Some(c) => c,
@@ -590,7 +603,7 @@ impl<'a> Lexer<'a> {
                         TokenKind::Str(s)
                     } else {
                         if !s.is_empty() {
-                            pieces.push(crate::lexer::token::InterpPiece::Lit(s));
+                            pieces.push(tok_mod::InterpPiece::Lit(s));
                         }
                         TokenKind::InterpStr(pieces)
                     };
@@ -607,11 +620,9 @@ impl<'a> Lexer<'a> {
                 b'{' => {
                     if let Some(path) = self.try_interp_path() {
                         if !s.is_empty() {
-                            pieces.push(crate::lexer::token::InterpPiece::Lit(std::mem::take(
-                                &mut s,
-                            )));
+                            pieces.push(tok_mod::InterpPiece::Lit(std::mem::take(&mut s)));
                         }
-                        pieces.push(crate::lexer::token::InterpPiece::Path(path));
+                        pieces.push(tok_mod::InterpPiece::Path(path));
                     } else if matches!(self.peek(), Some(c)
                         if c.is_ascii_alphabetic()
                             || c == b'_'
@@ -625,11 +636,9 @@ impl<'a> Lexer<'a> {
                         match self.try_interp_expr() {
                             Some(raw) => {
                                 if !s.is_empty() {
-                                    pieces.push(crate::lexer::token::InterpPiece::Lit(
-                                        std::mem::take(&mut s),
-                                    ));
+                                    pieces.push(tok_mod::InterpPiece::Lit(std::mem::take(&mut s)));
                                 }
-                                pieces.push(crate::lexer::token::InterpPiece::Hole(raw));
+                                pieces.push(tok_mod::InterpPiece::Hole(raw));
                             }
                             None => s.push('{'),
                         }
