@@ -1,10 +1,5 @@
 // Regenerate the embedded base64 WebAssembly binary from web/spid3r.wasm.
-// Two deployment copies exist and BOTH must track the binary byte for byte:
-//   web/spid3r_wasm_data.js        — SDK distribution copy
-//   docs/html/spid3r_wasm_data.js  — the copy docs/html/playground.html loads
-//                                   (the playground's <script> tags are
-//                                   relative, so it reads its local sibling,
-//                                   not the web/ one)
+// Output: web/spid3r_wasm_data.js (canonical SDK distribution and playground source)
 // Usage: node tools/gen_wasm_data.js [outPath]
 const fs = require('fs');
 const path = require('path');

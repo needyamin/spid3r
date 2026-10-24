@@ -1,25 +1,17 @@
 // Exercise the playground's ACTUAL load path. docs/html/playground.html loads
-// its LOCAL siblings (docs/html/spid3r.js + docs/html/spid3r_wasm_data.js)
+// canonical web/ assets (../../web/spid3r.js + ../../web/spid3r_wasm_data.js)
 // via relative <script> tags and prefers the embedded base64 module over
-// fetching a .wasm file, so the docs/html copies are what visitors actually
-// run. The other wasm tools read web/spid3r.wasm directly and would pass
-// while the playground ships a stale module (which it once did: the
-// docs/html copy sat five rebuilds behind and its stdlib preset could not
-// import anything; the web/ copy sat three behind).
+// fetching a .wasm file, using the original project wasm in web/ without duplication.
 //
 // Two modes:
 //   node tools/test_wasm_embedded.js                      (self-consistency)
-//     Both embedded copies must equal web/spid3r.wasm byte for byte, every
+//     Embedded web/ copy must equal web/spid3r.wasm byte for byte, every
 //     preset must run on both engines with no divergence, and the stdlib
 //     natives must work. Run against the committed tree.
 //
 //   node tools/test_wasm_embedded.js --against <wasm>     (behavioral)
 //     Same preset suite through the committed embedded module, plus every
 //     preset's stdout must match a freshly built reference module exactly.
-//     CI uses this: wasm is not byte-reproducible across machines, so the
-//     reference is compared behaviorally, never byte-wise. A committed
-//     module old enough to lack the embedded stdlib fails the stdlib preset
-//     outright; any other behavioral drift fails the stdout comparison.
 //
 // Run: node tools/test_wasm_embedded.js [--against web/spid3r.wasm]
 const fs = require('fs');
@@ -42,6 +34,8 @@ const start = html.indexOf('const PRESETS = {');
 const endMarker = '\n      };';
 const end = html.indexOf(endMarker, start);
 assert.ok(start >= 0 && end >= 0, 'could not locate PRESETS in playground.html');
+assert.ok(html.includes('<script src="../../web/spid3r.js"></script>'), 'playground.html must link to ../../web/spid3r.js');
+assert.ok(html.includes('<script src="../../web/spid3r_wasm_data.js"></script>'), 'playground.html must link to ../../web/spid3r_wasm_data.js');
 const literal = html
   .slice(start + 'const PRESETS = '.length, end + endMarker.length)
   .replace(/;\s*$/, '');
@@ -78,10 +72,10 @@ function loadDeployment(dir) {
 
 let failures = 0;
 
-// A. The playground path: every preset, both engines, plus divergence check.
-const runtime = loadDeployment(path.join('docs', 'html'));
+// A. The canonical runtime path: loads canonical web/ distribution directly
+const runtime = loadDeployment('web');
 const ver = runtime.version();
-console.log('playground path version:', JSON.stringify(ver));
+console.log('web runtime version:', JSON.stringify(ver));
 
 const outputs = {};
 for (const [name, source] of Object.entries(PRESETS)) {
@@ -119,15 +113,11 @@ if (!std.ok) {
   }
 }
 
-// B. The SDK distribution path: same module, same outputs must hold.
-const sdk = loadDeployment('web');
-const sdkStd = sdk.eval(PRESETS.stdlib, 'vm');
-if (!sdkStd.ok || sdkStd.stdout !== std.stdout) {
-  console.error('FAIL: web/ embedded copy disagrees with the playground copy');
-  failures++;
-} else {
-  console.log('ok web/ embedded copy matches the playground copy');
+// B. Verify single source of truth: docs/html/ has no duplicate wasm/js runtime files.
+for (const dup of ['spid3r.wasm', 'spid3r_wasm_data.js', 'spid3r.js']) {
+  assert.ok(!fs.existsSync(path.join(root, 'docs', 'html', dup)), `docs/html/${dup} should not exist (playground must use canonical web/ assets)`);
 }
+console.log('ok docs/html uses canonical web/ assets without duplicates');
 
 // C. Behavioral comparison against a freshly built reference module.
 if (referencePath) {
@@ -156,4 +146,4 @@ if (referencePath) {
 
 if (failures) process.exit(1);
 console.log(`\nembedded wasm OK: ${Object.keys(PRESETS).length} presets on both engines` +
-  (referencePath ? ', behaviorally equal to the fresh build' : ', both deployment copies current'));
+  (referencePath ? ', behaviorally equal to the fresh build' : ', canonical web/ deployment current and docs/html verified'));

@@ -4188,10 +4188,9 @@ fn main() {
         <h3>Zero-Setup Offline Execution</h3>
         <p>Because modern browsers block asynchronous WebAssembly <code>fetch()</code> requests over the local
           <code>file://</code> protocol, Spid3r ships with a companion in-memory dataset
-          (<code>spid3r_wasm_data.js</code>, the module embedded as base64). The playground page loads its own local
-          copy from <code>docs/html/</code> — alongside its sibling <code>spid3r.js</code> and
-          <code>spid3r.wasm</code> — while <code>web/spid3r_wasm_data.js</code> serves SDK embedders; both are
-          generated from the same binary by <code>tools/gen_wasm_data.js</code> and CI fails if any copy drifts.
+          (<code>web/spid3r_wasm_data.js</code>, the module embedded as base64). The playground page loads
+          directly from the project's canonical <code>web/</code> distribution — alongside its sibling <code>web/spid3r.js</code> and
+          <code>web/spid3r.wasm</code> — generated from the binary by <code>tools/gen_wasm_data.js</code> with no duplicate files needed in <code>docs/html/</code>.
           Double-clicking <code>docs/html/playground.html</code> directly from
           your file manager initializes the WebAssembly engine in <strong>~30 milliseconds</strong> with no local HTTP
           server or network access required.

@@ -329,6 +329,8 @@ spid3r pack -o dist/my_project.tar
 | [Webview GUI Guide](docs/GUI.md) | Building native desktop GUI apps |
 | [Garbage Collection](docs/GC.md) | Memory management and cycle collector architecture |
 | [Example Programs](examples/) | 24 runnable sample programs (+1 shared library module) |
+| [Desktop GUI Examples](examples/gui/) | Native desktop GUI apps with Tao/Wry webview and bidirectional IPC bridge |
+| [Web Server Examples](examples/web/) | Multi-threaded HTTP servers and REST APIs with `http` and `web` modules |
 | [Demos](examples/demo_apps/) | Native Windows GUI Calculator & Web Calculator |
 
 ---
