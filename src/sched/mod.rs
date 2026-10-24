@@ -100,8 +100,7 @@ impl Drop for BlockedGuard {
 /// (a timer, the network) will ever wake these: progress requires another
 /// Spid3r task to act. The deadlock watchdog (see `watchdog_loop`) reads this
 /// counter; a park that is merely slow (sleep, I/O) must not touch it.
-static UNTIMED_PARKED: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static UNTIMED_PARKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// RAII marker for one untimed park; the count is held for the whole wait so
 /// the 50 ms wake-ups inside `recv` do not open a sampling gap.

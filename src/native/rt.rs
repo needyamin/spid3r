@@ -427,8 +427,7 @@ pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mu
     // rational, decimal, bigint) and user classes with dunders raised a type
     // error under AOT while the same program ran on tree/VM (audit S-21).
     if let Some((fwd, rev)) = overload_dunders(op) {
-        let over =
-            native_try_operator(&l, &r, fwd).or_else(|| native_try_operator(&r, &l, rev));
+        let over = native_try_operator(&l, &r, fwd).or_else(|| native_try_operator(&r, &l, rev));
         if let Some(res) = over {
             return match res {
                 Ok(v) => leak(v),
@@ -730,7 +729,9 @@ pub extern "C" fn spid3r_method(
     argc: usize,
     argv: *const *mut Value,
 ) -> *mut Value {
-    ffi_value("method", || cancel_guard(spid3r_method_inner(obj, name, argc, argv)))
+    ffi_value("method", || {
+        cancel_guard(spid3r_method_inner(obj, name, argc, argv))
+    })
 }
 
 fn spid3r_method_inner(

@@ -1462,7 +1462,10 @@ impl Interp {
                 let f = self.field_get(v, method, span).ok()?;
                 if !matches!(
                     f,
-                    Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::Class(_)
+                    Value::Function(_)
+                        | Value::Native(_)
+                        | Value::NativeClosure(_)
+                        | Value::Class(_)
                 ) {
                     return None;
                 }

@@ -549,27 +549,27 @@ fn main() {
             "cx",
             cx,
             concat!(
-                "4.0+6.0i\n",       // complex add
-                "-5.0+10.0i\n",     // complex mul
-                "2.0+2.0i\n",       // complex sub
-                "2.2-0.4i\n",       // complex div
-                "375\n",            // Money add
-                "375\n",            // Money sub
-                "15\n",             // Money mul
-                "25\n",             // Money div
-                "-7\n",             // Money neg
-                "15\n",             // Money radd (10 + Money(5))
-                "3\n",              // no throw: the try body completes
+                "4.0+6.0i\n",   // complex add
+                "-5.0+10.0i\n", // complex mul
+                "2.0+2.0i\n",   // complex sub
+                "2.2-0.4i\n",   // complex div
+                "375\n",        // Money add
+                "375\n",        // Money sub
+                "15\n",         // Money mul
+                "25\n",         // Money div
+                "-7\n",         // Money neg
+                "15\n",         // Money radd (10 + Money(5))
+                "3\n",          // no throw: the try body completes
             ),
         ),
         (
             "big",
             big,
             concat!(
-                "123456789012345678901234567891\n", // bigint add
+                "123456789012345678901234567891\n",  // bigint add
                 "-123456789012345678901234567890\n", // bigint neg
-                "246913578024691357802469135780\n", // bigint mul
-                "123456789012345677901234567891\n", // bigint sub
+                "246913578024691357802469135780\n",  // bigint mul
+                "123456789012345677901234567891\n",  // bigint sub
             ),
         ),
     ];
@@ -583,7 +583,11 @@ fn main() {
             .unwrap_or_else(|e| panic!("tree run failed ({}):/n{}", tag, e));
         let vm = out(&["run", "--engine", "vm", &src_path])
             .unwrap_or_else(|e| panic!("vm run failed ({}):/n{}", tag, e));
-        assert_eq!(tree, vm, "tree vs vm differ for operator overloading ({})", tag);
+        assert_eq!(
+            tree, vm,
+            "tree vs vm differ for operator overloading ({})",
+            tag
+        );
 
         let exe = dir.join(if cfg!(windows) {
             format!("spid3r_nat_ops_{}.exe", tag)
@@ -593,13 +597,18 @@ fn main() {
         let exe = exe.to_str().unwrap().to_string();
         out(&["build", &src_path, "-o", &exe])
             .unwrap_or_else(|e| panic!("native build failed ({}):/n{}", tag, e));
-        let native = run_exe(&exe).unwrap_or_else(|e| panic!("native run failed ({}):/n{}", tag, e));
+        let native =
+            run_exe(&exe).unwrap_or_else(|e| panic!("native run failed ({}):/n{}", tag, e));
         assert_eq!(
             tree, native,
             "tree vs native stdout differ for operator overloading ({})",
             tag
         );
-        assert_eq!(tree, expected, "output drifted from the expected values ({})", tag);
+        assert_eq!(
+            tree, expected,
+            "output drifted from the expected values ({})",
+            tag
+        );
         let _ = std::fs::remove_file(&src_path);
         let _ = std::fs::remove_file(&exe);
     }
