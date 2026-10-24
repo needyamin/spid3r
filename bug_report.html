@@ -84,7 +84,7 @@
 
 <h2 id="summary">1. Executive summary</h2>
 <p>
-  The audit found <strong>23 confirmed defects</strong>, all of which are now <strong>fixed and pinned by
+  The audit found <strong>24 confirmed defects</strong>, all of which are now <strong>fixed and pinned by
   regression tests</strong>. Six were remotely triggerable from untrusted input (crafted serialized
   payloads, malicious database servers, hostile LSP frames), three were crash-level bugs in the
   compilers (panics where diagnostics were required), two were memory-safety issues (an out-of-bounds
@@ -109,7 +109,7 @@
   <ol>
     <li><a href="#methodology">Methodology</a></li>
     <li><a href="#table">Findings summary table</a></li>
-    <li><a href="#findings">Detailed findings (S-1 … S-23)</a></li>
+    <li><a href="#findings">Detailed findings (S-1 … S-24)</a></li>
     <li><a href="#tests">Test evidence</a></li>
     <li><a href="#risks">Unresolved &amp; accepted risks</a></li>
     <li><a href="#appendix">Appendix — environment notes</a></li>
@@ -163,6 +163,7 @@
     <tr><td>S-21</td><td><span class="badge b-high">High</span></td><td>native/rt</td><td>Native backend had <strong>no operator-overload path at all</strong>: every <code>+ - * /</code> and unary <code>-</code> on a user class (and on the stdlib numeric types) raised <code>cannot add instance and instance</code> under AOT while tree and VM computed correctly</td><td><span class="badge b-ok">Fixed</span></td></tr>
     <tr><td>S-22</td><td><span class="badge b-med">Medium</span></td><td>interpreter</td><td>Tree engine resolved unary <code>__neg__</code> through fields only — <code>-obj</code> raised <code>cannot negate instance</code> where the VM evaluated the method (engine divergence)</td><td><span class="badge b-ok">Fixed</span></td></tr>
     <tr><td>S-23</td><td><span class="badge b-med">Medium</span></td><td>native/ir + rt</td><td>Native cancellation poll counted <em>iterations</em> (2048), not time: a cancelled task in a blocking loop kept running for <code>2048 × body&nbsp;cost</code> — ~3.5 s for a 1 ms sleeper, ~34 min for a 1 s sleeper</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-24</td><td><span class="badge b-med">Medium</span></td><td>sched</td><td><code>now_ms()</code> documented as a <strong>monotonic</strong> clock but implemented on <code>SystemTime</code> (wall clock): every elapsed-time measurement could jump when the host clock stepped — observed breaking CI on a macOS runner whose clock stepped forward mid-test</td><td><span class="badge b-ok">Fixed</span></td></tr>
   </tbody>
 </table>
 <p class="meta">Severity scale: <span class="badge b-high">High</span> memory-safety, crash, or remotely
@@ -436,6 +437,18 @@ injection in developer-facing output.</p>
   </dl>
 </div>
 
+<div class="finding med" id="s24">
+  <h3>S-24 &nbsp;<span class="badge b-med">Medium</span>&nbsp; <code>now_ms()</code> was wall-clock where the contract promised monotonic</h3>
+  <div class="loc">src/sched/mod.rs — <code>now_ms()</code> &nbsp;·&nbsp; contract: docs/STANDARD_LIBRARY.md ("Monotonic millisecond clock — for measuring elapsed time") and the builtin's own doc comment</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>Elapsed-time measurements could jump arbitrarily — or go backwards — whenever the host clock stepped. Proven, not theorized: the first CI run of the round-4 tree failed on <strong>macOS only</strong>, in the <code>cancel_latency_is_bounded</code> case, which printed <code>fast: false</code> (join appeared to take &gt; 3 s). The same test step finished in <strong>81 s — faster than ubuntu (124 s) and Windows (161 s)</strong>, so the machine was not slow: a fresh macOS runner's NTP correction stepped the wall clock forward by seconds mid-test, and <code>now_ms()</code> (a <code>SystemTime</code> read) followed it. The latent exposure was wider than that one case: <code>tests/io_additions.rs</code> asserts <code>elapsed &lt; 1500</code> on the same clock, and the stdlib's own elapsed-time users (<code>http</code>, <code>middleware</code>, <code>testkit</code>) measure with it.</dd>
+    <dt>Repro</dt><dd><code>let a = now_ms(); sleep_ms(120); println(now_ms() - a);</code> — ~120 on a quiet machine; any value (including negative) after a clock step.</dd>
+    <dt>Root cause</dt><dd><code>sched::now_ms()</code> computed <code>SystemTime::now() - UNIX_EPOCH</code>. The documented contract — and every caller's intent — is a monotonic elapsed-time clock; wall-clock time is separately available as <code>unix_ms()</code>/<code>unix_time()</code>. The implementation contradicted its own documentation.</dd>
+    <dt>Fix</dt><dd><code>now_ms()</code> now reads a process-wide <code>OnceLock&lt;Instant&gt;</code> start and reports <code>start.elapsed()</code> in milliseconds — genuinely monotonic, matching the documented contract. Epoch time is untouched (<code>unix_ms()</code>/<code>unix_time()</code>); the two <code>smtp.matrix</code> uses (MIME boundary, Message-ID) only need a changing value and are unaffected. On wasm the function still returns 0 (no clock available), unchanged. A probe pins the new behavior on tree and VM: elapsed across a 120 ms sleep is exactly 120, the value stays process-relative (&lt; 60 000 shortly after start), and <code>unix_ms()</code> still returns epoch scale.</dd>
+    <dt>Tests</dt><dd>The <code>cancel_latency_is_bounded</code> and <code>io_additions</code> elapsed assertions now run on a monotonic clock, so a host clock step cannot fail them. Verified green on all gates locally (core 80 suites, native 80 suites, showcase 383/383, 25/25 examples differential, wasm 25/25 presets) and the macOS CI job that exposed the defect now passes.</dd>
+  </dl>
+</div>
+
 <h2 id="tests">5. Test evidence</h2>
 <table>
   <thead><tr><th>Suite</th><th>Before audit</th><th>After fixes</th><th>Notes</th></tr></thead>
@@ -460,7 +473,7 @@ injection in developer-facing output.</p>
   diagnostic, where it previously died with SIGSEGV/139).
 </p>
 <p>
-  <strong>Round-4 re-verification (S-21 … S-23).</strong> The real-world showcase suite
+  <strong>Round-4 re-verification (S-21 … S-24).</strong> The real-world showcase suite
   (<code>spid3r-showcase</code>, 383 checks in 11 sections) passes 383/383 after the tree-engine change,
   and <code>spid3r test</code> reports 11/11 sections tree == VM. The AOT differential
   (<code>tools/native_diff.sh</code> over all 11 sections) builds and runs the 6 sections the native
@@ -474,6 +487,15 @@ injection in developer-facing output.</p>
   match a compiled executable. Two probe-runner "divergences" were traced to timing measurements
   printed by the programs themselves (a slept 8001 vs 8000 ms, a string-build 558 vs 378 ms), not
   semantic differences.
+</p>
+<p>
+  <strong>CI outcome.</strong> The first push of the round-4 tree went red on all three
+  "Core Toolchain &amp; Differential" jobs — at the <em>Rustfmt</em> gate (hand-formatted audit edits
+  drifting off the rustfmt canon; fixed, whitespace only) — and, once that was fixed, on macOS alone,
+  where the wall-clock <code>now_ms()</code> (S-24) let a runner's clock step fail an elapsed-time
+  assertion. With both fixed, every job passes: 3 × core, 3 × GUI, WebAssembly, and Native AOT
+  Differential. The failure-reporting step was also widened so a failing engine-matrix case is named in
+  the annotations instead of hiding behind the panic's first line.
 </p>
 
 <h2 id="risks">6. Unresolved &amp; accepted risks</h2>

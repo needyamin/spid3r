@@ -56,7 +56,11 @@ jobs:
           tail -n 80 cargo_test_output.txt >> "$GITHUB_STEP_SUMMARY"
           # Annotations are readable from the check-runs API, unlike the step
           # summary; emit the failing test names and panic messages as errors.
-          grep -E "FAILED$|panicked at" cargo_test_output.txt | head -8 | while IFS= read -r line; do
+          # The extra patterns surface engine-matrix conformance failures
+          # ("N conformance failure(s):" + the "[case / engine] ..." lines,
+          # which follow the panicked-at line) — without them a failing case
+          # is invisible here and the logs need admin rights to read.
+          grep -E "FAILED$|panicked at|conformance failure|^\[" cargo_test_output.txt | head -12 | while IFS= read -r line; do
             echo "::error::${line}"
           done || true
           if [ -f cargo_test_output.txt ]; then
@@ -229,7 +233,9 @@ jobs:
           # Annotations are readable from the check-runs API. Without this a
           # compile error under `--features native` surfaced only as
           # "Process completed with exit code 101" with no visible cause.
-          grep -E "^error(\[|:)|FAILED$|panicked at" cargo_test_native.txt | head -8 | while IFS= read -r line; do
+          # `conformance failure` / `^\[` surface the failing engine-matrix
+          # cases (they follow the panicked-at line in the panic message).
+          grep -E "^error(\[|:)|FAILED$|panicked at|conformance failure|^\[" cargo_test_native.txt | head -12 | while IFS= read -r line; do
             echo "::error::${line}"
           done || true
 

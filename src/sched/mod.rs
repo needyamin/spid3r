@@ -1267,14 +1267,18 @@ pub fn sleep_ms(ms: i64) {
     }
 }
 
-/// Milliseconds since the Unix epoch.
+/// Monotonic millisecond clock — milliseconds since an arbitrary fixed point
+/// early in this process's life. The documented contract (docs/STANDARD_LIBRARY.md:
+/// "monotonic millisecond clock, for measuring elapsed time") and every caller
+/// want elapsed time that cannot jump: a wall clock steps under NTP, and a
+/// fresh CI runner stepping forward mid-test broke `elapsed < N` assertions
+/// (observed on macOS arm64). For epoch time use `unix_ms()` / `unix_time()`.
 pub fn now_ms() -> i64 {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0)
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = START.get_or_init(std::time::Instant::now);
+        start.elapsed().as_millis() as i64
     }
     #[cfg(target_arch = "wasm32")]
     {
