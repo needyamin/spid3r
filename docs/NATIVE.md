@@ -104,7 +104,7 @@ define ptr @spid3r_fn.N(ptr %env, i64 %argc, ptr %argv) -> ptr
 | Globals | `spid3r_global_get` / `_set` / `_def` / `_exists` |
 | Collections | `spid3r_construct`, `spid3r_index_get` / `_set`, `spid3r_len`, `spid3r_forin_start` / `_next` / `_end` |
 | Closures | `spid3r_cell_new` / `_get` / `_set`, `spid3r_env_alloc` / `_slot` / `_set_slot` |
-| Classes | `spid3r_class_register` / `_add_field` / `_add_method` / `_set_ctor`, `spid3r_field_get` / `_set` |
+| Classes | `spid3r_class_register` / `_add_field` / `_add_method` / `_set_ctor`, `spid3r_field_get` / `_set` / `field_get_soft` (the `?.` null-safe read, F-4) |
 | I/O | `spid3r_print`, `spid3r_println`, `spid3r_eprintln` |
 | Process | `spid3r_rt_start`, `spid3r_abort`, `spid3r_runtime_version` |
 
@@ -134,6 +134,7 @@ Explicitly rejected with a clear diagnostic (never silently mis-compiled):
 | Construct | Diagnostic |
 | --- | --- |
 | class inside a function | `'class declaration inside a function' is not supported ...` |
+| `import "x" as alias;` (module namespace) | `'x as alias' is not supported by the native backend yet; run it with --engine vm or use a plain import` |
 
 These are compile-time `error[usage]` diagnostics (exit code 2), the same
 phase the CLI uses for other usage errors.
@@ -174,7 +175,12 @@ canonical path), so `build_module` compiles one self-contained module with no
 runtime import window — the AST-level analogue of the bytecode path embedding
 imported modules into `.matrixc`. Resolution mirrors the bytecode path (the
 importing file's directory, then `SPID3R_PATH`); circular imports are reported
-and missing modules produce a clean "module not found" diagnostic. Visibility
+and missing modules produce a clean "module not found" diagnostic. **Known
+gap:** `import "name" as alias;` (module namespaces) is not supported — the
+program is rejected at build time with a clean `error[usage]` diagnostic
+(exit code 2), never silently mis-compiled; run it with `--engine vm` or use
+a plain import (a namespace would need mangled globals and a frozen-map
+constructor the AOT runtime does not have yet). Visibility
 is already enforced by the semantic pass, which runs before flattening in the
 `build` flow, so only public names may be imported.
 
@@ -187,6 +193,17 @@ is already enforced by the semantic pass, which runs before flattening in the
   three engines. Long-running stream processors stay flat because per-line
   garbage is the only thing that accumulates (verified: a 100,000-line stdin
   stream processes in ~1.4 s).
+- **GC builtins under the arena model.** `gc_live_cells()` reports roughly the
+  all-time tracked-cell count (not the live set), and `gc_collect()` completes
+  safely but reclaims nothing — every leaked handle is a permanent external
+  root, so the shared cycle collector (see `docs/GC.md`) correctly keeps every
+  cell alive. These two builtins are **engine-internal memory observability**
+  and are exempt from the byte-parity contract (ENGINE_CONTRACT exemption #4);
+  the portable subset — both return `int`, collection is safe, live data
+  survives — is pinned by `tests/gc_portability.rs`. Mid-run cycle reclamation
+  on native requires handle-lifetime management in codegen (freeing dead
+  `Box<Value>` handles) before the existing collector can reclaim; the design
+  path is recorded in `docs/GC.md`.
 - **Bounded recursion.** `MAX_CALL_DEPTH = 1000` (the same constant the VM
   and tree interpreter use) is enforced by a thread-local counter in
   `spid3r_call`, `spid3r_method`, and constructor construction. Hitting it

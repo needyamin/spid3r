@@ -5,10 +5,11 @@
 > `set`, `map`, `tuple`, `binary_tree`, `bst`, `heap`, `priority_queue`, `graph`,
 > `hash_table`, `trie`, `matrix`, `ring_buffer`, `bag`, `ref`, `option`/`result`,
 > and class instances) are tracked and cycle-collected automatically through
-> `value::new_ref`. `gc_collect()` / `gc_live_cells()` are builtins on both
-> engines; `gc_collect()` refuses to run only while another thread is executing
-> Spid3r code (audit A-4); automatic collection at statement boundaries is **on
-> by default** (`SPID3R_GC=0` disables it).
+> `value::new_ref`. `gc_collect()` / `gc_live_cells()` are builtins on **every**
+> engine (tree, vm, native/AOT — see "The native backend" below for what they
+> mean there); `gc_collect()` refuses to run only while another thread is
+> executing Spid3r code (audit A-4); automatic collection at statement boundaries
+> is **on by default** (`SPID3R_GC=0` disables it).
 
 ## The problem
 
@@ -140,6 +141,11 @@ collecting` error instead of corrupting memory (audit A-4). A safety valve prune
 dead and duplicate handles so the registry stays bounded even where collection
 never runs (the native runtime).
 
+On the native backend the same builtins report engine-internal numbers and
+`gc_collect()` reclaims nothing by construction — that is the documented arena
+trade, not a collector bug (see "The native backend" above and the
+ENGINE_CONTRACT exemption #4).
+
 Verified: all 23 examples produce byte-identical output with the collector on vs
 off (it never frees live data); `tests/cycle_tests.rs` proves cycles across all
 container and instance types are reclaimed while live cycles survive.
@@ -225,3 +231,42 @@ cycle is unmarked (no external refs) and swept from the environment's side.
 reclamation, including the safety half (captured containers survive
 collections and keep working). The VM needs none of this: its closures carry
 upvalue *cells* (untracked external refs, no env cycle).
+
+## The native backend: arena model and GC observability (policy, decided 2026-10-25)
+
+The native AOT backend has **no reclamation at all** — by design
+(`docs/NATIVE.md`, "Memory model"): every value handle is a `Box<Value>`
+leaked for the whole process (`rt.rs::leak`). This interacts with the
+collector in a precise, predictable way:
+
+- Native cells **are tracked** in the same registry (they are built by the
+  same `value::collections` constructors), so `gc_live_cells()` on native
+  reports roughly the **all-time** tracked-cell count, not the live set
+  (e.g. the field-test churn workload: tree 380 / vm 159 / native 300 462 —
+  `report.html` F-3).
+- `gc_collect()` on native is a **safe no-op by construction**: every leaked
+  handle's inner `Arc` is a strong reference from outside the tracked set, so
+  *every* cell has `external > 0`, every cell is a root, nothing is ever
+  unmarked. This is the collector's safety guarantee working exactly as
+  designed — it can never free live memory, and on native nothing looks dead.
+  It completes, returns `int` (0 swept), and all live data survives.
+
+**Policy (ENGINE_CONTRACT exemption #4):** `gc_live_cells()` and the swept
+count are **engine-internal memory observability** and are *excluded* from the
+byte-identical-parity contract. The portable subset every engine guarantees —
+and the parity bar for programs using these builtins — is: both builtins
+exist, return `int`, `gc_collect()` completes safely, and live data always
+survives a collection. `tests/gc_portability.rs` pins this on all three
+engines.
+
+**Why mid-run reclamation on native is future work, not a flag.** Reclaiming
+cycles on native requires the *handles* (the leaked `Box<Value>`s) to be
+freed when they die — i.e. last-use handle-lifetime management in the LLVM
+codegen (free on scope exit, on local overwrite, and for expression
+temporaries). Without that, no collector change can help: the handles root
+everything. With it, the existing shared collector would start reclaiming on
+native unchanged (external-reference mark-sweep needs no root enumeration).
+Until then, long-running native processes keep acyclic garbage bounded only
+by the stream-processing shape (constant live set, per-item garbage is
+allocation-only) and leak cycles until process exit — the documented arena
+trade.

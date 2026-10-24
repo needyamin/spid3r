@@ -104,6 +104,10 @@ the (flat, transitive) embedded table, so nested imports resolve too.
   `DefineConst`, which records a top-level `const` so the VM can reject a
   rebind and report a module's `public const` exports); `.matrixc` files
   written by older builds still load.
+- `?.` compiles to `FieldGetSoft` (opcode 58: name index `u16`, F-4
+  2026-10-25) — like `FieldGet` except a null receiver and a missing map key
+  push `null`. Additive per docs/BYTECODE_STABILITY.md: no format-version
+  bump, older readers reject the byte cleanly.
 
 ### Bytecode validation (safety net)
 

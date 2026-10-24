@@ -144,8 +144,8 @@ rather than an infinity or a panic.
 
 | Function | Description |
 |---|---|
-| `gc_collect()` | Trigger an immediate cycle of mark-and-sweep garbage collection across all engines. |
-| `gc_live_cells()` | Return the current count of active heap-allocated value cells (`int`). |
+| `gc_collect()` | Run one cycle-collection pass and return the number of cells swept (`int`). Engine-internal: tree/VM reclaim acyclic garbage eagerly and cycles at auto-collection points; native (arena model) reclaims nothing by construction and returns 0. Portable guarantee: safe on every engine, live data always survives. See `docs/GC.md`. |
+| `gc_live_cells()` | Return the engine's tracked-cell count (`int`). Engine-internal: live-set size on tree/VM, roughly the all-time count on native. Exempt from byte-parity (ENGINE_CONTRACT exemption #4) — print only portable facts (types, positivity, survival), never raw counts. See `docs/GC.md`. |
 | `weak(ref)` | Create a non-owning weak pointer to a `ref(v)` interior-mutable cell. |
 | `deref(weak)` | Dereference a weak pointer: returns target `Value` or `null` if the reference target has been collected. |
 

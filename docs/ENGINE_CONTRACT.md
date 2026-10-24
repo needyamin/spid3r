@@ -64,6 +64,18 @@ conformance test fails:
 3. **Timing/concurrency interleaving** — `spawn` scheduling is nondeterministic
    on every engine; programs must not depend on it (the test suite orders
    handoffs explicitly).
+4. **GC observability** — `gc_live_cells()` and `gc_collect()`'s return value
+   are **engine-internal memory observability**, not program semantics. The
+   tree and VM engines reclaim acyclic garbage eagerly and cycles at
+   (auto-)collection points; the native backend is an arena (values live for
+   the process, `docs/NATIVE.md`), so the same workload reports different
+   cell counts by design. The **portable subset** — and the parity bar for
+   these builtins — is: both builtins exist on every engine, return `int`,
+   `gc_collect()` completes safely (on native it reclaims nothing *by
+   construction*: every handle is a permanent external root, so the shared
+   collector's safety rule keeps all cells alive), and live data always
+   survives a collection. Programs must print only these portable facts
+   (`tests/gc_portability.rs` pins this on all three engines).
 
 ## Rules for backend authors
 

@@ -76,6 +76,28 @@ cargo run --release -- build examples/hello.matrix -o hello
 
 The `spid3r` binary is at `target/release/spid3r` (`.exe` on Windows).
 
+## `compile` vs `build`
+
+Two different outputs — do not confuse them:
+
+- `spid3r compile <file.matrix> -o out` serializes **bytecode** (header
+  `SPID3R…`, run with `spid3r exec out`). The output is always a `.matrixc`
+  artifact: an `-o` path **without an extension** gains the canonical
+  `.matrixc` extension (`-o out` writes `out.matrixc`), and the resolved
+  path is what gets printed. An explicit extension is used verbatim.
+- `spid3r build <file.matrix> -o out.exe` compiles to a **native
+  machine-code executable** via the LLVM backend (requires LLVM — above).
+- `spid3r exec <file.matrixc>` runs bytecode on the VM.
+
+### Native backend limits
+
+`spid3r build` rejects the constructs it cannot compile with a clean
+`error[usage]` diagnostic (exit code 2) — never silently mis-compiled. The
+current list: a class declared inside a function, and `import "x" as alias;`
+(module namespaces need runtime support the AOT backend does not have yet —
+run those programs with `--engine vm`, or use a plain import; see
+`docs/NATIVE.md` → Modules).
+
 The default `gui` feature pulls in `tao` (window) and `wry` (webview), so
 first-time compilation takes noticeably longer than the core toolchain; use
 `--no-default-features` to skip those crates.
