@@ -73,7 +73,7 @@ pub(crate) fn hole_is_expression(raw: &str, depth: u32) -> bool {
         depth: crate::lexer::MAX_INTERP_DEPTH as usize,
         value_block_depth: 0,
     };
-    matches!(sub.parse_expr(), Ok(_)) && sub.at(&TokenKind::Eof)
+    sub.parse_expr().is_ok() && sub.at(&TokenKind::Eof)
 }
 
 /// Parse one expression from source.
