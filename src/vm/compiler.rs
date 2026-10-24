@@ -1124,8 +1124,8 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
             ));
         }
         // Surface-only nodes are removed by `crate::lower` before compilation.
+        // (`?.` is a first-class op since F-4 — see the OptField arm below.)
         Expr::If { span, .. }
-        | Expr::OptField { span, .. }
         | Expr::Coalesce { span, .. }
         | Expr::Match { span, .. }
         | Expr::Propagate(_, span) => {
@@ -1135,6 +1135,14 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
                 "internal error: a surface-only expression reached the bytecode compiler \
                  without lowering (this is a bug in spid3r)",
             ))
+        }
+        // `obj?.field` — the null-safe dot (F-4): a null receiver and a missing
+        // map key read as null; every other failure matches `FieldGet`.
+        Expr::OptField { object, name, span } => {
+            compile_expr(compilers, ci, object)?;
+            compilers[ci].chunk.set_span(span.clone());
+            let idx = compilers[ci].chunk.emit_str_const(name);
+            compilers[ci].chunk.emit_u16(OpCode::FieldGetSoft, idx);
         }
         Expr::Int(i, _) => {
             let idx = compilers[ci].chunk.emit_const(Value::Int(*i));

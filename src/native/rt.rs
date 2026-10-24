@@ -356,7 +356,9 @@ fn call_cfn_method(cfn: &CompiledFn, method: &str, args: &[Value]) -> Result<Val
         ));
     }
     let argv: Vec<*mut Value> = args.iter().map(|a| leak(a.clone())).collect();
-    enter_call();
+    if !enter_call() {
+        return Err("stack overflow: call depth limit reached".to_string());
+    }
     let r = unsafe { (cfn.code)(cfn.env, argc, argv.as_ptr()) };
     leave_call();
     Ok(to_owned(r))
@@ -592,7 +594,9 @@ fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Valu
                     argc
                 ));
             }
-            enter_call();
+            if !enter_call() {
+                return rt_throw("stack overflow: call depth limit reached");
+            }
             let r = unsafe { (c.code)(c.env, argc, argv) };
             leave_call();
             r
@@ -618,7 +622,9 @@ fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Valu
             }
         }
         Value::CClass(c) => construct_cinstance(c, unsafe { args_vec(argc, argv) }),
-        other => abort(&format!(
+        // Catchable like the tree/VM call dispatch (F-9): calling a
+        // non-callable value is a script-level runtime error there.
+        other => rt_throw(&format!(
             "{} is not callable",
             crate::value::type_name(&other)
         )),
@@ -626,15 +632,19 @@ fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Valu
 }
 
 /// Arity check shared by calls of compiled functions (methods/constructors).
-pub fn check_arity(name: &str, arity: usize, got: usize) {
+/// Returns the catchable error message on a mismatch (`None` = ok) instead of
+/// aborting — a wrong-arity callback is a script-level runtime error on the
+/// tree/VM engines, so native must not kill the process (F-9).
+pub fn check_arity(name: &str, arity: usize, got: usize) -> Option<String> {
     if arity != got {
-        abort(&format!(
+        return Some(format!(
             "{} expects {} argument(s), got {}",
             name,
             arity.saturating_sub(1),
             got
         ));
     }
+    None
 }
 
 // ----------------------------------------------------------------------------
@@ -645,17 +655,20 @@ thread_local! {
     static CALL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Enter a compiled call; aborts with the same diagnostic the VM/tree
-/// interpreters produce when the depth limit is hit (a native stack overflow
-/// would otherwise kill the process silently).
-fn enter_call() {
+/// Enter a compiled call. Returns `false` (recording nothing) when the depth
+/// limit is hit: the caller must NOT enter generated code in that case and
+/// instead raises the same catchable diagnostic the VM/tree interpreters
+/// produce (F-9) — a native stack overflow would otherwise kill the process
+/// silently, and `abort` made the error uncatchable by `try`/`catch`.
+fn enter_call() -> bool {
     CALL_DEPTH.with(|d| {
         let n = d.get() + 1;
         if n > crate::vm::MAX_CALL_DEPTH {
-            abort("stack overflow: call depth limit reached");
+            return false;
         }
         d.set(n);
-    });
+        true
+    })
 }
 
 fn leave_call() {
@@ -764,7 +777,9 @@ fn spid3r_method_inner(
             for a in &args {
                 call_args.push(leak(a.clone()));
             }
-            enter_call();
+            if !enter_call() {
+                return rt_throw("stack overflow: call depth limit reached");
+            }
             let r = unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
             leave_call();
             return r;
@@ -857,7 +872,9 @@ fn spid3r_super_call_inner(
         }
         let env = ctor.env;
         let code = ctor.code;
-        enter_call();
+        if !enter_call() {
+            return rt_throw("stack overflow: call depth limit reached");
+        }
         unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
         leave_call();
         return leak(Value::Null);
@@ -886,7 +903,9 @@ fn spid3r_super_call_inner(
     }
     let env = f.env;
     let code = f.code;
-    enter_call();
+    if !enter_call() {
+        return rt_throw("stack overflow: call depth limit reached");
+    }
     let r = unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
     leave_call();
     r
@@ -902,18 +921,22 @@ impl collections::CallbackHost for NativeCallbackHost {
     fn call_callback(&mut self, f: &Value, args: Vec<Value>) -> Result<Value, String> {
         match f {
             Value::Cfn(cfn) => {
-                check_arity(
+                if let Some(msg) = check_arity(
                     cfn.name.as_deref().unwrap_or("<callback>"),
                     cfn.arity,
                     args.len(),
-                );
+                ) {
+                    return Err(msg);
+                }
                 let mut argv: Vec<*mut Value> = Vec::with_capacity(args.len());
                 for a in &args {
                     argv.push(leak(a.clone()));
                 }
                 let code = cfn.code;
                 let env = cfn.env;
-                enter_call();
+                if !enter_call() {
+                    return Err("stack overflow: call depth limit reached".to_string());
+                }
                 let r = unsafe { (code)(env, args.len(), argv.as_ptr()) };
                 leave_call();
                 Ok(to_owned(r))
@@ -977,12 +1000,17 @@ pub extern "C" fn spid3r_index_set(obj: *const Value, idx: *const Value, v: *mut
 pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *mut Value {
     let object = deref(obj);
     let name = cstr(name);
+    // Every failure here is a script-level runtime error on the tree/VM
+    // engines (interpreter `field_get` raises a catchable `Flow::Error`),
+    // so each arm throws through the catchable channel instead of `abort`
+    // (F-9: `m?.missing` / `m.missing` on a map without the key used to
+    // kill the process with exit 70 even inside `try`/`catch`).
     match object {
         Value::CInstance(inst) => {
             let inst = inst.lock().unwrap();
             match inst.fields.get(&name) {
                 Some(v) => leak(v.clone()),
-                None => abort(&format!(
+                None => rt_throw(&format!(
                     "instance of {} has no field '{}'",
                     inst.class.name, name
                 )),
@@ -992,7 +1020,7 @@ pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *m
             let inst = inst.lock().unwrap();
             match inst.fields.get(&name) {
                 Some(v) => leak(v.clone()),
-                None => abort(&format!(
+                None => rt_throw(&format!(
                     "instance of {} has no field '{}'",
                     inst.class.name, name
                 )),
@@ -1007,14 +1035,10 @@ pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *m
             let guard = m.lock().unwrap();
             match guard.find(&key) {
                 Some(i) => leak(guard.entries[i].1.clone()),
-                None => abort(&format!("missing key '{}'", name)),
+                None => rt_throw(&format!("missing key '{}'", name)),
             }
         }
-        other => abort(&format!(
-            "cannot read field '{}' of {}",
-            name,
-            crate::value::type_name(other)
-        )),
+        other => rt_throw(&crate::value::no_field_error(other, &name)),
     }
 }
 
@@ -1023,23 +1047,46 @@ pub extern "C" fn spid3r_field_set(obj: *const Value, name: *const c_char, v: *m
     let object = deref(obj);
     let name = cstr(name);
     let val = to_owned(v);
+    // Catchable like the interpreter's `field_set` (`Flow::Error`), not an
+    // abort (F-9).
     match object {
         Value::CInstance(inst) => {
             let mut inst = inst.lock().unwrap();
             if let Some(slot) = inst.fields.get_mut(&name) {
                 *slot = val;
             } else {
-                abort(&format!(
+                rt_throw(&format!(
                     "instance of {} has no field '{}'",
                     inst.class.name, name
                 ));
             }
         }
-        other => abort(&format!(
-            "cannot set field '{}' of {}",
-            name,
-            crate::value::type_name(other)
-        )),
+        other => {
+            rt_throw(&crate::value::no_field_error(other, &name));
+        }
+    }
+}
+
+/// `obj?.field` — the null-safe dot's read (F-4): like [`spid3r_field_get`],
+/// except a null receiver and a missing map key return null instead of
+/// throwing. Instance/other failures delegate to `spid3r_field_get`, so a
+/// missing instance field stays a real (catchable) error, exactly like the
+/// tree interpreter and the VM's `FieldGetSoft`.
+#[no_mangle]
+pub extern "C" fn spid3r_field_get_soft(obj: *const Value, name: *const c_char) -> *mut Value {
+    let object = deref(obj);
+    match object {
+        Value::Null => leak(Value::Null),
+        Value::Map(m) => {
+            let name = cstr(name);
+            let key = crate::value::MapKey::Str(name.into());
+            let guard = m.lock().unwrap();
+            match guard.find(&key) {
+                Some(i) => leak(guard.entries[i].1.clone()),
+                None => leak(Value::Null),
+            }
+        }
+        _ => spid3r_field_get(obj, name),
     }
 }
 
@@ -1338,7 +1385,9 @@ pub fn construct_cinstance(
             } else {
                 format!("{} to {} argument(s)", ctor.min_arity - 1, ctor.arity - 1)
             };
-            abort(&format!(
+            // Catchable like the tree/VM constructor dispatch (F-9): the same
+            // message the interpreter raises, routed through the throw channel.
+            return rt_throw(&format!(
                 "new {} expects {}, got {}",
                 class.name,
                 want,
@@ -1350,7 +1399,9 @@ pub fn construct_cinstance(
         for a in &args {
             call_args.push(leak(a.clone()));
         }
-        enter_call();
+        if !enter_call() {
+            return rt_throw("stack overflow: call depth limit reached");
+        }
         unsafe {
             (ctor.code)(ctor.env, args.len() + 1, call_args.as_ptr());
         }

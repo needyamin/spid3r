@@ -207,6 +207,11 @@ pub enum OpCode {
     /// `u16`, argument count `u8`). The receiver is the executing frame's
     /// `self` (slot 0).
     SuperMethod = 57,
+    /// The null-safe field read `obj?.field` (F-4; operand: name index `u16`).
+    /// Like `FieldGet`, except a null receiver and a missing map key push
+    /// `null` instead of failing; instance/other failures match `FieldGet`.
+    /// Additive opcode (docs/BYTECODE_STABILITY.md): no format-version bump.
+    FieldGetSoft = 58,
 }
 
 impl OpCode {
@@ -250,6 +255,7 @@ impl OpCode {
             OpCode::IndexSet => "index_set",
             OpCode::FieldGet => "field_get",
             OpCode::FieldSet => "field_set",
+            OpCode::FieldGetSoft => "field_get_soft",
             OpCode::Construct => "construct",
             OpCode::Return => "return",
             OpCode::Try => "try",
@@ -340,6 +346,7 @@ impl OpCode {
             55 => Some(OpCode::DefineConst),
             56 => Some(OpCode::SuperCtor),
             57 => Some(OpCode::SuperMethod),
+            58 => Some(OpCode::FieldGetSoft),
             _ => None,
         }
     }
@@ -609,6 +616,7 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
             | OpCode::Closure
             | OpCode::FieldGet
             | OpCode::FieldSet
+            | OpCode::FieldGetSoft
             | OpCode::Import
             | OpCode::DefineConst
             | OpCode::Class => {
@@ -1399,6 +1407,7 @@ fn validate_chunk_inner(chunk: &Chunk, upvalues: usize, where_: &str) -> SpidRes
             | OpCode::DefineConst
             | OpCode::FieldGet
             | OpCode::FieldSet
+            | OpCode::FieldGetSoft
             | OpCode::Import => {
                 let idx = u16::from_le_bytes([code[ip + 1], code[ip + 2]]) as usize;
                 check_pool("constant", chunk.constants.len(), idx, where_)?;
@@ -1606,6 +1615,7 @@ pub(crate) fn operand_len(op: OpCode) -> usize {
         | OpCode::Closure
         | OpCode::FieldGet
         | OpCode::FieldSet
+        | OpCode::FieldGetSoft
         | OpCode::Import
         | OpCode::DefineConst
         | OpCode::Class => 2,
@@ -1642,8 +1652,9 @@ mod tests {
 
     #[test]
     fn from_u8_rejects_garbage_without_ub() {
-        // Any byte outside 0..=57 must decode to None (no transmute / UB).
-        for b in 58u16..=255 {
+        // Any byte outside the assigned range must decode to None (no
+        // transmute / UB). 58 is `FieldGetSoft` (F-4, additive opcode).
+        for b in 59u16..=255 {
             assert!(OpCode::from_u8(b as u8).is_none(), "byte {} decoded", b);
         }
         // A handful of real opcodes round-trip.
@@ -1658,6 +1669,7 @@ mod tests {
         assert_eq!(OpCode::from_u8(55), Some(OpCode::DefineConst));
         assert_eq!(OpCode::from_u8(56), Some(OpCode::SuperCtor));
         assert_eq!(OpCode::from_u8(57), Some(OpCode::SuperMethod));
+        assert_eq!(OpCode::from_u8(58), Some(OpCode::FieldGetSoft));
     }
 
     #[test]

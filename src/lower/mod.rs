@@ -180,9 +180,11 @@ fn block_needs_lowering(b: &Block) -> bool {
 
 fn expr_needs_lowering(e: &Expr) -> bool {
     match e {
-        Expr::If { .. } | Expr::OptField { .. } | Expr::Coalesce { .. } | Expr::NamedArg { .. } => {
-            true
-        }
+        // `?.` is a first-class operation since the F-4 fix: every backend
+        // implements `Expr::OptField` directly (soft read). The node itself
+        // survives lowering, but its receiver may still need it.
+        Expr::OptField { object, .. } => expr_needs_lowering(object),
+        Expr::If { .. } | Expr::Coalesce { .. } | Expr::NamedArg { .. } => true,
         Expr::Match { .. } | Expr::Propagate(..) => true,
         // `super` is rewritten into a resolved `SuperCall`.
         Expr::Super { .. } => true,
@@ -1118,8 +1120,20 @@ impl Lower {
                 els,
                 span,
             } => self.if_expr(cond, then, els.as_ref(), span),
-            Expr::OptField { object, name, span } => self.opt_field(object, name, span),
             Expr::Coalesce { l, r, span } => self.coalesce(l, r, span),
+            // `?.` is a first-class op (F-4): the node survives; only its
+            // receiver is lowered here.
+            Expr::OptField { object, name, span } => {
+                let (object, pre) = self.expr(object);
+                (
+                    Expr::OptField {
+                        object: Box::new(object),
+                        name: name.clone(),
+                        span: span.clone(),
+                    },
+                    pre,
+                )
+            }
             Expr::Match {
                 scrutinee,
                 arms,
@@ -1429,42 +1443,6 @@ impl Lower {
             stmts,
             span: b.span.clone(),
         }
-    }
-
-    /// `obj?.field` — the receiver is evaluated once, and the field is read only
-    /// when it is not null.
-    fn opt_field(&mut self, object: &Expr, name: &str, span: &Span) -> (Expr, Vec<Stmt>) {
-        let (object, mut pre) = self.expr(object);
-        let obj_span = object.span().clone();
-        let obj = self.fresh();
-        pre.push(let_null(&obj, object, obj_span.clone()));
-        let t = self.fresh();
-        pre.push(let_stmt(&t, Expr::Null(span.clone()), span.clone()));
-        pre.push(Stmt::If {
-            cond: Expr::Binary {
-                op: BinOp::Ne,
-                l: Box::new(Expr::Ident(obj.clone(), obj_span.clone())),
-                r: Box::new(Expr::Null(obj_span.clone())),
-                span: obj_span.clone(),
-            },
-            then: Block {
-                stmts: vec![Stmt::Expr(Expr::Assign {
-                    target: Box::new(Expr::Ident(t.clone(), span.clone())),
-                    op: AssignOp::Assign,
-                    value: Box::new(Expr::Field {
-                        object: Box::new(Expr::Ident(obj, obj_span.clone())),
-                        name: name.to_string(),
-                        span: span.clone(),
-                    }),
-                    span: span.clone(),
-                })],
-                span: span.clone(),
-            },
-            elifs: Vec::new(),
-            els: None,
-            span: span.clone(),
-        });
-        (Expr::Ident(t, span.clone()), pre)
     }
 
     /// `a ?? b` — `b` is evaluated only when `a` is null.

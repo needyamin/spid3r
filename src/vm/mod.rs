@@ -1854,6 +1854,62 @@ impl Vm {
                         other => self.fail(crate::value::no_field_error(&other, name.as_ref())),
                     }
                 }
+                // `obj?.field` (F-4): like `FieldGet`, except a null receiver
+                // and a missing map key push `null` instead of failing. Every
+                // other failure matches `FieldGet` exactly.
+                OpCode::FieldGetSoft => {
+                    let idx = self.code_u16(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 3;
+                    let obj = self.pop_top();
+                    let name = match self.frames[nf].func.chunk.constants.get(idx) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => {
+                            self.fail("field name is not a string");
+                            continue;
+                        }
+                    };
+                    match obj {
+                        Value::Null => self.frames[nf].slots.push(Value::Null),
+                        Value::Map(m) => {
+                            let mb = m.lock().unwrap();
+                            let mk = crate::value::MapKey::Str(name.clone());
+                            match mb.find(&mk) {
+                                Some(i) => {
+                                    let val = mb.entries[i].1.clone();
+                                    drop(mb);
+                                    self.frames[nf].slots.push(val);
+                                }
+                                None => {
+                                    drop(mb);
+                                    self.frames[nf].slots.push(Value::Null);
+                                }
+                            }
+                        }
+                        // Instances and non-fieldable types keep the plain
+                        // `.` semantics: a missing field is a real error.
+                        other => match other {
+                            Value::VInstance(inst) => {
+                                let ib = inst.lock().unwrap();
+                                match ib.fields.get(name.as_ref()) {
+                                    Some(v) => {
+                                        let val = v.clone();
+                                        drop(ib);
+                                        self.frames[nf].slots.push(val);
+                                    }
+                                    None => {
+                                        let err = format!(
+                                            "instance of {} has no field '{}'",
+                                            ib.class.name, name
+                                        );
+                                        drop(ib);
+                                        self.fail(err);
+                                    }
+                                }
+                            }
+                            other => self.fail(crate::value::no_field_error(&other, name.as_ref())),
+                        },
+                    }
+                }
                 OpCode::FieldSet => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;

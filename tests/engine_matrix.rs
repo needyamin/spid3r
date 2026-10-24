@@ -886,8 +886,13 @@ fn lowering_is_a_no_op_for_programs_without_the_new_syntax() {
     );
 }
 
-/// The three surface nodes must be gone before a backend sees the tree, and the
+/// The surface nodes must be gone before a backend sees the tree, and the
 /// pass must be idempotent (the VM compiles module programs through it too).
+/// (`OptField` is a first-class op since F-4 — `?.` survives lowering by
+/// design now, so only `Coalesce` is checked here; the if-expression cannot
+/// be checked by name because lowering *produces* `Stmt::If`, which prints
+/// the same `If {` — its removal is covered by the matrix cases that
+/// execute it.)
 #[test]
 fn lowering_removes_the_surface_nodes_and_is_idempotent() {
     let src = "fn main() {\n    let a = if (true) { 1 } else { 2 };\n    let b = null ?? a;\n    let m = map();\n    println(m?.k);\n    println(b);\n    return 0;\n}\n";
@@ -895,10 +900,10 @@ fn lowering_removes_the_surface_nodes_and_is_idempotent() {
         spid3r_lang::parser::parse_file(src, std::sync::Arc::from("lower2.matrix")).expect("parse");
     let lowered = spid3r_lang::lower::lower(&program);
     let text = format!("{:?}", lowered.as_ref());
-    // `OptField`/`Coalesce` have unique names; the if-expression cannot be
+    // `Coalesce` has a unique name; the if-expression cannot be
     // checked by name because lowering *produces* `Stmt::If`, which prints the
     // same `If {` — its removal is covered by the matrix cases that execute it.
-    for node in ["OptField", "Coalesce"] {
+    for node in ["Coalesce"] {
         assert!(
             !text.contains(node),
             "`{}` survived lowering://n{}",

@@ -836,7 +836,6 @@ impl Interp {
                 "internal error: a named argument reached the interpreter without lowering",
             )),
             Expr::If { span, .. }
-            | Expr::OptField { span, .. }
             | Expr::Coalesce { span, .. }
             | Expr::Match { span, .. }
             | Expr::Propagate(_, span) => Err(self.rt(
@@ -844,6 +843,21 @@ impl Interp {
                 "internal error: a surface-only expression reached the interpreter \
                      without lowering (this is a bug in spid3r)",
             )),
+            // `obj?.field` — the null-safe dot (F-4): a null receiver AND a
+            // missing map key both read as null; every other failure (an
+            // instance without the field, a non-fieldable type) stays the
+            // same catchable error plain `.` raises.
+            Expr::OptField { object, name, span } => {
+                let obj = self.eval(object, env)?;
+                match &obj {
+                    Value::Null => Ok(Value::Null),
+                    Value::Map(_) => match self.field_get(&obj, name, span) {
+                        Ok(v) => Ok(v),
+                        Err(_) => Ok(Value::Null),
+                    },
+                    _ => self.field_get(&obj, name, span),
+                }
+            }
             Expr::Int(i, _) => Ok(Value::Int(*i)),
             Expr::Float(f, _) => Ok(Value::Float(*f)),
             Expr::Bool(b, _) => Ok(Value::Bool(*b)),

@@ -1957,8 +1957,8 @@ impl<'ctx> Ir<'ctx> {
                 Ok(call_ptr(r))
             }
             // Surface-only nodes are rewritten by `crate::lower` before codegen.
+            // (`?.` is a first-class op since F-4 — see the OptField arm above.)
             Expr::If { span, .. }
-            | Expr::OptField { span, .. }
             | Expr::Coalesce { span, .. }
             | Expr::Match { span, .. }
             | Expr::Propagate(_, span) => Err(format!(
@@ -2076,6 +2076,36 @@ impl<'ctx> Ir<'ctx> {
                 let obj = self.compile_expr(object)?;
                 let (np, _) = self.str_global(name);
                 Ok(self.call2p("spid3r_field_get", obj, np))
+            }
+            // `obj?.field` — the null-safe dot (F-4): a null receiver and a
+            // missing map key read as null; the trampoline throws for every
+            // other failure, and the throw_guard after this expression routes
+            // it to the handler exactly like a plain field read.
+            Expr::OptField { object, name, .. } => {
+                let obj = self.compile_expr(object)?;
+                let (np, _) = self.str_global(name);
+                // if obj == null { null } else { field_get_soft(obj, name) }
+                // — three blocks, phi-merged (same shape as the logical ops).
+                let is_null = self.builder.build_is_null(obj, "opt.isnull").unwrap();
+                let null_bb = self.new_block("optnull");
+                let get_bb = self.new_block("optget");
+                let cont_bb = self.new_block("optcont");
+                self.builder
+                    .build_conditional_branch(is_null, null_bb, get_bb)
+                    .unwrap();
+                self.builder.position_at_end(null_bb);
+                let n = self.v_null();
+                let null_from = self.cur_block().unwrap();
+                self.br_to(cont_bb);
+                self.builder.position_at_end(get_bb);
+                let r = self.call2p("spid3r_field_get_soft", obj, np);
+                let r_from = self.cur_block().unwrap();
+                self.br_to(cont_bb);
+                self.builder.position_at_end(cont_bb);
+                let pname = self.tmp_name("opt");
+                let phi = self.builder.build_phi(self.ptr_ty(), &pname).unwrap();
+                phi.add_incoming(&[(&n, null_from), (&r, r_from)]);
+                Ok(phi.as_basic_value().into_pointer_value())
             }
             Expr::New { class, args, .. } => {
                 let cls = self.global_value(class);
