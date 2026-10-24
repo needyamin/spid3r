@@ -1003,7 +1003,9 @@ impl Interp {
                         if !args.is_empty() {
                             return Err(self.rt(span, "lock takes no arguments"));
                         }
-                        let v = m.lock();
+                        // A self-deadlock (this context already holds the
+                        // mutex) is a catchable runtime error, not a hang.
+                        let v = m.lock().map_err(|e| self.rt(span, e))?;
                         let mut guards = self.guards.lock().unwrap();
                         guards.push(crate::sched::MutexGuardToken::new(m.clone()));
                         self.guards_len.store(guards.len(), Ordering::Relaxed);
@@ -1454,17 +1456,35 @@ impl Interp {
         method: &str,
         span: &Span,
     ) -> Option<Result<Value, Flow>> {
-        if !matches!(v, Value::Map(_) | Value::Instance(_)) {
-            return None;
+        match v {
+            // A map carries the dunder as a value.
+            Value::Map(_) => {
+                let f = self.field_get(v, method, span).ok()?;
+                if !matches!(
+                    f,
+                    Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::Class(_)
+                ) {
+                    return None;
+                }
+                Some(self.call_value(f, vec![v.clone()], span))
+            }
+            // A class instance carries it as a *method*, and `field_get` only
+            // sees declared fields — the same defect the binary path above
+            // documents. Resolve through the class chain and call it on the
+            // instance, exactly like `obj.__neg__()` and the VM's
+            // `try_unary_operator`.
+            Value::Instance(inst) => {
+                let has = {
+                    let ib = inst.lock().unwrap();
+                    Self::find_method(&ib.class, method).is_some()
+                };
+                if !has {
+                    return None;
+                }
+                Some(self.call_instance_method(inst, method, Vec::new(), span))
+            }
+            _ => None,
         }
-        let f = self.field_get(v, method, span).ok()?;
-        if !matches!(
-            f,
-            Value::Function(_) | Value::Native(_) | Value::NativeClosure(_) | Value::Class(_)
-        ) {
-            return None;
-        }
-        Some(self.call_value(f, vec![v.clone()], span))
     }
 
     pub fn call_value(&self, f: Value, args: Vec<Value>, span: &Span) -> Result<Value, Flow> {

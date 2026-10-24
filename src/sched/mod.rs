@@ -9,6 +9,14 @@
 //!   work. The pool is capped by `SPID3R_MAX_WORKERS` (default 256); a stall
 //!   at that ceiling is reported on stderr by a watchdog instead of hanging
 //!   silently (see `watchdog_loop`).
+//! - **deadlock detection**: a wait that only another task can end
+//!   (`recv`/`mutex.lock`/`join`) registers as an *untimed park*. When no task
+//!   is running, queued, or able to run and a thread is parked that way, the
+//!   watchdog aborts with a diagnostic instead of hanging forever
+//!   (`SPID3R_DEADLOCK_ABORT=0` downgrades to a warning). Socket waits and
+//!   `sleep_ms` are timed parks and never trigger it.
+//! - a `mutex` is **not reentrant**: a task locking one it already holds gets
+//!   a catchable `mutex: deadlock` error rather than parking forever.
 //! - the ready queue is **bounded** (`SPID3R_QUEUE_CAP`, default 65536 jobs).
 //!   `spawn` applies backpressure: it grows the pool first and then parks the
 //!   producer until a worker takes a job, so a spawn storm cannot exhaust
@@ -85,6 +93,46 @@ impl Drop for BlockedGuard {
             ACTIVE.fetch_add(1, Ordering::SeqCst);
         }
     }
+}
+
+/// Threads parked in a wait that **only another task can end** — `recv`,
+/// `mutex.lock`, `join`. Unlike `sleep_ms` or a socket read, nothing external
+/// (a timer, the network) will ever wake these: progress requires another
+/// Spid3r task to act. The deadlock watchdog (see `watchdog_loop`) reads this
+/// counter; a park that is merely slow (sleep, I/O) must not touch it.
+static UNTIMED_PARKED: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// RAII marker for one untimed park; the count is held for the whole wait so
+/// the 50 ms wake-ups inside `recv` do not open a sampling gap.
+pub struct UntimedPark;
+
+impl Drop for UntimedPark {
+    fn drop(&mut self) {
+        UNTIMED_PARKED.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Declare that the current thread is about to park in a wait only another
+/// task can end. Drop the guard when the wait is over.
+pub fn enter_untimed_park() -> UntimedPark {
+    UNTIMED_PARKED.fetch_add(1, Ordering::SeqCst);
+    UntimedPark
+}
+
+/// Threads currently parked in an untimed wait (diagnostic; watchdog).
+pub fn untimed_parked() -> usize {
+    UNTIMED_PARKED.load(Ordering::SeqCst)
+}
+
+/// Identity of the execution context that is running on this thread: the
+/// spawned task's state pointer, or `usize::MAX` for the main program. Used by
+/// `MutexData` to detect a task re-locking a mutex it already holds.
+pub(crate) fn current_owner_id() -> usize {
+    CURRENT_TASK.with(|c| match c.borrow().as_ref() {
+        Some(state) => Arc::as_ptr(state) as usize,
+        None => usize::MAX,
+    })
 }
 
 /// Declare that the current thread is about to park in a blocking wait
@@ -202,16 +250,23 @@ impl ChannelData {
     /// while it is parked on an empty channel.
     pub fn recv_checked(&self) -> Result<Value, String> {
         let mut q = self.queue.lock().unwrap();
-        while q.is_empty() {
-            if current_task_cancelled() {
-                return Err("task cancelled".to_string());
+        if q.is_empty() {
+            // Nothing can ever arrive without another task to send it, so the
+            // wait is untimed: register it and make sure the deadlock
+            // watchdog is running (a program that never spawns still has one).
+            ensure_deadlock_watchdog();
+            let _untimed = enter_untimed_park();
+            while q.is_empty() {
+                if current_task_cancelled() {
+                    return Err("task cancelled".to_string());
+                }
+                let _blocked = enter_blocked();
+                let (guard, _timeout) = self
+                    .cv
+                    .wait_timeout(q, std::time::Duration::from_millis(50))
+                    .unwrap();
+                q = guard;
             }
-            let _blocked = enter_blocked();
-            let (guard, _timeout) = self
-                .cv
-                .wait_timeout(q, std::time::Duration::from_millis(50))
-                .unwrap();
-            q = guard;
         }
         Ok(q.pop_front().unwrap())
     }
@@ -240,39 +295,73 @@ impl Default for ChannelData {
 /// `MutexData` is shared as `Arc<MutexData>` (no outer wrapper mutex): `lock`
 /// parks on the internal condvar while holding no other guard, so concurrent
 /// `lock`/`unlock` from several tasks can never deadlock on dispatch.
+///
+/// The lock is **not reentrant**: a task that locks a mutex it already holds
+/// can never be released by anyone else, so `lock` detects that case from the
+/// recorded owner and returns a catchable error instead of parking forever
+/// (which used to hang the whole program with no diagnostic).
 pub struct MutexData {
-    locked: Mutex<bool>,
+    state: Mutex<LockState>,
     cv: Condvar,
     value: Mutex<Value>,
 }
 
+/// Lock flag plus the identity of the holding execution context
+/// (`current_owner_id`: the task's state pointer, or the main-program
+/// sentinel). One mutex keeps the flag and the owner consistent.
+struct LockState {
+    locked: bool,
+    owner: Option<usize>,
+}
+
+/// Message for a task re-locking a mutex it already holds.
+pub const SELF_DEADLOCK_MSG: &str =
+    "mutex: deadlock - this task already holds the lock (mutexes are not reentrant)";
+
 impl MutexData {
     pub fn new(v: Value) -> Self {
         MutexData {
-            locked: Mutex::new(false),
+            state: Mutex::new(LockState {
+                locked: false,
+                owner: None,
+            }),
             cv: Condvar::new(),
             value: Mutex::new(v),
         }
     }
 
-    /// Blocks until the lock is free, then returns the inner value (aliased,
-    /// since collections are reference types). The wait is reported as
-    /// blocked, so it does not hold a concurrent `gc_collect()` back.
-    pub fn lock(&self) -> Value {
-        let mut locked = self.locked.lock().unwrap();
-        while *locked {
-            let _blocked = enter_blocked();
-            locked = self.cv.wait(locked).unwrap();
+    /// Takes the lock and returns the inner value (aliased, since collections
+    /// are reference types). The wait is reported as blocked, so it does not
+    /// hold a concurrent `gc_collect()` back.
+    ///
+    /// # Errors
+    /// The calling context already holds this mutex — a guaranteed self
+    /// deadlock, reported instead of parked on.
+    pub fn lock(&self) -> Result<Value, String> {
+        let me = current_owner_id();
+        let mut state = self.state.lock().unwrap();
+        if state.locked && state.owner == Some(me) {
+            return Err(SELF_DEADLOCK_MSG.to_string());
         }
-        *locked = true;
-        drop(locked);
-        self.value.lock().unwrap().clone()
+        if state.locked {
+            ensure_deadlock_watchdog();
+            let _untimed = enter_untimed_park();
+            while state.locked {
+                let _blocked = enter_blocked();
+                state = self.cv.wait(state).unwrap();
+            }
+        }
+        state.locked = true;
+        state.owner = Some(me);
+        drop(state);
+        Ok(self.value.lock().unwrap().clone())
     }
 
     pub fn unlock(&self) {
-        let mut locked = self.locked.lock().unwrap();
-        *locked = false;
-        drop(locked);
+        let mut state = self.state.lock().unwrap();
+        state.locked = false;
+        state.owner = None;
+        drop(state);
         self.cv.notify_one();
     }
 }
@@ -375,9 +464,14 @@ impl TaskHandle {
     /// reported as blocked (see [`enter_blocked`]).
     pub fn join(&self) -> Result<Value, String> {
         let mut r = self.state.result.lock().unwrap();
-        while r.is_none() {
-            let _blocked = enter_blocked();
-            r = self.state.cv.wait(r).unwrap();
+        if r.is_none() {
+            // The joined task is the only thing that can end this wait, so it
+            // counts as an untimed park for the deadlock watchdog.
+            let _untimed = enter_untimed_park();
+            while r.is_none() {
+                let _blocked = enter_blocked();
+                r = self.state.cv.wait(r).unwrap();
+            }
         }
         r.as_ref().unwrap().result.clone()
     }
@@ -480,6 +574,21 @@ const RETIRE_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
 const WATCHDOG_TICK: std::time::Duration = std::time::Duration::from_secs(1);
 #[cfg(not(target_arch = "wasm32"))]
 const WATCHDOG_STALL_TICKS: u32 = 3;
+
+/// Start the process-wide pool (and with it the deadlock watchdog) the first
+/// time a task parks in a wait only another task can end. A program that
+/// never spawns has no pool of its own, so without this its single
+/// `recv`-with-no-sender would hang with no watchdog to notice.
+#[cfg(not(target_arch = "wasm32"))]
+fn ensure_deadlock_watchdog() {
+    static ENSURE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ENSURE.get_or_init(|| {
+        Scheduler::shared();
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+fn ensure_deadlock_watchdog() {}
 
 /// Worker pool. One instance is shared by the whole process (see
 /// [`Scheduler::shared`]); tests can build an isolated one.
@@ -1047,9 +1156,22 @@ fn worker_loop(inner: Arc<SchedInner>, base: usize) {
 /// report the program would hang with no diagnostic. Samples once per second
 /// and reports a stall after `WATCHDOG_STALL_TICKS` consecutive samples where
 /// work is queued, every worker is busy, and the pool is at its ceiling.
+///
+/// It is also the **deadlock detector**: when nothing is queued, no worker is
+/// inside a job, no task is live, and some thread is parked in a wait only
+/// another task could end (recv/mutex/join — see [`untimed_parked`]), no
+/// future event can unblock it. After the same sustained window the process
+/// aborts with a diagnostic instead of hanging silently (the same policy as
+/// Go's "all goroutines are asleep" fatal error). `SPID3R_DEADLOCK_ABORT=0`
+/// downgrades the abort to a warning for embedding hosts that prefer to
+/// supervise the wait themselves. Socket waits (`tcp_accept`, `tcp_read`) and
+/// `sleep_ms` never register as untimed parks, so an idle server or a long
+/// sleep is not mistaken for a deadlock.
 #[cfg(not(target_arch = "wasm32"))]
 fn watchdog_loop(inner: Arc<SchedInner>) {
     let mut stalled: u32 = 0;
+    let mut deadlocked: u32 = 0;
+    let mut deadlock_warned = false;
     loop {
         {
             let tick = inner.watch.lock().unwrap();
@@ -1081,7 +1203,46 @@ fn watchdog_loop(inner: Arc<SchedInner>) {
         } else {
             stalled = 0;
         }
+        // Deadlock: the only live context is a park that no task can end.
+        // `busy == 0 && live == 0 && queued == 0` means no task exists that
+        // could send, unlock, or finish; `untimed > 0` means someone is
+        // waiting for exactly that. A worker parked untimed is `busy`, so
+        // this can only be the main program (or an embedder thread) — which
+        // is precisely the hang with no possible waker.
+        let untimed = untimed_parked();
+        let live = *inner.live.lock().unwrap();
+        if queued == 0 && busy == 0 && live == 0 && untimed > 0 {
+            deadlocked += 1;
+            if deadlocked == WATCHDOG_STALL_TICKS {
+                let msg = format!(
+                    "spid3r: fatal: deadlock - {} thread(s) blocked in a channel/mutex/join \
+                     wait and no task is running, queued, or able to run; nothing can ever \
+                     wake them",
+                    untimed
+                );
+                if deadlock_abort_enabled() {
+                    eprintln!("{}", msg);
+                    std::process::exit(1);
+                }
+                if !deadlock_warned {
+                    eprintln!("{} (SPID3R_DEADLOCK_ABORT=0: continuing to wait)", msg);
+                    deadlock_warned = true;
+                }
+                deadlocked = 0;
+            }
+        } else {
+            deadlocked = 0;
+        }
     }
+}
+
+/// Should a detected deadlock abort the process? Default yes; an embedding
+/// host that supervises its own waits sets `SPID3R_DEADLOCK_ABORT=0`.
+#[cfg(not(target_arch = "wasm32"))]
+fn deadlock_abort_enabled() -> bool {
+    std::env::var("SPID3R_DEADLOCK_ABORT")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(true)
 }
 
 /// Read a positive `usize` from the environment, falling back to `default`.

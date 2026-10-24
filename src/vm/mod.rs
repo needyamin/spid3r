@@ -1473,12 +1473,22 @@ impl Vm {
                                 // method dispatch.
                                 let mname = name.as_ref();
                                 if mname == "lock" && argc == 0 {
-                                    let v = m.lock();
-                                    self.frames[nf]
-                                        .guards
-                                        .push(crate::sched::MutexGuardToken::new(m.clone()));
-                                    self.frames[nf].slots[recv_idx] = v;
-                                    continue;
+                                    // A self-deadlock (this context already
+                                    // holds the mutex) is a catchable runtime
+                                    // error on the VM too, not a hang.
+                                    match m.lock() {
+                                        Ok(v) => {
+                                            self.frames[nf].guards.push(
+                                                crate::sched::MutexGuardToken::new(m.clone()),
+                                            );
+                                            self.frames[nf].slots[recv_idx] = v;
+                                            continue;
+                                        }
+                                        Err(msg) => {
+                                            self.fail(msg);
+                                            continue;
+                                        }
+                                    }
                                 }
                                 if mname == "unlock" && argc == 0 {
                                     m.unlock();

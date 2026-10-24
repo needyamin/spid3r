@@ -69,8 +69,8 @@
 <p class="meta">
   Project: <code>Spid3r</code> v1.0.0 (language toolchain: tree interpreter + bytecode VM + LLVM native backend)<br>
   Repository: <code>C:/Users/needyamin/OneDrive/Desktop/GaliLang</code> &nbsp;·&nbsp;
-  Audit window: 2026-10-21 → 2026-10-23 &nbsp;·&nbsp; Report generated: 2026-10-23<br>
-  Test baseline at start: 814 passing &nbsp;·&nbsp; Final: <strong>837 passing / 0 failing</strong>
+  Audit window: 2026-10-21 → 2026-10-24 &nbsp;·&nbsp; Report generated: 2026-10-24<br>
+  Test baseline at start: 814 passing &nbsp;·&nbsp; Round-4 final: <strong>871 tests (854 core + 10 gui + 7 aot), 0 failing</strong>
 </p>
 
 <div class="note">
@@ -84,12 +84,17 @@
 
 <h2 id="summary">1. Executive summary</h2>
 <p>
-  The audit found <strong>17 confirmed defects</strong>, all of which are now <strong>fixed and pinned by
+  The audit found <strong>23 confirmed defects</strong>, all of which are now <strong>fixed and pinned by
   regression tests</strong>. Six were remotely triggerable from untrusted input (crafted serialized
   payloads, malicious database servers, hostile LSP frames), three were crash-level bugs in the
   compilers (panics where diagnostics were required), two were memory-safety issues (an out-of-bounds
-  read in the native backend, an allocation-layout mismatch across the WASM boundary), and the remainder
-  were correctness, resource-exhaustion, or spec-conformance defects.
+  read in the native backend, an allocation-layout mismatch across the WASM boundary), two were
+  <strong>unbounded hangs</strong> in the concurrency runtime (a self-deadlocking mutex and a
+  <code>recv</code> with no possible sender), one leaked internal parser errors to user code, one
+  removed operator overloading from the native backend entirely (breaking the stdlib numeric types
+  under AOT), one made the tree engine reject a legal unary operator the VM accepted, one let a
+  cancelled native task run for seconds to minutes after cancellation, and the remainder were
+  correctness, resource-exhaustion, or spec-conformance defects.
 </p>
 <p>
   No finding remains open that is not explicitly documented as an accepted design trade-off in
@@ -104,7 +109,7 @@
   <ol>
     <li><a href="#methodology">Methodology</a></li>
     <li><a href="#table">Findings summary table</a></li>
-    <li><a href="#findings">Detailed findings (S-1 … S-17)</a></li>
+    <li><a href="#findings">Detailed findings (S-1 … S-23)</a></li>
     <li><a href="#tests">Test evidence</a></li>
     <li><a href="#risks">Unresolved &amp; accepted risks</a></li>
     <li><a href="#appendix">Appendix — environment notes</a></li>
@@ -152,6 +157,12 @@
     <tr><td>S-15</td><td><span class="badge b-low">Low</span></td><td>bundle</td><td>Project stem interpolated into HTML/XML output unescaped (markup injection)</td><td><span class="badge b-ok">Fixed</span></td></tr>
     <tr><td>S-16</td><td><span class="badge b-low">Low</span></td><td>cli</td><td><code>spid3r test</code> panicked on non-UTF-8 paths (<code>.str().unwrap()</code>)</td><td><span class="badge b-ok">Fixed</span></td></tr>
     <tr><td>S-17</td><td><span class="badge b-high">High</span></td><td>vm (GC)</td><td>VM never ran cycle collection at its poll point — cyclic garbage leaked until exit (prior round; tree engine collected)</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-18</td><td><span class="badge b-high">High</span></td><td>sched (mutex)</td><td><code>m.lock()</code> on a mutex the task already holds parked <strong>forever</strong> — silent self-deadlock, no diagnostic</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-19</td><td><span class="badge b-high">High</span></td><td>sched (recv/join)</td><td><code>ch.recv()</code> (or <code>join</code>) with no task able to wake it hung the process <strong>silently forever</strong></td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-20</td><td><span class="badge b-med">Medium</span></td><td>stdlib/toml</td><td>Three malformed TOML shapes leaked internal <code>slice range N..M out of bounds</code> errors instead of parse diagnostics</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-21</td><td><span class="badge b-high">High</span></td><td>native/rt</td><td>Native backend had <strong>no operator-overload path at all</strong>: every <code>+ - * /</code> and unary <code>-</code> on a user class (and on the stdlib numeric types) raised <code>cannot add instance and instance</code> under AOT while tree and VM computed correctly</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-22</td><td><span class="badge b-med">Medium</span></td><td>interpreter</td><td>Tree engine resolved unary <code>__neg__</code> through fields only — <code>-obj</code> raised <code>cannot negate instance</code> where the VM evaluated the method (engine divergence)</td><td><span class="badge b-ok">Fixed</span></td></tr>
+    <tr><td>S-23</td><td><span class="badge b-med">Medium</span></td><td>native/ir + rt</td><td>Native cancellation poll counted <em>iterations</em> (2048), not time: a cancelled task in a blocking loop kept running for <code>2048 × body&nbsp;cost</code> — ~3.5 s for a 1 ms sleeper, ~34 min for a 1 s sleeper</td><td><span class="badge b-ok">Fixed</span></td></tr>
   </tbody>
 </table>
 <p class="meta">Severity scale: <span class="badge b-high">High</span> memory-safety, crash, or remotely
@@ -353,14 +364,91 @@ injection in developer-facing output.</p>
   </dl>
 </div>
 
+<div class="finding high" id="s18">
+  <h3>S-18 &nbsp;<span class="badge b-high">High</span>&nbsp; Mutex self-deadlock was a silent infinite hang</h3>
+  <div class="loc">src/sched/mod.rs — <code>MutexData</code> / <code>lock()</code> &nbsp;·&nbsp; src/value/collections/mod.rs — <code>mutex_method</code> &nbsp;·&nbsp; src/interpreter/mod.rs (~1006) &nbsp;·&nbsp; src/vm/mod.rs (~1476)</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>A task that locked a mutex it already held parked forever. The process consumed no CPU and printed nothing — the classic unrecoverable self-deadlock, indistinguishable from a slow server. Probe <code>r3_mutex_relock.matrix</code> hit the 60 s runner timeout with zero output; a real service would hang until killed.</dd>
+    <dt>Repro</dt><dd><code>let m = mutex(0); let g = m.lock(); let h = m.lock();</code> (second call never returns).</dd>
+    <dt>Root cause</dt><dd><code>MutexData</code> tracked only <code>locked: bool</code> with no owner, so re-locking by the holder was indistinguishable from contention with another task: the task queued itself on the condvar and slept. Nothing could ever wake it.</dd>
+    <dt>Fix</dt><dd>Owner tracking: <code>LockState { locked, owner }</code> where the owner id is <code>Arc::as_ptr(TaskState)</code> (<code>usize::MAX</code> for the main thread). <code>lock()</code> now returns <code>Result&lt;Value, String&gt;</code> and fails with a catchable <code>mutex: deadlock - this task already holds the lock (mutexes are not reentrant)</code> when the current owner re-locks. Waiting on contention registers an <em>untimed park</em> (see S-19). <code>unlock()</code> clears the owner. Non-reentrant semantics are documented in the module header.</dd>
+    <dt>Tests</dt><dd><code>tests/deadlock_tests.rs</code>: <code>mutex_self_deadlock_is_a_clean_error_not_a_hang</code> (pre-fix: 60 s timeout), <code>mutex_self_deadlock_is_catchable_and_the_mutex_stays_usable</code> (error is a normal catchable value; the mutex still locks/unlocks afterward), <code>mutex_sequential_relock_still_works</code>, <code>cross_task_mutex_lock_still_works</code> (real handoff between two spawned tasks). Both engines produce the identical diagnostic.</dd>
+  </dl>
+</div>
+
+<div class="finding high" id="s19">
+  <h3>S-19 &nbsp;<span class="badge b-high">High</span>&nbsp; <code>recv</code>/<code>join</code> with no possible waker hung forever, silently</h3>
+  <div class="loc">src/sched/mod.rs — <code>UNTIMED_PARKED</code> counter, <code>enter_untimed_park()</code>, <code>watchdog_loop()</code>, <code>ensure_deadlock_watchdog()</code></div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd><code>ch.recv()</code> on a channel whose producer will never send (e.g. a producer that already exited, or a program that never spawns at all) blocked forever with no output and no diagnostic — including the zero-spawn case where the scheduler watchdog never ran. Probe <code>r3_recv_nospawn.matrix</code> hit the 60 s timeout.</dd>
+    <dt>Repro</dt><dd><code>let ch = chan(1); println(ch.recv());</code> — one task, one channel, no sender.</dd>
+    <dt>Root cause</dt><dd>The scheduler's watchdog existed to detect <em>stalls</em> (all workers busy at the ceiling), but a single parked task with nothing queued looked identical to an idle system, and programs that never call <code>spawn</code> never started a watchdog thread at all.</dd>
+    <dt>Fix</dt><dd>A new <em>untimed-park</em> counter (<code>UNTIMED_PARKED</code>) is incremented around every wait that only another task can break: <code>recv_checked</code>, <code>mutex.lock</code> contention, and <code>join</code>. Timed parks (<code>sleep_ms</code>, socket reads) deliberately do not count — an idle <code>tcp_accept</code> server must never be misdiagnosed. <code>ensure_deadlock_watchdog()</code> now starts the watchdog even for spawn-free programs. The watchdog fires only when <code>queued == 0 &amp;&amp; busy == 0 &amp;&amp; live == 0 &amp;&amp; untimed &gt; 0</code> holds for three consecutive ticks (~3 s), then prints a fatal diagnostic and exits 1. <code>SPID3R_DEADLOCK_ABORT=0</code> downgrades the abort to a one-shot warning (documented escape hatch for exotic embedding).</dd>
+    <dt>Tests</dt><dd><code>tests/deadlock_tests.rs</code>: <code>recv_with_no_sender_aborts_with_a_diagnostic</code>, <code>long_sleep_is_not_a_deadlock</code> (an 8 s main-thread sleep plus a 4 s spawned sleep runs clean for 12.3 s — no false positive), <code>deadlock_abort_can_be_downgraded_to_a_warning</code>. Verified safe against the real showcase server workloads (no idle-server false positives).</dd>
+  </dl>
+</div>
+
+<div class="finding med" id="s20">
+  <h3>S-20 &nbsp;<span class="badge b-med">Medium</span>&nbsp; TOML parser leaked internal slice errors</h3>
+  <div class="loc">stdlib/toml.matrix — <code>advance()</code>, <code>parse_escape()</code>, closing-bracket check</div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>Three malformed TOML documents raised <code>slice range N..M out of bounds</code> — an internal engine error text leaking through a library parser — instead of a <code>toml: line N: …</code> diagnostic. A caller catching parse errors would misclassify these as engine bugs, and the messages named no line number.</dd>
+    <dt>Repro</dt><dd><code>toml_parse("a = \"x\\")</code> (unterminated escape at EOF), <code>toml_parse("[unclosed")</code>, and <code>toml_parse("a = 1\n[[t]")</code> (truncated array-of-tables header).</dd>
+    <dt>Root cause</dt><dd><code>advance()</code> returned <code>SRC.slice(POS, POS+1)</code> past EOF (the engine's slice then threw), <code>parse_escape()</code> read the escape character without an EOF check, and the closing-bracket comparison sliced a range that could extend past the end of the source.</dd>
+    <dt>Fix</dt><dd><code>advance()</code> returns <code>null</code> at EOF; <code>parse_escape()</code> reports <code>unterminated escape</code>; the bracket check verifies <code>POS + len(closing) &lt;= len(SRC)</code> before slicing. All three shapes now produce <code>toml: line 1: unterminated escape</code> / <code>expected ']'</code> / <code>line 2: expected ']]'</code>.</dd>
+    <dt>Tests</dt><dd>Regression probes <code>t_esc</code>/<code>t_unclosed</code>/<code>t_bad_arr</code> in <code>audit/probes_r3/r3_parser_edges.matrix</code> (tree + VM, byte-identical). The sibling parsers were swept for the same class: <code>yaml.matrix</code> (36 hostile inputs incl. single-char quotes/brackets — every failure a clean <code>yaml_parse:</code> error) and <code>xml.matrix</code> (bounds-guarded <code>looking_at</code>/<code>peek</code>) are correctly guarded; no further fixes needed.</dd>
+  </dl>
+</div>
+
+<div class="finding high" id="s21">
+  <h3>S-21 &nbsp;<span class="badge b-high">High</span>&nbsp; The native backend had no operator-overload path</h3>
+  <div class="loc">src/native/rt.rs — <code>spid3r_binop</code> (delegated straight to <code>vm_eval_binary</code>) &nbsp;·&nbsp; new: <code>overload_dunders</code>, <code>native_try_operator</code>, <code>native_try_unary_operator</code>, <code>call_cfn_method</code>, <code>native_call_value</code></div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>Any program using operator overloading ran correctly on tree and VM and <strong>failed under AOT</strong> with <code>uncaught throw (thrown: cannot add instance and instance)</code>. This took down the showcase <code>oop</code> section under <code>spid3r build</code> (0 of 22 checks) and — because the stdlib numeric types (<code>complex</code>, <code>rational</code>, <code>decimal</code>, <code>bigint</code>) implement their operators as map-carried dunders — every arithmetic program using them under the native backend.</dd>
+    <dt>Repro</dt><dd><code>class V { fn __add__(self, o) { return 1; } } println(V() + V());</code> — tree/VM print <code>1</code>; the compiled binary exits 1.</dd>
+    <dt>Root cause</dt><dd><code>spid3r_binop</code> had no overload arm: it called <code>vm_eval_binary</code>, which only knows the built-in numeric/string rules. The interpreter resolves dunders via <code>field_get</code>+<code>call_value</code> (maps) or <code>find_method</code>+<code>call_instance_method</code> (instances); the VM has <code>try_operator</code>; the native runtime had neither. The unary path (<code>spid3r_unop</code>) had the same gap for <code>__neg__</code>.</dd>
+    <dt>Fix</dt><dd><code>overload_dunders(op)</code> maps each binary op to its forward/reflected dunder pair (<code>__add__</code>/<code>__radd__</code>, …). <code>native_try_operator</code> resolves the dunder — <code>index_get</code> for maps (the stdlib route), <code>find_method_cclass</code> for instances — and invokes it through <code>native_call_value</code>/<code>call_cfn_method</code> with a full arity check (<code>min_arity</code>..<code>arity</code>) before entering generated code, so a short call is a clean <code>__add__ expects N argument(s), got M</code> rather than an argv over-read (the S-3 class). <code>spid3r_binop</code> tries forward-then-reflected and falls through to <code>vm_eval_binary</code> when neither exists (preserving the type error); <code>spid3r_unop</code> does the same for <code>__neg__</code>. A throw inside an overload stays catchable because it routes through the normal <code>THROWN</code> mechanism.</dd>
+    <dt>Tests</dt><dd><code>tests/engine_matrix.rs</code>: <code>operator_overload_instance</code> (all five operators, AOT), <code>operator_overload_reflected</code> (<code>10 + Num(5)</code>, AOT), <code>operator_overload_map</code> (map-carried dunder, AOT), <code>operator_overload_missing</code> (no dunder still a type error, tree/VM). <code>tests/native_tests.rs</code>: <code>native_operator_overloading_matches_tree</code> drives <code>complex</code> (map dunders), a user <code>Money</code> class (instance dunders, all six forms), and <code>bigint</code> through tree, VM <em>and</em> a compiled executable, asserting byte-identical stdout and the exact expected values. Showcase <code>oop</code> section: 22/22 under AOT, tree == native.</dd>
+  </dl>
+</div>
+
+<div class="finding med" id="s22">
+  <h3>S-22 &nbsp;<span class="badge b-med">Medium</span>&nbsp; Tree engine could not negate an instance</h3>
+  <div class="loc">src/interpreter/mod.rs — <code>unary_operator_call</code></div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd><code>-obj</code> on a class defining <code>__neg__</code> raised <code>cannot negate instance</code> on the tree engine while the VM printed the correct result — a direct engine divergence on a legal program (the showcase <code>oop</code> section failed on tree only).</dd>
+    <dt>Repro</dt><dd><code>class M { public fn __neg__(self) { return 7; } } println(-M());</code> — VM prints <code>7</code>, tree exits 1.</dd>
+    <dt>Root cause</dt><dd><code>unary_operator_call</code> resolved the dunder with <code>field_get</code>, which only sees <em>fields</em>. For a map-carried dunder that happens to work (the dunder is a field), but an instance carries its dunder as a <em>method</em> — the same defect class already fixed for binary operators (S-21's tree-side counterpart), just never hit because unary overloading is rarer.</dd>
+    <dt>Fix</dt><dd>Instance receivers now resolve through the class chain: <code>find_method(&amp;ib.class, method)</code> presence check, then <code>call_instance_method</code>. The map arm is unchanged. All three engines print identical output.</dd>
+    <dt>Tests</dt><dd><code>operator_overload_instance</code> in <code>tests/engine_matrix.rs</code> includes <code>-a</code> (tree, VM, AOT); <code>native_operator_overloading_matches_tree</code> exercises <code>-Money(7)</code> and bigint negation across all three engines; showcase <code>oop</code> 383/383 on the dual-engine run.</dd>
+  </dl>
+</div>
+
+<div class="finding med" id="s23">
+  <h3>S-23 &nbsp;<span class="badge b-med">Medium</span>&nbsp; A cancelled native task kept running for <code>2048 × body cost</code></h3>
+  <div class="loc">src/native/ir.rs — <code>emit_cancel_poll</code> (<code>CANCEL_POLL_INTERVAL = 2048</code>) &nbsp;·&nbsp; src/native/rt.rs — new <code>cancel_guard</code> on <code>spid3r_call_inner</code> / <code>spid3r_method</code></div>
+  <dl class="kv">
+    <dt>Symptom</dt><dd>Cancelling a native task whose loop body blocks did not stop it promptly: the loop's cancellation poll fired every 2048 <em>iterations</em>, so the latency scaled with the body's wall-clock cost. Measured on the showcase <code>conc</code> section: <code>join()</code> on a cancelled <code>while true { sleep_ms(1) }</code> worker took <strong>3491 ms</strong> on native vs 2 ms on tree (the verdicts matched — only the timing differed). With <code>sleep_ms(100)</code> the same shape would take ~3.5 minutes; with a 30 s socket-read timeout, hours. Every shutdown/timeout pattern built on <code>cancel()</code>+<code>join()</code> inherited the delay.</dd>
+    <dt>Repro</dt><dd><code>let w = spawn fn() { while true { sleep_ms(5); } return 0; }; sleep_ms(50); w.cancel(); w.join();</code> — tree/VM return in ~5 ms; the compiled binary took ~10 s.</dd>
+    <dt>Root cause</dt><dd><code>emit_cancel_poll</code> keeps a per-loop iteration counter and calls <code>spid3r_cancel_check</code> only when it reaches 2048. That bounds the <em>work</em> between polls but says nothing about <em>time</em>: a blocking body (sleep, socket read, file I/O) spends milliseconds-to-seconds per iteration, so cancellation latency is unbounded in practice. The tree engine checks at every statement boundary and the VM at its own poll point, so only the native backend was affected.</dd>
+    <dt>Fix</dt><dd><code>cancel_guard(r)</code> in <code>src/native/rt.rs</code>: after any call returns, if the running task is cancelled <em>and</em> the callee did not itself throw, raise <code>task cancelled</code> through the normal <code>THROWN</code> path (a real error from the callee wins; cancellation is sticky, so the next call re-raises). It wraps <code>spid3r_call_inner</code> (every call expression, constructor and dynamic call) and <code>spid3r_method</code> (every method call) — the two paths through which all blocking natives are reached. The 2048-iteration poll stays for call-free CPU loops, where it already gives microsecond latency. The check is one thread-local read plus one atomic load, and a no-op outside spawned tasks (the main thread is never cancellable).</dd>
+    <dt>Tests</dt><dd><code>cancel_latency_is_bounded</code> in <code>tests/engine_matrix.rs</code> (tree, VM, AOT): spawns a 5 ms sleeper, cancels it, and prints whether <code>join</code> returned within 3000 ms. Pre-fix AOT output was <code>threw: task cancelled / fast: false</code> (measured ~10 s); post-fix all three engines print <code>fast: true</code> in milliseconds. Showcase <code>conc</code> AOT differential now passes (previously the only failing section, by timing); the thrown message is byte-identical across engines.</dd>
+  </dl>
+</div>
+
 <h2 id="tests">5. Test evidence</h2>
 <table>
   <thead><tr><th>Suite</th><th>Before audit</th><th>After fixes</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td>Full workspace (<code>cargo test --no-fail-fast</code>)</td><td>814 passed / 0 failed</td><td><strong>837 passed / 0 failed</strong></td><td>+1 <code>gc_vm_autocollect</code> (S-17), +21 <code>audit_hardening</code>, +1 LSP UTF-16</td></tr>
+    <tr><td>Full workspace (<code>cargo test</code>, default features)</td><td>814 passed / 0 failed</td><td><strong>871 passed / 0 failed</strong> (854 core + 10 gui + 7 aot)</td><td>+1 <code>gc_vm_autocollect</code> (S-17), +21 <code>audit_hardening</code>, +1 LSP UTF-16, +7 <code>deadlock_tests</code> (S-18/S-19), +1 <code>native_operator_overloading_matches_tree</code> (S-21); full suite re-run after every fix. <code>tools/count_tests.sh</code> is the canonical counter</td></tr>
     <tr><td><code>tests/audit_hardening.rs</code> (new)</td><td>—</td><td>21 / 21</td><td>All round-2 fixes; includes Rust fake MySQL/PG servers (no Python dependency)</td></tr>
     <tr><td><code>tests/lsp_tests.rs</code></td><td>23</td><td>24</td><td>Added <code>positions_are_utf16_code_units_not_unicode_scalars</code></td></tr>
     <tr><td><code>tests/gc_vm_autocollect.rs</code> (new)</td><td>—</td><td>1 / 1</td><td>Pins S-17; ~11 s</td></tr>
+    <tr><td><code>tests/deadlock_tests.rs</code> (new)</td><td>—</td><td>7 / 7 (~18 s)</td><td>Pins S-18/S-19; every test drives a <strong>real child process</strong> under a 60 s watchdog — an in-process test of a hang would poison the shared scheduler</td></tr>
+    <tr><td><code>tests/engine_matrix.rs</code></td><td>5</td><td>5 tests / 70 cases</td><td>Round-4 additions: 4 operator-overload cases (S-21/S-22 — tree, VM <em>and</em> AOT) and <code>cancel_latency_is_bounded</code> (S-23 — the AOT arm printed <code>fast: false</code> before the fix and <code>fast: true</code> after)</td></tr>
+    <tr><td><code>tests/native_tests.rs</code></td><td>6</td><td>7</td><td><code>native_operator_overloading_matches_tree</code> (S-21): <code>complex</code>, a user class with all six dunder forms, and <code>bigint</code> through tree, VM and a compiled executable — byte-identical stdout plus exact expected values</td></tr>
+    <tr><td><code>audit/probes_r3/</code> — 28 probes × 2 engines</td><td>—</td><td>28 / 28, stdout byte-identical tree vs VM</td><td>Round-3 battery: concurrency hangs, malformed data-format inputs, resource/stress edges. <code>tools/run_r3.sh</code> runs each probe on both engines with 60 s timeouts and diffs stdout (it prints <code>^^ DIVERGENCE</code> on any mismatch — none)</td></tr>
+    <tr><td><code>audit/probes_r3/r3_perf_bench.matrix</code> — 9 benchmarks × 3 engines</td><td>—</td><td>tree == VM == native, all verdicts correct</td><td>fib(30) = 832040, 3M-iteration arithmetic, 50k string build, 100k map insert+lookup, 100k sort, regex over 235 KB, JSON round trip, 1000 closures, 200 spawn+join. Timings (tree → VM): fib 1237 → 374 ms, arith 621 → 273 ms, map 90 → 56 ms, sort 28 → 17 ms, regex 51 → 10 ms. The 200-task spawn/join workload also confirms the S-23 <code>cancel_guard</code> adds no measurable overhead under AOT</td></tr>
     <tr><td><code>cargo check --all-targets</code></td><td>—</td><td>clean, no warnings</td><td>—</td></tr>
   </tbody>
 </table>
@@ -370,6 +458,22 @@ injection in developer-facing output.</p>
   or exhausted memory now produces a clean diagnostic or bounded behavior on both engines. The native
   arity fix was verified by building with the LLVM backend and running the executable (exit 1 with the
   diagnostic, where it previously died with SIGSEGV/139).
+</p>
+<p>
+  <strong>Round-4 re-verification (S-21 … S-23).</strong> The real-world showcase suite
+  (<code>spid3r-showcase</code>, 383 checks in 11 sections) passes 383/383 after the tree-engine change,
+  and <code>spid3r test</code> reports 11/11 sections tree == VM. The AOT differential
+  (<code>tools/native_diff.sh</code> over all 11 sections) builds and runs the 6 sections the native
+  backend supports — <code>text</code>, <code>oop</code>, <code>errors</code>, <code>files</code>,
+  <code>crypto</code>, <code>conc</code> — with byte-identical stdout to the tree engine; the other 5
+  are cleanly rejected for the documented <code>import as alias</code> limitation. Before the S-21 fix
+  the <code>oop</code> section failed outright under AOT, and before the S-23 fix <code>conc</code> was
+  the only section whose tree/native outputs differed (a timing line: 3491 ms vs 2 ms for the cancelled
+  join). The 28 round-3 probes (27 hostile inputs plus the performance battery) were re-run against the
+  rebuilt release binary: 28/28 byte-identical tree vs VM, and the benchmark's 9 verdicts additionally
+  match a compiled executable. Two probe-runner "divergences" were traced to timing measurements
+  printed by the programs themselves (a slept 8001 vs 8000 ms, a string-build 558 vs 378 ms), not
+  semantic differences.
 </p>
 
 <h2 id="risks">6. Unresolved &amp; accepted risks</h2>
@@ -400,6 +504,11 @@ injection in developer-facing output.</p>
       <td>R-5</td><td><span class="badge b-info">Info</span></td>
       <td>The native backend has no garbage collector — every value is a boxed allocation that lives for the process (arena).</td>
       <td>Deliberate, documented trade-off (<code>docs/NATIVE.md</code> §Memory model): dependency-free runtime and identical semantics across engines. Applications with long-running, allocation-heavy native workloads must account for it.</td>
+    </tr>
+    <tr>
+      <td>R-6</td><td><span class="badge b-low">Low</span></td>
+      <td>Stack-overflow diagnostics differ between engines: the tree engine prints the full ~10 000-frame call stack (a 108 KB stderr dump), the VM prints 2 frames (<code>src/interpreter</code> recursion guard vs. the VM's frame-count limit).</td>
+      <td>Both engines abort cleanly with exit 1 and a recognizable message; only the verbosity differs. Low priority: no functional impact, and <code>spid3r test</code> compares stdout only. Could be aligned later by capping the tree engine's printed frames.</td>
     </tr>
   </tbody>
 </table>
@@ -452,11 +561,22 @@ injection in developer-facing output.</p>
 
 <hr>
 <p class="meta">
-  Report covers audit rounds of 2026-10-21 through 2026-10-23. All fixes are committed and pushed to
-  <code>origin/main</code> (20 source/test files + this report, then a CI-corrections commit covering
-  the wasm clippy lint, rustfmt drift, and the feature-gated native test). Regression tests:
-  <code>tests/audit_hardening.rs</code>, <code>tests/gc_vm_autocollect.rs</code>, and the UTF-16 case in
-  <code>tests/lsp_tests.rs</code>. Hostile-input probes: <code>audit/probes/</code>.
+  Report covers audit rounds of 2026-10-21 through 2026-10-24. All fixes are committed and pushed to
+  <code>origin/main</code> (round 1–2: 20 source/test files + this report, then a CI-corrections commit
+  covering the wasm clippy lint, rustfmt drift, and the feature-gated native test; round 3: the scheduler
+  deadlock work in <code>src/sched/mod.rs</code> + 4 engine call sites, <code>stdlib/toml.matrix</code>,
+  <code>tests/deadlock_tests.rs</code>, and the <code>audit/probes_r3/</code> probe battery). Regression
+  tests: <code>tests/audit_hardening.rs</code>, <code>tests/gc_vm_autocollect.rs</code>,
+  <code>tests/deadlock_tests.rs</code>, and the UTF-16 case in <code>tests/lsp_tests.rs</code>.
+  Hostile-input probes: <code>audit/probes/</code> (rounds 1–2) and <code>audit/probes_r3/</code>
+  (round 3, run via <code>tools/run_r3.sh</code>).
+</p>
+<p class="meta">
+  Round-3 re-verification on a freshly built release binary (the scheduler fixes are Rust-side and
+  require a rebuild): the real-world showcase passes <strong>383/383 checks</strong> on the tree engine and
+  <strong>11/11 sections tree==vm</strong>; all 27 hostile probes reproduce their fixed behavior
+  (self-deadlock → catchable error, unwakeable <code>recv</code> → fatal diagnostic in ~3 s,
+  12 s sleep workload → no false positive).
 </p>
 </div>
 </body>

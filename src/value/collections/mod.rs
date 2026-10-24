@@ -1497,7 +1497,7 @@ fn mutex_method(m: &MutexData, name: &str, args: &[Value]) -> Result<Value, Stri
     match name {
         "lock" => {
             want(name, args, 0)?;
-            Ok(m.lock())
+            m.lock()
         }
         "unlock" => {
             want(name, args, 0)?;

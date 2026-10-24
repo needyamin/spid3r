@@ -329,6 +329,59 @@ const CASES: &[Case] = &[
         err: None,
         aot: true,
     },
+    // Operator overloading: a class instance carries the dunder as a method
+    // (audit S-21 — the native backend had no overload path at all), a map
+    // carries it as a value (the stdlib numeric types), and the reflected
+    // forms fire when the left operand has no overload of its own.
+    Case {
+        name: "operator_overload_instance",
+        src: "class Vec2 {\n    public let x;\n    public let y;\n    fn new(x, y) {\n        self.x = x;\n        self.y = y;\n    }\n    public fn __add__(self, o) {\n        return Vec2(self.x + o.x, self.y + o.y);\n    }\n    public fn __sub__(self, o) {\n        return Vec2(self.x - o.x, self.y - o.y);\n    }\n    public fn __mul__(self, k) {\n        return Vec2(self.x * k, self.y * k);\n    }\n    public fn __div__(self, k) {\n        return Vec2(self.x / k, self.y / k);\n    }\n    public fn __neg__(self) {\n        return Vec2(-self.x, -self.y);\n    }\n}\nfn main() {\n    let a = Vec2(1, 2);\n    let b = Vec2(3, 4);\n    let c = a + b;\n    println(c.x);\n    println(c.y);\n    let d = b - a;\n    println(d.x);\n    println(d.y);\n    let e = a * 3;\n    println(e.x);\n    println(e.y);\n    let f = b / 2;\n    println(f.x);\n    println(f.y);\n    let g = -a;\n    println(g.x);\n    println(g.y);\n    return 0;\n}\n",
+        out: "4\n6\n2\n2\n3\n6\n1\n2\n-1\n-2",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "operator_overload_reflected",
+        src: "class Num {\n    public let v;\n    fn new(v) {\n        self.v = v;\n    }\n    public fn __radd__(self, o) {\n        return Num(o + self.v);\n    }\n}\nfn main() {\n    let c = 10 + Num(5);\n    println(c.v);\n    return 0;\n}\n",
+        out: "15",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "operator_overload_map",
+        src: "fn mk(v) {\n    let m = map();\n    m[\"v\"] = v;\n    m[\"__add__\"] = fn(a, b) {\n        return mk(a[\"v\"] + b[\"v\"]);\n    };\n    return m;\n}\nfn main() {\n    let c = mk(1) + mk(2);\n    println(c[\"v\"]);\n    return 0;\n}\n",
+        out: "3",
+        code: 0,
+        err: None,
+        aot: true,
+    },
+    Case {
+        name: "operator_overload_missing",
+        src: "class P {\n    public let v;\n    fn new(v) {\n        self.v = v;\n    }\n}\nfn main() {\n    let a = P(1);\n    let b = P(2);\n    println(a + b);\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        // An instance without the dunder is still a type error — the overload
+        // path must not swallow it.
+        err: Some("error[runtime]: cannot add instance and instance"),
+        aot: false,
+    },
+    // Cancellation latency (audit S-23). A loop body that blocks — the
+    // canonical `while true { sleep_ms(..) }` worker — burns wall-clock time
+    // the loop's iteration-count poll cannot see: the native backend polled
+    // every 2048 iterations, so cancelling a 5ms-per-iteration sleeper took
+    // ~10s (a `sleep_ms(100)` loop would take minutes) while tree and VM
+    // stopped it within one sleep. `join` waits for the task to actually
+    // die, so the elapsed time is the observable.
+    Case {
+        name: "cancel_latency_is_bounded",
+        src: "fn main() {\n    let worker = spawn fn() {\n        while true {\n            sleep_ms(5);\n        }\n        return 0;\n    };\n    sleep_ms(50);\n    let t0 = now_ms();\n    worker.cancel();\n    try {\n        worker.join();\n        println(\"joined\");\n    } catch (e) {\n        println(\"threw: \" + string(e));\n    }\n    if (now_ms() - t0 < 3000) {\n        println(\"fast: true\");\n    } else {\n        println(\"fast: false\");\n    }\n    return 0;\n}\n",
+        out: "threw: task cancelled\nfast: true",
+        code: 0,
+        err: None,
+        aot: true,
+    },
     // ----------------------------------------------------------------- bindings
     Case {
         name: "let_const_annot",

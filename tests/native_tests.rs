@@ -457,3 +457,150 @@ fn main() {
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&exe);
 }
+
+/// Operator overloading under AOT (audit S-21). The native `spid3r_binop`
+/// trampoline used to delegate straight to `vm_eval_binary`, which has no
+/// overload path: `Money + Money` (class-instance dunder) and
+/// `complex + complex` (map-carried dunder, the route every stdlib numeric
+/// type uses) both raised "cannot add instance and instance" /
+/// "cannot add map and map" in compiled code while the same program ran on
+/// tree and VM. This pins the full overload set — binary, reflected and
+/// unary — against the tree engine on real stdlib types and a user class.
+#[test]
+fn native_operator_overloading_matches_tree() {
+    if !native_available() {
+        eprintln!("skip: LLVM-C.dll not found next to {}", bin().display());
+        return;
+    }
+    let dir = std::env::temp_dir();
+
+    // `complex` and `bigint` both export `to_string`, so a single program
+    // importing both unaliased is a semantic import collision (correctly
+    // rejected). Aliasing is unsupported on the native backend, so the two
+    // stdlib types are exercised in separate programs.
+    let cx = r#"import "complex";
+
+class Money {
+    public let cents;
+    fn new(cents) {
+        self.cents = cents;
+    }
+    public fn __add__(self, other) {
+        return Money(self.cents + other.cents);
+    }
+    public fn __sub__(self, other) {
+        return Money(self.cents - other.cents);
+    }
+    public fn __mul__(self, k) {
+        return Money(self.cents * k);
+    }
+    public fn __div__(self, k) {
+        return Money(self.cents / k);
+    }
+    public fn __neg__(self) {
+        return Money(-self.cents);
+    }
+    public fn __radd__(self, o) {
+        return Money(o + self.cents);
+    }
+}
+
+fn main() {
+    // map-carried dunders: the stdlib numeric types
+    let a = of(1, 2);
+    let b = of(3, 4);
+    println(to_string(a + b));
+    println(to_string(a * b));
+    println(to_string(b - a));
+    println(to_string(b / a));
+    // class-instance dunders: every operator, plus the reflected form
+    let m = new Money(250) + new Money(125);
+    println(m.cents);
+    println((new Money(500) - new Money(125)).cents);
+    println((new Money(5) * 3).cents);
+    println((new Money(100) / 4).cents);
+    println((-new Money(7)).cents);
+    println((10 + new Money(5)).cents);
+    // a throw inside an overloaded operator stays catchable
+    try {
+        let bad = new Money(1) + new Money(2);
+        println(bad.cents);
+    } catch (e) {
+        println("caught: " + string(e));
+    }
+    return 0;
+}
+"#;
+    let big = r#"import "bigint";
+
+fn main() {
+    let b = from_string("123456789012345678901234567890");
+    println(to_string(b + from_string("1")));
+    println(to_string(-b));
+    println(to_string(b * from_string("2")));
+    println(to_string(b - from_string("999999999999")));
+    return 0;
+}
+"#;
+
+    // (tag, source, expected stdout)
+    let cases: [(&str, &str, &str); 2] = [
+        (
+            "cx",
+            cx,
+            concat!(
+                "4.0+6.0i\n",       // complex add
+                "-5.0+10.0i\n",     // complex mul
+                "2.0+2.0i\n",       // complex sub
+                "2.2-0.4i\n",       // complex div
+                "375\n",            // Money add
+                "375\n",            // Money sub
+                "15\n",             // Money mul
+                "25\n",             // Money div
+                "-7\n",             // Money neg
+                "15\n",             // Money radd (10 + Money(5))
+                "3\n",              // no throw: the try body completes
+            ),
+        ),
+        (
+            "big",
+            big,
+            concat!(
+                "123456789012345678901234567891\n", // bigint add
+                "-123456789012345678901234567890\n", // bigint neg
+                "246913578024691357802469135780\n", // bigint mul
+                "123456789012345677901234567891\n", // bigint sub
+            ),
+        ),
+    ];
+
+    for (tag, src, expected) in cases {
+        let src_path = dir.join(format!("spid3r_nat_ops_{}.matrix", tag));
+        std::fs::write(&src_path, src).expect("write scratch");
+        let src_path = src_path.to_str().unwrap().to_string();
+
+        let tree = out(&["run", "--engine", "tree", &src_path])
+            .unwrap_or_else(|e| panic!("tree run failed ({}):/n{}", tag, e));
+        let vm = out(&["run", "--engine", "vm", &src_path])
+            .unwrap_or_else(|e| panic!("vm run failed ({}):/n{}", tag, e));
+        assert_eq!(tree, vm, "tree vs vm differ for operator overloading ({})", tag);
+
+        let exe = dir.join(if cfg!(windows) {
+            format!("spid3r_nat_ops_{}.exe", tag)
+        } else {
+            format!("spid3r_nat_ops_{}", tag)
+        });
+        let exe = exe.to_str().unwrap().to_string();
+        out(&["build", &src_path, "-o", &exe])
+            .unwrap_or_else(|e| panic!("native build failed ({}):/n{}", tag, e));
+        let native = run_exe(&exe).unwrap_or_else(|e| panic!("native run failed ({}):/n{}", tag, e));
+        assert_eq!(
+            tree, native,
+            "tree vs native stdout differ for operator overloading ({})",
+            tag
+        );
+        assert_eq!(tree, expected, "output drifted from the expected values ({})", tag);
+        let _ = std::fs::remove_file(&src_path);
+        let _ = std::fs::remove_file(&exe);
+    }
+}

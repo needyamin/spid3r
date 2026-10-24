@@ -316,6 +316,103 @@ pub fn unop_from_u8(op: u8) -> Option<UnOp> {
     })
 }
 
+/// The dunder pair a binary operator overloads, or `None` for operators with
+/// no overload (`%`, comparisons) — the same set the tree interpreter
+/// (`operator_call`) and the VM (`try_operator`) dispatch.
+fn overload_dunders(op: BinOp) -> Option<(&'static str, &'static str)> {
+    Some(match op {
+        BinOp::Add => ("__add__", "__radd__"),
+        BinOp::Sub => ("__sub__", "__rsub__"),
+        BinOp::Mul => ("__mul__", "__rmul__"),
+        BinOp::Div => ("__div__", "__rdiv__"),
+        _ => return None,
+    })
+}
+
+/// Invoke a callable value natively (the map-dunder route of operator
+/// overloading). Arity checking, `Native`/`NativeClosure` dispatch and
+/// construction all go through the shared `spid3r_call_inner`, so the
+/// semantics — including the arity diagnostic — match a direct call.
+fn native_call_value(f: Value, args: Vec<Value>) -> Result<Value, String> {
+    let argc = args.len();
+    let mut argv: Vec<*mut Value> = args.iter().map(|a| leak(a.clone())).collect();
+    let r = spid3r_call_inner(leak(f), argc, argv.as_mut_ptr());
+    // A `throw` inside the callee leaves the pending-throw flag set; the
+    // generated `spid3r_threw` guard after the operator handles it, exactly
+    // as it does for a direct call.
+    Ok(to_owned(r))
+}
+
+/// Call a compiled function with `args` (the receiver first for methods).
+/// Arity is range-checked BEFORE entering generated code: the prologue loads
+/// `argv[i]` for every declared parameter, so a short call reads past the
+/// array (audit S-3). The wording matches the VM's `call_value_sync`.
+fn call_cfn_method(cfn: &CompiledFn, method: &str, args: &[Value]) -> Result<Value, String> {
+    let argc = args.len();
+    if argc < cfn.min_arity || argc > cfn.arity {
+        return Err(format!(
+            "{} expects {} argument(s), got {}",
+            method, cfn.arity, argc
+        ));
+    }
+    let argv: Vec<*mut Value> = args.iter().map(|a| leak(a.clone())).collect();
+    enter_call();
+    let r = unsafe { (cfn.code)(cfn.env, argc, argv.as_ptr()) };
+    leave_call();
+    Ok(to_owned(r))
+}
+
+/// Operator overloading in compiled code — the native half of the VM's
+/// `OpCode::Add` dispatch (`try_operator`): a map carries the dunder as a
+/// value, a compiled class instance carries it as a method resolved through
+/// the class chain. `None` means "no overload": the caller falls back to the
+/// shared `vm_eval_binary`/`vm_eval_unary` and reports its usual type error,
+/// exactly like the tree and VM engines.
+fn native_try_operator(l: &Value, r: &Value, method: &str) -> Option<Result<Value, String>> {
+    match l {
+        Value::Map(_) => {
+            let f = collections::index_get(l, &Value::Str(method.into())).ok()?;
+            // Same callable filter as the engines: a non-callable dunder is
+            // "no overload", not an error.
+            if !matches!(
+                f,
+                Value::Cfn(_) | Value::Native(_) | Value::NativeClosure(_) | Value::CClass(_)
+            ) {
+                return None;
+            }
+            Some(native_call_value(f, vec![l.clone(), r.clone()]))
+        }
+        Value::CInstance(inst) => {
+            let class = inst.lock().unwrap().class.clone();
+            let (_, cfn) = find_method_cclass(&class, method)?;
+            Some(call_cfn_method(&cfn, method, &[l.clone(), r.clone()]))
+        }
+        _ => None,
+    }
+}
+
+/// Unary counterpart (`__neg__`): the receiver alone, no right-hand operand.
+fn native_try_unary_operator(v: &Value, method: &str) -> Option<Result<Value, String>> {
+    match v {
+        Value::Map(_) => {
+            let f = collections::index_get(v, &Value::Str(method.into())).ok()?;
+            if !matches!(
+                f,
+                Value::Cfn(_) | Value::Native(_) | Value::NativeClosure(_) | Value::CClass(_)
+            ) {
+                return None;
+            }
+            Some(native_call_value(f, vec![v.clone()]))
+        }
+        Value::CInstance(inst) => {
+            let class = inst.lock().unwrap().class.clone();
+            let (_, cfn) = find_method_cclass(&class, method)?;
+            Some(call_cfn_method(&cfn, method, std::slice::from_ref(v)))
+        }
+        _ => None,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mut Value {
     let op = match binop_from_u8(op as u8) {
@@ -324,6 +421,21 @@ pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mu
     };
     let l = to_owned(l);
     let r = to_owned(r);
+    // Operator overloading first: a value carrying `__add__`/`__sub__`/
+    // `__mul__`/`__div__` (or a reflected form on the right operand) handles
+    // the operator. Without this, the stdlib numeric types (complex,
+    // rational, decimal, bigint) and user classes with dunders raised a type
+    // error under AOT while the same program ran on tree/VM (audit S-21).
+    if let Some((fwd, rev)) = overload_dunders(op) {
+        let over =
+            native_try_operator(&l, &r, fwd).or_else(|| native_try_operator(&r, &l, rev));
+        if let Some(res) = over {
+            return match res {
+                Ok(v) => leak(v),
+                Err(msg) => rt_throw(&msg),
+            };
+        }
+    }
     match vm_eval_binary(op, l, r) {
         Ok(v) => leak(v),
         Err(msg) => rt_throw(&msg),
@@ -337,6 +449,16 @@ pub extern "C" fn spid3r_unop(v: *const Value, op: i64) -> *mut Value {
         None => abort("native runtime: unknown unop"),
     };
     let v = to_owned(v);
+    // Unary overloading (`__neg__`), the same dispatch as the VM's
+    // `try_unary_operator`.
+    if op == UnOp::Neg {
+        if let Some(res) = native_try_unary_operator(&v, "__neg__") {
+            return match res {
+                Ok(v) => leak(v),
+                Err(msg) => rt_throw(&msg),
+            };
+        }
+    }
     match vm_eval_unary(op, v) {
         Ok(v) => leak(v),
         Err(msg) => rt_throw(&msg),
@@ -432,7 +554,27 @@ pub extern "C" fn spid3r_call(f: *mut Value, argc: usize, argv: *const *mut Valu
     ffi_value("call", || spid3r_call_inner(f, argc, argv))
 }
 
+/// Cancellation point after a call returns (audit S-23). A loop body that
+/// blocks — the canonical `while true { sleep_ms(1) }` worker, or a socket
+/// read with a timeout — burns wall-clock time the loop's iteration-count
+/// poll cannot see: at `CANCEL_POLL_INTERVAL` (2048) iterations, cancelling a
+/// task that sleeps 1ms per iteration took ~2s (measured 3.5s under load),
+/// and a `sleep_ms(100)` loop would take minutes. Re-checking once the call
+/// returns bounds the latency to a single call, matching the tree engine's
+/// per-statement check. An error raised by the callee wins: cancellation is
+/// sticky, so the next call re-raises it. A no-op outside spawned tasks.
+fn cancel_guard(r: *mut Value) -> *mut Value {
+    if THROWN.with(|t| t.borrow().is_none()) && crate::sched::current_task_cancelled() {
+        return rt_throw("task cancelled");
+    }
+    r
+}
+
 fn spid3r_call_inner(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mut Value {
+    cancel_guard(spid3r_call_inner_dispatch(f, argc, argv))
+}
+
+fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mut Value {
     let callee = to_owned(f);
     match callee {
         Value::Cfn(c) => {
@@ -588,7 +730,7 @@ pub extern "C" fn spid3r_method(
     argc: usize,
     argv: *const *mut Value,
 ) -> *mut Value {
-    ffi_value("method", || spid3r_method_inner(obj, name, argc, argv))
+    ffi_value("method", || cancel_guard(spid3r_method_inner(obj, name, argc, argv)))
 }
 
 fn spid3r_method_inner(

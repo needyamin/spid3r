@@ -46,6 +46,11 @@ fn peek_at(k) {
 }
 
 fn advance() {
+    // EOF-safe: a caller that advances past the end (a truncated escape, for
+    // instance) gets null instead of an out-of-bounds slice error.
+    if POS >= len(SRC) {
+        return null;
+    }
     let c = SRC.slice(POS, POS + 1);
     POS = POS + 1;
     if c == "\n" {
@@ -145,6 +150,9 @@ fn parse_key_path() {
 
 fn parse_escape() {
     let c = advance();
+    if c == null {
+        fail("unterminated escape");
+    }
     if c == "n" {
         return "\n";
     }
@@ -413,7 +421,9 @@ public fn toml_parse(text) {
             if array_of_tables {
                 closing = "]]";
             }
-            if not SRC.slice(POS, POS + len(closing)).starts_with(closing) {
+            // Bounds check before slicing: a truncated header must fail with
+            // a parse diagnostic, not an internal slice-range error.
+            if POS + len(closing) > len(SRC) or not SRC.slice(POS, POS + len(closing)).starts_with(closing) {
                 fail("expected '" + closing + "'");
             }
             let k = 0;
