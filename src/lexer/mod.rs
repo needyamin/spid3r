@@ -17,7 +17,15 @@ pub struct Lexer<'a> {
     ranges: Vec<(usize, usize)>,
     /// Byte offset where the most recent token started (set by `next_token`).
     last_tok_start: usize,
+    /// Nesting depth of interpolation-hole validation. Validating a capture
+    /// re-lexes it, which can capture and validate again; the cap keeps a
+    /// pathological `{a{a{a...}}}` from recursing without bound.
+    interp_depth: u32,
 }
+
+/// How deep interpolation-hole validation may nest before a capture is
+/// rejected outright (the `{` then stays literal text).
+pub(crate) const MAX_INTERP_DEPTH: u32 = 32;
 
 /// A comment skipped by the lexer, kept for the formatter. `text` includes
 /// the `//` or `/* ... */` markers.
@@ -39,6 +47,12 @@ pub struct Lexed {
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str, file: std::sync::Arc<str>) -> Self {
+        Self::with_depth(src, file, 0)
+    }
+
+    /// A lexer that knows how deep it sits inside interpolation-hole
+    /// validation (see `MAX_INTERP_DEPTH`).
+    pub(crate) fn with_depth(src: &'a str, file: std::sync::Arc<str>, interp_depth: u32) -> Self {
         let bytes = src.as_bytes();
         let start = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
             3
@@ -54,6 +68,7 @@ impl<'a> Lexer<'a> {
             comments: Vec::new(),
             ranges: Vec::new(),
             last_tok_start: start,
+            interp_depth,
         }
     }
 
@@ -454,6 +469,13 @@ impl<'a> Lexer<'a> {
     /// tracked through nested braces and quoted strings. Returns `None` when
     /// the content is empty, spans a newline, or never closes - the caller
     /// then treats the `{` as literal text.
+    ///
+    /// A capture that closes is only accepted when it also parses as one
+    /// expression. The quote tracking cannot tell the hole's own `"` from the
+    /// closing quote of the literal being lexed, so `"a{b" + "c}d"` captures
+    /// `b" + "c` and stops at the `}` lines away - text that is never a valid
+    /// expression. Rejecting it here makes the `{` literal, so the literal
+    /// ends at its real closing quote and concatenation survives.
     fn try_interp_expr(&mut self) -> Option<String> {
         // The caller has already consumed the `{`; capture starts here.
         let (pos, line, col) = (self.pos, self.line, self.col);
@@ -478,6 +500,19 @@ impl<'a> Lexer<'a> {
                                 String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
                             self.bump(); // the `}`
                             if raw.trim().is_empty() {
+                                self.pos = pos;
+                                self.line = line;
+                                self.col = col;
+                                return None;
+                            }
+                            // The scan may have run past the end of the string
+                            // literal (its closing quote looks like the start
+                            // of a quoted region inside the hole). Such a
+                            // capture is never a valid expression, so reject
+                            // it and let the caller treat `{` as literal text.
+                            if self.interp_depth >= MAX_INTERP_DEPTH
+                                || !crate::parser::hole_is_expression(&raw, self.interp_depth + 1)
+                            {
                                 self.pos = pos;
                                 self.line = line;
                                 self.col = col;

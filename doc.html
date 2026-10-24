@@ -2215,6 +2215,24 @@ fn main() {
           <code>Dog {name: Rex, noise: woof}</code>. Field order in that output is not guaranteed.
         </p>
 
+        <h3>Abstract classes &amp; methods</h3>
+        <p>A class marked <code>abstract class</code> cannot be instantiated directly with <code>new</code> (producing a compile-time semantic error). Abstract methods declare a signature ending in <code>;</code> with no body. Non-abstract subclasses must implement all inherited abstract methods:</p>
+        <pre data-lang="spid3r"><code>abstract class BaseService {
+    public abstract fn handle(self, req);
+}
+
+class ApiService extends BaseService {
+    public fn handle(self, req) {
+        return "handled: " + req;
+    }
+}
+
+fn main() {
+    let s = new ApiService();
+    println(s.handle("ping")); // handled: ping
+    return 0;
+}</code></pre>
+
 
 
         <div class="w3-exercise-card">
@@ -3125,6 +3143,21 @@ fn main() {
             <td>True for files <em>and</em> directories.</td>
           </tr>
           <tr>
+            <td><code>file_delete(path)</code></td>
+            <td><code>result</code></td>
+            <td>Deletes file; returns <code>ok(null)</code> / <code>err(msg)</code>.</td>
+          </tr>
+          <tr>
+            <td><code>dir_create(path)</code></td>
+            <td><code>result</code></td>
+            <td>Creates directory (and parents); <code>ok(null)</code> / <code>err(msg)</code>.</td>
+          </tr>
+          <tr>
+            <td><code>dir_remove(path)</code></td>
+            <td><code>result</code></td>
+            <td>Removes empty directory; <code>ok(null)</code> / <code>err(msg)</code>.</td>
+          </tr>
+          <tr>
             <td><code>env(name)</code></td>
             <td><code>option</code></td>
             <td><code>some(value)</code> / <code>none</code>.</td>
@@ -3295,12 +3328,39 @@ fn main() {
               (32-byte key, hex) — the password-storage primitive. Zero dependencies.</td>
           </tr>
           <tr>
+            <td><code>bcrypt_hash(pwd[, cost])</code> · <code>bcrypt_verify(pwd, hash)</code></td>
+            <td>string / bool</td>
+            <td>OpenBSD bcrypt password hash string ($2b$...) and constant-time verification.</td>
+          </tr>
+          <tr>
+            <td><code>argon2(pwd, salt, time, mem, par, variant, len)</code> · <code>scrypt(...)</code></td>
+            <td>string</td>
+            <td>Argon2 (RFC 9106, variants "i"/"d"/"id") and scrypt (RFC 7914) password hashing returning lowercase hex.</td>
+          </tr>
+          <tr>
+            <td><code>secure_compare(a, b)</code> · <code>random_bytes(n)</code></td>
+            <td>bool / result</td>
+            <td>Constant-time comparison against timing attacks; <code>random_bytes</code> fetches OS CSPRNG entropy.</td>
+          </tr>
+          <tr>
             <td><code>base64_encode(data)</code> · <code>base64_decode(text)</code> ·
               <code>base64_url_encode(data)</code> · <code>base64_url_decode(text)</code>
             </td>
             <td>string / bytes</td>
             <td>RFC 4648 Base64 — standard (+/, padded) and URL-safe (-_, unpadded) alphabets.
               Encode accepts strings or bytes; decode returns bytes.</td>
+          </tr>
+          <tr>
+            <td><code>hex_encode(data)</code> · <code>hex_decode(text)</code> ·
+              <code>base32_encode(data)</code> · <code>base32_decode(text)</code>
+            </td>
+            <td>string / bytes</td>
+            <td>Hexadecimal and RFC 4648 Base32 encoding/decoding.</td>
+          </tr>
+          <tr>
+            <td><code>ord(s)</code> · <code>chr(n)</code></td>
+            <td>int / string</td>
+            <td>Unicode codepoint of character; string from Unicode codepoint integer.</td>
           </tr>
           <tr>
             <td><code>regex_match(pat, text)</code> · <code>regex_find(pat, text)</code></td>
@@ -3373,6 +3433,59 @@ fn main() {
             <td>Non-owning reference; <code>deref</code> returns <code>null</code> once the target is freed.</td>
           </tr>
         </table>
+        <h3>Compression, serialization &amp; media</h3>
+        <table>
+          <tr>
+            <th>Function</th>
+            <th>Returns</th>
+            <th>Notes</th>
+          </tr>
+          <tr>
+            <td><code>crc32(data)</code> · <code>adler32(data)</code></td>
+            <td>int</td>
+            <td>IEEE 802.3 CRC-32 and RFC 1950 Adler-32 checksums of strings or bytes.</td>
+          </tr>
+          <tr>
+            <td><code>deflate(b)</code> · <code>inflate(b)</code> · <code>gzip_compress(b)</code> · <code>gunzip(b)</code> · <code>zlib_compress(b)</code> · <code>unzlib(b)</code></td>
+            <td>bytes / result</td>
+            <td>DEFLATE (RFC 1951), GZIP (RFC 1952), and ZLIB (RFC 1950) compression and decompression.</td>
+          </tr>
+          <tr>
+            <td><code>zip_create(files)</code> · <code>zip_list(b)</code> · <code>zip_read(b)</code></td>
+            <td>bytes / result</td>
+            <td>In-memory .zip archive generation and extraction. <code>files</code> is a list of <code>map("name", n, "data", d)</code>.</td>
+          </tr>
+          <tr>
+            <td><code>msgpack_encode(v)</code> · <code>msgpack_decode(b)</code></td>
+            <td>bytes / result</td>
+            <td>MessagePack binary serialization and deserialization.</td>
+          </tr>
+          <tr>
+            <td><code>cbor_encode(v)</code> · <code>cbor_decode(b)</code></td>
+            <td>bytes / result</td>
+            <td>RFC 8949 CBOR binary serialization and deserialization.</td>
+          </tr>
+          <tr>
+            <td><code>pb_encode(map)</code> · <code>pb_decode(b)</code></td>
+            <td>bytes / result</td>
+            <td>Protocol Buffers wire format encoding/decoding.</td>
+          </tr>
+          <tr>
+            <td><code>png_encode(w, h, c, px)</code> · <code>png_decode(b)</code></td>
+            <td>bytes / result</td>
+            <td>PNG image encoding (1, 3, 4 channels) and decoding into pixel bytes.</td>
+          </tr>
+          <tr>
+            <td><code>wav_encode(sr, ch, bits, data)</code> · <code>wav_decode(b)</code></td>
+            <td>bytes / result</td>
+            <td>RIFF WAV audio encoding (8, 16, 24, 32-bit PCM) and decoding.</td>
+          </tr>
+          <tr>
+            <td><code>pdf_write(ops, w, h)</code> · <code>pdf_escape(s)</code></td>
+            <td>bytes / string</td>
+            <td>Vector PDF 1.4 document generator from page operator lists.</td>
+          </tr>
+        </table>
         <h3>Display format</h3>
         <p><code>print</code>/<code>println</code> render values in their display form:</p>
         <div class="tablewrap">
@@ -3440,6 +3553,33 @@ fn main() {
           <a href="#first-party-stdlib">First-Party Standard Libraries</a> for the web framework that
           pairs with it.
         </p>
+
+        <h3>Native database drivers (MySQL, PostgreSQL, Redis)</h3>
+        <p>In addition to SQLite, Spid3r features zero-dependency native TCP protocol clients implemented directly in the core language runtime:</p>
+        <div class="tablewrap">
+          <table>
+            <tr>
+              <th>Driver</th>
+              <th>Function</th>
+              <th>Notes</th>
+            </tr>
+            <tr>
+              <td><strong>MySQL</strong></td>
+              <td><code>mysql_connect(addr, user, pwd, db)</code> · <code>mysql_query(h, sql)</code> · <code>mysql_exec(h, sql)</code> · <code>mysql_close(h)</code></td>
+              <td>Pure TCP MySQL wire protocol with <code>mysql_native_password</code> handshake; <code>mysql_query</code> returns row maps.</td>
+            </tr>
+            <tr>
+              <td><strong>PostgreSQL</strong></td>
+              <td><code>pg_connect(addr, user, pwd, db)</code> · <code>pg_query(h, sql)</code> · <code>pg_exec(h, sql)</code> · <code>pg_close(h)</code></td>
+              <td>Postgres frontend/backend protocol 3.0 supporting MD5 and SCRAM-SHA-256 authentication.</td>
+            </tr>
+            <tr>
+              <td><strong>Redis</strong></td>
+              <td><code>redis_connect(addr[, pwd])</code> · <code>redis_command(h, ...args)</code> · <code>redis_close(h)</code></td>
+              <td>RESP2 protocol client supporting all Redis commands and nested reply decoding.</td>
+            </tr>
+          </table>
+        </div>
 
         <h3>Networking &amp; HTTP</h3>
         <p>Built-in TCP socket primitives and HTTP/1.1 framing with zero external dependencies (see <a
@@ -3772,6 +3912,158 @@ fn main() {
           formats. <code>unicode_cluster_len</code> counts base characters plus marks, not UAX #29 grapheme
           clusters, so emoji ZWJ sequences count as several.
         </div>
+
+        <h3>7. <code>stdlib/multipart.matrix</code>, <code>stdlib/session.matrix</code>, <code>stdlib/middleware.matrix</code>, <code>stdlib/fastcgi.matrix</code> — Web Infrastructure</h3>
+        <p>Production server building blocks: binary-safe RFC 7578 multipart file uploads, server-side session management with cryptographically signed cookies, composable middleware (CORS, gzip, rate limiting, access logging), and FastCGI binary framing for nginx/Apache:</p>
+        <pre data-lang="spid3r"><code>import "multipart" as mp;
+import "session" as sess;
+import "middleware" as mw;
+import "fastcgi" as fcgi;
+
+fn main() {
+    // 1. Session store
+    let store = sess.session_store("super_secret_key_16_chars_min", map("cookie_name", "sid"));
+
+    // 2. Sanitized file upload path
+    let safe_filename = mp.multipart_safe_name("../../etc/passwd"); // "passwd"
+
+    // 3. Composable middleware pipeline
+    let chain = mw.mw_chain(list(
+        mw.mw_recover(),
+        mw.mw_security_headers(),
+        mw.mw_cors(map("origin", "*")),
+        mw.mw_gzip()
+    ));
+    return 0;
+}</code></pre>
+
+        <h3>8. <code>stdlib/mock.matrix</code>, <code>stdlib/testkit.matrix</code>, <code>stdlib/assert.matrix</code> — Testing &amp; Tooling</h3>
+        <p>Comprehensive testing utilities with recording test doubles, isolated temporary directories, and fluent assertion helpers:</p>
+        <pre data-lang="spid3r"><code>import "assert" as a;
+import "mock" as m;
+import "testkit" as tk;
+
+fn main() {
+    // Recording test double
+    let f = m.mock1(fn(x) { return x * 2; });
+    f["call"](21);
+    a.eq(m.mock_count(f), 1, "called once");
+    a.is_true(m.mock_called_with(f, list(21)), "called with 21");
+
+    // Assertions with descriptive diagnostics
+    a.eq(10 + 5, 15, "addition works");
+    a.near(3.14159, 3.14, 0.01, "pi within epsilon");
+    return 0;
+}</code></pre>
+
+        <h3>9. <code>stdlib/bigint.matrix</code>, <code>stdlib/decimal.matrix</code>, <code>stdlib/rational.matrix</code>, <code>stdlib/complex.matrix</code> — Exact Numerics</h3>
+        <p>Arbitrary-precision integers, exact fixed-point financial decimals, reduced rational fractions, and complex numbers with operator overloading (<code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>):</p>
+        <pre data-lang="spid3r"><code>import "bigint" as bi;
+import "decimal" as dec;
+import "rational" as q;
+import "complex" as cx;
+
+fn main() {
+    // BigInt: arbitrary digit length
+    let big1 = 100000000000000000000n;
+    let big2 = 200000000000000000000n;
+    println(bi.to_string(big1 + big2)); // 300000000000000000000
+
+    // Decimal: exact financial ledger arithmetic
+    let d1 = dec.from_string("0.10");
+    let d2 = dec.from_string("0.20");
+    println(dec.to_string(d1 + d2)); // 0.30 (not 0.30000000000000004)
+
+    // Rational: exact reduced fractions
+    let frac = q.of(1, 3) + q.of(1, 6);
+    println(q.to_string(frac)); // 1/2
+
+    // Complex numbers: rectangular and polar forms
+    let z = cx.of(3, 4);
+    println(cx.abs(z)); // 5.0
+    return 0;
+}</code></pre>
+
+        <h3>10. <code>stdlib/mathx.matrix</code> — Advanced Numerical &amp; Statistical Methods</h3>
+        <p>Piecewise linear interpolation, discrete convolution, one-way ANOVA, Mann-Whitney U tests, two-sample Kolmogorov-Smirnov goodness-of-fit tests, and CSR sparse matrices:</p>
+        <pre data-lang="spid3r"><code>import "mathx" as mx;
+
+fn main() {
+    // 1D Linear Interpolation
+    let y = mx.interp_linear(list(0.0, 10.0), list(0.0, 100.0), 2.5); // 25.0
+
+    // Discrete linear convolution
+    let conv = mx.convolve(list(1.0, 2.0), list(3.0, 4.0)); // [3.0, 10.0, 8.0]
+
+    // Compressed Sparse Row (CSR) matrix conversion & fast multiply
+    let dense = matrix(3, 3);
+    dense.set(1, 1, 5.0);
+    let sparse = mx.sparse_from_dense(dense);
+    let v = vector(list(1.0, 2.0, 3.0));
+    let res = mx.sparse_mul_vector(sparse, v); // [0.0, 10.0, 0.0]
+    return 0;
+}</code></pre>
+
+        <h3>11. <code>stdlib/gen.matrix</code> — Generators &amp; Lazy Streams</h3>
+        <p>Lazy stream generators over the cooperative task scheduler. Supports infinite sequences, chaining, mapping, and eager collection without memory blowup:</p>
+        <pre data-lang="spid3r"><code>import "gen" as g;
+
+fn main() {
+    // Infinite counter pipeline bounded by take()
+    let inf = g.gen(fn(emit) {
+        let i = 0;
+        while true { emit(i); i = i + 1; }
+    });
+
+    let evens = g.filter(inf, fn(x) { return x % 2 == 0; });
+    let squares = g.map(evens, fn(x) { return x * x; });
+    println(g.take(squares, 4)); // [0, 4, 16, 36]
+    g.close(inf);
+    return 0;
+}</code></pre>
+
+        <h3>12. <code>stdlib/toml.matrix</code>, <code>stdlib/yaml.matrix</code>, <code>stdlib/xml.matrix</code> — Data &amp; Config Formats</h3>
+        <p>Zero-dependency parsers and emitters for TOML configuration files, YAML data structures, and XML documents with tag and attribute queries:</p>
+        <pre data-lang="spid3r"><code>import "toml" as t;
+import "yaml" as y;
+import "xml";
+
+fn main() {
+    // TOML parsing with dot-separated key lookup
+    let cfg = t.toml_parse("[database]\nport = 5432\nhost = \"localhost\"\n");
+    println(t.toml_get(cfg, "database.port")); // 5432
+
+    // YAML parser
+    let ym = y.yaml_parse("server:\n  port: 8080\n  debug: true\n");
+    println(ym["server"]["port"]); // 8080
+
+    // XML parser and element query
+    let doc = xml_parse("&lt;service id=\"auth\"&gt;&lt;status&gt;ready&lt;/status&gt;&lt;/service&gt;");
+    println(xml_attr(doc, "id")); // "auth"
+    let status_nodes = xml_find(doc, "status");
+    println(xml_text(status_nodes[0])); // "ready"
+    return 0;
+}</code></pre>
+
+        <h3>13. <code>stdlib/uuid.matrix</code>, <code>stdlib/semver.matrix</code>, <code>stdlib/event.matrix</code> — Utilities &amp; Event Loop</h3>
+        <p>RFC 9562 UUID v4 generation from OS entropy, SemVer 2.0.0 semantic version parsing, and a single-threaded multiplexing event loop over socket handles:</p>
+        <pre data-lang="spid3r"><code>import "uuid" as u;
+import "semver" as sv;
+import "event" as ev;
+
+fn main() {
+    // UUID v4
+    let id = u.uuid_v4(); // e.g. "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+
+    // Semantic Versioning
+    let ver = sv.parse("2.4.1-rc.1");
+    println(sv.satisfies("2.4.1", "&gt;=2.0.0 &lt;3.0.0")); // true
+
+    // Event Loop multiplexing over tcp_poll
+    let loop = ev.start();
+    ev.stop(loop);
+    return 0;
+}</code></pre>
 
         <div class="chapter-nav bottom-nav"><a class="nav-btn prev-btn" href="#stdlib">❮ Previous</a><span
             class="chapter-badge">End of Chapter 19</span><a class="nav-btn next-btn" href="#networking">Next ❯</a>

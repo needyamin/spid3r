@@ -30,7 +30,7 @@ let okv  = ok(1);  let errv = err("bad");   // result
 | Type | Notes |
 |---|---|
 | `list(a, b, …)` | Ordered, indexable by `list[i]`. Methods: `get(i)`, `set(i, v)`, `push`, `pop`, `remove`, `remove_at(i)`, `contains`, `sort`, `reverse`, `sorted` (new list), `reversed` (new list), `slice`, `join(sep)`, `append(other)`, `index_of`, `len`, `is_empty`, `clear`. **Higher-order (callback) methods:** `map(f)`, `filter(f)`, `reduce(init, f)`, `for_each(f)`, `all(f)`, `any(f)`, `sort_by(cmp)`, `sorted_by(cmp)`, `argsort()` — see [Sorting with a comparator](#sorting-with-a-comparator) and [Formatting floats](#formatting-floats). |
-| `vec()` | Resizable array. `push_back`, `push_front`, `pop_back`, `pop_front`, `get`, `set`, `contains`, `len`. |
+| `vec()` | Resizable array. `push`, `pop`, `get(i)`, `set(i, v)`, `contains`, `len`, `is_empty`, `clear`, `clone`. |
 | `deque()` | Double-ended queue. `push_front`/`push_back`, `pop_front`/`pop_back`, `peek_front`, `len`. |
 | `tuple(a, b, …)` | Fixed, immutable-length grouping; indexable by `t[i]`. |
 | `bytes(...)` | Contiguous 8-bit byte buffer (`0..255`). Indexable by `b[i]`. Methods: `len`, `get`, `set`, `push`, `slice`, `to_list`, `to_string`, `to_hex`, `from_hex`, `to_base64`, `from_base64`, `copy`. |
@@ -99,7 +99,7 @@ value, and the list is left as it was.
 | Type | Notes |
 |---|---|
 | `stack()` | LIFO. `push`, `pop`, `peek`, `len`, `is_empty`. `pop` on an empty stack throws. |
-| `queue()` | FIFO. `push` (enqueue), `pop` (dequeue), `peek_front`, `len`, `is_empty`. |
+| `queue()` | FIFO. `push` (enqueue), `pop` (dequeue), `peek`, `len`, `is_empty`. |
 | `priority_queue("min"\|"max")` | Heap-backed; `push`, `pop`, `peek`, `len`. |
 
 ## Strings
@@ -147,8 +147,8 @@ ignored format.
 |---|---|
 | `map(k, v, …)` | Insertion-order map. `get`, `set`/index-assign `m[k] = v`, `remove`/`delete`, `has`/`contains`, `keys`, `values`, `items` (list of `(k, v)` tuples), `len`, `is_empty`, `clear`. |
 | `set(a, b, …)` | Unique members. `add`, `remove`, `contains`, `union`, `intersection`/`intersect`, `difference`, `is_subset`, `is_superset`, `len`, `is_empty`, `clear`. |
-| `bag()` | Multiset (counts duplicates). `add`, `count`, `remove`, `len`. |
-| `hash_table(n)` | Open addressing; `get`, `set`, `remove`, `contains`, `exists`, `len`, `clear`. |
+| `bag()` | Multiset (counts duplicates). `add`, `count_of`, `remove`, `len`, `is_empty`, `clear`. |
+| `hash_table(n)` | Open addressing; `get`, `set`, `remove`, `contains`, `len`, `clear`. |
 
 ## Linked nodes
 
@@ -162,9 +162,9 @@ ignored format.
 
 | Type | Notes |
 |---|---|
-| `binary_tree(a, b, …)` | Level-order built. `insert`, `remove`, `find`, `min`, `max`, `traverse`, `depth`, `n_nodes`, `n_leaves`, `height`. |
-| `bst()` | Binary search tree. `insert`, `remove`, `get`, `min`, `max`, `find_closest`, `get_ith`, `traverse` (inorder / preorder / postorder), `depth`, `n_nodes`, `n_leaves`, `height`. |
-| `trie()` | Prefix tree of strings. `add(word)`, `exists(word)`, `remove(word)`, `collect(prefix)`, `n_words`, `is_empty`. |
+| `binary_tree(a, b, …)` | Binary tree with level-order constructor. `insert`, `inorder`, `preorder`, `postorder`, `level_order`, `root`, `len`, `is_empty`, `clear`, `clone`. |
+| `bst()` | Binary search tree. `insert`, `remove`, `contains`, `inorder`, `preorder`, `postorder`, `root`, `len`, `is_empty`, `clear`, `clone`. |
+| `trie()` | Prefix tree of strings. `insert(word)`, `contains(word)`, `starts_with(prefix)`, `with_prefix(prefix)`, `all_words()`, `len`, `is_empty`, `clear`, `clone`. |
 | `heap("min"\|"max")` | Min/max heap. `push`, `pop`, `peek`, `change_priority`, `merge`, `len`, `is_empty`. |
 
 ## Numeric Vector & Matrix (Linear Algebra)
@@ -288,16 +288,18 @@ and `inverse` throw catchable runtime errors (`"matrix is singular"`).
 | Type | Notes |
 |---|---|
 | `ref(v)` | Interior-mutable cell: `get()`, `set(v)`. Safe to share across tasks. |
+| `weak(r)` / `deref(w)` | Non-owning weak reference to a `ref(v)`. `deref(w)` returns the value or `null` if the reference target has been collected. |
 | `mutex(v)` | Guarded cell: `m.lock()` returns the value and holds a RAII guard, auto-released on the calling scope's exit. |
 | `channel()` | Unbuffered message channel. `send(v)`, `recv()`, `try_recv()`, `state()`, `len()`. |
 | `task` | Returned by `spawn`. Joined with `await`; `status()` and `join()`. |
 
-## Sum types
+## Sum types & Enums
 
 | Type | Notes |
 |---|---|
 | `option` | `some(v)` / `none`. `is_some`, `is_none`, `unwrap`, `unwrap_or(d)`. |
 | `result` | `ok(v)` / `err(e)`. `is_ok`, `is_err`, `unwrap`, `unwrap_or(d)`, `unwrap_err`. |
+| `enum` | Declared via `enum Name { Variant1, Variant2(data) }`. Dispatched with `match (v) { Name::Variant1 => ..., Name::Variant2(d) => ... }`. Variants carry `.kind` string, `.data` payload, and display as `Name::Variant`. |
 
 ## Binary `bytes` & Serialization
 

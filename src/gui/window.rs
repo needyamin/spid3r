@@ -54,7 +54,20 @@ pub fn dry_run(interp: &Interp) {
 pub fn open(interp: &Arc<Interp>, html: Option<&str>) -> Result<(), String> {
     let title = bridge::take_title().unwrap_or_else(|| "spid3r gui".to_string());
 
-    let event_loop = tao::event_loop::EventLoopBuilder::<Msg>::with_user_event().build();
+    let event_loop = {
+        let mut builder = tao::event_loop::EventLoopBuilder::<Msg>::with_user_event();
+        #[cfg(windows)]
+        {
+            use tao::platform::windows::EventLoopBuilderExtWindows;
+            // The CLI runs every subcommand on a big-stack worker thread (deep
+            // AST recursion does not fit the 1 MiB main stack), so the event
+            // loop is usually NOT on the main thread. tao 0.34 aborts at
+            // build() unless this is set; the calculator launcher spawns a
+            // worker for the same stack reason.
+            builder.with_any_thread(true);
+        }
+        builder.build()
+    };
     let proxy = event_loop.create_proxy();
 
     #[cfg(target_os = "windows")]

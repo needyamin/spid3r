@@ -32,6 +32,8 @@ text, not a keyword (`"class"` is the six characters `class`, nothing more).
 | Finally | `finally` |
 | Throw | `throw` |
 | Class | `class` |
+| Abstract | `abstract` |
+| Yield | `yield` |
 | Interface | `interface` |
 | Construct | `new` |
 | Self | `self` |
@@ -68,34 +70,39 @@ reachable under that name).
 | Kind | Names |
 |---|---|
 | Primitives | `int`, `float`, `bool`, `string` |
-| Sequences | `list`, `vec`, `deque`, `tuple`, `ring_buffer` |
+| Sequences | `list`, `vec`, `deque`, `tuple`, `ring_buffer`, `bytes` |
 | Stacks & queues | `stack`, `queue`, `priority_queue` |
 | Associative | `map`, `set`, `bag`, `hash_table` |
 | Linked nodes | `linked_list`, `singly_linked_list`, `doubly_linked_list` |
 | Trees | `binary_tree`, `bst`, `trie` |
-| Numeric grid | `matrix` |
+| Numeric grid & vector | `matrix`, `vector` |
 | Graph | `graph` |
 | Shared state | `ref`, `mutex`, `channel` |
 | Sum types | `option`, `result` |
 | Concurrency | `task` |
 
 Constructors are called like functions: `list(10, 20, 30)`, `stack()`,
-`graph("undirected")`, `heap("min")`, `matrix(2, 3, 0.0)`, `ring_buffer(4)`,
-`ref(1)`, `some(5)`, `none`, `ok(1)`, `err("bad")`, `channel()`, `mutex(0)`.
+`graph("undirected")`, `heap("min")`, `matrix(2, 3, 0.0)`, `vector(list(1.0, 2.0))`, `bytes("abc")`,
+`ring_buffer(4)`, `ref(1)`, `some(5)`, `none`, `ok(1)`, `err("bad")`, `channel()`, `mutex(0)`.
 
 ## 3. Operators and delimiters
 
 | Group | Tokens |
 |---|---|
 | Arithmetic | `+` `-` `*` `/` `%` |
+| Bitwise | `&` `|` `^` `<<` `>>` |
 | Comparison | `==` `!=` `<` `<=` `>` `>=` |
 | Logical | `and` `or` `not` |
+| Null safety & coalescing | `?.` `??` `?` |
 | Assignment | `=` `+=` `-=` `*=` `/=` `%=` |
+| Pattern Matching & Functions | `=>` `->` |
+| Decorator | `@` |
 | Grouping | `(` `)` `[` `]` `{` `}` |
-| Punctuation | `,` `:` `;` `.` `->` |
+| Punctuation | `,` `:` `;` `.` |
 
-Statements end with `;`. Blocks use `{ }`. `->` is used only in function return
-type annotations (`fn add(a, b) -> int { ... }`).
+Statements end with `;`. Blocks use `{ }`. `->` is used in function return
+type annotations (`fn add(a, b) -> int { ... }`), `=>` separates pattern arms in `match`,
+and `@` annotates functions and classes.
 
 ## 4. Identifiers
 

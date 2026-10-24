@@ -12,7 +12,7 @@ back by `deserialize_vmfunc`:
 
 ```
 SPID3R        — 6-byte magic number (b"SPID3R")
-version: u16  — little-endian format version (currently 1)
+version: u16  — little-endian format version (currently 2)
 VmFunc        — the script function (see below)
 ```
 

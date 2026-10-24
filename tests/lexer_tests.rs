@@ -287,3 +287,102 @@ fn big_int_rejected() {
     let e = lex_err("99999999999999999999");
     assert!(e.message.contains("i64"));
 }
+
+// ---------------------------------------------------------- interpolation
+// holes vs. string boundaries
+
+/// Extract the `Str` payloads from a token stream, in order.
+fn strs(src: &str) -> Vec<String> {
+    kinds(src)
+        .into_iter()
+        .filter_map(|k| match k {
+            TokenKind::Str(s) => Some(s),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The hole scan used to treat the literal's own closing quote as opening a
+/// quoted region, then hunted for a `}` past the end of the literal - across
+/// the newline, the `+` and the next literal's opening quote. Concatenation
+/// was silently destroyed (the raw source text survived inside the string).
+#[test]
+fn unmatched_brace_does_not_swallow_the_string_boundary() {
+    // One literal, brace never closes inside it.
+    assert_eq!(strs("\"a{b\""), vec!["a{b".to_string()]);
+    // The classic two-literal concatenation.
+    assert_eq!(
+        strs("\"a{b\"\n+ \"c}d\""),
+        vec!["a{b".to_string(), "c}d".to_string()]
+    );
+    // CSS-shaped text: braces balanced across literals, not within one.
+    assert_eq!(
+        strs("\".calc{padding:18px;\"\n+ \"box-shadow:0 2px}\""),
+        vec![
+            ".calc{padding:18px;".to_string(),
+            "box-shadow:0 2px}".to_string()
+        ]
+    );
+    // A quote inside the hole text, still unbalanced within the literal.
+    assert_eq!(
+        strs("\"v: {a + \"\n+ \"x}\""),
+        vec!["v: {a + ".to_string(), "x}".to_string()]
+    );
+    // Same shape on one line: the capture is `b" + "c`, never an expression.
+    assert_eq!(
+        strs("\"a{b\" + \"c}d\""),
+        vec!["a{b".to_string(), "c}d".to_string()]
+    );
+}
+
+/// Holes that already worked must keep working: quotes inside brackets,
+/// balanced quotes inside the literal, plain paths and calls.
+#[test]
+fn working_hole_forms_still_lex() {
+    let pieces = |src: &str| match kinds(src).into_iter().next().unwrap() {
+        TokenKind::InterpStr(p) => p,
+        other => panic!("expected InterpStr, got {:?}", other),
+    };
+    use spid3r_lang::lexer::token::InterpPiece;
+
+    // Quote inside a call: the hole closes inside the literal.
+    assert_eq!(
+        pieces("\"{f(\"x\")}\""),
+        vec![InterpPiece::Hole("f(\"x\")".to_string())]
+    );
+    // Quote at bracket depth 0, balanced inside the literal.
+    assert_eq!(
+        pieces("\"{a + \"x\"}\""),
+        vec![InterpPiece::Hole("a + \"x\"".to_string())]
+    );
+    // A brace inside the hole's own quoted string.
+    assert_eq!(
+        pieces("\"{f(\"}\")}\""),
+        vec![InterpPiece::Hole("f(\"}\")".to_string())]
+    );
+    // Plain path and call holes.
+    assert_eq!(
+        pieces("\"n={len(xs)}\""),
+        vec![
+            InterpPiece::Lit("n=".to_string()),
+            InterpPiece::Hole("len(xs)".to_string()),
+        ]
+    );
+    // Template text is untouched.
+    assert_eq!(strs("\"{{ user }}\""), vec!["{{ user }}".to_string()]);
+    // A hole whose text is not an expression stays literal text, unchanged.
+    assert_eq!(strs("\"{not a hole}\""), vec!["{not a hole}".to_string()]);
+}
+
+/// End-to-end through the parser: the concatenated result must be one string.
+#[test]
+fn concat_across_braces_end_to_end() {
+    use spid3r_lang::parser;
+    let src = "fn main() {\n    println(\"a{b\"\n    + \"c}d\");\n    return 0;\n}\n";
+    let program = parser::parse_file(src, Arc::from("t.matrix")).unwrap();
+    // The hole scan must not have escaped into the `+`: exactly one string
+    // token per literal, so the program parses as one println of one add.
+    let dumped = format!("{:?}", program);
+    assert!(dumped.contains("a{b"), "first literal lost: {}", dumped);
+    assert!(dumped.contains("c}d"), "second literal lost: {}", dumped);
+}

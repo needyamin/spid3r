@@ -175,6 +175,12 @@ fn main() {
   `unicode_equal("é", "e" + U+0301)` is true, `unicode_caseless_equal("STRASSE", "straße")` is true,
   `unicode_nfkc("ﬁ") == "fi"` — plus three-strength comparison, sort keys, `unicode_search_key` and
   `unicode_slug`. Not UCA/DUCET: ordering within a level is by code point, with no locale tailoring.
+- **`stdlib/xml.matrix`** & **`stdlib/yaml.matrix`**: Zero-dependency document parsers and emitters for XML
+  (DOM tree, attribute access, tag queries) and YAML (mappings, sequences, scalar types).
+- **`stdlib/mathx.matrix`**: Piecewise linear interpolation, discrete convolution, ANOVA, Mann-Whitney U,
+  Kolmogorov-Smirnov tests, CSR sparse matrices, and non-uniform random variate distributions.
+- **Zero-Dependency Native Database Drivers**: Direct TCP wire-protocol drivers built into the runtime for
+  **MySQL** (`mysql_*`), **PostgreSQL** (`pg_*`), **Redis** (`redis_*`), and **SQLite** (`db_open`).
 
 ---
 

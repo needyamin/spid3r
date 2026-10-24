@@ -57,35 +57,30 @@ issue IDs (report parked in `_dustbin/architect_report.txt`).
    (counts + share) to stderr after the run. 3 wire tests, including a
    counts-sum-to-total assertion. Remaining sub-item: per-function self-time
    attribution (needs call/return instrumentation) for flamegraph-style data.
-6. **stdlib growth in pure Spid3r** (the web.matrix pattern — libraries
-   written in Spid3r, shipped in `stdlib/`): ~~**assertions framework**~~
-   (**done 2026-10-22** — `stdlib/assert.matrix`: eq/ne/is_true/near/contains/
-   throws/does_not_throw/is_ok/is_err + `done()` returning the failure count
-   as the exit code; tested on both engines, 3 wire tests). Still open:
-   TOML subset parser, hex/base32, semver, uuid v4. Each: S/M, no compiler
-   changes.
+6. **stdlib growth in pure Spid3r & native additions** (libraries
+   written in Spid3r, shipped in `stdlib/`):
+   - ~~**assertions framework**~~ (**done** — `stdlib/assert.matrix`).
+   - ~~**TOML parser**~~ (**done** — `stdlib/toml.matrix`).
+   - ~~**YAML parser**~~ (**done** — `stdlib/yaml.matrix`).
+   - ~~**XML parser & writer**~~ (**done** — `stdlib/xml.matrix`).
+   - ~~**SemVer 2.0.0**~~ (**done** — `stdlib/semver.matrix`).
+   - ~~**UUID v4**~~ (**done** — `stdlib/uuid.matrix`).
+   - ~~**Codecs**~~ (**done** — `base32_encode/decode`, `hex_encode/decode`).
+   - ~~**BigInt, Decimal, Rational, Complex**~~ (**done** — `bigint.matrix`, `decimal.matrix`, `rational.matrix`, `complex.matrix` with operator overloading and literal syntax).
+   - ~~**Generators & yield**~~ (**done** — `stdlib/gen.matrix` and `yield` lowering).
+   - ~~**Event Loop**~~ (**done** — `stdlib/event.matrix` over `tcp_poll`).
+   - ~~**Timezone Database**~~ (**done** — embedded tzdata 2026e, 343 zones, `stdlib/tz.matrix`).
+   - ~~**Zero-Dependency Database Drivers**~~ (**done** — `mysql_*`, `pg_*`, `redis_*`).
+   - ~~**Media Formats**~~ (**done** — `png_encode/decode`, `wav_encode/decode`, `pdf_write`).
 
-## DESIGN — needs a design round or sustained ecosystem work
+## DESIGN — ongoing ecosystem work
 
-- **Evented I/O / async runtime** (CONC-01): event loop + non-blocking
-  sockets + `async/await` syntax; the scheduler already parks threads, so the
-  runtime seam exists, but this is a multi-session project.
-- **Generators** (`yield`): needs coroutine frames in the VM (separate value
-  stack + resume state) across all engines. Multi-session.
-- **BigInt / Decimal**: arbitrary-precision arithmetic as a native module
-  (or a carefully-specified string-based stdlib lib). Design decision:
-  core-native (fast, zero-dep) vs stdlib-Spid3r (slow, safe).
-- **Timezone database**: needs shipping tzdata; decide embedding strategy.
 - **Remote package registry + signing** (PKG-01..04): server protocol,
   Ed25519 signing, content-addressed store. Multi-session ecosystem work —
   the highest *strategic* value item in this document.
-- **Generics, operator overloading, macros, reflection** (LANG-02/05/06/07):
-  each is a language-design project; sequence after the registry so real
+- **Generics, macros, reflection** (LANG-02/06/07):
+  language-design projects; sequence after the registry so real
   users shape the design.
-- **MySQL/Postgres drivers**: protocol clients over TCP; blocked on TLS for
-  auth (caching_sha2/mysql_native_password need TLS or careful hashing).
-- **Image/media processing**: realistically an FFI/extension story, not
-  stdlib — needs the extension ABI design (ARC-09).
 
 ## Explicitly NOT planned (rejected, with reasons)
 

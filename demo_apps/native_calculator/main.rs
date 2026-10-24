@@ -1,6 +1,24 @@
 #![windows_subsystem = "windows"]
 
 fn main() {
+    // The tao event loop plus winit/wry/WebView2 debug frames do not fit the
+    // 1 MiB main-thread stack (the release build fits; debug frames are much
+    // larger), so run the GUI on a roomy worker — the CLI does the same for
+    // every subcommand. `window::open` sets tao's `any_thread`, so a worker
+    // is fine on Windows; elsewhere the UI must stay on the main thread.
+    #[cfg(windows)]
+    {
+        let handle = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(run_gui)
+            .expect("spawn the GUI thread");
+        let _ = handle.join();
+    }
+    #[cfg(not(windows))]
+    run_gui();
+}
+
+fn run_gui() {
     let script_path = std::env::current_exe()
         .ok()
         .and_then(|p| {

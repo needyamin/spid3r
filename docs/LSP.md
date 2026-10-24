@@ -33,6 +33,8 @@ CLI can never disagree about whether a file is correct.
 | `textDocument/didClose` | ← client | Clears diagnostics for that file |
 | `textDocument/hover` | → client | Kind, signature, and doc comment of the declaration under the cursor |
 | `textDocument/definition` | → client | `Location[]` of the declaration |
+| `textDocument/references` | → client | `Location[]` of all references to the symbol under the cursor |
+| `textDocument/rename` | → client | `WorkspaceEdit` renaming symbol across document references |
 | `textDocument/documentSymbol` | → client | Outline tree: functions, classes (with methods and fields), interfaces, enums (with variants), `let`/`const` |
 | `textDocument/completion` | → client | Every symbol in the file plus the keyword list |
 | `textDocument/formatting` | → client | One whole-document `TextEdit`, from the same formatter as `spid3r fmt` |

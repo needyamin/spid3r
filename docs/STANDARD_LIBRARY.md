@@ -24,6 +24,9 @@ Global functions available in every program. These are ordinary global values
 | `read_file(path)` | Read a text file; returns `ok(text)` / `err(msg)`. |
 | `write_file(path, text)` | Write a text file; returns `ok(null)` / `err(msg)`. |
 | `file_exists(path)` | `true` if the path exists (files and directories). |
+| `file_delete(path)` | Delete a file; returns `ok(null)` / `err(msg)`. |
+| `dir_create(path)` | Create a directory (including parent directories); returns `ok(null)` / `err(msg)`. |
+| `dir_remove(path)` | Remove a directory; returns `ok(null)` / `err(msg)`. |
 | `env(name)` | Read an environment variable as an `option` (`some(value)` / `none`). |
 | `args()` | The arguments passed to the program: everything after the script path on the `spid3r run` command line. |
 
@@ -70,19 +73,29 @@ Float literals may use scientific notation: `1.5e3`, `1e-5`, `2E+4` are all
 single float tokens. A literal too large for `f64` is a clean lexer error
 rather than an infinity or a panic.
 
-## Crypto
+## Crypto & Passwords
 
 | Function | Description |
 |---|---|
 | `sha256(s)` | SHA-256 (FIPS 180-4) of the UTF-8 bytes of `s`, lowercase hex — the same implementation the package layer uses to verify dependencies. |
 | `hmac_sha256(key, msg)` | RFC 2104 HMAC-SHA256 of `msg` under `key`, lowercase hex, over the standard 64-byte block. |
 | `pbkdf2_sha256(password, salt, iterations)` | PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte key as lowercase hex. `salt` is a string or bytes; `iterations` clamped to 1..=10_000_000. The primitive for password storage: store `(salt, iterations, hash)`. |
-| `base64_encode(data)` / `base64_decode(text)` | RFC 4648 standard alphabet (+/, padded). `data` is a string or bytes; `decode` returns bytes. |
-| `base64_url_encode(data)` / `base64_url_decode(text)` | URL-safe alphabet (-_, unpadded) — the JWT form. |
-| `hex_encode(data)` / `hex_decode(text)` | Lowercase hex (two digits per byte); `decode` returns bytes and rejects odd lengths / non-hex characters. |
-| `base32_encode(data)` / `base32_decode(text)` | RFC 4648 standard alphabet (A-Z2-7, padded); `decode` returns bytes. |
+| `bcrypt_hash(password, cost=10)` | OpenBSD bcrypt password hash string (`$2b$...`). Cost clamped to 4..=16. |
+| `bcrypt_verify(password, hash)` | Constant-time verification of password against bcrypt hash (`bool`). |
+| `argon2(password, salt, time_cost, mem_cost_kib, parallelism, variant, key_len)` | Argon2 password hashing (RFC 9106); `variant` is `"i"`, `"d"`, or `"id"`. Returns lowercase hex string. |
+| `scrypt(password, salt, n, r, p, key_len)` | scrypt key derivation (RFC 7914). Returns lowercase hex string. |
+| `secure_compare(a, b)` | Constant-time string / byte equality check to mitigate timing side-channels (`bool`). |
 
-## Conversions
+## Encodings & Codecs
+
+| Function | Description |
+|---|---|
+| `base64_encode(data)` / `base64_decode(text)` | RFC 4648 standard alphabet (+/, padded). `data` is a string or bytes; `decode` returns `bytes`. |
+| `base64_url_encode(data)` / `base64_url_decode(text)` | URL-safe alphabet (-_, unpadded) — the JWT form. |
+| `hex_encode(data)` / `hex_decode(text)` | Lowercase hex (two digits per byte); `decode` returns `bytes` and rejects odd lengths / non-hex characters. |
+| `base32_encode(data)` / `base32_decode(text)` | RFC 4648 standard alphabet (A-Z2-7, padded); `decode` returns `bytes`. |
+
+## Conversions & Codepoints
 
 | Function | Description |
 |---|---|
@@ -90,13 +103,51 @@ rather than an infinity or a panic.
 | `float(x)` | Convert to float. |
 | `string(x)` | Convert to a string representation. |
 | `bool(x)` | Convert to boolean (truthiness). |
+| `ord(s)` | Unicode codepoint of the first character of string `s` (`int`). |
+| `chr(n)` | String containing the Unicode character with codepoint `n`. |
 
-## JSON
+## Serialization & Binary Formats
 
 | Function | Description |
 |---|---|
 | `json_parse(text)` | Parse JSON into Spid3r values (including `\uXXXX` escapes and surrogate pairs); nesting is capped at 512 levels. |
-| `json_write(value)` | Serialize a value to a JSON string. Non-finite floats are an error; nesting is capped at 512 levels (self-referential containers get a clean error, not a hang). |
+| `json_write(value)` | Serialize a value to a JSON string. Non-finite floats are an error; nesting is capped at 512 levels. |
+| `msgpack_encode(val)` / `msgpack_decode(bytes)` | MessagePack binary serialization. `encode` returns `bytes`; `decode` returns `ok(val)` or `err(msg)`. |
+| `cbor_encode(val)` / `cbor_decode(bytes)` | RFC 8949 Concise Binary Object Representation. `encode` returns `bytes`; `decode` returns `ok(val)`. |
+| `pb_encode(map)` / `pb_decode(bytes)` | Protocol Buffers wire-format encoding and decoding. `map` maps field numbers to values or lists. |
+
+## Compression & Archives
+
+| Function | Description |
+|---|---|
+| `crc32(data)` | Compute CRC-32 checksum (IEEE 802.3 standard) of string or `bytes` (`int`). |
+| `adler32(data)` | Compute Adler-32 checksum (RFC 1950) of string or `bytes` (`int`). |
+| `deflate(bytes)` / `inflate(bytes)` | Raw DEFLATE (RFC 1951) streaming compression / decompression (`ok(bytes)`). |
+| `gzip_compress(bytes)` / `gunzip(bytes)` | GZIP format (RFC 1952) with CRC-32 integrity checking (`ok(bytes)`). |
+| `zlib_compress(bytes)` / `unzlib(bytes)` | ZLIB format (RFC 1950) with Adler-32 checksum (`ok(bytes)`). |
+| `zip_create(list_of_file_maps)` | Create in-memory `.zip` archive buffer (`bytes`). Each item is `map("name", "...", "data", bytes_or_str)`. |
+| `zip_list(zip_bytes)` | List filenames inside zip archive: `ok(list_of_names)` or `err(msg)`. |
+| `zip_read(zip_bytes)` | Extract files from archive into a map of `name -> bytes`: `ok(map)` or `err(msg)`. |
+
+## Media & Document Formats
+
+| Function | Description |
+|---|---|
+| `png_encode(width, height, channels, pixel_bytes)` | Encode raw uncompressed pixel data into standard PNG file bytes (supports 1, 3, or 4 channels). |
+| `png_decode(png_bytes)` | Decode PNG bytes: returns `ok(map("width", w, "height", h, "channels", c, "data", bytes))` or `err(msg)`. |
+| `wav_encode(sample_rate, channels, bits_per_sample, samples_bytes)` | Encode PCM audio into RIFF WAV file bytes (supports 8, 16, 24, 32-bit PCM). |
+| `wav_decode(wav_bytes)` | Decode WAV bytes: returns `ok(map("sample_rate", sr, "channels", ch, "bits", b, "data", bytes))`. |
+| `pdf_write(ops_list, width=595, height=842)` | Generate standard PDF 1.4 document `bytes` from PDF content stream operator strings. |
+| `pdf_escape(text)` | Escape string for PDF string literals (escaping `\`, `(`, `)`). |
+
+## Memory & Garbage Collection
+
+| Function | Description |
+|---|---|
+| `gc_collect()` | Trigger an immediate cycle of mark-and-sweep garbage collection across all engines. |
+| `gc_live_cells()` | Return the current count of active heap-allocated value cells (`int`). |
+| `weak(ref)` | Create a non-owning weak pointer to a `ref(v)` interior-mutable cell. |
+| `deref(weak)` | Dereference a weak pointer: returns target `Value` or `null` if the reference target has been collected. |
 
 ## Process & entropy
 
@@ -228,7 +279,7 @@ algorithmic Hangul). Surrogates are not representable in Spid3r strings, so they
 
 # First-Party Standard Library Modules (`./stdlib/`)
 
-Spid3r includes 23 zero-dependency standard library modules located in `./stdlib/`. These modules are automatically searched by `modules::default_module_dirs()` and can be imported using flat (`import "name";`) or namespaced (`import "name" as alias;`) imports. Every module runs identically across both the tree-walk interpreter and the bytecode VM.
+Spid3r includes 29 zero-dependency standard library modules located in `./stdlib/`. These modules are automatically searched by `modules::default_module_dirs()` and can be imported using flat (`import "name";`) or namespaced (`import "name" as alias;`) imports. Every module runs identically across both the tree-walk interpreter and the bytecode VM.
 
 ```matrix
 import "web" as w;
@@ -525,7 +576,153 @@ opts: `log` (true), `watch_signals` (true). The request map is the same one the 
 Each case gets a fresh `ctx` with `dir` (created before, deleted after), `name` and `suite`. A case that
 throws is reported and the suite continues; `done()` returns the failure count, which `main` should return.
 
-## 16. Coverage — `spid3r run --coverage`
+## 16. `assert.matrix` — assertion library
+
+| Function | Description |
+|---|---|
+| `eq(actual, expected, label)` | Assert equality, reporting pretty diff on failure. |
+| `ne(actual, unexpected, label)` | Assert inequality. |
+| `is_true(cond, label)` | Assert condition is true. |
+| `near(actual, expected, eps, label)` | Assert float closeness within epsilon. |
+| `contains(haystack, needle, label)` | Assert string or list contains item. |
+| `throws(f, label)` | Assert closure throws a catchable exception. |
+| `does_not_throw(f, label)` | Assert closure executes without throwing. |
+| `is_ok(result, label)` / `is_err(result, label)` | Assert Result variant. |
+| `fail(label)` | Unconditionally fail assertion. |
+
+## 17. `bigint.matrix` — arbitrary-precision integers
+
+| Function | Description |
+|---|---|
+| `from_int(n)` / `from_string(s)` | Parse arbitrary-length integers. |
+| `add(a, b)` / `sub(a, b)` / `mul(a, b)` / `divmod(a, b)` | Exact arithmetic operations. Supports operator overloads `+`, `-`, `*`, `/`. |
+| `pow(a, exp)` | Modular or standard exponentiation. |
+| `cmp(a, b)` | Three-way comparison (`-1`, `0`, `1`). |
+| `to_string(a)` | Format BigInt as base-10 decimal string. |
+
+## 18. `complex.matrix` — complex numbers
+
+| Function | Description |
+|---|---|
+| `of(re, im=0)` | Construct complex number `re + im i`. Supports `+`, `-`, `*`, `/`. |
+| `add(a, b)` / `sub(a, b)` / `mul(a, b)` / `div(a, b)` | Complex arithmetic. |
+| `abs(z)` / `arg(z)` | Modulus and phase in radians. |
+| `polar(z)` / `from_polar(r, theta)` | Polar representation conversion. |
+| `conj(z)` | Complex conjugate. |
+| `to_string(z)` | Formatted `"a+bi"` representation. |
+
+## 19. `decimal.matrix` — exact fixed-point decimals
+
+| Function | Description |
+|---|---|
+| `from_int(n)` / `from_string(s)` | Exact decimal representation `{units, scale}`. Supports `+`, `-`, `*`, `/`. |
+| `add(a, b)` / `sub(a, b)` / `mul(a, b)` / `div(a, b, prec=6)` | Non-floating-point financial and ledger arithmetic. |
+| `cmp(a, b)` | Comparison without precision loss. |
+| `to_string(d)` | Decimal string representation. |
+
+## 20. `rational.matrix` — exact fractions
+
+| Function | Description |
+|---|---|
+| `of(num, den=1)` / `from_string(s)` | Construct reduced fraction `{num, den}` with positive denominator. Supports `+`, `-`, `*`, `/`. |
+| `add(a, b)` / `sub(a, b)` / `mul(a, b)` / `div(a, b)` | Exact fraction arithmetic in lowest terms. |
+| `to_string(q)` | `"num/den"` format. |
+| `to_decimal(q, places=6)` | Rounded fixed-point decimal string. |
+
+## 21. `mathx.matrix` — advanced numerical algorithms
+
+| Function | Description |
+|---|---|
+| `anova_oneway(groups)` | One-way ANOVA returning `{f, df_between, df_within, p}`. |
+| `mann_whitney(a, b)` | Mann-Whitney U test for independent samples. |
+| `ks_test(a, b)` | Two-sample Kolmogorov-Smirnov goodness-of-fit test (`{d, p}`). |
+| `convolve(a, b)` | Discrete linear convolution of numeric sequences. |
+| `interp_linear(x, y, x0)` | 1-D piecewise linear interpolation. |
+| `sparse_from_dense(matrix)` / `sparse_to_dense(s)` | Compressed sparse matrix conversions. |
+| `sparse_mul_vector(s, vec)` | Fast matrix-vector sparse multiplication. |
+| `random_exponential(rate)` / `random_poisson(lambda)` | Non-uniform random variate generators. |
+
+## 22. `gen.matrix` — generators & lazy streams
+
+| Function | Description |
+|---|---|
+| `gen(fn(emit))` | Create cooperative fiber generator stream. |
+| `range_gen(start, stop?, step?)` | Lazy numeric sequence generator. |
+| `next(g)` | Fetch next item from generator (`null` when exhausted). |
+| `take(g, n)` | Take first `n` items into a list and stop generator. |
+| `collect(g)` | Drain entire generator into a `list`. |
+| `map(g, f)` / `filter(g, f)` | Lazy transformation and filtering pipelines. |
+| `close(g)` | Terminate generator and reclaim background task. |
+
+## 23. `toml.matrix` — TOML parser
+
+| Function | Description |
+|---|---|
+| `toml_parse(text)` | Parse TOML 1.0 subset into nested Spid3r maps and lists. |
+| `toml_get(map, dotted_key)` | Look up nested keys using dot notation (e.g. `"server.limits.max"`). |
+
+## 24. `yaml.matrix` — YAML parser
+
+| Function | Description |
+|---|---|
+| `yaml_parse(text)` | Parse YAML subset (mappings, sequences, nested structures, scalars). |
+
+## 25. `xml.matrix` — XML parser & writer
+
+| Function | Description |
+|---|---|
+| `xml_parse(text)` | Parse XML document into node tree `{name, attrs, children, text}`. |
+| `xml_attr(node, name)` | Get attribute value from node. |
+| `xml_text(node)` | Extract trimmed decoded character text. |
+| `xml_find(node, tag_name)` | Find direct child elements matching `tag_name`. |
+| `xml_write(node)` | Serialize node tree back into XML string. |
+
+## 26. `uuid.matrix` — UUID v4
+
+| Function | Description |
+|---|---|
+| `uuid_v4()` | Generate random RFC 9562 UUID v4 string with OS entropy. |
+
+## 27. `semver.matrix` — SemVer 2.0.0
+
+| Function | Description |
+|---|---|
+| `parse(v)` | Parse semantic version into map `{major, minor, patch, prerelease, build}`. |
+| `compare(v1, v2)` | Three-way comparison following SemVer 2.0.0 precedence (-1, 0, 1). |
+| `satisfies(v, range_str)` | Check if version satisfies range constraints (e.g. `">=1.0.0 <2.0.0"`). |
+
+## 28. `event.matrix` — event loop
+
+| Function | Description |
+|---|---|
+| `start()` | Initialize fresh single-threaded event loop. |
+| `on_readable(loop, conn_id, callback)` | Register readiness callback on socket handle. |
+| `remove(loop, conn_id)` | Unregister socket handle. |
+| `run(loop, timeout_ms=250)` | Dispatch readable I/O events until stopped. |
+| `stop(loop)` | Signal event loop to terminate. |
+
+## Native Database Drivers (Zero-Dependency)
+
+In addition to SQLite (`db_open`), Spid3r includes zero-dependency native TCP database protocol drivers:
+
+### MySQL Protocol Client (`mysql_*`)
+- `mysql_connect(addr, user, password, db) -> ok(handle)`
+- `mysql_query(handle, sql) -> ok([row_map, ...])`
+- `mysql_exec(handle, sql) -> ok(affected_rows)`
+- `mysql_close(handle) -> bool`
+
+### PostgreSQL Protocol Client (`pg_*`)
+- `pg_connect(addr, user, password, db) -> ok(handle)`
+- `pg_query(handle, sql) -> ok([row_map, ...])`
+- `pg_exec(handle, sql) -> ok(null)`
+- `pg_close(handle) -> bool`
+
+### Redis Client (`redis_*`)
+- `redis_connect(addr, password=null) -> ok(handle)`
+- `redis_command(handle, ...args) -> ok(response)` (RESP2 protocol parser supporting Simple Strings, Errors, Integers, Bulk Strings, and Arrays)
+- `redis_close(handle) -> bool`
+
+## Coverage — `spid3r run --coverage`
 
 `spid3r run --engine vm --coverage [--coverage-out lcov.info] prog.matrix` collects per-line hit counts in the
 VM dispatch loop and prints a percentage table to **stderr** (stdout stays the program's own, so differential
@@ -540,7 +737,6 @@ stream to hook, and the flag says so instead of reporting a number for a differe
 - File and process operations that can fail return a `result` (`ok`/`err`)
   rather than throwing, so callers can handle failures with `is_ok`/`is_err` and
   `unwrap`. Argument/type errors still throw.
-
 
 ## SQLite database (`db_open`)
 
@@ -603,8 +799,8 @@ Every container is constructed by its builtin (`list(…)`, `stack()`, `map(…)
 | `hash_table(…)` | `set get remove contains bucket_count load_factor keys` (+ `len is_empty clear clone`) |
 | `set(…)` | `remove contains union difference to_list` (+ `len is_empty clear clone`; `add` via the shared host) |
 | `bag(…)` | multiset: `remove count_of contains` (+ `len is_empty clear clone`) |
-| `bst()` | ordered: `insert contains remove root` (+ `len is_empty clear clone`) |
-| `binary_tree()` | `insert root` (+ `len is_empty clear clone`) |
+| `bst()` | ordered: `insert contains remove root inorder preorder postorder` (+ `len is_empty clear clone`) |
+| `binary_tree()` | `insert root inorder preorder postorder level_order` (+ `len is_empty clear clone`) |
 | `heap()` | `push pop peek is_min` (+ `len is_empty clear clone`) |
 | `priority_queue()` | `push pop peek` (+ `len is_empty clear clone`) |
 | `ring_buffer(n)` | bounded: `push peek pop is_full capacity contains` (+ `len is_empty clear clone`) |
@@ -612,7 +808,7 @@ Every container is constructed by its builtin (`list(…)`, `stack()`, `map(…)
 | `graph(directed?)` | `add_node has_node add_edge neighbors path_exists find_path bfs dfs nodes edge_count is_directed` (+ `len is_empty clear clone`) |
 | `vector(…)` | numeric: `get set push slice to_list add sub mul div sum mean variance std min max argmin argmax dot norm cumsum diff sort argsort save_npy` (+ `len is_empty clear`) |
 | `matrix(rows, cols, fill)` | 2-D numeric: `get set row col to_list transpose scale trace sum mean solve inverse det eigen_sym save_npy` (+ `rows cols is_empty`) |
-| `refbox(v)` | single mutable cell: `get set` |
+| `ref(v)` | interior mutable cell: `get set` (weak references via `weak`/`deref`) |
 
 Two conventions to know: **stack/queue both use `push`/`pop`** — a stack pops
 from the top, a queue pops from the front; and `remove` on `list` removes *by

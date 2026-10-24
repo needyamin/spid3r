@@ -51,6 +51,31 @@ pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
     p.parse_program()
 }
 
+/// Does `raw` lex and parse as exactly one expression?
+///
+/// The lexer calls this on every interpolation-hole capture. Its quote
+/// tracking cannot distinguish a hole's own `"` from the closing quote of the
+/// literal being lexed, so a literal like `"a{b" + "c}d"` captures
+/// `b" + "c` and stops at a `}` that lives past the literal's end. That text
+/// is never a valid expression, so rejecting the capture makes the `{`
+/// literal and the literal ends where it really does. `depth` bounds the
+/// re-lex recursion (each capture re-lexes, which can capture again).
+pub(crate) fn hole_is_expression(raw: &str, depth: u32) -> bool {
+    let toks = match crate::lexer::Lexer::with_depth(raw, Arc::from("<interp>"), depth).tokenize() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let mut sub = Parser {
+        toks,
+        saw_bigint_lit: false,
+        saw_yield: false,
+        pos: 0,
+        depth: crate::lexer::MAX_INTERP_DEPTH as usize,
+        value_block_depth: 0,
+    };
+    matches!(sub.parse_expr(), Ok(_)) && sub.at(&TokenKind::Eof)
+}
+
 /// Parse one expression from source.
 ///
 /// The debugger's `print`/`watch`/`repl` need to evaluate a fragment against

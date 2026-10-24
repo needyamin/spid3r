@@ -9,20 +9,25 @@ program        = { import } { declaration } ;
 
 import         = "import" string [ "as" ident ] ";" ;
 
-declaration    = fnDecl | classDecl | interfaceDecl | statement ;
+declaration    = { decorator } ( fnDecl | classDecl | enumDecl | interfaceDecl | statement ) ;
+
+decorator      = "@" ident [ "(" [ args ] ")" ] ;
 
 fnDecl         = [ visibility ] [ "async" ] "fn" ident "(" [ params ] ")"
                  [ "->" type ] block ;
 
-classDecl      = "class" ident [ "extends" ident ]
+classDecl      = [ visibility ] [ "abstract" ] "class" ident [ "extends" ident ]
                  [ "implements" ident { "," ident } ] "{" { member } "}" ;
+
+enumDecl       = [ visibility ] "enum" ident "{" [ enumVariant { "," enumVariant } ] "}" ;
+enumVariant    = ident [ "(" [ ident { "," ident } ] ")" ] ;
 
 member         = fieldDecl | methodDecl ;
 
 fieldDecl      = [ visibility ] "let" ident [ ":" type ] ";" ;
 
-methodDecl     = [ visibility ] [ "async" ] "fn" ident "(" [ params ] ")"
-                 [ "->" type ] block ;
+methodDecl     = [ visibility ] [ "abstract" ] [ "async" ] "fn" ident "(" [ params ] ")"
+                 [ "->" type ] ( block | ";" ) ;
 
 interfaceDecl  = "interface" ident "{" { ifaceMethod } "}" ;
 
@@ -36,8 +41,10 @@ param          = "self" | ident [ ":" type ] [ "=" literal ] ;
 type           = ident [ "<" type ">" ] ;
 
 statement      = letStmt | constStmt | ifStmt | whileStmt | forStmt
-               | returnStmt | breakStmt | continueStmt | block | spawnStmt
+               | returnStmt | breakStmt | continueStmt | yieldStmt | block | spawnStmt
                | tryStmt | throwStmt | exprStmt ;
+
+yieldStmt      = "yield" [ expr ] ";" ;
 
 letStmt        = "let" ident [ ":" type ] [ "=" expr ] ";" ;
 constStmt      = "const" ident [ ":" type ] "=" expr ";" ;
@@ -120,7 +127,7 @@ args           = arg { "," arg } ;
 arg            = expr | namedArg ;
 namedArg       = ident ":" expr ;   (* reordered to positional form by lower *)
 
-primary        = intLit | floatLit | stringLit | "true" | "false" | "null"
+primary        = intLit | bigintLit | floatLit | stringLit | "true" | "false" | "null"
                | ident | listLit | tupleLit | fnLit | "new" ident "(" [ args ] ")"
                | "super" | ifExpr | matchExpr | parenExpr ;
 
