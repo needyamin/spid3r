@@ -125,6 +125,9 @@ spid3r build app.matrix -o app.exe --icon app.ico --subsystem windows
 - `--icon <path>` embeds an `.ico` (compiled with the Windows SDK `rc.exe`). A
   missing or empty icon file is a build error; if `rc.exe` rejects the resource,
   the build fails instead of quietly producing an icon-less executable.
+  Without `--icon` the icon shipped beside `spid3r.exe` is embedded, so a build
+  started from any directory still gets one; `SPID3R_ICON` overrides that
+  default.
 - `--subsystem windows` marks the PE as a GUI binary, so Windows starts it
   **without** a terminal window. The default stays `console`. The entry point
   remains `main`: the linker is told `-entry:mainCRTStartup`, so the CRT startup

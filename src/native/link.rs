@@ -1220,6 +1220,32 @@ fn rc_escape(s: &str) -> String {
     out
 }
 
+/// The icon to embed when the caller did not pass `--icon`.
+///
+/// Resolved against the *running* `spid3r` executable first, because that is the
+/// installed layout: the NSIS installer drops `spid3r.ico` next to `spid3r.exe`,
+/// so `spid3r build app.matrix` from any directory gets the product icon.
+///
+/// The old behaviour looked only at `packaging/nsis/assets/spid3r.ico` relative
+/// to the current directory, so any build started outside the repo silently
+/// produced an executable with the default blank Windows icon — no error, no
+/// warning. `SPID3R_ICON` overrides everything for callers who want a different
+/// product icon without passing `--icon` on every build.
+fn default_icon() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = std::env::var_os("SPID3R_ICON") {
+        candidates.push(PathBuf::from(p));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("spid3r.ico"));
+        }
+    }
+    // Developer layout: `cargo run` out of a checkout.
+    candidates.push(PathBuf::from("packaging/nsis/assets/spid3r.ico"));
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 fn compile_windows_resources(
     out: &Path,
     meta: &BuildMeta,
@@ -1282,14 +1308,7 @@ fn compile_windows_resources(
     let manifest_escaped = manifest_path.to_string_lossy().replace('\\', "/");
     let mut rc_content = format!("1 24 \"{}\"\n", manifest_escaped);
 
-    let icon_path = meta.icon.clone().or_else(|| {
-        let cand = PathBuf::from("packaging/nsis/assets/spid3r.ico");
-        if cand.is_file() {
-            Some(cand)
-        } else {
-            None
-        }
-    });
+    let icon_path = meta.icon.clone().or_else(default_icon);
 
     if let Some(ico) = icon_path {
         let abs_ico = std::fs::canonicalize(&ico).unwrap_or(ico);

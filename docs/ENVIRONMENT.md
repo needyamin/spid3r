@@ -32,6 +32,7 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_LIB_DIR` | auto | Directory searched for the runtime staticlib (`spid3r_lang.lib` / `libspid3r.a`). |
 | `SPID3R_RUNTIME_LIB` | auto | Explicit path to that staticlib (a file, or a directory containing it). |
 | `SPID3R_DUMP_IR` | off | `spid3r build` prints the generated LLVM IR to stderr. |
+| `SPID3R_ICON` | icon beside `spid3r.exe` | Application icon used by `spid3r build` when `--icon` is not passed. The default resolves against the running executable, not the current directory. |
 | `SPID3R_TARGET` | — | Compile-time: the target triple the toolchain was built for, injected by `build.rs`. Read-only; not a user setting. |
 
 ## Packaging (Windows installer)

@@ -1923,7 +1923,9 @@
                 <td><code>--icon &lt;path.ico&gt;</code></td>
                 <td>Embeds the icon into the PE resource directory as <code>RT_ICON</code> plus
                   <code>RT_GROUP_ICON</code>. Every size stored in the <code>.ico</code> is preserved, so Explorer, the
-                  taskbar and Alt-Tab each pick the resolution they need.
+                  taskbar and Alt-Tab each pick the resolution they need. Without the flag the icon shipped beside
+                  <code>spid3r.exe</code> is embedded, so a build started from any directory still gets one;
+                  <code>SPID3R_ICON</code> overrides that default.
                 </td>
               </tr>
               <tr>

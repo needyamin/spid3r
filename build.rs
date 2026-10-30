@@ -536,54 +536,19 @@ fn windows_resources() {
 </assembly>"#;
     let _ = fs::write(&manifest_path, manifest_content);
 
-    let rc_path = out_dir.join("spid3r.rc");
-    let res_path = out_dir.join("spid3r.res");
-
     let manifest_escaped = manifest_path.to_string_lossy().replace('\\', "/");
-    let mut rc_content = format!("1 24 \"{}\"\n", manifest_escaped);
-
-    let ico_path = PathBuf::from("packaging/nsis/assets/spid3r.ico");
-    if ico_path.is_file() {
-        let abs_ico = fs::canonicalize(&ico_path).unwrap_or(ico_path);
-        rc_content.push_str(&format!(
-            "1 ICON \"{}\"\n",
-            abs_ico.to_string_lossy().replace('\\', "/")
-        ));
-    }
-
-    rc_content.push_str(
-        r#"1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
-FILEFLAGSMASK 0x3fL
-FILEFLAGS 0x0L
-FILEOS 0x40004L
-FILETYPE 0x1L
-FILESUBTYPE 0x0L
-BEGIN
-    BLOCK "StringFileInfo"
-    BEGIN
-        BLOCK "040904b0"
-        BEGIN
-            VALUE "FileDescription", "Spid3r Language Toolchain"
-            VALUE "FileVersion", "1.0.0.0"
-            VALUE "InternalName", "spid3r"
-            VALUE "OriginalFilename", "spid3r.exe"
-            VALUE "ProductName", "Spid3r"
-            VALUE "ProductVersion", "1.0.0"
-        END
-    END
-    BLOCK "VarFileInfo"
-    BEGIN
-        VALUE "Translation", 0x409, 1200
-    END
-END
-"#,
-    );
-
-    if fs::write(&rc_path, rc_content).is_err() {
-        return;
-    }
+    let ico_line = {
+        let ico_path = PathBuf::from("packaging/nsis/assets/spid3r.ico");
+        if ico_path.is_file() {
+            let abs_ico = fs::canonicalize(&ico_path).unwrap_or(ico_path);
+            Some(format!(
+                "1 ICON \"{}\"\n",
+                abs_ico.to_string_lossy().replace('\\', "/")
+            ))
+        } else {
+            None
+        }
+    };
 
     // Try finding rc.exe from Windows Kits or PATH
     let mut rc_exe = None;
@@ -607,24 +572,76 @@ END
             }
         }
     }
-
     let rc_cmd = rc_exe.unwrap_or_else(|| PathBuf::from("rc.exe"));
-    match Command::new(rc_cmd)
-        .arg("/nologo")
-        .arg("/fo")
-        .arg(&res_path)
-        .arg(&rc_path)
-        .status()
-    {
-        Ok(status) if status.success() && res_path.is_file() => {
-            let res_s = res_path.display().to_string();
-            println!("cargo:rustc-link-arg-bin=spid3r={}", res_s);
+
+    // `rustc-link-arg-bin` applies to exactly one bin target, so each binary
+    // needs its own .res. Sharing one would hand calculator.exe version info
+    // that claims OriginalFilename "spid3r.exe" — visible in the Properties
+    // dialog — and, before this, left it with no icon at all because only the
+    // spid3r bin was ever given the resource.
+    let mut bins = vec![("spid3r", "Spid3r Language Toolchain", "spid3r.exe")];
+    if env::var_os("CARGO_FEATURE_GUI").is_some() {
+        bins.push(("calculator", "Spid3r Calculator", "calculator.exe"));
+    }
+
+    for (bin, description, original) in bins {
+        let rc_path = out_dir.join(format!("{bin}.rc"));
+        let res_path = out_dir.join(format!("{bin}.res"));
+
+        let mut rc_content = format!("1 24 \"{}\"\n", manifest_escaped);
+        if let Some(ref ico) = ico_line {
+            rc_content.push_str(ico);
         }
-        Ok(status) => {
-            println!("cargo:warning=rc.exe failed with status {}", status);
+        rc_content.push_str(&format!(
+            r#"1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK 0x3fL
+FILEFLAGS 0x0L
+FILEOS 0x40004L
+FILETYPE 0x1L
+FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "{description}"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "{bin}"
+            VALUE "OriginalFilename", "{original}"
+            VALUE "ProductName", "Spid3r"
+            VALUE "ProductVersion", "1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+"#
+        ));
+
+        if fs::write(&rc_path, rc_content).is_err() {
+            continue;
         }
-        Err(e) => {
-            println!("cargo:warning=failed to invoke rc.exe: {}", e);
+
+        match Command::new(&rc_cmd)
+            .arg("/nologo")
+            .arg("/fo")
+            .arg(&res_path)
+            .arg(&rc_path)
+            .status()
+        {
+            Ok(status) if status.success() && res_path.is_file() => {
+                println!("cargo:rustc-link-arg-bin={}={}", bin, res_path.display());
+            }
+            Ok(status) => {
+                println!("cargo:warning=rc.exe failed for {bin} with status {status}");
+            }
+            Err(e) => {
+                println!("cargo:warning=failed to invoke rc.exe for {bin}: {e}");
+            }
         }
     }
 }
