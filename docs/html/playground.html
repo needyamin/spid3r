@@ -990,7 +990,7 @@
       <img src="../../src/assets/spid3r.png" alt="Spid3r logo" class="brand-logo-img">
       <span style="color: var(--cyan);">Spid3r</span>
       <span>In-Browser Runtime</span>
-      <span class="brand-badge">WASM 1.0</span>
+      <span class="brand-badge">WASM 1.0.0</span>
     </div>
     <div class="nav-actions">
       <a href="doc.html" class="nav-link" style="color: var(--cyan); font-weight: 600;">Documentation</a>
@@ -1100,15 +1100,18 @@
             </div>
           </div>
           <div class="pane-actions">
-            <button class="btn btn-secondary btn-sm" id="btn-copy-code" title="Copy code to clipboard">📋 Copy Code</button>
+            <button class="btn btn-secondary btn-sm" id="btn-copy-code" title="Copy code to clipboard">📋 Copy
+              Code</button>
             <span style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;">Ctrl+Enter</span>
           </div>
         </div>
         <div class="editor-wrapper" id="editor-wrapper">
           <div class="line-numbers" id="line-numbers">1</div>
           <div class="editor-stage">
-            <pre class="code-highlight" id="code-highlight" aria-hidden="true"><code id="code-highlight-inner"></code></pre>
-            <textarea class="code-textarea" id="code-editor" spellcheck="false" placeholder="Write your Spid3r code here, or drop a .matrix file..."></textarea>
+            <pre class="code-highlight" id="code-highlight"
+              aria-hidden="true"><code id="code-highlight-inner"></code></pre>
+            <textarea class="code-textarea" id="code-editor" spellcheck="false"
+              placeholder="Write your Spid3r code here, or drop a .matrix file..."></textarea>
           </div>
         </div>
       </section>
@@ -1122,51 +1125,25 @@
           </div>
           <div class="pane-actions">
             <span id="perf-pill" style="font-size: 0.78rem; color: var(--cyan); white-space: nowrap;">Ready</span>
-            <button class="btn btn-secondary btn-sm" id="btn-copy-term" title="Copy terminal output">📋 Copy Output</button>
+            <button class="btn btn-secondary btn-sm" id="btn-copy-term" title="Copy terminal output">📋 Copy
+              Output</button>
           </div>
         </div>
         <div class="terminal-body" id="term-output">Spid3r WebAssembly Engine Initializing...
-Ready to execute Spid3r scripts entirely within your browser!</div>
+          Ready to execute Spid3r scripts entirely within your browser!</div>
       </section>
     </div>
 
-    <!-- Quick Syntax Guide -->
-    <section class="quick-guide">
-      <div class="guide-title">
-        <span>⚡</span> Spid3r Language Essentials
-      </div>
-      <div class="guide-grid">
-        <div class="guide-item">
-          <h4>Variables &amp; Types</h4>
-          <code><span class="tok-kw">let</span> x<span class="tok-op">:</span> <span class="tok-type">int</span> <span class="tok-op">=</span> <span class="tok-num">42</span>;</code><br>
-          <code><span class="tok-kw">const</span> PI <span class="tok-op">=</span> <span class="tok-num">3.14159</span>;</code><br>
-          <code><span class="tok-kw">let</span> list<span class="tok-op">:</span> <span class="tok-type">list</span> <span class="tok-op">=</span> [<span class="tok-num">1</span>, <span class="tok-str">"two"</span>, <span class="tok-lit">true</span>];</code>
-        </div>
-        <div class="guide-item">
-          <h4>Functions &amp; Closures</h4>
-          <code><span class="tok-kw">fn</span> <span class="tok-fn">add</span>(a, b) { <span class="tok-kw">return</span> a <span class="tok-op">+</span> b; }</code><br>
-          <code><span class="tok-kw">let</span> sq <span class="tok-op">=</span> <span class="tok-kw">fn</span>(x) { x <span class="tok-op">*</span> x };</code>
-        </div>
-        <div class="guide-item">
-          <h4>Classes &amp; OOP</h4>
-          <code><span class="tok-kw">class</span> <span class="tok-type">Point</span> { <span class="tok-kw">public</span> <span class="tok-kw">let</span> x; }</code><br>
-          <code><span class="tok-kw">let</span> p <span class="tok-op">=</span> <span class="tok-kw">new</span> <span class="tok-type">Point</span>(); p.x <span class="tok-op">=</span> <span class="tok-num">10</span>;</code>
-        </div>
-        <div class="guide-item">
-          <h4>Control Flow</h4>
-          <code><span class="tok-kw">if</span> (x <span class="tok-op">&gt;</span> <span class="tok-num">0</span>) { ... } <span class="tok-kw">else</span> { ... }</code><br>
-          <code><span class="tok-kw">for</span> item <span class="tok-kw">in</span> list { <span class="tok-builtin">println</span>(item); }</code>
-        </div>
-      </div>
-    </section>
+
 
   </main>
 
   <!-- Footer -->
   <footer class="footer">
-    <div>Spid3r In-Browser Runtime — Built with zero external dependencies compiled to WebAssembly.</div>
+    <div>Spid3r In-Browser Runtime Built with zero external dependencies compiled to WebAssembly.</div>
     <div style="margin-top: 6px; font-size: 0.82rem;">
-      Developed and maintained by <a href="https://inside.ansnew.com/" target="_blank" rel="noopener noreferrer" style="color: var(--cyan); text-decoration: none; font-weight: 600;">ANSNEW TECH.</a>
+      Developed and maintained by <a href="https://inside.ansnew.com/" target="_blank" rel="noopener noreferrer"
+        style="color: var(--cyan); text-decoration: none; font-weight: 600;">ANSNEW TECH.</a>
     </div>
   </footer>
   <!-- Toast Floating Container -->
@@ -1183,10 +1160,12 @@ Ready to execute Spid3r scripts entirely within your browser!</div>
       </div>
       <div class="modal-body">
         <p class="modal-desc">
-          Your code is encoded directly in this URL. Anyone who opens it will load your exact Spid3r script in their browser:
+          Your code is encoded directly in this URL. Anyone who opens it will load your exact Spid3r script in their
+          browser:
         </p>
         <div class="share-input-wrapper">
-          <input type="text" id="share-url-input" class="share-url-input" readonly spellcheck="false" placeholder="Generating link...">
+          <input type="text" id="share-url-input" class="share-url-input" readonly spellcheck="false"
+            placeholder="Generating link...">
           <button class="btn btn-primary btn-copy-link" id="btn-modal-copy">
             <span id="modal-copy-icon">📋</span> <span id="modal-copy-text">Copy Link</span>
           </button>
@@ -1231,7 +1210,7 @@ Ready to execute Spid3r scripts entirely within your browser!</div>
       let runtime = null;
 
       // Presets
-                        const PRESETS = {
+      const PRESETS = {
         hello: `// 1. Hello World & System Info
 println("=========================================");
 println("  ⚡ Welcome to Spid3r WebAssembly Engine!");
@@ -2517,7 +2496,7 @@ println("sha256(abc): " + sha256("abc"));
         if (loadedFromUrl) {
           executeCode();
         }
-      }).catch(() => {});
+      }).catch(() => { });
 
       window.addEventListener('hashchange', function () {
         if (loadCodeFromUrl()) {

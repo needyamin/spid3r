@@ -33,8 +33,8 @@
 <text x="824" y="165" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">offline web app, one HTML file</text>
 
 <rect x="256" y="194" width="584" height="38" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
-<text x="272" y="213" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">build --subsystem windows</text>
-<text x="824" y="213" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">single-file desktop GUI app</text>
+<text x="272" y="213" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">spid3r gui</text>
+<text x="824" y="213" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">desktop GUI app, native WebView</text>
 
 <rect x="256" y="242" width="584" height="38" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
 <text x="272" y="261" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">spid3r_lang</text>

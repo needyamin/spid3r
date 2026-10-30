@@ -111,8 +111,17 @@ cargo install --path . --no-default-features
 | [Native backend](docs/NATIVE.md) | LLVM AOT |
 | [GUI](docs/GUI.md) · [Embedding](docs/EMBEDDING.md) | desktop apps · Rust host |
 | [Environment](docs/ENVIRONMENT.md) | every `SPID3R_*` knob |
+| [Security policy](SECURITY.md) | trust model, reporting, known gaps |
 | [Audit status](docs/AUDIT_STATUS.md) | known issues and their state |
 
 ## License
 
-MIT
+Spid3r is free software under the **GNU General Public License, version 3 or later**. The full text is in [LICENSE.md](LICENSE.md).
+
+| Point | Meaning |
+|---|---|
+| **Use** | run, study, modify and redistribute freely — commercial use included |
+| **Share alike** | distribute a modified toolchain and the source must stay available under the GPL |
+| **No warranty** | provided as-is, without warranty of any kind |
+
+One consequence worth knowing before you ship: `spid3r build` statically links the GPL runtime library into the executable it produces, so binaries you distribute that way carry GPL obligations. If you need permissively licensed output, add a runtime exception to your build or distribute bytecode via `spid3r compile` instead.

@@ -732,6 +732,32 @@
       background: var(--bg-card);
     }
 
+    /* Architecture figures. The SVG itself is drawn on a white plate so the
+       ink stays legible in both themes; the caption sits on the page
+       background so it picks up the active theme's muted colour. */
+    .diagram {
+      margin: 20px 0 26px;
+    }
+
+    .diagram img {
+      display: block;
+      width: 100%;
+      height: auto;
+      box-sizing: border-box;
+      padding: 12px;
+      background: #ffffff;
+      border: 1px solid var(--border-line);
+      border-radius: 10px;
+    }
+
+    .diagram figcaption {
+      margin-top: 10px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--muted);
+      text-align: center;
+    }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -1642,6 +1668,13 @@
           the VM and AOT native backends.
         </p>
 
+        <figure class="diagram">
+          <img src="../diagrams/pipeline.svg"
+            alt="Source passes through lexer, parser, semantic checker and lowering into a checked AST; four backends consume it — tree walker, bytecode VM, LLVM native, and WebAssembly.">
+          <figcaption>One front end, four backends. The tree walker is the reference oracle; the VM, native and
+            WebAssembly backends must reproduce its stdout, error phase and exit code exactly.</figcaption>
+        </figure>
+
         <div class="table-wrap">
           <table>
             <thead>
@@ -1707,6 +1740,14 @@
         <p>
           The <code>spid3r</code> command-line executable provides a complete developer environment:
         </p>
+
+        <figure class="diagram">
+          <img src="../diagrams/targets.svg"
+            alt="One .matrix source file feeds five delivery paths: spid3r run for direct execution, spid3r build for an AOT native executable, bundle --target wasm for a wasm module, spid3r gui for a desktop app on a native WebView, and the spid3r_lang crate for embedding in a Rust host.">
+          <figcaption>One source, five outputs. Every path is the same front end; only the backend and the packaging
+            change.</figcaption>
+        </figure>
+
         <div class="table-wrap">
           <table>
             <thead>
@@ -4284,6 +4325,24 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           both engines, so a script cannot swallow the stop and keep running. The native backend does not
           enforce it at all, which is why embedders running untrusted code use the tree or VM engine.
         </p>
+        <p>
+          The budget bounds <em>time</em>; a separate policy bounds <em>authority</em>. An embedding host can deny
+          whole capabilities, and each native the capability covers is replaced by a stub that raises a catchable
+          error instead of reaching the OS:
+        </p>
+        <div
+          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; overflow-x: auto;">
+          <div style="color: var(--fg-primary);">let engine = Engine::new().deny(Capability::FileSystem);</div>
+          <div style="color: var(--fg-primary);">let engine = Engine::new().deny_all();</div>
+          <div style="color: var(--fg-muted); margin-top: 6px;"># Capability::FileSystem | Process | Network | Environment</div>
+        </div>
+
+        <figure class="diagram">
+          <img src="../diagrams/security.svg"
+            alt="A script reaches the operating system only through built-in natives, which the embedding host can filter with Engine::deny. On the command line no such gate exists, so a script has the same authority as a shell.">
+          <figcaption>The gate exists only when a host installs it, and it filters names rather than permissions — for
+            real isolation, run untrusted code as a separate user or in a container.</figcaption>
+        </figure>
 
         <h3 class="section-h3" id="gc">Garbage Collection: Cycles</h3>
         <p>
@@ -4293,6 +4352,14 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           because every member of the cycle keeps the next one's count above zero. Those cells would leak until
           the process exits.
         </p>
+
+        <figure class="diagram">
+          <img src="../diagrams/memory.svg"
+            alt="Left: two owners share a value whose reference count is two; when both drop the count reaches zero and the value is freed immediately. Right: two values point at each other so each count stays at one and neither is freed; the cycle collector reclaims them.">
+          <figcaption>Reference counting frees the acyclic case with no collector involved. Only the cycle on the
+            right needs the mark-sweep pass.</figcaption>
+        </figure>
+
         <p>
           The collector is a mark-sweep that deliberately never enumerates roots. Enumerating every place a live
           value can hide — interpreter environments, VM frame slots, globals, upvalue cells, task captures — is

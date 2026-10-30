@@ -5,7 +5,7 @@ edition = "2021"
 # MSRV: the toolchain is pinned in rust-toolchain.toml and ci.yml.
 rust-version = "1.99"
 description = "Spid3r - A professional programming language. The compiler and VM are written in Rust."
-license = "MIT"
+license = "GPL-3.0-or-later"
 default-run = "spid3r"
 
 [lib]

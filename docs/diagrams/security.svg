@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 248" width="880" height="248" role="img">
+<title>Spid3r trust boundary: no sandbox by default, opt-in capability filter when embedding</title>
+<desc>A .matrix program runs with the full authority of the process that starts it. On the command line there is no gate between the program and the operating system. When embedding in Rust, Engine::deny can refuse four capability groups, but it is a policy filter over built-in natives, not a sandbox.</desc>
+<defs>
+<marker id="s" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<marker id="sr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#B45309" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="880" height="248" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+
+<rect x="40" y="100" width="150" height="72" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+<text x="115" y="124" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#78350F">.matrix</text>
+<text x="115" y="142" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">program</text>
+<text x="115" y="158" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#B45309">from someone else?</text>
+
+<rect x="250" y="100" width="200" height="72" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
+<text x="350" y="122" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">Engine::deny</text>
+<text x="350" y="140" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">opt-in · embedding only</text>
+<text x="350" y="156" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">policy filter, not a sandbox</text>
+
+<rect x="510" y="100" width="170" height="72" rx="8" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1"/>
+<text x="595" y="122" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="500" fill="#0F172A">built-in natives</text>
+<text x="595" y="140" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">files · processes</text>
+<text x="595" y="156" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">network · environment</text>
+
+<rect x="740" y="100" width="100" height="72" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+<text x="790" y="126" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="500" fill="#0F172A">your OS</text>
+<text x="790" y="146" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">as your user</text>
+
+<path d="M190 136 L246 136" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#s)"/>
+<path d="M450 136 L506 136" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#s)"/>
+<path d="M680 136 L736 136" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#s)"/>
+
+<path d="M115 100 C 115 54, 595 54, 595 96" fill="none" stroke="#B45309" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#sr)"/>
+<text x="355" y="48" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#B45309">On the command line there is no gate — a script has the same authority as sh</text>
+
+<text x="40" y="210" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">capabilities it can refuse:</text>
+<rect x="250" y="196" width="100" height="28" rx="6" fill="#FFFFFF" stroke="#0D9488" stroke-width="1"/>
+<text x="300" y="210" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">FileSystem</text>
+<rect x="362" y="196" width="100" height="28" rx="6" fill="#FFFFFF" stroke="#0D9488" stroke-width="1"/>
+<text x="412" y="210" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">Process</text>
+<rect x="474" y="196" width="100" height="28" rx="6" fill="#FFFFFF" stroke="#0D9488" stroke-width="1"/>
+<text x="524" y="210" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">Network</text>
+<rect x="586" y="196" width="100" height="28" rx="6" fill="#FFFFFF" stroke="#0D9488" stroke-width="1"/>
+<text x="636" y="210" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">Environment</text>
+
+</svg>

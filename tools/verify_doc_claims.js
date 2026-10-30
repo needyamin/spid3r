@@ -113,6 +113,46 @@ while ((m = idRe.exec(html)) !== null) {
 }
 console.log('Ids:', seen.size, '| duplicates:', duplicateIds);
 
+// 1d. Image sources. Every `<img src>` and markdown image must resolve to a
+// file that exists, relative to the page that references it. A renamed or
+// moved diagram does not break the build — it just silently degrades to alt
+// text — so this is checked explicitly. SVGs must also carry a <title>, which
+// is what a screen reader announces in place of the image.
+const imageChecks = [
+  { file: DOC_HTML, base: path.dirname(DOC_HTML) },
+  { file: path.join(ROOT, 'README.md'), base: ROOT },
+];
+let images = 0;
+let missingImages = 0;
+let untitledSvgs = 0;
+const imgSrcRe = /<img\b[^>]*?\ssrc=["']([^"']+)["']/gi;
+const mdImgRe = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+for (const { file, base } of imageChecks) {
+  if (!fs.existsSync(file)) continue;
+  const text = fs.readFileSync(file, 'utf8');
+  const refs = [];
+  while ((m = imgSrcRe.exec(text)) !== null) refs.push(m[1]);
+  while ((m = mdImgRe.exec(text)) !== null) refs.push(m[1]);
+  for (const ref of refs) {
+    if (/^(https?:)?\/\//.test(ref) || ref.startsWith('data:')) continue;
+    images++;
+    const target = path.resolve(base, decodeURI(ref));
+    if (!fs.existsSync(target)) {
+      missingImages++;
+      fail(path.basename(file), 'image does not exist: ' + ref);
+      continue;
+    }
+    if (target.endsWith('.svg')) {
+      const svg = fs.readFileSync(target, 'utf8');
+      if (!/<title>[\s\S]*?<\/title>/.test(svg)) {
+        untitledSvgs++;
+        fail(path.basename(target), 'SVG has no <title>, so screen readers announce nothing');
+      }
+    }
+  }
+}
+console.log('Images checked:', images, '| missing:', missingImages, '| SVGs without title:', untitledSvgs);
+
 // ---------------------------------------------------------------------------
 // 2. Runtime claims
 // ---------------------------------------------------------------------------

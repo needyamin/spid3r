@@ -4,7 +4,7 @@
   "description": "Language support for Spid3r: diagnostics, hover, go-to-definition, outline, formatting.",
   "version": "1.0.0",
   "publisher": "spid3r",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "engines": {
     "vscode": "^1.75.0"
   },
