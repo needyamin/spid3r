@@ -1,0 +1,196 @@
+// Comprehensive multi-domain stress & parity benchmark for Spid3r v1.0.0
+// Exercises: Sieve, BigInt (123n), 3-level OOP + named args + defaults + super(),
+// ADTs + pattern matching, Linear Algebra, MessagePack/CBOR + SHA-256, Regex, and Generators.
+
+import "gen";
+
+enum Expr {
+    Lit(val: int),
+    Add(left, right),
+    Mul(left, right),
+    Neg(inner)
+}
+
+fn eval_expr(e) -> int {
+    return match (e) {
+        Lit(v) => v,
+        Add(l, r) => eval_expr(l) + eval_expr(r),
+        Mul(l, r) => eval_expr(l) * eval_expr(r),
+        Neg(x) => -eval_expr(x),
+        _ => 0
+    };
+}
+
+class Shape {
+    public let w: int;
+    public let h: int;
+    fn new (w: int = 2, h: int = 3) {
+        self.w = w;
+        self.h = h;
+    }
+    public fn area(self) -> int {
+        return self.w * self.h;
+    }
+}
+
+class RectShape extends Shape {
+    public fn perimeter(self) -> int {
+        return 2 * (self.w + self.h);
+    }
+}
+
+class RoundedBox extends RectShape {
+    public let depth: int;
+    fn new (w: int = 4, h: int = 5, depth: int = 2) {
+        super(h: h, w: w);
+        self.depth = depth;
+    }
+    public fn volume(self, scale: int = 1) -> int {
+        return super.area() * self.depth * scale;
+    }
+}
+
+fn fib_gen(limit: int) {
+    let a = 0;
+    let b = 1;
+    let count = 0;
+    while count < limit {
+        yield a;
+        let next = a + b;
+        a = b;
+        b = next;
+        count = count + 1;
+    }
+}
+
+fn main() {
+    // 1. Prime Sieve up to 20,000
+    let n = 20000;
+    let is_prime = [];
+    for let i = 0; i <= n; i = i + 1 {
+        is_prime.push(true);
+    }
+    is_prime[0] = false;
+    is_prime[1] = false;
+    let p = 2;
+    while p * p <= n {
+        if is_prime[p] {
+            let mult = p * p;
+            while mult <= n {
+                is_prime[mult] = false;
+                mult = mult + p;
+            }
+        }
+        p = p + 1;
+    }
+    let prime_count = 0;
+    let prime_checksum = 0;
+    for let i = 2; i <= n; i = i + 1 {
+        if is_prime[i] {
+            prime_count = prime_count + 1;
+            prime_checksum = (prime_checksum * 31 + i) % 1000000007;
+        }
+    }
+    println("primes:" + string(prime_count) + ":" + string(prime_checksum));
+
+    // 2. Arbitrary-Precision BigInt (50! and Fib(120))
+    let fact = 1n;
+    let k_big = 1n;
+    for let k = 1; k <= 50; k = k + 1 {
+        fact = fact * k_big;
+        k_big = k_big + 1n;
+    }
+    let fa = 0n;
+    let fb = 1n;
+    for let k = 0; k < 120; k = k + 1 {
+        let fnx = fa + fb;
+        fa = fb;
+        fb = fnx;
+    }
+    println("fact50:" + string(fact));
+    println("fib120:" + string(fa));
+
+    // 3. 3-level OOP hierarchy, inherited ctors, named args, defaults, super(), callbacks
+    let total_vol = 0;
+    for let i = 1; i <= 500; i = i + 1 {
+        let b = new RoundedBox(depth: (i % 5) + 1, h: (i % 7) + 2, w: (i % 11) + 3);
+        total_vol = total_vol + b.volume() + b.perimeter();
+    }
+    let r_inh = new RectShape(h: 9, w: 8);
+    println(
+        "oop:" + string(total_vol) + ":" + string(r_inh.area()) + ":" + string(r_inh.perimeter())
+    );
+
+    // 4. Algebraic Data Types (Enum with named constructors + pattern matching)
+    let expr_sum = 0;
+    for let i = 1; i <= 200; i = i + 1 {
+        let tree = Add(
+            right: Neg(inner: Lit(val: i)),
+            left: Mul(
+                left: Lit(val: i + 2),
+                right: Add(left: Lit(val: 3), right: Lit(val: i % 5))
+            )
+        );
+        expr_sum = expr_sum + eval_expr(tree);
+    }
+    println("adt:" + string(expr_sum));
+
+    // 5. Linear Algebra (4x4 SPD system solve & determinant)
+    let a_mat = matrix_from_list(
+        [
+        [10.0,
+        2.0,
+        1.0,
+        0.0],
+        [2.0,
+        8.0,
+        2.0,
+        1.0],
+        [1.0,
+        2.0,
+        9.0,
+        2.0],
+        [0.0,
+        1.0,
+        2.0,
+        7.0]
+        ]
+    );
+    let b_vec = [15.0, 23.0, 38.0, 33.0];
+    let x_sol = a_mat.solve(b_vec);
+    let det_a = a_mat.det();
+    println(
+        "linalg:" + "{:.4}".format(det_a) + ":" + "{:.4}".format(x_sol.get(0)) + "," + "{:.4}".format(x_sol.get(1)) + "," + "{:.4}".format(x_sol.get(2)) + "," + "{:.4}".format(x_sol.get(3))
+    );
+
+    // 6. Binary Serialization (MessagePack + CBOR with vec, list, map) & Crypto SHA-256
+    let payload = map(
+        "id",
+        2026,
+        "vec",
+        vec(10, 20, 30, 40),
+        "tags",
+        list("spid3r", "aot", "vm"),
+        "ok",
+        (1 and 2) and not (0 or false)
+    );
+    let mp_bytes = msgpack_encode(payload);
+    let mp_back = msgpack_decode(mp_bytes).unwrap();
+    let cb_bytes = cbor_encode(payload);
+    let cb_back = cbor_decode(cb_bytes).unwrap();
+    let digest = sha256(
+        string(mp_back["id"]) + ":" + string(cb_back["vec"]) + ":" + string(mp_back["ok"])
+    );
+    println("serde_sha:" + digest);
+
+    // 7. Regex Quantifiers & Keyword String Interpolation
+    let log_line = "2026-10-25 [WARN] node=42load=987ms status={true}/{false}/{null}";
+    let m_digits = regex_find_all("[0-9]{2,4}", log_line);
+    println("regex:" + string(m_digits) + ":" + "{true}-{false}-{null}");
+
+    // 8. Coroutine Generator Pipeline
+    let fibs = collect(fib_gen(12));
+    println("gen:" + string(fibs));
+
+    return 0;
+}

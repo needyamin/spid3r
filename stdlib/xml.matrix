@@ -1,0 +1,438 @@
+// stdlib/xml.matrix - an XML parser, written in Spid3r.
+//
+//   import "xml";
+//
+//   let doc = xml_parse("<catalog><book id=\"1\">Dune</book></catalog>");
+//   println(doc["name"]);                    // catalog
+//   let books = xml_find(doc, "book");
+//   println(xml_attr(books[0], "id"));       // 1
+//   println(xml_text(books[0]));             // Dune
+//
+// A node is `{name, attrs, children, text}`: `attrs` is a map of strings,
+// `children` is a list of nodes, `text` is the concatenated direct character
+// data with entities decoded and surrounding whitespace trimmed.
+//
+// Supported: the XML declaration and processing instructions (skipped),
+// comments, CDATA sections, self-closing tags, single- and double-quoted
+// attributes, and the entities `&lt; &gt; &amp; &quot; &apos;` plus numeric
+// `&#NN;` / `&#xHH;`. Not supported: DTDs and internal entities (they are
+// rejected, not silently ignored), namespaces as a resolution layer (a
+// prefixed name like `ns:tag` is kept as the literal string), and schema
+// validation. This is a parser, not a validating processor.
+//
+// Reentrancy: the scanner cursor lives in an `XmlParser` instance created per
+// call, never in module-level state, so concurrent `xml_parse` calls on
+// different threads (for example one per HTTP connection) cannot observe each
+// other's cursor. Do not reintroduce module-level `let` variables here.
+
+const DIGITS = "0123456789";
+const HEXDIGITS = "0123456789abcdef";
+const NAME_PUNCT = "-_:.";
+
+fn is_name_char(c) {
+    if c == "" {
+        return false;
+    }
+    if NAME_PUNCT.index_of(c) >= 0 {
+        return true;
+    }
+    if DIGITS.index_of(c) >= 0 {
+        return true;
+    }
+    // A character is a letter when case folding changes it.
+    return c.lower() != c.upper();
+}
+
+fn digit_value(c, base) {
+    let lower = c.lower();
+    let d = HEXDIGITS.index_of(lower);
+    if d < 0 or d >= base {
+        return -1;
+    }
+    return d;
+}
+
+/// One parse in progress. All cursor state is per-instance.
+class XmlParser {
+    private let src;
+    private let pos;
+
+    fn new (text) {
+        self.src = text;
+        self.pos = 0;
+    }
+
+    fn fail(self, msg) {
+        throw "xml_parse: " + msg + " at offset " + string(self.pos);
+    }
+
+    fn at_end(self) {
+        return self.pos >= len(self.src);
+    }
+
+    fn peek(self) {
+        if self.at_end() {
+            return "";
+        }
+        return self.src.slice(self.pos, self.pos + 1);
+    }
+
+    fn looking_at(self, s) {
+        let end = self.pos + len(s);
+        if end > len(self.src) {
+            return false;
+        }
+        return self.src.slice(self.pos, end) == s;
+    }
+
+    fn advance(self, n) {
+        self.pos = self.pos + n;
+    }
+
+    fn expect(self, s) {
+        if not self.looking_at(s) {
+            self.fail("expected '" + s + "'");
+        }
+        self.advance(len(s));
+    }
+
+    fn skip_ws(self) {
+        while not self.at_end() {
+            let c = self.peek();
+            if c == " " or c == "\n" or c == "\r" or c == "\t" {
+                self.advance(1);
+            } else {
+                return;
+            }
+        }
+    }
+
+    fn parse_name(self) {
+        let start = self.pos;
+        while is_name_char(self.peek()) {
+            self.advance(1);
+        }
+        if self.pos == start {
+            self.fail("expected a name");
+        }
+        return self.src.slice(start, self.pos);
+    }
+
+    fn parse_radix(self, digits, base) {
+        if digits == "" {
+            self.fail("empty numeric character reference");
+        }
+        let value = 0;
+        let i = 0;
+        while i < len(digits) {
+            let c = digits.slice(i, i + 1);
+            let d = digit_value(c, base);
+            if d < 0 {
+                self.fail("bad digit '" + c + "' in character reference");
+            }
+            value = value * base + d;
+            i = i + 1;
+        }
+        if value <= 0 or value > 1114111 {
+            self.fail("character reference out of range: " + string(value));
+        }
+        return value;
+    }
+
+    fn decode_entities(self, s) {
+        if not s.contains("&") {
+            return s;
+        }
+        let out = "";
+        let i = 0;
+        while i < len(s) {
+            let c = s.slice(i, i + 1);
+            if c != "&" {
+                out = out + c;
+                i = i + 1;
+                continue;
+            }
+            // Find the closing ';' by scanning forward (string.index_of takes no
+            // start offset, and entities are short).
+            let semi = -1;
+            let j = i + 1;
+            while j < len(s) {
+                if s.slice(j, j + 1) == ";" {
+                    semi = j;
+                    j = len(s);
+                } else {
+                    j = j + 1;
+                }
+            }
+            if semi < 0 {
+                out = out + c;
+                i = i + 1;
+                continue;
+            }
+            let body = s.slice(i + 1, semi);
+            if body == "lt" {
+                out = out + "<";
+            } elif body == "gt" {
+                out = out + ">";
+            } elif body == "amp" {
+                out = out + "&";
+            } elif body == "quot" {
+                out = out + "\"";
+            } elif body == "apos" {
+                out = out + "'";
+            } elif body.starts_with("#x") or body.starts_with("#X") {
+                out = out + chr(self.parse_radix(body.slice(2, len(body)), 16));
+            } elif body.starts_with("#") {
+                out = out + chr(self.parse_radix(body.slice(1, len(body)), 10));
+            } else {
+                out = out + "&" + body + ";";
+            }
+            i = semi + 1;
+        }
+        return out;
+    }
+
+    fn skip_comment(self) {
+        self.advance(4);
+        while not self.at_end() {
+            if self.looking_at("-->") {
+                self.advance(3);
+                return;
+            }
+            self.advance(1);
+        }
+        self.fail("unterminated comment");
+    }
+
+    fn skip_processing_instruction(self) {
+        self.advance(2);
+        while not self.at_end() {
+            if self.looking_at("?>") {
+                self.advance(2);
+                return;
+            }
+            self.advance(1);
+        }
+        self.fail("unterminated processing instruction");
+    }
+
+    fn skip_doctype(self) {
+        // Reject rather than mis-parse: an internal DTD would define entities we
+        // do not expand, so silently skipping it would change the document.
+        self.fail("DTDs are not supported (this parser does not expand entities)");
+    }
+
+    fn parse_element(self) {
+        if self.peek() != "<" {
+            self.fail("expected '<'");
+        }
+        self.advance(1);
+        let name = self.parse_name();
+        let attrs = map();
+        while true {
+            self.skip_ws();
+            if self.at_end() {
+                self.fail("unterminated start tag <" + name + ">");
+            }
+            if self.looking_at("/>") {
+                self.advance(2);
+                return map("name", name, "attrs", attrs, "children", list(), "text", "");
+            }
+            if self.peek() == ">" {
+                self.advance(1);
+                break;
+            }
+            let attr_name = self.parse_name();
+            self.skip_ws();
+            self.expect("=");
+            self.skip_ws();
+            let quote = self.peek();
+            if quote != "\"" and quote != "'" {
+                self.fail("attribute '" + attr_name + "' needs a quoted value");
+            }
+            self.advance(1);
+            let start = self.pos;
+            while not self.at_end() and self.peek() != quote {
+                self.advance(1);
+            }
+            if self.at_end() {
+                self.fail("unterminated attribute value for '" + attr_name + "'");
+            }
+            let raw = self.src.slice(start, self.pos);
+            self.advance(1);
+            attrs[attr_name] = self.decode_entities(raw);
+        }
+
+        let children = list();
+        let text = "";
+        while true {
+            if self.at_end() {
+                self.fail("unexpected end of input inside <" + name + ">");
+            }
+            if self.looking_at("</") {
+                self.advance(2);
+                let closing = self.parse_name();
+                self.skip_ws();
+                self.expect(">");
+                if closing != name {
+                    self.fail("mismatched close tag: <" + name + "> closed by </" + closing + ">");
+                }
+                return map(
+                    "name",
+                    name,
+                    "attrs",
+                    attrs,
+                    "children",
+                    children,
+                    "text",
+                    text.trim()
+                );
+            }
+            if self.looking_at("<!--") {
+                self.skip_comment();
+                continue;
+            }
+            if self.looking_at("<![CDATA[") {
+                self.advance(9);
+                let start = self.pos;
+                while not self.at_end() and not self.looking_at("]]>") {
+                    self.advance(1);
+                }
+                if self.at_end() {
+                    self.fail("unterminated CDATA section");
+                }
+                text = text + self.src.slice(start, self.pos);
+                self.advance(3);
+                continue;
+            }
+            if self.looking_at("<?") {
+                self.skip_processing_instruction();
+                continue;
+            }
+            if self.looking_at("<!") {
+                self.skip_doctype();
+            }
+            if self.peek() == "<" {
+                children.push(self.parse_element());
+                continue;
+            }
+            let start = self.pos;
+            while not self.at_end() and self.peek() != "<" {
+                self.advance(1);
+            }
+            text = text + self.decode_entities(self.src.slice(start, self.pos));
+        }
+        return null;
+    }
+
+    public fn parse_document(self) {
+        while true {
+            self.skip_ws();
+            if self.at_end() {
+                throw "xml_parse: document has no root element";
+            }
+            if self.looking_at("<?") {
+                self.skip_processing_instruction();
+                continue;
+            }
+            if self.looking_at("<!--") {
+                self.skip_comment();
+                continue;
+            }
+            if self.looking_at("<!") {
+                self.skip_doctype();
+            }
+            break;
+        }
+        let root = self.parse_element();
+        self.skip_ws();
+        if not self.at_end() {
+            if self.looking_at("<!--") {
+                self.skip_comment();
+                self.skip_ws();
+            }
+        }
+        if not self.at_end() {
+            self.fail("trailing content after the root element");
+        }
+        return root;
+    }
+}
+
+/// Parse a document and return its root node.
+public fn xml_parse(text) {
+    let parser = new XmlParser(text);
+    return parser.parse_document();
+}
+
+/// Attribute value, or `null` when the attribute is absent.
+public fn xml_attr(node, name) {
+    let attrs = node["attrs"];
+    if not attrs.has(name) {
+        return null;
+    }
+    return attrs[name];
+}
+
+/// The node's direct character data (entities decoded, whitespace trimmed).
+public fn xml_text(node) {
+    return node["text"];
+}
+
+fn collect_by_name(node, name, out) {
+    for child in node["children"] {
+        if child["name"] == name {
+            out.push(child);
+        }
+        collect_by_name(child, name, out);
+    }
+}
+
+/// Every descendant element with this tag name, in document order.
+public fn xml_find(node, name) {
+    let out = list();
+    collect_by_name(node, name, out);
+    return out;
+}
+
+/// Serialize a node back to XML (used for round-trip checks).
+public fn xml_write(node) {
+    let out = "<" + node["name"];
+    for k in node["attrs"].keys() {
+        out = out + " " + string(k) + "=\"" + xml_escape(node["attrs"][k]) + "\"";
+    }
+    let kids = node["children"];
+    let body = node["text"];
+    if len(kids) == 0 and body == "" {
+        return out + "/>";
+    }
+    out = out + ">";
+    if body != "" {
+        out = out + xml_escape(body);
+    }
+    for c in kids {
+        out = out + xml_write(c);
+    }
+    return out + "</" + node["name"] + ">";
+}
+
+fn xml_escape(s) {
+    let out = "";
+    let i = 0;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "<" {
+            out = out + "&lt;";
+        } elif c == ">" {
+            out = out + "&gt;";
+        } elif c == "&" {
+            out = out + "&amp;";
+        } elif c == "\"" {
+            out = out + "&quot;";
+        } else {
+            out = out + c;
+        }
+        i = i + 1;
+    }
+    return out;
+}

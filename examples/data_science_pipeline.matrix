@@ -1,0 +1,77 @@
+// ============================================================
+// Data Science Pipeline in Spid3r
+// Demonstrating first-party standard libraries:
+//   - dataframe.matrix (Pandas alternative)
+//   - stats.matrix (SciPy Stats alternative)
+//   - ml.matrix (Scikit-Learn alternative)
+// ============================================================
+
+import "dataframe" as df_mod;
+import "stats" as st;
+import "ml" as ml;
+
+fn main() {
+    println("=== 1. DataFrame Ingestion & Filtering ===");
+    let records = list(
+        map("id", 1, "experience", 1.0, "education", 12.0, "salary", 45.0, "promoted", 0.0),
+        map("id", 2, "experience", 2.0, "education", 14.0, "salary", 55.0, "promoted", 0.0),
+        map("id", 3, "experience", 3.0, "education", 16.0, "salary", 68.0, "promoted", 1.0),
+        map("id", 4, "experience", 5.0, "education", 16.0, "salary", 85.0, "promoted", 1.0),
+        map("id", 5, "experience", 7.0, "education", 18.0, "salary", 105.0, "promoted", 1.0),
+        map("id", 6, "experience", 9.0, "education", 18.0, "salary", 125.0, "promoted", 1.0)
+    );
+
+    let df = df_mod.from_records(records);
+    println("Dataset rows: " + string(df.num_rows));
+    println("Columns: " + string(df.col_names));
+
+    let senior = df.filter(fn(row) {
+        return row["experience"] >= 5.0;
+    });
+    println("Senior employees count: " + string(senior.num_rows));
+
+    println("\n=== 2. Descriptive Statistics & Correlation ===");
+    let salaries = df.get_col("salary");
+    let exp = df.get_col("experience");
+
+    println("Salary Mean: " + string(st.mean(salaries)));
+    println("Salary Median: " + string(st.median(salaries)));
+    println("Salary IQR: " + string(st.iqr(salaries)));
+    println(
+        "Pearson(Experience, Salary): " + string(
+            round(st.pearson(exp, salaries) * 100.0) / 100.0
+        )
+    );
+
+    println("\n=== 3. Machine Learning: Linear Regression ===");
+    // Features: experience (col 0), education (col 1)
+    let n = df.num_rows;
+    let X = matrix(n, 2);
+    for let i = 0; i < n; i = i + 1 {
+        let r = df.get_row(i);
+        X.set(i, 0, float(r["experience"]));
+        X.set(i, 1, float(r["education"]));
+    }
+    let y = salaries;
+
+    let model = ml.linear_regression_fit(X, y);
+    let preds = ml.linear_regression_predict(model, X);
+    let r2 = ml.r2_score(y, preds);
+    println("Model R^2 Score > 0.95: " + string(r2 > 0.95));
+    let rmse_val = ml.rmse(y, preds);
+    println("RMSE < 5.0: " + string(rmse_val < 5.0));
+
+    println("\n=== 4. Classification: Promotion Prediction ===");
+    let y_promoted = df.get_col("promoted");
+    let clf = ml.logistic_regression_fit(X, y_promoted, 0.05, 300);
+    let clf_preds = ml.logistic_regression_predict(clf, X);
+    let acc = ml.accuracy(y_promoted, clf_preds);
+    println("Promotion Accuracy >= 0.8: " + string(acc >= 0.8));
+
+    let knn_preds = ml.knn_predict(X, y_promoted, X, 3);
+    println(
+        "KNN (k=3) Accuracy == 1.0: " + string(ml.accuracy(y_promoted, knn_preds) == 1.0)
+    );
+
+    println("\nPipeline completed successfully.");
+}

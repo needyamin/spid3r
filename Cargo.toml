@@ -1,0 +1,63 @@
+[package]
+name = "spid3r"
+version = "1.0.0"
+edition = "2021"
+# MSRV: the toolchain is pinned in rust-toolchain.toml and ci.yml.
+rust-version = "1.99"
+description = "Spid3r - A professional programming language. The compiler and VM are written in Rust."
+license = "MIT"
+default-run = "spid3r"
+
+[lib]
+name = "spid3r_lang"
+path = "src/lib.rs"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "spid3r"
+path = "src/main.rs"
+
+[[bin]]
+name = "calculator"
+path = "examples/demo_apps/native_calculator/main.rs"
+required-features = ["gui"]
+
+
+
+[features]
+# The core language toolchain is zero-dependency; the backends add their own
+# dependencies and are both on by default (build the core alone with
+# --no-default-features, or pick one with --no-default-features --features gui):
+#   gui    - embedded webview GUI via wry + tao.
+#   native - LLVM AOT backend (machine code) via inkwell, like rustc; needs
+#            LLVM 18.1+ installed to build (see docs/BUILDING.md).
+default = ["gui", "native"]
+native = ["dep:inkwell"]
+gui = ["dep:wry", "dep:tao"]
+# TLS for `http_fetch` (https://) via native-tls: schannel on Windows,
+# OpenSSL on Linux, Security.framework on macOS. Opt-in so the core
+# toolchain stays zero-dependency; build with --features tls.
+tls = ["dep:native-tls"]
+
+[dependencies]
+# inkwell is a BUILD-TIME dependency of the native backend only. It requires
+# LLVM 18.1+ installed on the machine (see docs/BUILDING.md). The
+# `no-llvm-linking` feature is required because llvm-sys neither supports
+# dynamic linking on Windows nor ships a built-in llvm-config for the stock
+# installer; build.rs links the LLVM C API library itself.
+inkwell = { version = "0.10.0", features = ["llvm18-1-no-llvm-linking"], optional = true }
+# TLS backend for the `tls` feature (https:// in http_fetch). Uses the OS
+# certificate store; no pinned CA bundle to rotate.
+native-tls = { version = "0.2", optional = true }
+# GUI backend (Phase 2): embedded webview via wry on tao.
+wry = { version = "0.53", optional = true }
+tao = { version = "0.34", optional = true }
+
+[profile.release]
+opt-level = 3
+
+[profile.dev]
+# Incremental compilation corrupts its cache on OneDrive-synced trees
+# (the documented "error deleting lock file (os error 5)" quirk can escalate
+# into a rustc ICE in the metadata encoder). Reliability over rebuild speed.
+incremental = false

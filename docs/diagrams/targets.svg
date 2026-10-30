@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 300" width="880" height="300" role="img">
+<title>Five ways to ship a Spid3r program</title>
+<desc>One source file can run on the bytecode VM, compile to a native executable, bundle as an offline web app, ship as a single-file GUI application, or be embedded as a scripting engine in a Rust host.</desc>
+<defs>
+<marker id="c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="880" height="300" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+
+<rect x="40" y="118" width="120" height="64" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+<text x="100" y="142" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#0F172A">app.matrix</text>
+<text x="100" y="162" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">one source</text>
+
+<path d="M160 150 L206 150" fill="none" stroke="#94A3B8" stroke-width="1.5"/>
+<path d="M206 69 L206 261" fill="none" stroke="#94A3B8" stroke-width="1.5"/>
+<path d="M206 69 L252 69" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#c)"/>
+<path d="M206 117 L252 117" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#c)"/>
+<path d="M206 165 L252 165" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#c)"/>
+<path d="M206 213 L252 213" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#c)"/>
+<path d="M206 261 L252 261" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#c)"/>
+
+<rect x="256" y="50" width="584" height="38" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
+<text x="272" y="69" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">spid3r run</text>
+<text x="824" y="69" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">bytecode VM, instant</text>
+
+<rect x="256" y="98" width="584" height="38" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
+<text x="272" y="117" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">spid3r build</text>
+<text x="824" y="117" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">native executable, no runtime needed</text>
+
+<rect x="256" y="146" width="584" height="38" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
+<text x="272" y="165" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">bundle --target wasm</text>
+<text x="824" y="165" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">offline web app, one HTML file</text>
+
+<rect x="256" y="194" width="584" height="38" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
+<text x="272" y="213" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">build --subsystem windows</text>
+<text x="824" y="213" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">single-file desktop GUI app</text>
+
+<rect x="256" y="242" width="584" height="38" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
+<text x="272" y="261" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#134E4A">spid3r_lang</text>
+<text x="824" y="261" text-anchor="end" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">embed as a scripting engine in Rust</text>
+</svg>

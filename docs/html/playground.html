@@ -1,0 +1,2531 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spid3r | In-Browser WebAssembly Playground</title>
+  <meta name="description"
+    content="Interactive in-browser WebAssembly playground and code runner for the Spid3r programming language. Write, check, format, and execute Spid3r scripts in real time.">
+
+  <link rel="icon" type="image/png" href="../../src/assets/spid3r.png">
+
+  <!-- Modern Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <style>
+    /* ==========================================================================
+       CSS Variables & Design Tokens (Rich Glassmorphism + Vibrant Theme)
+       ========================================================================== */
+    :root {
+      --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', SFMono-Regular, Consolas, monospace;
+
+      /* Dark Theme (Default) */
+      --bg-main: #0b0f17;
+      --bg-surface: #111722;
+      --bg-card: rgba(17, 23, 34, 0.75);
+      --bg-editor: #080c13;
+      --bg-terminal: #05080e;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-hover: rgba(56, 189, 248, 0.4);
+      --border-active: #38bdf8;
+
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+
+      /* Vibrant Accents */
+      --cyan: #38bdf8;
+      --cyan-glow: rgba(56, 189, 248, 0.25);
+      --indigo: #818cf8;
+      --indigo-glow: rgba(129, 140, 248, 0.25);
+      --purple: #c084fc;
+      --emerald: #34d399;
+      --emerald-glow: rgba(52, 211, 153, 0.2);
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --rose-glow: rgba(251, 113, 133, 0.25);
+
+      --grad-primary: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+      --grad-emerald: linear-gradient(135deg, #34d399 0%, #38bdf8 100%);
+
+      --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+      --shadow-glow: 0 0 25px rgba(56, 189, 248, 0.2);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 16px;
+      --radius-pill: 9999px;
+
+      --transition-fast: 0.15s ease;
+      --transition-normal: 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    html[data-theme="light"] {
+      --bg-main: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-card: rgba(255, 255, 255, 0.9);
+      --bg-editor: #f1f5f9;
+      --bg-terminal: #0f172a;
+      --border-subtle: rgba(0, 0, 0, 0.1);
+      --border-hover: rgba(14, 165, 233, 0.4);
+      --border-active: #0284c7;
+
+      --text-primary: #0f172a;
+      --text-secondary: #475569;
+      --text-muted: #94a3b8;
+
+      --cyan: #0284c7;
+      --cyan-glow: rgba(2, 132, 199, 0.15);
+      --indigo: #6366f1;
+      --emerald: #059669;
+      --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.08);
+      --shadow-lg: 0 16px 24px rgba(0, 0, 0, 0.12);
+    }
+
+    /* Reset & Base */
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-body);
+      background-color: var(--bg-main);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow-x: hidden;
+      line-height: 1.5;
+    }
+
+    a {
+      color: var(--cyan);
+      text-decoration: none;
+      transition: color var(--transition-fast);
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    /* Top Navigation */
+    .navbar {
+      height: 64px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(11, 15, 23, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-family: var(--font-heading);
+      font-weight: 700;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-logo-img {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      object-fit: cover;
+      box-shadow: 0 0 12px var(--cyan-glow);
+    }
+
+    .brand-badge {
+      background: var(--grad-primary);
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: var(--radius-pill);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      box-shadow: 0 0 12px var(--cyan-glow);
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .nav-link {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color var(--transition-fast);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .nav-link:hover {
+      color: var(--text-primary);
+      text-decoration: none;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-family: var(--font-body);
+      font-size: 0.88rem;
+      font-weight: 600;
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      user-select: none;
+    }
+
+    .btn-primary {
+      background: var(--grad-primary);
+      color: #ffffff;
+      box-shadow: 0 4px 14px var(--cyan-glow);
+    }
+
+    .btn-primary:hover {
+      opacity: 0.95;
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px var(--cyan-glow);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-primary);
+      border-color: var(--border-subtle);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.1);
+      border-color: var(--border-hover);
+    }
+
+    .btn-sm {
+      padding: 4px 10px;
+      font-size: 0.78rem;
+      border-radius: var(--radius-sm);
+      font-weight: 500;
+    }
+
+    .btn-icon {
+      padding: 8px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+    }
+
+    .btn-icon:hover {
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+
+    /* Toast Notification */
+    .toast-container {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .toast {
+      background: rgba(17, 23, 34, 0.95);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-hover);
+      color: var(--text-primary);
+      padding: 10px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      font-weight: 500;
+      box-shadow: var(--shadow-lg);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      animation: toastSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      pointer-events: auto;
+    }
+
+    @keyframes toastSlideUp {
+      from {
+        transform: translateY(20px);
+        opacity: 0;
+      }
+
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+
+    /* Share Modal Styles */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 7, 13, 0.72);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+      padding: 16px;
+    }
+
+    .modal-overlay.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .modal-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-hover);
+      border-radius: var(--radius-lg);
+      width: 100%;
+      max-width: 540px;
+      box-shadow: 0 24px 48px rgba(0, 0, 0, 0.5), 0 0 24px var(--cyan-glow);
+      overflow: hidden;
+      transform: scale(0.94) translateY(8px);
+      transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .modal-overlay.active .modal-card {
+      transform: scale(1) translateY(0);
+    }
+
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .modal-title {
+      font-family: var(--font-heading);
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .modal-close {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.15rem;
+      cursor: pointer;
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color var(--transition-fast), background var(--transition-fast);
+    }
+
+    .modal-close:hover {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .modal-body {
+      padding: 20px;
+    }
+
+    .modal-desc {
+      font-size: 0.88rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
+    .share-input-wrapper {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    .share-url-input {
+      flex: 1;
+      background: var(--bg-main);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      color: var(--text-primary);
+      outline: none;
+      transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+      cursor: text;
+    }
+
+    .share-url-input:focus {
+      border-color: var(--border-active);
+      box-shadow: 0 0 0 2px var(--cyan-glow);
+    }
+
+    .btn-copy-link {
+      white-space: nowrap;
+      flex-shrink: 0;
+      padding: 0 16px;
+    }
+
+    .share-meta-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px;
+      font-size: 0.76rem;
+      color: var(--text-muted);
+    }
+
+    .share-meta-stat {
+      font-family: var(--font-mono);
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      padding: 12px 20px;
+      background: rgba(0, 0, 0, 0.15);
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    /* Light Theme adjustments for modal */
+    html[data-theme="light"] .modal-overlay {
+      background: rgba(15, 23, 42, 0.45);
+    }
+
+    html[data-theme="light"] .modal-card {
+      box-shadow: 0 20px 35px rgba(0, 0, 0, 0.15), 0 0 15px rgba(2, 132, 199, 0.1);
+    }
+
+    html[data-theme="light"] .modal-close:hover {
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    html[data-theme="light"] .modal-footer {
+      background: rgba(0, 0, 0, 0.02);
+    }
+
+    .editor-wrapper.drag-over {
+      outline: 2px dashed var(--cyan);
+      outline-offset: -4px;
+    }
+
+    /* Main Workspace Layout */
+    .playground-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 24px;
+      gap: 16px;
+      max-width: 1700px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* Control Toolbar */
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 10px 16px;
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .select-input {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-primary);
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 7px 12px;
+      border-radius: var(--radius-sm);
+      outline: none;
+      cursor: pointer;
+      transition: border-color var(--transition-fast);
+    }
+
+    .select-input:hover,
+    .select-input:focus {
+      border-color: var(--border-hover);
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: var(--radius-pill);
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--emerald);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+    }
+
+    .status-badge.ready {
+      background: rgba(52, 211, 153, 0.12);
+      color: var(--emerald);
+      border-color: rgba(52, 211, 153, 0.3);
+    }
+
+    .status-badge.loading {
+      background: rgba(251, 191, 36, 0.12);
+      color: var(--amber);
+      border-color: rgba(251, 191, 36, 0.3);
+    }
+
+    .status-badge.error {
+      background: rgba(251, 113, 133, 0.12);
+      color: var(--rose);
+      border-color: rgba(251, 113, 133, 0.3);
+    }
+
+    .pulse-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 8px currentColor;
+    }
+
+    /* Split Workspace Panes */
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      flex: 1;
+      min-height: 580px;
+    }
+
+    @media (max-width: 960px) {
+      .workspace-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .pane-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .pane-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      background: rgba(0, 0, 0, 0.25);
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 0.84rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      flex-wrap: nowrap;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .pane-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      min-width: 0;
+      flex-shrink: 1;
+    }
+
+    .pane-title-text {
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .pane-title-text code {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      color: var(--cyan);
+      background: rgba(56, 189, 248, 0.1);
+      padding: 1px 6px;
+      border-radius: var(--radius-sm);
+      white-space: nowrap;
+    }
+
+    .pane-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* Code Editor Container & Overlay Stage */
+    .editor-wrapper {
+      position: relative;
+      flex: 1;
+      display: flex;
+      background: var(--bg-editor);
+      overflow: hidden;
+    }
+
+    .line-numbers {
+      padding: 16px 8px 16px 12px;
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      line-height: 1.6;
+      color: var(--text-muted);
+      text-align: right;
+      user-select: none;
+      background: rgba(0, 0, 0, 0.15);
+      border-right: 1px solid var(--border-subtle);
+      min-width: 46px;
+      overflow: hidden;
+      white-space: pre;
+      box-sizing: border-box;
+      pointer-events: none;
+    }
+
+    .editor-stage {
+      position: relative;
+      flex: 1;
+      height: 100%;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .code-highlight,
+    .code-textarea {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 16px;
+      border: none;
+      outline: none;
+      box-sizing: border-box;
+      font-family: var(--font-mono);
+      font-size: 0.88rem;
+      line-height: 1.6;
+      tab-size: 4;
+      -moz-tab-size: 4;
+      letter-spacing: 0;
+      word-spacing: 0;
+      font-variant-ligatures: none;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      white-space: pre;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+
+    .code-highlight {
+      pointer-events: none;
+      overflow: hidden;
+      background: transparent;
+      color: #e2e8f0;
+      z-index: 1;
+    }
+
+    .code-highlight code {
+      display: inline-block;
+      min-width: 100%;
+      font-family: inherit;
+      font-size: inherit;
+      line-height: inherit;
+      white-space: pre;
+      background: transparent;
+      padding: 0;
+      border: none;
+      color: inherit;
+    }
+
+    .code-textarea {
+      z-index: 2;
+      background: transparent;
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+      caret-color: var(--cyan);
+      resize: none;
+      overflow: auto;
+    }
+
+    .code-textarea::selection {
+      background: rgba(56, 189, 248, 0.28);
+      color: transparent;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .code-textarea::placeholder {
+      color: var(--text-muted);
+      -webkit-text-fill-color: var(--text-muted);
+      opacity: 0.7;
+    }
+
+    /* Editor Syntax Legend */
+    .editor-syntax-legend {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 6px;
+      padding: 2px 8px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-pill);
+      font-size: 0.7rem;
+      font-family: var(--font-mono);
+      font-weight: 500;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 1360px) {
+      .editor-syntax-legend .legend-extra {
+        display: none;
+      }
+    }
+
+    @media (max-width: 1120px) {
+      .editor-syntax-legend {
+        display: none;
+      }
+    }
+
+    /* IDE Syntax Token Colors */
+    .tok-comment {
+      color: #64748b;
+      font-style: italic;
+    }
+
+    .tok-kw {
+      color: #c084fc;
+      font-weight: 600;
+    }
+
+    .tok-type {
+      color: #38bdf8;
+      font-weight: 600;
+      text-shadow: 0 0 10px rgba(56, 189, 248, 0.22);
+    }
+
+    .tok-str {
+      color: #4ade80;
+    }
+
+    .tok-num {
+      color: #fb923c;
+    }
+
+    .tok-builtin {
+      color: #facc15;
+      font-weight: 500;
+    }
+
+    .tok-lit {
+      color: #fb7185;
+      font-weight: 600;
+    }
+
+    .tok-fn {
+      color: #67e8f9;
+    }
+
+    .tok-op {
+      color: #94a3b8;
+    }
+
+    /* Light Theme Syntax Tokens */
+    html[data-theme="light"] .code-highlight {
+      color: #0f172a;
+    }
+
+    html[data-theme="light"] .code-textarea::selection {
+      background: rgba(2, 132, 199, 0.22);
+    }
+
+    html[data-theme="light"] .editor-syntax-legend {
+      background: rgba(0, 0, 0, 0.04);
+    }
+
+    html[data-theme="light"] .tok-comment {
+      color: #64748b;
+      font-style: italic;
+    }
+
+    html[data-theme="light"] .tok-kw {
+      color: #9333ea;
+      font-weight: 600;
+    }
+
+    html[data-theme="light"] .tok-type {
+      color: #0284c7;
+      font-weight: 600;
+      text-shadow: none;
+    }
+
+    html[data-theme="light"] .tok-str {
+      color: #16a34a;
+    }
+
+    html[data-theme="light"] .tok-num {
+      color: #ea580c;
+    }
+
+    html[data-theme="light"] .tok-builtin {
+      color: #ca8a04;
+      font-weight: 600;
+    }
+
+    html[data-theme="light"] .tok-lit {
+      color: #e11d48;
+      font-weight: 600;
+    }
+
+    html[data-theme="light"] .tok-fn {
+      color: #0891b2;
+    }
+
+    html[data-theme="light"] .tok-op {
+      color: #475569;
+    }
+
+    /* Terminal Console */
+    .terminal-body {
+      flex: 1;
+      background: var(--bg-terminal);
+      color: #38bdf8;
+      font-family: var(--font-mono);
+      font-size: 0.86rem;
+      line-height: 1.6;
+      padding: 16px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .term-stdout {
+      color: #e2e8f0;
+    }
+
+    .term-success {
+      color: var(--emerald);
+    }
+
+    .term-error {
+      color: var(--rose);
+      font-weight: 600;
+    }
+
+    .term-meta {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border-subtle);
+    }
+
+    /* Fallback Banner */
+    .file-proto-banner {
+      display: none;
+      background: rgba(251, 191, 36, 0.15);
+      border: 1px solid rgba(251, 191, 36, 0.4);
+      border-radius: var(--radius-md);
+      padding: 12px 16px;
+      color: var(--text-primary);
+      font-size: 0.88rem;
+    }
+
+    .file-proto-banner.visible {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    /* Quick Guide / Cheat Sheet Accordion */
+    .quick-guide {
+      margin-top: 8px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+    }
+
+    .guide-title {
+      font-family: var(--font-heading);
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--cyan);
+    }
+
+    .guide-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .guide-item {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px 14px;
+      font-size: 0.82rem;
+    }
+
+    .guide-item h4 {
+      font-family: var(--font-heading);
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      font-size: 0.88rem;
+    }
+
+    .guide-item code {
+      font-family: var(--font-mono);
+      color: var(--cyan);
+      background: rgba(56, 189, 248, 0.08);
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+
+    /* Footer */
+    .footer {
+      border-top: 1px solid var(--border-subtle);
+      padding: 18px 24px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+
+    .file-proto-banner {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 18px;
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      font-size: 0.88rem;
+    }
+
+    .file-proto-banner.visible {
+      display: flex;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Top Navigation -->
+  <header class="navbar">
+    <div class="brand">
+      <img src="../../src/assets/spid3r.png" alt="Spid3r logo" class="brand-logo-img">
+      <span style="color: var(--cyan);">Spid3r</span>
+      <span>In-Browser Runtime</span>
+      <span class="brand-badge">WASM 1.0</span>
+    </div>
+    <div class="nav-actions">
+      <a href="doc.html" class="nav-link" style="color: var(--cyan); font-weight: 600;">Documentation</a>
+      <a href="../../examples/demo_apps/web_calculator/index.html" class="nav-link">Web Calculator</a>
+      <button class="btn-icon" id="theme-btn" title="Toggle Theme">🌓</button>
+    </div>
+  </header>
+
+  <!-- Workspace Container -->
+  <main class="playground-container">
+
+    <!-- CORS File Protocol Notice (Shown if opened via file:// and fetch fails) -->
+    <div id="cors-notice" class="file-proto-banner">
+      <div>
+        <strong>Local File Access Notice:</strong> Browsers restrict WebAssembly <code>fetch()</code> over
+        <code>file://</code> URLs.
+        Run a quick local server (e.g. <code>spid3r run server.matrix</code> or <code>npx serve .</code>), or select
+        <code>web/spid3r.wasm</code> manually:
+      </div>
+      <input type="file" id="wasm-file-picker" accept=".wasm" style="font-size: 0.8rem; color: var(--text-primary);">
+    </div>
+
+    <!-- Toolbar Controls -->
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <button class="btn btn-primary" id="btn-run" title="Run (Ctrl + Enter)">
+          <span>▶</span> Run Code
+        </button>
+        <button class="btn btn-secondary" id="btn-check" title="Syntax and semantic analysis">
+          <span>✓</span> Check
+        </button>
+        <button class="btn btn-secondary" id="btn-format" title="Canonical code formatter">
+          <span>✦</span> Format
+        </button>
+        <button class="btn btn-secondary" id="btn-share" title="Copy shareable link with code embedded">
+          <span>🔗</span> Share
+        </button>
+        <button class="btn btn-secondary" id="btn-download" title="Export as main.matrix">
+          <span>💾</span> Export
+        </button>
+        <button class="btn btn-secondary" id="btn-open" title="Open .matrix file">
+          <span>📂</span> Open
+        </button>
+        <button class="btn btn-secondary" id="btn-clear" title="Clear console output">
+          <span>⟳</span> Clear
+        </button>
+        <input type="file" id="file-code-input" accept=".matrix,.spid3r,.txt" style="display: none;">
+      </div>
+
+      <div class="toolbar-group">
+        <label style="font-size: 0.85rem; color: var(--text-secondary);">Preset:</label>
+        <select class="select-input" id="preset-selector">
+          <option value="hello">1. Hello World & System</option>
+          <option value="fib">2. Fibonacci & Recursion</option>
+          <option value="control">3. Control Flow</option>
+          <option value="functions">4. Functions & Closures</option>
+          <option value="strings">5. Strings & Interpolation</option>
+          <option value="collections">6. Lists, Maps & Sets</option>
+          <option value="datastructures">7. Built-in Data Structures</option>
+          <option value="oop">8. Classes & Inheritance</option>
+          <option value="operators">9. Operator Overloading</option>
+          <option value="enums">10. Enums & Pattern Matching</option>
+          <option value="errors">11. Error Handling</option>
+          <option value="concurrency">12. Tasks & Channels</option>
+          <option value="typing">13. Gradual Typing</option>
+          <option value="numeric">14. Math & Numeric Types</option>
+          <option value="formats">15. Serialization Formats</option>
+          <option value="crypto">16. Crypto & Encoding</option>
+          <option value="compression">17. Compression</option>
+          <option value="text">18. Regex & Unicode</option>
+          <option value="media">19. Images & Audio</option>
+          <option value="time">20. Date & Time</option>
+          <option value="introspection">21. Runtime Introspection</option>
+          <option value="http_sim">22. Simulated Web Server Route</option>
+          <option value="calculator">23. Calculator Engine Demo</option>
+          <option value="benchmark">24. Benchmark (100k Loops)</option>
+          <option value="stdlib">25. Standard Library & Compression</option>
+        </select>
+
+        <label style="font-size: 0.85rem; color: var(--text-secondary); margin-left: 6px;">Engine:</label>
+        <select class="select-input" id="engine-selector">
+          <option value="vm" selected>Bytecode VM (Fast)</option>
+          <option value="tree">Tree Interpreter (Reference)</option>
+        </select>
+
+        <div class="status-badge loading" id="engine-status">
+          <span class="pulse-dot"></span>
+          <span id="engine-status-text">Loading WASM...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Workspace Grid -->
+    <div class="workspace-grid">
+      <!-- Left: Code Editor -->
+      <section class="pane-card">
+        <div class="pane-header">
+          <div class="pane-title">
+            <span>📝</span>
+            <span class="pane-title-text">Spid3r Source Code <code>(main.matrix)</code></span>
+            <div class="editor-syntax-legend" title="IDE Syntax Highlighting">
+              <span class="tok-comment">// comments</span>
+              <span class="tok-kw">keywords</span>
+              <span class="tok-type">types</span>
+              <span class="tok-builtin legend-extra">builtins</span>
+              <span class="tok-str legend-extra">"strings"</span>
+            </div>
+          </div>
+          <div class="pane-actions">
+            <button class="btn btn-secondary btn-sm" id="btn-copy-code" title="Copy code to clipboard">📋 Copy Code</button>
+            <span style="font-size: 0.78rem; color: var(--text-muted); white-space: nowrap;">Ctrl+Enter</span>
+          </div>
+        </div>
+        <div class="editor-wrapper" id="editor-wrapper">
+          <div class="line-numbers" id="line-numbers">1</div>
+          <div class="editor-stage">
+            <pre class="code-highlight" id="code-highlight" aria-hidden="true"><code id="code-highlight-inner"></code></pre>
+            <textarea class="code-textarea" id="code-editor" spellcheck="false" placeholder="Write your Spid3r code here, or drop a .matrix file..."></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: Terminal Console Output -->
+      <section class="pane-card">
+        <div class="pane-header">
+          <div class="pane-title">
+            <span>💻</span>
+            <span class="pane-title-text">Execution Terminal &amp; Diagnostics</span>
+          </div>
+          <div class="pane-actions">
+            <span id="perf-pill" style="font-size: 0.78rem; color: var(--cyan); white-space: nowrap;">Ready</span>
+            <button class="btn btn-secondary btn-sm" id="btn-copy-term" title="Copy terminal output">📋 Copy Output</button>
+          </div>
+        </div>
+        <div class="terminal-body" id="term-output">Spid3r WebAssembly Engine Initializing...
+Ready to execute Spid3r scripts entirely within your browser!</div>
+      </section>
+    </div>
+
+    <!-- Quick Syntax Guide -->
+    <section class="quick-guide">
+      <div class="guide-title">
+        <span>⚡</span> Spid3r Language Essentials
+      </div>
+      <div class="guide-grid">
+        <div class="guide-item">
+          <h4>Variables &amp; Types</h4>
+          <code><span class="tok-kw">let</span> x<span class="tok-op">:</span> <span class="tok-type">int</span> <span class="tok-op">=</span> <span class="tok-num">42</span>;</code><br>
+          <code><span class="tok-kw">const</span> PI <span class="tok-op">=</span> <span class="tok-num">3.14159</span>;</code><br>
+          <code><span class="tok-kw">let</span> list<span class="tok-op">:</span> <span class="tok-type">list</span> <span class="tok-op">=</span> [<span class="tok-num">1</span>, <span class="tok-str">"two"</span>, <span class="tok-lit">true</span>];</code>
+        </div>
+        <div class="guide-item">
+          <h4>Functions &amp; Closures</h4>
+          <code><span class="tok-kw">fn</span> <span class="tok-fn">add</span>(a, b) { <span class="tok-kw">return</span> a <span class="tok-op">+</span> b; }</code><br>
+          <code><span class="tok-kw">let</span> sq <span class="tok-op">=</span> <span class="tok-kw">fn</span>(x) { x <span class="tok-op">*</span> x };</code>
+        </div>
+        <div class="guide-item">
+          <h4>Classes &amp; OOP</h4>
+          <code><span class="tok-kw">class</span> <span class="tok-type">Point</span> { <span class="tok-kw">public</span> <span class="tok-kw">let</span> x; }</code><br>
+          <code><span class="tok-kw">let</span> p <span class="tok-op">=</span> <span class="tok-kw">new</span> <span class="tok-type">Point</span>(); p.x <span class="tok-op">=</span> <span class="tok-num">10</span>;</code>
+        </div>
+        <div class="guide-item">
+          <h4>Control Flow</h4>
+          <code><span class="tok-kw">if</span> (x <span class="tok-op">&gt;</span> <span class="tok-num">0</span>) { ... } <span class="tok-kw">else</span> { ... }</code><br>
+          <code><span class="tok-kw">for</span> item <span class="tok-kw">in</span> list { <span class="tok-builtin">println</span>(item); }</code>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div>Spid3r In-Browser Runtime — Built with zero external dependencies compiled to WebAssembly.</div>
+    <div style="margin-top: 6px; font-size: 0.82rem;">
+      Developed and maintained by <a href="https://inside.ansnew.com/" target="_blank" rel="noopener noreferrer" style="color: var(--cyan); text-decoration: none; font-weight: 600;">ANSNEW TECH.</a>
+    </div>
+  </footer>
+  <!-- Toast Floating Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <!-- Share Modal Dialog -->
+  <div class="modal-overlay" id="share-modal" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-labelledby="share-modal-title" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title" id="share-modal-title">
+          <span>🔗</span> Share Spid3r Snippet
+        </div>
+        <button class="modal-close" id="btn-close-share-modal" title="Close modal" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Your code is encoded directly in this URL. Anyone who opens it will load your exact Spid3r script in their browser:
+        </p>
+        <div class="share-input-wrapper">
+          <input type="text" id="share-url-input" class="share-url-input" readonly spellcheck="false" placeholder="Generating link...">
+          <button class="btn btn-primary btn-copy-link" id="btn-modal-copy">
+            <span id="modal-copy-icon">📋</span> <span id="modal-copy-text">Copy Link</span>
+          </button>
+        </div>
+        <div class="share-meta-row">
+          <span class="share-meta-stat" id="share-code-size">0 chars</span>
+          <span class="share-meta-hint">Click the input or button to copy</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary btn-sm" id="btn-modal-done">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Include Spid3r JS SDK & Embedded WASM Binary Data (canonical web/ distribution) -->
+  <script src="../../web/spid3r.js"></script>
+  <script src="../../web/spid3r_wasm_data.js"></script>
+  <script>
+    (function () {
+      'use strict';
+
+      // Elements
+      const editor = document.getElementById('code-editor');
+      const lineNumbers = document.getElementById('line-numbers');
+      const codeHighlight = document.getElementById('code-highlight');
+      const codeHighlightInner = document.getElementById('code-highlight-inner');
+      const terminal = document.getElementById('term-output');
+      const btnRun = document.getElementById('btn-run');
+      const btnCheck = document.getElementById('btn-check');
+      const btnFormat = document.getElementById('btn-format');
+      const btnClear = document.getElementById('btn-clear');
+      const presetSelector = document.getElementById('preset-selector');
+      const engineSelector = document.getElementById('engine-selector');
+      const engineStatus = document.getElementById('engine-status');
+      const engineStatusText = document.getElementById('engine-status-text');
+      const perfPill = document.getElementById('perf-pill');
+      const themeBtn = document.getElementById('theme-btn');
+      const corsNotice = document.getElementById('cors-notice');
+      const wasmFilePicker = document.getElementById('wasm-file-picker');
+
+      let runtime = null;
+
+      // Presets
+                        const PRESETS = {
+        hello: `// 1. Hello World & System Info
+println("=========================================");
+println("  ⚡ Welcome to Spid3r WebAssembly Engine!");
+println("=========================================");
+
+let name = "Browser Developer";
+let version = 1.0;
+
+println("Hello, " + name + "!");
+println("Language Version: ", version);
+
+// Test math & collections
+let numbers = [10, 20, 30, 40, 50];
+let total = 0;
+for n in numbers {
+    total = total + n;
+}
+println("Sum of array:", total);
+`,
+        fib: `// 2. Recursive Fibonacci
+fn fib(n) {
+    if (n <= 1) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+println("Computing Fibonacci sequence:");
+for let i = 0; i <= 12; i = i + 1 {
+    println("fib(" + string(i) + ") = " + string(fib(i)));
+}
+`,
+        control: `// 3. Control Flow: if / elif / while / for
+fn sign(n) {
+    if (n < 0) {
+        return "negative";
+    } elif (n == 0) {
+        return "zero";
+    }
+    return "positive";
+}
+
+// if is also an expression
+fn grade(n) {
+    return if (n >= 90) { "A" } else if (n >= 80) { "B" } else { "C" };
+}
+
+println("sign(-3) = " + sign(-3));
+println("sign(0)  = " + sign(0));
+println("sign(7)  = " + sign(7));
+println("grade(95) = " + grade(95) + ", grade(85) = " + grade(85));
+
+// while with break and continue: the Collatz sequence
+let n = 100;
+let steps = 0;
+while (n != 1) {
+    if (n % 2 == 0) {
+        n = n / 2;
+    } else {
+        n = 3 * n + 1;
+    }
+    steps = steps + 1;
+}
+println("collatz(100) takes " + string(steps) + " steps");
+
+// for over a list, skipping even values
+let odd_sum = 0;
+for x in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
+    if (x % 2 == 0) {
+        continue;
+    }
+    odd_sum = odd_sum + x;
+}
+println("sum of odd 1..10 = " + string(odd_sum));
+`,
+        functions: `// 4. Functions & Closures
+fn make_counter(start) {
+    let count = start;
+    return fn() {
+        count = count + 1;
+        return count;
+    };
+}
+
+let c = make_counter(100);
+println("counter: " + string(c()) + ", " + string(c()) + ", " + string(c()));
+
+// Functions are values: pass one to another
+fn apply_twice(f, x) {
+    return f(f(x));
+}
+println("apply_twice(double, 21) = " + string(apply_twice(fn(x) { return x * 2; }, 21)));
+
+// Closures nest and capture every level
+fn adder(x) {
+    return fn(y) {
+        return fn(z) {
+            return x + y + z;
+        };
+    };
+}
+println("adder(1)(2)(3) = " + string(adder(1)(2)(3)));
+
+// Mutual recursion
+fn is_even(n) {
+    if (n == 0) {
+        return true;
+    }
+    return is_odd(n - 1);
+}
+
+fn is_odd(n) {
+    if (n == 0) {
+        return false;
+    }
+    return is_even(n - 1);
+}
+println("is_even(10) = " + string(is_even(10)) + ", is_odd(7) = " + string(is_odd(7)));
+
+// Deep recursion stays on the big stack
+fn fact(n) {
+    if (n <= 1) {
+        return 1;
+    }
+    return n * fact(n - 1);
+}
+println("fact(20) = " + string(fact(20)));
+`,
+        strings: `// 5. Strings & Interpolation
+let s = "  Hello, World  ";
+println("trim+lower: [" + s.trim().lower() + "]");
+println("replace:    " + "a-b-c".replace("-", "+"));
+println("slice(1,3): " + "hello".slice(1, 3));
+println("split:      " + string("a,b,c".split(",")));
+println("starts_with/ends_with/contains: " + string("hello".starts_with("he")) + "/" + string("hello".ends_with("lo")) + "/" + string("hello".contains("ell")));
+println("index [1]:  " + "hello"[1]);
+
+// Interpolation evaluates any expression
+let items = [1, 2, 3];
+println("list has {len(items)} items: {items}");
+
+// format fills {} placeholders in order
+println("{} and {}".format("a", "b"));
+
+// Comparison is lexicographic
+println("a < b: " + string("a" < "b"));
+`,
+        collections: `// 6. Lists, Maps & Sets
+let xs = [5, 3, 8, 1];
+println("original: " + string(xs));
+xs.sort();              // in place, returns null
+println("sorted:   " + string(xs));
+xs.reverse();
+println("reversed: " + string(xs));
+println("slice(1,3): " + string(xs.slice(1, 3)) + ", index_of(8): " + string(xs.index_of(8)));
+
+// Higher-order methods chain
+let odds = [1, 2, 3, 4, 5].filter(fn(x) { return x % 2 == 1; });
+println("filter odds:    " + string(odds));
+println("map squares:    " + string(odds.map(fn(x) { return x * x; })));
+
+// Maps keep insertion order
+let m = map("a", 1, "b", 2);
+m["c"] = 3;
+println("keys: " + string(m.keys()) + ", has(a): " + string(m.has("a")) + ", len: " + string(len(m)));
+
+// Set algebra
+let s1 = set(1, 2, 3);
+let s2 = set(2, 3, 4);
+println("union:      " + string(s1.union(s2)));
+println("intersect:  " + string(s1.intersect(s2)));
+
+// Tuples index like lists and destructure
+let t = tuple(1, "two", 3.0);
+println("tuple: " + string(t[0]) + "/" + t[1] + "/" + string(t[2]));
+let (x, y) = tuple(10, 20);
+println("destructured: " + string(x + y));
+`,
+        datastructures: `// 7. Built-in Data Structures
+let s = stack();
+s.push(1);
+s.push(2);
+s.push(3);
+println("stack pop: " + string(s.pop()));
+
+let q = queue();
+q.push(1);
+q.push(2);
+println("queue pop: " + string(q.pop()) + ", len: " + string(len(q)));
+
+let d = deque();
+d.push_back(2);
+d.push_front(1);
+println("deque len: " + string(len(d)));
+
+let h = heap("max");
+h.push(3);
+h.push(9);
+h.push(1);
+println("max-heap pop: " + string(h.pop()));
+
+let pq = priority_queue();
+pq.push("low", 5);
+pq.push("high", 1);
+println("priority pop: " + pq.pop());
+
+let rb = ring_buffer(3);
+rb.push(1);
+rb.push(2);
+println("ring buffer: len " + string(len(rb)) + ", pop " + string(rb.pop()));
+
+let ll = linked_list();
+ll.push_back(1);
+ll.push_back(2);
+println("linked list len: " + string(len(ll)));
+
+let ht = hash_table();
+ht.set("a", 1);
+println("hash table get: " + string(ht.get("a")));
+
+let bt = binary_tree();
+bt.insert(5);
+bt.insert(3);
+bt.insert(8);
+println("binary tree len: " + string(len(bt)));
+
+let tr = trie("");
+tr.insert("ab");
+println("trie len: " + string(len(tr)));
+
+let g = graph("directed");
+g.add_node("a");
+g.add_node("b");
+g.add_edge("a", "b", 1);
+println("graph nodes: " + string(len(g)));
+`,
+        oop: `// 8. Classes & Inheritance
+class Shape {
+    public let name;
+    fn new(name) {
+        self.name = name;
+    }
+    public fn describe(self) {
+        return "Shape: " + self.name;
+    }
+}
+
+class Circle extends Shape {
+    public let radius;
+    fn new(name, radius) {
+        super(name);
+        self.radius = radius;
+    }
+    public fn area(self) {
+        return 3.14159 * self.radius * self.radius;
+    }
+}
+
+let c = new Circle("MyCircle", 5.0);
+println(c.describe());
+println("radius: " + string(c.radius));
+println("area:   " + string(c.area()));
+
+// Abstract classes declare, subclasses implement
+abstract class Polygon {
+    abstract fn area(self);
+    public fn kind(self) {
+        return "polygon";
+    }
+}
+
+class Square extends Polygon {
+    public let side;
+    public fn area(self) {
+        return self.side * self.side;
+    }
+}
+
+let sq = new Square();
+sq.side = 3.0;
+println("square area: " + string(sq.area()) + ", kind: " + sq.kind());
+
+// Interfaces are contracts
+interface Greet {
+    fn hello(self) -> string;
+}
+
+class En implements Greet {
+    public fn hello(self) {
+        return "hi from En";
+    }
+}
+println(new En().hello());
+`,
+        operators: `// 9. Operator Overloading
+class Vec2 {
+    public let x;
+    public let y;
+    public fn __add__(self, o) {
+        let v = new Vec2();
+        v.x = self.x + o.x;
+        v.y = self.y + o.y;
+        return v;
+    }
+    public fn dist(self) {
+        return sqrt(self.x * self.x + self.y * self.y);
+    }
+}
+
+let a = new Vec2();
+a.x = 3;
+a.y = 4;
+let b = new Vec2();
+b.x = 1;
+b.y = 1;
+
+let sum = a + b;
+println("a = (" + string(a.x) + ", " + string(a.y) + ")");
+println("b = (" + string(b.x) + ", " + string(b.y) + ")");
+println("a + b = (" + string(sum.x) + ", " + string(sum.y) + ")");
+println("|a| = " + string(a.dist()));
+`,
+        enums: `// 10. Enums & Pattern Matching
+enum Shape {
+    Empty,
+    Circle(radius),
+    Rect(w, h),
+}
+
+fn area(s) {
+    return match (s) {
+        Circle(r) => 3 * r * r,
+        Rect(w, h) => w * h,
+        Empty() => 0,
+    };
+}
+
+println("circle(2):  " + string(area(Circle(2.0))));
+println("rect(2,3):  " + string(area(Rect(2.0, 3.0))));
+println("empty:      " + string(area(Empty())));
+
+// Literals and the wildcard arm
+fn classify(n) {
+    return match (n) {
+        0 => "zero",
+        1 => "one",
+        _ => "many",
+    };
+}
+println(classify(0) + "/" + classify(1) + "/" + classify(42));
+
+// Guards narrow an arm; a failed guard falls through
+fn size(s) {
+    return match (s) {
+        Circle(r) if (r > 10) => "big",
+        Circle(r) => "small",
+        Rect(w, h) => "rect",
+        Empty() => "empty",
+    };
+}
+println(size(Circle(2.0)) + "/" + size(Circle(20.0)) + "/" + size(Rect(1.0, 1.0)));
+
+// Patterns nest
+enum At {
+    At(int, int),
+}
+
+enum Dot {
+    Dot(At),
+}
+
+fn manhattan(d) {
+    return match (d) {
+        Dot(At(x, y)) => x + y,
+    };
+}
+println("manhattan: " + string(manhattan(Dot(At(2, 3)))));
+`,
+        errors: `// 11. Error Handling
+fn parse(s) {
+    if (s == "42") {
+        return ok(42);
+    }
+    return err("not a number");
+}
+
+// Option and result are method-based
+let a = some(5);
+println("some: is_some " + string(a.is_some()) + ", unwrap " + string(a.unwrap()) + ", map " + string(a.map(fn(x) { return x * 2; }).unwrap()));
+let b = none();
+println("none: is_none " + string(b.is_none()) + ", unwrap_or " + string(b.unwrap_or(99)));
+
+let r = parse("42");
+println("ok:   is_ok " + string(r.is_ok()) + ", unwrap " + string(r.unwrap()));
+let e = parse("nope");
+println("err:  is_err " + string(e.is_err()) + ", message " + e.unwrap_err());
+
+// Combinators chain
+println("and_then: " + string(ok("42").and_then(parse).unwrap()));
+
+// try / catch / finally
+fn boom() {
+    throw "kaboom";
+}
+
+try {
+    boom();
+} catch (e) {
+    println("caught: " + e);
+} finally {
+    println("finally always runs");
+}
+
+// is_failure checks both wrappers
+println("is_failure: " + string(is_failure(err("x"))) + "/" + string(is_failure(ok(1))) + "/" + string(is_failure(none())));
+`,
+        concurrency: `// 12. Concurrency: tasks, channels, shared state
+fn double(n) {
+    return n * 2;
+}
+
+// Spawn anonymous tasks and join them
+let t1 = spawn fn() { return double(21); };
+let t2 = spawn fn() { return 7; };
+println("t1: " + string(t1.join()) + ", t2: " + string(t2.join()));
+println("status after join: " + t1.status());
+
+// A failed task re-raises on join, so it stays catchable
+let bad = spawn fn() { throw "task-error"; };
+try {
+    bad.join();
+} catch (e) {
+    println("caught: " + e);
+}
+println("bad status: " + bad.status());
+
+// Channels are unbounded FIFO queues
+let ch = channel();
+spawn fn() {
+    ch.send(1);
+    ch.send(2);
+    ch.send(3);
+};
+println("recv: " + string(ch.recv()) + string(ch.recv()) + string(ch.recv()));
+
+// Shared state behind a mutex
+let shared = mutex(list());
+let items = shared.lock();
+items.push(1);
+items.push(2);
+shared.unlock();
+let again = shared.lock();
+println("shared len: " + string(len(again)));
+shared.unlock();
+
+// await a task from async code
+async fn settle(t) {
+    return await t;
+}
+let t3 = spawn fn() { return 99; };
+println("settled: " + string(settle(t3)));
+`,
+        typing: `// 13. Gradual Typing
+fn add(a: int, b: int) -> int {
+    return a + b;
+}
+
+let xs: list = [1, 2];
+println("add(2, 3) = " + string(add(2, 3)) + ", len(xs) = " + string(len(xs)));
+
+// Explicit casts
+println(string(3 as float) + "/" + string(2.7 as int) + "/" + string(true as string));
+
+// type_of reports the runtime type
+println(type_of(1) + "/" + type_of("s") + "/" + type_of(1.5) + "/" + type_of(true) + "/" + type_of(null));
+println(type_of([1]) + "/" + type_of(map("a", 1)) + "/" + type_of(set(1)) + "/" + type_of(tuple(1)));
+
+// const bindings
+const PI = 3.14159;
+println("PI = " + string(PI));
+`,
+        numeric: `// 14. Math & Numeric Types
+import "bigint" as bi;
+import "decimal" as dec;
+import "rational" as ra;
+import "complex" as cx;
+import "stats" as st;
+
+println(string(sqrt(16)) + "/" + string(pow(2, 10)) + "/" + string(abs(-5)));
+println(string(floor(2.7)) + "/" + string(ceil(2.1)) + "/" + string(round(2.5)));
+println(string(sin(0)) + "/" + string(cos(0)));
+
+// Bitwise operators and functions
+println(string(12 & 10) + "/" + string(12 | 10) + "/" + string(12 ^ 10) + "/" + string(1 << 4) + "/" + string(256 >> 4));
+println(string(bit_and(12, 10)) + "/" + string(shl(1, 4)));
+
+// Arbitrary precision and exact numeric types
+let big = bi.add(bi.from_string("123456789012345678901234567890"), bi.from_int(1));
+println("bigint:  " + bi.to_string(big));
+
+println("decimal: " + dec.to_string(dec.mul(dec.from_string("1.10"), dec.from_string("3"))));
+
+println("rational: " + ra.to_string(ra.div(ra.of(1, 3), ra.of(1, 6))));
+
+println("complex: " + cx.to_string(cx.add(cx.of(1, 2), cx.of(3, 4))));
+
+// Statistics and signal processing
+let data = [1, 2, 3, 4];
+println("mean: " + string(st.mean(data)) + ", median: " + string(st.median([3, 1, 2])));
+println("variance: " + string(st.variance(data, 1)) + ", p50: " + string(st.percentile(data, 50)));
+
+let spec = fft([1.0, 2.0, 3.0, 4.0]);
+println("fft: n=" + string(spec["n"]) + ", bins=" + string(len(spec["re"])));
+`,
+        formats: `// 15. Serialization Formats
+import "toml";
+import "yaml" as yml;
+import "xml";
+
+// JSON
+let v = json_parse("{\\"n\\":1,\\"a\\":[1,2]}");
+println("json: " + json_write(v));
+
+// TOML parses and writes
+let cfg = toml_parse("name = \\"spid3r\\"\\n[server]\\nport = 8080\\n");
+println("toml: " + string(cfg["name"]) + " / " + string(toml_get(cfg, "server.port")));
+println(toml_write(cfg));
+
+// YAML
+let doc = yml.yaml_parse("host: a.io\\nports:\\n  - 80\\n  - 443\\n");
+println("yaml: " + string(doc["host"]) + " / " + string(doc["ports"][1]));
+
+// CSV
+let rows = parse_csv("a,b\\n1,2\\n3,4\\n").unwrap();
+println("csv: " + string(len(rows["rows"])) + " rows, first cell " + string(rows["rows"][0][1]));
+
+// XML
+let d = xml_parse("<a x=\\"1\\"><b>hi</b></a>");
+println("xml: " + d["name"] + " / " + d["children"][0]["text"]);
+
+// Binary formats: msgpack, cbor, protobuf
+let mp = msgpack_decode(msgpack_encode(map("k", 1))).unwrap();
+println("msgpack:   " + string(mp["k"]));
+let cb = cbor_decode(cbor_encode(map("k", 1))).unwrap();
+println("cbor:      " + string(cb["k"]));
+let pb = pb_decode(pb_encode(map(1, 42))).unwrap();
+println("protobuf:  " + string(pb[1][0]));
+
+// ZIP archives
+let z = zip_create([map("name", "f.txt", "data", bytes([104, 105]))]);
+let files = zip_read(z).unwrap();
+println("zip: " + files["f.txt"].to_string().unwrap());
+`,
+        crypto: `// 16. Crypto & Encoding
+println("sha256(abc): " + sha256("abc"));
+println("hmac_sha256: " + hmac_sha256("key", "msg"));
+println("adler32(hello): " + string(adler32("hello")));
+println("secure_compare: " + string(secure_compare("abc", "abc")) + "/" + string(secure_compare("abc", "abd")));
+
+// Encodings round-trip
+println("base64: " + base64_encode("hello"));
+println("base32: " + base32_encode("hello world"));
+let b64 = base64_decode(base64_encode("hello"));
+println("base64 round trip: " + b64.to_string().unwrap());
+let b32 = base32_decode(base32_encode("hello world"));
+println("base32 round trip: " + b32.to_string().unwrap());
+
+let raw = bytes([1, 2, 255]);
+println("hex: " + hex_encode(raw) + " -> " + string(len(hex_decode(hex_encode(raw)))) + " bytes");
+println("url: " + url_encode("a b&c=d") + " -> " + url_decode(url_encode("a b&c=d")));
+`,
+        compression: `// 17. Compression
+let text = "the quick brown fox jumps over the lazy dog. ";
+let big = text + text + text + text;
+
+let gz = gzip_compress(big);
+println("gzip: " + string(len(big)) + " -> " + string(len(gz)) + " bytes");
+println("gunzip round trip:  " + string(gunzip(gz).unwrap().to_string().unwrap() == big));
+
+let zl = zlib_compress(big);
+println("zlib round trip:    " + string(unzlib(zl).unwrap().to_string().unwrap() == big));
+
+let df = deflate(big);
+println("deflate round trip: " + string(inflate(df).unwrap().to_string().unwrap() == big));
+`,
+        text: `// 18. Text Processing
+// Regex natives take (pattern, text)
+println("match:    " + string(regex_match("[0-9]+", "a1b2")));
+println("find:     " + string(regex_find("[0-9]+", "a1b2")));
+println("find_all: " + string(len(regex_find_all("[0-9]", "a1b2"))));
+println("replace:  " + regex_replace("[0-9]", "a1b2", "#"));
+
+// Unicode case folding and normalization
+println("casefold:   " + unicode_casefold("ÄÖÜ"));
+println("normalized: " + string(unicode_is_normalized("café", "NFC")));
+`,
+        media: `// 19. Media: Images & Audio
+// A 2x2 RGB image
+let pixels = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]);
+let png = png_encode(2, 2, 3, pixels);
+let img = png_decode(png).unwrap();
+println("png: " + string(img["width"]) + "x" + string(img["height"]));
+
+// A short 16-bit mono WAV
+let wav = wav_encode(8000, 1, 16, bytes([0, 0, 0, 64]));
+let snd = wav_decode(wav).unwrap();
+println("wav: " + string(snd["sample_rate"]) + " Hz, " + string(snd["channels"]) + " channel(s)");
+`,
+        time: `// 20. Date & Time
+import "tz" as tz;
+
+// Fixed epochs only: the sandbox has no wall clock
+let p = datetime_parts(0);
+println("epoch 0:   " + string(p["year"]) + "-" + string(p["month"]) + "-" + string(p["day"]));
+println("formatted: " + format_datetime(0, "%Y-%m-%d %H:%M:%S"));
+
+println("UTC:       " + tz_format("UTC", 0, "%Y-%m-%d %H:%M"));
+println("zones:     " + string(len(tz_names()) > 100));
+let info = tz_info("UTC", 0).unwrap();
+println("tz offset: " + string(info["offset"]) + " seconds");
+`,
+        introspection: `// 21. Runtime Introspection
+println(type_of(1) + "/" + type_of("s") + "/" + type_of(1.5) + "/" + type_of(true) + "/" + type_of(null));
+println(type_of([1]) + "/" + type_of(map("a", 1)) + "/" + type_of(set(1)) + "/" + type_of(tuple(1)));
+
+// Garbage collector stats
+let keep = [1, 2, 3];
+gc_collect();
+println("live cells: " + string(gc_live_cells() > 0));
+
+// Scheduler
+println("task_count: " + string(task_count() >= 0));
+
+// Assertions
+assert(1 + 1 == 2);
+assert_eq(2 + 2, 4);
+println("asserts passed");
+`,
+        http_sim: `// 22. Simulated Web Server Route Handler
+class Request {
+    public let method;
+    public let path;
+}
+
+class Response {
+    public let status;
+    public let body;
+}
+
+fn handle_route(req) {
+    let res = new Response();
+    if (req.path == "/api/status") {
+        res.status = 200;
+        res.body = "{\\"status\\":\\"ok\\",\\"platform\\":\\"wasm32\\"}";
+    } else {
+        res.status = 404;
+        res.body = "{\\"error\\":\\"Not Found\\"}";
+    }
+    return res;
+}
+
+let req = new Request();
+req.method = "GET";
+req.path = "/api/status";
+
+println("Processing HTTP Request: " + req.method + " " + req.path);
+let res = handle_route(req);
+println("HTTP " + string(res.status) + " OK");
+println("Payload: " + res.body);
+`,
+        calculator: `// 23. Spid3r Calculator Engine State Machine Demo
+println("=========================================");
+println("  🧮 Spid3r Calculator Engine State Demo");
+println("=========================================");
+
+class Calculator {
+    public let acc;
+    public let op;
+
+    fn new() {
+        self.acc = 0;
+        self.op = "+";
+    }
+
+    public fn compute(self, next_op, val) {
+        if (self.op == "+") { self.acc = self.acc + val; }
+        elif (self.op == "-") { self.acc = self.acc - val; }
+        elif (self.op == "*") { self.acc = self.acc * val; }
+        elif (self.op == "/") {
+            if (val == 0) {
+                println("Error: Division by 0");
+                return self.acc;
+            }
+            self.acc = self.acc / val;
+        }
+        self.op = next_op;
+        return self.acc;
+    }
+}
+
+let calc = new Calculator();
+println("Initial display:", calc.acc);
+
+println("  Step 1: + 50   -> display:", calc.compute("+", 50));
+println("  Step 2: * 4    -> display:", calc.compute("*", 4));
+println("  Step 3: - 20   -> display:", calc.compute("-", 20));
+println("  Step 4: / 2    -> display:", calc.compute("=", 2));
+
+println("\\nFinal Calculated Result:", calc.acc);
+println("Desk calculator left-to-right chaining verified!");
+`,
+        benchmark: `// 24. Benchmark: 100,000 iterations
+println("Running 100,000 loop iterations in browser WASM...");
+let count = 0;
+for let i = 0; i < 100000; i = i + 1 {
+    count = count + 1;
+}
+println("Benchmark completed! Total:", count);
+`,
+        stdlib: `// 25. The standard library, inside WebAssembly
+import "toml";
+import "yaml" as yml;
+import "semver" as sv;
+
+println("=== Standard library in the browser ===");
+
+// TOML parses AND writes; the module sources are compiled into the wasm.
+    let cfg = toml_parse("name = \\"spid3r\\"\\n[server]\\nport = 8080\\n");
+println("name: " + string(cfg["name"]));
+println("server.port: " + string(toml_get(cfg, "server.port")));
+print(toml_write(cfg));
+
+// YAML
+    let doc = yml.yaml_parse("host: a.io\\nports:\\n  - 80\\n  - 443\\n");
+println("yaml host: " + string(doc["host"]));
+println("yaml port: " + string(doc["ports"][1]));
+
+// Semver comparison
+println("1.2.3 vs 1.10.0: " + string(sv.compare("1.2.3", "1.10.0")));
+
+// Compression and hashing are native, so they run at full speed.
+let text = "the quick brown fox jumps over the lazy dog. ";
+let big = text + text + text + text;
+let gz = gzip_compress(big);
+println("raw " + string(len(big)) + " -> gzip " + string(len(gz)) + " bytes");
+println("round trip ok: " + string(gunzip(gz).unwrap().to_string().unwrap() == big));
+println("sha256(abc): " + sha256("abc"));
+`,
+      };
+
+      // IDE Syntax Tokenizer & Highlighter
+      const TOKEN_REGEX = new RegExp(
+        [
+          '(?<comment>\\/\\/[^\\r\\n]*|\\/\\*[\\s\\S]*?(?:\\*\\/|$))',
+          '(?<str>"(?:\\\\.|[^"\\r\\n\\\\])*"|\'(?:\\\\.|[^\'\\r\\n\\\\])*\'|`(?:\\\\.|[^`\\\\])*`)',
+          '(?<num>\\b0x[0-9a-fA-F]+\\b|\\b0b[01]+\\b|\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b)',
+          '(?<type>\\b(?:int|float|string|bool|list|vec|tuple|map|set|bag|stack|queue|deque|heap|priority_queue|binary_tree|bst|trie|graph|matrix|ring_buffer|linked_list|hash_table|option|result|ref|weak|any|void)\\b)',
+          '(?<kw>\\b(?:fn|let|const|if|elif|else|while|for|in|return|break|continue|throw|try|catch|finally|spawn|async|await|class|extends|implements|public|private|new|import|export|as|this|self|super|match|case|default|yield|struct|enum|interface)\\b)',
+          '(?<lit>\\b(?:true|false|null|nil|some|none|ok|err)\\b)',
+          '(?<builtin>\\b(?:println|print|eprint|eprintln|read_line|read_file|write_file|file_exists|len|type_of|now|abs|sqrt|pow|min|max|random_int|tcp_listen|tcp_accept|tcp_connect|tcp_read|tcp_write|tcp_close|http_fetch|url_encode|url_decode|gc_collect|gc_live_cells|assert|panic)\\b)',
+          '(?<cls>\\b[A-Z][a-zA-Z0-9_]*\\b)',
+          '(?<call>\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*\\())',
+          '(?<op>==|!=|<=|>=|=>|->|::|\\+\\+|--|\\+=|-=|\\*=|\\/=|&&|\\|\\||[+\\-*\\/%!=<>~&|^?:])'
+        ].join('|'),
+        'g'
+      );
+
+      function escapeHtml(s) {
+        return s
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function highlightSpid3rCode(code) {
+        let html = '';
+        let lastIndex = 0;
+        TOKEN_REGEX.lastIndex = 0;
+        let match;
+        while ((match = TOKEN_REGEX.exec(code)) !== null) {
+          if (match.index > lastIndex) {
+            html += escapeHtml(code.substring(lastIndex, match.index));
+          }
+          const token = match[0];
+          const g = match.groups;
+          if (g.comment) {
+            html += '<span class="tok-comment">' + escapeHtml(token) + '</span>';
+          } else if (g.str) {
+            html += '<span class="tok-str">' + escapeHtml(token) + '</span>';
+          } else if (g.num) {
+            html += '<span class="tok-num">' + escapeHtml(token) + '</span>';
+          } else if (g.type) {
+            html += '<span class="tok-type">' + escapeHtml(token) + '</span>';
+          } else if (g.kw) {
+            html += '<span class="tok-kw">' + escapeHtml(token) + '</span>';
+          } else if (g.lit) {
+            html += '<span class="tok-lit">' + escapeHtml(token) + '</span>';
+          } else if (g.builtin) {
+            html += '<span class="tok-builtin">' + escapeHtml(token) + '</span>';
+          } else if (g.cls) {
+            html += '<span class="tok-type">' + escapeHtml(token) + '</span>';
+          } else if (g.call) {
+            html += '<span class="tok-fn">' + escapeHtml(token) + '</span>';
+          } else if (g.op) {
+            html += '<span class="tok-op">' + escapeHtml(token) + '</span>';
+          } else {
+            html += escapeHtml(token);
+          }
+          lastIndex = TOKEN_REGEX.lastIndex;
+        }
+        if (lastIndex < code.length) {
+          html += escapeHtml(code.substring(lastIndex));
+        }
+        return html;
+      }
+
+      function updateHighlight() {
+        if (!codeHighlightInner) return;
+        const code = editor.value;
+        let html = highlightSpid3rCode(code);
+        if (code.endsWith('\n')) {
+          html += ' ';
+        }
+        codeHighlightInner.innerHTML = html;
+      }
+
+      function updateLineNumbers() {
+        const lines = editor.value.split('\n').length;
+        let nums = '';
+        for (let i = 1; i <= lines; i++) {
+          nums += i + '\n';
+        }
+        lineNumbers.innerText = nums;
+      }
+
+      function syncEditorScroll() {
+        if (codeHighlight) {
+          codeHighlight.scrollTop = editor.scrollTop;
+          codeHighlight.scrollLeft = editor.scrollLeft;
+        }
+        if (lineNumbers) {
+          lineNumbers.scrollTop = editor.scrollTop;
+        }
+      }
+
+      function refreshEditor() {
+        updateLineNumbers();
+        updateHighlight();
+        syncEditorScroll();
+      }
+
+      editor.addEventListener('input', refreshEditor);
+      editor.addEventListener('scroll', syncEditorScroll);
+
+      // Tab key indent in textarea
+      editor.addEventListener('keydown', function (e) {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          const start = this.selectionStart;
+          const end = this.selectionEnd;
+          this.value = this.value.substring(0, start) + '    ' + this.value.substring(end);
+          this.selectionStart = this.selectionEnd = start + 4;
+          refreshEditor();
+        }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault();
+          executeCode();
+        }
+      });
+
+      // Preset change
+      presetSelector.addEventListener('change', function () {
+        const val = this.value;
+        if (PRESETS[val]) {
+          editor.value = PRESETS[val];
+          refreshEditor();
+        }
+      });
+
+      // Clear terminal
+      btnClear.addEventListener('click', function () {
+        terminal.innerText = '';
+        perfPill.innerText = 'Ready';
+        perfPill.style.color = 'var(--text-muted)';
+      });
+
+      // Format code
+      btnFormat.addEventListener('click', async function () {
+        if (!runtime) {
+          try { await initEngine(); } catch (_) { }
+          if (!runtime) {
+            printError("Engine is not ready yet.");
+            return;
+          }
+        }
+        const res = runtime.format(editor.value);
+        if (res.ok && res.code) {
+          editor.value = res.code;
+          refreshEditor();
+          printMeta("✦ Code canonical formatting applied.");
+        } else {
+          printError("Formatter Error: " + (res.error || "failed"));
+        }
+      });
+
+      // Check code
+      btnCheck.addEventListener('click', async function () {
+        if (!runtime) {
+          try { await initEngine(); } catch (_) { }
+          if (!runtime) {
+            printError("Engine is not ready yet.");
+            return;
+          }
+        }
+        const t0 = performance.now();
+        const res = runtime.check(editor.value);
+        const elapsed = (performance.now() - t0).toFixed(2);
+        if (res.ok) {
+          terminal.innerText = "";
+          printSuccess("✓ Syntax and semantic checks passed cleanly! (Checked in " + elapsed + "ms)");
+        } else {
+          terminal.innerText = "";
+          printError("[" + (res.phase || "Check") + " Error at line " + res.line + ":" + res.col + "]\n" + res.error);
+        }
+      });
+
+      // Run code
+      async function executeCode() {
+        if (!runtime) {
+          printMeta("⏳ Engine is still initializing, attempting to connect...");
+          try {
+            await initEngine();
+          } catch (_) { }
+          if (!runtime) {
+            printError("Engine is not ready yet. Please wait or select spid3r.wasm using the file picker above.");
+            return;
+          }
+        }
+
+        const engine = engineSelector.value;
+        terminal.innerText = "";
+        perfPill.innerText = "Running...";
+        perfPill.style.color = "var(--amber)";
+
+        setTimeout(() => {
+          const t0 = performance.now();
+          const res = runtime.eval(editor.value, engine);
+          const elapsed = (performance.now() - t0).toFixed(2);
+
+          perfPill.innerText = "Completed in " + elapsed + "ms (" + engine.toUpperCase() + ")";
+          perfPill.style.color = "var(--cyan)";
+
+          if (res.stdout) {
+            const outDiv = document.createElement("div");
+            outDiv.className = "term-stdout";
+            outDiv.innerText = res.stdout;
+            terminal.appendChild(outDiv);
+          }
+
+          if (res.ok) {
+            printMeta("Exit Code: " + res.exit_code + " · Execution time: " + elapsed + "ms");
+          } else {
+            const errDiv = document.createElement("div");
+            errDiv.className = "term-error";
+            const phase = res.phase ? "[" + res.phase + " Error] " : "[Error] ";
+            const pos = res.line ? " at line " + res.line + ":" + res.col : "";
+            const thrown = res.thrown ? "\nThrown: " + res.thrown : "";
+            errDiv.innerText = phase + res.error + pos + thrown;
+            terminal.appendChild(errDiv);
+          }
+        }, 10);
+      }
+      btnRun.addEventListener('click', executeCode);
+
+      function printSuccess(msg) {
+        const div = document.createElement("div");
+        div.className = "term-success";
+        div.innerText = msg;
+        terminal.appendChild(div);
+      }
+
+      function printError(msg) {
+        const div = document.createElement("div");
+        div.className = "term-error";
+        div.innerText = msg;
+        terminal.appendChild(div);
+      }
+
+      function printMeta(msg) {
+        const div = document.createElement("div");
+        div.className = "term-meta";
+        div.innerText = msg;
+        terminal.appendChild(div);
+      }
+
+      const btnShare = document.getElementById('btn-share');
+      const btnDownload = document.getElementById('btn-download');
+      const btnOpen = document.getElementById('btn-open');
+      const fileCodeInput = document.getElementById('file-code-input');
+      const btnCopyCode = document.getElementById('btn-copy-code');
+      const btnCopyTerm = document.getElementById('btn-copy-term');
+      const editorWrapper = document.getElementById('editor-wrapper');
+      const toastContainer = document.getElementById('toast-container');
+
+      function showToast(msg) {
+        const t = document.createElement('div');
+        t.className = 'toast';
+        t.innerText = msg;
+        toastContainer.appendChild(t);
+        setTimeout(() => {
+          t.style.opacity = '0';
+          t.style.transition = 'opacity 0.3s ease';
+          setTimeout(() => t.remove(), 300);
+        }, 2500);
+      }
+
+      const shareModal = document.getElementById('share-modal');
+      const shareUrlInput = document.getElementById('share-url-input');
+      const btnCloseShareModal = document.getElementById('btn-close-share-modal');
+      const btnModalCopy = document.getElementById('btn-modal-copy');
+      const modalCopyIcon = document.getElementById('modal-copy-icon');
+      const modalCopyText = document.getElementById('modal-copy-text');
+      const btnModalDone = document.getElementById('btn-modal-done');
+      const shareCodeSize = document.getElementById('share-code-size');
+
+      function openShareModal() {
+        try {
+          const code = editor.value;
+          const encoded = encodeURIComponent(btoa(unescape(encodeURIComponent(code))));
+          const shareUrl = window.location.origin + window.location.pathname + '#code=' + encoded;
+          history.replaceState(null, '', '#code=' + encoded);
+
+          shareUrlInput.value = shareUrl;
+          shareCodeSize.innerText = code.length.toLocaleString() + ' chars (' + (new Blob([code]).size) + ' bytes)';
+
+          // Reset copy button state
+          modalCopyIcon.innerText = '📋';
+          modalCopyText.innerText = 'Copy Link';
+          btnModalCopy.style.background = '';
+
+          shareModal.classList.add('active');
+          shareModal.setAttribute('aria-hidden', 'false');
+
+          // Auto-focus and select URL
+          setTimeout(() => {
+            shareUrlInput.focus();
+            shareUrlInput.select();
+          }, 60);
+        } catch (e) {
+          showToast("Failed to generate share URL: " + e.message);
+        }
+      }
+
+      function closeShareModal() {
+        if (shareModal) {
+          shareModal.classList.remove('active');
+          shareModal.setAttribute('aria-hidden', 'true');
+        }
+      }
+
+      if (btnShare) btnShare.addEventListener('click', openShareModal);
+      if (btnCloseShareModal) btnCloseShareModal.addEventListener('click', closeShareModal);
+      if (btnModalDone) btnModalDone.addEventListener('click', closeShareModal);
+
+      // Close on clicking backdrop
+      if (shareModal) {
+        shareModal.addEventListener('click', function (e) {
+          if (e.target === shareModal) {
+            closeShareModal();
+          }
+        });
+
+        // Close on Escape key
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && shareModal.classList.contains('active')) {
+            closeShareModal();
+          }
+        });
+      }
+
+      // Auto-select on clicking input
+      if (shareUrlInput) {
+        shareUrlInput.addEventListener('click', function () {
+          this.select();
+        });
+      }
+
+      // Copy link inside modal
+      if (btnModalCopy) {
+        btnModalCopy.addEventListener('click', function () {
+          const url = shareUrlInput ? shareUrlInput.value : '';
+          if (!url) return;
+          navigator.clipboard.writeText(url).then(() => {
+            if (modalCopyIcon) modalCopyIcon.innerText = '✓';
+            if (modalCopyText) modalCopyText.innerText = 'Copied!';
+            btnModalCopy.style.background = 'var(--grad-emerald)';
+            showToast("🔗 Shareable link copied to clipboard!");
+            setTimeout(() => {
+              if (modalCopyIcon) modalCopyIcon.innerText = '📋';
+              if (modalCopyText) modalCopyText.innerText = 'Copy Link';
+              btnModalCopy.style.background = '';
+            }, 2500);
+          }).catch(() => {
+            if (shareUrlInput) shareUrlInput.select();
+            document.execCommand('copy');
+            showToast("🔗 Link copied to clipboard!");
+          });
+        });
+      }
+
+      // Export / Download
+      btnDownload.addEventListener('click', function () {
+        const blob = new Blob([editor.value], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'main.matrix';
+        a.click();
+        URL.revokeObjectURL(url);
+        showToast("💾 Exported main.matrix!");
+      });
+
+      // Open file
+      btnOpen.addEventListener('click', () => fileCodeInput.click());
+      fileCodeInput.addEventListener('change', function (e) {
+        const f = e.target.files[0];
+        if (f) {
+          const reader = new FileReader();
+          reader.onload = function (evt) {
+            editor.value = evt.target.result;
+            refreshEditor();
+            showToast("📂 Loaded " + f.name);
+          };
+          reader.readAsText(f);
+        }
+      });
+
+      // Drag and Drop
+      editorWrapper.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        editorWrapper.classList.add('drag-over');
+      });
+      editorWrapper.addEventListener('dragleave', () => {
+        editorWrapper.classList.remove('drag-over');
+      });
+      editorWrapper.addEventListener('drop', (e) => {
+        e.preventDefault();
+        editorWrapper.classList.remove('drag-over');
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          const f = e.dataTransfer.files[0];
+          const reader = new FileReader();
+          reader.onload = function (evt) {
+            editor.value = evt.target.result;
+            refreshEditor();
+            showToast("📂 Loaded " + f.name);
+          };
+          reader.readAsText(f);
+        }
+      });
+
+      // Copy Code & Copy Output
+      btnCopyCode.addEventListener('click', () => {
+        navigator.clipboard.writeText(editor.value).then(() => {
+          showToast("📋 Code copied to clipboard!");
+        });
+      });
+      btnCopyTerm.addEventListener('click', () => {
+        navigator.clipboard.writeText(terminal.innerText).then(() => {
+          showToast("📋 Terminal output copied to clipboard!");
+        });
+      });
+
+      function loadCodeFromUrl() {
+        const hash = window.location.hash;
+        if (hash && hash.startsWith('#code=')) {
+          try {
+            const raw = hash.substring(6);
+            const decoded = decodeURIComponent(escape(atob(decodeURIComponent(raw))));
+            editor.value = decoded;
+            refreshEditor();
+            showToast("🔗 Loaded shared snippet from URL!");
+            return true;
+          } catch (_) { }
+        }
+        return false;
+      }
+
+      function decodeBase64ToBytes(b64) {
+        const binStr = atob(b64);
+        const len = binStr.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binStr.charCodeAt(i);
+        }
+        return bytes;
+      }
+
+      // Initialize WASM
+      async function initEngine(source) {
+        try {
+          if (runtime) return runtime;
+
+          engineStatus.className = "status-badge loading";
+          engineStatusText.innerText = "Loading WASM...";
+
+          let wasmInput = source;
+          if (!wasmInput) {
+            const g = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : this);
+            if (g && typeof g.__SPID3R_WASM_BASE64__ === 'string' && g.__SPID3R_WASM_BASE64__.length > 0) {
+              wasmInput = decodeBase64ToBytes(g.__SPID3R_WASM_BASE64__);
+            } else {
+              wasmInput = "../../web/spid3r.wasm";
+            }
+          }
+
+          if (typeof Spid3r === 'undefined') {
+            throw new Error("Spid3r JavaScript SDK is not loaded. Please verify ../../web/spid3r.js is present.");
+          }
+
+          try {
+            if (typeof Spid3r.initSync === 'function' && (wasmInput instanceof ArrayBuffer || ArrayBuffer.isView(wasmInput))) {
+              runtime = Spid3r.initSync(wasmInput);
+            } else {
+              runtime = await Spid3r.init(wasmInput);
+            }
+          } catch (firstErr) {
+            if (typeof wasmInput === 'string' && wasmInput !== "../../web/spid3r.wasm") {
+              runtime = await Spid3r.init("../../web/spid3r.wasm");
+            } else {
+              throw firstErr;
+            }
+          }
+
+          const ver = runtime.version();
+          engineStatus.className = "status-badge ready";
+          engineStatusText.innerText = "Spid3r v" + ver.version + " Ready";
+          if (corsNotice) corsNotice.classList.remove('visible');
+          terminal.innerText = "⚡ Spid3r WebAssembly Engine initialized successfully!\nRuntime: v" + ver.version + " (Language " + ver.language_version + ")\nClick 'Run Code' or press Ctrl+Enter to execute.";
+          return runtime;
+        } catch (err) {
+          console.error("WASM Load Error:", err);
+          engineStatus.className = "status-badge error";
+          engineStatusText.innerText = "Load Failed";
+          if (corsNotice) corsNotice.classList.add('visible');
+          terminal.innerText = "Notice: Could not load WebAssembly runtime (" + err.message + ").\n\nIf running from a local file:// URL, select 'web/spid3r.wasm' using the file picker above, or run a local HTTP server:\n  npx serve .\n  or: python -m http.server 8000";
+          throw err;
+        }
+      }
+
+      // File picker fallback
+      if (wasmFilePicker) {
+        wasmFilePicker.addEventListener('change', async function (e) {
+          const file = e.target.files && e.target.files[0];
+          if (file) {
+            try {
+              showToast("⏳ Reading " + file.name + "...");
+              const buffer = await file.arrayBuffer();
+              await initEngine(buffer);
+              showToast("⚡ Engine loaded from " + file.name + "!");
+            } catch (loadErr) {
+              showToast("❌ Failed to load file: " + loadErr.message);
+            }
+          }
+        });
+      }
+
+      // Theme toggle
+      themeBtn.addEventListener('click', function () {
+        const current = document.documentElement.getAttribute('data-theme');
+        const next = current === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+      });
+
+      // Load initial preset and start engine
+      const loadedFromUrl = loadCodeFromUrl();
+      if (!loadedFromUrl) {
+        editor.value = PRESETS.hello;
+      }
+      refreshEditor();
+      initEngine().then(() => {
+        if (loadedFromUrl) {
+          executeCode();
+        }
+      }).catch(() => {});
+
+      window.addEventListener('hashchange', function () {
+        if (loadCodeFromUrl()) {
+          executeCode();
+        }
+      });
+    })();
+  </script>
+</body>
+
+</html>

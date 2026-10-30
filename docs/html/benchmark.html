@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spid3r Benchmark Report &mdash; gate, engines, and reference runtimes</title>
+  <meta name="description"
+    content="Measured benchmark report for the Spid3r language: perf-gate results, bytecode VM vs tree interpreter, and a startup-adjusted comparison against PHP and Python.">
+
+  <link rel="icon" type="image/png" href="../../src/assets/spid3r.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <script>
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('spid3r-dev-theme'); } catch (_) { }
+      if (!t) {
+        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+
+  <style>
+    :root {
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: 'JetBrains Mono', "SF Mono", Consolas, monospace;
+
+      --bg-base: #0b0f17;
+      --bg-surface: #111722;
+      --bg-card: #161e2e;
+      --bg-card-alt: #1a2335;
+      --bg-code: #080c13;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-line: #1e293b;
+      --border-hover: rgba(56, 189, 248, 0.35);
+
+      --fg-primary: #f1f5f9;
+      --fg-secondary: #94a3b8;
+      --fg-muted: #64748b;
+
+      --w3-green: #04AA6D;
+      --w3-green-hover: #059862;
+      --w3-green-light: rgba(4, 170, 109, 0.12);
+      --w3-green-border: rgba(4, 170, 109, 0.4);
+      --cyan: #38bdf8;
+      --indigo: #818cf8;
+      --purple: #c084fc;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+
+      --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.4);
+      --radius: 12px;
+      --topbar-height: 58px;
+      --max-width: 1180px;
+    }
+    html[data-theme="light"] {
+      --bg-base: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-card: #ffffff;
+      --bg-card-alt: #f1f5f9;
+      --bg-code: #f1f5f9;
+      --border-subtle: rgba(0, 0, 0, 0.08);
+      --border-line: #e2e8f0;
+      --border-hover: rgba(4, 170, 109, 0.4);
+      --fg-primary: #0f172a;
+      --fg-secondary: #475569;
+      --fg-muted: #94a3b8;
+      --w3-green-light: #e8f5e9;
+      --w3-green-border: #a5d6a7;
+      --cyan: #0284c7;
+      --indigo: #6366f1;
+      --amber: #b45309;
+      --rose: #e11d48;
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg-base);
+      color: var(--fg-primary);
+      font-family: var(--font-body);
+      font-size: 15px;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--w3-green); text-decoration: none; }
+    a:hover { color: var(--w3-green-hover); text-decoration: underline; }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 50;
+      height: var(--topbar-height);
+      display: flex; align-items: center; gap: 18px;
+      padding: 0 22px;
+      background: rgba(11, 15, 23, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-line);
+    }
+    html[data-theme="light"] .topbar { background: rgba(255, 255, 255, 0.94); }
+    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-heading); font-weight: 700; font-size: 17px; color: var(--fg-primary); }
+    .brand:hover { text-decoration: none; color: var(--fg-primary); }
+    .brand img { width: 26px; height: 26px; border-radius: 6px; }
+    .brand .accent { color: var(--w3-green); }
+    .brand .sub { font-size: 13px; font-weight: 500; color: var(--fg-secondary); }
+    .topbar-nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+    .nav-tab {
+      padding: 7px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 500;
+      color: var(--fg-secondary);
+    }
+    .nav-tab:hover { background: var(--bg-card-alt); color: var(--fg-primary); text-decoration: none; }
+    .nav-tab.active { background: var(--w3-green-light); color: var(--w3-green); }
+    .btn-top {
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      color: var(--fg-secondary); border-radius: 8px; padding: 7px 11px;
+      cursor: pointer; font-size: 14px; font-family: var(--font-body);
+    }
+    .btn-top:hover { border-color: var(--border-hover); color: var(--fg-primary); }
+
+    main { max-width: var(--max-width); margin: 0 auto; padding: 34px 22px 70px; }
+
+    .hero { padding: 8px 0 26px; border-bottom: 1px solid var(--border-line); margin-bottom: 30px; }
+    .eyebrow {
+      font-family: var(--font-mono); font-size: 12px; letter-spacing: .14em;
+      text-transform: uppercase; color: var(--w3-green); margin-bottom: 10px;
+    }
+    h1 {
+      font-family: var(--font-heading); font-size: 40px; line-height: 1.1;
+      margin: 0 0 12px; letter-spacing: -0.02em;
+    }
+    .lead { color: var(--fg-secondary); font-size: 16.5px; max-width: 76ch; margin: 0 0 18px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: 999px; padding: 5px 12px;
+      font-size: 12.5px; color: var(--fg-secondary); font-family: var(--font-mono);
+    }
+    .chip b { color: var(--fg-primary); font-weight: 600; }
+
+    h2 {
+      font-family: var(--font-heading); font-size: 24px; margin: 44px 0 6px;
+      letter-spacing: -0.01em;
+    }
+    h2 .num { color: var(--w3-green); font-family: var(--font-mono); font-size: 15px; margin-right: 10px; }
+    .section-lead { color: var(--fg-secondary); margin: 0 0 18px; max-width: 82ch; }
+    h3 { font-family: var(--font-heading); font-size: 17px; margin: 26px 0 8px; }
+
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 18px 0 6px; }
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: var(--radius); padding: 16px 18px;
+    }
+    .card .k { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--fg-muted); font-family: var(--font-mono); }
+    .card .v { font-family: var(--font-heading); font-size: 27px; font-weight: 700; margin: 6px 0 2px; }
+    .card .v.green { color: var(--w3-green); }
+    .card .n { font-size: 12.5px; color: var(--fg-secondary); }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--border-line); border-radius: var(--radius); background: var(--bg-card); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    thead th {
+      text-align: left; padding: 11px 14px; font-size: 11.5px; text-transform: uppercase;
+      letter-spacing: .09em; color: var(--fg-muted); font-weight: 600;
+      border-bottom: 1px solid var(--border-line); white-space: nowrap;
+      font-family: var(--font-mono);
+    }
+    tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--bg-card-alt); }
+    .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .dim { color: var(--fg-muted); font-size: 12.5px; }
+    .name { font-weight: 600; }
+    .name small { display: block; font-weight: 400; color: var(--fg-muted); font-size: 12px; }
+
+    .badge {
+      display: inline-block; padding: 2px 9px; border-radius: 999px;
+      font-size: 11.5px; font-weight: 600; letter-spacing: .04em;
+      font-family: var(--font-mono); white-space: nowrap;
+    }
+    .badge.pass { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid var(--w3-green-border); }
+    .badge.fail { background: rgba(251, 113, 133, 0.14); color: var(--rose); border: 1px solid rgba(251, 113, 133, 0.4); }
+    .badge.muted { background: var(--bg-card-alt); color: var(--fg-muted); border: 1px solid var(--border-line); }
+
+    .track { position: relative; height: 8px; width: 100%; min-width: 110px; background: var(--bg-card-alt); border-radius: 999px; overflow: hidden; }
+    .track span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: linear-gradient(90deg, var(--w3-green), var(--cyan)); }
+
+    .chart { width: 100%; max-width: 840px; height: auto; display: block; margin: 4px auto 0; }
+    .chart-label { fill: var(--fg-secondary); font-family: var(--font-mono); font-size: 11.5px; }
+    .chart-val { fill: var(--fg-muted); font-family: var(--font-mono); font-size: 10.5px; }
+    .chart-tick { fill: var(--fg-muted); font-family: var(--font-mono); font-size: 10px; }
+    .grid { stroke: var(--border-line); stroke-width: 1; stroke-dasharray: 2 3; }
+    .bar.spid3r { fill: var(--w3-green); }
+    .bar.php { fill: var(--indigo); }
+    .bar.python { fill: var(--amber); }
+    .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 2px 0; font-size: 12.5px; color: var(--fg-secondary); }
+    .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; }
+    .legend .spid3r { background: var(--w3-green); }
+    .legend .php { background: var(--indigo); }
+    .legend .python { background: var(--amber); }
+
+    pre {
+      background: var(--bg-code); border: 1px solid var(--border-line);
+      border-radius: 10px; padding: 14px 16px; overflow-x: auto;
+      font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
+      color: var(--fg-primary);
+    }
+    code { font-family: var(--font-mono); font-size: 0.92em; }
+    p code, li code { background: var(--bg-card-alt); border: 1px solid var(--border-subtle); border-radius: 5px; padding: 1px 5px; }
+
+    .note {
+      border-left: 3px solid var(--cyan); background: var(--bg-card);
+      padding: 12px 16px; border-radius: 0 10px 10px 0; margin: 16px 0;
+      color: var(--fg-secondary); font-size: 14px;
+    }
+    .note b { color: var(--fg-primary); }
+    ul { padding-left: 20px; }
+    li { margin: 5px 0; color: var(--fg-secondary); }
+    li b { color: var(--fg-primary); }
+
+    footer {
+      max-width: var(--max-width); margin: 0 auto; padding: 22px;
+      border-top: 1px solid var(--border-line);
+      color: var(--fg-muted); font-size: 12.5px;
+      display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between;
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <a href="doc.html" class="brand">
+      <img src="../../src/assets/spid3r.png" alt="Spid3r Logo">
+      <div>Spid<span class="accent">3</span>r <span class="sub">Benchmarks</span></div>
+    </a>
+    <nav class="topbar-nav">
+      <a href="doc.html" class="nav-tab">Documentation</a>
+      <a href="benchmark.html" class="nav-tab active">Benchmarks</a>
+      <a href="playground.html" target="_blank" class="nav-tab">Playground</a>
+      <button class="btn-top" id="themeBtn" title="Toggle Light/Dark Theme">&#127769;</button>
+    </nav>
+  </header>
+
+  <main>
+    <div class="hero">
+      <div class="eyebrow">Measured &middot; reproducible</div>
+      <h1>Benchmark Report</h1>
+      <p class="lead">
+        Eight gated micro-benchmarks measured on a fresh process per run, best of 5.
+        Every case is also a differential test: the bytecode VM and the tree interpreter must print
+        identical output, and each run must reproduce its own output exactly.
+      </p>
+      <div class="chips">
+        <span class="chip"><b>2026-10-31 00:32:18</b></span>
+        <span class="chip">spid3r 1.0.0 (language 1.0)</span>
+        <span class="chip">Intel(R) Core(TM) Ultra 7 265K &middot; 20 threads</span>
+        <span class="chip">Windows-11-10.0.26300-SP0</span>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <div class="k">Perf gate</div>
+        <div class="v green">8/8 PASS</div>
+        <div class="n">every benchmark above its floor</div>
+      </div>
+      <div class="card">
+        <div class="k">Narrowest margin</div>
+        <div class="v">4.4&times;</div>
+        <div class="n">methods &mdash; closest to its floor</div>
+      </div>
+      <div class="card">
+        <div class="k">Widest margin</div>
+        <div class="v">18.4&times;</div>
+        <div class="n">tasks</div>
+      </div>
+      <div class="card">
+        <div class="k">VM over tree</div>
+        <div class="v">1.59&times;</div>
+        <div class="n">median across all cases</div>
+      </div>
+    </div>
+
+    <h2><span class="num">01</span>Performance gate</h2>
+    <p class="section-lead">
+      Floors are set at roughly a third of the worst rate observed on reference hardware. They exist to
+      catch catastrophic regressions (a 3&times;+ slowdown) on shared CI runners, not small drift &mdash;
+      a passing gate is a floor, not a target.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Benchmark</th>
+            <th>Iters</th>
+            <th>Throughput</th>
+            <th>Floor</th>
+            <th>Margin</th>
+            <th>Headroom</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+        <tr>
+          <td class="name">Arithmetic &amp; Loop<small>2M-iteration integer accumulation loop</small></td>
+          <td class="mono">2,000,000</td>
+          <td class="mono">33.57M<span class="dim">/s</span></td>
+          <td class="mono dim">6.00M</td>
+          <td class="mono">5.6&times;</td>
+          <td><div class="track"><span style="width:25.6%"></span></div></td>
+          <td><span class="badge pass">PASS</span></td>
+        </tr><tr>
+          <td class="name">String Building<small>30K string concatenations and slices</small></td>
+          <td class="mono">30,000</td>
+          <td class="mono">1.65M<span class="dim">/s</span></td>
+          <td class="mono dim">140k</td>
+          <td class="mono">11.8&times;</td>
+          <td><div class="track"><span style="width:69.2%"></span></div></td>
+          <td><span class="badge pass">PASS</span></td>
+        </tr><tr>
+          <td class="name">List Churn<small>200K pushes then pops, summing values</small></td>
+          <td class="mono">200,000</td>
+          <td class="mono">5.45M<span class="dim">/s</span></td>
+          <td class="mono dim">800k</td>
+          <td class="mono">6.8&times;</td>
+          <td><div class="track"><span style="width:37.1%"></span></div></td>
+          <td><span class="badge pass">PASS</span></td>
+        </tr><tr>
+          <td class="name">Map / Dict<small>40K hash inserts and lookups</small></td>
+          <td class="mono">40,000</td>
+          <td class="mono">1.23M<span class="dim">/s</span></td>
+          <td class="mono dim">160k</td>
+          <td class="mono">7.7&times;</td>
+          <td><div class="track"><span style="width:44.0%"></span></div></td>
+          <td><span class="badge pass">PASS</span></td>
+        </tr><tr>
+          <td class="name">Method Dispatch<small>200K method calls on objects</small></td>
+          <td class="mono">200,000</td>
+          <td class="mono">2.19M<span class="dim">/s</span></td>
+          <td class="mono dim">500k</td>
+          <td class="mono">4.4&times;</td>
+          <td><div class="track"><span style="width:11.3%"></span></div></td>
+          <td><span class="badge pass">PASS</span></td>
+        </tr><tr>
+          <td class="name">Closures<small>40K closure allocations and calls</small></td>
+          <td class="mono">40,000</td>
+          <td class="mono">1.63M<span class="dim">/s</span></td>
+          <td class="mono dim">170k</td>
+          <td class="mono">9.6&times;</td>
+          <td><div class="track"><span style="width:57.0%"></span></div></td>
+          <td><span class="badge pass">PASS</span></td>
+        </tr><tr>
+          <td class="name">JSON Encode / Decode<small>2K encode/decode round-trips</small></td>
+          <td class="mono">2,000</td>
+          <td class="mono">86k<span class="dim">/s</span></td>
+          <td class="mono dim">8k</td>
+          <td class="mono">10.7&times;</td>
+          <td><div class="track"><span style="width:63.6%"></span></div></td>
+          <td><span class="badge pass">PASS</span></td>
+        </tr><tr>
+          <td class="name">Spawn &amp; Join<small>2K spawn/join task round-trips</small></td>
+          <td class="mono">2,000</td>
+          <td class="mono">110k<span class="dim">/s</span></td>
+          <td class="mono dim">6k</td>
+          <td class="mono">18.4&times;</td>
+          <td><div class="track"><span style="width:95.1%"></span></div></td>
+          <td><span class="badge pass">PASS</span></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="dim">Throughput is iters/sec, where one iteration is one full body of the benchmark file.
+      Bars are log-scaled: the track spans 4&times; to 20&times; the floor.</p>
+
+    <h2><span class="num">02</span>Bytecode VM vs tree interpreter</h2>
+    <p class="section-lead">
+      The same source runs on both engines. The VM compiles to bytecode with constant folding and
+      peephole passes; the tree interpreter walks the AST directly. Numbers are milliseconds, best of
+      5 (VM) and 3 (tree).
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Benchmark</th>
+            <th>VM (ms)</th>
+            <th>Tree (ms)</th>
+            <th>VM is</th>
+            <th>Tree / VM</th>
+          </tr>
+        </thead>
+        <tbody>
+        <tr>
+          <td class="name">Arithmetic &amp; Loop</td>
+          <td class="mono">59.6</td>
+          <td class="mono dim">370.4</td>
+          <td class="mono">6.22&times; faster</td>
+          <td><div class="track"><span style="width:16.1%"></span></div></td>
+        </tr><tr>
+          <td class="name">String Building</td>
+          <td class="mono">18.2</td>
+          <td class="mono dim">38.4</td>
+          <td class="mono">2.11&times; faster</td>
+          <td><div class="track"><span style="width:47.3%"></span></div></td>
+        </tr><tr>
+          <td class="name">List Churn</td>
+          <td class="mono">36.7</td>
+          <td class="mono dim">60.1</td>
+          <td class="mono">1.64&times; faster</td>
+          <td><div class="track"><span style="width:61.1%"></span></div></td>
+        </tr><tr>
+          <td class="name">Map / Dict</td>
+          <td class="mono">32.6</td>
+          <td class="mono dim">42.7</td>
+          <td class="mono">1.31&times; faster</td>
+          <td><div class="track"><span style="width:76.4%"></span></div></td>
+        </tr><tr>
+          <td class="name">Method Dispatch</td>
+          <td class="mono">91.3</td>
+          <td class="mono dim">145.3</td>
+          <td class="mono">1.59&times; faster</td>
+          <td><div class="track"><span style="width:62.8%"></span></div></td>
+        </tr><tr>
+          <td class="name">Closures</td>
+          <td class="mono">24.6</td>
+          <td class="mono dim">64.0</td>
+          <td class="mono">2.60&times; faster</td>
+          <td><div class="track"><span style="width:38.4%"></span></div></td>
+        </tr><tr>
+          <td class="name">JSON Encode / Decode</td>
+          <td class="mono">23.3</td>
+          <td class="mono dim">26.9</td>
+          <td class="mono">1.16&times; faster</td>
+          <td><div class="track"><span style="width:86.5%"></span></div></td>
+        </tr><tr>
+          <td class="name">Spawn &amp; Join</td>
+          <td class="mono">18.1</td>
+          <td class="mono dim">20.4</td>
+          <td class="mono">1.13&times; faster</td>
+          <td><div class="track"><span style="width:88.7%"></span></div></td>
+        </tr><tr>
+          <td class="name">Stress Suite<small>correctness only, not gated</small></td>
+          <td class="mono">40.0</td>
+          <td class="mono dim">55.7</td>
+          <td class="mono">1.39&times; faster</td>
+          <td><div class="track"><span style="width:71.7%"></span></div></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2><span class="num">03</span>Against PHP and Python</h2>
+    <p class="section-lead">
+      The same workloads implemented in PHP 8.3.33 and Python
+      3.13.14, measured the same way: one fresh process per run, best of
+      3, wall clock including interpreter startup.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Benchmark</th>
+            <th>Spid3r (ms)</th>
+            <th>PHP (ms)</th>
+            <th>Python (ms)</th>
+          </tr>
+        </thead>
+        <tbody>
+        <tr><td class="name">Arithmetic &amp; Loop</td><td class="mono">59.6</td><td class="mono">50.1</td><td class="mono">251.8</td></tr><tr><td class="name">String Building</td><td class="mono">18.2</td><td class="mono">33.5</td><td class="mono">197.1</td></tr><tr><td class="name">List Churn</td><td class="mono">36.7</td><td class="mono">35.2</td><td class="mono">203.3</td></tr><tr><td class="name">Map / Dict</td><td class="mono">32.6</td><td class="mono">34.4</td><td class="mono">207.8</td></tr><tr><td class="name">Method Dispatch</td><td class="mono">91.3</td><td class="mono">41.5</td><td class="mono">209.2</td></tr><tr><td class="name">Closures</td><td class="mono">24.6</td><td class="mono">31.8</td><td class="mono">197.2</td></tr><tr><td class="name">JSON Encode / Decode</td><td class="mono">23.3</td><td class="mono">33.3</td><td class="mono">209.4</td></tr><tr><td class="name">Spawn &amp; Join</td><td class="mono">18.1</td><td class="mono">30.4</td><td class="mono">207.7</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <b>Python's totals are startup-bound here.</b> The interpreter on this host takes 201&nbsp;ms just to start (3.13.14) &mdash; longer than any of these workloads takes to run &mdash; so its wall-clock column is essentially a measurement of startup. See the startup-adjusted table below.
+      <b>Startup is not free for anyone:</b> the measured fixed cost is 15.2&nbsp;ms
+      for Spid3r, 29.3&nbsp;ms for PHP and 200.5&nbsp;ms for
+      Python. For the light benchmarks that fixed cost is the same order as the workload itself, which is
+      why the table below subtracts it.
+    </div>
+
+    <h3>Startup-adjusted compute time</h3>
+    <p class="section-lead">
+      Total wall clock minus each runtime's measured startup, in milliseconds. Lower is better. This is an
+      estimate: startup measured by a no-op invocation understates the fixed cost of loading a program,
+      so treat differences under ~1&nbsp;ms as noise.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Benchmark</th>
+            <th>Spid3r</th>
+            <th>PHP</th>
+            <th>Python</th>
+            <th>Fastest</th>
+          </tr>
+        </thead>
+        <tbody>
+        <tr>
+          <td class="name">Arithmetic &amp; Loop</td>
+          <td class="mono">44.4</td>
+          <td class="mono dim">20.8</td>
+          <td class="mono dim">51.2</td>
+          <td><span class="badge muted">PHP</span></td>
+        </tr><tr>
+          <td class="name">String Building</td>
+          <td class="mono">2.99</td>
+          <td class="mono dim">4.18</td>
+          <td class="mono dim">0.10</td>
+          <td><span class="badge muted">Python</span></td>
+        </tr><tr>
+          <td class="name">List Churn</td>
+          <td class="mono">21.5</td>
+          <td class="mono dim">5.90</td>
+          <td class="mono dim">2.76</td>
+          <td><span class="badge muted">Python</span></td>
+        </tr><tr>
+          <td class="name">Map / Dict</td>
+          <td class="mono">17.4</td>
+          <td class="mono dim">5.13</td>
+          <td class="mono dim">7.24</td>
+          <td><span class="badge muted">PHP</span></td>
+        </tr><tr>
+          <td class="name">Method Dispatch</td>
+          <td class="mono">76.1</td>
+          <td class="mono dim">12.2</td>
+          <td class="mono dim">8.69</td>
+          <td><span class="badge muted">Python</span></td>
+        </tr><tr>
+          <td class="name">Closures</td>
+          <td class="mono">9.39</td>
+          <td class="mono dim">2.54</td>
+          <td class="mono dim">0.10</td>
+          <td><span class="badge muted">Python</span></td>
+        </tr><tr>
+          <td class="name">JSON Encode / Decode</td>
+          <td class="mono">8.14</td>
+          <td class="mono dim">4.06</td>
+          <td class="mono dim">8.92</td>
+          <td><span class="badge muted">PHP</span></td>
+        </tr><tr>
+          <td class="name">Spawn &amp; Join</td>
+          <td class="mono">2.95</td>
+          <td class="mono dim">1.15</td>
+          <td class="mono dim">7.17</td>
+          <td><span class="badge muted">PHP</span></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <span><i class="spid3r"></i>Spid3r (VM)</span>
+      <span><i class="php"></i>PHP</span>
+      <span><i class="python"></i>Python</span>
+    </div>
+    <svg class="chart" viewBox="0 0 688 558" role="img" aria-label="Startup-adjusted compute time per benchmark, log scale, lower is faster"><line x1="112.0" y1="2" x2="112.0" y2="528" class="grid"/><text x="112.0" y="546" class="chart-tick" text-anchor="middle">1</text><line x1="236.1" y1="2" x2="236.1" y2="528" class="grid"/><text x="236.1" y="546" class="chart-tick" text-anchor="middle">3</text><line x1="372.0" y1="2" x2="372.0" y2="528" class="grid"/><text x="372.0" y="546" class="chart-tick" text-anchor="middle">10</text><line x1="496.1" y1="2" x2="496.1" y2="528" class="grid"/><text x="496.1" y="546" class="chart-tick" text-anchor="middle">30</text><text x="2" y="33.0" class="chart-label">arith</text><rect x="112.0" y="2.0" width="428.3" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 44.4 ms</title></rect><text x="545.3" y="14.0" class="chart-val">44.4</text><rect x="112.0" y="20.0" width="342.7" height="13" rx="2.5" class="bar php"><title>php: 20.8 ms</title></rect><text x="459.7" y="32.0" class="chart-val">20.8</text><rect x="112.0" y="38.0" width="444.5" height="13" rx="2.5" class="bar python"><title>python: 51.2 ms</title></rect><text x="561.5" y="50.0" class="chart-val">51.2</text><text x="2" y="99.0" class="chart-label">strings</text><rect x="112.0" y="68.0" width="123.8" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 2.99 ms</title></rect><text x="240.8" y="80.0" class="chart-val">2.99</text><rect x="112.0" y="86.0" width="161.6" height="13" rx="2.5" class="bar php"><title>php: 4.18 ms</title></rect><text x="278.6" y="98.0" class="chart-val">4.18</text><rect x="112.0" y="104.0" width="1.5" height="13" rx="2.5" class="bar python"><title>python: 0.10 ms</title></rect><text x="117.0" y="116.0" class="chart-val">0.10</text><text x="2" y="165.0" class="chart-label">list</text><rect x="112.0" y="134.0" width="346.5" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 21.5 ms</title></rect><text x="463.5" y="146.0" class="chart-val">21.5</text><rect x="112.0" y="152.0" width="200.3" height="13" rx="2.5" class="bar php"><title>php: 5.90 ms</title></rect><text x="317.3" y="164.0" class="chart-val">5.90</text><rect x="112.0" y="170.0" width="114.6" height="13" rx="2.5" class="bar python"><title>python: 2.76 ms</title></rect><text x="231.6" y="182.0" class="chart-val">2.76</text><text x="2" y="231.0" class="chart-label">map</text><rect x="112.0" y="200.0" width="322.8" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 17.4 ms</title></rect><text x="439.8" y="212.0" class="chart-val">17.4</text><rect x="112.0" y="218.0" width="184.7" height="13" rx="2.5" class="bar php"><title>php: 5.13 ms</title></rect><text x="301.7" y="230.0" class="chart-val">5.13</text><rect x="112.0" y="236.0" width="223.6" height="13" rx="2.5" class="bar python"><title>python: 7.24 ms</title></rect><text x="340.6" y="248.0" class="chart-val">7.24</text><text x="2" y="297.0" class="chart-label">methods</text><rect x="112.0" y="266.0" width="489.2" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 76.1 ms</title></rect><text x="606.2" y="278.0" class="chart-val">76.1</text><rect x="112.0" y="284.0" width="282.3" height="13" rx="2.5" class="bar php"><title>php: 12.2 ms</title></rect><text x="399.3" y="296.0" class="chart-val">12.2</text><rect x="112.0" y="302.0" width="244.2" height="13" rx="2.5" class="bar python"><title>python: 8.69 ms</title></rect><text x="361.2" y="314.0" class="chart-val">8.69</text><text x="2" y="363.0" class="chart-label">closures</text><rect x="112.0" y="332.0" width="252.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 9.39 ms</title></rect><text x="369.9" y="344.0" class="chart-val">9.39</text><rect x="112.0" y="350.0" width="105.2" height="13" rx="2.5" class="bar php"><title>php: 2.54 ms</title></rect><text x="222.2" y="362.0" class="chart-val">2.54</text><rect x="112.0" y="368.0" width="1.5" height="13" rx="2.5" class="bar python"><title>python: 0.10 ms</title></rect><text x="117.0" y="380.0" class="chart-val">0.10</text><text x="2" y="429.0" class="chart-label">json</text><rect x="112.0" y="398.0" width="236.7" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 8.14 ms</title></rect><text x="353.7" y="410.0" class="chart-val">8.14</text><rect x="112.0" y="416.0" width="158.1" height="13" rx="2.5" class="bar php"><title>php: 4.06 ms</title></rect><text x="275.1" y="428.0" class="chart-val">4.06</text><rect x="112.0" y="434.0" width="247.2" height="13" rx="2.5" class="bar python"><title>python: 8.92 ms</title></rect><text x="364.2" y="446.0" class="chart-val">8.92</text><text x="2" y="495.0" class="chart-label">tasks</text><rect x="112.0" y="464.0" width="122.3" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 2.95 ms</title></rect><text x="239.3" y="476.0" class="chart-val">2.95</text><rect x="112.0" y="482.0" width="15.8" height="13" rx="2.5" class="bar php"><title>php: 1.15 ms</title></rect><text x="132.8" y="494.0" class="chart-val">1.15</text><rect x="112.0" y="500.0" width="222.5" height="13" rx="2.5" class="bar python"><title>python: 7.17 ms</title></rect><text x="339.5" y="512.0" class="chart-val">7.17</text></svg>
+    <p class="dim" style="text-align:center">Startup-adjusted compute time, log scale &mdash; shorter is faster.</p>
+
+    <h2><span class="num">04</span>Method and caveats</h2>
+    <ul>
+      <li><b>One process per run.</b> Each sample is a fresh OS process; the harness takes the best of N.
+        Nothing is warmed up across runs, so JIT-less runtimes are not penalised by a cold-start handicap
+        they would not have in a long-lived server.</li>
+      <li><b>Correctness is part of the measurement.</b> <code>--compare</code> requires the VM and tree
+        engines to print byte-identical output, and every repeat run must reproduce its own output, or the
+        benchmark is reported as failed rather than timed.</li>
+      <li><b>Micro-benchmarks, not applications.</b> These isolate a loop, a hash table or a call path.
+        They say nothing about startup-to-first-byte for a real program, memory ceiling, or I/O.</li>
+      <li><b>Absolute numbers are host-specific.</b> The CPU on this machine runs at its base clock under
+        the Balanced power plan; recorded numbers from a turbo-boosted run are ~25&ndash;30% higher across
+        every workload and every runtime, including PHP. Compare ratios, not raw milliseconds, across
+        machines.</li>
+      <li><b>Not measured here:</b> the AOT/native backend (needs LLVM, runs in its own CI job) and the
+        WebAssembly build (see <a href="playground.html">the playground</a>).</li>
+    </ul>
+
+    <h3>Reproduce</h3>
+    <pre>cargo build --release
+./target/release/spid3r bench --gate --compare --runs 5
+
+# this page, from the same measurements
+python tools/bench_report.py</pre>
+    <p class="dim">Raw samples: <code>benchmarks/report-data.json</code>. The historical comparison set
+      (2026-10-20) lives in <code>benchmarks/results.json</code>.</p>
+  </main>
+
+  <footer>
+    <span>Generated by <code>tools/bench_report.py</code> &middot; 2026-10-31 00:32:18</span>
+    <span><a href="doc.html">Documentation</a> &middot; <a href="playground.html">Playground</a></span>
+  </footer>
+
+  <script>
+    document.getElementById('themeBtn').addEventListener('click', function () {
+      var root = document.documentElement;
+      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('spid3r-dev-theme', next); } catch (_) { }
+    });
+  </script>
+</body>
+
+</html>

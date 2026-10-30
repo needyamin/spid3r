@@ -1,0 +1,308 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  SPID3R_NO_INSTALLER: "1"
+  # Windows CI spends most of its wall time LINKING ~95 test binaries, and the
+  # cost is dominated by debug-info generation (each link also writes a .pdb).
+  # CI never debugs these binaries, so drop debug info there: same tests, same
+  # panics, much less linker and disk work. Local builds keep full debug info.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  core:
+    name: Core Toolchain & Differential (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Windows is the slow leg: a cold run compiles ~95 test targets twice (once
+    # for `clippy --all-targets`, once for `cargo test`) and links each of them.
+    # 40 min was tight enough that the job could be killed mid-test and report
+    # "still running" instead of a failure; 60 leaves room and the per-step
+    # timeouts below still catch a real hang.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Pinned to rust-toolchain.toml: `-D warnings` makes a new stable's lints
+      # a hard CI break (Rust 1.99 deprecated `fetch_update` and turned every job
+      # red while the local 1.98 toolchain was green). Bump both together.
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: clippy, rustfmt
+
+      # Reuse the compiled artifact graph between runs. Without it every push
+      # rebuilt the lib and all ~95 test targets from scratch, which is what
+      # pushed the Windows leg against its timeout. Keyed per OS + toolchain.
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: core-${{ matrix.os }}
+
+      - name: Clippy (core, zero warnings)
+        timeout-minutes: 25
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
+
+      # The tree is rustfmt-clean (2026-10-21 normalization); gate it so the
+      # drift that made `cargo fmt --check` fail on 70 files cannot return (F1).
+      - name: Rustfmt (core, zero diff)
+        timeout-minutes: 5
+        run: cargo fmt --all -- --check
+
+      - name: Run unit, integration, and fuzz/regression test suites
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          cargo test --no-default-features 2>&1 | tee cargo_test_output.txt
+          test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Report test failures to the step summary
+        if: failure()
+        shell: bash
+        run: |
+          echo "### Failing tests (${{ matrix.os }})" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f cargo_test_output.txt ]; then
+            grep -E "FAILED|panicked at|test result:" cargo_test_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+            tail -n 80 cargo_test_output.txt >> "$GITHUB_STEP_SUMMARY" || true
+            # Annotations are readable from the check-runs API, unlike the step
+            # summary; emit the failing test names and panic messages as errors.
+            # The extra patterns surface engine-matrix conformance failures
+            # ("N conformance failure(s):" + the "[case / engine] ..." lines,
+            # which follow the panicked-at line) — without them a failing case
+            # is invisible here and the logs need admin rights to read.
+            grep -E "FAILED$|panicked at|conformance failure|^\[" cargo_test_output.txt | head -12 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done || true
+            echo "::error::tail: $(tail -n 3 cargo_test_output.txt | tr '\n' ' ' | cut -c1-400)"
+          fi
+
+      - name: Run 3-engine differential example suite (tree == vm == exec)
+        timeout-minutes: 15
+        run: cargo run --bin spid3r --no-default-features -- test
+
+      - name: Verify Spid3r source formatting
+        timeout-minutes: 5
+        run: cargo run --bin spid3r --no-default-features -- fmt --check
+
+      # CI-03: pin the CANONICAL test counts (tools/count_tests.sh is the only
+      # accepted counter — never hand-count) into the step summary, so a suite
+      # count drifting silently between runs is visible in every CI result.
+      - name: Report canonical test counts
+        shell: bash
+        run: |
+          {
+            echo "### Canonical test counts (${{ matrix.os }})"
+            echo '```'
+            bash tools/count_tests.sh
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  gui:
+    name: GUI Feature (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        # Seen: apt-get hanging on a mirror for the whole job. Keep the job
+        # timeout generous for compilation, but bound the package install.
+        timeout-minutes: 10
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            xvfb
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          components: clippy
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: gui-${{ matrix.os }}
+
+      - name: Clippy (GUI feature, zero warnings)
+        timeout-minutes: 30
+        run: cargo clippy --no-default-features --features gui --all-targets -- -D warnings
+
+      - name: Run GUI test suite (Linux Xvfb)
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        run: xvfb-run -a cargo test --no-default-features --features gui --test gui_tests
+
+      - name: Run GUI test suite (Windows / macOS)
+        if: runner.os != 'Linux'
+        timeout-minutes: 20
+        run: cargo test --no-default-features --features gui --test gui_tests
+
+  wasm:
+    name: WebAssembly Runtime (wasm32-unknown-unknown)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain with wasm32 target (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: wasm32-unknown-unknown
+          components: clippy
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+
+      - name: Build WebAssembly library (zero dependencies)
+        run: cargo build --target wasm32-unknown-unknown --release --lib --no-default-features
+
+      # The cdylib artifact is named after the lib target (`spid3r_lang`); the
+      # deployed module is copied to `web/spid3r.wasm`. Assert the artifact so a
+      # crate-type/rename regression fails here instead of in a browser.
+      - name: Verify the wasm artifact
+        run: |
+          test -s target/wasm32-unknown-unknown/release/spid3r_lang.wasm
+          ls -l target/wasm32-unknown-unknown/release/spid3r_lang.wasm
+
+      - name: Clippy WebAssembly target (zero warnings)
+        run: cargo clippy --target wasm32-unknown-unknown --lib --no-default-features -- -D warnings
+
+      # The browser runtime is a product surface: run it. `import "toml"` and
+      # friends only work because the stdlib sources are compiled in, and the
+      # playground presets are the first thing a visitor clicks, so both are
+      # exercised here against the freshly built module (Node is preinstalled
+      # on ubuntu runners).
+      - name: Exercise the browser runtime and every playground preset
+        run: |
+          cp target/wasm32-unknown-unknown/release/spid3r_lang.wasm web/spid3r.wasm
+          node tools/test_wasm_runtime.js
+          node tools/test_playground_presets.js
+
+      # docs/html/doc.html is hand-written HTML with no generator, so nothing
+      # else notices when a code sample stops compiling or an anchor loses its
+      # target. This evaluates every .w3-code-body snippet on both engines and
+      # checks every internal link; it exits non-zero on drift.
+      - name: Verify the developer guide's code samples and anchors
+        run: node tools/verify_dev_snippets.js
+
+      # The snippet gate above only proves that the SAMPLES still run. Every
+      # documentation defect the 2026-10-30 audit found was in the PROSE around
+      # them — a claimed method that does not exist (`bag.union`), a claimed
+      # return type that is wrong (`m.sum(axis)` returns a vector, not a 1xN
+      # matrix), constructors missing from a table. This gate encodes those
+      # claims as assertions against the module built above, and also checks
+      # table structure (orphan <tr>, column-count drift, duplicate ids) —
+      # the damage hand-deleting a row leaves behind.
+      - name: Verify the developer guide's prose claims
+        run: node tools/verify_doc_claims.js
+
+      # The playground loads its LOCAL siblings via relative <script> tags and
+      # prefers the embedded base64 module over fetching a .wasm file. There is
+      # ONE canonical deployment set (web/spid3r.wasm + web/spid3r.js +
+      # web/spid3r_wasm_data.js) — docs/html/ holds no runtime copies at all
+      # (the playground links ../../web/... directly; tools/test_wasm_embedded.js
+      # asserts the docs/html duplicates do not exist). Two guards, neither
+      # assuming the CI build is byte-reproducible with a developer machine:
+      #   1. behavioral — the COMMITTED embedded module must produce exactly
+      #      what the fresh build produces on every preset and engine.
+      #   2. self-consistency — the committed embedded module must equal the
+      #      committed web/spid3r.wasm byte for byte, and regenerating the data
+      #      file must change nothing.
+      # (A committed deployment set that is one commit old is a process risk —
+      # rebuild before committing — not something CI can see.)
+      - name: Verify the embedded wasm module is current
+        run: |
+          cp target/wasm32-unknown-unknown/release/spid3r_lang.wasm "$RUNNER_TEMP/fresh_spid3r.wasm"
+          node tools/test_wasm_embedded.js --against "$RUNNER_TEMP/fresh_spid3r.wasm"
+          git checkout -- web/spid3r.wasm web/spid3r_wasm_data.js
+          node tools/test_wasm_embedded.js
+          node tools/gen_wasm_data.js
+          git diff --exit-code web/spid3r_wasm_data.js
+
+  # CI-02: the native/AOT backend joins the GATED differential (previously the
+  # AOT subset only ran where a developer happened to have LLVM installed).
+  # Ubuntu only for now — macOS (brew llvm@18) and Windows (official LLVM
+  # installer) join with CI-04, the multi-platform native job. LLVM install
+  # per docs/BUILDING.md.
+  aot:
+    name: Native AOT Differential (LLVM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install LLVM 18 (native backend dependency)
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 libllvm18 llvm-18-dev clang
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: aot
+
+      # Builds core + native (no gui). Includes the engine-matrix AOT subset
+      # and the native runtime tests.
+      - name: Build the native toolchain and runtime staticlib
+        timeout-minutes: 40
+        run: cargo build --no-default-features --features native
+
+      - name: Run the suite with the native backend
+        timeout-minutes: 30
+        run: cargo test --no-default-features --features native 2>&1 | tee cargo_test_native.txt
+        shell: bash
+
+      - name: Report native test failures to the step summary
+        if: failure()
+        shell: bash
+        run: |
+          echo "### Native failures" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f cargo_test_native.txt ]; then
+            grep -E "FAILED|panicked at|test result:|^error" cargo_test_native.txt >> "$GITHUB_STEP_SUMMARY" || true
+            tail -n 60 cargo_test_native.txt >> "$GITHUB_STEP_SUMMARY" || true
+            # Emit panic lines and failure blocks as GitHub Actions annotations.
+            grep -A 20 "panicked at" cargo_test_native.txt | head -25 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done || true
+            grep -E "^error(\[|:)|FAILED$|conformance failure|^\[" cargo_test_native.txt | head -12 | while IFS= read -r line; do
+              echo "::error::${line}"
+            done || true
+          fi
+
+      # Tree-vs-native over every shipped example, with per-step timeouts so a
+      # wedged AOT build cannot eat the job (see the script header).
+      - name: Tree-vs-native differential over all examples
+        timeout-minutes: 30
+        run: bash tools/native_diff.sh examples/*.matrix

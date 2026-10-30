@@ -1,0 +1,28 @@
+// examples/bst.matrix - binary search tree, ascending inorder.
+fn main() {
+    let tree = bst();
+    tree.insert(50);
+    tree.insert(30);
+    tree.insert(70);
+    tree.insert(20);
+    tree.insert(40);
+
+    println(tree.inorder());
+    println(tree.contains(40));
+    println(tree.contains(99));
+
+    // duplicates throw
+    try {
+        tree.insert(30);
+    } catch (e) {
+        println("caught: " + e);
+    }
+
+    // deletion: leaf, one child, two children
+    tree.remove(20);  // leaf
+    tree.remove(30);  // one child
+    tree.remove(50);  // two children
+    println(tree.inorder());
+    println(tree.root().unwrap());
+    return 0;
+}

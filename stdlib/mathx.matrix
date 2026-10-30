@@ -1,0 +1,491 @@
+// stdlib/mathx.matrix - the numeric odds and ends the stats module does not
+// cover: random draws from more distributions, two more hypothesis tests,
+// interpolation, smoothing, and a sparse matrix.
+//
+//   import "mathx";
+//
+//   let x = random_exponential(2.0);
+//   let p = anova_oneway(list(group_a, group_b, group_c));
+//   let s = sparse_from_dense(matrix_of_zeros_and_values);
+//
+// Everything here is deterministic except the random_* functions, which draw
+// from the language's `random_float` / `random_int` generator.
+
+import "stats" as st;
+
+// ------------------------------------------------------------- random draws
+
+/// Exponential with rate `lambda` (inverse-CDF sampling).
+public fn random_exponential(lambda) {
+    if lambda <= 0.0 {
+        throw "random_exponential: lambda must be positive";
+    }
+    let u = random_float();
+    if u <= 0.0 {
+        u = 1.0e-12;
+    }
+    return -ln(u) / lambda;
+}
+
+/// Binomial via `n` Bernoulli trials (fine for modest n).
+public fn random_binomial(n, p) {
+    if p < 0.0 or p > 1.0 {
+        throw "random_binomial: p must be in [0, 1]";
+    }
+    let hits = 0;
+    let i = 0;
+    while i < n {
+        if random_float() < p {
+            hits = hits + 1;
+        }
+        i = i + 1;
+    }
+    return hits;
+}
+
+/// Poisson by Knuth's product-of-uniforms method (good for lambda <= ~30;
+/// larger values fall back to a normal approximation).
+public fn random_poisson(lambda) {
+    if lambda < 0.0 {
+        throw "random_poisson: lambda must be non-negative";
+    }
+    if lambda == 0.0 {
+        return 0;
+    }
+    if lambda > 30.0 {
+        let z = st.normal_quantile(random_float());
+        let v = round(lambda + sqrt(lambda) * z);
+        if v < 0.0 {
+            return 0;
+        }
+        return int(v);
+    }
+    let limit = exp(-lambda);
+    let k = 0;
+    let prod = random_float();
+    while prod > limit {
+        k = k + 1;
+        prod = prod * random_float();
+    }
+    return k;
+}
+
+/// Uniform integer in [lo, hi] — thin wrapper so callers do not need to
+/// remember argument order.
+public fn random_between(lo, hi) {
+    return random_int(lo, hi);
+}
+
+/// Fisher-Yates shuffle, returning a new list.
+public fn shuffle(items) {
+    let out = list();
+    for x in items {
+        out.push(x);
+    }
+    let i = len(out) - 1;
+    while i > 0 {
+        let j = random_int(0, i);
+        let t = out[i];
+        out[i] = out[j];
+        out[j] = t;
+        i = i - 1;
+    }
+    return out;
+}
+
+/// One element at random.
+public fn choice(items) {
+    if len(items) == 0 {
+        throw "choice: empty list";
+    }
+    return items[random_int(0, len(items) - 1)];
+}
+
+// --------------------------------------------------------- hypothesis tests
+
+/// One-way ANOVA. Returns `{f, df_between, df_within, p}` where p comes from
+/// the F distribution's survival function (computed by numerical integration
+/// of the F density, since no incomplete-beta helper is shipped).
+public fn anova_oneway(groups) {
+    let k = len(groups);
+    if k < 2 {
+        throw "anova_oneway: need at least two groups";
+    }
+    let n_total = 0;
+    let grand = 0.0;
+    for g in groups {
+        n_total = n_total + len(g);
+        for x in g {
+            grand = grand + float(x);
+        }
+    }
+    if n_total <= k {
+        throw "anova_oneway: not enough observations";
+    }
+    grand = grand / float(n_total);
+    let ss_between = 0.0;
+    let ss_within = 0.0;
+    for g in groups {
+        let m = st.mean(g);
+        ss_between = ss_between + float(len(g)) * (m - grand) * (m - grand);
+        for x in g {
+            ss_within = ss_within + (float(x) - m) * (float(x) - m);
+        }
+    }
+    let df_b = k - 1;
+    let df_w = n_total - k;
+    if ss_within == 0.0 {
+        throw "anova_oneway: zero within-group variance";
+    }
+    let f = (ss_between / float(df_b)) / (ss_within / float(df_w));
+    return map(
+        "f",
+        f,
+        "df_between",
+        df_b,
+        "df_within",
+        df_w,
+        "p",
+        f_sf(f, df_b, df_w)
+    );
+}
+
+/// F distribution survival function by Simpson integration of the density.
+fn f_sf(f, d1, d2) {
+    if f <= 0.0 {
+        return 1.0;
+    }
+    let a = float(d1) / 2.0;
+    let b = float(d2) / 2.0;
+    let log_c = st.lgamma(a + b) - st.lgamma(a) - st.lgamma(b) + a * ln(float(d1) / float(d2));
+    // Integrate from f to a point where the tail is negligible.
+    let upper = f + 200.0;
+    let steps = 2000;
+    let h = (upper - f) / float(steps);
+    let acc = 0.0;
+    let i = 0;
+    while i <= steps {
+        let x = f + float(i) * h;
+        let log_density = log_c + (a - 1.0) * ln(x) - (a + b) * ln(1.0 + float(d1) * x / float(d2));
+        let w = 1.0;
+        if i == 0 or i == steps {
+            w = 1.0;
+        } elif i % 2 == 1 {
+            w = 4.0;
+        } else {
+            w = 2.0;
+        }
+        acc = acc + w * exp(log_density);
+        i = i + 1;
+    }
+    let p = acc * h / 3.0;
+    if p < 0.0 {
+        return 0.0;
+    }
+    if p > 1.0 {
+        return 1.0;
+    }
+    return p;
+}
+
+/// Mann-Whitney U (two-sided, normal approximation with tie correction).
+/// Returns `{u, z, p}`.
+public fn mann_whitney(a, b) {
+    let n1 = len(a);
+    let n2 = len(b);
+    if n1 == 0 or n2 == 0 {
+        throw "mann_whitney: both samples must be non-empty";
+    }
+    let combined = list();
+    for x in a {
+        combined.push(map("v", float(x), "g", 0));
+    }
+    for x in b {
+        combined.push(map("v", float(x), "g", 1));
+    }
+    combined = sort_by_value(combined);
+    // Ranks with ties averaged.
+    let ranks = list();
+    let i = 0;
+    while i < len(combined) {
+        let j = i;
+        while j + 1 < len(combined) and combined[j + 1]["v"] == combined[i]["v"] {
+            j = j + 1;
+        }
+        let avg = (float(i) + float(j)) / 2.0 + 1.0;
+        let k = i;
+        while k <= j {
+            ranks.push(avg);
+            k = k + 1;
+        }
+        i = j + 1;
+    }
+    let r1 = 0.0;
+    i = 0;
+    while i < len(combined) {
+        if combined[i]["g"] == 0 {
+            r1 = r1 + ranks[i];
+        }
+        i = i + 1;
+    }
+    let u1 = r1 - float(n1) * float(n1 + 1) / 2.0;
+    let u2 = float(n1 * n2) - u1;
+    let u = u1;
+    if u2 < u1 {
+        u = u2;
+    }
+    let mean_u = float(n1 * n2) / 2.0;
+    let sd = sqrt(float(n1 * n2) * float(n1 + n2 + 1) / 12.0);
+    if sd == 0.0 {
+        throw "mann_whitney: zero variance";
+    }
+    let z = (u - mean_u) / sd;
+    return map("u", u, "z", z, "p", 2.0 * st.normal_cdf(-abs(z), 0.0, 1.0));
+}
+
+/// Two-sample Kolmogorov-Smirnov. Returns `{d, p}` (asymptotic p-value).
+public fn ks_test(a, b) {
+    let xs = list();
+    for x in a {
+        xs.push(float(x));
+    }
+    for x in b {
+        xs.push(float(x));
+    }
+    xs.sort();
+    let d = 0.0;
+    for x in xs {
+        let ca = empirical_cdf(a, x);
+        let cb = empirical_cdf(b, x);
+        let diff = abs(ca - cb);
+        if diff > d {
+            d = diff;
+        }
+    }
+    let n1 = float(len(a));
+    let n2 = float(len(b));
+    let en = sqrt(n1 * n2 / (n1 + n2));
+    let lambda = (en + 0.12 + 0.11 / en) * d;
+    return map("d", d, "p", kolmogorov_tail(lambda));
+}
+
+/// Insertion sort over `{v, g}` records (the list type has no keyed sort).
+fn sort_by_value(items) {
+    let out = list();
+    for x in items {
+        out.push(x);
+    }
+    let i = 1;
+    while i < len(out) {
+        let cur = out[i];
+        let j = i - 1;
+        while j >= 0 and out[j]["v"] > cur["v"] {
+            out[j + 1] = out[j];
+            j = j - 1;
+        }
+        out[j + 1] = cur;
+        i = i + 1;
+    }
+    return out;
+}
+
+fn empirical_cdf(xs, x) {
+    let hits = 0;
+    for v in xs {
+        if float(v) <= x {
+            hits = hits + 1;
+        }
+    }
+    return float(hits) / float(len(xs));
+}
+
+/// Q(lambda) = 2 * sum_{k>=1} (-1)^(k-1) exp(-2 k^2 lambda^2).
+fn kolmogorov_tail(lambda) {
+    if lambda <= 0.0 {
+        return 1.0;
+    }
+    let total = 0.0;
+    let k = 1;
+    while k <= 100 {
+        let term = exp(-2.0 * float(k) * float(k) * lambda * lambda);
+        if k % 2 == 1 {
+            total = total + term;
+        } else {
+            total = total - term;
+        }
+        if term < 1.0e-16 {
+            k = 100;
+        }
+        k = k + 1;
+    }
+    let p = 2.0 * total;
+    if p < 0.0 {
+        return 0.0;
+    }
+    if p > 1.0 {
+        return 1.0;
+    }
+    return p;
+}
+
+// ------------------------------------------------- interpolation/filtering
+
+/// Linear interpolation between known points; clamps outside the range.
+public fn interp_linear(xs, ys, x) {
+    if len(xs) != len(ys) or len(xs) == 0 {
+        throw "interp_linear: xs and ys must be the same non-zero length";
+    }
+    if x <= float(xs[0]) {
+        return float(ys[0]);
+    }
+    let last = len(xs) - 1;
+    if x >= float(xs[last]) {
+        return float(ys[last]);
+    }
+    let i = 0;
+    while i < last {
+        let x0 = float(xs[i]);
+        let x1 = float(xs[i + 1]);
+        if x >= x0 and x <= x1 {
+            let t = (x - x0) / (x1 - x0);
+            return float(ys[i]) * (1.0 - t) + float(ys[i + 1]) * t;
+        }
+        i = i + 1;
+    }
+    return float(ys[last]);
+}
+
+/// Moving average with a window of `k` samples (edges shrink the window).
+public fn moving_average(xs, k) {
+    if k < 1 {
+        throw "moving_average: window must be at least 1";
+    }
+    let out = list();
+    let i = 0;
+    while i < len(xs) {
+        let lo = i - k / 2;
+        if lo < 0 {
+            lo = 0;
+        }
+        let hi = lo + k;
+        if hi > len(xs) {
+            hi = len(xs);
+            lo = hi - k;
+            if lo < 0 {
+                lo = 0;
+            }
+        }
+        let sum = 0.0;
+        let j = lo;
+        while j < hi {
+            sum = sum + float(xs[j]);
+            j = j + 1;
+        }
+        out.push(sum / float(hi - lo));
+        i = i + 1;
+    }
+    return out;
+}
+
+/// Full discrete convolution (no padding).
+public fn convolve(a, b) {
+    if len(a) == 0 or len(b) == 0 {
+        throw "convolve: both inputs must be non-empty";
+    }
+    let out = list();
+    let i = 0;
+    while i < len(a) + len(b) - 1 {
+        let sum = 0.0;
+        let j = 0;
+        while j < len(a) {
+            let k = i - j;
+            if k >= 0 and k < len(b) {
+                sum = sum + float(a[j]) * float(b[k]);
+            }
+            j = j + 1;
+        }
+        out.push(sum);
+        i = i + 1;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------- sparse matrix
+
+/// Compressed-sparse-row matrix from a dense matrix: `{rows, cols, values,
+/// col_index, row_ptr}`. Only non-zero cells are stored, which is the point:
+/// a 10000x10000 diagonal costs 10000 numbers, not 100 million.
+public fn sparse_from_dense(m) {
+    let rows = m.rows();
+    let cols = m.cols();
+    let values = list();
+    let col_index = list();
+    let row_ptr = list();
+    row_ptr.push(0);
+    let r = 0;
+    while r < rows {
+        let c = 0;
+        while c < cols {
+            let v = m.get(r, c);
+            if v != 0.0 {
+                values.push(v);
+                col_index.push(c);
+            }
+            c = c + 1;
+        }
+        row_ptr.push(len(values));
+        r = r + 1;
+    }
+    return map(
+        "rows",
+        rows,
+        "cols",
+        cols,
+        "values",
+        values,
+        "col_index",
+        col_index,
+        "row_ptr",
+        row_ptr
+    );
+}
+
+/// Dense matrix back from CSR.
+public fn sparse_to_dense(s) {
+    let m = matrix(s["rows"], s["cols"]);
+    let r = 0;
+    while r < s["rows"] {
+        let k = s["row_ptr"][r];
+        while k < s["row_ptr"][r + 1] {
+            m.set(r, s["col_index"][k], s["values"][k]);
+            k = k + 1;
+        }
+        r = r + 1;
+    }
+    return m;
+}
+
+/// Sparse matrix-vector product.
+public fn sparse_mul_vector(s, v) {
+    if len(v) != s["cols"] {
+        throw "sparse_mul_vector: vector length must match the column count";
+    }
+    let out = vector(s["rows"]);
+    let r = 0;
+    while r < s["rows"] {
+        let sum = 0.0;
+        let k = s["row_ptr"][r];
+        while k < s["row_ptr"][r + 1] {
+            sum = sum + s["values"][k] * v[s["col_index"][k]];
+            k = k + 1;
+        }
+        out[r] = sum;
+        r = r + 1;
+    }
+    return out;
+}
+
+/// Number of stored non-zeros.
+public fn sparse_nnz(s) {
+    return len(s["values"]);
+}

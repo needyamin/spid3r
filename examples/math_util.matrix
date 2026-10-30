@@ -1,0 +1,14 @@
+// examples/math_util.matrix - a library module. No main needed.
+// public marks an export; everything else stays private.
+
+public fn square(x) {
+    return x * x;
+}
+
+public fn cube(x) {
+    return x * x * x;
+}
+
+fn hidden_constant() {
+    return 42;
+}

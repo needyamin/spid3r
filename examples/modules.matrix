@@ -1,0 +1,9 @@
+// examples/modules.matrix - import "math_util"; resolves next to this file.
+import "math_util";
+
+fn main() {
+    println(square(5));
+    println(cube(3));
+    // hidden_constant() is private and rejected by the semantic pass
+    return 0;
+}

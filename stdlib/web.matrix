@@ -1,0 +1,965 @@
+// stdlib/web.matrix - Modern web application framework for Spid3r.
+//
+// Features:
+//   - web_app() router creation (get, post, put, delete, use, listen)
+//   - URL parameter extraction (:param, *)
+//   - query string parser (parse_query)
+//   - form body parser (parse_form)
+//   - response helpers (json_response, html_response, text_response, redirect_response)
+//   - template engine: single-pass substitution with HTML escaping (escape_html, render_template)
+//   - cookie parser and setter (parse_cookies, set_cookie)
+//   - JWT sign and verify (jwt_sign, jwt_verify) using HMAC-SHA256 and base64
+//   - wrapping middleware (use_next) and a production serve loop (listen)
+
+// The production connection loop (keep-alive, limits, graceful shutdown) lives
+// in http.matrix; this module owns routing and the response vocabulary.
+import "http";
+
+// ------------------------------------------------------------ response headers
+
+/// The first value of a response header, case-insensitively, or null.
+///
+/// `headers` is a map in the common case, but a list of `{name, value}` pairs
+/// once a response carries two headers with the same name (two Set-Cookie
+/// lines). Every helper here accepts both shapes.
+public fn response_header(res, name) {
+    if res == null or type_of(res) != "map" or not res.has("headers") {
+        return null;
+    }
+    let h = res["headers"];
+    let want = string(name).lower();
+    if type_of(h) == "map" {
+        for k in h.keys() {
+            if k.lower() == want {
+                return string(h[k]);
+            }
+        }
+        return null;
+    }
+    if type_of(h) == "list" {
+        for e in h {
+            if string(e["name"]).lower() == want {
+                return string(e["value"]);
+            }
+        }
+    }
+    return null;
+}
+
+/// Set (or replace) a response header, keeping the map/list shape intact.
+public fn response_set_header(res, name, value) {
+    if res == null or type_of(res) != "map" {
+        return res;
+    }
+    let v = string(value);
+    if not res.has("headers") or res["headers"] == null {
+        res.set("headers", map(name, v));
+        return res;
+    }
+    let h = res["headers"];
+    let want = string(name).lower();
+    if type_of(h) == "map" {
+        let found = null;
+        for k in h.keys() {
+            if k.lower() == want {
+                found = k;
+            }
+        }
+        if found != null {
+            h[found] = v;
+        } else {
+            h[name] = v;
+        }
+        return res;
+    }
+    if type_of(h) == "list" {
+        for e in h {
+            if string(e["name"]).lower() == want {
+                e["value"] = v;
+                return res;
+            }
+        }
+        h.push(map("name", name, "value", v));
+    }
+    return res;
+}
+
+/// Append a response header, keeping any existing ones with the same name.
+///
+/// This is what a second Set-Cookie needs: replacing would silently log the
+/// user out of whichever session was set first.
+public fn response_add_header(res, name, value) {
+    if res == null or type_of(res) != "map" {
+        return res;
+    }
+    let v = string(value);
+    if not res.has("headers") or res["headers"] == null {
+        res.set("headers", map(name, v));
+        return res;
+    }
+    let h = res["headers"];
+    if type_of(h) == "map" {
+        if h.has(name) {
+            let out = list();
+            for k in h.keys() {
+                out.push(map("name", k, "value", h[k]));
+            }
+            out.push(map("name", name, "value", v));
+            res.set("headers", out);
+            return res;
+        }
+        h[name] = v;
+        return res;
+    }
+    if type_of(h) == "list" {
+        h.push(map("name", name, "value", v));
+    }
+    return res;
+}
+
+/// Add a value to `Vary` without dropping the ones already there.
+///
+/// `Vary` is a list, and two middlewares both legitimately need to add to it
+/// (CORS adds `origin`, compression adds `accept-encoding`). Overwriting -
+/// which `response_set_header` does - would silently break caching for one of
+/// them.
+public fn response_add_vary(res, value) {
+    let cur = response_header(res, "vary");
+    if cur == null or cur == "" {
+        return response_set_header(res, "vary", value);
+    }
+    if cur.lower().contains(string(value).lower()) {
+        return res;
+    }
+    return response_set_header(res, "vary", cur + ", " + string(value));
+}
+
+// ------------------------------------------------------------ response helpers
+
+public fn json_response(status, data) {
+    let headers = map("content-type", "application/json; charset=utf-8");
+    return map(
+        "__http_response",
+        true,
+        "status",
+        status,
+        "headers",
+        headers,
+        "body",
+        json_write(data)
+    );
+}
+
+public fn html_response(status, html_content) {
+    let headers = map("content-type", "text/html; charset=utf-8");
+    return map(
+        "__http_response",
+        true,
+        "status",
+        status,
+        "headers",
+        headers,
+        "body",
+        string(html_content)
+    );
+}
+
+public fn text_response(status, text_content) {
+    let headers = map("content-type", "text/plain; charset=utf-8");
+    return map(
+        "__http_response",
+        true,
+        "status",
+        status,
+        "headers",
+        headers,
+        "body",
+        string(text_content)
+    );
+}
+
+public fn redirect_response(location) {
+    let headers = map("location", string(location));
+    return map("__http_response", true, "status", 302, "headers", headers, "body", "");
+}
+
+// ------------------------------------------------------------------ cookies
+
+/// Build a `Set-Cookie` header value. This is the only cookie builder in the
+/// module — `set_cookie` and `SessionStore` both go through it.
+///
+/// `opts` is a map with any of: `path` (default `"/"`), `max_age`, `expires`,
+/// `http_only`, `secure`, `same_site` (default `"Lax"`).
+///
+/// `SameSite=Lax` is the default because a cookie without it is sent on
+/// cross-site requests, which is the shape of a CSRF. Pass
+/// `map("same_site", "None")` to opt out (and then `secure` is mandatory in
+/// every browser). `Secure` is emitted when `opts["secure"]` is true, or when
+/// `opts["https"]` is true — a `Secure` cookie set over plain http is dropped by
+/// the browser, so the caller has to say which one it is serving.
+public fn cookie(name, value, opts) {
+    let o = opts;
+    if o == null or type_of(o) != "map" {
+        o = map();
+    }
+    let c = string(name) + "=" + string(value);
+    if o.has("path") {
+        c = c + "; Path=" + string(o["path"]);
+    } else {
+        c = c + "; Path=/";
+    }
+    if o.has("max_age") {
+        c = c + "; Max-Age=" + string(o["max_age"]);
+    }
+    if o.has("expires") {
+        c = c + "; Expires=" + string(o["expires"]);
+    }
+    if o.has("http_only") and o["http_only"] {
+        c = c + "; HttpOnly";
+    }
+    let same_site = "Lax";
+    if o.has("same_site") {
+        same_site = string(o["same_site"]);
+    }
+    if same_site != "" {
+        c = c + "; SameSite=" + same_site;
+    }
+    let secure = false;
+    if o.has("secure") and o["secure"] {
+        secure = true;
+    }
+    if o.has("https") and o["https"] {
+        secure = true;
+    }
+    if secure {
+        c = c + "; Secure";
+    }
+    return c;
+}
+
+/// Move a response map's `cookies` map into its headers (as a list of
+/// `{name, value}` pairs, so several Set-Cookie headers can coexist).
+fn with_cookies(res) {
+    if not res.has("cookies") {
+        return res;
+    }
+    let cookies = res["cookies"];
+    let headers = list();
+    let base = res["headers"];
+    for k in base.keys() {
+        headers.push(map("name", k, "value", base[k]));
+    }
+    for name in cookies.keys() {
+        headers.push(map("name", "set-cookie", "value", cookies[name]));
+    }
+    res.set("headers", headers);
+    res.delete("cookies");
+    return res;
+}
+
+/// Normalize whatever a handler returned into a response map.
+public fn to_response(value) {
+    if value == null {
+        return map("__http_response", true, "status", 204, "headers", map(), "body", "");
+    }
+    let t = type_of(value);
+    if t == "map" {
+        if value.has("__http_response") {
+            return with_cookies(value);
+        }
+        return json_response(200, value);
+    }
+    if t == "string" {
+        return html_response(200, value);
+    }
+    if t == "list" {
+        return json_response(200, value);
+    }
+    return json_response(200, value);
+}
+
+// ------------------------------------------------------------ HTML templating
+
+public fn escape_html(s) {
+    let text = string(s);
+    return text
+    .replace("&", "&amp;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
+    .replace("\"", "&quot;")
+    .replace("'", "&#39;");
+}
+
+/// Resolve one tag body against the context, memoised per render call.
+///
+/// Accepts the two forms the previous implementation recognised - `{{key}}` and
+/// `{{ key }}` - so no template that renders today changes meaning. Anything
+/// else (`{{  key  }}`) stays literal. Returns `{raw, esc}`, or null when the
+/// key is absent (that miss is cached too: templates repeat unknown keys).
+///
+/// The cache is a local map owned by the caller, never module state, so
+/// concurrent renders cannot see each other's entries.
+fn template_value(ctx_map, inner, cache) {
+    let name = inner;
+    if len(inner) >= 2 and inner.starts_with(" ") and inner.ends_with(" ") {
+        name = inner.slice(1, len(inner) - 1);
+    }
+    if cache.has(name) {
+        return cache[name];
+    }
+    let hit = null;
+    if ctx_map.has(name) {
+        let raw = string(ctx_map[name]);
+        hit = map("raw", raw, "esc", escape_html(raw));
+    }
+    cache[name] = hit;
+    return hit;
+}
+
+/// Render a `{{ key }}` template in ONE pass over the template text.
+///
+/// A substituted value is appended straight to the output and never re-scanned,
+/// so a user-supplied value that happens to contain `{{ api_key }}` stays
+/// literal text instead of being expanded into another context value. That
+/// re-expansion was the injection: it turned user data into template syntax and
+/// leaked server-side values into the page.
+///
+/// `{{ key }}` escapes HTML; `{{{ key }}}` interpolates raw and is the caller's
+/// responsibility. Unknown keys are left in the output exactly as written.
+///
+/// The template is split on `{{` once (a native operation) and each segment is
+/// resolved on its own; scanning the string character by character instead
+/// would copy the whole template per character and go quadratic on a page.
+public fn render_template(tpl, ctx_map) {
+    let text = string(tpl);
+    if ctx_map == null or type_of(ctx_map) != "map" {
+        return text;
+    }
+    let segments = text.split("{{");
+    let parts = list();
+    let cache = map();
+    // Everything before the first `{{` is literal.
+    parts.push(segments[0]);
+    let k = 1;
+    let count = len(segments);
+    while k < count {
+        let seg = segments[k];
+        // A segment that starts with `{` came from `{{{` and is a raw tag.
+        if seg.starts_with("{") {
+            let raw_end = seg.index_of("}}}");
+            if raw_end >= 0 {
+                let hit = template_value(ctx_map, seg.slice(1, raw_end), cache);
+                if hit != null {
+                    parts.push(hit["raw"]);
+                } else {
+                    // Unknown key: reproduce the tag verbatim.
+                    parts.push("{{" + seg.slice(0, raw_end + 3));
+                }
+                parts.push(seg.slice(raw_end + 3, len(seg)));
+                k = k + 1;
+                continue;
+            }
+            // No closing `}}}`: fall back to reading it as `{` + a double tag,
+            // which is what the old string-replace implementation did.
+            parts.push("{");
+            seg = seg.slice(1, len(seg));
+        }
+        let end = seg.index_of("}}");
+        if end < 0 {
+            // Unterminated tag: leave the rest as written.
+            parts.push("{{" + seg);
+            k = k + 1;
+            continue;
+        }
+        let hit = template_value(ctx_map, seg.slice(0, end), cache);
+        if hit != null {
+            parts.push(hit["esc"]);
+        } else {
+            parts.push("{{" + seg.slice(0, end + 2));
+        }
+        parts.push(seg.slice(end + 2, len(seg)));
+        k = k + 1;
+    }
+    return parts.join("");
+}
+
+// ------------------------------------------------------------ query & form parsing
+
+public fn parse_query(qs) {
+    let out = map();
+    if qs == null or qs == "" {
+        return out;
+    }
+    let query_str = string(qs);
+    if query_str.starts_with("?") {
+        query_str = query_str.slice(1);
+    }
+    for pair in query_str.split("&") {
+        if pair != "" {
+            let eq = pair.index_of("=");
+            if eq >= 0 {
+                let k = url_decode(pair.slice(0, eq));
+                let v = url_decode(pair.slice(eq + 1));
+                out.set(k, v);
+            } else {
+                let k = url_decode(pair);
+                out.set(k, "");
+            }
+        }
+    }
+    return out;
+}
+
+public fn parse_form(body) {
+    if body == null or body == "" {
+        return map();
+    }
+    let norm = string(body).replace("+", " ");
+    return parse_query(norm);
+}
+
+// ------------------------------------------------------------ cookies
+
+public fn parse_cookies(req_or_header) {
+    let out = map();
+    let header_val = "";
+    let t = type_of(req_or_header);
+    if t == "map" {
+        if req_or_header.has("headers") {
+            let h = req_or_header["headers"];
+            if h.has("cookie") {
+                header_val = h["cookie"];
+            } elif h.has("Cookie") {
+                header_val = h["Cookie"];
+            }
+        } elif req_or_header.has("cookie") {
+            header_val = req_or_header["cookie"];
+        }
+    } elif t == "string" {
+        header_val = req_or_header;
+    }
+    if header_val == "" {
+        return out;
+    }
+    for item in header_val.split(";") {
+        let trimmed = item.trim();
+        if trimmed != "" {
+            let eq = trimmed.index_of("=");
+            if eq >= 0 {
+                let k = trimmed.slice(0, eq).trim();
+                let v = trimmed.slice(eq + 1).trim();
+                out.set(k, v);
+            }
+        }
+    }
+    return out;
+}
+
+/// Append a `Set-Cookie` header to a response, keeping any already there.
+///
+/// A response often carries more than one cookie (session + CSRF + preference),
+/// and `Set-Cookie` is the one header that cannot be comma-joined. Headers are
+/// therefore stored as a `{name, value}` list as soon as a second cookie
+/// arrives; `http_write_response` accepts both shapes. The old implementation
+/// assigned into a map key, so the second cookie silently replaced the first.
+public fn set_cookie(res, name, value, opts) {
+    let cookie_str = cookie(name, value, opts);
+    if not res.has("headers") {
+        res.set("headers", map());
+    }
+    let h = res["headers"];
+    if type_of(h) == "list" {
+        h.push(map("name", "set-cookie", "value", cookie_str));
+        return res;
+    }
+    if not h.has("set-cookie") {
+        h["set-cookie"] = cookie_str;
+        return res;
+    }
+    // Second cookie: promote the map to the list form so both survive.
+    let out = list();
+    for k in h.keys() {
+        if k == "set-cookie" {
+            out.push(map("name", "set-cookie", "value", h[k]));
+        } else {
+            out.push(map("name", k, "value", h[k]));
+        }
+    }
+    out.push(map("name", "set-cookie", "value", cookie_str));
+    res.set("headers", out);
+    return res;
+}
+
+// ------------------------------------------------------------ JWT (HS256)
+
+fn b64url_encode_str(s) {
+    let b = bytes(s);
+    return b.to_base64().replace("+", "-").replace("/", "_").replace("=", "");
+}
+
+fn b64url_encode_bytes(b) {
+    return b.to_base64().replace("+", "-").replace("/", "_").replace("=", "");
+}
+
+fn b64url_decode_str(s) {
+    let res = s.replace("-", "+").replace("_", "/");
+    let rem = res.len() % 4;
+    if rem == 2 {
+        res = res + "==";
+    } elif rem == 3 {
+        res = res + "=";
+    } elif rem == 1 {
+        res = res + "===";
+    }
+    let b = bytes().from_base64(res);
+    let r = b.to_string();
+    return r.unwrap();
+}
+
+public fn jwt_sign(payload_map, secret) {
+    let header = map("alg", "HS256", "typ", "JWT");
+    let h_b64 = b64url_encode_str(json_write(header));
+    let p_b64 = b64url_encode_str(json_write(payload_map));
+    let signing_input = h_b64 + "." + p_b64;
+    let hex_sig = hmac_sha256(secret, signing_input);
+    let sig_bytes = bytes().from_hex(hex_sig);
+    let sig_b64 = b64url_encode_bytes(sig_bytes);
+    return signing_input + "." + sig_b64;
+}
+
+/// Verify an HS256 JWT: `ok(claims)` or `err(msg)`.
+///
+/// The signature is compared with `secure_compare`, not `!=`. A byte-wise
+/// compare returns as soon as it finds a difference, so the time it takes leaks
+/// how many leading bytes a forgery got right — enough to walk a valid signature
+/// out one byte at a time.
+///
+/// `exp` and `nbf` are enforced with `skew` seconds of allowance (default 60:
+/// issuer and verifier clocks drift, so a token minted seconds ago can arrive
+/// "expired"; pass `0` for a strict comparison). A token without `exp`
+/// is accepted: this verifies the signature and whatever claims are present, it
+/// does not invent a lifetime. The payload must be a JSON object, as RFC 7519
+/// requires; a signed array or scalar is rejected.
+public fn jwt_verify(token, secret, skew = 60) {
+    let parts = token.split(".");
+    if parts.len() != 3 {
+        return err("invalid JWT: expected 3 dot-separated parts");
+    }
+    let signing_input = parts[0] + "." + parts[1];
+    let hex_sig = hmac_sha256(secret, signing_input);
+    let sig_bytes = bytes().from_hex(hex_sig);
+    let expected_sig = b64url_encode_bytes(sig_bytes);
+    if not secure_compare(parts[2], expected_sig) {
+        return err("invalid JWT signature");
+    }
+    let payload = null;
+    try {
+        payload = json_parse(b64url_decode_str(parts[1]));
+    } catch (e) {
+        return err("failed to decode JWT payload: " + string(e));
+    }
+    if type_of(payload) != "map" {
+        return err("invalid JWT: payload is not a JSON object");
+    }
+    let now = float(unix_time());
+    let allowance = float(skew);
+    if payload.has("exp") {
+        let exp = payload["exp"];
+        if type_of(exp) != "int" and type_of(exp) != "float" {
+            return err("invalid JWT: exp must be a number");
+        }
+        if now > float(exp) + allowance {
+            return err("expired JWT");
+        }
+    }
+    if payload.has("nbf") {
+        let nbf = payload["nbf"];
+        if type_of(nbf) != "int" and type_of(nbf) != "float" {
+            return err("invalid JWT: nbf must be a number");
+        }
+        if now + allowance < float(nbf) {
+            return err("JWT is not valid yet (nbf)");
+        }
+    }
+    return ok(payload);
+}
+
+// ------------------------------------------------------------ WebApp router
+
+fn match_route(pattern_parts, path_parts) {
+    let params = map();
+    let pat_len = pattern_parts.len();
+    let path_len = path_parts.len();
+
+    let i = 0;
+    while i < pat_len {
+        let pat = pattern_parts[i];
+        if pat == "*" {
+            let rest = list();
+            while i < path_len {
+                rest.push(path_parts[i]);
+                i = i + 1;
+            }
+            params.set("*", rest.join("/"));
+            return some(params);
+        }
+        if i >= path_len {
+            return none;
+        }
+        let seg = path_parts[i];
+        if pat.starts_with(":") {
+            let param_name = pat.slice(1);
+            params.set(param_name, seg);
+        } elif pat != seg {
+            return none;
+        }
+        i = i + 1;
+    }
+    if i < path_len {
+        return none;
+    }
+    return some(params);
+}
+
+/// Run `nexts[i..]` around `final`, threading `next` through each middleware.
+fn run_nexts(nexts, i, req, final) {
+    if i >= len(nexts) {
+        return to_response(final(req));
+    }
+    let next = fn(r) {
+        return run_nexts(nexts, i + 1, r, final);
+    };
+    return to_response(nexts[i](req, next));
+}
+
+public class WebApp {
+    public let routes;
+    public let middlewares;
+    public let nexts;
+    /// Serve tuning, passed through to http.serve_listener: keep_alive,
+    /// idle_timeout_ms, timeout_ms, max_requests_per_conn, max_body_bytes,
+    /// drain_ms, access_log, on_error.
+    public let opts;
+    private let listener;
+
+    public fn new () {
+        self.routes = list();
+        self.middlewares = list();
+        self.nexts = list();
+        self.opts = map();
+        self.listener = -1;
+    }
+
+    public fn route(self, method, path, handler) {
+        let parts = list();
+        for p in path.split("/") {
+            if p != "" {
+                parts.push(p);
+            }
+        }
+        self.routes.push(
+            map(
+                "method",
+                method.upper(),
+                "raw_path",
+                path,
+                "parts",
+                parts,
+                "handler",
+                handler
+            )
+        );
+    }
+
+    public fn get(self, path, handler) {
+        self.route("GET", path, handler);
+    }
+
+    public fn post(self, path, handler) {
+        self.route("POST", path, handler);
+    }
+
+    public fn put(self, path, handler) {
+        self.route("PUT", path, handler);
+    }
+
+    public fn delete(self, path, handler) {
+        self.route("DELETE", path, handler);
+    }
+
+    /// A before-hook: `fn(req)` returns a response to stop, or null to
+    /// continue. It cannot see or modify the response.
+    public fn use(self, middleware) {
+        self.middlewares.push(middleware);
+    }
+
+    /// Wrapping middleware: `fn(req, next)`. `next(req)` runs the rest of the
+    /// chain and returns the normalized response, so this form can rewrite it
+    /// (gzip, etag, cookies, logging).
+    ///
+    /// There are two methods rather than one because Spid3r has no arity
+    /// introspection: `use` and `use_next` are distinguishable at the call
+    /// site, while `use(fn(req, next))` could only be detected by calling it
+    /// and catching the arity error, which would also swallow real errors.
+    public fn use_next(self, middleware) {
+        self.nexts.push(middleware);
+    }
+
+    /// Dispatch one request through the wrapping middleware, the before-hooks
+    /// and the router, in that order.
+    public fn handle(self, req) {
+        if not req.has("params") {
+            req.set("params", map());
+        }
+        if req.has("raw_query") and not req.has("query") {
+            req.set("query", parse_query(req["raw_query"]));
+        }
+        if not req.has("cookies") {
+            req.set("cookies", parse_cookies(req));
+        }
+        if len(self.nexts) == 0 {
+            return self.dispatch(req);
+        }
+        let app = self;
+        return run_nexts(self.nexts, 0, req, fn(r) {
+            return app.dispatch(r);
+        });
+    }
+
+    /// Routing plus before-hooks, with no wrapping middleware.
+    public fn dispatch(self, req) {
+        // Run middlewares
+        for mw in self.middlewares {
+            let m_res = mw(req);
+            if m_res != null {
+                return to_response(m_res);
+            }
+        }
+
+        let req_method = "GET";
+        if req.has("method") {
+            req_method = req["method"].upper();
+        }
+        let req_path = "/";
+        if req.has("path") {
+            req_path = req["path"];
+        }
+        let path_parts = list();
+        for p in req_path.split("/") {
+            if p != "" {
+                path_parts.push(p);
+            }
+        }
+
+        for r in self.routes {
+            if r["method"] == req_method {
+                let match_res = match_route(r["parts"], path_parts);
+                if match_res.is_some() {
+                    let params = match_res.unwrap();
+                    for k in params.keys() {
+                        req["params"].set(k, params[k]);
+                    }
+                    let handler = r["handler"];
+                    let res = handler(req);
+                    return to_response(res);
+                }
+            }
+        }
+
+        return json_response(404, map("error", "Not Found", "path", req_path));
+    }
+
+    /// Serve files from `dir` under `url_prefix` (e.g. `app.static_files(
+    /// "./public", "/static")` serves `./public/style.css` at
+    /// `/static/style.css`). Binary content is served verbatim; `..`
+    /// traversal is rejected with 403 and misses return 404.
+    public fn static_files(self, dir, url_prefix) {
+        let root = string(dir);
+        let prefix = string(url_prefix);
+        if prefix.ends_with("/") {
+            prefix = prefix.slice(0, prefix.len() - 1);
+        }
+        let handler = fn(req) {
+            let rest = "";
+            if req.has("params") and req["params"].has("*") {
+                rest = req["params"]["*"];
+            }
+            if rest.contains("..") {
+                return map(
+                    "__http_response",
+                    true,
+                    "status",
+                    403,
+                    "headers",
+                    map(),
+                    "body",
+                    "forbidden"
+                );
+            }
+            let path = root + "/" + rest;
+            let content = read_bytes(path);
+            if content.is_err() {
+                return map(
+                    "__http_response",
+                    true,
+                    "status",
+                    404,
+                    "headers",
+                    map(),
+                    "body",
+                    "not found"
+                );
+            }
+            let ctype = "application/octet-stream";
+            let lower = path.lower();
+            if lower.ends_with(".html") or lower.ends_with(".htm") {
+                ctype = "text/html; charset=utf-8";
+            } elif lower.ends_with(".css") {
+                ctype = "text/css; charset=utf-8";
+            } elif lower.ends_with(".js") or lower.ends_with(".mjs") {
+                ctype = "text/javascript; charset=utf-8";
+            } elif lower.ends_with(".json") {
+                ctype = "application/json";
+            } elif lower.ends_with(".png") {
+                ctype = "image/png";
+            } elif lower.ends_with(".jpg") or lower.ends_with(".jpeg") {
+                ctype = "image/jpeg";
+            } elif lower.ends_with(".svg") {
+                ctype = "image/svg+xml";
+            } elif lower.ends_with(".ico") {
+                ctype = "image/x-icon";
+            } elif lower.ends_with(".wasm") {
+                ctype = "application/wasm";
+            } elif lower.ends_with(".txt") {
+                ctype = "text/plain; charset=utf-8";
+            }
+            return map(
+                "__http_response",
+                true,
+                "status",
+                200,
+                "headers",
+                map("content-type", ctype),
+                "body",
+                content.unwrap()
+            );
+        };
+        self.route("GET", prefix + "/*", handler);
+    }
+
+    /// Bind and serve with the production loop: keep-alive, an idle timeout,
+    /// request and body limits, error isolation and a graceful drain on
+    /// Ctrl+C/SIGTERM. Returns when the listener is closed.
+    public fn listen(self, addr) {
+        let real = self.bind(addr);
+        println("Spid3r web_app listening on http://" + real);
+        let app = self;
+        serve_listener(self.listener, fn(req) {
+            return app.handle(req);
+        }, self.opts, -1);
+        return ok(null);
+    }
+
+    /// Stop accepting; a blocked `listen()` drains and returns.
+    public fn close(self) {
+        if self.listener >= 0 {
+            tcp_close(self.listener);
+        }
+        return true;
+    }
+
+    /// Bind without serving (port 0 picks a free port); returns the address.
+    public fn bind(self, addr) {
+        let r = tcp_listen(addr);
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        self.listener = r.unwrap();
+        return tcp_local_addr(self.listener).unwrap();
+    }
+}
+
+public fn web_app() {
+    return new WebApp();
+}
+
+// ------------------------------------------------------------------ sessions
+
+/// Stateless signed-cookie sessions. The session data lives in the cookie
+/// itself, authenticated with `jwt_sign`/`jwt_verify` under `secret` — no
+/// server-side storage. Trust the data only as much as the signature (the
+/// client can read it; it cannot forge it).
+public class SessionStore {
+    public let secret;
+    public let cookie_name;
+    /// Mark the cookie `Secure`. Set it (or pass `opts` with `https: true`) when
+    /// the app is served over TLS: a `Secure` cookie is dropped over plain http,
+    /// so this cannot be the unconditional default.
+    public let secure;
+
+    public fn new (secret, cookie_name, opts = null) {
+        self.secret = secret;
+        self.cookie_name = "spid3r_session";
+        if cookie_name != null {
+            self.cookie_name = cookie_name;
+        }
+        self.secure = false;
+        if opts != null and type_of(opts) == "map" {
+            if opts.has("secure") and opts["secure"] {
+                self.secure = true;
+            }
+            if opts.has("https") and opts["https"] {
+                self.secure = true;
+            }
+        }
+    }
+
+    /// The cookie options this store hands to the shared builder: HttpOnly,
+    /// path-scoped, `SameSite=Lax`, and `Secure` when configured.
+    fn cookie_opts(self) {
+        return map(
+            "http_only",
+            true,
+            "path",
+            "/",
+            "same_site",
+            "Lax",
+            "secure",
+            self.secure
+        );
+    }
+
+    /// Build the Set-Cookie header value that starts a session carrying
+    /// `data` (a map) for one day.
+    public fn start(self, data) {
+        let payload = map("data", data, "exp", unix_time() + 86400);
+        let token = jwt_sign(payload, self.secret);
+        return cookie(self.cookie_name, token, self.cookie_opts());
+    }
+
+    /// The session data for a request, or `null` when absent, invalid,
+    /// tampered with, or expired. `exp` is enforced inside `jwt_verify` (with
+    /// its skew allowance), so there is no second, stricter check here.
+    public fn read(self, req) {
+        if not req.has("cookies") {
+            return null;
+        }
+        if not req["cookies"].has(self.cookie_name) {
+            return null;
+        }
+        let token = req["cookies"][self.cookie_name];
+        let verified = jwt_verify(token, self.secret);
+        if verified.is_err() {
+            return null;
+        }
+        let payload = verified.unwrap();
+        return payload["data"];
+    }
+
+    /// The Set-Cookie header value that ends the session.
+    public fn clear(self) {
+        let o = self.cookie_opts();
+        o["max_age"] = 0;
+        return cookie(self.cookie_name, "", o);
+    }
+}

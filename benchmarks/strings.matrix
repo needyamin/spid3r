@@ -1,0 +1,13 @@
+// benchmarks/strings.matrix - string building and concatenation.
+// Prints one checksum line: the total length of the built string.
+fn main() {
+    let n = 30000;
+    let s = "";
+    let i = 0;
+    while i < n {
+        s = s + "x";
+        i = i + 1;
+    }
+    println(s.len());
+    return 0;
+}

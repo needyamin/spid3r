@@ -1,0 +1,40 @@
+// examples/error_handling.matrix - try / catch / finally, throw, result.
+fn parse_age(s) {
+    let n = int(s);
+    if n < 0 {
+        return err("age cannot be negative");
+    }
+    return ok(n);
+}
+
+fn main() {
+    try {
+        print(10 / 0);
+    } catch (error) {
+        eprint("caught: " + error);
+    } finally {
+        println("done");
+    }
+
+    try {
+        throw "boom";
+    } catch (e) {
+        println("user error: " + e);
+    }
+
+    let r = parse_age("42");
+    if r.is_ok() {
+        println("ok: " + string(r.unwrap()));
+    }
+    let bad = parse_age("-1");
+    println(bad.is_err());
+
+    // option: unwrap on none throws
+    let none_val = none;
+    try {
+        none_val.unwrap();
+    } catch (e) {
+        println("caught: " + e);
+    }
+    return 0;
+}

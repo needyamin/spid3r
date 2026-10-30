@@ -1,0 +1,25 @@
+// benchmarks/methods.matrix - class method dispatch and field access.
+// Prints one checksum line.
+class Counter {
+    public let n;
+    fn new () {
+        self.n = 0;
+    }
+    public fn bump(self) -> int {
+        self.n = self.n + 1;
+        return self.n;
+    }
+}
+
+fn main() {
+    let n = 200000;
+    let c = new Counter();
+    let i = 0;
+    let last = 0;
+    while i < n {
+        last = c.bump();
+        i = i + 1;
+    }
+    println(last);
+    return 0;
+}

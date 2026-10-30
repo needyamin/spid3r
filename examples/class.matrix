@@ -1,0 +1,34 @@
+// examples/class.matrix - single inheritance and privacy.
+class Animal {
+    public let name;
+    private let noise;
+
+    fn new (name, noise) {
+        self.name = name;
+        self.noise = noise;
+    }
+
+    public fn speak(self) -> string {
+        return self.name + " says " + self.noise;
+    }
+}
+
+class Dog extends Animal {
+    fn new (name) {
+        super(name, "woof");
+    }
+
+    public fn fetch(self) -> string {
+        return self.name + " fetches";
+    }
+}
+
+fn main() {
+    let d = new Dog("Rex");
+    println(d.speak());
+    println(d.fetch());
+
+    // a private field used outside its class is a semantic error
+    // println(d.noise);
+    return 0;
+}

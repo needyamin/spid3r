@@ -1,0 +1,33 @@
+// examples/tasks.matrix - spawn on the OS thread pool; await joins a task.
+// `await` is only legal inside an async function, so joins live in one.
+async fn join_two(a, b) {
+    return await a + await b;
+}
+
+fn sleep_task(ms) {
+    let ch = channel();
+    spawn fn() {
+        sleep_ms(ms);
+        ch.send(0);
+    };
+    return ch;
+}
+
+fn main() {
+    let t1 = spawn fn() {
+        return 1;
+    };
+    let t2 = spawn fn() {
+        return 2;
+    };
+    println(join_two(t1, t2));
+    // awaiting a channel blocks until a worker sends
+    let ch = sleep_task(5);
+    println(await_channel(ch));
+    println(task_count() >= 0);
+    return 0;
+}
+
+async fn await_channel(ch) {
+    return await ch;
+}

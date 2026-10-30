@@ -1,0 +1,508 @@
+// stdlib/session.matrix - server-side sessions, written in Spid3r.
+//
+//   import "session";
+//
+//   let store = session_store("a-long-random-secret", map(
+//       "cookie_name", "sid",
+//       "ttl", 86400,          // absolute lifetime, seconds
+//       "idle", 1800,          // idle timeout, seconds
+//       "dir", "./sessions",   // optional: survive a restart
+//       "secure", true         // send the cookie only over TLS
+//   )).unwrap();
+//
+//   let app = web_app();
+//   app.use_next(store.middleware());     // req["session"] is set for every handler
+//
+//   app.post("/login", fn(req) {
+//       let s = req["session"];
+//       s["data"]["user"] = "ada";
+//       s["data"]["role"] = "admin";
+//       return json_response(200, map("ok", true));
+//   });
+//
+//   app.get("/me", fn(req) {
+//       let s = req["session"];
+//       if s["data"]["user"] == null { return json_response(401, map("error", "login")); }
+//       return json_response(200, map("user", s["data"]["user"]));
+//   });
+//
+// ---------------------------------------------------------------------------
+// Why this is server-side, and what that buys
+//
+// `web.SessionStore` is a signed cookie: the data travels with the client and
+// the signature stops forgery, but it cannot be revoked, it grows with the
+// data, and it leaks whatever it contains to anyone who can read the cookie.
+// This store keeps the data on the server and puts only an opaque ID in the
+// cookie:
+//
+//   * IDs come from `random_bytes` (the OS CSPRNG), never from `random_int`.
+//     A predictable session ID is an account takeover, not a code smell.
+//   * The cookie is `<id>.<hmac>` and verified with `secure_compare`, so a
+//     tampered or truncated ID is rejected in constant time.
+//   * Logout and expiry actually revoke: deleting the row kills the session.
+//   * `start()` always mints a new ID, which is the session-fixation defence -
+//     an attacker who plants a cookie before login does not get the session
+//     that login creates.
+//   * Absolute (`ttl`) and idle (`idle`) timeouts are both enforced.
+//
+// Limits, stated rather than discovered later: there is no cross-process lock,
+// so a file-backed store assumes a single writer process (two servers sharing
+// `dir` would clobber each other's writes - use a database for that); and a
+// request that mutates `req["session"]["data"]` without the middleware
+// installed is not persisted.
+// ---------------------------------------------------------------------------
+
+fn opt(m, key, dflt) {
+    if m == null or type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+fn now_secs() {
+    return unix_time();
+}
+
+/// The `Cookie:` header value for `name`, or null.
+///
+/// Reads `req["cookies"]` when the app already parsed it (web.matrix does),
+/// otherwise parses the header, so the store works with both servers.
+fn cookie_value(req, name) {
+    if req.has("cookies") and type_of(req["cookies"]) == "map" {
+        if req["cookies"].has(name) {
+            return req["cookies"][name];
+        }
+        return null;
+    }
+    if not req.has("headers") or type_of(req["headers"]) != "map" {
+        return null;
+    }
+    let h = req["headers"];
+    let raw = null;
+    if h.has("cookie") {
+        raw = h["cookie"];
+    } elif h.has("Cookie") {
+        raw = h["Cookie"];
+    }
+    if raw == null {
+        return null;
+    }
+    for piece in string(raw).split(";") {
+        let kv = piece.trim();
+        let eq = kv.index_of("=");
+        if eq <= 0 {
+            continue;
+        }
+        if kv.slice(0, eq).trim() == name {
+            return kv.slice(eq + 1, len(kv));
+        }
+    }
+    return null;
+}
+
+/// A fresh, unguessable session ID: 24 bytes from the OS CSPRNG, hex.
+fn new_session_id() {
+    let r = random_bytes(24);
+    if r.is_err() {
+        // No entropy means no safe session. Fail loudly rather than fall back
+        // to the PRNG behind `random_int`.
+        throw "session: " + r.unwrap_err();
+    }
+    return hex_encode(r.unwrap());
+}
+
+fn session_of(id, row, is_new) {
+    return map(
+        "id",
+        id,
+        "data",
+        row["data"],
+        "created",
+        row["created"],
+        "touched",
+        row["touched"],
+        "is_new",
+        is_new
+    );
+}
+
+public class SessionManager {
+    public let name;
+    private let secret;
+    private let ttl;
+    private let idle;
+    private let dir;
+    private let secure;
+    private let same_site;
+    private let rows;
+
+    fn new (secret, opts) {
+        if secret == null or len(string(secret)) < 16 {
+            throw "session_store: the secret must be at least 16 characters";
+        }
+        self.secret = string(secret);
+        self.name = opt(opts, "cookie_name", "sid");
+        self.ttl = int(opt(opts, "ttl", 86400));
+        self.idle = int(opt(opts, "idle", 1800));
+        self.dir = opt(opts, "dir", null);
+        self.secure = opt(opts, "secure", false);
+        self.same_site = opt(opts, "same_site", "Lax");
+        self.rows = map();
+        if self.dir != null {
+            if not file_exists(string(self.dir)) {
+                throw "session_store: directory '" + string(self.dir) + "' does not exist "
+                + "(there is no mkdir native; create it before starting the server)";
+            }
+        }
+    }
+
+    // ---------------------------------------------------------- internals
+
+    fn signature(self, id) {
+        return hmac_sha256(self.secret, id).slice(0, 32);
+    }
+
+    fn file_of(self, id) {
+        let d = string(self.dir);
+        if not d.ends_with("/") and not d.ends_with("\\") {
+            d = d + "/";
+        }
+        return d + id + ".json";
+    }
+
+    fn persist(self, id, row) {
+        if self.dir == null {
+            return true;
+        }
+        let body = json_write(
+            map(
+                "data",
+                row["data"],
+                "created",
+                row["created"],
+                "touched",
+                row["touched"]
+            )
+        );
+        let w = write_file(self.file_of(id), body);
+        return w.is_ok();
+    }
+
+    fn restore(self, id) {
+        if self.dir == null {
+            return null;
+        }
+        let path = self.file_of(id);
+        if not file_exists(path) {
+            return null;
+        }
+        let raw = read_file(path);
+        if raw.is_err() {
+            return null;
+        }
+        try {
+            let parsed = json_parse(raw.unwrap());
+            return map(
+                "data",
+                parsed["data"],
+                "created",
+                parsed["created"],
+                "touched",
+                parsed["touched"]
+            );
+        } catch (_e) {
+            // A truncated or hand-edited file is not a session.
+            return null;
+        }
+    }
+
+    fn expired(self, row) {
+        let t = now_secs();
+        if row["created"] + self.ttl <= t {
+            return true;
+        }
+        if row["touched"] + self.idle <= t {
+            return true;
+        }
+        return false;
+    }
+
+    fn drop_row(self, id) {
+        // `delete` on a missing key throws, and dropping an already-expired
+        // row is normal (two requests racing on the same dead session).
+        if self.rows.has(id) {
+            self.rows.delete(id);
+        }
+        if self.dir != null {
+            let path = self.file_of(id);
+            // Best effort: an undeletable file still expires on its own.
+            try {
+                file_delete(path);
+            } catch (_e) {
+            }
+        }
+        return true;
+    }
+
+    // ---------------------------------------------------------- cookie
+
+    /// The `Set-Cookie` value that hands `id` to the client.
+    public fn cookie_header(self, id) {
+        let v = id + "." + self.signature(id);
+        let c = self.name
+        + "="
+        + v
+        + "; Path=/; HttpOnly; SameSite="
+        + self.same_site
+        + "; Max-Age="
+        + string(self.ttl);
+        if self.secure {
+            c = c + "; Secure";
+        }
+        return c;
+    }
+
+    /// The `Set-Cookie` value that removes the cookie from the client.
+    public fn clear_header(self) {
+        let c = self.name + "=; Path=/; HttpOnly; Max-Age=0";
+        if self.secure {
+            c = c + "; Secure";
+        }
+        return c;
+    }
+
+    /// The verified session ID in a request, or null.
+    ///
+    /// Verification is constant-time and checks the HMAC *before* the ID is
+    /// used to look anything up, so a timing oracle cannot enumerate IDs.
+    public fn id_of(self, req) {
+        let raw = cookie_value(req, self.name);
+        if raw == null {
+            return null;
+        }
+        let v = string(raw);
+        let dot = v.index_of(".");
+        if dot <= 0 {
+            return null;
+        }
+        let id = v.slice(0, dot);
+        let sig = v.slice(dot + 1, len(v));
+        if len(id) != 48 or len(sig) != 32 {
+            return null;
+        }
+        if not secure_compare(sig, self.signature(id)) {
+            return null;
+        }
+        return id;
+    }
+
+    // ---------------------------------------------------------- lifecycle
+
+    /// The session for a request, or null. Touches the idle timer.
+    public fn load(self, req) {
+        let id = self.id_of(req);
+        if id == null {
+            return null;
+        }
+        let row = null;
+        if self.rows.has(id) {
+            row = self.rows[id];
+        } else {
+            row = self.restore(id);
+            if row == null {
+                return null;
+            }
+            self.rows[id] = row;
+        }
+        if self.expired(row) {
+            self.drop_row(id);
+            return null;
+        }
+        row["touched"] = now_secs();
+        return session_of(id, row, false);
+    }
+
+    /// A brand-new session, replacing whatever the request presented.
+    ///
+    /// Rotating on every login is the session-fixation defence: the ID the
+    /// client arrived with is destroyed and can never be attached to the
+    /// authenticated session.
+    public fn start(self, req, data) {
+        let old = self.id_of(req);
+        if old != null {
+            self.drop_row(old);
+        }
+        let id = new_session_id();
+        let t = now_secs();
+        let row = map(
+            "data",
+            data,
+            "created",
+            t,
+            "touched",
+            t
+        );
+        self.rows[id] = row;
+        self.persist(id, row);
+        return session_of(id, row, true);
+    }
+
+    /// Persist a session after the handler mutated it. Returns true on success.
+    public fn save(self, session) {
+        if session.has("destroyed") and session["destroyed"] == true {
+            return false;
+        }
+        let id = session["id"];
+        let t = now_secs();
+        session["touched"] = t;
+        let row = map(
+            "data",
+            session["data"],
+            "created",
+            session["created"],
+            "touched",
+            t
+        );
+        self.rows[id] = row;
+        return self.persist(id, row);
+    }
+
+    /// Destroy the session a request carries. Returns the clearing cookie.
+    ///
+    /// The session object is flagged as destroyed so the middleware's trailing
+    /// `save()` does not resurrect it - a logout that silently re-inserts the
+    /// row it just deleted is the classic version of this bug.
+    public fn destroy(self, req) {
+        let id = self.id_of(req);
+        if id != null {
+            self.drop_row(id);
+        }
+        if req.has("session") and type_of(req["session"]) == "map" {
+            req["session"]["destroyed"] = true;
+        }
+        return self.clear_header();
+    }
+
+    /// Destroy a specific session (logout on every device, admin action).
+    public fn destroy_id(self, id) {
+        self.drop_row(id);
+        return true;
+    }
+
+    /// Number of live sessions held in memory.
+    public fn count(self) {
+        return len(self.rows);
+    }
+
+    /// Drop every expired session. Call it on a timer; nothing else sweeps.
+    public fn prune(self) {
+        let dead = list();
+        for id in self.rows.keys() {
+            if self.expired(self.rows[id]) {
+                dead.push(id);
+            }
+        }
+        for id in dead {
+            self.drop_row(id);
+        }
+        return len(dead);
+    }
+
+    // ---------------------------------------------------------- flash
+
+    /// One-shot data: set it now, read it once on the next request.
+    public fn flash(self, session, key, value) {
+        if not session["data"].has("_flash") {
+            session["data"]["_flash"] = map();
+        }
+        session["data"]["_flash"][key] = value;
+        self.save(session);
+        return true;
+    }
+
+    /// Read and clear a flash value.
+    public fn flash_take(self, session, key) {
+        if not session["data"].has("_flash") {
+            return null;
+        }
+        let f = session["data"]["_flash"];
+        if not f.has(key) {
+            return null;
+        }
+        let v = f[key];
+        f.delete(key);
+        self.save(session);
+        return v;
+    }
+
+    // ---------------------------------------------------------- middleware
+
+    /// `fn(req, next)` middleware: loads or creates `req["session"]`, then
+    /// persists whatever the handler did and sets the cookie for a new one.
+    public fn middleware(self) {
+        let store = self;
+        return fn(req, next) {
+            let s = store.load(req);
+            let fresh = false;
+            if s == null {
+                s = store.start(req, map());
+                fresh = true;
+            }
+            req.set("session", s);
+            let res = next(req);
+            if type_of(res) != "map" {
+                store.save(s);
+                return res;
+            }
+            store.save(s);
+            if fresh {
+                res = attach_cookie(res, store.cookie_header(s["id"]));
+            }
+            return res;
+        };
+    }
+}
+
+/// Add a `Set-Cookie` header without destroying any that are already there.
+///
+/// `headers` is normally a map, but it may already be the list-of-pairs form
+/// that carries several Set-Cookie lines (`http_write_response` accepts both).
+fn attach_cookie(res, value) {
+    if not res.has("headers") or type_of(res["headers"]) != "map" {
+        if res.has("headers") and type_of(res["headers"]) == "list" {
+            res["headers"].push(map("name", "set-cookie", "value", value));
+            return res;
+        }
+        res.set("headers", map("set-cookie", value));
+        return res;
+    }
+    let h = res["headers"];
+    if not h.has("set-cookie") {
+        h["set-cookie"] = value;
+        return res;
+    }
+    // Already has one: switch to the multi-header form.
+    let out = list();
+    for k in h.keys() {
+        if k == "set-cookie" {
+            out.push(map("name", "set-cookie", "value", h[k]));
+            out.push(map("name", "set-cookie", "value", value));
+        } else {
+            out.push(map("name", k, "value", h[k]));
+        }
+    }
+    res.set("headers", out);
+    return res;
+}
+
+/// `session_store(secret, opts)` -> `ok(SessionManager)` / `err(msg)`.
+public fn session_store(secret, opts) {
+    try {
+        return ok(new SessionManager(secret, opts));
+    } catch (e) {
+        return err(string(e));
+    }
+}

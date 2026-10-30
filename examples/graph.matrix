@@ -1,0 +1,24 @@
+// examples/graph.matrix - directed and undirected graphs, BFS and DFS.
+fn main() {
+    let g = graph("undirected");
+    g.add_node("boss");
+    g.add_node("manager");
+    g.add_node("intern");
+
+    g.add_edge("boss", "manager");
+    g.add_edge("manager", "intern", 2.5);
+
+    println(g.path_exists("boss", "intern"));
+    println(g.find_path("boss", "intern").unwrap());
+    println(g.bfs("boss"));
+    println(g.dfs("boss"));
+    println(g.neighbors("manager"));
+
+    // a missing vertex on an edge insert throws
+    try {
+        g.add_edge("boss", "ghost");
+    } catch (e) {
+        println("caught: " + e);
+    }
+    return 0;
+}

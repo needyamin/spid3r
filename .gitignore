@@ -1,0 +1,80 @@
+# --- Rust build output -------------------------------------------------------
+# Full build tree (debug + release, ~5 GB with the optional features).
+/target/
+
+# NOTE: Cargo.lock is intentionally NOT ignored — this is a binary
+# application (the `spid3r` CLI), so the lockfile is committed for
+# reproducible builds.
+
+# --- Spid3r compile/link artifacts -------------------------------------------
+# Bytecode produced by `spid3r compile` (regenerable from the .matrix source).
+*.matrixc
+# NumPy serialization dumps (.npy)
+*.npy
+# Native AOT link intermediates and debug info next to built programs.
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+# The wry/tao and LLVM-C DLLs that build.rs copies next to binaries live under
+# target/ (already covered), but guard the root just in case.
+/LLVM-C.dll
+
+# --- Test/verification scratch ----------------------------------------------
+# tools/native_diff.sh writes built programs and logs here.
+target/isolated/
+
+# --- Fuzzing artifacts -------------------------------------------------------
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+
+# --- Spid3r project artifacts (created by init/install/dist/pack) ------------
+# Vendored dependencies are re-created by `spid3r install` from spider.lock.
+vendor/
+# Git checkouts for git dependencies.
+.spid3r/
+# dist/ holds packed tarballs and sha256 files (regenerable via pack).
+dist/
+
+# --- Installer build workspace -----------------------------------------------
+# The portable NSIS toolchain and the downloaded WebView2 bootstrapper are
+# reproducible (build.rs fetches the bootstrapper); the .nsi, LICENSE.txt and
+# generated assets/*.ico|*.bmp are tracked.
+packaging/nsis/nsis/
+packaging/nsis/nsis.zip
+packaging/nsis/payload/
+packaging/nsis/redist/
+Spid3r-Setup-*.exe
+
+# --- Editor / IDE ------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+.workbuddy-ai/
+.zwork/
+
+# --- OS cruft (Windows + OneDrive setup) -------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+# Office/OneDrive lock files and temp copies
+~$*
+.~lock.*#
+*.tmp
+*.WebView2/
+*.WebView2
+
+# --- Parked material and scratch output ---------------------------------------
+# Not part of the project. Kept ignored so regenerated scratch can never be
+# committed: _dustbin/ holds history/planning artifacts parked rather than
+# deleted, audit/ and deliverables/ are throwaway output from audit and review
+# runs. The 2026-10-31 cleanup removed all three from the working tree; these
+# entries stay as guards.
+/_dustbin/
+/audit/
+/deliverables/

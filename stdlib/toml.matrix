@@ -1,0 +1,600 @@
+// stdlib/toml.matrix - a TOML-subset parser, written in Spid3r.
+//
+//   import "toml";
+//
+//   let cfg = toml_parse("
+//   title = \"my app\"
+//   [server]
+//   port = 8080
+//   hosts = [\"a\", \"b\"]
+//   [[workers]]
+//   name = \"w1\"
+//   ");
+//   println(cfg["server"]["port"]);        // 8080
+//   println(toml_get(cfg, "server.port")); // 8080
+//
+// Supported: comments (#), `key = value`, [tables], [[arrays of tables]],
+// dotted keys, basic strings ("..." with \n \t \" \\ escapes) and literal
+// strings ('...'), integers (with _ separators), floats, booleans, arrays
+// (nested, multi-line, with comments), and inline tables { k = v }.
+// Dates and times are returned as strings. Multi-line strings (""") are not
+// supported and fail with a clear error.
+//
+// Malformed input throws with a line number.
+//
+// Reentrancy: the scanner cursor lives in a `TomlParser` instance created per
+// call, never in module-level state, so concurrent `toml_parse` calls on
+// different threads cannot observe each other's cursor. Do not reintroduce
+// module-level `let` variables here.
+
+fn is_space(c) {
+    return c == " " or c == "\t";
+}
+
+fn is_bare_char(c) {
+    if c == null {
+        return false;
+    }
+    let letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+    return letters.contains(c);
+}
+
+/// One parse in progress. All cursor state is per-instance.
+class TomlParser {
+    private let src;
+    private let pos;
+    private let line;
+
+    fn new (text) {
+        self.src = text;
+        self.pos = 0;
+        self.line = 1;
+    }
+
+    fn fail(self, msg) {
+        throw "toml: line " + string(self.line) + ": " + msg;
+    }
+
+    fn peek(self) {
+        if self.pos >= len(self.src) {
+            return null;
+        }
+        return self.src.slice(self.pos, self.pos + 1);
+    }
+
+    fn peek_at(self, k) {
+        if self.pos + k >= len(self.src) {
+            return null;
+        }
+        return self.src.slice(self.pos + k, self.pos + k + 1);
+    }
+
+    fn advance(self) {
+        // EOF-safe: a caller that advances past the end (a truncated escape, for
+        // instance) gets null instead of an out-of-bounds slice error.
+        if self.pos >= len(self.src) {
+            return null;
+        }
+        let c = self.src.slice(self.pos, self.pos + 1);
+        self.pos = self.pos + 1;
+        if c == "\n" {
+            self.line = self.line + 1;
+        }
+        return c;
+    }
+
+    fn eof(self) {
+        return self.pos >= len(self.src);
+    }
+
+    /// Skip spaces and tabs (newlines are structural here).
+    fn skip_inline_ws(self) {
+        while true {
+            let c = self.peek();
+            if c == null or not is_space(c) {
+                return;
+            }
+            self.advance();
+        }
+    }
+
+    /// Skip whitespace, newlines, and comments - used inside arrays and inline
+    /// tables where the grammar allows line breaks.
+    fn skip_ws_and_comments(self) {
+        while true {
+            let c = self.peek();
+            if c == null {
+                return;
+            }
+            if is_space(c) or c == "\n" or c == "\r" {
+                self.advance();
+                continue;
+            }
+            if c == "#" {
+                while self.peek() != null and self.peek() != "\n" {
+                    self.advance();
+                }
+                continue;
+            }
+            return;
+        }
+    }
+
+    /// A bare or quoted key; quoted keys allow dots inside.
+    fn parse_key(self) {
+        let c = self.peek();
+        if c == "\"" {
+            let s = self.parse_basic_string();
+            return s;
+        }
+        if c == "'" {
+            let s = self.parse_literal_string();
+            return s;
+        }
+        let out = "";
+        while true {
+            let k = self.peek();
+            if k == null or not is_bare_char(k) {
+                break;
+            }
+            out = out + self.advance();
+        }
+        if out == "" {
+            self.fail("expected a key");
+        }
+        return out;
+    }
+
+    /// A dotted key path: `a.b.c` -> ["a", "b", "c"].
+    fn parse_key_path(self) {
+        let parts = [];
+        while true {
+            parts.push(self.parse_key());
+            self.skip_inline_ws();
+            if self.peek() == "." {
+                self.advance();
+                self.skip_inline_ws();
+                continue;
+            }
+            return parts;
+        }
+    }
+
+    fn parse_escape(self) {
+        let c = self.advance();
+        if c == null {
+            self.fail("unterminated escape");
+        }
+        if c == "n" {
+            return "\n";
+        }
+        if c == "t" {
+            return "\t";
+        }
+        if c == "r" {
+            return "\r";
+        }
+        if c == "\"" {
+            return "\"";
+        }
+        if c == "\\" {
+            return "\\";
+        }
+        self.fail("unknown escape \\" + c);
+    }
+
+    fn parse_basic_string(self) {
+        self.advance();  // opening quote
+        let out = "";
+        while true {
+            let c = self.peek();
+            if c == null {
+                self.fail("unterminated string");
+            }
+            if c == "\"" {
+                self.advance();
+                return out;
+            }
+            if c == "\\" {
+                self.advance();
+                out = out + self.parse_escape();
+                continue;
+            }
+            out = out + self.advance();
+        }
+    }
+
+    fn parse_literal_string(self) {
+        self.advance();  // opening quote
+        let out = "";
+        while true {
+            let c = self.peek();
+            if c == null {
+                self.fail("unterminated string");
+            }
+            if c == "'" {
+                self.advance();
+                return out;
+            }
+            out = out + self.advance();
+        }
+    }
+
+    /// A bare token (number, bool, or date) up to a delimiter.
+    fn parse_bare(self) {
+        let out = "";
+        while true {
+            let c = self.peek();
+            if c == null or c == "," or c == "]" or c == "}" or c == "\n" or c == "\r" or c == "#" {
+                break;
+            }
+            out = out + self.advance();
+        }
+        return out.trim();
+    }
+
+    fn parse_number_or_bare(self, raw) {
+        let text = raw.replace("_", "");
+        if text == "true" {
+            return true;
+        }
+        if text == "false" {
+            return false;
+        }
+        // Integers: optional sign, digits only.
+        let body = text;
+        if body.starts_with("+") or body.starts_with("-") {
+            body = body.slice(1, len(body));
+        }
+        let digits = "0123456789";
+        let all_digits = len(body) > 0;
+        let i = 0;
+        while i < len(body) {
+            if not digits.contains(body.slice(i, i + 1)) {
+                all_digits = false;
+            }
+            i = i + 1;
+        }
+        if all_digits {
+            return int(text);
+        }
+        // Floats (and exponents): try the float parser; it rejects junk.
+        let f = float(text);
+        if f != null {
+            return f;
+        }
+        // Dates/times and anything else bare stay strings.
+        if len(text) > 0 {
+            let first = text.slice(0, 1);
+            if digits.contains(first) {
+                return text;
+            }
+        }
+        self.fail("unrecognized value '" + raw + "'");
+    }
+
+    fn parse_array(self) {
+        self.advance();  // [
+        let out = [];
+        while true {
+            self.skip_ws_and_comments();
+            let c = self.peek();
+            if c == null {
+                self.fail("unterminated array");
+            }
+            if c == "]" {
+                self.advance();
+                return out;
+            }
+            out.push(self.parse_value());
+            self.skip_ws_and_comments();
+            let d = self.peek();
+            if d == "," {
+                self.advance();
+                continue;
+            }
+            if d == "]" {
+                self.advance();
+                return out;
+            }
+            self.fail("expected ',' or ']' in array");
+        }
+    }
+
+    fn parse_inline_table(self) {
+        self.advance();  // {
+        let out = map();
+        self.skip_inline_ws();
+        if self.peek() == "}" {
+            self.advance();
+            return out;
+        }
+        while true {
+            self.skip_inline_ws();
+            let path = self.parse_key_path();
+            self.skip_inline_ws();
+            if self.peek() != "=" {
+                self.fail("expected '=' in inline table");
+            }
+            self.advance();
+            self.skip_inline_ws();
+            let v = self.parse_value();
+            set_path(out, path, v);
+            self.skip_inline_ws();
+            let c = self.peek();
+            if c == "," {
+                self.advance();
+                continue;
+            }
+            if c == "}" {
+                self.advance();
+                return out;
+            }
+            self.fail("expected ',' or '}' in inline table");
+        }
+    }
+
+    fn parse_value(self) {
+        let c = self.peek();
+        if c == "\"" {
+            if self.peek_at(1) == "\"" and self.peek_at(2) == "\"" {
+                self.fail("multi-line strings are not supported");
+            }
+            return self.parse_basic_string();
+        }
+        if c == "'" {
+            return self.parse_literal_string();
+        }
+        if c == "[" {
+            return self.parse_array();
+        }
+        if c == "{" {
+            return self.parse_inline_table();
+        }
+        let raw = self.parse_bare();
+        if raw == "" {
+            self.fail("expected a value");
+        }
+        return self.parse_number_or_bare(raw);
+    }
+
+    public fn parse_document(self) {
+        let root = map();
+        let current = root;
+        while true {
+            self.skip_ws_and_comments();
+            if self.eof() {
+                return root;
+            }
+            let c = self.peek();
+            if c == "[" {
+                self.advance();
+                let array_of_tables = false;
+                if self.peek() == "[" {
+                    self.advance();
+                    array_of_tables = true;
+                }
+                self.skip_inline_ws();
+                let parts = self.parse_key_path();
+                self.skip_inline_ws();
+                let closing = "]";
+                if array_of_tables {
+                    closing = "]]";
+                }
+                // Bounds check before slicing: a truncated header must fail with
+                // a parse diagnostic, not an internal slice-range error.
+                if self.pos + len(closing) > len(self.src) or not self.src.slice(self.pos, self.pos + len(closing)).starts_with(closing) {
+                    self.fail("expected '" + closing + "'");
+                }
+                let k = 0;
+                while k < len(closing) {
+                    self.advance();
+                    k = k + 1;
+                }
+                current = table_at(root, parts, array_of_tables);
+                continue;
+            }
+            // key = value
+            let parts = self.parse_key_path();
+            self.skip_inline_ws();
+            if self.peek() != "=" {
+                self.fail("expected '=' after key");
+            }
+            self.advance();
+            self.skip_inline_ws();
+            let v = self.parse_value();
+            set_path(current, parts, v);
+        }
+    }
+}
+
+/// Set a dotted path inside `m`, creating intermediate tables.
+fn set_path(m, parts, value) {
+    let cur = m;
+    let n = len(parts);
+    let i = 0;
+    while i < n - 1 {
+        let part = parts[i];
+        if not cur.contains(part) {
+            cur[part] = map();
+        }
+        cur = cur[part];
+        i = i + 1;
+    }
+    cur[parts[n - 1]] = value;
+}
+
+/// Resolve a table header path to its map, creating intermediate tables.
+/// The final segment is created fresh by the caller for [[arrays]].
+fn table_at(root, parts, make_last) {
+    let cur = root;
+    let n = len(parts);
+    let i = 0;
+    while i < n - 1 {
+        let part = parts[i];
+        if not cur.contains(part) {
+            cur[part] = map();
+        }
+        cur = cur[part];
+        i = i + 1;
+    }
+    let last = parts[n - 1];
+    if make_last {
+        // [[array of tables]]: append a fresh table to the array at `last`.
+        if not cur.contains(last) {
+            cur[last] = [];
+        }
+        let arr = cur[last];
+        let fresh = map();
+        arr.push(fresh);
+        return fresh;
+    }
+    if not cur.contains(last) {
+        cur[last] = map();
+    }
+    return cur[last];
+}
+
+/// Parse a TOML document (subset - see the header comment) into a map.
+/// Throws with a line number on malformed input.
+public fn toml_parse(text) {
+    let parser = new TomlParser(text);
+    return parser.parse_document();
+}
+
+/// Dot-path lookup: `toml_get(cfg, "server.port")`. Returns null when any
+/// segment is missing.
+public fn toml_get(m, path) {
+    let parts = path.split(".");
+    let cur = m;
+    let i = 0;
+    while i < len(parts) {
+        if cur == null {
+            return null;
+        }
+        cur = cur[parts[i]];
+        i = i + 1;
+    }
+    return cur;
+}
+
+// ============================================================ writer
+//
+// `toml_write(map)` serializes back to the same subset the parser accepts:
+// scalar keys first, then `[table]` sections, then `[[array of tables]]`.
+// Round-trip: `toml_parse(toml_write(m))` yields the same values for
+// string/int/float/bool/null-free maps. TOML has no null, so `null` is
+// rejected rather than silently dropped.
+
+fn toml_escape_string(s) {
+    let out = "\"";
+    let i = 0;
+    while i < len(s) {
+        let c = s.slice(i, i + 1);
+        if c == "\"" {
+            out = out + "\\\"";
+        } elif c == "\\" {
+            out = out + "\\\\";
+        } elif c == "\n" {
+            out = out + "\\n";
+        } elif c == "\r" {
+            out = out + "\\r";
+        } elif c == "\t" {
+            out = out + "\\t";
+        } else {
+            out = out + c;
+        }
+        i = i + 1;
+    }
+    return out + "\"";
+}
+
+fn toml_scalar(v) {
+    let t = type_of(v);
+    if t == "string" {
+        return toml_escape_string(v);
+    }
+    if t == "bool" {
+        if v {
+            return "true";
+        }
+        return "false";
+    }
+    if t == "int" {
+        return string(v);
+    }
+    if t == "float" {
+        return string(v);
+    }
+    if t == "null" {
+        throw "toml_write: TOML has no null; drop the key or use a sentinel string";
+    }
+    if t == "list" {
+        let parts = list();
+        for x in v {
+            parts.push(toml_scalar(x));
+        }
+        return "[" + parts.join(", ") + "]";
+    }
+    throw "toml_write: cannot serialize a " + t + " value";
+}
+
+fn toml_is_table_array(v) {
+    if type_of(v) != "list" {
+        return false;
+    }
+    if len(v) == 0 {
+        return false;
+    }
+    return type_of(v[0]) == "map";
+}
+
+fn toml_write_table(m, prefix, out) {
+    let scalars = list();
+    let tables = list();
+    let arrays = list();
+    for k in m.keys() {
+        let v = m[k];
+        let t = type_of(v);
+        if t == "map" {
+            tables.push(k);
+        } elif toml_is_table_array(v) {
+            arrays.push(k);
+        } else {
+            scalars.push(k);
+        }
+    }
+    for k in scalars {
+        out.push(string(k) + " = " + toml_scalar(m[k]));
+    }
+    for k in tables {
+        let name = string(k);
+        if prefix != "" {
+            name = prefix + "." + name;
+        }
+        out.push("");
+        out.push("[" + name + "]");
+        toml_write_table(m[k], name, out);
+    }
+    for k in arrays {
+        let name = string(k);
+        if prefix != "" {
+            name = prefix + "." + name;
+        }
+        for item in m[k] {
+            out.push("");
+            out.push("[[" + name + "]]");
+            toml_write_table(item, name, out);
+        }
+    }
+}
+
+/// Serialize a map to a TOML document (the subset this module parses).
+public fn toml_write(m) {
+    if type_of(m) != "map" {
+        throw "toml_write expects a map at the top level, found " + type_of(m);
+    }
+    let out = list();
+    toml_write_table(m, "", out);
+    return out.join("\n") + "\n";
+}

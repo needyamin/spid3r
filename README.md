@@ -1,0 +1,118 @@
+# Spid3r
+
+**One front end. Four backends. Zero runtime dependencies.**
+
+A programming language whose interpreters and compilers are required to agree with each other.
+
+![Spid3r pipeline: one front end, four backends](docs/diagrams/pipeline.svg)
+
+```spid3r
+fn main() {
+    println("Hello, Spid3r!");
+    return 0;
+}
+```
+
+```bash
+$ spid3r run hello.matrix
+Hello, Spid3r!
+```
+
+## How it works
+
+Source goes through **one** front end — lexer, parser, semantic checker, lowering — and stops at a checked AST. Everything after that is a backend, and no backend may reinterpret the language.
+
+- **The tree walker is the oracle.** When engines disagree, the plain AST interpreter defines what is correct.
+- **The VM compiles to 59 opcodes** with a peephole optimizer. `--no-opt` exists so the optimizer can be tested against itself.
+- **Native is real machine code** via LLVM — not a bundled interpreter wearing an `.exe`.
+- **WebAssembly is the same VM**, compiled to wasm32.
+
+Every backend must produce identical **stdout**, identical **error phase**, and identical **exit code**. `spid3r test` checks the three native engines on every run; CI holds the WebAssembly build to the same bar.
+
+## Memory
+
+![Reference counting plus a cycle collector](docs/diagrams/memory.svg)
+
+Values are reference counted, so ordinary garbage dies the moment it is dropped. Cycles cannot, so a tracing mark-and-sweep collector reclaims them. `gc_collect()` and `gc_live_cells()` are builtins on every engine.
+
+## Ship it five ways
+
+![Five deployment targets](docs/diagrams/targets.svg)
+
+## What's inside
+
+| Aspect | Detail |
+|---|---|
+| **Implementation** | 76,585 lines of Rust · no third-party crates in the core |
+| **Engines** | tree · bytecode VM · LLVM AOT · WebAssembly |
+| **Bytecode** | 59 opcodes · serialized `.matrixc` format |
+| **Standard library** | 29 modules, compiled into the binary |
+| **Tests** | 1,051 test functions · three-engine differential |
+| **Binary** | one 11 MB file · static CRT · runs with no installed runtime |
+
+## The language
+
+```spid3r
+fn add(a: int, b: int) -> int { return a + b; }
+
+class User {
+    public let name;
+    fn new(name) { self.name = name; }
+    public fn greet(self) -> string { return "Hi, " + self.name; }
+}
+
+fn main() {
+    let u = User("Ada");
+    println(u.greet() + " / 2 + 3 = " + string(add(2, 3)));
+    return 0;
+}
+```
+
+Types are optional. Classes, interfaces, closures, `try`/`catch`, `spawn` and channels, 20+ native containers, vectors and matrices — all in the core.
+
+## Install
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | sh
+
+# From source: core only, no LLVM and no system libraries
+cargo install --path . --no-default-features
+```
+
+**Windows:** run `Spid3r-Setup-<version>.exe` from the latest release.
+
+## Toolchain
+
+| Command | Does |
+|---|---|
+| `spid3r run app.matrix` | execute on the VM (`--engine tree` for the oracle) |
+| `spid3r check` | types, scopes, lints — no execution |
+| `spid3r repl` | interactive shell |
+| `spid3r debug --break 12` | breakpoints, stepping, backtrace, locals |
+| `spid3r fmt --check` | canonical formatting, exits 1 on drift |
+| `spid3r test` | differential run across engines |
+| `spid3r lsp` | editor server: diagnostics, hover, rename, actions |
+| `spid3r build` | native executable |
+| `spid3r bundle --target wasm` | offline web app |
+| `spid3r init` · `install` · `dist` | projects, dependencies, release build |
+
+## Documentation
+
+| Guide | What's in it |
+|---|---|
+| [Developer guide](docs/html/doc.html) | 15-chapter tutorial, API reference, runnable samples |
+| [Playground](docs/html/playground.html) | run Spid3r in the browser |
+| [Grammar](docs/GRAMMAR.md) | EBNF and precedence |
+| [Standard library](docs/STANDARD_LIBRARY.md) | every builtin and module |
+| [Data structures](docs/DATA_STRUCTURES.md) | all 20+ containers |
+| [Bytecode & VM](docs/BYTECODE.md) | `.matrixc` format, opcodes, scheduler |
+| [Garbage collection](docs/GC.md) | cycle collector design |
+| [Native backend](docs/NATIVE.md) | LLVM AOT |
+| [GUI](docs/GUI.md) · [Embedding](docs/EMBEDDING.md) | desktop apps · Rust host |
+| [Environment](docs/ENVIRONMENT.md) | every `SPID3R_*` knob |
+| [Audit status](docs/AUDIT_STATUS.md) | known issues and their state |
+
+## License
+
+MIT

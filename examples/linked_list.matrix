@@ -1,0 +1,30 @@
+// examples/linked_list.matrix - real nodes and pointers.
+fn main() {
+    // linked_list keeps a tail pointer: push_back is O(1)
+    let ll = linked_list();
+    ll.push_back(2);
+    ll.push_front(1);
+    ll.push_back(3);
+    println(ll);
+    println(ll.get(1));
+    println(ll.pop_back());
+    println(ll.pop_front());
+    println(ll.len());
+
+    // singly_linked_list has no tail pointer: push_back is O(n)
+    let sl = singly_linked_list();
+    sl.push_back(1);
+    sl.push_back(2);
+    sl.push_front(0);
+    println(sl);
+
+    // doubly_linked_list has prev links: both ends are O(1)
+    let dl = doubly_linked_list();
+    dl.push_back(1);
+    dl.push_back(2);
+    dl.push_front(0);
+    println(dl.pop_back());
+    println(dl.pop_front());
+    println(dl);
+    return 0;
+}

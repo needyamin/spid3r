@@ -1,0 +1,23 @@
+// examples/variables.matrix - let, const, and the primitive types.
+fn main() {
+    let count = 10;
+    let ratio = 0.5;
+    let name = "spid3r";
+    let ready = true;
+    const LIMIT = 3;
+
+    println(count);
+    println(ratio);
+    println(name);
+    println(ready);
+    println(LIMIT);
+
+    count = count + 5;
+    println(count);
+
+    // int + float promotes to float
+    println(count + ratio);
+    // string + string concatenates
+    println(name + " runs");
+    return 0;
+}

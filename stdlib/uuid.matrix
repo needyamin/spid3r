@@ -1,0 +1,45 @@
+// stdlib/uuid.matrix - UUID v4 generation, in Spid3r.
+//
+//   import "uuid" as u;
+//
+//   println(u.uuid_v4());   // "3f2504e0-4f89-41d3-9a0c-0305e82c3301"-shaped
+//
+// Version 4 per RFC 9562: 122 random bits, with the version nibble (4) and
+// variant bits (10xx) set.
+//
+// Entropy comes from `random_bytes` - the OS CSPRNG (/dev/urandom on Unix,
+// RtlGenRandom on Windows) - never from `random_int`. `random_int` is xorshift
+// seeded from the clock, a stack address and the thread id: the output function
+// is invertible, so a handful of observed values reveals the rest of the stream.
+// A UUID is routinely used as a capability (session id, password-reset token,
+// object id), which makes a guessable one an account takeover rather than a
+// code smell. See docs/STANDARD_LIBRARY.md for the non-cryptographic warning on
+// `random_int` and the CSPRNG guidance on `random_bytes`.
+//
+// If the platform has no OS entropy source the call throws. Degrading to a
+// predictable generator is the exact failure this module must not have.
+
+const HEX = "0123456789abcdef";
+
+/// 32 lowercase hex digits from 16 OS-random bytes, with the RFC 9562 version
+/// and variant nibbles forced.
+fn uuid_hex() {
+    let r = random_bytes(16);
+    if r.is_err() {
+        throw "uuid_v4: " + r.unwrap_err();
+    }
+    let h = hex_encode(r.unwrap());
+    // Nibble 12 is the version: always '4'.
+    // Nibble 16 is the variant: 10xx, i.e. the top two bits are '10' and the
+    // bottom two are random. Take those two bits from the following nibble and
+    // map them into 8..b, so the byte keeps the entropy it was drawn with.
+    let low2 = HEX.index_of(h.slice(17, 18)) & 3;
+    let variant = HEX.slice(8 + low2, 9 + low2);
+    return h.slice(0, 12) + "4" + h.slice(13, 16) + variant + h.slice(17, 32);
+}
+
+/// A fresh random UUID v4 string.
+public fn uuid_v4() {
+    let h = uuid_hex();
+    return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20, 32);
+}

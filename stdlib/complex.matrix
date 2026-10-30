@@ -1,0 +1,131 @@
+// stdlib/complex.matrix - complex numbers, written in Spid3r.
+//
+//   import "complex" as cx;
+//
+//   let z = cx.of(3, 4);
+//   println(cx.to_string(cx.mul(z, z)));   // -7+24i
+//   println(cx.abs(z));                    // 5
+//
+// A value is `{ re: float, im: float }`. All the usual operations, plus
+// polar form (`abs`/`arg`) and `from_polar`. Exact for the values f64 can
+// represent; for exact rational arithmetic use stdlib/decimal.matrix.
+
+fn coerce(x, who) {
+    let t = type_of(x);
+    if t == "map" and x.has("re") and x.has("im") {
+        return x;
+    }
+    if t == "int" or t == "float" {
+        return of(x, 0);
+    }
+    throw "complex." + who + ": expected a complex, int, or float, found " + t;
+}
+
+public fn radd(me, other) {
+    return add(other, me);
+}
+
+public fn rsub(me, other) {
+    return sub(other, me);
+}
+
+public fn rmul(me, other) {
+    return mul(other, me);
+}
+
+public fn rdiv(me, other) {
+    return div(other, me);
+}
+
+public fn neg(a) {
+    a = coerce(a, "neg");
+    return of(-a["re"], -a["im"]);
+}
+
+public fn of(re, im = 0) {
+    let z = map("re", float(re), "im", float(im));
+    // Operator methods (hidden from display): `a + b`, `a - b`, `a * b`,
+    // `a / b` dispatch here.
+    z["__add__"] = add;
+    z["__sub__"] = sub;
+    z["__mul__"] = mul;
+    z["__div__"] = div;
+    z["__neg__"] = neg;
+    z["__radd__"] = radd;
+    z["__rsub__"] = rsub;
+    z["__rmul__"] = rmul;
+    z["__rdiv__"] = rdiv;
+    z["__display__"] = to_string(z);
+    return z;
+}
+
+public fn add(a, b) {
+    a = coerce(a, "add");
+    b = coerce(b, "add");
+    return of(a["re"] + b["re"], a["im"] + b["im"]);
+}
+
+public fn sub(a, b) {
+    a = coerce(a, "sub");
+    b = coerce(b, "sub");
+    return of(a["re"] - b["re"], a["im"] - b["im"]);
+}
+
+public fn mul(a, b) {
+    a = coerce(a, "mul");
+    b = coerce(b, "mul");
+    return of(
+        a["re"] * b["re"] - a["im"] * b["im"],
+        a["re"] * b["im"] + a["im"] * b["re"]
+    );
+}
+
+public fn div(a, b) {
+    a = coerce(a, "div");
+    b = coerce(b, "div");
+    let d = b["re"] * b["re"] + b["im"] * b["im"];
+    if d == 0.0 {
+        throw "complex.div: division by zero";
+    }
+    return of(
+        (a["re"] * b["re"] + a["im"] * b["im"]) / d,
+        (a["im"] * b["re"] - a["re"] * b["im"]) / d
+    );
+}
+
+/// Complex conjugate.
+public fn conj(a) {
+    a = coerce(a, "conj");
+    return of(a["re"], -a["im"]);
+}
+
+/// Magnitude (modulus).
+public fn abs(a) {
+    a = coerce(a, "abs");
+    return sqrt(a["re"] * a["re"] + a["im"] * a["im"]);
+}
+
+/// Argument (phase) in radians, in (-pi, pi].
+public fn arg(a) {
+    a = coerce(a, "arg");
+    return atan2(a["im"], a["re"]);
+}
+
+/// `abs` and `arg` in one call: `[magnitude, phase]`.
+public fn polar(a) {
+    return [abs(a), arg(a)];
+}
+
+/// From magnitude and phase.
+public fn from_polar(r, theta) {
+    return of(r * cos(theta), r * sin(theta));
+}
+
+/// `re + im i` with the sign folded into the separator.
+public fn to_string(a) {
+    let im = a["im"];
+    if im < 0.0 {
+        return string(a["re"]) + "-" + string(-im) + "i";
+    }
+    return string(a["re"]) + "+" + string(im) + "i";
+}

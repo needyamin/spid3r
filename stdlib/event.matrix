@@ -1,0 +1,77 @@
+// stdlib/event.matrix - an event loop over the readiness primitive, in Spid3r.
+//
+//   import "event" as ev;
+//   import "http" as http;
+//
+//   let loop = ev.new();
+//   ev.on_readable(loop, conn, fn(c) {
+//       let line = tcp_read(c, 1024).unwrap();
+//       if line == "" { ev.remove(loop, c); tcp_close(c); return; }
+//       tcp_write(c, line);
+//   });
+//   ev.run(loop);   // dispatches readable events until stop() or no watchers
+//
+// One task watches any number of connections: each turn polls them all with
+// `tcp_poll` and dispatches the readable ones to their callbacks. This is
+// the multiplexing pattern behind a single-task server; it is a user-space
+// loop over a readiness probe (2 ms granularity), NOT a kernel epoll wakeup.
+
+/// A fresh event loop.
+public fn start() {
+    let m = map("watchers", list(), "stopped", false);
+    return m;
+}
+
+/// Register a readable-callback for a connection. Returns the loop.
+public fn on_readable(loop, conn, cb) {
+    loop["watchers"].push(map("conn", conn, "cb", cb));
+    return loop;
+}
+
+/// Drop a connection's watcher (call it when a peer disconnects).
+public fn remove(loop, conn) {
+    let kept = list();
+    for w in loop["watchers"] {
+        if w["conn"] != conn {
+            kept.push(w);
+        }
+    }
+    loop["watchers"] = kept;
+    return loop;
+}
+
+/// Ask the loop to exit after the current turn.
+public fn stop(loop) {
+    loop["stopped"] = true;
+    return loop;
+}
+
+/// Run the loop: poll the watched connections and dispatch readable events
+/// until `stop` is called or no watchers remain. `timeout_ms` bounds each
+/// poll turn (so `stop` is noticed promptly).
+public fn run(loop, timeout_ms = 250) {
+    while not loop["stopped"] {
+        if len(loop["watchers"]) == 0 {
+            return;
+        }
+        let ids = list();
+        for w in loop["watchers"] {
+            ids.push(w["conn"]);
+        }
+        let ready = tcp_poll(ids, timeout_ms).unwrap();
+        for id in ready["readable"] {
+            if loop["stopped"] {
+                return;
+            }
+            let current = list();
+            for w in loop["watchers"] {
+                if w["conn"] == id {
+                    current.push(w);
+                }
+            }
+            for w in current {
+                w["cb"](id);
+            }
+        }
+    }
+}

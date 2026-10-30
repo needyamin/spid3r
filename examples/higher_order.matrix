@@ -1,0 +1,50 @@
+// examples/higher_order.matrix - higher-order list methods with callbacks,
+// plus the newer string helpers. Runs identically on tree, vm, and exec.
+fn double(x) {
+    return x * 2;
+}
+
+fn main() {
+    let xs = list(1, 2, 3, 4, 5);
+
+    // map with a named function and with a closure
+    println(xs.map(double));
+    println(xs.map(fn(x) {
+        return x * x;
+    }));
+
+    // filter / reduce / predicates
+    println(xs.filter(fn(x) {
+        return x % 2 == 1;
+    }));
+    println(xs.reduce(0, fn(acc, x) {
+        return acc + x;
+    }));
+    println(xs.all(fn(x) {
+        return x > 0;
+    }));
+    println(xs.any(fn(x) {
+        return x > 4;
+    }));
+
+    // non-mutating sorted / reversed
+    let ys = list(3, 1, 2);
+    println(ys.sorted());
+    println(ys.reversed());
+    println(ys);
+
+    // string helpers
+    println("spid3r".upper());
+    println("  pad  ".trim().pad_left(8, "."));
+    println("k=v".split("=").join("|"));
+    println("abc".reverse());
+    println("a={} b={}".format(1, "two"));
+
+    // map helpers
+    let m = map("a", 1, "b", 2);
+    println(m.items());
+    println(m.has("a"));
+    m.delete("a");
+    println(m.has("a"));
+    return 0;
+}

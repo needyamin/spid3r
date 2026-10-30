@@ -1,0 +1,1046 @@
+//! Zero-dependency Thompson NFA regex engine.
+//!
+//! Supports literals, '.', '*', '+', '?', '{n}', '{n,}', '{n,m}', '^', '$',
+//! character classes '[abc]', ranges '[a-z]', negations '[^...]', escapes
+//! '\d', '\w', '\s', '\D', '\W', '\S', alternation '|', and grouping '()'.
+//! Linear time execution with no exponential backtracking.
+//!
+//! Bounded repeats are expanded at parse time (`a{2,4}` becomes `aa(a(a)?)?`,
+//! `a{2,}` becomes `aa a*`), so the NFA compiler needs no extra state kind.
+//! A `{` that does not form a valid quantifier (`a{`, `a{x}`, `a{2`, `{}`)
+//! is a literal character, as in PCRE; a well-formed count beyond
+//! [`MAX_REPEAT`] is a compile error rather than a silent blowup.
+//!
+//! Bounding one quantifier is not enough, because nesting multiplies:
+//! `(a{1000}){1000}` is 1e6 nodes and `((a{1000}){1000}){1000}` is 1e9 from a
+//! 30-character pattern. [`MAX_NODES`] caps the total size of the parsed pattern
+//! instead, and the check runs *before* the expansion allocates anything, so an
+//! oversized pattern is a fast error rather than an out-of-memory kill.
+
+#[derive(Clone, Debug, PartialEq)]
+enum RegexNode {
+    Literal(char),
+    Any,
+    Class {
+        ranges: Vec<(char, char)>,
+        negated: bool,
+    },
+    AnchorStart,
+    AnchorEnd,
+    Concat(Vec<RegexNode>),
+    Alt(Vec<RegexNode>),
+    Star(Box<RegexNode>),
+    Plus(Box<RegexNode>),
+    Quest(Box<RegexNode>),
+    Empty,
+}
+
+/// Maximum nested-group depth for a regex pattern (mirrors the JSON parser's
+/// recursion guard). Without it, a pathological `((((…` pattern recurses the
+/// pattern parser without bound and overflows the call stack.
+const MAX_REGEX_DEPTH: u32 = 512;
+
+/// Maximum repetition count for `{n}`/`{n,}`/`{n,m}` quantifiers. The
+/// expansion is unrolled into copies at parse time, so a hostile `a{99999999}`
+/// must not allocate a billion states; 1000 matches RE2's default bound.
+const MAX_REPEAT: u32 = 1000;
+
+/// Maximum number of nodes in the parsed pattern, which bounds the compiled NFA
+/// (each node becomes at most two states).
+///
+/// [`MAX_REPEAT`] bounds one quantifier but nesting multiplies them, so
+/// `((a{1000}){1000}){1000}` — 30 characters — used to expand to ~1e9 nodes:
+/// about 100 s and 30 GB per call, from any endpoint that compiles a
+/// user-supplied pattern. The parser charges each atom and each expansion
+/// against this budget before allocating, so the same pattern is now a compile
+/// error in microseconds.
+///
+/// The value is set by what must keep working, not by what must fail: the
+/// panic-hardening suite pins a 200 000-branch alternation
+/// (`tests/panic_hardening_tests.rs`), which is 200 001 nodes, so the budget
+/// needs comfortable headroom above that. 500 000 is ~50 ms of compile work and
+/// ~20 MB, while the smallest nested bomb worth rejecting — `(a{1000}){1000}` —
+/// is 1e6 nodes, twice the budget.
+const MAX_NODES: usize = 500_000;
+
+/// Nodes in an already-parsed subtree, used to price an expansion.
+fn node_size(node: &RegexNode) -> usize {
+    match node {
+        RegexNode::Concat(items) | RegexNode::Alt(items) => {
+            1 + items.iter().map(node_size).sum::<usize>()
+        }
+        RegexNode::Star(inner) | RegexNode::Plus(inner) | RegexNode::Quest(inner) => {
+            1 + node_size(inner)
+        }
+        _ => 1,
+    }
+}
+
+struct Parser<'a> {
+    chars: Vec<char>,
+    pos: usize,
+    depth: u32,
+    /// Nodes built so far, charged against [`MAX_NODES`].
+    nodes: usize,
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
+impl<'a> Parser<'a> {
+    fn new(pattern: &'a str) -> Self {
+        Self {
+            chars: pattern.chars().collect(),
+            pos: 0,
+            depth: 0,
+            nodes: 0,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Charge `n` nodes against the pattern budget, failing before anything is
+    /// allocated. Saturating so a hostile count cannot wrap the counter.
+    fn charge(&mut self, n: usize) -> Result<(), String> {
+        self.nodes = self.nodes.saturating_add(n);
+        if self.nodes > MAX_NODES {
+            return Err(format!(
+                "regex is too large: the pattern parses to more than {MAX_NODES} nodes \
+                 (nested bounded repeats multiply — cap the counts or use fewer of them)"
+            ));
+        }
+        Ok(())
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn next(&mut self) -> Option<char> {
+        let ch = self.chars.get(self.pos).copied();
+        if ch.is_some() {
+            self.pos += 1;
+        }
+        ch
+    }
+
+    fn parse(&mut self) -> Result<RegexNode, String> {
+        let node = self.parse_alt()?;
+        if self.pos < self.chars.len() {
+            return Err(format!(
+                "unexpected character '{}' at position {}",
+                self.chars[self.pos], self.pos
+            ));
+        }
+        Ok(node)
+    }
+
+    fn parse_alt(&mut self) -> Result<RegexNode, String> {
+        let mut branches = vec![self.parse_concat()?];
+        while self.peek() == Some('|') {
+            self.next();
+            branches.push(self.parse_concat()?);
+        }
+        if branches.len() == 1 {
+            Ok(branches.pop().unwrap())
+        } else {
+            Ok(RegexNode::Alt(branches))
+        }
+    }
+
+    fn parse_concat(&mut self) -> Result<RegexNode, String> {
+        let mut items = Vec::new();
+        while let Some(ch) = self.peek() {
+            if ch == '|' || ch == ')' {
+                break;
+            }
+            items.push(self.parse_piece()?);
+        }
+        if items.is_empty() {
+            Ok(RegexNode::Empty)
+        } else if items.len() == 1 {
+            Ok(items.pop().unwrap())
+        } else {
+            Ok(RegexNode::Concat(items))
+        }
+    }
+
+    fn parse_piece(&mut self) -> Result<RegexNode, String> {
+        let atom = self.parse_atom()?;
+        match self.peek() {
+            Some('*') => {
+                self.next();
+                Ok(RegexNode::Star(Box::new(atom)))
+            }
+            Some('+') => {
+                self.next();
+                Ok(RegexNode::Plus(Box::new(atom)))
+            }
+            Some('?') => {
+                self.next();
+                Ok(RegexNode::Quest(Box::new(atom)))
+            }
+            // `{n}` / `{n,}` / `{n,m}` — expanded into copies + Quest/Star. A
+            // `{` that does not form a valid quantifier is left unconsumed so
+            // the next `parse_atom` treats it as a literal character (PCRE's
+            // malformed-brace rule); a well-formed but oversized count is an
+            // error, never a silent blowup.
+            Some('{') => match self.parse_brace_repeat()? {
+                Some((min, max)) => {
+                    // Price the expansion before building it: `copies` is how many
+                    // clones `expand_repeat` is about to create.
+                    let copies = match max {
+                        None => min as usize + 1, // n copies + the unbounded tail
+                        Some(m) => m as usize,    // m copies total
+                    };
+                    self.charge(node_size(&atom).saturating_mul(copies))?;
+                    Self::expand_repeat(atom, min, max)
+                }
+                None => Ok(atom),
+            },
+            _ => Ok(atom),
+        }
+    }
+
+    /// Parse a bounded-repeat quantifier at the current position (which must
+    /// be `{`). Returns `None` — with the position rewound — when the shape is
+    /// not a valid quantifier (`{}`, `{,}`, `{x}`, `{2`, `a{2,x}` …), leaving
+    /// the brace to be consumed as a literal. Accepted forms: `{n}`, `{n,}`,
+    /// `{n,m}`, `{,m}` (= `{0,m}`).
+    fn parse_brace_repeat(&mut self) -> Result<Option<(u32, Option<u32>)>, String> {
+        let start = self.pos;
+        self.next(); // consume '{'
+        let min_digits = self.take_digits();
+        let max_digits = if self.peek() == Some(',') {
+            self.next();
+            Some(self.take_digits())
+        } else {
+            None
+        };
+        if self.peek() != Some('}') {
+            self.pos = start;
+            return Ok(None);
+        }
+        self.next(); // consume '}'
+                     // `{}` and `{,}` are literals, not quantifiers.
+        if min_digits.is_empty() && max_digits.as_deref().is_none_or(|d| d.is_empty()) {
+            self.pos = start;
+            return Ok(None);
+        }
+        let (min, max) = match max_digits {
+            // `{n}` — exact count.
+            None => {
+                let min = Self::parse_count(&min_digits)?;
+                (min, Some(min))
+            }
+            Some(d) => {
+                if d.is_empty() {
+                    // `{n,}` — min or more.
+                    let min = Self::parse_count(&min_digits)?;
+                    (min, None)
+                } else if min_digits.is_empty() {
+                    // `{,m}` — up to m.
+                    (0, Some(Self::parse_count(&d)?))
+                } else {
+                    // `{n,m}` — between n and m.
+                    let min = Self::parse_count(&min_digits)?;
+                    let max = Self::parse_count(&d)?;
+                    if max < min {
+                        return Err(format!(
+                            "regex repeat range: max {max} is smaller than min {min}"
+                        ));
+                    }
+                    (min, Some(max))
+                }
+            }
+        };
+        if min > MAX_REPEAT || matches!(max, Some(m) if m > MAX_REPEAT) {
+            return Err(format!("regex repeat count exceeds max {MAX_REPEAT}"));
+        }
+        Ok(Some((min, max)))
+    }
+
+    fn take_digits(&mut self) -> String {
+        let mut digits = String::new();
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                digits.push(c);
+                self.next();
+            } else {
+                break;
+            }
+        }
+        digits
+    }
+
+    fn parse_count(digits: &str) -> Result<u32, String> {
+        digits
+            .parse::<u32>()
+            .map_err(|_| format!("regex repeat count '{digits}' is out of range"))
+    }
+
+    /// Expand `atom{min,max}` into plain Concat/Quest/Star nodes.
+    fn expand_repeat(atom: RegexNode, min: u32, max: Option<u32>) -> Result<RegexNode, String> {
+        let mut items: Vec<RegexNode> = Vec::new();
+        for _ in 0..min {
+            items.push(atom.clone());
+        }
+        match max {
+            // `{n,}`: n copies then an unbounded tail.
+            None => items.push(RegexNode::Star(Box::new(atom))),
+            Some(max) => {
+                // `{n,m}`: (m - n) further copies nested in optionals, built
+                // from the inside out: `a{2,4}` → `a a (a (a)?)?`.
+                let mut acc: Option<RegexNode> = None;
+                for _ in 0..(max - min) {
+                    acc = Some(match acc {
+                        None => RegexNode::Quest(Box::new(atom.clone())),
+                        Some(inner) => {
+                            RegexNode::Quest(Box::new(RegexNode::Concat(vec![atom.clone(), inner])))
+                        }
+                    });
+                }
+                if let Some(q) = acc {
+                    items.push(q);
+                }
+            }
+        }
+        Ok(match items.len() {
+            0 => RegexNode::Empty,
+            1 => items.pop().unwrap(),
+            _ => RegexNode::Concat(items),
+        })
+    }
+
+    fn parse_atom(&mut self) -> Result<RegexNode, String> {
+        // Every atom produces at most one node; charging here bounds a pattern
+        // that is nothing but literals as well.
+        self.charge(1)?;
+        match self.next() {
+            Some('^') => Ok(RegexNode::AnchorStart),
+            Some('$') => Ok(RegexNode::AnchorEnd),
+            Some('.') => Ok(RegexNode::Any),
+            Some('(') => {
+                self.depth += 1;
+                if self.depth > MAX_REGEX_DEPTH {
+                    return Err(format!(
+                        "regex nesting too deep (max {MAX_REGEX_DEPTH} groups)"
+                    ));
+                }
+                let inner = self.parse_alt()?;
+                self.depth -= 1;
+                if self.next() != Some(')') {
+                    return Err("unclosed parenthesis in regex".to_string());
+                }
+                Ok(inner)
+            }
+            Some('[') => self.parse_class(),
+            Some('\\') => self.parse_escape(),
+            Some(ch) if ch == '*' || ch == '+' || ch == '?' => {
+                Err(format!("quantifier '{}' without preceding token", ch))
+            }
+            Some(ch) => Ok(RegexNode::Literal(ch)),
+            None => Ok(RegexNode::Empty),
+        }
+    }
+
+    fn parse_escape(&mut self) -> Result<RegexNode, String> {
+        match self.next() {
+            Some('d') => Ok(RegexNode::Class {
+                ranges: vec![('0', '9')],
+                negated: false,
+            }),
+            Some('D') => Ok(RegexNode::Class {
+                ranges: vec![('0', '9')],
+                negated: true,
+            }),
+            Some('w') => Ok(RegexNode::Class {
+                ranges: vec![('a', 'z'), ('A', 'Z'), ('0', '9'), ('_', '_')],
+                negated: false,
+            }),
+            Some('W') => Ok(RegexNode::Class {
+                ranges: vec![('a', 'z'), ('A', 'Z'), ('0', '9'), ('_', '_')],
+                negated: true,
+            }),
+            Some('s') => Ok(RegexNode::Class {
+                ranges: vec![(' ', ' '), ('\t', '\t'), ('\r', '\r'), ('\n', '\n')],
+                negated: false,
+            }),
+            Some('S') => Ok(RegexNode::Class {
+                ranges: vec![(' ', ' '), ('\t', '\t'), ('\r', '\r'), ('\n', '\n')],
+                negated: true,
+            }),
+            Some('t') => Ok(RegexNode::Literal('\t')),
+            Some('n') => Ok(RegexNode::Literal('\n')),
+            Some('r') => Ok(RegexNode::Literal('\r')),
+            Some(ch) => Ok(RegexNode::Literal(ch)),
+            None => Err("trailing backslash in regex".to_string()),
+        }
+    }
+
+    fn parse_class(&mut self) -> Result<RegexNode, String> {
+        let negated = if self.peek() == Some('^') {
+            self.next();
+            true
+        } else {
+            false
+        };
+        let mut ranges = Vec::new();
+        while let Some(ch) = self.next() {
+            if ch == ']' {
+                return Ok(RegexNode::Class { ranges, negated });
+            }
+            let first = if ch == '\\' {
+                match self.next() {
+                    Some('d') => {
+                        ranges.push(('0', '9'));
+                        continue;
+                    }
+                    Some('w') => {
+                        ranges.extend(vec![('a', 'z'), ('A', 'Z'), ('0', '9'), ('_', '_')]);
+                        continue;
+                    }
+                    Some('s') => {
+                        ranges.extend(vec![(' ', ' '), ('\t', '\t'), ('\r', '\r'), ('\n', '\n')]);
+                        continue;
+                    }
+                    Some('t') => '\t',
+                    Some('n') => '\n',
+                    Some('r') => '\r',
+                    Some(c) => c,
+                    None => return Err("unclosed escape in character class".to_string()),
+                }
+            } else {
+                ch
+            };
+
+            if self.peek() == Some('-') && self.chars.get(self.pos + 1) != Some(&']') {
+                self.next(); // consume '-'
+                let second = match self.next() {
+                    Some('\\') => match self.next() {
+                        Some('t') => '\t',
+                        Some('n') => '\n',
+                        Some('r') => '\r',
+                        Some(c) => c,
+                        None => return Err("unclosed escape in character class".to_string()),
+                    },
+                    Some(c) => c,
+                    None => return Err("unclosed character class".to_string()),
+                };
+                ranges.push((first.min(second), first.max(second)));
+            } else {
+                ranges.push((first, first));
+            }
+        }
+        Err("unclosed character class '['".to_string())
+    }
+}
+
+#[derive(Clone, Debug)]
+enum StateKind {
+    Char(char),
+    Any,
+    Class {
+        ranges: Vec<(char, char)>,
+        negated: bool,
+    },
+    AnchorStart,
+    AnchorEnd,
+    Split,
+    Match,
+}
+
+#[derive(Clone, Debug)]
+struct State {
+    kind: StateKind,
+    next1: Option<usize>,
+    next2: Option<usize>,
+}
+
+struct Frag {
+    start: usize,
+    exits: Vec<(usize, u8)>, // (state_index, 1 for next1 or 2 for next2)
+}
+
+struct Nfa {
+    states: Vec<State>,
+    start: usize,
+}
+
+impl Nfa {
+    fn new(root: &RegexNode) -> Self {
+        let mut states = Vec::new();
+        let frag = Self::compile_node(root, &mut states);
+        let match_state = states.len();
+        states.push(State {
+            kind: StateKind::Match,
+            next1: None,
+            next2: None,
+        });
+        for (s, slot) in frag.exits {
+            if slot == 1 {
+                states[s].next1 = Some(match_state);
+            } else {
+                states[s].next2 = Some(match_state);
+            }
+        }
+        Self {
+            states,
+            start: frag.start,
+        }
+    }
+
+    fn compile_node(node: &RegexNode, states: &mut Vec<State>) -> Frag {
+        match node {
+            RegexNode::Literal(ch) => {
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::Char(*ch),
+                    next1: None,
+                    next2: None,
+                });
+                Frag {
+                    start: s,
+                    exits: vec![(s, 1)],
+                }
+            }
+            RegexNode::Any => {
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::Any,
+                    next1: None,
+                    next2: None,
+                });
+                Frag {
+                    start: s,
+                    exits: vec![(s, 1)],
+                }
+            }
+            RegexNode::Class { ranges, negated } => {
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::Class {
+                        ranges: ranges.clone(),
+                        negated: *negated,
+                    },
+                    next1: None,
+                    next2: None,
+                });
+                Frag {
+                    start: s,
+                    exits: vec![(s, 1)],
+                }
+            }
+            RegexNode::AnchorStart => {
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::AnchorStart,
+                    next1: None,
+                    next2: None,
+                });
+                Frag {
+                    start: s,
+                    exits: vec![(s, 1)],
+                }
+            }
+            RegexNode::AnchorEnd => {
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::AnchorEnd,
+                    next1: None,
+                    next2: None,
+                });
+                Frag {
+                    start: s,
+                    exits: vec![(s, 1)],
+                }
+            }
+            RegexNode::Empty => {
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::Split,
+                    next1: None,
+                    next2: None,
+                });
+                Frag {
+                    start: s,
+                    exits: vec![(s, 1)],
+                }
+            }
+            RegexNode::Concat(nodes) => {
+                if nodes.is_empty() {
+                    return Self::compile_node(&RegexNode::Empty, states);
+                }
+                let mut frags: Vec<Frag> = nodes
+                    .iter()
+                    .map(|n| Self::compile_node(n, states))
+                    .collect();
+                for i in 0..frags.len() - 1 {
+                    let next_start = frags[i + 1].start;
+                    for (s, slot) in frags[i].exits.drain(..) {
+                        if slot == 1 {
+                            states[s].next1 = Some(next_start);
+                        } else {
+                            states[s].next2 = Some(next_start);
+                        }
+                    }
+                }
+                let start = frags[0].start;
+                let exits = frags.pop().unwrap().exits;
+                Frag { start, exits }
+            }
+            RegexNode::Alt(nodes) => {
+                if nodes.is_empty() {
+                    return Self::compile_node(&RegexNode::Empty, states);
+                }
+                let mut branches: Vec<Frag> = nodes
+                    .iter()
+                    .map(|n| Self::compile_node(n, states))
+                    .collect();
+                let mut cur = branches.remove(0);
+                for next_branch in branches {
+                    let s = states.len();
+                    states.push(State {
+                        kind: StateKind::Split,
+                        next1: Some(cur.start),
+                        next2: Some(next_branch.start),
+                    });
+                    let mut exits = cur.exits;
+                    exits.extend(next_branch.exits);
+                    cur = Frag { start: s, exits };
+                }
+                cur
+            }
+            RegexNode::Star(inner) => {
+                let frag = Self::compile_node(inner, states);
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::Split,
+                    next1: Some(frag.start),
+                    next2: None,
+                });
+                for (es, slot) in frag.exits {
+                    if slot == 1 {
+                        states[es].next1 = Some(s);
+                    } else {
+                        states[es].next2 = Some(s);
+                    }
+                }
+                Frag {
+                    start: s,
+                    exits: vec![(s, 2)],
+                }
+            }
+            RegexNode::Plus(inner) => {
+                let frag = Self::compile_node(inner, states);
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::Split,
+                    next1: Some(frag.start),
+                    next2: None,
+                });
+                for (es, slot) in frag.exits {
+                    if slot == 1 {
+                        states[es].next1 = Some(s);
+                    } else {
+                        states[es].next2 = Some(s);
+                    }
+                }
+                Frag {
+                    start: frag.start,
+                    exits: vec![(s, 2)],
+                }
+            }
+            RegexNode::Quest(inner) => {
+                let frag = Self::compile_node(inner, states);
+                let s = states.len();
+                states.push(State {
+                    kind: StateKind::Split,
+                    next1: Some(frag.start),
+                    next2: None,
+                });
+                let mut exits = frag.exits;
+                exits.push((s, 2));
+                Frag { start: s, exits }
+            }
+        }
+    }
+
+    /// Leftmost match at or after `from`: `(start, end)` in char indices.
+    ///
+    /// One scan of the input carries a "start anywhere" thread, so the whole
+    /// search costs O(n * states). The previous implementation re-ran the NFA
+    /// from every possible start index, which is O(n^2 * states) — measured at
+    /// 634 ms for 2 500 characters and past 30 s at 20 000 (audit A-15).
+    ///
+    /// Semantics are unchanged: the earliest start that can match wins, and for
+    /// that start the longest end is reported (the old `match_from` also kept
+    /// the last `Match` it saw).
+    fn search(&self, chars: &[char], from: usize) -> Option<(usize, usize)> {
+        let n = chars.len();
+        let num_states = self.states.len();
+        // (state, start) — the start index is what makes the result leftmost.
+        let mut active: Vec<(usize, usize)> = Vec::new();
+        let mut visited = vec![false; num_states];
+        let mut next: Vec<(usize, usize)> = Vec::new();
+        let mut visited_next = vec![false; num_states];
+        let mut best: Option<(usize, usize)> = None;
+
+        // A manual cursor rather than `for i in from..=n`: the loop needs the
+        // index as a *position* (thread starts, `cur_idx`) and runs one step
+        // past the last character, where there is no element to iterate.
+        let mut i = from;
+        loop {
+            // `active` already holds the closures reached at position `i`.
+            // Existing threads started earlier, so they claim states first and
+            // a later start can never displace them.
+            if best.is_none() {
+                self.add_thread(self.start, i, i, n, &mut active, &mut visited, &mut best);
+            }
+            // No live thread only ends the search once a match is in hand: an
+            // empty thread set just means nothing is in flight *at this
+            // position*, and a later start can still match — that is how `$`
+            // finds the empty match at the end of a non-empty string.
+            if active.is_empty() && best.is_some() {
+                return best;
+            }
+            if i == n {
+                break;
+            }
+            let ch = chars[i];
+            visited_next.fill(false);
+            next.clear();
+            for &(s_idx, thread_start) in &active {
+                // Once a start is known to match, threads that began later
+                // cannot improve the answer.
+                if let Some((best_start, _)) = best {
+                    if thread_start != best_start {
+                        continue;
+                    }
+                }
+                let step = match &self.states[s_idx].kind {
+                    StateKind::Char(c) => *c == ch,
+                    StateKind::Any => ch != '\n',
+                    StateKind::Class { ranges, negated } => {
+                        let in_range = ranges.iter().any(|&(lo, hi)| ch >= lo && ch <= hi);
+                        // A negated class matches newline, as in PCRE/Python/Go.
+                        // Only `.` excludes it (the `Any` arm above); excluding
+                        // it here too made `[^a]` fail on every newline.
+                        if *negated {
+                            !in_range
+                        } else {
+                            in_range
+                        }
+                    }
+                    _ => false,
+                };
+                if step {
+                    if let Some(nxt) = self.states[s_idx].next1 {
+                        self.add_thread(
+                            nxt,
+                            i + 1,
+                            thread_start,
+                            n,
+                            &mut next,
+                            &mut visited_next,
+                            &mut best,
+                        );
+                    }
+                }
+            }
+            std::mem::swap(&mut active, &mut next);
+            std::mem::swap(&mut visited, &mut visited_next);
+            i += 1;
+        }
+
+        best
+    }
+
+    /// Epsilon-closure of `start`, computed with an explicit stack. A
+    /// pathological `a|b|c…` pattern chains one Split state per branch, so a
+    /// recursive closure would overflow the call stack and abort the host;
+    /// iteration has no depth limit.
+    ///
+    /// `thread_start` is the input index the thread began at, so a `Match` can
+    /// report where the match started. A state already visited at this position
+    /// belongs to an equal-or-earlier start and wins, which is what keeps the
+    /// result leftmost without tracking every start separately.
+    #[allow(clippy::too_many_arguments)]
+    fn add_thread(
+        &self,
+        start: usize,
+        cur_idx: usize,
+        thread_start: usize,
+        total_len: usize,
+        active: &mut Vec<(usize, usize)>,
+        visited: &mut [bool],
+        best: &mut Option<(usize, usize)>,
+    ) {
+        let mut stack = vec![start];
+        while let Some(s_idx) = stack.pop() {
+            if visited[s_idx] {
+                continue;
+            }
+            visited[s_idx] = true;
+            match &self.states[s_idx].kind {
+                StateKind::Split => {
+                    if let Some(n2) = self.states[s_idx].next2 {
+                        stack.push(n2);
+                    }
+                    if let Some(n1) = self.states[s_idx].next1 {
+                        stack.push(n1);
+                    }
+                }
+                StateKind::AnchorStart => {
+                    if cur_idx == 0 {
+                        if let Some(n1) = self.states[s_idx].next1 {
+                            stack.push(n1);
+                        }
+                    }
+                }
+                StateKind::AnchorEnd => {
+                    if cur_idx == total_len {
+                        if let Some(n1) = self.states[s_idx].next1 {
+                            stack.push(n1);
+                        }
+                    }
+                }
+                StateKind::Match => match best {
+                    None => *best = Some((thread_start, cur_idx)),
+                    // Same start: a later `Match` is a longer match.
+                    Some((bs, be)) if *bs == thread_start => *be = cur_idx,
+                    // A later start cannot beat the leftmost one.
+                    Some(_) => {}
+                },
+                _ => active.push((s_idx, thread_start)),
+            }
+        }
+    }
+}
+
+fn regex_compile(pattern: &str) -> Result<Nfa, String> {
+    let mut parser = Parser::new(pattern);
+    let ast = parser.parse()?;
+    Ok(Nfa::new(&ast))
+}
+
+pub fn regex_match(pattern: &str, text: &str) -> Result<bool, String> {
+    let nfa = regex_compile(pattern)?;
+    let chars: Vec<char> = text.chars().collect();
+    Ok(nfa.search(&chars, 0).is_some())
+}
+
+pub fn regex_find(pattern: &str, text: &str) -> Result<Option<String>, String> {
+    let nfa = regex_compile(pattern)?;
+    let chars: Vec<char> = text.chars().collect();
+    Ok(nfa
+        .search(&chars, 0)
+        .map(|(s, e)| chars[s..e].iter().collect()))
+}
+
+pub fn regex_find_all(pattern: &str, text: &str) -> Result<Vec<String>, String> {
+    let nfa = regex_compile(pattern)?;
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut pos = 0;
+    // Each iteration resumes the scan where the last match ended, so the input
+    // is walked once overall rather than once per candidate start.
+    while pos <= chars.len() {
+        match nfa.search(&chars, pos) {
+            Some((s, e)) => {
+                out.push(chars[s..e].iter().collect());
+                pos = if e > s { e } else { s + 1 };
+            }
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+pub fn regex_replace(pattern: &str, text: &str, replacement: &str) -> Result<String, String> {
+    let nfa = regex_compile(pattern)?;
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut pos = 0;
+    while pos < chars.len() {
+        match nfa.search(&chars, pos) {
+            Some((s, e)) => {
+                // A match that starts at end-of-input is never replaced (the
+                // pre-single-pass implementation skipped that position too),
+                // but the unmatched prefix still has to be emitted.
+                if s == chars.len() {
+                    out.extend(&chars[pos..]);
+                    break;
+                }
+                out.extend(&chars[pos..s]);
+                out.push_str(replacement);
+                if e > s {
+                    pos = e;
+                } else {
+                    // Empty match: emit the character so the loop advances.
+                    out.push(chars[s]);
+                    pos = s + 1;
+                }
+            }
+            None => {
+                out.extend(&chars[pos..]);
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_match() {
+        assert!(regex_match("a+b", "aaab").unwrap());
+        assert!(!regex_match("^a+b$", "aaabc").unwrap());
+        assert!(regex_match("^a+b$", "aaab").unwrap());
+    }
+
+    #[test]
+    fn test_find() {
+        assert_eq!(
+            regex_find(r"\d+", "abc123xyz").unwrap(),
+            Some("123".to_string())
+        );
+        assert_eq!(
+            regex_find(r"foo|bar", "start bar end").unwrap(),
+            Some("bar".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_all() {
+        assert_eq!(
+            regex_find_all(r"\d+", "one 1 two 22 three 333").unwrap(),
+            vec!["1".to_string(), "22".to_string(), "333".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_replace() {
+        assert_eq!(
+            regex_replace(r"\d+", "user123_item456", "NUM").unwrap(),
+            "userNUM_itemNUM"
+        );
+    }
+
+    #[test]
+    fn test_classes_and_anchors() {
+        assert!(regex_match(r"^[a-zA-Z_]\w*$", "valid_var_1").unwrap());
+        assert!(!regex_match(r"^[a-zA-Z_]\w*$", "1invalid").unwrap());
+    }
+
+    // -----------------------------------------------------------------
+    // Bounded-repeat quantifiers {n} / {n,} / {n,m} (field-test finding F-1:
+    // they used to match literal brace characters — see AUDIT_REPORT.md)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn test_repeat_exact() {
+        assert!(regex_match(r"^[0-9]{4}$", "5555").unwrap());
+        assert!(!regex_match(r"^[0-9]{4}$", "555").unwrap());
+        assert!(!regex_match(r"^[0-9]{4}$", "55555").unwrap());
+        assert!(regex_match(r"^a{2}$", "aa").unwrap());
+        assert!(!regex_match(r"^a{2}$", "a").unwrap());
+        assert!(!regex_match(r"^a{2}$", "aaa").unwrap());
+    }
+
+    #[test]
+    fn test_repeat_range() {
+        assert!(regex_match(r"^a{2,4}$", "aa").unwrap());
+        assert!(regex_match(r"^a{2,4}$", "aaa").unwrap());
+        assert!(regex_match(r"^a{2,4}$", "aaaa").unwrap());
+        assert!(!regex_match(r"^a{2,4}$", "a").unwrap());
+        assert!(!regex_match(r"^a{2,4}$", "aaaaa").unwrap());
+        // `{,m}` is `{0,m}`.
+        assert!(regex_match(r"^a{,2}$", "").unwrap());
+        assert!(regex_match(r"^a{,2}$", "aa").unwrap());
+        assert!(!regex_match(r"^a{,2}$", "aaa").unwrap());
+    }
+
+    #[test]
+    fn test_repeat_open_ended() {
+        assert!(regex_match(r"^a{2,}$", "aa").unwrap());
+        assert!(regex_match(r"^a{2,}$", "aaaaaa").unwrap());
+        assert!(!regex_match(r"^a{2,}$", "a").unwrap());
+        assert!(regex_match(r"^(ab){2,}$", "ababab").unwrap());
+    }
+
+    #[test]
+    fn test_repeat_zero_and_groups() {
+        // `{0}` and `{0,1}` degenerate forms.
+        assert!(regex_match(r"^ab{0}c$", "ac").unwrap());
+        assert!(regex_match(r"^ab{0,1}c$", "abc").unwrap());
+        assert!(regex_match(r"^ab{0,1}c$", "ac").unwrap());
+        // Repeats over groups and classes.
+        assert!(regex_match(r"^(ab){2}$", "abab").unwrap());
+        assert!(!regex_match(r"^(ab){2}$", "ab").unwrap());
+        assert!(regex_match(r"^[ab]{3}$", "aba").unwrap());
+        assert!(!regex_match(r"^[ab]{3}$", "abc").unwrap());
+        // Longest match within the range is still reported.
+        assert_eq!(regex_find(r"a{1,3}", "aaaa").unwrap(), Some("aaa".into()));
+        assert_eq!(
+            regex_find_all(r"\d{2,3}", "1 22 333 4444").unwrap(),
+            vec!["22".to_string(), "333".to_string(), "444".to_string()]
+        );
+        assert_eq!(regex_replace(r"o{2}", "zoo keep", "0").unwrap(), "z0 keep");
+    }
+
+    #[test]
+    fn test_repeat_malformed_braces_stay_literal() {
+        // PCRE rule: a `{` that does not form a valid quantifier is literal.
+        assert!(regex_match(r"a{2", "xa{2").unwrap());
+        assert!(regex_match(r"a{x}", "a{x}").unwrap());
+        assert!(regex_match(r"a{}", "a{}").unwrap());
+        assert!(regex_match(r"a{,}", "a{,}").unwrap());
+        assert!(regex_match(r"a{2,x}", "a{2,x}").unwrap());
+        assert!(regex_match(r"^\{2\}$", "{2}").unwrap());
+        // The old silent-wrong-answer shape is gone.
+        assert!(!regex_match("a{2}", "a{2}").unwrap());
+        assert!(regex_match("a{2}", "aa").unwrap());
+    }
+
+    #[test]
+    fn test_repeat_limits_are_errors_not_blowups() {
+        let e = regex_match("a{1001}", "aaa").unwrap_err();
+        assert!(e.contains("exceeds max"), "got: {e}");
+        let e = regex_match("a{2,1001}", "aaa").unwrap_err();
+        assert!(e.contains("exceeds max"), "got: {e}");
+        let e = regex_match("a{3,2}", "aaa").unwrap_err();
+        assert!(e.contains("smaller than min"), "got: {e}");
+        // At the cap it still compiles and works.
+        assert!(regex_match(r"^a{1000}$", &"a".repeat(1000)).unwrap());
+    }
+
+    #[test]
+    fn nested_repeats_are_rejected_instead_of_expanded() {
+        // Each pattern here is a handful of characters but multiplies out to
+        // 1e6..1e9 nodes. Before MAX_NODES the last one ran ~100 s and reached
+        // ~30 GB; the assertion is only meaningful because the test returns.
+        for pat in [
+            "(a{1000}){1000}",
+            "((a{1000}){1000}){5}",
+            "((a{1000}){1000}){1000}",
+        ] {
+            let e = regex_match(pat, "aaa").unwrap_err();
+            assert!(e.contains("too large"), "{pat} -> {e}");
+        }
+        // The budget accumulates across the pattern, not just per quantifier.
+        // 600 x 1000 = 600k nodes, over the 500k budget.
+        let wide = "a{1000}".repeat(600);
+        let e = regex_match(&wide, "aaa").unwrap_err();
+        assert!(e.contains("too large"), "got: {e}");
+        // 200k is under the budget: the panic-hardening suite relies on a
+        // 200 000-branch alternation compiling, and it must stay that way.
+        let alt = format!("{}a", "a|".repeat(199_999));
+        assert!(!regex_match(&alt, "z").unwrap());
+        assert!(regex_match(&alt, "a").unwrap());
+        // Sane patterns on both sides of the old behaviour still work.
+        assert!(regex_match(r"^[a-z]{1000}$", &"a".repeat(1000)).unwrap());
+        assert!(regex_match(r"^(ab|cd){500}$", &"abcd".repeat(250)).unwrap());
+        assert!(regex_match(r"^a{1000}$", &"a".repeat(1000)).unwrap());
+    }
+}

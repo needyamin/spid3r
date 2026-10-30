@@ -1,0 +1,76 @@
+{
+  "name": "spid3r",
+  "displayName": "Spid3r",
+  "description": "Language support for Spid3r: diagnostics, hover, go-to-definition, outline, formatting.",
+  "version": "1.0.0",
+  "publisher": "spid3r",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Formatters"
+  ],
+  "keywords": [
+    "spid3r",
+    "scripting"
+  ],
+  "activationEvents": [
+    "onLanguage:spid3r"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "spid3r",
+        "extensions": [
+          ".matrix"
+        ],
+        "aliases": [
+          "Spid3r"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icon.png",
+          "dark": "./icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "spid3r",
+        "scopeName": "source.spid3r",
+        "path": "./syntaxes/spid3r.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Spid3r",
+      "properties": {
+        "spid3r.serverPath": {
+          "type": "string",
+          "default": "spid3r",
+          "description": "Path to the spid3r executable. Use an absolute path when it is not on PATH (e.g. C:\\spid3r\\spid3r.exe)."
+        },
+        "spid3r.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Log the JSON-RPC traffic to the Spid3r output channel."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

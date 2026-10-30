@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spid3r Web Calculator | Interactive Demo</title>
+<meta name="description" content="Official Spid3r Web Calculator demo. A responsive, high-precision web calculator powered by Spid3r language design.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-deep: #07090e;
+    --card: #111722;
+    --card-surface: rgba(19, 27, 41, 0.75);
+    --border: rgba(255, 255, 255, 0.08);
+    --border-glow: rgba(56, 189, 248, 0.4);
+    --cyan: #38bdf8;
+    --cyan-glow: rgba(56, 189, 248, 0.25);
+    --green: #34d399;
+    --amber: #fbbf24;
+    --text: #f1f5f9;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    --btn-num: #162030;
+    --btn-num-hover: #1e2c42;
+    --btn-op: #0f2338;
+    --btn-op-hover: #183556;
+    --btn-eq: linear-gradient(135deg, #0284c7, #38bdf8);
+    --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background-color: var(--bg-deep);
+    background-image: 
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(56, 189, 248, 0.15), transparent),
+      radial-gradient(circle at 10% 70%, rgba(99, 102, 241, 0.06), transparent 50%),
+      radial-gradient(circle at 90% 30%, rgba(52, 211, 153, 0.05), transparent 40%);
+    color: var(--text);
+    font-family: var(--font-body);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem;
+  }
+
+  /* Header */
+  header {
+    width: 100%;
+    max-width: 900px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .brand-icon {
+    width: 40px;
+    height: 40px;
+    background: linear-gradient(135deg, #0284c7, #38bdf8);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 20px var(--cyan-glow);
+  }
+
+  .brand-icon svg { width: 22px; height: 22px; fill: #fff; }
+
+  .brand-text h1 {
+    font-family: var(--font-heading);
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .tag {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: var(--cyan-glow);
+    color: var(--cyan);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+  }
+
+  .brand-text p {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+  }
+
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .nav-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.85rem;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--card);
+    border: 1px solid var(--border);
+    text-decoration: none;
+    transition: all 0.2s;
+  }
+
+  .nav-btn:hover {
+    background: #192334;
+    border-color: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    transform: translateY(-1px);
+  }
+
+  /* Main Layout */
+  .calc-layout {
+    width: 100%;
+    max-width: 900px;
+    display: grid;
+    grid-template-columns: 440px 1fr;
+    gap: 1.5rem;
+    align-items: start;
+  }
+
+  @media (max-width: 820px) {
+    .calc-layout { grid-template-columns: 1fr; }
+  }
+
+  /* Calculator Chassis */
+  .calc-card {
+    background: var(--card-surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 1.5rem;
+    backdrop-filter: blur(16px);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5), 0 0 30px rgba(56, 189, 248, 0.08);
+  }
+
+  /* Screen Display */
+  .screen {
+    background: #080c14;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.25rem 1.25rem 0.9rem;
+    margin-bottom: 1.25rem;
+    text-align: right;
+    box-shadow: inset 0 2px 8px rgba(0,0,0,0.4);
+  }
+
+  .expr-line {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    color: var(--text-dim);
+    min-height: 1.4rem;
+    overflow-x: auto;
+    white-space: nowrap;
+    word-break: break-all;
+  }
+
+  .main-line {
+    font-family: var(--font-mono);
+    font-size: 2.3rem;
+    font-weight: 700;
+    color: #fff;
+    margin-top: 0.35rem;
+    overflow-x: auto;
+    white-space: nowrap;
+    letter-spacing: -0.02em;
+  }
+
+  .main-line.error {
+    color: #fb7185;
+    font-size: 1.6rem;
+  }
+
+  /* Mode Switcher */
+  .mode-tabs {
+    display: flex;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 0.25rem;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    border: 1px solid var(--border);
+  }
+
+  .mode-tab {
+    flex: 1;
+    text-align: center;
+    padding: 0.35rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .mode-tab.active {
+    background: var(--card);
+    color: var(--cyan);
+    font-weight: 700;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+  }
+
+  /* Keypad Grid */
+  .keypad {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.65rem;
+  }
+
+  .scientific-keys {
+    display: none;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.65rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .scientific-keys.show {
+    display: grid;
+  }
+
+  .key {
+    background: var(--btn-num);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    height: 52px;
+    font-family: var(--font-mono);
+    font-size: 1.15rem;
+    font-weight: 600;
+    color: var(--text);
+    cursor: pointer;
+    transition: all 0.12s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+  }
+
+  .key:hover {
+    background: var(--btn-num-hover);
+    border-color: rgba(255, 255, 255, 0.2);
+    transform: translateY(-1px);
+    color: #fff;
+  }
+
+  .key:active {
+    transform: translateY(1px);
+  }
+
+  .key-op {
+    background: var(--btn-op);
+    color: var(--cyan);
+    font-weight: 700;
+    border-color: rgba(56, 189, 248, 0.2);
+  }
+
+  .key-op:hover {
+    background: var(--btn-op-hover);
+    border-color: var(--cyan);
+    color: #fff;
+  }
+
+  .key-fn {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-muted);
+    font-size: 0.95rem;
+  }
+
+  .key-fn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+  }
+
+  .key-eq {
+    background: var(--btn-eq);
+    color: #07090e;
+    font-weight: 800;
+    border: none;
+    box-shadow: 0 4px 15px var(--cyan-glow);
+  }
+
+  .key-eq:hover {
+    background: linear-gradient(135deg, #0369a1, #0284c7);
+    color: #fff;
+  }
+
+  .key-clear {
+    color: #fb7185;
+  }
+
+  /* History & Info Sidebar */
+  .sidebar-card {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  .history-box {
+    background: var(--card-surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 1.25rem;
+    backdrop-filter: blur(16px);
+  }
+
+  .history-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.85rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .history-header h3 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    font-weight: 700;
+  }
+
+  .btn-sm {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: color 0.15s;
+  }
+
+  .btn-sm:hover { color: #fb7185; }
+
+  .history-list {
+    max-height: 240px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .history-item {
+    padding: 0.6rem 0.75rem;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    cursor: pointer;
+    transition: all 0.15s;
+    text-align: right;
+  }
+
+  .history-item:hover {
+    background: rgba(56, 189, 248, 0.06);
+    border-color: rgba(56, 189, 248, 0.3);
+  }
+
+  .hist-expr {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .hist-res {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--cyan);
+  }
+
+  .empty-hist {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.82rem;
+    padding: 2rem 0;
+  }
+
+  /* Spid3r Native Architecture Card */
+  .info-box {
+    background: var(--card-surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 1.25rem;
+  }
+
+  .info-box h3 {
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .info-box p {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin-bottom: 0.75rem;
+  }
+
+  .cmd-chip {
+    background: #07090e;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.45rem 0.65rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--cyan);
+    display: block;
+    word-break: break-all;
+  }
+
+  footer {
+    margin-top: 3rem;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-icon">
+      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V7h2v2zm4 8h-2v-2h2v2zm0-4h-2v-2h2v2zm0-4h-2V7h2v2zm-8 8H6v-2h2v2zm0-4H6v-2h2v2zm0-4H6V7h2v2z"/></svg>
+    </div>
+    <div class="brand-text">
+      <h1>Spid3r Web Calculator <span class="tag">Demo</span></h1>
+      <p>Dual Web & Native Calculator demo architecture for Spid3r 1.0.0</p>
+    </div>
+  </div>
+
+  <div class="nav-links">
+    <a href="../../../docs/html/doc.html" class="nav-btn">📖 Documentation</a>
+    <a href="../../../docs/html/playground.html" class="nav-btn">⚡ Live REPL</a>
+  </div>
+</header>
+
+<main class="calc-layout">
+  <!-- Calculator Main Frame -->
+  <div class="calc-card">
+    <div class="screen">
+      <div class="expr-line" id="exprDisplay">&nbsp;</div>
+      <div class="main-line" id="mainDisplay">0</div>
+    </div>
+
+    <div class="mode-tabs">
+      <button class="mode-tab active" id="tabStandard" onclick="setMode('standard')">Standard</button>
+      <button class="mode-tab" id="tabScientific" onclick="setMode('scientific')">Scientific</button>
+    </div>
+
+    <!-- Scientific Row (collapsible) -->
+    <div class="scientific-keys" id="sciRow">
+      <button class="key key-fn" onclick="inputFunc('sin')">sin</button>
+      <button class="key key-fn" onclick="inputFunc('cos')">cos</button>
+      <button class="key key-fn" onclick="inputFunc('tan')">tan</button>
+      <button class="key key-fn" onclick="inputFunc('sqrt')">√</button>
+      <button class="key key-fn" onclick="inputFunc('log')">log</button>
+      <button class="key key-fn" onclick="inputFunc('ln')">ln</button>
+      <button class="key key-fn" onclick="inputConst('pi')">π</button>
+      <button class="key key-fn" onclick="inputConst('e')">e</button>
+    </div>
+
+    <!-- Keypad -->
+    <div class="keypad">
+      <button class="key key-fn key-clear" onclick="clearAll()">AC</button>
+      <button class="key key-fn" onclick="backspace()">⌫</button>
+      <button class="key key-fn" onclick="inputOp('%')">%</button>
+      <button class="key key-op" onclick="inputOp('/')">÷</button>
+
+      <button class="key" onclick="inputDigit('7')">7</button>
+      <button class="key" onclick="inputDigit('8')">8</button>
+      <button class="key" onclick="inputDigit('9')">9</button>
+      <button class="key key-op" onclick="inputOp('*')">×</button>
+
+      <button class="key" onclick="inputDigit('4')">4</button>
+      <button class="key" onclick="inputDigit('5')">5</button>
+      <button class="key" onclick="inputDigit('6')">6</button>
+      <button class="key key-op" onclick="inputOp('-')">−</button>
+
+      <button class="key" onclick="inputDigit('1')">1</button>
+      <button class="key" onclick="inputDigit('2')">2</button>
+      <button class="key" onclick="inputDigit('3')">3</button>
+      <button class="key key-op" onclick="inputOp('+')">+</button>
+
+      <button class="key key-fn" onclick="toggleSign()">±</button>
+      <button class="key" onclick="inputDigit('0')">0</button>
+      <button class="key" onclick="inputDot()">.</button>
+      <button class="key key-eq" id="btnEqual" onclick="calculate()">=</button>
+    </div>
+  </div>
+
+  <!-- Sidebar: History & Native Info -->
+  <div class="sidebar-card">
+    <div class="history-box">
+      <div class="history-header">
+        <h3>Calculation History</h3>
+        <button class="btn-sm" onclick="clearHistory()">Clear History</button>
+      </div>
+      <div class="history-list" id="historyList">
+        <div class="empty-hist">No past calculations yet.</div>
+      </div>
+    </div>
+
+    <div class="info-box">
+      <h3>💻 Native Desktop & CLI Demos</h3>
+      <p>Spid3r ships with both this web calculator and a native console/desktop version built in pure Spid3r:</p>
+      <div style="display:flex;flex-direction:column;gap:0.5rem;">
+        <div>
+          <span style="font-size:0.75rem;color:var(--text-dim);font-weight:600;">Desktop GUI Webview:</span>
+          <code class="cmd-chip">spid3r gui examples/demo_apps/web_calculator/calculator.matrix</code>
+        </div>
+        <div>
+          <span style="font-size:0.75rem;color:var(--text-dim);font-weight:600;">Native CLI Calculator:</span>
+          <code class="cmd-chip">spid3r run examples/demo_apps/native_calculator/calculator.matrix</code>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  Spid3r Calculator Demo · High precision mathematical engine · ANSNEW TECH.
+</footer>
+
+<script>
+  let currentVal = "0";
+  let exprHistory = "";
+  let shouldReset = false;
+  let history = [];
+
+  const mainDisplay = document.getElementById("mainDisplay");
+  const exprDisplay = document.getElementById("exprDisplay");
+  const historyList = document.getElementById("historyList");
+  const sciRow = document.getElementById("sciRow");
+  const tabStandard = document.getElementById("tabStandard");
+  const tabScientific = document.getElementById("tabScientific");
+
+  function setMode(mode) {
+    if (mode === 'scientific') {
+      sciRow.classList.add('show');
+      tabScientific.classList.add('active');
+      tabStandard.classList.remove('active');
+    } else {
+      sciRow.classList.remove('show');
+      tabStandard.classList.add('active');
+      tabScientific.classList.remove('active');
+    }
+  }
+
+  function updateDisplay() {
+    mainDisplay.innerText = currentVal;
+    exprDisplay.innerText = exprHistory || " ";
+  }
+
+  function inputDigit(d) {
+    mainDisplay.classList.remove("error");
+    if (shouldReset || currentVal === "Error" || currentVal.startsWith("Error")) {
+      currentVal = d;
+      shouldReset = false;
+    } else {
+      if (currentVal === "0") {
+        currentVal = d;
+      } else {
+        currentVal += d;
+      }
+    }
+    updateDisplay();
+  }
+
+  function inputDot() {
+    mainDisplay.classList.remove("error");
+    if (shouldReset || currentVal === "Error" || currentVal.startsWith("Error")) {
+      currentVal = "0.";
+      shouldReset = false;
+    } else if (!currentVal.includes(".")) {
+      currentVal += ".";
+    }
+    updateDisplay();
+  }
+
+  function inputOp(op) {
+    mainDisplay.classList.remove("error");
+    const symbolMap = { '+': '+', '-': '−', '*': '×', '/': '÷', '%': '%' };
+    if (exprHistory && !shouldReset && !exprHistory.includes("=")) {
+      calculate(false);
+    }
+    exprHistory = currentVal + " " + (symbolMap[op] || op);
+    shouldReset = true;
+    updateDisplay();
+  }
+
+  function toggleSign() {
+    if (currentVal !== "0") {
+      if (currentVal.startsWith("-")) {
+        currentVal = currentVal.substring(1);
+      } else {
+        currentVal = "-" + currentVal;
+      }
+      updateDisplay();
+    }
+  }
+
+  function backspace() {
+    if (!shouldReset) {
+      if (currentVal.length > 1) {
+        currentVal = currentVal.slice(0, -1);
+      } else {
+        currentVal = "0";
+      }
+      updateDisplay();
+    }
+  }
+
+  function clearAll() {
+    currentVal = "0";
+    exprHistory = "";
+    shouldReset = false;
+    mainDisplay.classList.remove("error");
+    updateDisplay();
+  }
+
+  function inputFunc(fn) {
+    let num = parseFloat(currentVal);
+    let res = 0;
+    let label = "";
+
+    switch(fn) {
+      case 'sin': res = Math.sin(num * Math.PI / 180); label = `sin(${num})`; break;
+      case 'cos': res = Math.cos(num * Math.PI / 180); label = `cos(${num})`; break;
+      case 'tan': res = Math.tan(num * Math.PI / 180); label = `tan(${num})`; break;
+      case 'sqrt': res = Math.sqrt(num); label = `√(${num})`; break;
+      case 'log': res = Math.log10(num); label = `log(${num})`; break;
+      case 'ln': res = Math.log(num); label = `ln(${num})`; break;
+    }
+
+    if (isNaN(res)) {
+      currentVal = "Error";
+      mainDisplay.classList.add("error");
+    } else {
+      res = parseFloat(res.toFixed(10)).toString();
+      addHistory(label, res);
+      exprHistory = label + " =";
+      currentVal = res;
+      shouldReset = true;
+    }
+    updateDisplay();
+  }
+
+  function inputConst(c) {
+    if (c === 'pi') currentVal = Math.PI.toFixed(8);
+    if (c === 'e') currentVal = Math.E.toFixed(8);
+    shouldReset = true;
+    updateDisplay();
+  }
+
+  function calculate(isFinal = true) {
+    if (!exprHistory) return;
+    if (exprHistory.includes("=")) return;
+
+    let parts = exprHistory.trim().split(" ");
+    if (parts.length < 2) return;
+    let a = parseFloat(parts[0]);
+    let op = parts[1];
+    let b = parseFloat(currentVal);
+    let res = 0;
+
+    switch(op) {
+      case '+': res = a + b; break;
+      case '−':
+      case '-': res = a - b; break;
+      case '×':
+      case '*': res = a * b; break;
+      case '÷':
+      case '/': 
+        if (b === 0) {
+          currentVal = "Error: Division by 0";
+          mainDisplay.classList.add("error");
+          exprHistory = "";
+          shouldReset = true;
+          updateDisplay();
+          return;
+        }
+        res = a / b; 
+        break;
+      case '%': res = a % b; break;
+      default: res = b;
+    }
+
+    let finalRes = parseFloat(res.toFixed(10)).toString();
+    if (isFinal) {
+      addHistory(`${exprHistory} ${currentVal}`, finalRes);
+      exprHistory = `${exprHistory} ${currentVal} =`;
+      currentVal = finalRes;
+      shouldReset = true;
+    } else {
+      currentVal = finalRes;
+    }
+    updateDisplay();
+  }
+
+  function evaluate(isFinal = true) {
+    calculate(isFinal);
+  }
+
+  function addHistory(expr, res) {
+    history.unshift({ expr, res });
+    renderHistory();
+  }
+
+  function clearHistory() {
+    history = [];
+    renderHistory();
+  }
+
+  function renderHistory() {
+    if (history.length === 0) {
+      historyList.innerHTML = '<div class="empty-hist">No past calculations yet.</div>';
+      return;
+    }
+    historyList.innerHTML = history.map((item, idx) => `
+      <div class="history-item" onclick="recall(${idx})">
+        <div class="hist-expr">${item.expr} =</div>
+        <div class="hist-res">${item.res}</div>
+      </div>
+    `).join('');
+  }
+
+  function recall(idx) {
+    if (history[idx]) {
+      currentVal = history[idx].res;
+      shouldReset = true;
+      updateDisplay();
+    }
+  }
+
+  // Keyboard support
+  window.addEventListener("keydown", (e) => {
+    if (e.key >= "0" && e.key <= "9") inputDigit(e.key);
+    else if (e.key === ".") inputDot();
+    else if (e.key === "+") inputOp("+");
+    else if (e.key === "-") inputOp("-");
+    else if (e.key === "*") inputOp("*");
+    else if (e.key === "/") { e.preventDefault(); inputOp("/"); }
+    else if (e.key === "%") inputOp("%");
+    else if (e.key === "Enter" || e.key === "=") { e.preventDefault(); calculate(); }
+    else if (e.key === "Backspace") backspace();
+    else if (e.key === "Escape") clearAll();
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,217 @@
+// stdlib/testkit.matrix - a test runner with fixtures, written in Spid3r.
+//
+//   import "testkit";
+//
+//   fn main() {
+//       let t = test_suite("string helpers");
+//
+//       t.before_each(fn(ctx) {
+//           ctx["log"] = list();
+//       });
+//
+//       t.case("upper", fn(ctx) {
+//           assert_eq("ada".upper(), "ADA");
+//       });
+//
+//       t.case("writes a file", fn(ctx) {
+//           // ctx["dir"] is a fresh directory, removed when the case ends.
+//           let p = ctx["dir"] + "/note.txt";
+//           write_file(p, "hello");
+//           assert_eq(read_file(p).unwrap(), "hello");
+//       });
+//
+//       return t.done();     // prints results, returns the failure count
+//   }
+//
+// `spid3r test` runs each file on all three engines and compares stdout, so a
+// suite that prints its results and returns the failure count from `main` is
+// exactly what it expects. `done()` follows the same exit-code protocol as
+// `stdlib/assert.matrix`: 0 when everything passed.
+//
+// What this adds over bare assertions:
+//   * a fresh temp directory per case (created before, deleted after - a test
+//     that leaves files behind is a test that passes on your machine only);
+//   * `before_each`/`after_each` hooks with a per-case context map;
+//   * failure isolation: a case that throws is reported and the suite continues;
+//   * per-case timing, and a summary line.
+//
+// There is no test *discovery*: Spid3r has no reflection, so cases are
+// registered explicitly. That is a feature for a suite this size - the list of
+// cases is readable in the source - and it is why `spid3r test` still discovers
+// at file granularity.
+
+fn opt(m, key, dflt) {
+    if m == null or type_of(m) != "map" {
+        return dflt;
+    }
+    if m.has(key) {
+        return m[key];
+    }
+    return dflt;
+}
+
+/// The system temporary directory: `TEMP`, `TMPDIR`, `TMP`, then `/tmp`.
+///
+/// The `/tmp` fallback matters on CI: `TMPDIR` is often unset on Linux, and
+/// falling back to "." would scatter fixture directories through the checkout.
+public fn temp_root() {
+    for name in ["TEMP", "TMPDIR", "TMP"] {
+        let v = env(name);
+        if v.is_some() {
+            return v.unwrap();
+        }
+    }
+    if file_exists("/tmp") {
+        return "/tmp";
+    }
+    return ".";
+}
+
+/// A fresh, unique directory under the temp root. The caller removes it.
+public fn tmpdir(tag) {
+    let base = temp_root();
+    if not base.ends_with("/") and not base.ends_with("\\") {
+        base = base + "/";
+    }
+    let name = "spid3r_" + string(tag) + "_" + hex_encode(random_bytes(6).unwrap());
+    let path = base + name;
+    let r = dir_create(path);
+    if r.is_err() {
+        throw "tmpdir: " + r.unwrap_err();
+    }
+    return path;
+}
+
+/// Create a directory, run `body(dir)`, then delete it - even if `body` throws.
+public fn with_tmpdir(tag, body) {
+    let dir = tmpdir(tag);
+    let out = null;
+    try {
+        out = body(dir);
+    } catch (e) {
+        dir_remove(dir);
+        throw e;
+    }
+    dir_remove(dir);
+    return out;
+}
+
+/// Write `text` to `dir/name` and return the full path.
+public fn fixture_write(dir, name, text) {
+    let path = string(dir) + "/" + string(name);
+    let w = write_file(path, text);
+    if w.is_err() {
+        throw "fixture_write: " + w.unwrap_err();
+    }
+    return path;
+}
+
+public class TestSuite {
+    private let name;
+    private let cases;
+    private let before_hooks;
+    private let after_hooks;
+    private let skipped;
+
+    fn new (name) {
+        self.name = string(name);
+        self.cases = list();
+        self.before_hooks = list();
+        self.after_hooks = list();
+        self.skipped = list();
+    }
+
+    /// Run `hook(ctx)` before every case.
+    public fn before_each(self, hook) {
+        self.before_hooks.push(hook);
+        return self;
+    }
+
+    /// Run `hook(ctx)` after every case, even when it failed.
+    public fn after_each(self, hook) {
+        self.after_hooks.push(hook);
+        return self;
+    }
+
+    /// Register a case. `body(ctx)` throws to fail.
+    public fn case(self, name, body) {
+        self.cases.push(map("name", string(name), "body", body, "skip", null));
+        return self;
+    }
+
+    /// Register a case that is reported but not run.
+    public fn skip(self, name, reason) {
+        self.cases.push(
+            map("name", string(name), "body", null, "skip", string(reason))
+        );
+        return self;
+    }
+
+    /// Run every case. Returns the number of failures.
+    public fn run(self) {
+        let failures = 0;
+        let passed = 0;
+        let skipped = 0;
+        println("== " + self.name + " ==");
+        for c in self.cases {
+            if c["skip"] != null {
+                skipped += 1;
+                println("  - " + c["name"] + " (skipped: " + c["skip"] + ")");
+                continue;
+            }
+            let dir = tmpdir("case");
+            let ctx = map("dir", dir, "name", c["name"], "suite", self.name);
+            let start = now_ms();
+            let error = null;
+            try {
+                for hook in self.before_hooks {
+                    hook(ctx);
+                }
+                c["body"](ctx);
+            } catch (e) {
+                error = string(e);
+            }
+            // after_each runs even on failure, and its own failure is reported
+            // rather than swallowed.
+            for hook in self.after_hooks {
+                try {
+                    hook(ctx);
+                } catch (e) {
+                    if error == null {
+                        error = "after_each: " + string(e);
+                    }
+                }
+            }
+            dir_remove(dir);
+            let ms = now_ms() - start;
+            if error == null {
+                passed += 1;
+                println("  ok   " + c["name"] + " (" + string(ms) + " ms)");
+            } else {
+                failures += 1;
+                println("  FAIL " + c["name"] + " (" + string(ms) + " ms)");
+                println("       " + error);
+            }
+        }
+        println(
+            "  "
+            + string(passed)
+            + " passed, "
+            + string(failures)
+            + " failed, "
+            + string(skipped)
+            + " skipped"
+        );
+        return failures;
+    }
+
+    /// Run and exit-code: `return t.done();` from `main`.
+    public fn done(self) {
+        return self.run();
+    }
+}
+
+/// `test_suite("name")` -> a TestSuite.
+public fn test_suite(name) {
+    return new TestSuite(name);
+}

@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spid3r CloudOps & Telemetry Hub</title>
+  <meta name="description" content="Production-grade telemetry, statistics reduction, and machine learning dashboard powered by the Spid3r language web runtime.">
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: rgba(17, 24, 39, 0.72);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --primary: #38bdf8;
+      --primary-glow: rgba(56, 189, 248, 0.25);
+      --secondary: #818cf8;
+      --accent: #a855f7;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+    }
+    body {
+      background-color: var(--bg);
+      background-image: 
+        radial-gradient(circle at 10% 10%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 90% 90%, rgba(168, 85, 247, 0.08) 0%, transparent 40%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: rgba(9, 13, 22, 0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--card-border);
+      padding: 1.25rem 2.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    .logo-badge {
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.3rem;
+      color: #090d16;
+      box-shadow: 0 0 20px var(--primary-glow);
+    }
+    .brand h1 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.2;
+    }
+    .brand span {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+    }
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 1rem;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--success);
+    }
+    .pulse-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 10px var(--success);
+      animation: pulse 2s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.5; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.15); }
+    }
+    nav.subnav {
+      display: flex;
+      gap: 0.75rem;
+      padding: 1.25rem 2.5rem 0;
+      max-width: 1500px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .nav-btn {
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text-muted);
+      padding: 0.65rem 1.25rem;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .nav-btn:hover {
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.04);
+    }
+    .nav-btn.active {
+      color: var(--primary);
+      background: rgba(56, 189, 248, 0.1);
+      border-color: rgba(56, 189, 248, 0.25);
+    }
+    main {
+      flex: 1;
+      padding: 1.5rem 2.5rem 3rem;
+      max-width: 1500px;
+      margin: 0 auto;
+      width: 100%;
+    }
+    .section-tab {
+      display: none;
+    }
+    .section-tab.active {
+      display: block;
+      animation: fadeIn 0.25s ease-out;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .stats-overview {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .overview-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.25rem 1.5rem;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .overview-card:hover {
+      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+    .overview-card .title {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+    .overview-card .value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .overview-card .subtitle {
+      font-size: 0.78rem;
+      color: var(--primary);
+      margin-top: 0.4rem;
+    }
+    .two-col-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.6fr;
+      gap: 1.75rem;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 18px;
+      padding: 1.75rem;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    }
+    .card h2 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+    textarea, input[type="text"] {
+      width: 100%;
+      background: rgba(9, 13, 22, 0.8);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+      color: var(--text);
+      padding: 0.85rem;
+      font-size: 0.9rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    textarea:focus, input[type="text"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 12px var(--primary-glow);
+    }
+    .btn-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.6rem;
+      margin: 1.25rem 0;
+    }
+    .btn {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 0.65rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--primary), #0284c7);
+      border: none;
+      color: #090d16;
+      font-weight: 700;
+      box-shadow: 0 4px 15px var(--primary-glow);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #7dd3fc, #0369a1);
+      transform: translateY(-1px);
+    }
+    .metric-tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .tile {
+      background: rgba(9, 13, 22, 0.6);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 1rem;
+      text-align: center;
+    }
+    .tile .label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.4rem;
+    }
+    .tile .val {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--primary);
+    }
+    canvas {
+      width: 100%;
+      height: 290px;
+      background: rgba(9, 13, 22, 0.85);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      display: block;
+    }
+    .console-box {
+      background: #05070d;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 1.25rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+      color: #38bdf8;
+      max-height: 380px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .endpoint-badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      margin-right: 0.4rem;
+    }
+    .badge-get { background: rgba(56, 189, 248, 0.2); color: var(--primary); }
+    .badge-post { background: rgba(16, 185, 129, 0.2); color: var(--success); }
+    footer {
+      border-top: 1px solid var(--card-border);
+      padding: 1.25rem 2.5rem;
+      text-align: center;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-top: auto;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="logo-badge" id="logo-icon">S</div>
+      <div>
+        <h1>Spid3r CloudOps Hub</h1>
+        <span>First-Party Web Runtime &bull; REST &bull; Telemetry &bull; ML</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="status-pill" id="server-status-pill">
+        <div class="pulse-indicator"></div>
+        <span id="server-status-text">Spid3r Engine Live</span>
+      </div>
+      <button class="btn" id="btn-ping" onclick="pingServer()">⚡ Ping (ms)</button>
+    </div>
+  </header>
+
+  <nav class="subnav">
+    <button class="nav-btn active" id="tab-btn-overview" onclick="switchView('overview')">Telemetry Overview</button>
+    <button class="nav-btn" id="tab-btn-stats" onclick="switchView('stats')">Statistical Analysis</button>
+    <button class="nav-btn" id="tab-btn-ml" onclick="switchView('ml')">ML Linear Regression</button>
+    <button class="nav-btn" id="tab-btn-api" onclick="switchView('api')">REST API Explorer</button>
+  </nav>
+
+  <main>
+    <!-- OVERVIEW STATS BANNER -->
+    <section class="stats-overview">
+      <div class="overview-card">
+        <div class="title">Active Engine</div>
+        <div class="value" id="card-engine">Tree / VM</div>
+        <div class="subtitle">Spid3r Standard Library</div>
+      </div>
+      <div class="overview-card">
+        <div class="title">Server Uptime</div>
+        <div class="value" id="card-uptime">0s</div>
+        <div class="subtitle">127.0.0.1:8090</div>
+      </div>
+      <div class="overview-card">
+        <div class="title">Total HTTP Requests</div>
+        <div class="value" id="card-requests">0</div>
+        <div class="subtitle" id="card-latency">Roundtrip: &lt;1ms</div>
+      </div>
+      <div class="overview-card">
+        <div class="title">Telemetry Memory</div>
+        <div class="value" id="card-mem">38.4 MB</div>
+        <div class="subtitle">Allocated Runtime</div>
+      </div>
+    </section>
+
+    <!-- SECTION 1: OVERVIEW & CLUSTER HEALTH -->
+    <div id="view-overview" class="section-tab active">
+      <div class="two-col-grid">
+        <div class="card">
+          <h2>Server Runtime Specification</h2>
+          <p style="color:var(--text-muted); font-size:0.88rem; line-height:1.6; margin-bottom:1.25rem;">
+            This web application is executing on Spid3r's native HTTP/Web stack (<code>stdlib/web.matrix</code> and <code>stdlib/http.matrix</code>). It supports concurrent connection multiplexing, cookie management, JWT signing, and native vector math kernels.
+          </p>
+          <div style="display:flex; flex-direction:column; gap:0.75rem; font-size:0.85rem;">
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--card-border); padding-bottom:0.5rem;">
+              <span style="color:var(--text-muted);">Runtime Binary</span>
+              <strong style="color:var(--primary);">spid3r.exe (x86_64)</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--card-border); padding-bottom:0.5rem;">
+              <span style="color:var(--text-muted);">HTTP Standard Library</span>
+              <strong>web.matrix v1.0.0</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--card-border); padding-bottom:0.5rem;">
+              <span style="color:var(--text-muted);">Compute Modules</span>
+              <strong>stats.matrix, ml.matrix</strong>
+            </div>
+            <div style="display:flex; justify-content:space-between; border-bottom:1px solid var(--card-border); padding-bottom:0.5rem;">
+              <span style="color:var(--text-muted);">Listen Socket</span>
+              <strong style="color:var(--success);">http://127.0.0.1:8090/</strong>
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="btn btn-primary" onclick="fetchMetrics()">Refresh Telemetry</button>
+            <button class="btn" onclick="testAuthSession()">Test JWT Token</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Live Cluster Node Telemetry</h2>
+          <div style="margin-bottom:0.75rem; color:var(--text-muted); font-size:0.85rem;">
+            Simulated throughput & node performance (auto-updating every 4s):
+          </div>
+          <canvas id="overview-canvas" width="600" height="260"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 2: STATISTICAL ANALYSIS -->
+    <div id="view-stats" class="section-tab">
+      <div class="two-col-grid">
+        <div class="card">
+          <h2>Statistical Data Input</h2>
+          <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0.75rem;">
+            Send an array of numbers to the Spid3r server endpoint (<code>POST /api/stats</code>):
+          </p>
+          <textarea id="web-stats-input" rows="6">[24.5, 31.2, 28.9, 45.1, 52.3, 49.0, 63.8, 71.4, 68.2, 85.0, 92.6, 88.4]</textarea>
+          <div class="btn-group">
+            <button class="btn btn-primary" id="btn-run-stats" onclick="submitStatsAnalysis()">Analyze via Spid3r Backend</button>
+            <button class="btn" onclick="setStatsPreset('cluster')">Preset: Node Load</button>
+            <button class="btn" onclick="setStatsPreset('latency')">Preset: Latencies</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Spid3r Stats Reductions (stdlib/stats)</h2>
+          <div class="metric-tiles">
+            <div class="tile">
+              <div class="label">Count (N)</div>
+              <div class="val" id="web-stat-n">-</div>
+            </div>
+            <div class="tile">
+              <div class="label">Mean (μ)</div>
+              <div class="val" id="web-stat-mean">-</div>
+            </div>
+            <div class="tile">
+              <div class="label">Median</div>
+              <div class="val" id="web-stat-med">-</div>
+            </div>
+            <div class="tile">
+              <div class="label">Std Dev (σ)</div>
+              <div class="val" id="web-stat-std">-</div>
+            </div>
+            <div class="tile">
+              <div class="label">Variance (σ²)</div>
+              <div class="val" id="web-stat-var">-</div>
+            </div>
+            <div class="tile">
+              <div class="label">IQR</div>
+              <div class="val" id="web-stat-iqr">-</div>
+            </div>
+          </div>
+          <h2 style="font-size:0.95rem; margin-bottom:0.5rem;">Distribution Histogram</h2>
+          <canvas id="web-stats-canvas" width="600" height="240"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 3: ML LINEAR REGRESSION -->
+    <div id="view-ml" class="section-tab">
+      <div class="two-col-grid">
+        <div class="card">
+          <h2>Training Dataset (X, Y)</h2>
+          <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:0.75rem;">
+            Click the plot or edit coordinates below to fit a model on the Spid3r backend (<code>POST /api/ml/regression</code>):
+          </p>
+          <textarea id="web-ml-input" rows="6">[[1, 3.2], [2, 5.1], [3, 7.8], [4, 9.5], [5, 12.2], [6, 14.9], [7, 16.5], [8, 19.1]]</textarea>
+          <div class="btn-group">
+            <button class="btn btn-primary" id="btn-run-ml" onclick="submitMLRegression()">Train Model</button>
+            <button class="btn" onclick="resetMLPoints()">Reset Sample</button>
+          </div>
+          <div style="margin-top:1.25rem;">
+            <div style="font-size:0.85rem; margin-bottom:0.4rem; color:var(--text-muted);">Predict Y for custom X:</div>
+            <div style="display:flex; gap:0.5rem;">
+              <input type="text" id="web-predict-x" value="12" style="max-width:110px;">
+              <button class="btn" onclick="webPredictCustom()">Forecast</button>
+              <div id="web-predict-output" style="display:flex; align-items:center; font-weight:700; color:var(--primary); font-size:1.15rem; padding-left:0.5rem;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Fitted Regression Model (stdlib/ml)</h2>
+          <div class="metric-tiles">
+            <div class="tile">
+              <div class="label">Slope (m)</div>
+              <div class="val" id="web-ml-slope">-</div>
+            </div>
+            <div class="tile">
+              <div class="label">Intercept (b)</div>
+              <div class="val" id="web-ml-intercept">-</div>
+            </div>
+            <div class="tile">
+              <div class="label">R² Score</div>
+              <div class="val" id="web-ml-r2">-</div>
+            </div>
+            <div class="tile">
+              <div class="label">Equation</div>
+              <div class="val" id="web-ml-eq" style="font-size:0.95rem; font-family:monospace;">-</div>
+            </div>
+          </div>
+          <h2 style="font-size:0.95rem; margin-bottom:0.5rem;">Model Fit Visualizer</h2>
+          <canvas id="web-ml-canvas" width="600" height="260"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 4: REST API EXPLORER -->
+    <div id="view-api" class="section-tab">
+      <div class="two-col-grid">
+        <div class="card">
+          <h2>Spid3r REST Endpoints</h2>
+          <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:1rem;">
+            Click an endpoint to test live against the local Spid3r HTTP server:
+          </p>
+          <div style="display:flex; flex-direction:column; gap:0.6rem;">
+            <button class="btn" style="text-align:left;" onclick="testApi('/api/info')">
+              <span class="endpoint-badge badge-get">GET</span> /api/info
+            </button>
+            <button class="btn" style="text-align:left;" onclick="testApi('/api/metrics')">
+              <span class="endpoint-badge badge-get">GET</span> /api/metrics
+            </button>
+            <button class="btn" style="text-align:left;" onclick="testApiPostStats()">
+              <span class="endpoint-badge badge-post">POST</span> /api/stats
+            </button>
+            <button class="btn" style="text-align:left;" onclick="testApiPostML()">
+              <span class="endpoint-badge badge-post">POST</span> /api/ml/regression
+            </button>
+            <button class="btn" style="text-align:left;" onclick="testApi('/api/auth/token', 'POST')">
+              <span class="endpoint-badge badge-post">POST</span> /api/auth/token (JWT Sign)
+            </button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Server Response Output</h2>
+          <div style="display:flex; justify-content:space-between; margin-bottom:0.5rem; font-size:0.8rem; color:var(--text-muted);">
+            <span id="api-status-chip">Status: Idle</span>
+            <span id="api-latency-chip">Latency: -</span>
+          </div>
+          <div class="console-box" id="api-output">// Click an endpoint on the left to invoke live REST calls.</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    Spid3r Web Framework &bull; Built with Spid3r <code>web.matrix</code> &bull; 2026
+  </footer>
+
+  <script>
+    // -----------------------------------------------------------------------
+    // UI Navigation
+    // -----------------------------------------------------------------------
+    function switchView(viewId) {
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.section-tab').forEach(t => t.classList.remove('active'));
+      document.getElementById('tab-btn-' + viewId).classList.add('active');
+      document.getElementById('view-' + viewId).classList.add('active');
+      if (viewId === 'ml' && window.webRegressionModel) {
+        drawWebRegression(window.webRegressionModel.points, window.webRegressionModel.slope, window.webRegressionModel.intercept);
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // Telemetry & Ping
+    // -----------------------------------------------------------------------
+    let requestCount = 0;
+    async function pingServer() {
+      const start = performance.now();
+      try {
+        const res = await fetch('/api/info');
+        const elapsed = (performance.now() - start).toFixed(1);
+        requestCount++;
+        document.getElementById('btn-ping').textContent = `⚡ Ping: ${elapsed}ms`;
+        document.getElementById('card-latency').textContent = `Roundtrip: ${elapsed}ms`;
+        document.getElementById('card-requests').textContent = requestCount;
+      } catch (e) {
+        document.getElementById('btn-ping').textContent = '⚠️ Error';
+      }
+    }
+
+    async function fetchMetrics() {
+      try {
+        const res = await fetch('/api/metrics');
+        const data = await res.json();
+        requestCount++;
+        document.getElementById('card-requests').textContent = requestCount;
+        document.getElementById('card-uptime').textContent = data.uptime_sec + 's';
+        document.getElementById('card-mem').textContent = data.memory_mb + ' MB';
+        document.getElementById('card-engine').textContent = data.engine;
+      } catch (e) {}
+    }
+
+    // -----------------------------------------------------------------------
+    // Stats Endpoint
+    // -----------------------------------------------------------------------
+    async function submitStatsAnalysis() {
+      try {
+        const raw = document.getElementById('web-stats-input').value;
+        const nums = JSON.parse(raw);
+        const res = await fetch('/api/stats', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: nums })
+        });
+        const data = await res.json();
+        requestCount++;
+        document.getElementById('card-requests').textContent = requestCount;
+
+        document.getElementById('web-stat-n').textContent = data.count;
+        document.getElementById('web-stat-mean').textContent = Number(data.mean).toFixed(2);
+        document.getElementById('web-stat-med').textContent = Number(data.median).toFixed(2);
+        document.getElementById('web-stat-std').textContent = Number(data.std_dev).toFixed(2);
+        document.getElementById('web-stat-var').textContent = Number(data.variance).toFixed(2);
+        document.getElementById('web-stat-iqr').textContent = Number(data.iqr).toFixed(2);
+        drawWebHistogram(nums, data.mean, data.std_dev);
+      } catch (e) {
+        alert('Stats Error: ' + e.message);
+      }
+    }
+
+    function setStatsPreset(type) {
+      if (type === 'cluster') {
+        document.getElementById('web-stats-input').value = '[18.5, 22.1, 25.4, 29.8, 35.0, 42.6, 51.2, 48.7, 58.9, 65.4, 72.0, 80.5]';
+      } else {
+        document.getElementById('web-stats-input').value = '[1.2, 1.5, 1.8, 2.1, 2.3, 2.5, 2.8, 3.2, 3.8, 4.5, 5.1, 6.8]';
+      }
+      submitStatsAnalysis();
+    }
+
+    function drawWebHistogram(data, mean, std) {
+      const canvas = document.getElementById('web-stats-canvas');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      if (!data || data.length === 0) return;
+      const min = Math.min(...data);
+      const max = Math.max(...data);
+      const binsCount = 8;
+      const binWidth = (max - min) / binsCount || 1;
+      const bins = new Array(binsCount).fill(0);
+
+      data.forEach(val => {
+        let idx = Math.floor((val - min) / binWidth);
+        if (idx >= binsCount) idx = binsCount - 1;
+        bins[idx]++;
+      });
+
+      const maxBin = Math.max(...bins, 1);
+      const pad = 40;
+      const barW = (w - pad * 2) / binsCount;
+
+      bins.forEach((cnt, i) => {
+        const barH = (cnt / maxBin) * (h - pad * 2);
+        const x = pad + i * barW;
+        const y = h - pad - barH;
+
+        const grad = ctx.createLinearGradient(0, y, 0, h - pad);
+        grad.addColorStop(0, '#38bdf8');
+        grad.addColorStop(1, '#0284c7');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x + 4, y, barW - 8, barH);
+
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(cnt, x + barW / 2, y - 6);
+        ctx.fillText((min + i * binWidth).toFixed(1), x + barW / 2, h - pad + 15);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // ML Endpoint
+    // -----------------------------------------------------------------------
+    window.webRegressionModel = null;
+    async function submitMLRegression() {
+      try {
+        const points = JSON.parse(document.getElementById('web-ml-input').value);
+        const res = await fetch('/api/ml/regression', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ points: points })
+        });
+        const data = await res.json();
+        requestCount++;
+        document.getElementById('card-requests').textContent = requestCount;
+
+        window.webRegressionModel = { ...data, points: points };
+        document.getElementById('web-ml-slope').textContent = Number(data.slope).toFixed(3);
+        document.getElementById('web-ml-intercept').textContent = Number(data.intercept).toFixed(3);
+        document.getElementById('web-ml-r2').textContent = Number(data.r2).toFixed(4);
+        const sign = data.intercept >= 0 ? '+' : '-';
+        document.getElementById('web-ml-eq').textContent = `y = ${Number(data.slope).toFixed(2)}x ${sign} ${Math.abs(Number(data.intercept)).toFixed(2)}`;
+        drawWebRegression(points, data.slope, data.intercept);
+        webPredictCustom();
+      } catch (e) {
+        alert('ML Error: ' + e.message);
+      }
+    }
+
+    function webPredictCustom() {
+      if (!window.webRegressionModel) return;
+      const x = parseFloat(document.getElementById('web-predict-x').value);
+      if (isNaN(x)) return;
+      const y = window.webRegressionModel.slope * x + window.webRegressionModel.intercept;
+      document.getElementById('web-predict-output').textContent = `→ y ≈ ${y.toFixed(2)}`;
+    }
+
+    function drawWebRegression(points, slope, intercept) {
+      const canvas = document.getElementById('web-ml-canvas');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const pad = 40;
+      let maxX = 12;
+      let maxY = 25;
+      if (points && points.length > 0) {
+        maxX = Math.max(...points.map(p => p[0]), 5) * 1.2;
+        maxY = Math.max(...points.map(p => p[1]), 5) * 1.2;
+      }
+
+      function toX(x) { return pad + (x / maxX) * (w - pad * 2); }
+      function toY(y) { return h - pad - (y / maxY) * (h - pad * 2); }
+
+      // Grid
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      for (let i = 0; i <= 5; i++) {
+        const gx = pad + (i / 5) * (w - pad * 2);
+        const gy = pad + (i / 5) * (h - pad * 2);
+        ctx.beginPath(); ctx.moveTo(gx, pad); ctx.lineTo(gx, h - pad); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(pad, gy); ctx.lineTo(w - pad, gy); ctx.stroke();
+      }
+
+      // Line
+      if (slope !== undefined && intercept !== undefined) {
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(toX(0), toY(intercept));
+        ctx.lineTo(toX(maxX), toY(slope * maxX + intercept));
+        ctx.stroke();
+      }
+
+      // Points
+      if (points) {
+        points.forEach(pt => {
+          ctx.fillStyle = '#a855f7';
+          ctx.beginPath();
+          ctx.arc(toX(pt[0]), toY(pt[1]), 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        });
+      }
+    }
+
+    function resetMLPoints() {
+      document.getElementById('web-ml-input').value = '[[1, 3.2], [2, 5.1], [3, 7.8], [4, 9.5], [5, 12.2], [6, 14.9], [7, 16.5], [8, 19.1]]';
+      submitMLRegression();
+    }
+
+    // -----------------------------------------------------------------------
+    // REST API Explorer
+    // -----------------------------------------------------------------------
+    async function testApi(url, method = 'GET', body = null) {
+      const out = document.getElementById('api-output');
+      const start = performance.now();
+      out.textContent = `Connecting to ${method} ${url}...`;
+      try {
+        const opts = { method: method };
+        if (body) {
+          opts.headers = { 'Content-Type': 'application/json' };
+          opts.body = JSON.stringify(body);
+        }
+        const res = await fetch(url, opts);
+        const latency = (performance.now() - start).toFixed(1);
+        const data = await res.json();
+        requestCount++;
+        document.getElementById('card-requests').textContent = requestCount;
+        document.getElementById('api-status-chip').textContent = `Status: ${res.status} OK`;
+        document.getElementById('api-latency-chip').textContent = `Latency: ${latency}ms`;
+        out.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        out.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    function testApiPostStats() {
+      testApi('/api/stats', 'POST', { data: [10, 20, 30, 40, 50, 60, 70, 80, 90, 100] });
+    }
+
+    function testApiPostML() {
+      testApi('/api/ml/regression', 'POST', { points: [[1, 2], [2, 4], [3, 6], [4, 8]] });
+    }
+
+    async function testAuthSession() {
+      await testApi('/api/auth/token', 'POST');
+    }
+
+    // Dynamic Overview Canvas
+    function drawOverviewChart() {
+      const canvas = document.getElementById('overview-canvas');
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+
+      const points = [14, 22, 19, 35, 42, 38, 55, 62, 58, 70, 85, 78, 92];
+      const pad = 30;
+      const step = (w - pad * 2) / (points.length - 1);
+
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.4)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach((val, i) => {
+        const x = pad + i * step;
+        const y = h - pad - (val / 100) * (h - pad * 2);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Nodes
+      points.forEach((val, i) => {
+        const x = pad + i * step;
+        const y = h - pad - (val / 100) * (h - pad * 2);
+        ctx.fillStyle = '#38bdf8';
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+
+    // Auto initialize on load
+    window.addEventListener('DOMContentLoaded', () => {
+      fetchMetrics();
+      submitStatsAnalysis();
+      submitMLRegression();
+      drawOverviewChart();
+      setInterval(fetchMetrics, 4000);
+    });
+  </script>
+</body>
+</html>

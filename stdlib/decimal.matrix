@@ -1,0 +1,213 @@
+// stdlib/decimal.matrix - exact fixed-point decimals, written in Spid3r.
+//
+//   import "decimal" as dec;
+//
+//   let a = dec.from_string("0.10");
+//   let b = dec.from_string("0.20");
+//   println(dec.to_string(dec.add(a, b)));   // 0.30  (not 0.30000000000000004)
+//
+// A value is `{ units: bigint, scale: int }` meaning `units / 10^scale`.
+// Arithmetic is exact: no binary floating point is involved, so money math
+// behaves the way a ledger expects. `div` needs a precision (default 6 extra
+// digits) and truncates toward zero at that precision.
+//
+// Built on stdlib/bigint.matrix.
+
+import "bigint" as bi;
+
+fn make(units, scale) {
+    // The dunder fields make `a + b`, `a - b`, `a * b`, `a / b` work: the
+    // engines dispatch to them when the left operand is a map carrying a
+    // callable `__add__` etc. (They are hidden from display.)
+    let m = map("units", units, "scale", scale);
+    m["__add__"] = add;
+    m["__sub__"] = sub;
+    m["__mul__"] = mul;
+    m["__div__"] = div;
+    m["__neg__"] = neg;
+    m["__radd__"] = radd;
+    m["__rsub__"] = rsub;
+    m["__rmul__"] = rmul;
+    m["__rdiv__"] = rdiv;
+    m["__display__"] = to_string(m);
+    return m;
+}
+
+/// From an int (scale 0).
+public fn from_int(n) {
+    return make(bi.from_int(n), 0);
+}
+
+/// From a decimal string like "12.34", "-0.5", "7".
+public fn from_string(s) {
+    let text = s.trim();
+    let neg = false;
+    if text.starts_with("-") {
+        neg = true;
+        text = text.slice(1, len(text));
+    } else if text.starts_with("+") {
+        text = text.slice(1, len(text));
+    }
+    let dot = text.index_of(".");
+    let scale = 0;
+    if dot >= 0 {
+        scale = len(text) - dot - 1;
+        text = text.slice(0, dot) + text.slice(dot + 1, len(text));
+    }
+    if text == "" {
+        text = "0";
+    }
+    let units = bi.from_string(text);
+    if neg {
+        units = bi.neg(units);
+    }
+    return make(units, scale);
+}
+
+/// `units / 10^scale` as a plain decimal string.
+public fn to_string(d) {
+    let units = d["units"];
+    let scale = d["scale"];
+    if scale == 0 {
+        return bi.to_string(units);
+    }
+    let neg = d["units"]["sign"] < 0;
+    let digits = bi.to_string(bi.abs(units));
+    // Left-pad so the value has at least scale+1 digits.
+    while len(digits) <= scale {
+        digits = "0" + digits;
+    }
+    let cut = len(digits) - scale;
+    let out = digits.slice(0, cut) + "." + digits.slice(cut, len(digits));
+    if neg {
+        return "-" + out;
+    }
+    return out;
+}
+
+/// Rescale to `scale` digits, truncating (scale must be >= the current one).
+public fn rescale(d, scale) {
+    if scale <= d["scale"] {
+        return d;
+    }
+    let factor = bi.pow(bi.from_int(10), scale - d["scale"]);
+    return make(bi.mul(d["units"], factor), scale);
+}
+
+/// The scale that makes both operands comparable.
+fn coerce(x, who) {
+    let t = type_of(x);
+    if t == "map" and x.has("units") and x.has("scale") {
+        return x;
+    }
+    if t == "int" {
+        return from_int(x);
+    }
+    if t == "string" {
+        return from_string(x);
+    }
+    throw "decimal." + who + ": expected a decimal, an int or a decimal string, found " + t;
+}
+
+public fn radd(me, other) {
+    return add(other, me);
+}
+
+public fn rsub(me, other) {
+    return sub(other, me);
+}
+
+public fn rmul(me, other) {
+    return mul(other, me);
+}
+
+public fn rdiv(me, other) {
+    return div(other, me);
+}
+
+fn common_scale(a, b) {
+    if a["scale"] > b["scale"] {
+        return a["scale"];
+    }
+    return b["scale"];
+}
+
+public fn add(a, b) {
+    a = coerce(a, "add");
+    b = coerce(b, "add");
+    let s = common_scale(a, b);
+    let x = rescale(a, s);
+    let y = rescale(b, s);
+    return make(bi.add(x["units"], y["units"]), s);
+}
+
+public fn sub(a, b) {
+    return add(coerce(a, "sub"), neg(coerce(b, "sub")));
+}
+
+public fn neg(d) {
+    d = coerce(d, "neg");
+    return make(bi.neg(d["units"]), d["scale"]);
+}
+
+public fn abs(d) {
+    d = coerce(d, "abs");
+    return make(bi.abs(d["units"]), d["scale"]);
+}
+
+/// Exact: scales add.
+public fn mul(a, b) {
+    a = coerce(a, "mul");
+    b = coerce(b, "mul");
+    return make(bi.mul(a["units"], b["units"]), a["scale"] + b["scale"]);
+}
+
+/// `a / b`, truncated to `extra` digits past the natural scale (default 6).
+public fn div(a, b, extra = 6) {
+    a = coerce(a, "div");
+    b = coerce(b, "div");
+    if bi.is_zero(b["units"]) {
+        throw "decimal.div: division by zero";
+    }
+    // a/b = (ua/10^sa) / (ub/10^sb) = (ua/ub) * 10^(sb-sa), and we want
+    // `extra` fractional digits: units_q = ua * 10^(sb+extra) / (ub * 10^sa).
+    let lift = bi.pow(bi.from_int(10), b["scale"] + extra);
+    let drop = bi.pow(bi.from_int(10), a["scale"]);
+    let numer = bi.mul(a["units"], lift);
+    let denom = bi.mul(b["units"], drop);
+    let qr = bi.divmod(numer, denom);
+    return make(qr[0], extra);
+}
+
+/// -1 / 0 / 1.
+public fn cmp(a, b) {
+    a = coerce(a, "cmp");
+    b = coerce(b, "cmp");
+    let s = common_scale(a, b);
+    return bi.cmp(rescale(a, s)["units"], rescale(b, s)["units"]);
+}
+
+public fn is_zero(d) {
+    return bi.is_zero(d["units"]);
+}
+
+/// Round half away from zero to `scale` digits.
+public fn round(d, scale) {
+    if d["scale"] <= scale {
+        return rescale(d, scale);
+    }
+    let drop = d["scale"] - scale;
+    let factor = bi.pow(bi.from_int(10), drop);
+    let qr = bi.divmod(d["units"], factor);
+    let q = qr[0];
+    let r = bi.abs(qr[1]);
+    let half = bi.divmod(factor, bi.from_int(2))[0];
+    if bi.cmp(r, half) >= 0 {
+        if d["units"]["sign"] < 0 {
+            q = bi.sub(q, bi.from_int(1));
+        } else {
+            q = bi.add(q, bi.from_int(1));
+        }
+    }
+    return make(q, scale);
+}

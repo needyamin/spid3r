@@ -1,0 +1,219 @@
+// stdlib/mock.matrix - test doubles, written in Spid3r.
+//
+//   import "mock";
+//
+//   // A stub: a dependency that answers without doing anything.
+//   let clock = stub(1700000000);
+//   assert_eq(clock(), 1700000000);
+//   assert_eq(clock("ignored"), 1700000000);   // accepts up to four arguments
+//
+//   // A mock: answers like the real thing and records the calls.
+//   let repo = mock1(fn(id) { return map("id", id, "name", "ada"); });
+//   let user = repo["call"](7);
+//   mock_assert_called_once(repo);
+//   mock_assert_called_with(repo, [7]);
+//
+// ---------------------------------------------------------------------------
+// Why the handle and the arity-specific constructors
+//
+// Spid3r closures are the only callable values, and a closure has neither named
+// state nor an `arguments` object: it sees exactly the parameters it declares.
+// So a generic `mock(f)` could not forward an unknown number of arguments to
+// `f`, and a single-parameter `fn(a = null)` could not tell `call(7)` from
+// `call(7, null)`.
+//
+// Two consequences, both visible at the call site:
+//
+//   * `mock` returns `{call, log}` rather than a bare closure, because the
+//     assertions need somewhere to read the recording from;
+//   * the constructors are arity-specific (`mock0`..`mock3`), so the callable
+//     forwards exactly the arguments it received. `mock_list` covers the rest
+//     by taking the arguments as one list.
+//
+// There is no automatic mock: without reflection a double cannot be derived
+// from a real interface. Tests pass doubles explicitly, which also documents
+// what the code under test actually depends on.
+
+/// A callable that ignores its arguments and returns `value`.
+///
+/// Accepts 0 to 4 arguments, which covers every callback shape in the standard
+/// library (handlers, comparators, middleware).
+public fn stub(value) {
+    return fn(_a = null, _b = null, _c = null, _d = null) {
+        return value;
+    };
+}
+
+/// A callable that throws `message` when called.
+public fn stub_throws(message) {
+    return fn(_a = null, _b = null, _c = null, _d = null) {
+        throw string(message);
+    };
+}
+
+fn handle(log, call) {
+    return map("call", call, "log", log);
+}
+
+/// A recording double with no parameters.
+public fn mock0(impl) {
+    let log = list();
+    let call = fn() {
+        let r = impl();
+        log.push(map("args", list(), "result", r));
+        return r;
+    };
+    return handle(log, call);
+}
+
+/// A recording double with one parameter.
+public fn mock1(impl) {
+    let log = list();
+    let call = fn(a) {
+        let r = impl(a);
+        log.push(map("args", list(a), "result", r));
+        return r;
+    };
+    return handle(log, call);
+}
+
+/// A recording double with two parameters.
+public fn mock2(impl) {
+    let log = list();
+    let call = fn(a, b) {
+        let r = impl(a, b);
+        log.push(map("args", list(a, b), "result", r));
+        return r;
+    };
+    return handle(log, call);
+}
+
+/// A recording double with three parameters.
+public fn mock3(impl) {
+    let log = list();
+    let call = fn(a, b, c) {
+        let r = impl(a, b, c);
+        log.push(map("args", list(a, b, c), "result", r));
+        return r;
+    };
+    return handle(log, call);
+}
+
+/// A recording double whose callable takes the arguments as **one list**.
+///
+///   let f = mock_list(fn(a) { return len(a); });
+///   f["call"]([1, 2, 3]);   // 3, and the call is recorded as [1, 2, 3]
+public fn mock_list(impl) {
+    let log = list();
+    let call = fn(a) {
+        let r = impl(a);
+        log.push(map("args", a, "result", r));
+        return r;
+    };
+    return handle(log, call);
+}
+
+fn log_of(m, who) {
+    if type_of(m) != "map" or not m.has("log") {
+        throw who + ": expected a mock handle (from mock0..mock3/mock_list)";
+    }
+    return m["log"];
+}
+
+/// Every recorded call as `{args, result}`, in order.
+public fn mock_calls(m) {
+    return log_of(m, "mock_calls");
+}
+
+/// How many times the mock was called.
+public fn mock_count(m) {
+    return len(log_of(m, "mock_calls"));
+}
+
+/// The argument list of call `i` (0-based), or null.
+public fn mock_args(m, i) {
+    let log = log_of(m, "mock_args");
+    if i < 0 or i >= len(log) {
+        return null;
+    }
+    return log[i]["args"];
+}
+
+/// The arguments of the most recent call, or null.
+public fn mock_last_args(m) {
+    return mock_args(m, mock_count(m) - 1);
+}
+
+/// The result the mock returned for call `i`, or null.
+public fn mock_result(m, i) {
+    let log = log_of(m, "mock_result");
+    if i < 0 or i >= len(log) {
+        return null;
+    }
+    return log[i]["result"];
+}
+
+fn same_args(got, want) {
+    if len(got) != len(want) {
+        return false;
+    }
+    let i = 0;
+    while i < len(want) {
+        if got[i] != want[i] {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+/// True when some call received exactly `expected` (a list of arguments).
+public fn mock_called_with(m, expected) {
+    let want = expected;
+    if type_of(want) != "list" {
+        want = list(expected);
+    }
+    for entry in log_of(m, "mock_called_with") {
+        if same_args(entry["args"], want) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Clear the recording, keeping the implementation.
+public fn mock_reset(m) {
+    let log = log_of(m, "mock_reset");
+    while len(log) > 0 {
+        log.pop();
+    }
+    return m;
+}
+
+/// Assert an exact call count; throws with a readable message otherwise.
+public fn mock_assert_count(m, expected) {
+    let got = mock_count(m);
+    if got != expected {
+        throw "expected " + string(expected) + " call(s), got " + string(got);
+    }
+    return true;
+}
+
+public fn mock_assert_called_once(m) {
+    return mock_assert_count(m, 1);
+}
+
+public fn mock_assert_not_called(m) {
+    return mock_assert_count(m, 0);
+}
+
+/// Assert that some call received exactly these arguments.
+public fn mock_assert_called_with(m, expected) {
+    if not mock_called_with(m, expected) {
+        throw "expected a call with "
+        + json_write(expected)
+        + ", got "
+        + json_write(mock_calls(m));
+    }
+    return true;
+}

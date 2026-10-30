@@ -1,0 +1,21 @@
+# Build configuration shared by local builds and CI.
+#
+# Windows (MSVC): link the C runtime statically.
+#
+# Rust's default on this target is the *dynamic* CRT, which leaves both the
+# toolchain and every AOT-built app importing VCRUNTIME140.dll /
+# VCRUNTIME140_1.dll. Those are not part of Windows — they come from the
+# Visual C++ Redistributable — so `spid3r.exe`, an app produced by
+# `spid3r build`, and the runtime that `--bundle-runtime` extracts all failed
+# to start (STATUS_DLL_NOT_FOUND, 0xC0000135) on a clean Windows install.
+#
+# Static CRT removes that prerequisite: the produced binaries import only
+# system DLLs (kernel32, user32, ws2_32, ...). The runtime static library
+# `spid3r_lang.lib` inherits the same choice, so apps linked by `spid3r build`
+# need no CRT redistributable either.
+#
+# Do not remove this to "shrink" a binary: the size difference is ~200 KB and
+# the failure mode is a machine-dependent startup crash that cannot be
+# diagnosed from the app.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

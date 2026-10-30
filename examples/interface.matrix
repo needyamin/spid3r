@@ -1,0 +1,37 @@
+// examples/interface.matrix - interfaces and polymorphic dispatch.
+interface Named {
+    fn name(self) -> string;
+}
+
+class User extends Object implements Named {
+    public let id;
+
+    fn new (id) {
+        self.id = id;
+    }
+
+    public fn name(self) -> string {
+        return "user-" + string(self.id);
+    }
+}
+
+class Team implements Named {
+    public let label;
+
+    fn new (label) {
+        self.label = label;
+    }
+
+    public fn name(self) -> string {
+        return "team-" + self.label;
+    }
+}
+
+fn main() {
+    // calling through a variable that holds any implementation works by name
+    let u = new User(7);
+    let t = new Team("core");
+    println(u.name());
+    println(t.name());
+    return 0;
+}
