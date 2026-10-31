@@ -482,6 +482,7 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     // networking (src/stdlib/net.rs)
     "tcp_listen",
     "tcp_accept",
+    "tcp_accept_timeout",
     "tcp_connect",
     "tcp_read",
     "tcp_read_exact",

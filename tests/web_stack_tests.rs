@@ -623,6 +623,34 @@ fn main() {{
     run_both("graceful_shutdown_stops_the_accept_loop", &src);
 }
 
+/// `tcp_accept_timeout` is the primitive that makes shutdown deterministic:
+/// a bounded accept returns `null` instead of blocking forever. Without it the
+/// server could only be stopped by poking a blocked `accept`, which is
+/// best-effort and failed on windows-latest.
+#[test]
+fn bounded_accept_times_out_then_takes_a_real_connection() {
+    let src = r#"import "http";
+fn main() {
+    let l = tcp_listen("127.0.0.1:0").unwrap();
+    let addr = tcp_local_addr(l).unwrap();
+
+    // Nothing pending: returns null after the timeout rather than blocking.
+    let first = tcp_accept_timeout(l, 100);
+    assert_eq(first, null);
+
+    // A real client: returns a connection handle.
+    let c = tcp_connect(addr).unwrap();
+    let second = tcp_accept_timeout(l, 2000);
+    assert(second.is_ok());
+    tcp_close(second.unwrap());
+    tcp_close(c);
+    tcp_close(l);
+    return 0;
+}
+"#;
+    run_both("bounded_accept_times_out_then_takes_a_real_connection", src);
+}
+
 // ---------------------------------------------------------------- fastcgi
 
 /// A hand-built FastCGI client: the test asserts on the raw records, so a

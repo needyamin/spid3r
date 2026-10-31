@@ -209,6 +209,7 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 |---|---|
 | `tcp_listen(addr)` | Bind a TCP listener (`ok(listener_id)` / `err(msg)`). Use `"127.0.0.1:0"` to pick a free port. |
 | `tcp_accept(listener_id)` | Accept an incoming connection (`ok(conn_id)` / `err(msg)`). Blocks until a client connects. |
+| `tcp_accept_timeout(listener_id, timeout_ms)` | Bounded accept: `ok(conn_id)`, `null` when nothing connected before the deadline, or `err(msg)`. The listener is briefly non-blocking and restored afterwards. A server loop should use this rather than `tcp_accept`: a blocked `accept` cannot be interrupted reliably (closing the listener to wake it is best-effort, and failed on Windows), so polling gives shutdown a bound the loop owns. |
 | `tcp_connect(addr)` | Connect to a remote TCP host (`ok(conn_id)` / `err(msg)`). |
 | `tcp_read(conn_id, max_bytes)` | Read up to `max_bytes` (`ok(text)`). Returns `ok("")` on peer close. |
 | `tcp_write(conn_id, text)` | Write UTF-8 string data (`ok(bytes_written)` / `err(msg)`). |

@@ -386,7 +386,9 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
     let counter = mutex(map("n", 0));
     let stopping = map("v", false);
 
-    // Ctrl+C / SIGTERM: close the listener so the blocking accept returns.
+    // Ctrl+C / SIGTERM. The accept below is bounded, so the loop notices the
+    // flag by itself; this watcher only closes the listener so a waiting accept
+    // returns at once instead of after one poll interval.
     if watch_signals {
         spawn fn() {
             while not stopping["v"] {
@@ -402,7 +404,19 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
 
     let accepted = 0;
     while max_connections < 0 or accepted < max_connections {
-        let c = tcp_accept(listener);
+        // A *bounded* accept, not a blocking one. Interrupting a blocked
+        // accept() is best-effort at best: std guarantees nothing, and the
+        // self-connect that tcp_close uses to poke it can fail (seen on
+        // windows-latest, where the accept then stayed blocked forever and the
+        // server never noticed the shutdown). Polling gives the loop a bound it
+        // owns, so shutdown is deterministic on every platform.
+        let c = tcp_accept_timeout(listener, 200);
+        if c == null {
+            if watch_signals and shutdown_requested() {
+                break;
+            }
+            continue;
+        }
         if c.is_err() {
             break;
         }

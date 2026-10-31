@@ -19,7 +19,7 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::NativeDef;
 use crate::value::collections;
@@ -40,6 +40,7 @@ pub fn native_defs() -> Vec<NativeDef> {
     vec![
         ("tcp_listen", n_tcp_listen),
         ("tcp_accept", n_tcp_accept),
+        ("tcp_accept_timeout", n_tcp_accept_timeout),
         ("tcp_connect", n_tcp_connect),
         ("tcp_read", n_tcp_read),
         ("tcp_write", n_tcp_write),
@@ -415,6 +416,60 @@ fn n_tcp_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         }
         Err(e) => err(io_msg("tcp_accept", &e)),
     }
+}
+
+/// `tcp_accept_timeout(listener, timeout_ms)` -> `ok(conn)` / `null` on
+/// timeout / `err(msg)`.
+///
+/// `tcp_accept` blocks the worker until a client connects, and the only way to
+/// interrupt a blocked `accept` is to poke it with a connection — which is what
+/// `tcp_close` does. That poke is best-effort: `std` gives no guarantee that a
+/// blocked accept wakes when the socket is closed, and on Windows a failed
+/// self-connect leaves it blocked forever. A server that polls needs a bound it
+/// controls, not a wake it hopes for.
+///
+/// This flips the listener non-blocking for the duration of the call, retries
+/// `accept` until the deadline, and restores blocking mode before returning, so
+/// a caller that mixes the two forms keeps the old behaviour.
+fn n_tcp_accept_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("tcp_accept_timeout", &args, 2)?;
+    let id = want_int(&args[0], "tcp_accept_timeout")?;
+    let timeout_ms = want_int(&args[1], "tcp_accept_timeout")?.max(0) as u64;
+    let listener = get_listener(id, "tcp_accept_timeout")?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| io_msg("tcp_accept_timeout", &e))?;
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    // The loop *is* the result: every arm breaks with the value to return, so
+    // there is no placeholder to keep in sync.
+    let outcome: Result<Value, String> = loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // Same closure check as the blocking form: `tcp_close` may have
+                // removed the handle while we waited.
+                if lookup(id).is_none() {
+                    let _ = stream.shutdown(Shutdown::Both);
+                    break err("tcp_accept: listener closed");
+                }
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_nodelay(true);
+                break ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new(
+                    stream,
+                ))))));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    break Ok(Value::Null);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => break err(io_msg("tcp_accept_timeout", &e)),
+        }
+    };
+    // Restore the mode the listener had, whatever happened above.
+    let _ = listener.set_nonblocking(false);
+    outcome
 }
 
 /// `tcp_connect("example.com:80")` -> `ok(conn)` / `err(msg)`.
