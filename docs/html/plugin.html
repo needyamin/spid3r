@@ -257,6 +257,16 @@
     .pill.warn { color: var(--amber); border-color: rgba(251, 191, 36, 0.4); }
     .pill.no { color: var(--fg-muted); }
 
+    .pill-note {
+      margin-top: 14px;
+      max-width: 80ch;
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--fg-muted);
+    }
+
+    .pill-note strong { color: var(--fg-secondary); }
+
     /* ---------------------------------------------------------------- sections */
     section { margin-bottom: 46px; scroll-margin-top: calc(var(--topbar-h) + 18px); }
 
@@ -539,6 +549,16 @@
           <span class="pill no">ffi · not implemented</span>
           <span class="pill">abi v1</span>
         </div>
+        <p class="pill-note">
+          <strong>abi v1</strong> is the contract version every plugin declares:
+          <code>spid3r-plugin-abi-1</code>, matched <em>exactly</em> at load, so a plugin built against a
+          different contract is rejected rather than half-working. There is no compatibility negotiation
+          and no "probably fine" — bumping the ABI means a new string, and old plugins stop loading on
+          purpose.<br>
+          <strong>ffi</strong> is not part of that contract. It would let a program call a C library
+          directly (<code>extern fn</code>, AOT-only, trusted code); the keyword does not exist in the
+          language yet, which is why a plugin is currently the only way to reach native code.
+        </p>
       </div>
 
       <!-- ================================================================ 1 -->
