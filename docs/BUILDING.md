@@ -244,9 +244,9 @@ then runs NSIS on `packaging/nsis/spid3r.nsi`.
 > **The installer is a build-script side effect, not a Cargo output.** `build.rs`
 > runs once and Cargo then caches it, so a later `cargo build --release` finishes
 > instantly (`Finished in 0.2s`) and does **not** recreate an installer that was
-> skipped or since deleted. Cargo may even replay the old `installer written:`
-> warning from its cache, which makes it look like the file was produced. To force
-> the step to run again:
+> skipped or since deleted. A plain release build says nothing about the
+> installer either way, so a quiet build is not evidence that the file exists —
+> check for it. To force the step to run again:
 >
 > ```bash
 > # bash / Git Bash
@@ -259,19 +259,31 @@ then runs NSIS on `packaging/nsis/spid3r.nsi`.
 >
 > Setting `SPID3R_PACKAGE=1` works because `build.rs` declares
 > `cargo:rerun-if-env-changed` for it, so the changed value invalidates the cache.
-> Watch the `cargo:warning=` lines — every skip path reports there, including
-> missing NSIS, missing `LLVM-C.dll`/`LLVM-C.lib` under `native`, and a failed
-> nested build.
+> It is also the only thing that makes the build report the result:
+> `installer written: <path> — WebView2 bootstrapper …`. The message is gated on
+> an explicit request because Cargo replays a build script's `cargo:warning=`
+> output from cache, so an unconditional one reappears on every later no-op build
+> and reads as if the installer had just been rebuilt.
+>
+> Every skip path still reports: missing NSIS, missing `LLVM-C.dll`/`LLVM-C.lib`
+> under `native`, and a failed nested build.
 
 - NSIS 3.x is found in `packaging/nsis/nsis/nsis-3.10/` (the portable zip) or
   on `PATH`; when it is missing, the step is skipped with a `cargo:warning`.
-- The installer packs `spid3r.exe` plus (with `gui`) the standalone native
-  `calculator.exe` desktop app, `stdlib/`, `README.md`, `docs/` (developer guide,
-  WASM playground, benchmarks dashboard), `examples/` (including `demo_apps/`), and
-  `benchmarks/` (the 9 canonical benchmark scripts and dataset).
+- The installer packs the toolchain and nothing else: `spid3r.exe`,
+  `spid3r.ico` and — with `gui` — the standalone native `calculator.exe`; under
+  `native` it adds `LLVM-C.dll`, `LLVM-C.lib` and the `spid3r_lang.lib` runtime
+  staticlib. Documentation, examples, benchmarks and the `stdlib/` sources are
+  **not** installed; they live in the repository and at the docs URL the finish
+  page links to. The stdlib needs no payload because it is compiled into
+  `spid3r.exe` (`src/stdlib_embed.rs`) and every backend falls back to it, so
+  shipping a second writable copy only added 29 files that outranked the
+  built-in ones. An install made by an earlier version still has that folder, so
+  the installer deletes `$INSTDIR\stdlib` on the way in — otherwise an in-place
+  upgrade would keep resolving imports from the old, editable copy.
 - Creates a dedicated **Spid3r** Start Menu group with shortcuts for the Command
-  Shell, Developer Guide, WebAssembly Playground, Benchmarks Dashboard, Desktop Calculator,
-  and Uninstaller, plus an optional Desktop Shortcuts component.
+  Shell, the Desktop Calculator and the Uninstaller, plus an optional Desktop
+  Shortcuts component.
 - Registers `.matrix` file associations with Windows Explorer context menu actions
   ("Run with Spid3r", "Check Syntax", and "Run with GUI").
 - With `native`, it also ships `LLVM-C.dll` (loaded by `spid3r.exe`),
@@ -304,6 +316,40 @@ GUI programs can be run headlessly with `spid3r gui --dry-run <file>`, which
 replays the whole native↔JS bridge (script flushes and event dispatch) without
 opening a window — useful for CI and for verifying handler wiring. See
 [GUI.md](GUI.md).
+
+### Linux and macOS installer
+
+`install.sh` is the Unix counterpart of the Windows installer and follows the
+same rule: **the toolchain, and nothing else.**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | sh
+sh install.sh --version 1.0.0 --dir /usr/local/bin --no-modify-path
+sh install.sh --source --core        # build from source instead of downloading
+```
+
+- The release asset is `spid3r-<target>.tar.gz` for
+  `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+  `x86_64-apple-darwin` and `aarch64-apple-darwin`. It carries the `spid3r`
+  binary only — no `stdlib/`, no `docs/`, no `examples/`, no `benchmarks/`.
+  The installer moves `spid3r` out of the extracted tree and discards the rest,
+  so a tarball that still contains a `stdlib/` folder cannot install one.
+- The default target is `~/.spid3r/bin` (`--dir` or `SPID3R_INSTALL_DIR` to
+  override); that directory is appended to `~/.bashrc`, `~/.zshrc` and
+  `~/.profile` unless `--no-modify-path` is passed.
+- No standard library is installed as files. It is compiled into the binary, so
+  `import "json"` works with nothing else on disk. Versions of `install.sh` up to
+  1.0.0 copied 29 `.matrix` modules into `~/.spid3r/stdlib` **and**
+  `~/.spid3r/bin/stdlib`; both are searched before the built-in copy, so an
+  edited module silently changed every program on the machine. The installer now
+  deletes either directory, and only when it actually contains `.matrix` files
+  (so a `stdlib` that belongs to something else, e.g. `/usr/local/stdlib` when
+  installing into `/usr/local/bin`, is left alone).
+- The installer no longer fetches `https://github.com/<repo>/archive/...` to
+  obtain the stdlib: an install is a single download of the release tarball.
+- `--source` compiles with `cargo install --no-default-features` (plus
+  `native`/`gui` when LLVM 18 / WebKit2GTK 4.1 are detected) and installs the
+  same self-contained binary.
 
 ### Environment variables
 

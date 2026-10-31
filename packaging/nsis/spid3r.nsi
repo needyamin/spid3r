@@ -6,9 +6,12 @@
 ;    * adds that directory to the CURRENT USER's PATH (new cmd/PowerShell
 ;      windows can run `spid3r` directly)
 ;    * creates Start Menu shortcuts in Programs\Spid3r
-;    * optional: desktop shortcuts, examples, benchmarks, docs, and .matrix
-;      file association
+;    * optional: desktop shortcuts and .matrix file association
 ;    * registers uninstaller and complete metadata in "Apps & features"
+;
+;  The payload is the toolchain only — no docs, examples, benchmarks or
+;  stdlib sources. Those live in the repository and at DOCSURL, and the stdlib
+;  is already compiled into spid3r.exe.
 ;
 ;  Build:  `cargo build --release` on Windows runs this script from build.rs,
 ;          passing APPVERSION (Cargo.toml), WITH_GUI, SPID3R_EXE, and optionally
@@ -97,20 +100,16 @@ BrandingText "Spid3r Programming Language — Zero-Dependency Core Toolchain"
 
 !define MUI_FINISHPAGE_TITLE "Spid3r is ready"
 !if ${WITH_GUI} == 1
-!define FINISH_GUI      "$\r$\n    spid3r gui examples\demo_apps\web_calculator\calculator.matrix"
 !define FINISH_GUI_NOTE " GUI programs need the WebView2 runtime (included with Windows 11 and Microsoft Edge)."
 !else
-!define FINISH_GUI      ""
 !define FINISH_GUI_NOTE ""
 !endif
 !if ${WITH_NATIVE} == 1
-!define FINISH_NATIVE      "$\r$\n    spid3r build examples\hello.matrix"
-!define FINISH_NATIVE_NOTE ""
+!define FINISH_NATIVE_NOTE "$\r$\n The native backend is included: spid3r build turns a .matrix file into a standalone .exe."
 !else
-!define FINISH_NATIVE      ""
 !define FINISH_NATIVE_NOTE ""
 !endif
-!define MUI_FINISHPAGE_TEXT "Spid3r has been installed to $INSTDIR and added to your user PATH.$\r$\n$\r$\nStart Menu shortcuts have been created in 'Spid3r'.$\r$\n$\r$\nRun in a NEW terminal window:$\r$\n    spid3r version$\r$\n    spid3r run examples\hello.matrix${FINISH_GUI}${FINISH_NATIVE}$\r$\n$\r$\n${FINISH_GUI_NOTE}${FINISH_NATIVE_NOTE}"
+!define MUI_FINISHPAGE_TEXT "Spid3r has been installed to $INSTDIR and added to your user PATH.$\r$\n$\r$\nStart Menu shortcuts have been created in 'Spid3r'.$\r$\n$\r$\nRun in a NEW terminal window:$\r$\n    spid3r version$\r$\n    spid3r --help$\r$\n$\r$\n${FINISH_GUI_NOTE}${FINISH_NATIVE_NOTE}"
 !define MUI_FINISHPAGE_SHOWREADME "${DOCSURL}"
 !define MUI_FINISHPAGE_SHOWREADME_TEXT "Open online Spid3r documentation"
 !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
@@ -137,9 +136,17 @@ Section "Spid3r compiler & runtime (required)" SecCore
 !endif
 !endif
   File "assets\spid3r.ico"
-  SetOutPath "$INSTDIR\stdlib"
-  File /r "..\..\stdlib\*.*"
-  SetOutPath "$INSTDIR"
+  ; No `stdlib/` payload: every stdlib module is compiled into spid3r.exe
+  ; (`src/stdlib_embed.rs`), and all three backends fall back to that table
+  ; when the filesystem search finds nothing. Shipping a second, writable copy
+  ; beside the executable bought nothing and gave the install a set of 29
+  ; inconspicuous files that silently outrank the built-in ones — editing
+  ; `stdlib\json.matrix` there changed every program on the machine.
+  ;
+  ; Dropping it from the payload is not enough on its own: an install made by an
+  ; earlier version still has the folder, and it still wins. Remove it here so an
+  ; in-place upgrade cannot keep running the old, editable modules.
+  RMDir /r "$INSTDIR\stdlib"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   ; --- add to the current user's PATH (deduplicated) ---
@@ -288,21 +295,10 @@ SectionEnd
 
 
 
-Section "Examples, documentation & benchmarks" SecDocs
-  SetOutPath "$INSTDIR"
-  File "..\..\README.md"
-  SetOutPath "$INSTDIR\docs"
-  File /r "..\..\docs\*.*"
-  SetOutPath "$INSTDIR\examples"
-  File /r "..\..\examples\*.*"
-  SetOutPath "$INSTDIR\benchmarks"
-  File /r "..\..\benchmarks\*.*"
-
-  ; --- Documentation shortcuts in Start Menu ---
-  CreateDirectory "$SMPROGRAMS\Spid3r"
-  CreateShortCut "$SMPROGRAMS\Spid3r\Developer Guide.lnk" "$INSTDIR\docs\html\doc.html" "" "$INSTDIR\spid3r.ico" 0
-  CreateShortCut "$SMPROGRAMS\Spid3r\WebAssembly Playground.lnk" "$INSTDIR\docs\html\playground.html" "" "$INSTDIR\spid3r.ico" 0
-SectionEnd
+; No documentation, examples or benchmark component: the installer carries the
+; toolchain and nothing else. The developer guide, playground and examples live
+; in the repository and at DOCSURL, so shipping a second copy in Program Files
+; only meant stale docs on disk and 100+ extra files to uninstall.
 
 Section /o "Desktop shortcuts" SecDesktop
   CreateShortCut "$DESKTOP\Spid3r Shell.lnk" "$SYSDIR\cmd.exe" '/K "spid3r version"' "$INSTDIR\spid3r.ico" 0
@@ -339,7 +335,6 @@ LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / 
 !else
 LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl, plus automatic PATH registration."
 !endif
-LangString DESC_SecDocs  ${LANG_ENGLISH} "The 25 example programs, full benchmark suite, and local documentation (Developer Guide, Playground, Benchmarks dashboard)."
 LangString DESC_SecDesktop ${LANG_ENGLISH} "Creates convenient shortcuts on your desktop for quick terminal access and the standalone calculator."
 LangString DESC_SecAssoc ${LANG_ENGLISH} "Associates .matrix source files with Spid3r and registers Explorer context menu actions (Run, Check syntax, GUI)."
 !if ${WITH_GUI} == 1
@@ -351,7 +346,6 @@ LangString DESC_SecWebView2 ${LANG_ENGLISH} "Installs the Microsoft Edge WebView
 !if ${WITH_GUI} == 1
   !insertmacro MUI_DESCRIPTION_TEXT ${SecWebView2} $(DESC_SecWebView2)
 !endif
-  !insertmacro MUI_DESCRIPTION_TEXT ${SecDocs}     $(DESC_SecDocs)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop}  $(DESC_SecDesktop)
   !insertmacro MUI_DESCRIPTION_TEXT ${SecAssoc}    $(DESC_SecAssoc)
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
@@ -390,6 +384,10 @@ Section "Uninstall"
   Delete "$INSTDIR\spid3r.ico"
   Delete "$INSTDIR\README.md"
   Delete "$INSTDIR\uninstall.exe"
+  ; README.md, docs, examples, benchmarks and stdlib/ are no longer installed,
+  ; but an install made by an earlier version still has them: remove them on
+  ; uninstall so an upgrade-then-uninstall does not leave 100+ orphan files
+  ; behind.
   RMDir /r "$INSTDIR\docs"
   RMDir /r "$INSTDIR\stdlib"
   RMDir /r "$INSTDIR\examples"

@@ -10,9 +10,13 @@
 //!   table `import "semver"` failed with "module not found" on exactly the
 //!   clean machine the single-file build exists for.
 //!
-//! The module loader falls back to it only when normal resolution fails, so a
-//! project-local `stdlib/` still wins everywhere it exists. `build.rs` emits the
-//! table; the cost is the size of `stdlib/` (~420 KB) in every binary.
+//! A third case falls out of the second: the installer ships no `stdlib/`
+//! either, so on an installed machine this table *is* the standard library.
+//! All three backends (tree walker, VM, AOT) fall back to it, and all three
+//! prefer a file when one exists, so a project-local `stdlib/` still wins.
+//!
+//! `build.rs` emits the table; the cost is the size of `stdlib/` (~420 KB) in
+//! every binary.
 
 include!(concat!(env!("OUT_DIR"), "/embedded_stdlib.rs"));
 

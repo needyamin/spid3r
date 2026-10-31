@@ -1559,9 +1559,9 @@
             <p style="font-size: 13.5px; margin-bottom: 8px;">
               Run this single command in your terminal. It detects your operating system and CPU architecture, downloads
               the pre-built binary, installs it into <code>~/.spid3r/bin</code> (override with
-              <code>--dir &lt;path&gt;</code> or <code>SPID3R_INSTALL_DIR</code>), puts the standard library in
-              <code>~/.spid3r/stdlib</code>, adds that directory to your shell <code>PATH</code>
-              (<code>--no-modify-path</code> to skip), and verifies execution:
+              <code>--dir &lt;path&gt;</code> or <code>SPID3R_INSTALL_DIR</code>), deletes any <code>stdlib/</code> folder
+              left by an older install (the standard library is compiled into the binary), adds that directory to your
+              shell <code>PATH</code> (<code>--no-modify-path</code> to skip), and verifies execution:
             </p>
             <div
               style="background: var(--bg-code); padding: 12px 16px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; color: var(--cyan); margin-bottom: 18px; border: 1px solid var(--border-line);">
@@ -1580,7 +1580,8 @@
             <ul style="font-size: 13px; margin-bottom: 18px; color: var(--fg-secondary);">
               <li>Adds the <code>spid3r.exe</code> compiler and VM toolchain to your system <code>PATH</code>.</li>
               <li>Registers <code>.matrix</code> source files so double-clicking executes them.</li>
-              <li>Installs the standard library (<code>stdlib/</code>) alongside the executable.</li>
+              <li>Installs no separate standard-library folder: every <code>stdlib</code> module is compiled into
+                <code>spid3r.exe</code>, so <code>import "json"</code> works with nothing else on disk.</li>
             </ul>
 
             <!-- Option 3: Cargo Source Build -->

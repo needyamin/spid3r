@@ -138,10 +138,14 @@ pub fn ensure_with(
         }
     }
     if !fetch {
-        println!(
-            "cargo:warning=WebView2 bootstrapper not bundled: the download is opt-in \
-             (set SPID3R_FETCH_WEBVIEW2=1; the installer will build without it)"
-        );
+        // Not bundling is the default and fully supported: `spid3r.nsi` only
+        // ships the bootstrapper under `!ifdef WEBVIEW2_SETUP`, and its
+        // WebView2 section downloads the runtime at install time on a machine
+        // that lacks it. Warning here fired on every ordinary release build —
+        // and because Cargo replays a build script's warnings from cache, it
+        // also reappeared on no-op rebuilds, reading as a problem when nothing
+        // was wrong. `build.rs` reports the choice instead, once, and only for
+        // an explicitly requested packaging run.
         return None;
     }
     let Some(hash) = expected else {

@@ -63,7 +63,10 @@ fn flatten_stmts(
                         format!("circular import of '{}'", path),
                     ));
                 }
-                let src = std::fs::read_to_string(&resolved).map_err(|e| {
+                // `read_module_source`, not `fs::read_to_string`: an embedded
+                // module's path is the synthetic `<stdlib>/name.matrix` marker,
+                // which only this reader understands.
+                let src = crate::modules::read_module_source(&resolved).map_err(|e| {
                     Diagnostic::new(Phase::Semantic, format!("cannot import '{}': {}", path, e))
                 })?;
                 let resolved_str = resolved.to_string_lossy().to_string();
@@ -97,7 +100,7 @@ fn flatten_stmts(
                     format!("circular import of '{}'", path),
                 ));
             }
-            let src = std::fs::read_to_string(&resolved).map_err(|e| {
+            let src = crate::modules::read_module_source(&resolved).map_err(|e| {
                 Diagnostic::new(Phase::Semantic, format!("cannot import '{}': {}", path, e))
             })?;
             let resolved_str = resolved.to_string_lossy().to_string();
@@ -690,6 +693,13 @@ fn collect_pattern_bindings(p: &Pattern, out: &mut HashSet<String>) {
 /// then [`crate::modules::default_module_dirs`] (`SPID3R_PATH`, `stdlib/`,
 /// `vendor/`) — mirroring [`crate::vm::compiler`]'s resolver so both the
 /// bytecode and AOT paths agree on module lookup.
+///
+/// The final [`crate::modules::embedded_path`] fallback is what makes a
+/// `stdlib/` directory optional: without it `spid3r build` reported
+/// `module 'semver' not found` on an install that had no `stdlib/` on disk,
+/// while `spid3r run` in the same directory succeeded off the embedded table.
+/// Disk still wins, so a project-local `stdlib/` or `vendor/` copy keeps
+/// overriding the built-in one, exactly as on the other two backends.
 fn resolve_module(importer_file: &str, path: &str) -> Result<PathBuf, Diagnostic> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     let base = PathBuf::from(importer_file);
@@ -705,6 +715,9 @@ fn resolve_module(importer_file: &str, path: &str) -> Result<PathBuf, Diagnostic
         if c.is_file() {
             return Ok(c);
         }
+    }
+    if let Some(p) = crate::modules::embedded_path(path) {
+        return Ok(p);
     }
     Err(Diagnostic::new(
         Phase::Semantic,

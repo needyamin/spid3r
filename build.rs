@@ -58,11 +58,12 @@ fn main() {
     }
 }
 
-/// Emit the `stdlib/*.matrix` sources as a static table for the wasm build.
+/// Emit the `stdlib/*.matrix` sources as a static table.
 ///
-/// A browser has no filesystem, so `import "json"` would otherwise fail with
-/// "cannot import". The table is only compiled for wasm32 (see
-/// `src/stdlib_embed.rs`); native builds keep reading the files from disk so a
+/// The table is compiled into every target, not only wasm32: a browser has no
+/// filesystem, a single-file app runs from a synthetic path with no `stdlib/`
+/// beside it, and the installer no longer ships the sources at all. The module
+/// loader consults the table only after the filesystem search fails, so a
 /// project-local `stdlib/` still wins.
 fn embedded_stdlib() {
     println!("cargo:rerun-if-changed=stdlib");
@@ -166,17 +167,16 @@ fn windows_installer() {
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_default();
     let installer_name = format!("Spid3r-Setup-{version}.exe");
     let installer_path = root.join(&installer_name);
+    // Only inputs the installer actually reads. Documentation, examples and
+    // benchmarks used to be packaged, so they were watched here too; now that
+    // the payload is the toolchain only, watching them just forced a
+    // multi-minute installer rebuild on every doc edit.
     for input in [
         "src",
         "build.rs",
         "Cargo.toml",
         "Cargo.lock",
-        "README.md",
-        "docs",
-        "examples",
-        "benchmarks",
         "stdlib",
-        "examples/demo_apps",
         "packaging/nsis/spid3r.nsi",
         "packaging/nsis/LICENSE.txt",
         "packaging/nsis/assets",
@@ -326,10 +326,25 @@ fn windows_installer() {
     }
     let output = nsis.arg("spid3r.nsi").output();
     match output {
-        Ok(o) if o.status.success() && installer_path.is_file() => println!(
-            "cargo:warning=installer written: {}",
-            installer_path.display()
-        ),
+        Ok(o) if o.status.success() && installer_path.is_file() => {
+            // Report only when packaging was asked for explicitly. Cargo
+            // replays a build script's `cargo:warning=` output from its cache,
+            // so an unconditional success message reappears on every later
+            // `cargo build --release` — including the 0.1s no-op ones, where it
+            // reads as if the installer had just been rebuilt. A plain release
+            // build still writes the file; it just does not narrate it.
+            if packaging_requested {
+                let bundled = if webview2.is_some() {
+                    "WebView2 bootstrapper bundled"
+                } else {
+                    "WebView2 bootstrapper not bundled, opt-in via SPID3R_FETCH_WEBVIEW2=1"
+                };
+                println!(
+                    "cargo:warning=installer written: {} — {bundled}",
+                    installer_path.display()
+                );
+            }
+        }
         Ok(o) if o.status.success() => {
             println!(
                 "cargo:warning=installer skipped: makensis reported success but {} was not found",

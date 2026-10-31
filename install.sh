@@ -17,9 +17,18 @@
 #   1. Detects OS + architecture, picks the right release tarball.
 #   2. Downloads spid3r-<target>.tar.gz from GitHub releases.
 #   3. Installs the `spid3r` binary into $SPID3R_INSTALL_DIR (default ~/.spid3r/bin).
-#   4. Installs the standard library into ~/.spid3r/stdlib.
+#   4. Removes a `stdlib/` directory left by an older version of this script
+#      (the standard library is compiled into the binary now).
 #   5. Adds that directory to your PATH in ~/.bashrc / ~/.zshrc / ~/.profile
 #      (only if not already present, skippable via --no-modify-path).
+#
+# The standard library is not installed as files. Every stdlib module is
+# compiled into the `spid3r` binary, and all three backends (tree walker, VM,
+# AOT) fall back to that table, so `import "json"` works with the binary alone.
+# Older versions of this script copied 29 editable `.matrix` files into
+# ~/.spid3r/stdlib and ~/.spid3r/bin/stdlib; those outranked the built-in copy,
+# so a hand-edited (or maliciously edited) module silently changed the behaviour
+# of every program on the machine. They are removed on install now.
 # ============================================================================
 set -eu
 
@@ -89,18 +98,33 @@ fetch() { # fetch <url> <outfile>
     fi
 }
 
-install_stdlib_tree() {
-    src_stdlib="$1"
-    dst_parent="$(dirname "$INSTALL_DIR")"
-    if [ -d "$src_stdlib" ]; then
-        mkdir -p "${dst_parent}/stdlib"
-        cp -R "$src_stdlib"/* "${dst_parent}/stdlib/" 2>/dev/null || true
-        mkdir -p "${INSTALL_DIR}/stdlib"
-        cp -R "$src_stdlib"/* "${INSTALL_DIR}/stdlib/" 2>/dev/null || true
-        say "Standard library installed to ${dst_parent}/stdlib"
-        return 0
-    fi
-    return 1
+# Remove a `stdlib/` directory left behind by an older version of this script.
+#
+# Older installs copied 29 `.matrix` modules into BOTH "${INSTALL_DIR}/stdlib"
+# (beside the binary) and "$(dirname "$INSTALL_DIR")/stdlib"; both are searched
+# before the built-in copy, so they kept overriding it after an upgrade.
+#
+# Only a directory that actually contains `.matrix` modules is touched, so a
+# `stdlib` that belongs to something else (e.g. /usr/local/stdlib when the
+# binary went into /usr/local/bin) is left alone.
+#
+# The check is a plain glob rather than `find -maxdepth 1`: BSD find (macOS)
+# has no `-maxdepth`, and this script runs on both.
+remove_legacy_stdlib() {
+    for dir in "${INSTALL_DIR}/stdlib" "$(dirname "$INSTALL_DIR")/stdlib"; do
+        [ -d "$dir" ] || continue
+        has_matrix=0
+        for f in "$dir"/*.matrix; do
+            if [ -e "$f" ]; then
+                has_matrix=1
+                break
+            fi
+        done
+        if [ "$has_matrix" -eq 1 ]; then
+            rm -rf "$dir"
+            say "Removed legacy standard library (now built in): ${dir}"
+        fi
+    done
 }
 
 # ------------------------------------------------------ build from source ----
@@ -143,19 +167,9 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
         cp -f "${PARENT_DIR}/bin/spid3r" "${INSTALL_DIR}/spid3r"
     fi
 
-    # Fetch stdlib if not already present
-    if [ ! -d "${PARENT_DIR}/stdlib" ]; then
-        say "Fetching standard library modules..."
-        TMPDIR_DL="$(mktemp -d 2>/dev/null || mktemp -d -t spid3r)"
-        if fetch "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" "${TMPDIR_DL}/repo.tar.gz" 2>/dev/null; then
-            tar -xzf "${TMPDIR_DL}/repo.tar.gz" -C "$TMPDIR_DL" 2>/dev/null || true
-            STDLIB_FOUND="$(find "$TMPDIR_DL" -maxdepth 3 -type d -name stdlib | head -n 1)"
-            if [ -n "$STDLIB_FOUND" ] && [ -d "$STDLIB_FOUND" ]; then
-                install_stdlib_tree "$STDLIB_FOUND"
-            fi
-        fi
-        rm -rf "$TMPDIR_DL"
-    fi
+    # A source build is a single self-contained binary too: the stdlib is
+    # compiled in by build.rs, so there is nothing to fetch or copy.
+    remove_legacy_stdlib
 
     say "Done. spid3r is installed into ${INSTALL_DIR}."
     exit 0
@@ -216,22 +230,12 @@ mkdir -p "$INSTALL_DIR"
 chmod +x "$BIN_SRC"
 mv -f "$BIN_SRC" "${INSTALL_DIR}/spid3r"
 
-# ---------------------------------------------------------- stdlib install ---
-STDLIB_SRC="$(find "$TMPDIR_DL" -maxdepth 3 -type d -name stdlib | head -n 1)"
-if [ -n "$STDLIB_SRC" ] && [ -d "$STDLIB_SRC" ]; then
-    install_stdlib_tree "$STDLIB_SRC"
-else
-    say "Fetching standard library modules..."
-    if fetch "https://github.com/${REPO}/archive/refs/heads/main.tar.gz" "${TMPDIR_DL}/repo.tar.gz" 2>/dev/null; then
-        tar -xzf "${TMPDIR_DL}/repo.tar.gz" -C "$TMPDIR_DL" 2>/dev/null || true
-        STDLIB_SRC="$(find "$TMPDIR_DL" -maxdepth 3 -type d -name stdlib | head -n 1)"
-        if [ -n "$STDLIB_SRC" ] && [ -d "$STDLIB_SRC" ]; then
-            install_stdlib_tree "$STDLIB_SRC"
-        fi
-    else
-        warn "Could not fetch standard library modules automatically. You can install them by cloning the stdlib folder."
-    fi
-fi
+# ---------------------------------------------------------- stdlib cleanup ---
+# The tarball carries the binary only; any `stdlib/` it happens to contain is
+# ignored (only `spid3r` is moved out of the extracted tree). What must go is
+# the writable copy an older install left on disk, because that one outranks
+# the built-in modules.
+remove_legacy_stdlib
 
 # --------------------------------------------------------------- PATH set ----
 path_added=0
