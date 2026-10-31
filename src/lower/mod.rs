@@ -721,6 +721,7 @@ impl Lower {
             let inner = crate::ast::Expr::Fn(Box::new(FnProto {
                 vis: crate::ast::Vis::Private,
                 is_async: false,
+                is_extern: false,
                 name: None,
                 params: vec![emit],
                 ret: None,
@@ -978,6 +979,7 @@ impl Lower {
             out.push(Stmt::Fn(FnProto {
                 vis: e.vis,
                 is_async: false,
+                is_extern: false,
                 name: Some(v.name.clone()),
                 params: v
                     .fields

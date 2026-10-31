@@ -476,6 +476,9 @@ OPTIONS:
                            an error, not a silently skipped step
     --subsystem <kind>     Windows subsystem: 'console' (default) or 'windows'
                            ('windows' removes the terminal window; Windows only)
+    --link-lib <name|path> Link a C library so `extern fn` declarations resolve
+                           (repeatable). A bare name means -l<name> on Unix and
+                           <name>.lib under MSVC; a path is passed as given
     --allow-gui            Build even though GUI natives are not linked in AOT
                            builds (they resolve to null at runtime — use this for
                            a launcher that hands off to `spid3r gui`)

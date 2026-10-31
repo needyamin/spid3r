@@ -37,6 +37,9 @@ pub struct TypeExpr {
 pub struct FnProto {
     pub vis: Vis,
     pub is_async: bool,
+    /// `extern fn name(a: int) -> int;` — a C function the AOT backend links
+    /// against. It has no body; the tree and VM backends reject it outright.
+    pub is_extern: bool,
     pub name: Option<String>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,

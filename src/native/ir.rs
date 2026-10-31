@@ -121,6 +121,14 @@ fn call_ptr<'a>(r: inkwell::values::CallSiteValue<'a>) -> PointerValue<'a> {
     }
 }
 
+/// Extract the floating-point result of a call.
+fn call_float<'a>(r: inkwell::values::CallSiteValue<'a>) -> inkwell::values::FloatValue<'a> {
+    match r.try_as_basic_value() {
+        inkwell::values::ValueKind::Basic(b) => b.into_float_value(),
+        _ => panic!("spid3r: runtime trampoline did not return a float"),
+    }
+}
+
 /// Extract the integer (i1/i8/i64) result of a call.
 fn call_int<'a>(r: inkwell::values::CallSiteValue<'a>) -> inkwell::values::IntValue<'a> {
     match r.try_as_basic_value() {
@@ -506,6 +514,9 @@ pub struct Ir<'ctx> {
     is_entry: bool,
     strings: HashMap<String, PointerValue<'ctx>>,
     tramps: HashMap<String, FunctionValue<'ctx>>,
+    /// `extern fn` declarations, by Spidr name. These are C symbols the
+    /// linker resolves, not runtime trampolines.
+    externs: HashMap<String, FunctionValue<'ctx>>,
     tmp: usize,
     fn_counter: usize,
 }
@@ -536,6 +547,7 @@ impl<'ctx> Ir<'ctx> {
             is_entry: false,
             strings: HashMap::new(),
             tramps: HashMap::new(),
+            externs: HashMap::new(),
             tmp: 0,
             fn_counter: 0,
         }
@@ -2912,7 +2924,203 @@ impl<'ctx> Ir<'ctx> {
         Ok(call_ptr(r))
     }
 
+    // ------------------------------------------------------------- FFI
+
+    /// LLVM type for a declared C parameter or return type.
+    ///
+    /// Only the four shapes the FFI contract allows cross the boundary:
+    /// `int` (i64), `float` (f64), `bool` (i8 — the C ABI width, not LLVM's
+    /// i1) and `string` (`char*`). Anything else is refused with the reason
+    /// instead of being marshalled as a pointer and crashing later.
+    fn c_type(&self, t: &crate::ast::TypeExpr, who: &str) -> IrResult<BasicTypeEnum<'ctx>> {
+        match t.name.as_str() {
+            "int" => Ok(self.i64_ty().into()),
+            "float" => Ok(self.ctx.f64_type().into()),
+            "bool" => Ok(self.i8_ty().into()),
+            "string" => Ok(self.ptr_ty().into()),
+            other => Err(format!(
+                "extern fn '{who}': cannot pass '{other}' to C (supported: int, float, bool, string)"
+            )),
+        }
+    }
+
+    /// Declare every `extern fn` in the program as an external symbol.
+    ///
+    /// Declaring up front means a typo'd *type* fails at build time with a
+    /// clear message, rather than at the first call site deep in codegen.
+    pub fn declare_externs(&mut self, program: &Program) -> IrResult<()> {
+        for stmt in &program.stmts {
+            let Stmt::Fn(f) = stmt else { continue };
+            if !f.is_extern {
+                continue;
+            }
+            let name = f.name.clone().unwrap_or_default();
+            if name.is_empty() {
+                return Err("extern fn needs a name".to_string());
+            }
+            let mut params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = Vec::new();
+            for p in &f.params {
+                let te = p.ty.as_ref().ok_or_else(|| {
+                    format!("extern fn '{name}': every parameter needs a type (int, float, bool, string)")
+                })?;
+                params.push(self.c_type(te, &name)?.into());
+            }
+            let ft = match f.ret.as_ref() {
+                Some(te) => self.c_type(te, &name)?.fn_type(&params, false),
+                None => self.ctx.void_type().fn_type(&params, false),
+            };
+            let fv = self.module.add_function(&name, ft, Some(Linkage::External));
+            self.externs.insert(name, fv);
+        }
+        Ok(())
+    }
+
+    /// Marshal the arguments, call the C symbol, free the temporaries and box
+    /// the result back into a Spidr value.
+    fn compile_extern_call(
+        &mut self,
+        name: &str,
+        fv: FunctionValue<'ctx>,
+        args: &[Expr],
+    ) -> IrResult<PointerValue<'ctx>> {
+        let fty = fv.get_type();
+        let ptypes = fty.get_param_types();
+        if args.len() != ptypes.len() {
+            return Err(format!(
+                "extern fn '{name}' takes {} argument(s), got {}",
+                ptypes.len(),
+                args.len()
+            ));
+        }
+
+        let mut raw: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(args.len());
+        // C strings handed to the callee must be released after it returns.
+        let mut free_after: Vec<PointerValue<'ctx>> = Vec::new();
+        for (arg, pt) in args.iter().zip(ptypes.iter()) {
+            let v = self.compile_expr(arg)?;
+            let meta: inkwell::values::BasicMetadataValueEnum<'ctx> = match pt {
+                inkwell::types::BasicMetadataTypeEnum::IntType(t) if t.get_bit_width() == 64 => {
+                    let f = self.tramp(
+                        "spid3r_to_i64",
+                        &[self.ptr_ty().into()],
+                        Some(self.i64_ty().into()),
+                    );
+                    call_int(self.emit_call(f, &[v.into()], "ffi.i")).into()
+                }
+                inkwell::types::BasicMetadataTypeEnum::IntType(t) if t.get_bit_width() == 8 => {
+                    let f = self.tramp(
+                        "spid3r_to_i64",
+                        &[self.ptr_ty().into()],
+                        Some(self.i64_ty().into()),
+                    );
+                    let i = call_int(self.emit_call(f, &[v.into()], "ffi.b"));
+                    let b = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            i,
+                            self.i64_ty().const_zero(),
+                            "ffi.nz",
+                        )
+                        .unwrap();
+                    self.builder
+                        .build_int_z_extend(b, self.i8_ty(), "ffi.b8")
+                        .unwrap()
+                        .into()
+                }
+                inkwell::types::BasicMetadataTypeEnum::FloatType(_) => {
+                    let f = self.tramp(
+                        "spid3r_to_f64",
+                        &[self.ptr_ty().into()],
+                        Some(self.ctx.f64_type().into()),
+                    );
+                    call_float(self.emit_call(f, &[v.into()], "ffi.f")).into()
+                }
+                inkwell::types::BasicMetadataTypeEnum::PointerType(_) => {
+                    let f = self.tramp(
+                        "spid3r_cstr",
+                        &[self.ptr_ty().into()],
+                        Some(self.ptr_ty().into()),
+                    );
+                    let p = call_ptr(self.emit_call(f, &[v.into()], "ffi.s"));
+                    free_after.push(p);
+                    p.into()
+                }
+                other => {
+                    return Err(format!(
+                        "extern fn '{name}': unsupported parameter type {other:?}"
+                    ))
+                }
+            };
+            raw.push(meta);
+        }
+
+        let call = self.emit_call(fv, &raw, "ffi.call");
+
+        // Release the C strings before touching the result, so an error path in
+        // the boxing below cannot leak them.
+        if !free_after.is_empty() {
+            let free = self.tramp("spid3r_cstr_free", &[self.ptr_ty().into()], None);
+            for p in free_after {
+                self.emit_call(free, &[p.into()], "ffi.free");
+            }
+        }
+
+        match fty.get_return_type() {
+            None => {
+                let f = self.tramp("spid3r_value_null", &[], Some(self.ptr_ty().into()));
+                Ok(call_ptr(self.emit_call(f, &[], "ffi.unit")))
+            }
+            Some(BasicTypeEnum::IntType(t)) if t.get_bit_width() == 64 => {
+                let i = call_int(call);
+                let f = self.tramp(
+                    "spid3r_value_int",
+                    &[self.i64_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[i.into()], "ffi.box")))
+            }
+            Some(BasicTypeEnum::IntType(t)) if t.get_bit_width() == 8 => {
+                let b = call_int(call);
+                let f = self.tramp(
+                    "spid3r_value_bool",
+                    &[self.i8_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[b.into()], "ffi.boxb")))
+            }
+            Some(BasicTypeEnum::FloatType(_)) => {
+                let x = call_float(call);
+                let f = self.tramp(
+                    "spid3r_value_float",
+                    &[self.ctx.f64_type().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[x.into()], "ffi.boxf")))
+            }
+            Some(BasicTypeEnum::PointerType(_)) => {
+                let p = call_ptr(call);
+                let f = self.tramp(
+                    "spid3r_value_from_cstr",
+                    &[self.ptr_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[p.into()], "ffi.boxs")))
+            }
+            Some(other) => Err(format!(
+                "extern fn '{name}': unsupported return type {other:?}"
+            )),
+        }
+    }
+
     fn compile_call(&mut self, callee: &Expr, args: &[Expr]) -> IrResult<PointerValue<'ctx>> {
+        // `extern fn` — a direct C call, marshalled explicitly.
+        if let Expr::Ident(name, _) = callee {
+            if let Some(fv) = self.externs.get(name).copied() {
+                return self.compile_extern_call(name, fv, args);
+            }
+        }
         // builtin collection constructors: list(...), map(...), ...
         if let Expr::Ident(name, _) = callee {
             if collections::is_constructor(name) {
@@ -3451,6 +3659,9 @@ impl<'ctx> Ir<'ctx> {
 
     /// Build the module entry: register classes, run top-level statements.
     pub fn build_entry(&mut self, program: &Program) -> IrResult<PointerValue<'ctx>> {
+        // Declare every `extern fn` before any body is emitted, so a call site
+        // can resolve the symbol and a bad parameter type fails immediately.
+        self.declare_externs(program)?;
         let ptr_ty = self.ptr_ty();
         let fty = ptr_ty.fn_type(&[], false);
         let entry = self.module.add_function("spid3r_entry", fty, None);

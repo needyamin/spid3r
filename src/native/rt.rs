@@ -379,6 +379,71 @@ pub extern "C" fn spid3r_to_i64(v: *const Value) -> i64 {
     }
 }
 
+// ---------------------------------------------------------------- FFI bridge
+//
+// `extern fn` marshals only these four shapes across the C boundary. Each pair
+// is explicit: the AOT side calls the `to_*` form to get a C value and the
+// `value_*` form to box a result back into a Spidr value.
+
+#[no_mangle]
+pub extern "C" fn spid3r_to_f64(v: *const Value) -> f64 {
+    match deref(v) {
+        Value::Float(f) => *f,
+        // A C function taking `double` accepts an int argument without
+        // complaint, and a script should not have to write `1.0` to pass `1`.
+        Value::Int(n) => *n as f64,
+        _ => {
+            let msg = leak(Value::Str("expected number".into()));
+            spid3r_throw(msg);
+            0.0
+        }
+    }
+}
+
+/// Copy a Spidr string into a NUL-terminated C string.
+///
+/// The buffer is **owned by the caller** and released with the existing
+/// `spid3r_cstr_free` (the same one `spid3r_display` uses) right after the call
+/// returns. Copying rather than borrowing is deliberate: `Arc<str>` is not
+/// NUL-terminated, and a C function may only keep the pointer for the duration
+/// of the call.
+#[no_mangle]
+pub extern "C" fn spid3r_cstr(v: *const Value) -> *mut c_char {
+    let text: &str = match deref(v) {
+        Value::Str(s) => s,
+        Value::Null => "",
+        _ => {
+            let msg = leak(Value::Str("expected string".into()));
+            spid3r_throw(msg);
+            return std::ptr::null_mut();
+        }
+    };
+    match std::ffi::CString::new(text) {
+        Ok(c) => c.into_raw(),
+        // An interior NUL cannot be represented in C; report it rather than
+        // silently truncating the string at the boundary.
+        Err(_) => {
+            let msg = leak(Value::Str("string contains a NUL byte".into()));
+            spid3r_throw(msg);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Read a C string returned by an `extern fn` into a Spidr value.
+///
+/// The buffer is **not** freed: a C function may return a string literal or a
+/// static buffer, and freeing it would be a double-free waiting to happen. A
+/// null pointer becomes `null`.
+#[no_mangle]
+pub extern "C" fn spid3r_value_from_cstr(p: *const c_char) -> *mut Value {
+    if p.is_null() {
+        return spid3r_value_null();
+    }
+    let text = unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy();
+    leak(Value::Str(text.into_owned().into()))
+}
+
 /// Build a string from raw bytes (LLVM globals hold the literal bytes).
 #[no_mangle]
 pub extern "C" fn spid3r_value_str(ptr: *const u8, len: usize) -> *mut Value {

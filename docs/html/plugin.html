@@ -546,7 +546,7 @@
           <span class="pill ok">spid3r plugin · works</span>
           <span class="pill ok">wasm plugin · works</span>
           <span class="pill ok">host plugin · works</span>
-          <span class="pill no">ffi · not implemented</span>
+          <span class="pill ok">ffi · works (AOT)</span>
           <span class="pill">abi v1</span>
         </div>
         <p class="pill-note">
@@ -555,9 +555,10 @@
           different contract is rejected rather than half-working. There is no compatibility negotiation
           and no "probably fine" — bumping the ABI means a new string, and old plugins stop loading on
           purpose.<br>
-          <strong>ffi</strong> is not part of that contract. It would let a program call a C library
-          directly (<code>extern fn</code>, AOT-only, trusted code); the keyword does not exist in the
-          language yet, which is why a plugin is currently the only way to reach native code.
+          <strong>ffi</strong> is a separate contract, not part of the plugin ABI: <code>extern fn</code>
+          declares a C function, the AOT backend links it with <code>--link-lib</code>, and the tree and VM
+          reject it at compile time because they link nothing. Trusted code — a C library has the same
+          authority your program does.
         </p>
       </div>
 
@@ -1663,8 +1664,9 @@ spidr run app.matrix
                 <td>a registered plugin lives for the process; <code>stop()</code> ends its lifecycle but does not free it</td>
               </tr>
               <tr>
-                <td>No FFI yet</td>
-                <td><code>extern fn</code> is not implemented; a plugin is the only way to reach native code</td>
+                <td>FFI is <strong>AOT-only</strong></td>
+                <td><code>extern fn</code> resolves at link time, so <code>spidr run</code> rejects it with
+                  <code>error[usage]</code>. Only int, float, bool and string cross the boundary</td>
               </tr>
             </tbody>
           </table>

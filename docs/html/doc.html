@@ -2015,7 +2015,7 @@
         <figure class="diagram">
           <img src="../diagrams/ecosystem.svg"
             alt="A Spid3r program receives code through seven routes: the embedded standard library, project source files, Spid3r plugins, vendored packages, WASM plugins and host plugins (all shipped today), plus FFI (planned). Only the WASM plugin route is sandboxed; the Spid3r and host plugin routes are trusted code by definition.">
-          <figcaption>Seven routes in, six of them shipped. Only one — WASM plugins — can be sandboxed, and it is not
+          <figcaption>Seven routes in, all of them shipped. Only one — WASM plugins — can be sandboxed, and it is not
             built yet. Dashed routes are planned, not available.</figcaption>
         </figure>
 
@@ -2069,8 +2069,8 @@
               <tr>
                 <td>T5</td>
                 <td>FFI (<code>extern fn</code>)</td>
-                <td>Trusted code, AOT-only</td>
-                <td>planned</td>
+                <td>Trusted code, AOT-only; <code>spidr run</code> rejects it at compile time</td>
+                <td>shipped</td>
               </tr>
             </tbody>
           </table>

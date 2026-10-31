@@ -373,9 +373,20 @@ impl Parser {
         } else if self.eat_kw(Keyword::Private) {
             had_vis = true;
         }
+        // `extern fn …;` — an FFI declaration. `extern` is not a keyword (it
+        // must remain usable as an ordinary identifier), so this is a
+        // two-token lookahead rather than a keyword arm.
+        if !had_vis && matches!(self.kind(), TokenKind::Ident(w) if w == "extern") {
+            let save = self.pos;
+            self.pos += 1;
+            if self.at_kw(Keyword::Fn) {
+                return Ok(Stmt::Fn(self.parse_fn(false, None, true)?));
+            }
+            self.pos = save;
+        }
         match self.kind() {
             TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => Ok(Stmt::Fn(
-                self.parse_fn(false, if had_vis { Some(vis) } else { None })?,
+                self.parse_fn(false, if had_vis { Some(vis) } else { None }, false)?,
             )),
             TokenKind::Kw(Keyword::Class) => Ok(Stmt::Class(self.parse_class(vis, false)?)),
             TokenKind::Kw(Keyword::Abstract) => {
@@ -443,7 +454,12 @@ impl Parser {
     /// `allow_anon` permits the nameless `fn(...) {...}` literal form.
     /// `pre_vis` is the visibility already read by a caller (module-level
     /// declarations); when None the keyword is read here (class bodies).
-    fn parse_fn(&mut self, allow_anon: bool, pre_vis: Option<Vis>) -> SpidResult<FnProto> {
+    fn parse_fn(
+        &mut self,
+        allow_anon: bool,
+        pre_vis: Option<Vis>,
+        is_extern: bool,
+    ) -> SpidResult<FnProto> {
         let start = self.span();
         let mut vis = pre_vis.unwrap_or(Vis::Private);
         if pre_vis.is_none() {
@@ -484,11 +500,23 @@ impl Parser {
         } else {
             None
         };
-        let body = self.parse_block()?;
+        // An extern declaration has no body: it ends at the semicolon, and the
+        // backend links the symbol instead.
+        let body = if is_extern {
+            let semi = self.span();
+            self.expect(&TokenKind::Semi, "';'")?;
+            Block {
+                stmts: Vec::new(),
+                span: semi,
+            }
+        } else {
+            self.parse_block()?
+        };
         let span = join(start, body.span.clone());
         Ok(FnProto {
             vis,
             is_async,
+            is_extern,
             name,
             params,
             ret,
@@ -669,6 +697,7 @@ impl Parser {
                     methods.push(FnProto {
                         vis,
                         is_async,
+                        is_extern: false,
                         name: Some(mname),
                         params,
                         ret,
@@ -685,6 +714,7 @@ impl Parser {
                     methods.push(FnProto {
                         vis,
                         is_async,
+                        is_extern: false,
                         name: Some(mname),
                         params,
                         ret,
@@ -702,6 +732,7 @@ impl Parser {
                 methods.push(FnProto {
                     vis,
                     is_async: false,
+                    is_extern: false,
                     name: Some("new".to_string()),
                     params,
                     ret: None,
@@ -890,13 +921,13 @@ impl Parser {
             TokenKind::Kw(Keyword::Let) => self.parse_let(true),
             TokenKind::Kw(Keyword::Const) => self.parse_const(),
             TokenKind::Kw(Keyword::Fn) if matches!(self.peek_kind(1), TokenKind::Ident(_)) => {
-                Ok(Stmt::Fn(self.parse_fn(false, Some(Vis::Private))?))
+                Ok(Stmt::Fn(self.parse_fn(false, Some(Vis::Private), false)?))
             }
             TokenKind::Kw(Keyword::Async)
                 if matches!(self.peek_kind(1), TokenKind::Kw(Keyword::Fn))
                     && matches!(self.peek_kind(2), TokenKind::Ident(_)) =>
             {
-                Ok(Stmt::Fn(self.parse_fn(false, Some(Vis::Private))?))
+                Ok(Stmt::Fn(self.parse_fn(false, Some(Vis::Private), false)?))
             }
             TokenKind::Kw(Keyword::If) => self.parse_if(),
             TokenKind::Kw(Keyword::While) => self.parse_while(),
@@ -1937,7 +1968,7 @@ impl Parser {
                 Ok(Expr::New { class, args, span })
             }
             TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => {
-                let proto = self.parse_fn(true, None)?;
+                let proto = self.parse_fn(true, None, false)?;
                 Ok(Expr::Fn(Box::new(proto)))
             }
             TokenKind::LBracket => {

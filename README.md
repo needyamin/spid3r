@@ -75,7 +75,7 @@ Both samples are in the repository: [`hello-host`](examples/plugins/hello-host) 
 | Vendored packages | checksummed, re-checked by `spidr verify` | shipped |
 | WASM plugins | sandboxed, loaded from disk | shipped |
 | Host plugins | trusted code, not sandboxable | shipped |
-| FFI (`extern fn`) | trusted code, AOT only | planned |
+| FFI (`extern fn`) | trusted code, AOT only | shipped |
 
 ```bash
 $ spid3r modules src/main.matrix --tree   # which file does each import name?
@@ -155,7 +155,7 @@ cargo install --path . --no-default-features
 | [Data structures](docs/DATA_STRUCTURES.md) | all 20+ containers |
 | [Bytecode & VM](docs/BYTECODE.md) | `.matrixc` format, opcodes, scheduler |
 | [Garbage collection](docs/GC.md) | cycle collector design |
-| [Native backend](docs/NATIVE.md) | LLVM AOT |
+| [Native backend](docs/NATIVE.md) · [FFI](docs/FFI.md) | LLVM AOT · calling C with `extern fn` |
 | [GUI](docs/GUI.md) · [Embedding](docs/EMBEDDING.md) | desktop apps · Rust host |
 | [Environment](docs/ENVIRONMENT.md) | every `SPID3R_*` knob |
 | [Security policy](SECURITY.md) | trust model, reporting, known gaps |

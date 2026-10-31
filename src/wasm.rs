@@ -113,6 +113,7 @@ pub fn spid3r_eval_json(src: &str, engine: &str) -> String {
             .push(crate::ast::Stmt::Fn(crate::ast::FnProto {
                 vis: crate::ast::Vis::Private,
                 is_async: false,
+                is_extern: false,
                 name: Some("main".to_string()),
                 params: Vec::new(),
                 ret: None,

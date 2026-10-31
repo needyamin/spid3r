@@ -499,6 +499,19 @@ fn compile_stmt(compilers: &mut Vec<Compiler>, ci: usize, stmt: &Stmt) -> Result
             define_const_variable(compilers, ci, name, *vis)?;
         }
         Stmt::Fn(proto) => {
+            // `extern fn` is a link-time declaration: only the AOT backend can
+            // resolve it. Rejecting here means the bytecode compiler never
+            // emits a call to a symbol nothing will define.
+            if proto.is_extern {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    format!(
+                        "extern fn '{}' needs a native executable: the bytecode VM cannot call C. \
+                         Build with `spidr build`.",
+                        proto.name.as_deref().unwrap_or("<anonymous>")
+                    ),
+                ));
+            }
             if compilers[ci].is_global && compilers[ci].scope_depth == 0 {
                 let f = compile_function(compilers, ci, proto)?;
                 emit_closure_syncs(compilers, ci, &f);

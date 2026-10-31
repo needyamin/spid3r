@@ -3,9 +3,9 @@
 How third-party code extends Spid3r, what it is allowed to do, and what is
 actually implemented today.
 
-Status: **Spid3r-source, WASM and host plugins all work**. FFI does not exist
-yet. This page marks every route rather than describing a design as if it
-shipped.
+Status: **every route works** — Spid3r-source, WASM and host plugins, plus
+native FFI. This page still marks each one rather than describing a design as if
+it shipped.
 
 ## The one thing to understand first
 
@@ -299,7 +299,7 @@ negotiated at run time.
 | Spid3r plugins (`kind = "matrix"`) | **works** — no feature flag, no build step |
 | Host plugins (compiled in) | **works** |
 | WASM plugins (`kind = "wasm"`, loaded from disk) | **works** — `wasmi`, behind the `plugins-wasm` feature |
-| FFI (`extern fn`) | not implemented |
+| FFI (`extern fn`) | **works** — AOT only; see `docs/FFI.md` |
 | `spidr plugin list/enable/disable` | not implemented |
 | Dynamic loading of *native* code (`dlopen`) | deliberately not implemented — no stable ABI to load against |
 

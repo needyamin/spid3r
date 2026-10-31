@@ -332,6 +332,22 @@ impl Interp {
     }
 
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
+        // `extern fn` resolves at link time, and the tree interpreter links
+        // nothing. Refuse before running a single statement rather than
+        // defining a function whose body is empty — a silent `null` return is
+        // the one outcome worse than an error.
+        if let Some(name) = program.stmts.iter().find_map(|s| match s {
+            Stmt::Fn(f) if f.is_extern => Some(f.name.clone().unwrap_or_default()),
+            _ => None,
+        }) {
+            return Err(Diagnostic::new(
+                Phase::Usage,
+                format!(
+                    "extern fn '{name}' needs a native executable: the tree interpreter cannot call C. \
+                     Build with `spidr build`."
+                ),
+            ));
+        }
         // On a panic (which unwinds out of the whole run), release every user
         // mutex this interpreter still holds; see `GuardSweep`.
         let _guard_sweep = GuardSweep {

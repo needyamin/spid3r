@@ -3,9 +3,8 @@
 How third-party code reaches a Spid3r program, what each route is allowed to do,
 and which parts exist today.
 
-Status: `spidr-<name>` external tools, packages, **host plugins** and **WASM
-plugins** are implemented. FFI is **planned**; this page marks each one rather
-than describing it as if it already worked.
+Status: every route on this page is implemented. `spidr-<name>` external tools,
+packages, Spid3r-source / WASM / host plugins, and native FFI.
 
 ## 0. The seven routes, at a glance
 
@@ -24,7 +23,7 @@ be sandboxed.
 | Vendored packages (`vendor/`, `spider.lock`) | ✅ | T2 | Checksummed on install |
 | Host plugins | ✅ | T4 | **Trusted code.** Not sandboxed, and cannot be — see `docs/PLUGINS.md` |
 | WASM plugins | ✅ | T3 | The only genuine sandbox: empty linker, so no ambient authority; fuel-limited |
-| FFI (`extern fn`) | ⬜ planned | T5 | **Trusted code**, AOT-only |
+| FFI (`extern fn`) | ✅ | T5 | **Trusted code**, AOT-only — see `docs/FFI.md` |
 
 The trust tiers are defined in `docs/SECURITY.md`. The one rule that matters
 most: **capability filtering is a policy filter, not a sandbox.** It replaces

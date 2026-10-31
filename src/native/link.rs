@@ -280,6 +280,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     let mut bundle_runtime = false;
     let mut bytecode: Option<PathBuf> = None;
     let mut embed: Vec<String> = Vec::new();
+    let mut link_libs: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -305,6 +306,16 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
                 );
             }
             "--release" => release = true,
+            // `extern fn` needs a library to resolve against. Repeatable, and a
+            // bare name means `-l<name>` / `<name>.lib`.
+            "--link-lib" => {
+                i += 1;
+                link_libs.push(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| err("--link-lib needs a name or path"))?,
+                );
+            }
             "--icon" => {
                 i += 1;
                 let p = args
@@ -398,6 +409,9 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     // inside the toolchain. Must happen before any LLVM call.
     #[cfg(windows)]
     preload_llvm_c();
+
+    // Libraries for `extern fn` symbols, recorded before any linking happens.
+    set_link_libs(link_libs);
 
     let file = file.ok_or_else(|| err("build needs a source file: spid3r build file.matrix"))?;
 
@@ -1423,6 +1437,8 @@ fn link_windows(
         obj.display().to_string(),
         lib.display().to_string(),
     ];
+    // `extern fn` symbols live in the libraries the user named.
+    args.extend(user_link_args());
     // The generated entry point is `main`. Under the Windows subsystem the
     // linker would otherwise look for WinMain/WinMainCRTStartup, so pin the CRT
     // startup that calls main and exits with its return value.
@@ -1598,6 +1614,7 @@ fn link_plain(
         ))
     })?;
     let mut args: Vec<String> = vec![obj.display().to_string()];
+    args.extend(user_link_args());
     if !cfg!(windows) && !cfg!(target_os = "macos") {
         args.push("-Wl,--start-group".to_string());
         args.push(lib.display().to_string());
@@ -1726,6 +1743,47 @@ fn which_program(name: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Extra libraries requested with `spidr build --link-lib …`.
+///
+/// Process-global rather than threaded through `build_native`: one build per
+/// process, and every call site in between would otherwise carry a parameter it
+/// does not use.
+static EXTRA_LIBS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Record the libraries a build should link. Later calls replace earlier ones.
+pub fn set_link_libs(libs: Vec<String>) {
+    let mut slot = EXTRA_LIBS.lock().unwrap_or_else(|e| e.into_inner());
+    *slot = libs;
+}
+
+/// Turn one `--link-lib` spec into a linker argument.
+///
+/// A path is passed through untouched. A bare name becomes `-l<name>` on Unix
+/// and `<name>.lib` under MSVC, which is what a user typing `--link-lib m`
+/// means on each platform.
+fn link_arg(spec: &str) -> String {
+    let looks_like_path = spec.contains('/')
+        || spec.contains('\\')
+        || spec.ends_with(".a")
+        || spec.ends_with(".lib")
+        || spec.ends_with(".so")
+        || spec.ends_with(".dylib");
+    if looks_like_path {
+        return spec.to_string();
+    }
+    if cfg!(windows) {
+        format!("{}.lib", spec)
+    } else {
+        format!("-l{}", spec)
+    }
+}
+
+/// The linker arguments for the recorded libraries.
+fn user_link_args() -> Vec<String> {
+    let libs = EXTRA_LIBS.lock().unwrap_or_else(|e| e.into_inner());
+    libs.iter().map(|s| link_arg(s)).collect()
 }
 
 fn run_linker(exe: &Path, args: &[String]) -> Result<(), Diagnostic> {
