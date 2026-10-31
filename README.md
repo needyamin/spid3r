@@ -147,7 +147,7 @@ cargo install --path . --no-default-features
 | Guide | What's in it |
 |---|---|
 | [Developer guide](docs/html/doc.html) | 15-chapter tutorial, API reference, runnable samples |
-| [Plugin guide](docs/html/plugin.html) | how to write a plugin, and how it works |
+| [Plugin guide](docs/html/plugin.html) · [ABI v1](docs/PLUGIN_ABI.md) | how to write a plugin · the contract, and what forces a v2 |
 | [Playground](docs/html/playground.html) | run Spid3r in the browser |
 | [Grammar](docs/GRAMMAR.md) | EBNF and precedence |
 | [Standard library](docs/STANDARD_LIBRARY.md) | every builtin and module |

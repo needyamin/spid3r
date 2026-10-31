@@ -564,6 +564,100 @@ fn register_wasm_if_enabled(_dir: &Path, name: &str) -> Result<(), String> {
     ))
 }
 
+/// Validate one plugin directory against ABI v1 **without registering it**.
+///
+/// This is what a plugin author runs before shipping: it answers "would this
+/// load?" with the same code path the loader uses, so a `check` that passes and
+/// a load that fails cannot disagree. Nothing is added to the registry, so it is
+/// safe to run in a loop over a directory of candidates.
+///
+/// Returns the notes to show on success (kind, functions, capabilities).
+pub fn check_dir(dir: &Path) -> Result<Vec<String>, String> {
+    let manifest = PluginManifest::load(dir)?;
+
+    if !manifest.abi_matches() {
+        return Err(format!(
+            "targets ABI '{}' but this toolchain implements '{}'",
+            if manifest.abi.is_empty() {
+                "(none)"
+            } else {
+                &manifest.abi
+            },
+            ABI_V1
+        ));
+    }
+
+    // A function the manifest declares but the plugin does not provide is the
+    // most common authoring mistake, so it is checked for every kind.
+    let mut notes = vec![format!(
+        "kind {} · {} function(s) · capabilities [{}]",
+        manifest.kind.as_str(),
+        manifest.functions.len(),
+        manifest
+            .capabilities
+            .iter()
+            .copied()
+            .map(capability_name)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )];
+
+    match manifest.kind {
+        PluginKind::Matrix => {
+            let loaded = matrix::load(dir)?;
+            notes.push(format!("{} public fn(s) resolved", loaded.closures.len()));
+        }
+        PluginKind::Wasm => {
+            #[cfg(feature = "plugins-wasm")]
+            {
+                let loaded = wasm::load(dir)?;
+                notes.push(format!(
+                    "{} export(s) resolved · {} byte(s) of module",
+                    loaded.closures.len(),
+                    std::fs::metadata(dir.join(&manifest.entry))
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                ));
+            }
+            #[cfg(not(feature = "plugins-wasm"))]
+            {
+                return Err(
+                    "this build was compiled without the `plugins-wasm` feature, so a WASM module cannot be checked"
+                        .to_string(),
+                );
+            }
+        }
+        PluginKind::Host => {
+            return Err(
+                "kind = \"host\" is Rust compiled into its host and cannot be validated from disk"
+                    .to_string(),
+            )
+        }
+    }
+    Ok(notes)
+}
+
+/// What the search path would discover, without loading anything.
+///
+/// `(root, [plugin dirs under it])`, in the order the loader would try them.
+pub fn search_report() -> Vec<(PathBuf, Vec<PathBuf>)> {
+    let mut out = Vec::new();
+    for root in default_plugin_dirs() {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            out.push((root, Vec::new()));
+            continue;
+        };
+        let mut found: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.join("plugin.toml").is_file())
+            .collect();
+        found.sort();
+        out.push((root, found));
+    }
+    out
+}
+
 /// A snapshot of one registered plugin, for `plugin list`-style output.
 #[derive(Debug, Clone)]
 pub struct PluginInfo {

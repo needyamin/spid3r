@@ -300,13 +300,18 @@ negotiated at run time.
 | Host plugins (compiled in) | **works** |
 | WASM plugins (`kind = "wasm"`, loaded from disk) | **works** — `wasmi`, behind the `plugins-wasm` feature |
 | FFI (`extern fn`) | **works** — AOT only; see `docs/FFI.md` |
-| `spidr plugin list/enable/disable` | not implemented |
+| `spidr plugin abi/list/check` | **works** — `abi` prints the version, `list` reports the search path, `check` validates a directory |
+| `spidr plugin enable/disable` | not implemented — a plugin is discovered per run, so there is no persistent enable list |
 | Dynamic loading of *native* code (`dlopen`) | deliberately not implemented — no stable ABI to load against |
 
-`spidr plugin list` is missing for a specific reason: a host plugin belongs to the
-host binary that registered it, and a WASM plugin is discovered per run, so there
-is no process-independent list to print. A `--json` report of what *would* load is
-the useful shape, and it is not written yet.
+`spidr plugin list` prints what the **search path** would load — name, kind and
+function count per directory — which is the question an author actually has. It
+does not list what is *registered* in the current process: a host plugin belongs
+to the binary that registered it, so a process-independent list of those does not
+exist.
+
+`spidr plugin check <dir>` validates one directory against the ABI using the
+loader's own code path, without registering anything. See `docs/PLUGIN_ABI.md`.
 
 ### Build configurations
 

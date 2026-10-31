@@ -65,6 +65,9 @@ COMMANDS:
                                            dist/<name>-<version>.tar
     unpack <archive> [dir]                 Extract a packed project
     init [dir]                             Create spider.toml + src/main.matrix
+    plugin abi                             Print the plugin ABI this toolchain implements
+    plugin list                            Show what the plugin search path would load
+    plugin check <dir>                     Validate one plugin directory against the ABI
     modules <file.matrix> [--tree]         List every module this file imports,
                                            with the origin of each: disk, vendor,
                                            embedded or plugin. --tree prints the
@@ -337,6 +340,7 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "lsp" => Ok(crate::lsp::cmd_lsp()),
         "init" => cmd_init(&rest),
         "modules" => cmd_modules(&rest),
+        "plugin" => cmd_plugin(&rest),
         "verify" => cmd_verify(&rest),
         "tree" => cmd_tree(&rest),
         "add" => cmd_add(&rest),
@@ -612,6 +616,18 @@ USAGE:
 
 OPTIONS:
     -h, --help             Print help information
+"),
+        "plugin" => Some("\
+spid3r plugin - Inspect the plugin contract
+
+USAGE:
+    spidr plugin abi              Print the plugin ABI string this build implements
+    spidr plugin list             Show what the plugin search path would load
+    spidr plugin check <dir>      Validate one plugin directory against the ABI
+
+`check` runs the same validation the loader does, without registering anything,
+so it is safe to run over a directory of candidates. Exit codes: 0 valid,
+1 invalid, 2 usage.
 "),
         "modules" => Some("\
 spid3r modules - List the modules a program imports
@@ -1886,6 +1902,92 @@ fn cmd_publish(args: &[String]) -> Result<i32, Diagnostic> {
     println!("published to {}", dest.display());
     println!("sha256: {}", hash);
     Ok(EXIT_OK)
+}
+
+/// `spidr plugin abi | list | check <dir>` — inspect the plugin contract.
+///
+/// The ABI is a versioned contract, so it needs a way to be *read* and
+/// *validated* without loading anything. `check` runs the same code path the
+/// loader does, so a passing check and a failing load cannot disagree.
+fn cmd_plugin(args: &[String]) -> Result<i32, Diagnostic> {
+    let sub = args.first().map(String::as_str).unwrap_or("");
+    let rest = if args.is_empty() {
+        &args[0..]
+    } else {
+        &args[1..]
+    };
+    match sub {
+        "" | "--help" | "-h" => {
+            println!("{}", subcommand_help("plugin").unwrap_or(HELP));
+            Ok(EXIT_OK)
+        }
+        "abi" => {
+            println!("{}", crate::plugin::ABI_V1);
+            Ok(EXIT_OK)
+        }
+        "list" => {
+            let report = crate::plugin::search_report();
+            let mut total = 0usize;
+            for (root, found) in &report {
+                if found.is_empty() {
+                    continue;
+                }
+                println!("{}", root.display());
+                for dir in found {
+                    total += 1;
+                    // A manifest that does not parse is still worth listing:
+                    // the point of `list` is what the loader *would* see.
+                    match crate::plugin::PluginManifest::load(dir) {
+                        Ok(m) => println!(
+                            "  {} ({}) — {} function(s){}",
+                            m.name,
+                            m.kind.as_str(),
+                            m.functions.len(),
+                            if m.abi_matches() {
+                                ""
+                            } else {
+                                "  [ABI MISMATCH]"
+                            }
+                        ),
+                        Err(e) => println!("  ? {} — {}", dir.display(), e),
+                    }
+                }
+            }
+            if total == 0 {
+                println!("no plugins found on the search path");
+                for (root, _) in &report {
+                    println!("  looked in {}", root.display());
+                }
+            }
+            Ok(EXIT_OK)
+        }
+        "check" => {
+            let dir = rest
+                .first()
+                .ok_or_else(|| usage("plugin check needs a directory: spidr plugin check <dir>"))?;
+            let path = PathBuf::from(dir);
+            if !path.is_dir() {
+                return Err(usage(&format!("'{}' is not a directory", dir)));
+            }
+            match crate::plugin::check_dir(&path) {
+                Ok(notes) => {
+                    println!("ok: {} conforms to {}", dir, crate::plugin::ABI_V1);
+                    for n in notes {
+                        println!("  {}", n);
+                    }
+                    Ok(EXIT_OK)
+                }
+                Err(e) => {
+                    eprintln!("error[plugin]: {}: {}", dir, e);
+                    Ok(EXIT_USER_ERROR)
+                }
+            }
+        }
+        other => Err(usage(&format!(
+            "unknown plugin subcommand '{}' (abi, list, check)",
+            other
+        ))),
+    }
 }
 
 /// `spidr modules <file> [--tree]`: make the resolver's decisions inspectable.

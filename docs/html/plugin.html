@@ -967,6 +967,36 @@ spidr run app.matrix
           <strong>Why a wrong ABI is a hard error.</strong> A plugin built against a different contract is not
           "probably fine". Rejecting it before <code>start()</code> runs means a mismatched plugin can never half-work.
         </div>
+
+        <h3>The ABI is versioned, and you can inspect it</h3>
+        <p>
+          <code>spid3r-plugin-abi-1</code> is a contract with three parts — the manifest, the function
+          surface, and (for WASM) the wire format. It is matched exactly, so the toolchain also gives you a
+          way to read and validate it without loading anything:
+        </p>
+        <div class="code">
+          <div class="bar"><span>shell</span><span class="lang">bash</span></div>
+          <pre><code><span class="c"># the version string this build implements</span>
+spidr plugin abi
+<span class="c"># spid3r-plugin-abi-1</span>
+
+<span class="c"># what the search path would load — names, kinds, function counts</span>
+spidr plugin list
+
+<span class="c"># does this directory conform? the loader's own validation, without registering</span>
+spidr plugin check examples/plugins/hello-wasm
+<span class="c"># ok: … conforms to spid3r-plugin-abi-1</span>
+<span class="c">#   kind wasm · 2 function(s) · capabilities []</span>
+<span class="c">#   2 export(s) resolved · 65745 byte(s) of module</span>
+</code></pre>
+        </div>
+        <p>
+          <code>check</code> exits <code>0</code> valid, <code>1</code> invalid, <code>2</code> usage. Because it
+          runs the loader's own validation, a passing check and a failing load cannot disagree. A
+          <code>kind = "host"</code> directory cannot be validated from disk — it is Rust compiled into a host —
+          and the command says so rather than passing it.
+        </p>
+        <p>The full contract, including what forces a v2: <code>docs/PLUGIN_ABI.md</code>.</p>
       </section>
 
       <!-- ================================================================ 4 -->
