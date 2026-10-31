@@ -10,8 +10,8 @@ packages, Spid3r-source / WASM / host plugins, and native FFI.
 
 ![Seven routes by which third-party code reaches a Spid3r program](diagrams/ecosystem.svg)
 
-Solid rows ship today; dashed rows are planned (P4–P6). Only the WASM route can
-be sandboxed.
+Every row ships. Only the WASM route can be sandboxed — the rest are trusted
+code, and the diagram says so on each row.
 
 ## 1. The seven ways code enters a program
 

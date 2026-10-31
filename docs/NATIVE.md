@@ -114,6 +114,39 @@ calls them through `spid3r_call`, which dispatches to the same stdlib the
 interpreters use. `read_line` returns `Null` at EOF, so stream-processing
 loops (`while line != null`) terminate identically under stdin redirection.
 
+## Calling C: `extern fn`
+
+The AOT backend is the only one that can call C — it already emits machine code
+and invokes a linker, so a C library is native to it.
+
+```spidr
+extern fn c_add(a: int, b: int) -> int;
+
+fn main() {
+    println(c_add(20, 22));
+    return 0;
+}
+```
+
+```console
+$ clang -c cmath.c -o cmath.o
+$ spidr build app.matrix -o app --link-lib cmath.o
+```
+
+Marshalling is explicit because Spidr values are boxed pointers here: each
+argument is unboxed to a raw C value (`spid3r_to_i64`, `spid3r_to_f64`,
+`spid3r_cstr`) and the result is boxed again (`spid3r_value_int`, `…_float`,
+`…_bool`, `spid3r_value_from_cstr`). Only `int` (i64), `float` (f64), `bool`
+(i8) and `string` (`char*`) cross the boundary; anything else is refused at
+build time naming the type.
+
+The tree interpreter and the bytecode VM **reject** `extern fn` with
+`error[usage]` before running a statement — they link nothing, so a body-less
+function would return `null` and fail somewhere unrelated.
+
+A symbol nothing defines is a **link** error, so the build fails and no binary is
+produced. Full contract: `docs/FFI.md`.
+
 ## Supported subset
 
 Supported today: functions/closures with upvalues, `let`/`const`,
@@ -311,7 +344,7 @@ byte-identical to the tree interpreter.**
 - `tools/native_diff.sh`: the same differential as a shell runner over
   `examples/*.matrix`. Every step (VM reference run, native build, native
   run) is wrapped in a timeout and reported as `HANG` if it ever stalls.
-  Current result: **22 pass / 0 fail / 1 skip** — the one skip is `math_util`,
+  Current result: **24 pass / 0 fail / 1 skip** — the one skip is `math_util`,
   a no-`main` library example (not a native gap; there is no program to run).
 - Spot checks, all identical to the tree interpreter: `fib(10)` = 55,
   fizzbuzz(15), `sum_to(999)` = 499500, a 1,000,000-iteration spin =

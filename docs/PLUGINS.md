@@ -16,7 +16,8 @@ sandbox, and none can be added at this layer: a capability declaration stops a
 holds.
 
 Only a **WASM plugin** can be genuinely sandboxed, because it has no ambient
-authority to begin with. That route is not implemented.
+authority to begin with: the host links no imports into it. That is the route to
+use for code you did not write.
 
 ## Three kinds of plugin, two trust stories
 
@@ -292,7 +293,10 @@ Function names are `&'static str` — compile-time constants. That is what keeps
 plugin names out of the marshalling problem: nothing about a plugin's identity is
 negotiated at run time.
 
-## What is not implemented
+## Status of every route
+
+Everything on this page is implemented except the two rows at the bottom, which
+are deliberate exclusions rather than gaps.
 
 | Route | Status |
 | --- | --- |

@@ -1911,6 +1911,15 @@
                 </td>
               </tr>
               <tr>
+                <td><code>spid3r plugin abi|list|check</code></td>
+                <td><code>spidr plugin check examples/plugins/hello-wasm</code></td>
+                <td>Inspect the plugin contract: <code>abi</code> prints the version string this build
+                  implements, <code>list</code> shows what the plugin search path would load, and
+                  <code>check &lt;dir&gt;</code> validates one directory against ABI v1 using the loader's own
+                  code path, without registering anything. Exit codes: 0 valid, 1 invalid, 2 usage.
+                </td>
+              </tr>
+              <tr>
                 <td><code>spid3r modules &lt;file&gt;</code></td>
                 <td><code>spid3r modules main.matrix --tree</code></td>
                 <td>List every module a program imports as <code>origin&lt;TAB&gt;path</code>, where origin is
@@ -2014,9 +2023,9 @@
 
         <figure class="diagram">
           <img src="../diagrams/ecosystem.svg"
-            alt="A Spid3r program receives code through seven routes: the embedded standard library, project source files, Spid3r plugins, vendored packages, WASM plugins and host plugins (all shipped today), plus FFI (planned). Only the WASM plugin route is sandboxed; the Spid3r and host plugin routes are trusted code by definition.">
-          <figcaption>Seven routes in, all of them shipped. Only one — WASM plugins — can be sandboxed, and it is not
-            built yet. Dashed routes are planned, not available.</figcaption>
+            alt="A Spid3r program receives code through seven routes: the embedded standard library, project source files, Spid3r plugins, vendored packages, WASM plugins, host plugins and native FFI — every route ships. Only the WASM plugin route is sandboxed; the Spid3r, host and FFI routes are trusted code by definition.">
+          <figcaption>Seven routes in, all of them shipped. Only one — WASM plugins — can be sandboxed; the rest
+            are trusted code, and the diagram marks which is which.</figcaption>
         </figure>
 
         <div class="table-wrap">
@@ -2058,7 +2067,7 @@
                 <td>T3</td>
                 <td>WASM plugins</td>
                 <td>Sandboxed — no ambient authority, manifest-declared permissions, fuel-limited</td>
-                <td>planned</td>
+                <td>shipped</td>
               </tr>
               <tr>
                 <td>T4</td>
@@ -2194,6 +2203,10 @@
             </thead>
             <tbody>
               <tr>
+                <td>Spid3r plugins (<code>kind = "matrix"</code>, loaded from disk)</td>
+                <td>works — no feature flag, no build step</td>
+              </tr>
+              <tr>
                 <td>Host plugins (compiled into the host)</td>
                 <td>works</td>
               </tr>
@@ -2203,11 +2216,16 @@
               </tr>
               <tr>
                 <td>FFI (<code>extern fn</code>)</td>
-                <td>not implemented</td>
+                <td>works — AOT only; <code>spidr run</code> rejects it at compile time</td>
               </tr>
               <tr>
-                <td><code>spidr plugin list/enable/disable</code></td>
-                <td>not implemented — a plugin is discovered per run, so there is no process-independent list</td>
+                <td><code>spidr plugin abi|list|check</code></td>
+                <td>works — <code>abi</code> prints the version, <code>list</code> reports the search path,
+                  <code>check</code> validates a directory against ABI v1</td>
+              </tr>
+              <tr>
+                <td><code>spidr plugin enable/disable</code></td>
+                <td>not implemented — a plugin is discovered per run, so there is no persistent enable list</td>
               </tr>
               <tr>
                 <td>Dynamic loading of <em>native</em> code (<code>dlopen</code>)</td>

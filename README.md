@@ -86,11 +86,11 @@ $ spid3r verify                           # is the vendored tree the one the loc
 
 | Aspect | Detail |
 |---|---|
-| **Implementation** | 80,115 lines of Rust · zero dependencies in the core (`--no-default-features`) |
+| **Implementation** | 81,066 lines of Rust · zero dependencies in the core (`--no-default-features`) |
 | **Engines** | tree · bytecode VM · LLVM AOT · WebAssembly |
 | **Bytecode** | 59 opcodes · serialized `.matrixc` format |
 | **Standard library** | 29 modules, compiled into the binary |
-| **Tests** | 1,083 tests · three-engine differential |
+| **Tests** | 1,092 tests · three-engine differential |
 | **Binary** | one 11 MB file · static CRT · runs with no installed runtime |
 
 ## The language
