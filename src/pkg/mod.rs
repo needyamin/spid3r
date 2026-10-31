@@ -333,7 +333,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
 }
 
 /// `["a", "b"]` → Vec<String>.
-fn parse_string_array(v: &str) -> Option<Vec<String>> {
+pub(crate) fn parse_string_array(v: &str) -> Option<Vec<String>> {
     let inner = v.trim().strip_prefix('[')?.strip_suffix(']')?;
     let mut out = Vec::new();
     for part in inner.split(',') {
@@ -346,7 +346,7 @@ fn parse_string_array(v: &str) -> Option<Vec<String>> {
     Some(out)
 }
 
-fn strip_comment(line: &str) -> &str {
+pub(crate) fn strip_comment(line: &str) -> &str {
     // A `#` outside a quoted string starts a comment.
     let mut in_str = false;
     for (i, c) in line.char_indices() {
@@ -360,7 +360,7 @@ fn strip_comment(line: &str) -> &str {
 }
 
 /// A double-quoted string value, with `\"` and `\\` escapes.
-fn parse_string(v: &str) -> Option<String> {
+pub(crate) fn parse_string(v: &str) -> Option<String> {
     let v = v.trim();
     let inner = v.strip_prefix('"')?.strip_suffix('"')?;
     let mut out = String::with_capacity(inner.len());
@@ -687,10 +687,20 @@ pub fn tree_hash(root: &Path) -> Result<String, String> {
     if !src_dir.is_dir() {
         return Err(format!("no src/ directory in {}", root.display()));
     }
+    content_hash(&src_dir)
+}
+
+/// Deterministic hash of every file under `dir`: relative path + NUL + raw
+/// contents + NUL, sorted by path.
+///
+/// This is the same input `vendor_dep` hashes, so a vendored tree can be
+/// re-checked against the `sha256` recorded in `spider.lock` — that is what
+/// `spidr verify` does.
+pub fn content_hash(dir: &Path) -> Result<String, String> {
     let mut files: Vec<PathBuf> = Vec::new();
-    collect_files(&src_dir, &mut files)?;
+    collect_files(dir, &mut files)?;
     files.sort();
-    hash_files(&src_dir, &files)
+    hash_files(dir, &files)
 }
 
 /// `spid3r pack`: write `dist/<name>-<version>.tar` and return
@@ -808,6 +818,10 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<Vec<String>, String> {
 #[path = "sha256.rs"]
 mod sha256;
 pub use sha256::{hex_encode, sha256_bytes, sha256_hex};
+
+/// Inspect/edit half of the package manager: `verify`, `tree`, `add`,
+/// `remove`, `publish --to-dir`, `search --local`.
+pub mod ops;
 
 // ---------------------------------------------------------------- install
 

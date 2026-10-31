@@ -1,0 +1,1800 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spid3r | Writing Plugins</title>
+  <meta name="description"
+    content="Developer guide to Spid3r plugins: how to write a host plugin in Rust, how to build a sandboxed WebAssembly plugin, the manifest contract, the wire format, and how the toolchain loads and calls them.">
+
+  <link rel="icon" type="image/png" href="../../src/assets/spid3r.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <script>
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('spid3r-dev-theme'); } catch (_) { }
+      if (!t) {
+        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+
+  <style>
+    :root {
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: 'JetBrains Mono', "SF Mono", Consolas, monospace;
+
+      --bg-base: #0b0f17;
+      --bg-surface: #111722;
+      --bg-card: #161e2e;
+      --bg-code: #080c13;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-line: #1e293b;
+
+      --fg-primary: #f1f5f9;
+      --fg-secondary: #94a3b8;
+      --fg-muted: #64748b;
+
+      --cyan: #38bdf8;
+      --indigo: #818cf8;
+      --purple: #c084fc;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --emerald: #34d399;
+      --w3-green: #04AA6D;
+
+      --grad-cyan: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+      --hl-kw: #c084fc;
+      --hl-str: #34d399;
+      --hl-num: #fbbf24;
+      --hl-com: #64748b;
+      --hl-fn: #38bdf8;
+      --hl-type: #818cf8;
+
+      --shadow-md: 0 10px 15px -3px rgba(0, 0, 0, 0.4);
+      --topbar-h: 58px;
+      --sidebar-w: 268px;
+    }
+
+    html[data-theme="light"] {
+      --bg-base: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-card: #ffffff;
+      --bg-code: #f1f5f9;
+      --border-subtle: rgba(15, 23, 42, 0.08);
+      --border-line: #e2e8f0;
+      --fg-primary: #0f172a;
+      --fg-secondary: #475569;
+      --fg-muted: #64748b;
+      --hl-kw: #7c3aed;
+      --hl-str: #047857;
+      --hl-num: #b45309;
+      --hl-com: #94a3b8;
+      --hl-fn: #0369a1;
+      --hl-type: #4338ca;
+      --shadow-md: 0 10px 15px -3px rgba(15, 23, 42, 0.08);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg-base);
+      color: var(--fg-primary);
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.86em;
+      background: var(--bg-code);
+      border: 1px solid var(--border-subtle);
+      border-radius: 4px;
+      padding: 1px 5px;
+      color: var(--fg-primary);
+    }
+
+    /* ------------------------------------------------------------------ topbar */
+    .topbar {
+      position: fixed;
+      inset: 0 0 auto 0;
+      height: var(--topbar-h);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 22px;
+      background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border-line);
+      z-index: 50;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-family: var(--font-heading);
+      font-weight: 700;
+      font-size: 1rem;
+      color: var(--fg-primary);
+      letter-spacing: -0.01em;
+    }
+
+    .brand .dot {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--grad-cyan);
+      box-shadow: 0 0 10px var(--cyan);
+    }
+
+    .topnav { display: flex; gap: 4px; margin-left: 10px; }
+
+    .topnav a {
+      color: var(--fg-secondary);
+      font-size: 0.86rem;
+      padding: 6px 11px;
+      border-radius: 7px;
+      border: 1px solid transparent;
+    }
+
+    .topnav a:hover { background: var(--bg-card); text-decoration: none; color: var(--fg-primary); }
+    .topnav a.active { color: var(--cyan); border-color: var(--border-line); background: var(--bg-card); }
+
+    .spacer { flex: 1; }
+
+    .theme-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border-line);
+      color: var(--fg-secondary);
+      border-radius: 8px;
+      padding: 6px 11px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      font-family: var(--font-body);
+    }
+    .theme-btn:hover { color: var(--fg-primary); border-color: var(--cyan); }
+
+    /* ----------------------------------------------------------------- layout */
+    .shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+      gap: 40px;
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: calc(var(--topbar-h) + 26px) 26px 90px;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: calc(var(--topbar-h) + 22px);
+      align-self: start;
+      max-height: calc(100vh - var(--topbar-h) - 44px);
+      overflow-y: auto;
+      padding-right: 8px;
+    }
+
+    .sidebar h4 {
+      font-family: var(--font-heading);
+      font-size: 0.7rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--fg-muted);
+      margin: 0 0 10px 10px;
+    }
+
+    .sidebar nav a {
+      display: block;
+      padding: 6px 10px;
+      border-radius: 7px;
+      font-size: 0.855rem;
+      color: var(--fg-secondary);
+      border-left: 2px solid transparent;
+    }
+
+    .sidebar nav a:hover { background: var(--bg-card); color: var(--fg-primary); text-decoration: none; }
+    .sidebar nav a.active { color: var(--cyan); border-left-color: var(--cyan); background: var(--bg-card); }
+
+    main { min-width: 0; }
+
+    /* ------------------------------------------------------------------- hero */
+    .hero {
+      border: 1px solid var(--border-line);
+      background: radial-gradient(1000px 320px at 8% -30%, rgba(56, 189, 248, 0.13), transparent 65%), var(--bg-surface);
+      border-radius: 16px;
+      padding: 34px 34px 30px;
+      margin-bottom: 34px;
+    }
+
+    .kicker {
+      font-family: var(--font-heading);
+      font-size: 0.72rem;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 10px;
+    }
+
+    .hero h1 {
+      font-family: var(--font-heading);
+      font-size: clamp(1.75rem, 3.2vw, 2.35rem);
+      line-height: 1.18;
+      letter-spacing: -0.02em;
+      margin-bottom: 12px;
+    }
+
+    .hero p.lead {
+      color: var(--fg-secondary);
+      font-size: 1.02rem;
+      max-width: 62ch;
+    }
+
+    .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+
+    .pill {
+      font-family: var(--font-mono);
+      font-size: 0.74rem;
+      padding: 5px 11px;
+      border-radius: 999px;
+      border: 1px solid var(--border-line);
+      background: var(--bg-card);
+      color: var(--fg-secondary);
+    }
+
+    .pill.ok { color: var(--emerald); border-color: rgba(52, 211, 153, 0.4); }
+    .pill.warn { color: var(--amber); border-color: rgba(251, 191, 36, 0.4); }
+    .pill.no { color: var(--fg-muted); }
+
+    /* ---------------------------------------------------------------- sections */
+    section { margin-bottom: 46px; scroll-margin-top: calc(var(--topbar-h) + 18px); }
+
+    h2 {
+      font-family: var(--font-heading);
+      font-size: 1.42rem;
+      letter-spacing: -0.015em;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    h2 .num {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--fg-muted);
+      border: 1px solid var(--border-line);
+      border-radius: 6px;
+      padding: 2px 7px;
+    }
+
+    h3 {
+      font-family: var(--font-heading);
+      font-size: 1.06rem;
+      margin: 26px 0 10px;
+      letter-spacing: -0.01em;
+    }
+
+    h4.sub {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 20px 0 8px;
+      color: var(--fg-primary);
+    }
+
+    .subtitle { color: var(--fg-muted); font-size: 0.9rem; margin-bottom: 18px; }
+
+    p { color: var(--fg-secondary); margin-bottom: 13px; }
+    p strong, li strong { color: var(--fg-primary); font-weight: 600; }
+
+    ul, ol { color: var(--fg-secondary); margin: 0 0 14px 20px; }
+    li { margin-bottom: 6px; }
+
+    /* ------------------------------------------------------------------- code */
+    .code {
+      border: 1px solid var(--border-line);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 14px 0 18px;
+      background: var(--bg-code);
+    }
+
+    .code .bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 13px;
+      border-bottom: 1px solid var(--border-line);
+      background: var(--bg-card);
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--fg-muted);
+    }
+
+    .code .bar .lang { margin-left: auto; opacity: 0.7; }
+
+    .code pre {
+      margin: 0;
+      padding: 15px 16px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      line-height: 1.72;
+      color: var(--fg-primary);
+      tab-size: 2;
+    }
+
+    .code pre code { background: none; border: 0; padding: 0; font-size: inherit; }
+
+    .k { color: var(--hl-kw); }
+    .s { color: var(--hl-str); }
+    .n { color: var(--hl-num); }
+    .c { color: var(--hl-com); font-style: italic; }
+    .f { color: var(--hl-fn); }
+    .t { color: var(--hl-type); }
+
+    /* ------------------------------------------------------------------ tables */
+    .tw { overflow-x: auto; margin: 14px 0 18px; border: 1px solid var(--border-line); border-radius: 10px; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.855rem; min-width: 480px; }
+
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      background: var(--bg-card);
+      color: var(--fg-primary);
+      font-weight: 600;
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+      border-bottom: 1px solid var(--border-line);
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--fg-secondary);
+      vertical-align: top;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    td code { white-space: nowrap; }
+
+    /* ------------------------------------------------------------------ cards */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin: 16px 0 20px; }
+
+    .card {
+      border: 1px solid var(--border-line);
+      border-radius: 12px;
+      padding: 18px;
+      background: var(--bg-card);
+    }
+
+    .card h4 {
+      font-family: var(--font-heading);
+      font-size: 0.98rem;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card p { font-size: 0.86rem; margin-bottom: 0; }
+
+    .card .tag {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border-line);
+      color: var(--fg-muted);
+    }
+
+    .card.matrix { border-top: 2px solid var(--cyan); }
+    .card.host { border-top: 2px solid var(--amber); }
+    .card.wasm { border-top: 2px solid var(--emerald); }
+
+    /* --------------------------------------------------------------- callouts */
+    .callout {
+      border: 1px solid var(--border-line);
+      border-left: 3px solid var(--cyan);
+      border-radius: 9px;
+      padding: 13px 16px;
+      margin: 16px 0;
+      background: var(--bg-card);
+      font-size: 0.88rem;
+      color: var(--fg-secondary);
+    }
+
+    .callout strong { color: var(--fg-primary); }
+    .callout.warn { border-left-color: var(--amber); }
+    .callout.stop { border-left-color: var(--rose); }
+    .callout.ok { border-left-color: var(--emerald); }
+
+    /* --------------------------------------------------------------- diagram */
+    figure.diagram {
+      margin: 18px 0 22px;
+      border: 1px solid var(--border-line);
+      border-radius: 12px;
+      padding: 16px;
+      background: var(--bg-surface);
+      overflow-x: auto;
+    }
+
+    figure.diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+    figure.diagram figcaption { color: var(--fg-muted); font-size: 0.8rem; text-align: center; margin-top: 10px; }
+
+    /* ------------------------------------------------------------------ steps */
+    .steps { counter-reset: step; margin: 16px 0 20px; }
+
+    .step {
+      position: relative;
+      padding: 0 0 18px 42px;
+      border-left: 1px solid var(--border-line);
+      margin-left: 13px;
+    }
+
+    .step:last-child { border-left-color: transparent; padding-bottom: 0; }
+
+    .step::before {
+      counter-increment: step;
+      content: counter(step);
+      position: absolute;
+      left: -13px;
+      top: -2px;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      background: var(--bg-card);
+      border: 1px solid var(--border-line);
+      color: var(--cyan);
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .step h4 { margin: 0 0 4px; font-size: 0.95rem; }
+    .step p { margin-bottom: 0; font-size: 0.87rem; }
+    .step .code { margin-bottom: 0; }
+
+    footer {
+      border-top: 1px solid var(--border-line);
+      padding-top: 18px;
+      color: var(--fg-muted);
+      font-size: 0.82rem;
+    }
+
+    @media (max-width: 1000px) {
+      .shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
+      .sidebar { display: none; }
+      .hero { padding: 26px 22px; }
+    }
+  </style>
+</head>
+
+<body>
+
+  <header class="topbar">
+    <div class="brand"><span class="dot"></span> Spid3r</div>
+    <nav class="topnav">
+      <a href="doc.html">Developer Guide</a>
+      <a href="playground.html">Playground</a>
+      <a href="plugin.html" class="active">Plugins</a>
+      <a href="benchmark.html">Benchmarks</a>
+    </nav>
+    <div class="spacer"></div>
+    <button class="theme-btn" id="themeBtn" type="button">Light</button>
+  </header>
+
+  <div class="shell">
+
+    <aside class="sidebar">
+      <h4>On this page</h4>
+      <nav id="toc">
+        <a href="#overview">What a plugin is</a>
+        <a href="#choose">Which kind to write</a>
+        <a href="#matrix">Spid3r plugins</a>
+        <a href="#manifest">The manifest</a>
+        <a href="#host">Host plugins</a>
+        <a href="#wasm">WASM plugins</a>
+        <a href="#wire">The wire format</a>
+        <a href="#how">How it works</a>
+        <a href="#discovery">Discovery</a>
+        <a href="#permissions">Permissions &amp; fuel</a>
+        <a href="#limits">Limits</a>
+        <a href="#reference">Reference</a>
+        <a href="#troubleshooting">Troubleshooting</a>
+        <a href="#checklist">Checklist</a>
+      </nav>
+    </aside>
+
+    <main>
+
+      <div class="hero">
+        <div class="kicker">Extension guide</div>
+        <h1>Writing Spid3r plugins</h1>
+        <p class="lead">
+          A plugin adds functions to a Spid3r program. You write one <strong>in Spid3r</strong> — a
+          <code>.matrix</code> file with <code>public fn</code>s, no Rust and no build step. Two other kinds exist for
+          the cases the language cannot cover: sandboxed WebAssembly, and native Rust for hosts that embed the
+          toolchain.
+        </p>
+        <div class="pills">
+          <span class="pill ok">spid3r plugin · works</span>
+          <span class="pill ok">wasm plugin · works</span>
+          <span class="pill ok">host plugin · works</span>
+          <span class="pill no">ffi · not implemented</span>
+          <span class="pill">abi v1</span>
+        </div>
+      </div>
+
+      <!-- ================================================================ 1 -->
+      <section id="overview">
+        <h2><span class="num">01</span> What a plugin is</h2>
+        <p class="subtitle">Three kinds, one registry, one place they meet.</p>
+
+        <p>
+          Third-party code reaches a Spid3r program through seven routes. Three of them are plugins, and they are the
+          only ones where <em>you</em> decide what the function does — which is why they get their own page.
+        </p>
+
+        <figure class="diagram">
+          <svg viewBox="0 0 860 300" role="img" width="860" height="300">
+            <title>Three plugin kinds merge into one native table that three engines install from</title>
+            <desc>A Spid3r-source plugin loaded from disk, a WASM plugin loaded from disk and a host plugin compiled
+              into the binary all register into the same plugin registry. The registry merges into stdlib native_defs,
+              which the tree interpreter, the bytecode VM and the AOT backend all install from.</desc>
+            <defs>
+              <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6"
+                orient="auto-start-reverse">
+                <path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </marker>
+            </defs>
+            <rect x="0" y="0" width="860" height="300" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1" />
+
+            <rect x="14" y="24" width="196" height="52" rx="9" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2" />
+            <text x="112" y="44" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="12.5"
+              fill="#0C4A6E">Spid3r plugin</text>
+            <text x="112" y="62" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10"
+              fill="#075985">.matrix · script trust</text>
+
+            <rect x="14" y="124" width="196" height="52" rx="9" fill="#D1FAE5" stroke="#059669" stroke-width="1.2" />
+            <text x="112" y="144" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="12.5"
+              fill="#064E3B">wasm plugin</text>
+            <text x="112" y="162" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10"
+              fill="#065F46">from disk · sandboxed</text>
+
+            <rect x="14" y="224" width="196" height="52" rx="9" fill="#FEF3C7" stroke="#D97706" stroke-width="1.2" />
+            <text x="112" y="244" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="12.5"
+              fill="#78350F">host plugin</text>
+            <text x="112" y="262" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10"
+              fill="#92400E">compiled in · trusted</text>
+
+            <path d="M210 50 L240 50" fill="none" stroke="#94A3B8" stroke-width="1.5" />
+            <path d="M210 150 L240 150" fill="none" stroke="#94A3B8" stroke-width="1.5" />
+            <path d="M210 250 L240 250" fill="none" stroke="#94A3B8" stroke-width="1.5" />
+            <path d="M240 50 L240 250" fill="none" stroke="#94A3B8" stroke-width="1.5" />
+            <path d="M240 150 L258 150" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ar)" />
+
+            <rect x="262" y="128" width="150" height="44" rx="9" fill="#EEF2FF" stroke="#6366F1" stroke-width="1.2" />
+            <text x="337" y="145" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="11.5"
+              fill="#312E81">plugin registry</text>
+            <text x="337" y="161" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9.5"
+              fill="#4338CA">fn ptr + closures</text>
+
+            <path d="M412 150 L460 150" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ar)" />
+
+            <rect x="464" y="128" width="168" height="44" rx="9" fill="#F0FDFA" stroke="#0D9488" stroke-width="1.2" />
+            <text x="548" y="145" text-anchor="middle" font-family="ui-monospace, monospace" font-size="11"
+              fill="#134E4A">native_defs()</text>
+            <text x="548" y="161" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="9.5"
+              fill="#0F766E">the single merge point</text>
+
+            <path d="M632 150 L668 150" fill="none" stroke="#94A3B8" stroke-width="1.5" />
+            <path d="M668 44 L668 236" fill="none" stroke="#94A3B8" stroke-width="1.5" />
+
+            <rect x="676" y="28" width="168" height="32" rx="8" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1" />
+            <text x="760" y="49" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="11.5"
+              fill="#334155">tree interpreter</text>
+
+            <rect x="676" y="94" width="168" height="32" rx="8" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1" />
+            <text x="760" y="115" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="11.5"
+              fill="#334155">bytecode VM</text>
+
+            <rect x="676" y="160" width="168" height="32" rx="8" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1"
+              stroke-dasharray="4 3" />
+            <text x="760" y="181" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="11.5"
+              fill="#64748B">AOT · no plugins</text>
+
+            <path d="M668 44 L676 44" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ar)" />
+            <path d="M668 110 L676 110" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ar)" />
+            <path d="M668 176 L676 176" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ar)" />
+
+            <text x="430" y="284" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="10.5"
+              fill="#64748B">a plugin function needs no per-engine code — all three read the same list</text>
+          </svg>
+          <figcaption>All three kinds register into one table. That is why a plugin function works on every engine
+            that installs from it.</figcaption>
+        </figure>
+
+        <div class="cards">
+          <div class="card matrix">
+            <h4>Spid3r plugin <span class="tag">kind = "matrix"</span></h4>
+            <p>
+              A <code>.matrix</code> file whose <code>public fn</code>s become callable from any program. Same
+              language, same standard library, same debugger. Script authority — the same trust as your own source.
+            </p>
+          </div>
+          <div class="card host">
+            <h4>Host plugin <span class="tag">kind = "host"</span></h4>
+            <p>
+              Rust code compiled into a binary that embeds the toolchain. Full authority, no sandbox. The right choice
+              for a program you control that needs to expose its own internals to a script.
+            </p>
+          </div>
+          <div class="card wasm">
+            <h4>WASM plugin <span class="tag">kind = "wasm"</span></h4>
+            <p>
+              A <code>.wasm</code> module the toolchain reads from disk and interprets. No imports, no ambient
+              authority, fuel-limited. The right choice for anything you did not write.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout">
+          <strong>The one-sentence difference.</strong> A Spid3r or host plugin is trusted code — it can do what your
+          program can. A WASM plugin has nothing to be trusted <em>with</em>, because the host links no capabilities
+          into it. That is why the sandbox is the only route worth running code you did not write.
+        </div>
+      </section>
+
+      <!-- ================================================================ 2 -->
+      <section id="choose">
+        <h2><span class="num">02</span> Which kind should I write?</h2>
+        <p class="subtitle">Pick by who wrote the code, not by what it does. If in doubt: write it in Spid3r.</p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>If you are…</th>
+                <th>Write</th>
+                <th>Because</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Writing a plugin, full stop</td>
+                <td><strong>Spid3r plugin</strong></td>
+                <td>it is your language: a <code>.matrix</code> file with <code>public fn</code>s, loaded from disk</td>
+              </tr>
+              <tr>
+                <td>Distributing a plugin to people you do not know</td>
+                <td>WASM plugin</td>
+                <td>the only route that is sandboxed, so it is the only one to run untrusted code in</td>
+              </tr>
+              <tr>
+                <td>Shipping a Rust app that embeds <code>spid3r_lang</code></td>
+                <td>host plugin</td>
+                <td>you already control the binary; registration is a single call at startup</td>
+              </tr>
+              <tr>
+                <td>Needing a file, a socket or a clock inside the plugin</td>
+                <td>Spid3r or host</td>
+                <td>a WASM guest has no imports, so it cannot reach any of them</td>
+              </tr>
+              <tr>
+                <td>Targeting <code>spidr build</code> output</td>
+                <td>neither</td>
+                <td>a standalone executable cannot link a plugin — see <a href="#limits">Limits</a></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ================================================================ 3 -->
+      <section id="matrix">
+        <h2><span class="num">03</span> Spid3r plugins</h2>
+        <p class="subtitle">The default. Write the plugin in the language.</p>
+
+        <p>
+          A Spid3r plugin is a directory with a <code>plugin.toml</code> and a <code>.matrix</code> file. Its
+          <code>public fn</code>s become callable from any program that loads it — no Rust, no WebAssembly, no build
+          step. If you can write a function, you can write a plugin.
+        </p>
+
+        <div class="code">
+          <div class="bar"><span>greetings/plugin.toml</span><span class="lang">toml</span></div>
+          <pre><code>[<span class="f">plugin</span>]
+<span class="k">name</span> = <span class="s">"greetings"</span>
+<span class="k">version</span> = <span class="s">"0.1.0"</span>
+<span class="k">abi</span> = <span class="s">"spid3r-plugin-abi-1"</span>
+<span class="k">kind</span> = <span class="s">"matrix"</span>
+<span class="k">entry</span> = <span class="s">"greetings.matrix"</span>   <span class="c"># optional: defaults to &lt;name&gt;.matrix</span>
+
+[[<span class="f">function</span>]]
+<span class="k">name</span> = <span class="s">"greet"</span>
+<span class="k">arity</span> = <span class="n">1</span>
+
+[[<span class="f">function</span>]]
+<span class="k">name</span> = <span class="s">"sum_to"</span>
+<span class="k">arity</span> = <span class="n">1</span>
+</code></pre>
+        </div>
+
+        <div class="code">
+          <div class="bar"><span>greetings/greetings.matrix</span><span class="lang">spid3r</span></div>
+          <pre><code><span class="c">// Nothing special: ordinary functions in the ordinary language.</span>
+<span class="k">public fn</span> <span class="f">greet</span>(name) {
+    <span class="k">return</span> <span class="s">"Hello, "</span> + name + <span class="s">"!"</span>;
+}
+
+<span class="k">public fn</span> <span class="f">sum_to</span>(n) {
+    <span class="k">let</span> total = <span class="n">0</span>;
+    <span class="k">let</span> i = <span class="n">1</span>;
+    <span class="k">while</span> (i &lt;= n) {
+        total = total + i;
+        i = i + <span class="n">1</span>;
+    }
+    <span class="k">return</span> total;
+}
+</code></pre>
+        </div>
+
+        <p>Then any program that can see the plugin calls them like builtins:</p>
+
+        <div class="code">
+          <div class="bar"><span>shell</span><span class="lang">bash</span></div>
+          <pre><code><span class="k">export</span> SPID3R_PLUGINS=./plugins     <span class="c"># the directory containing greetings/</span>
+spidr run app.matrix
+<span class="c"># Hello, Ada!</span>
+<span class="c"># 55</span>
+</code></pre>
+        </div>
+
+        <h3>What the loader does</h3>
+        <div class="steps">
+          <div class="step">
+            <h4>Parse and check</h4>
+            <p>The <code>.matrix</code> file goes through the same parser and semantic checker as any program —
+              including the lints. A plugin that does not check never loads.</p>
+          </div>
+          <div class="step">
+            <h4>Run the top level, without a <code>fn main</code></h4>
+            <p>
+              A plugin is a <em>module</em>, not a program, so it is loaded with <code>run_module</code> — every
+              top-level statement, no entry point required. The definitions are the point.
+            </p>
+          </div>
+          <div class="step">
+            <h4>Bind each declared function</h4>
+            <p>
+              For every <code>[[function]]</code>, the loader looks the name up in the plugin's globals, checks it is a
+              function with the declared arity, and wraps it as a native closure. A declared name that the file does
+              not define is a load error.
+            </p>
+          </div>
+          <div class="step">
+            <h4>Register</h4>
+            <p>
+              The closures join the same registry as every other plugin, so the tree interpreter and the bytecode VM
+              both see them — with no per-engine code.
+            </p>
+          </div>
+        </div>
+
+        <div class="callout warn">
+          <strong>Trust: this is script code.</strong> A Spid3r plugin has exactly the authority a script has — the
+          same builtins, the same file access. It is tier T1, the same trust as your project's own source. Being a
+          plugin does not sandbox it, and pretending otherwise would be the worst kind of documentation. Use
+          <code>kind = "wasm"</code> for code you did not write.
+        </div>
+
+        <h3>Isolation and rules</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Property</th>
+                <th>Behaviour</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Globals</td>
+                <td>Each plugin gets its own interpreter and its own globals: it cannot read or clobber the calling
+                  program's variables.</td>
+              </tr>
+              <tr>
+                <td>Standard library</td>
+                <td>Fully available — that is the point of writing in the language.</td>
+              </tr>
+              <tr>
+                <td>Imports</td>
+                <td>The plugin's own directory is first on its module search path, so it can <code>import</code> a
+                  sibling file.</td>
+              </tr>
+              <tr>
+                <td>Errors</td>
+                <td>A <code>throw</code> inside the plugin reaches the caller's <code>catch</code> with its message
+                  intact.</td>
+              </tr>
+              <tr>
+                <td>Arity</td>
+                <td>Checked against the file at load: a manifest cannot describe a call the language would reject.</td>
+              </tr>
+              <tr>
+                <td>Build step</td>
+                <td>None. The file <em>is</em> the plugin.</td>
+              </tr>
+              <tr>
+                <td>Needs <code>plugins-wasm</code>?</td>
+                <td>No — a Spid3r plugin works in the zero-dependency build.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>A complete, runnable sample: <code>examples/plugins/hello-matrix/</code>.</p>
+      </section>
+
+      <!-- ================================================================ 4 -->
+      <section id="manifest">
+        <h2><span class="num">04</span> The manifest</h2>
+        <p class="subtitle"><code>plugin.toml</code> is the contract. All three kinds use the same file.</p>
+
+        <div class="code">
+          <div class="bar"><span>plugin.toml</span><span class="lang">toml</span></div>
+          <pre><code><span class="c"># The manifest is the contract: what the plugin is, what ABI it targets,</span>
+<span class="c"># and every function it may expose.</span>
+[<span class="f">plugin</span>]
+<span class="k">name</span> = <span class="s">"hello"</span>                 <span class="c"># unique across the process</span>
+<span class="k">version</span> = <span class="s">"0.1.0"</span>
+<span class="k">abi</span> = <span class="s">"spid3r-plugin-abi-1"</span>  <span class="c"># exact match, or registration fails</span>
+<span class="k">kind</span> = <span class="s">"host"</span>                <span class="c"># "host" or "wasm"</span>
+<span class="k">capabilities</span> = [<span class="s">"environment"</span>] <span class="c"># everything the plugin may declare</span>
+<span class="c"># entry = "plugin.wasm"          # required for kind = "wasm"</span>
+
+<span class="c"># One block per function. The name is what a script calls.</span>
+[[<span class="f">function</span>]]
+<span class="k">name</span> = <span class="s">"hello_greet"</span>
+<span class="k">arity</span> = <span class="n">1</span>                     <span class="c"># no permission: pure computation</span>
+
+[[<span class="f">function</span>]]
+<span class="k">name</span> = <span class="s">"hello_env"</span>
+<span class="k">arity</span> = <span class="n">1</span>
+<span class="k">permission</span> = <span class="s">"environment"</span>   <span class="c"># must appear in capabilities above</span>
+</code></pre>
+        </div>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Required</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>name</code></td>
+                <td>yes</td>
+                <td>Unique plugin id. Two plugins with the same name cannot coexist in one process.</td>
+              </tr>
+              <tr>
+                <td><code>version</code></td>
+                <td>no</td>
+                <td>Free-form; shown in diagnostics. Defaults to <code>0.0.0</code>.</td>
+              </tr>
+              <tr>
+                <td><code>abi</code></td>
+                <td>yes</td>
+                <td>Must equal <code>spid3r-plugin-abi-1</code> exactly. Checked before any plugin code runs.</td>
+              </tr>
+              <tr>
+                <td><code>kind</code></td>
+                <td>no</td>
+                <td><code>host</code> (default) or <code>wasm</code>.</td>
+              </tr>
+              <tr>
+                <td><code>capabilities</code></td>
+                <td>no</td>
+                <td>The full set a function may declare: <code>filesystem</code>, <code>process</code>,
+                  <code>network</code>, <code>environment</code>.</td>
+              </tr>
+              <tr>
+                <td><code>entry</code></td>
+                <td>for wasm</td>
+                <td>The <code>.wasm</code> file name, relative to the manifest.</td>
+              </tr>
+              <tr>
+                <td><code>[[function]].name</code></td>
+                <td>yes</td>
+                <td>The identifier a script calls.</td>
+              </tr>
+              <tr>
+                <td><code>[[function]].arity</code></td>
+                <td>no</td>
+                <td>Checked against what the plugin actually offers; a mismatch is a registration error.</td>
+              </tr>
+              <tr>
+                <td><code>[[function]].permission</code></td>
+                <td>no</td>
+                <td>The capability a script must be allowed to call this function.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout warn">
+          <strong>Why a wrong ABI is a hard error.</strong> A plugin built against a different contract is not
+          "probably fine". Rejecting it before <code>start()</code> runs means a mismatched plugin can never half-work.
+        </div>
+      </section>
+
+      <!-- ================================================================ 4 -->
+      <section id="host">
+        <h2><span class="num">05</span> Host plugins</h2>
+        <p class="subtitle">A trait, four methods, one registration call.</p>
+
+        <p>
+          A host plugin is a Rust type implementing <code>PluginHost</code>. It is compiled into the binary that embeds
+          the toolchain — there is no dynamic loading, because a native function is a Rust function pointer over
+          <code>Value</code>, and <code>Value</code> has no stable representation that could cross a C ABI boundary.
+        </p>
+
+        <div class="steps">
+          <div class="step">
+            <h4>Implement the trait</h4>
+            <p><code>manifest()</code> returns your parsed <code>plugin.toml</code>; <code>functions()</code> returns
+              one definition per declared function.</p>
+            <div class="code">
+              <div class="bar"><span>src/lib.rs</span><span class="lang">rust</span></div>
+              <pre><code><span class="k">use</span> spid3r_lang::plugin::{PluginFnDef, PluginHost, PluginManifest};
+<span class="k">use</span> spid3r_lang::value::{NativeCtx, Value};
+
+<span class="k">pub struct</span> <span class="t">Hello</span>;
+
+<span class="k">impl</span> <span class="t">PluginHost</span> <span class="k">for</span> <span class="t">Hello</span> {
+    <span class="k">fn</span> <span class="f">manifest</span>(&amp;self) -&gt; &amp;<span class="t">PluginManifest</span> {
+        <span class="c">// Embed it, so the shipped manifest and the code cannot drift.</span>
+        <span class="f">manifest_singleton</span>()
+    }
+
+    <span class="k">fn</span> <span class="f">functions</span>(&amp;self) -&gt; <span class="t">Vec</span>&lt;<span class="t">PluginFnDef</span>&gt; {
+        <span class="k">vec!</span>[<span class="t">PluginFnDef</span> {
+            <span class="c">// A fn pointer needs a 'static name: the function names are</span>
+            <span class="c">// compile-time constants, which is what keeps them out of the</span>
+            <span class="c">// marshalling problem entirely.</span>
+            name: <span class="s">"hello_greet"</span>,
+            arity: <span class="n">1</span>,
+            permission: <span class="t">None</span>,
+            func: greet,
+        }]
+    }
+
+    <span class="c">// start runs before the first call; stop runs at shutdown.</span>
+    <span class="k">fn</span> <span class="f">start</span>(&amp;<span class="k">mut</span> self) -&gt; <span class="t">Result</span>&lt;(), <span class="t">String</span>&gt; { <span class="t">Ok</span>(()) }
+    <span class="k">fn</span> <span class="f">stop</span>(&amp;<span class="k">mut</span> self) -&gt; <span class="t">Result</span>&lt;(), <span class="t">String</span>&gt; { <span class="t">Ok</span>(()) }
+}
+
+<span class="c">// The function itself: same signature as any builtin native.</span>
+<span class="k">fn</span> <span class="f">greet</span>(_ctx: &amp;<span class="t">NativeCtx</span>, args: <span class="t">Vec</span>&lt;<span class="t">Value</span>&gt;) -&gt; <span class="t">Result</span>&lt;<span class="t">Value</span>, <span class="t">String</span>&gt; {
+    <span class="k">match</span> args.first() {
+        <span class="t">Some</span>(<span class="t">Value</span>::<span class="t">Str</span>(s)) =&gt; <span class="t">Ok</span>(<span class="t">Value</span>::<span class="t">Str</span>(<span class="t">Arc</span>::<span class="f">from</span>(<span class="f">format!</span>(<span class="s">"Hello, {s}!"</span>)))),
+        _ =&gt; <span class="t">Err</span>(<span class="s">"hello_greet(name) expects a string"</span>.<span class="f">into</span>()),
+    }
+}
+</code></pre>
+            </div>
+          </div>
+
+          <div class="step">
+            <h4>Register it before you create an engine</h4>
+            <p>Registration merges your functions into <code>native_defs()</code>, the list every engine installs
+              from. Doing it after the engine exists is too late.</p>
+            <div class="code">
+              <div class="bar"><span>src/main.rs</span><span class="lang">rust</span></div>
+              <pre><code><span class="f">spid3r_lang::plugin::register</span>(<span class="t">Box</span>::<span class="f">new</span>(<span class="t">Hello</span>))?;
+
+<span class="k">let</span> engine = <span class="t">Engine</span>::<span class="f">new</span>();
+<span class="k">let</span> out = engine.<span class="f">run</span>(<span class="s">"app.matrix"</span>, &amp;source)?;
+<span class="f">print!</span>(<span class="s">"{}"</span>, out.output);
+
+<span class="c">// Stop plugins in a defined order rather than at process exit.</span>
+<span class="f">spid3r_lang::plugin::shutdown_all</span>();
+</code></pre>
+            </div>
+          </div>
+
+          <div class="step">
+            <h4>Call it from a script</h4>
+            <div class="code">
+              <div class="bar"><span>app.matrix</span><span class="lang">spid3r</span></div>
+              <pre><code><span class="k">fn</span> <span class="f">main</span>() {
+    <span class="f">println</span>(<span class="f">hello_greet</span>(<span class="s">"Ada"</span>));
+    <span class="k">return</span> <span class="n">0</span>;
+}
+</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <h3>Lifecycle</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>State</th>
+                <th>When</th>
+                <th>What it means</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Loaded</code></td>
+                <td>after the manifest checks pass</td>
+                <td>registered, <code>start</code> not yet attempted</td>
+              </tr>
+              <tr>
+                <td><code>Started</code></td>
+                <td><code>start()</code> returned <code>Ok</code></td>
+                <td>its functions are visible to scripts</td>
+              </tr>
+              <tr>
+                <td><code>Stopped</code></td>
+                <td><code>stop()</code> ran</td>
+                <td>functions are no longer offered</td>
+              </tr>
+              <tr>
+                <td><code>Failed</code></td>
+                <td><code>start()</code> returned <code>Err</code></td>
+                <td>recorded, never offered, host keeps running</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout ok">
+          <strong>A broken plugin cannot take the host down.</strong> <code>start()</code> runs with the registry lock
+          released, so it may do real work; if it fails, the plugin is recorded as <code>Failed</code> and its
+          functions are simply never offered. <code>stop()</code> must tolerate being called twice, and
+          <code>shutdown_all()</code> returns errors instead of failing fast.
+        </div>
+
+        <p>A complete, runnable sample: <code>examples/plugins/hello-host/</code>.</p>
+      </section>
+
+      <!-- ================================================================ 5 -->
+      <section id="wasm">
+        <h2><span class="num">06</span> WASM plugins</h2>
+        <p class="subtitle">The kind the <code>spidr</code> CLI can use without being rebuilt.</p>
+
+        <p>
+          A WASM plugin is a directory: <code>plugin.toml</code> plus a <code>.wasm</code> module. The toolchain reads
+          both from the plugin search path and interprets the module with <code>wasmi</code>. This is the only route
+          that can be sandboxed, because the host links <strong>nothing</strong> into the guest.
+        </p>
+
+        <h3>Directory layout</h3>
+        <div class="code">
+          <div class="bar"><span>my-plugin/</span><span class="lang">tree</span></div>
+          <pre><code>my-plugin/
+├── plugin.toml      <span class="c"># kind = "wasm", entry = "plugin.wasm"</span>
+├── plugin.wasm      <span class="c"># the built module</span>
+├── Cargo.toml       <span class="c"># crate-type = ["cdylib"]</span>
+└── src/lib.rs       <span class="c"># the guest</span>
+</code></pre>
+        </div>
+
+        <h3>The guest contract</h3>
+        <p>A module must export exactly these:</p>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Export</th>
+                <th>Signature</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>memory</code></td>
+                <td>—</td>
+                <td>The linear memory the host reads and writes. A <code>cdylib</code> exports it by default.</td>
+              </tr>
+              <tr>
+                <td><code>alloc</code></td>
+                <td><code>(i32) -&gt; i32</code></td>
+                <td>Reserve <code>len</code> bytes, return the pointer.</td>
+              </tr>
+              <tr>
+                <td><code>dealloc</code></td>
+                <td><code>(i32, i32) -&gt; ()</code></td>
+                <td>Optional. Release the request buffer after the call.</td>
+              </tr>
+              <tr>
+                <td><em>one per function</em></td>
+                <td><code>(i32, i32) -&gt; i64</code></td>
+                <td>Take <code>(ptr, len)</code>, return <code>(ptr &lt;&lt; 32) | len</code> of the response.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          A function's export name <em>is</em> its manifest name, so there is no dispatch table inside the guest — the
+          host resolves the export once, at load time.
+        </p>
+
+        <figure class="diagram">
+          <svg viewBox="0 0 820 250" role="img" width="820" height="250">
+            <title>One plugin call through linear memory</title>
+            <desc>The host encodes the arguments, calls alloc in the guest to reserve space, copies the bytes into the
+              guest's linear memory, calls the exported function, then reads the response bytes back and decodes
+              them.</desc>
+            <defs>
+              <marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6"
+                orient="auto-start-reverse">
+                <path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round"
+                  stroke-linejoin="round" />
+              </marker>
+            </defs>
+            <rect x="0" y="0" width="820" height="250" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1" />
+
+            <rect x="16" y="88" width="150" height="66" rx="9" fill="#EEF2FF" stroke="#6366F1" stroke-width="1.2" />
+            <text x="91" y="112" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="12"
+              fill="#312E81">host</text>
+            <text x="91" y="130" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9.5"
+              fill="#4338CA">encode(args)</text>
+
+            <rect x="250" y="60" width="300" height="122" rx="10" fill="#F0FDFA" stroke="#0D9488" stroke-width="1.2" />
+            <text x="400" y="80" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="11.5"
+              fill="#134E4A">guest linear memory</text>
+
+            <rect x="270" y="96" width="120" height="30" rx="5" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1" />
+            <text x="330" y="115" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9.5"
+              fill="#334155">request bytes</text>
+
+            <rect x="410" y="96" width="120" height="30" rx="5" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1" />
+            <text x="470" y="115" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9.5"
+              fill="#334155">response bytes</text>
+
+            <rect x="270" y="140" width="260" height="26" rx="5" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"
+              stroke-dasharray="4 3" />
+            <text x="400" y="157" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9"
+              fill="#64748B">alloc(ptr) · call(ptr, len) · dealloc</text>
+
+            <rect x="640" y="88" width="164" height="66" rx="9" fill="#D1FAE5" stroke="#059669" stroke-width="1.2" />
+            <text x="722" y="112" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="12"
+              fill="#064E3B">guest export</text>
+            <text x="722" y="130" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9.5"
+              fill="#065F46">hello_greet</text>
+
+            <path d="M166 108 L244 108" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ar2)" />
+            <text x="205" y="100" text-anchor="middle" font-family="ui-monospace, monospace" font-size="8.5"
+              fill="#64748B">write</text>
+
+            <path d="M550 108 L634 108" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#ar2)" />
+            <text x="592" y="100" text-anchor="middle" font-family="ui-monospace, monospace" font-size="8.5"
+              fill="#64748B">invoke</text>
+
+            <path d="M722 154 L722 196 L91 196 L91 158" fill="none" stroke="#94A3B8" stroke-width="1.5"
+              marker-end="url(#ar2)" />
+            <text x="400" y="214" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9"
+              fill="#64748B">read (ptr, len) back · decode</text>
+
+            <text x="400" y="34" text-anchor="middle" font-family="ui-sans-serif, system-ui" font-size="10.5"
+              fill="#64748B">nothing crosses the boundary except bytes</text>
+          </svg>
+          <figcaption>Arguments go in as bytes, the answer comes back as bytes. The guest cannot see or touch anything
+            else.</figcaption>
+        </figure>
+
+        <h3>A complete guest</h3>
+        <div class="code">
+          <div class="bar"><span>src/lib.rs</span><span class="lang">rust</span></div>
+          <pre><code><span class="c">// Responses are copied into a static buffer, so the guest never hands the</span>
+<span class="c">// host a dangling pointer and never leaks an allocation.</span>
+<span class="k">const</span> <span class="t">OUT_CAP</span>: <span class="t">usize</span> = <span class="n">1</span> &lt;&lt; <span class="n">16</span>;
+<span class="k">static mut</span> <span class="t">OUT</span>: [<span class="t">u8</span>; <span class="t">OUT_CAP</span>] = [<span class="n">0</span>; <span class="t">OUT_CAP</span>];
+
+<span class="c">/// Reserve `len` bytes; the host writes the request there.</span>
+#[<span class="f">no_mangle</span>]
+<span class="k">pub extern</span> <span class="s">"C"</span> <span class="k">fn</span> <span class="f">alloc</span>(len: <span class="t">u32</span>) -&gt; <span class="t">u32</span> {
+    <span class="k">let mut</span> buf: <span class="t">Vec</span>&lt;<span class="t">u8</span>&gt; = <span class="t">Vec</span>::<span class="f">with_capacity</span>(len <span class="k">as</span> <span class="t">usize</span>);
+    buf.<span class="f">resize</span>(len <span class="k">as</span> <span class="t">usize</span>, <span class="n">0</span>);
+    <span class="k">let</span> ptr = buf.<span class="f">as_mut_ptr</span>() <span class="k">as</span> <span class="t">u32</span>;
+    <span class="t">mem</span>::<span class="f">forget</span>(buf);
+    ptr
+}
+
+#[<span class="f">no_mangle</span>]
+<span class="k">pub extern</span> <span class="s">"C"</span> <span class="k">fn</span> <span class="f">dealloc</span>(ptr: <span class="t">u32</span>, len: <span class="t">u32</span>) {
+    <span class="k">unsafe</span> { <span class="f">drop</span>(<span class="t">Vec</span>::<span class="f">from_raw_parts</span>(ptr <span class="k">as</span> *<span class="k">mut</span> <span class="t">u8</span>, len <span class="k">as</span> <span class="t">usize</span>, len <span class="k">as</span> <span class="t">usize</span>)); }
+}
+
+<span class="c">/// Copy `bytes` out and return `(ptr &lt;&lt; 32) | len`.</span>
+<span class="k">fn</span> <span class="f">respond</span>(bytes: &amp;[<span class="t">u8</span>]) -&gt; <span class="t">i64</span> {
+    <span class="k">let</span> n = bytes.<span class="f">len</span>().<span class="f">min</span>(<span class="t">OUT_CAP</span>);
+    <span class="k">unsafe</span> {
+        <span class="k">let</span> out = &amp;<span class="k">mut</span> *<span class="t">core</span>::<span class="t">ptr</span>::<span class="f">addr_of_mut!</span>(<span class="t">OUT</span>);
+        out[..n].<span class="f">copy_from_slice</span>(&amp;bytes[..n]);
+        ((out.<span class="f">as_ptr</span>() <span class="k">as</span> <span class="t">u32</span>) <span class="k">as</span> <span class="t">i64</span>) &lt;&lt; <span class="n">32</span> | (n <span class="k">as</span> <span class="t">i64</span>)
+    }
+}
+
+<span class="c">/// hello_greet(name) -&gt; string</span>
+#[<span class="f">no_mangle</span>]
+<span class="k">pub extern</span> <span class="s">"C"</span> <span class="k">fn</span> <span class="f">hello_greet</span>(ptr: <span class="t">u32</span>, len: <span class="t">u32</span>) -&gt; <span class="t">i64</span> {
+    <span class="c">// SAFETY: the host just wrote `len` bytes at `ptr` via alloc.</span>
+    <span class="k">let</span> req = <span class="k">unsafe</span> { <span class="t">std</span>::<span class="t">slice</span>::<span class="f">from_raw_parts</span>(ptr <span class="k">as</span> *<span class="k">const</span> <span class="t">u8</span>, len <span class="k">as</span> <span class="t">usize</span>) };
+    <span class="k">match</span> <span class="f">decode_one_string</span>(req) {
+        <span class="t">Ok</span>(name) =&gt; <span class="f">respond</span>(&amp;<span class="f">encode_string</span>(&amp;<span class="f">format!</span>(<span class="s">"Hello, {name}!"</span>))),
+        <span class="t">Err</span>(e) =&gt; <span class="f">respond</span>(&amp;<span class="f">encode_error</span>(&amp;e)),
+    }
+}
+</code></pre>
+        </div>
+
+        <p><code>decode_one_string</code> / <code>encode_string</code> / <code>encode_error</code> are the wire
+          format, described next. A full working version is in <code>examples/plugins/hello-wasm/src/lib.rs</code>.</p>
+
+        <h3>Build it</h3>
+        <div class="code">
+          <div class="bar"><span>shell</span><span class="lang">bash</span></div>
+          <pre><code><span class="c"># Cargo.toml needs: crate-type = ["cdylib"]</span>
+rustup target add wasm32-unknown-unknown
+cargo build --target wasm32-unknown-unknown --release
+
+<span class="c"># the module must sit next to plugin.toml</span>
+cp target/wasm32-unknown-unknown/release/my_plugin.wasm plugin.wasm
+</code></pre>
+        </div>
+
+        <div class="callout">
+          <strong>Commit the <code>.wasm</code>.</strong> A plugin directory is meant to be droppable onto a machine
+          that has no wasm toolchain. The repository's own test fails if the committed module is stale or is not a
+          WebAssembly binary.
+        </div>
+      </section>
+
+      <!-- ================================================================ 6 -->
+      <section id="wire">
+        <h2><span class="num">07</span> The wire format</h2>
+        <p class="subtitle">Six types, little-endian, and nothing else crosses.</p>
+
+        <p>
+          A typed binary encoding rather than JSON: a guest would otherwise have to ship a JSON parser <em>into the
+          sandbox</em>, which is a large attack surface for a value set only six types wide.
+        </p>
+
+        <div class="code">
+          <div class="bar"><span>grammar</span><span class="lang">text</span></div>
+          <pre><code>request  := u8 argc, argc × value
+response := value | (0xFF, u32 byte_len, utf8 message)
+
+value := u8 tag, payload
+  0  null      (no payload)
+  1  int       i64
+  2  float     f64
+  3  bool      u8 (0 or 1)
+  4  string    u32 byte_len, utf8 bytes
+  5  list      u32 count, count × value
+</code></pre>
+        </div>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Rule</th>
+                <th>Why</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>A response must be fully consumed</td>
+                <td>trailing bytes mean the guest and host disagree; that is an error, not slack</td>
+              </tr>
+              <tr>
+                <td>A claimed length is bounds-checked before allocating</td>
+                <td>the guest controls the number, so an 8 MiB ceiling is enforced up front</td>
+              </tr>
+              <tr>
+                <td>A map, class or closure is refused by name</td>
+                <td>a plugin boundary is the wrong place to guess a type</td>
+              </tr>
+              <tr>
+                <td>An error is a tag, not a trap</td>
+                <td><code>Err(...)</code> from a plugin becomes a catchable script error</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout warn">
+          <strong>Versioning.</strong> The format is part of ABI v1. Changing a tag is an ABI change, and a plugin
+          built against a different contract is rejected at registration rather than misinterpreted.
+        </div>
+      </section>
+
+      <!-- ================================================================ 7 -->
+      <section id="how">
+        <h2><span class="num">08</span> How it works</h2>
+        <p class="subtitle">From <code>plugin.toml</code> on disk to a call inside a running program.</p>
+
+        <div class="steps">
+          <div class="step">
+            <h4>Discovery</h4>
+            <p>The CLI scans the plugin search path for directories containing <code>plugin.toml</code>, sorted so the
+              load order is deterministic.</p>
+          </div>
+          <div class="step">
+            <h4>Validation, before any plugin code runs</h4>
+            <p>The manifest is parsed and checked: ABI string, every function declared, arity agreeing, every
+              permission announced, no duplicate names, no shadowing a builtin.</p>
+          </div>
+          <div class="step">
+            <h4>Backing</h4>
+            <p>
+              A <b>host</b> plugin's <code>start()</code> runs. A <b>WASM</b> plugin is compiled and instantiated
+              against an empty linker, which <em>is</em> its sandbox.
+            </p>
+          </div>
+          <div class="step">
+            <h4>Merge</h4>
+            <p>
+              Functions land in the registry as either a <code>fn</code> pointer or a closure. <code>native_defs()</code>
+              returns builtins plus both, and every engine installs from that one list.
+            </p>
+          </div>
+          <div class="step">
+            <h4>Call</h4>
+            <p>
+              A script call reaches the function like any builtin. For a WASM plugin the host encodes the arguments,
+              writes them into linear memory, invokes the export, and decodes the response.
+            </p>
+          </div>
+        </div>
+
+        <h3>Why a WASM function is a closure, not a fn pointer</h3>
+        <p>
+          A builtin native is <code>(&amp;'static str, fn(&amp;NativeCtx, Vec&lt;Value&gt;) -&gt; Result&lt;Value, String&gt;)</code>
+          — a bare function pointer, which cannot capture a guest instance. So the registry holds both forms: fn
+          pointers for host plugins, <code>Arc&lt;NativeClosureFn&gt;</code> for WASM. Both engines already knew how to
+          call a <code>Value::NativeClosure</code>, so making a WASM plugin available on the bytecode path was a
+          twelve-line change, not a new calling convention.
+        </p>
+
+        <div class="callout">
+          <strong>Why not <code>dlopen</code>?</strong> A native function is a Rust pointer over <code>Value</code>,
+          and <code>Value</code> is a reference-counted enum with no stable layout. Handing it across a C ABI boundary
+          would need a serialisation hop — which is exactly what the WASM route does, with a sandbox for free.
+        </div>
+      </section>
+
+      <!-- ================================================================ 8 -->
+      <section id="discovery">
+        <h2><span class="num">09</span> Discovery</h2>
+        <p class="subtitle">Where the toolchain looks, in order.</p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Root</th>
+                <th>Use it for</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td>
+                <td><code>SPID3R_PLUGINS</code></td>
+                <td>a <code>;</code>-separated list of directories that <em>contain</em> plugin directories — pin an exact set in CI</td>
+              </tr>
+              <tr>
+                <td>2</td>
+                <td><code>./plugins</code></td>
+                <td>a project-local set, committed with the project</td>
+              </tr>
+              <tr>
+                <td>3</td>
+                <td><code>&lt;exe&gt;/plugins</code></td>
+                <td>the installed layout, next to <code>spidr.exe</code></td>
+              </tr>
+              <tr>
+                <td>4</td>
+                <td><code>~/.spidr/plugins</code></td>
+                <td>a per-user set</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="code">
+          <div class="bar"><span>shell</span><span class="lang">bash</span></div>
+          <pre><code><span class="c"># a directory that contains plugin directories</span>
+<span class="k">export</span> SPID3R_PLUGINS=./plugins:/opt/spidr/plugins
+
+<span class="c"># then any program can call the plugin's functions</span>
+spidr run app.matrix
+</code></pre>
+        </div>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Loads plugins?</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>run</code>, <code>check</code>, <code>compile</code>, <code>exec</code>, <code>test</code>, <code>bench</code>, <code>debug</code>, <code>gui</code>, <code>repl</code></td><td>yes</td></tr>
+              <tr><td><code>build</code>, <code>dist</code></td><td><strong>no</strong> — a native executable cannot link one</td></tr>
+              <tr><td><code>fmt</code>, <code>version</code>, <code>lsp</code>, package commands</td><td>no — they never run a program</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          A plugin that fails to load is a <strong>warning</strong>, not a fatal error. One broken plugin in a shared
+          directory must not stop the toolchain from running a program.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Kind</th>
+                <th>Needs the <code>plugins-wasm</code> feature?</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>matrix</code></td><td>No — works in the zero-dependency build</td></tr>
+              <tr><td><code>wasm</code></td><td>Yes (on by default; <code>--no-default-features</code> drops it)</td></tr>
+              <tr><td><code>host</code></td><td>N/A — compiled in, never discovered on disk</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ================================================================ 9 -->
+      <section id="permissions">
+        <h2><span class="num">10</span> Permissions &amp; fuel</h2>
+        <p class="subtitle">What a filter can do, and what only a sandbox can do.</p>
+
+        <h3>The permission gate</h3>
+        <p>
+          A function may declare a <code>permission</code>. A host that calls
+          <code>Engine::deny(Capability::Environment)</code> replaces every function declaring
+          <code>environment</code> — builtin <em>or plugin</em> — with a stub that returns a catchable error.
+        </p>
+
+        <div class="code">
+          <div class="bar"><span>app.matrix</span><span class="lang">spid3r</span></div>
+          <pre><code><span class="k">fn</span> <span class="f">main</span>() {
+    <span class="k">try</span> {
+        <span class="f">println</span>(<span class="f">hello_env</span>(<span class="s">"PATH"</span>));
+    } <span class="k">catch</span> (e) {
+        <span class="c">// capability denied: 'hello_env' is not available to this script</span>
+        <span class="f">println</span>(<span class="s">"blocked: "</span> + e);
+    }
+    <span class="k">return</span> <span class="n">0</span>;
+}
+</code></pre>
+        </div>
+
+        <div class="callout stop">
+          <strong>This is a policy filter, not a sandbox.</strong> It stops a <em>script</em> from calling the
+          function. It does not constrain the plugin: a host plugin could call <code>std::env::var</code> whether or
+          not it declared anything. Only the WASM route removes the capability itself.
+        </div>
+
+        <h3>Fuel</h3>
+        <p>
+          Every WASM call gets a fuel budget — 50 million instructions by default, or the host's tighter limit. A
+          <code>loop {}</code> traps instead of hanging the interpreter, and the trap arrives as a catchable script
+          error. This is the one place a limit is enforceable <em>below</em> the language.
+        </p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Limit</th>
+                <th>Value</th>
+                <th>Applies to</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>fuel per call</td><td>50,000,000 instructions</td><td>WASM</td></tr>
+              <tr><td>payload size</td><td>8 MiB each direction</td><td>WASM</td></tr>
+              <tr><td>arguments per call</td><td>255</td><td>both</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- =============================================================== 10 -->
+      <section id="limits">
+        <h2><span class="num">11</span> Limits</h2>
+        <p class="subtitle">What does not work, stated up front.</p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Limitation</th>
+                <th>Consequence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>A native executable cannot link a plugin</td>
+                <td>
+                  <code>spidr build</code> on a program that calls a plugin function is a <strong>compile-time
+                    error</strong> with a note explaining why — not a binary that throws at run time.
+                </td>
+              </tr>
+              <tr>
+                <td>The <code>spidr</code> binary ships with no host plugins</td>
+                <td><code>spidr run</code> can use WASM plugins only. A host plugin needs a binary that registers it.</td>
+              </tr>
+              <tr>
+                <td>A WASM guest cannot import anything</td>
+                <td>no filesystem, clock, randomness, network or environment — by design, not by omission</td>
+              </tr>
+              <tr>
+                <td>Only six value types cross</td>
+                <td>a map or class instance is refused by name rather than coerced</td>
+              </tr>
+              <tr>
+                <td>A Spid3r plugin is <strong>not sandboxed</strong></td>
+                <td>it is script code: it can call the same builtins your program can. Being a plugin does not reduce
+                  its authority</td>
+              </tr>
+              <tr>
+                <td>No plugin unloading</td>
+                <td>a registered plugin lives for the process; <code>stop()</code> ends its lifecycle but does not free it</td>
+              </tr>
+              <tr>
+                <td>No FFI yet</td>
+                <td><code>extern fn</code> is not implemented; a plugin is the only way to reach native code</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- =============================================================== 11 -->
+      <section id="reference">
+        <h2><span class="num">12</span> Reference</h2>
+        <p class="subtitle">The API surface, in one place.</p>
+
+        <h3>Rust</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th>Signature</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>plugin::register</code></td><td><code>(Box&lt;dyn PluginHost&gt;) -&gt; Result&lt;(), String&gt;</code></td></tr>
+              <tr><td><code>plugin::register_matrix</code></td><td><code>(&amp;Path) -&gt; Result&lt;(), String&gt;</code> — load a <code>.matrix</code> plugin</td></tr>
+              <tr><td><code>plugin::register_wasm</code></td><td><code>(&amp;Path) -&gt; Result&lt;(), String&gt;</code> — load a <code>.wasm</code> plugin</td></tr>
+              <tr><td><code>plugin::load_all</code></td><td><code>() -&gt; Vec&lt;String&gt;</code> — discover on the search path, return warnings</td></tr>
+              <tr><td><code>plugin::shutdown_all</code></td><td><code>() -&gt; Vec&lt;String&gt;</code> — stop every started plugin</td></tr>
+              <tr><td><code>plugin::list</code></td><td><code>() -&gt; Vec&lt;PluginInfo&gt;</code> — what is registered, and its state</td></tr>
+              <tr><td><code>PluginHost</code></td><td><code>manifest()</code>, <code>functions()</code>, <code>start()</code>, <code>stop()</code></td></tr>
+              <tr><td><code>PluginFnDef</code></td><td><code>name</code>, <code>arity</code>, <code>permission</code>, <code>func</code></td></tr>
+              <tr><td><code>Engine::deny</code></td><td><code>(Capability) -&gt; Engine</code> — stubs every native declaring it</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Capabilities</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Covers</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>filesystem</code></td><td><code>read_file</code>, <code>write_file</code>, <code>file_delete</code>, …</td></tr>
+              <tr><td><code>process</code></td><td>spawning and process control</td></tr>
+              <tr><td><code>network</code></td><td>sockets and HTTP</td></tr>
+              <tr><td><code>environment</code></td><td>environment variables, clock</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Source map</h3>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Path</th>
+                <th>What lives there</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>src/plugin/mod.rs</code></td><td>registry, lifecycle, discovery, registration rules</td></tr>
+              <tr><td><code>src/plugin/manifest.rs</code></td><td>the <code>plugin.toml</code> parser</td></tr>
+              <tr><td><code>src/plugin/abi.rs</code></td><td>the wire format</td></tr>
+              <tr><td><code>src/plugin/wasm.rs</code></td><td>the <code>wasmi</code> host: sandbox, fuel, calls</td></tr>
+              <tr><td><code>examples/plugins/hello-host</code></td><td>host plugin sample</td></tr>
+              <tr><td><code>examples/plugins/hello-wasm</code></td><td>WASM plugin sample, with its built module</td></tr>
+              <tr><td><code>tests/plugin_api.rs</code></td><td>registration, lifecycle, permission gate</td></tr>
+              <tr><td><code>tests/plugin_wasm.rs</code></td><td>discovery, execution, fuel, AOT refusal</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- =============================================================== 12 -->
+      <section id="troubleshooting">
+        <h2><span class="num">13</span> Troubleshooting</h2>
+        <p class="subtitle">The errors you will actually hit.</p>
+
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>Symptom</th>
+                <th>Cause and fix</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>unknown name 'hello_greet'</code> under <code>spidr run</code></td>
+                <td>The plugin was not discovered. Check that <code>SPID3R_PLUGINS</code> points at the directory
+                  <em>containing</em> the plugin directory, not at the plugin itself.</td>
+              </tr>
+              <tr>
+                <td><code>targets ABI '…' but this build implements 'spid3r-plugin-abi-1'</code></td>
+                <td>The manifest's <code>abi</code> is wrong or missing. It must match exactly.</td>
+              </tr>
+              <tr>
+                <td><code>does not export it as (i32, i32) -&gt; i64</code></td>
+                <td>The module is missing the export, or it has the wrong signature. A function's export name must equal
+                  its manifest name.</td>
+              </tr>
+              <tr>
+                <td><code>cannot instantiate (it must not import host functions)</code></td>
+                <td>The module imports WASI or anything else. The sandbox has no imports to give it.</td>
+              </tr>
+              <tr>
+                <td><code>failed: … fuel</code></td>
+                <td>The call exhausted its budget. Raise it, or make the guest terminate.</td>
+              </tr>
+              <tr>
+                <td><code>declares 'greet' but the file does not define it</code></td>
+                <td>A <code>[[function]]</code> names a function the <code>.matrix</code> file does not define. It must
+                  be a <code>public fn</code> at the top level.</td>
+              </tr>
+              <tr>
+                <td><code>takes 1 parameter(s) but plugin.toml declares 3</code></td>
+                <td>The <code>arity</code> in the manifest disagrees with the file. The manifest is the contract.</td>
+              </tr>
+              <tr>
+                <td><code>kind = "host" must be compiled into its host</code></td>
+                <td>A host plugin was placed on the disk search path. Host plugins are Rust; only
+                  <code>kind = "wasm"</code> loads from disk.</td>
+              </tr>
+              <tr>
+                <td><code>would shadow a builtin</code></td>
+                <td>A function is named like <code>println</code> or <code>write_file</code>. Builtins cannot be
+                  intercepted.</td>
+              </tr>
+              <tr>
+                <td>Build fails with a plugin note</td>
+                <td>Expected: a standalone executable cannot link a plugin. Use <code>spidr run</code>, or ship a host
+                  binary.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- =============================================================== 13 -->
+      <section id="checklist">
+        <h2><span class="num">14</span> Checklist</h2>
+        <p class="subtitle">Before you ship a plugin.</p>
+
+        <ul>
+          <li>You picked the kind on purpose: <code>matrix</code> by default, <code>wasm</code> for code you did not
+            write, <code>host</code> only when the plugin must be Rust.</li>
+          <li><code>abi</code> is exactly <code>spid3r-plugin-abi-1</code>.</li>
+          <li>Every function you offer is declared, with a matching <code>arity</code>.</li>
+          <li>Every <code>permission</code> appears in <code>capabilities</code>.</li>
+          <li>No function name collides with a builtin or with another plugin.</li>
+          <li>For WASM: <code>entry</code> is set, <code>plugin.wasm</code> is committed, and the module exports
+            <code>memory</code>, <code>alloc</code> and one export per function.</li>
+          <li>For WASM: the guest terminates — the fuel budget is a backstop, not a design.</li>
+          <li>For host: <code>start()</code> can fail without taking the host down, and <code>stop()</code> is safe to
+            call twice.</li>
+          <li>You have decided what happens under <code>spidr build</code> (it will refuse — say so in your README).</li>
+        </ul>
+
+        <div class="callout ok">
+          <strong>Next:</strong> read <code>docs/PLUGINS.md</code> for the full contract, or open
+          <code>examples/plugins/hello-wasm</code> and change one function to see the whole loop.
+        </div>
+      </section>
+
+      <footer>
+        Spid3r plugin guide · ABI v1 · <a href="doc.html">Developer Guide</a> ·
+        <a href="playground.html">Playground</a> · <code>docs/PLUGINS.md</code>
+      </footer>
+
+    </main>
+  </div>
+
+  <script>
+    (function () {
+      // Theme toggle, sharing the docs' storage key so the choice follows you.
+      var btn = document.getElementById('themeBtn');
+      function sync() {
+        btn.textContent = document.documentElement.getAttribute('data-theme') === 'light' ? 'Dark' : 'Light';
+      }
+      sync();
+      btn.addEventListener('click', function () {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('spid3r-dev-theme', next); } catch (_) { }
+        sync();
+      });
+
+      // Scroll spy over the sections the sidebar actually links to.
+      var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+      var targets = links.map(function (a) {
+        return document.getElementById(a.getAttribute('href').slice(1));
+      }).filter(Boolean);
+      var ticking = false;
+
+      function paint() {
+        ticking = false;
+        var y = window.scrollY + 120;
+        var active = targets[0];
+        for (var i = 0; i < targets.length; i++) {
+          if (targets[i].offsetTop <= y) { active = targets[i]; }
+        }
+        links.forEach(function (a) {
+          a.classList.toggle('active', a.getAttribute('href') === '#' + active.id);
+        });
+      }
+
+      window.addEventListener('scroll', function () {
+        if (!ticking) { ticking = true; requestAnimationFrame(paint); }
+      }, { passive: true });
+      paint();
+    })();
+  </script>
+
+</body>
+
+</html>

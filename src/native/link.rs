@@ -463,7 +463,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
         ),
     };
     let program: Program = crate::parser::parse_file(&src, file_id.clone())?;
-    crate::semantic::check_file(&program, true, &file)?;
+    crate::semantic::check_file(&program, true, &file).map_err(explain_plugin_name)?;
 
     let mut gui_natives = has_gui_natives(&program);
     if gui_natives && !allow_gui {
@@ -1748,4 +1748,27 @@ fn run_linker(exe: &Path, args: &[String]) -> Result<(), Diagnostic> {
         )));
     }
     Ok(())
+}
+
+/// A standalone native executable cannot link a plugin the toolchain loads from
+/// disk, so `build` refuses such a program at compile time. The checker already
+/// rejects the name; this turns that into an explanation when a plugin on the
+/// search path would have provided it.
+fn explain_plugin_name(mut d: crate::diagnostics::Diagnostic) -> crate::diagnostics::Diagnostic {
+    if d.phase != crate::diagnostics::Phase::Semantic {
+        return d;
+    }
+    const PREFIX: &str = "unknown name '";
+    let Some(rest) = d.message.strip_prefix(PREFIX) else {
+        return d;
+    };
+    let Some(name) = rest.split(char::from(39)).next() else {
+        return d;
+    };
+    if crate::plugin::declared_on_disk().iter().any(|n| n == name) {
+        d.message.push_str(&format!(
+            "\nnote: '{name}' is provided by a plugin, and a standalone native executable cannot link one. Run the program with `spidr run`, or build a host binary that registers the plugin."
+        ));
+    }
+    d
 }

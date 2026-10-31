@@ -275,8 +275,9 @@ pub fn compile_program_unoptimized(
     let program = lowered.as_ref();
     let mut embedded: Vec<EmbeddedModule> = Vec::new();
     let mut keys: HashSet<String> = HashSet::new();
-    let mut in_progress: HashSet<String> = HashSet::new();
-    in_progress.insert(importer_file.to_string());
+    // A Vec, not a HashSet: the cycle diagnostic prints the chain in order.
+    // Import depth is tiny, so `contains` being O(n) does not matter.
+    let mut in_progress: Vec<String> = vec![importer_file.to_string()];
     let (func, public) = compile_one(
         program,
         importer_file,
@@ -304,7 +305,7 @@ fn compile_one(
     module_dirs: &[PathBuf],
     embedded: &mut Vec<EmbeddedModule>,
     keys: &mut HashSet<String>,
-    in_progress: &mut HashSet<String>,
+    in_progress: &mut Vec<String>,
     top: bool,
 ) -> Result<(crate::value::VmFunc, HashSet<String>), Diagnostic> {
     // Pre-resolve this program's imports: the `Import` ops will carry the
@@ -363,9 +364,14 @@ fn compile_one(
                 continue;
             }
             if in_progress.contains(&rkey) {
+                // Same wording as the tree interpreter and the AOT flattener:
+                // phase + message are part of the engine contract.
+                let chain: Vec<std::path::PathBuf> =
+                    in_progress.iter().map(std::path::PathBuf::from).collect();
+                let chain = crate::modules::cycle_chain(&chain);
                 return Err(Diagnostic::new(
                     Phase::Semantic,
-                    format!("circular import of '{}'", path),
+                    crate::modules::circular_import_message(&chain, path),
                 ));
             }
             let src =
@@ -378,7 +384,7 @@ fn compile_one(
             // An imported module is a program: it goes through the same lowering
             // seam, or an `enum`/`match` inside it reaches the compiler raw.
             let lowered_mod = crate::lower::lower(&mod_program);
-            in_progress.insert(rkey.clone());
+            in_progress.push(rkey.clone());
             let (mod_func, mod_public) = compile_one(
                 lowered_mod.as_ref(),
                 &file,
@@ -388,7 +394,7 @@ fn compile_one(
                 in_progress,
                 false,
             )?;
-            in_progress.remove(&rkey);
+            in_progress.retain(|k| k != &rkey);
             let public_vec: Vec<String> = mod_public.into_iter().collect();
             embedded.push(EmbeddedModule {
                 key: rkey.clone(),
@@ -423,39 +429,18 @@ fn compile_one(
     Ok((func, public))
 }
 
-/// Resolve an import literal to a `.matrix` file on disk, mirroring the
-/// interpreter's `resolve`: the importing file's parent directory first, then
-/// each entry of `module_dirs` (with and without the `.matrix` suffix).
+/// Resolve an import literal for the bytecode compiler.
+///
+/// Delegates to [`crate::modules::resolve::resolve_module`] — the one
+/// resolver — so the compiler, the tree interpreter and the AOT flattener
+/// cannot disagree about which file an `import` names, or about which specs
+/// are legal. `module_dirs` is the VM's host-supplied extra root list.
 fn resolve_module_path(
     importer_file: &str,
     module_dirs: &[PathBuf],
     path: &str,
 ) -> Result<PathBuf, Diagnostic> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    let base = PathBuf::from(importer_file);
-    if let Some(dir) = base.parent() {
-        candidates.push(dir.join(path));
-        candidates.push(dir.join(format!("{}.matrix", path)));
-    }
-    for d in module_dirs {
-        candidates.push(d.join(path));
-        candidates.push(d.join(format!("{}.matrix", path)));
-    }
-    for c in candidates {
-        if c.is_file() {
-            return Ok(c);
-        }
-    }
-    if let Some(p) = crate::modules::embedded_path(path) {
-        return Ok(p);
-    }
-    Err(Diagnostic::new(
-        Phase::Semantic,
-        format!(
-            "module '{}' not found (looked next to the importing file and on SPID3R_PATH)",
-            path
-        ),
-    ))
+    crate::modules::resolve::resolve_module(importer_file, path, module_dirs).map(|r| r.path)
 }
 
 // ------------------------------------------------------------- statements

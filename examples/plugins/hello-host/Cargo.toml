@@ -1,0 +1,25 @@
+[package]
+name = "spid3r-plugin-hello"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Sample Spid3r host plugin: two functions, one of them permission-gated."
+
+# The plugin depends on the toolchain, not the other way round. A host plugin
+# is *compiled into* its host — there is no dynamic loading in ABI v1.
+#
+# The package is called `spid3r` but its library is `spid3r_lang`, so the
+# dependency is renamed to match the `use` paths below.
+[dependencies]
+spid3r_lang = { package = "spid3r", path = "../../..", default-features = false }
+
+[[bin]]
+name = "hello-host"
+path = "src/main.rs"
+
+# The same reason the root manifest disables it: incremental compilation
+# corrupts its cache on OneDrive-synced trees (the "error deleting lock file
+# (os error 5)" quirk), and a sample that warns on every build teaches the
+# wrong thing.
+[profile.dev]
+incremental = false

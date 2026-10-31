@@ -31,13 +31,18 @@ required-features = ["gui"]
 #   gui    - embedded webview GUI via wry + tao.
 #   native - LLVM AOT backend (machine code) via inkwell, like rustc; needs
 #            LLVM 18.1+ installed to build (see docs/BUILDING.md).
-default = ["gui", "native"]
+default = ["gui", "native", "plugins-wasm"]
 native = ["dep:inkwell"]
 gui = ["dep:wry", "dep:tao"]
 # TLS for `http_fetch` (https://) via native-tls: schannel on Windows,
 # OpenSSL on Linux, Security.framework on macOS. Opt-in so the core
 # toolchain stays zero-dependency; build with --features tls.
 tls = ["dep:native-tls"]
+# WASM plugins: a sandboxed plugin is a .wasm module loaded from disk, so the
+# CLI can use plugins without linking them in. wasmi (interpreter) rather than
+# wasmtime (JIT): ~100 MB less build output, and a plugin does not need speed.
+# Optional, so `--no-default-features` stays zero-dependency.
+plugins-wasm = ["dep:wasmi"]
 
 [dependencies]
 # inkwell is a BUILD-TIME dependency of the native backend only. It requires
@@ -50,6 +55,9 @@ inkwell = { version = "0.10.0", features = ["llvm18-1-no-llvm-linking"], optiona
 # certificate store; no pinned CA bundle to rotate.
 native-tls = { version = "0.2", optional = true }
 # GUI backend (Phase 2): embedded webview via wry on tao.
+# WASM plugin host (feature `plugins-wasm`). Interpreter-only: a plugin is a
+# guest, not a hot loop.
+wasmi = { version = "0.46", optional = true, default-features = false, features = ["std"] }
 wry = { version = "0.53", optional = true }
 tao = { version = "0.34", optional = true }
 

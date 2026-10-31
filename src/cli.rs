@@ -65,6 +65,10 @@ COMMANDS:
                                            dist/<name>-<version>.tar
     unpack <archive> [dir]                 Extract a packed project
     init [dir]                             Create spider.toml + src/main.matrix
+    modules <file.matrix> [--tree]         List every module this file imports,
+                                           with the origin of each: disk, vendor,
+                                           embedded or plugin. --tree prints the
+                                           dependency graph instead
     install [--update]                     Vendor path/git dependencies into
                                            vendor/, write spider.lock (commit
                                            pinned, SHA-256 per dep); --update
@@ -72,6 +76,17 @@ COMMANDS:
                                            locked commits
     dist [-o out] [--no-opt]               Compile the project entry (spider.toml)
                                            into target/<package>.matrixc
+    add <name> --path P | --git URL [--rev R] | --version V
+                                           Declare a dependency in spider.toml and
+                                           vendor it (rolled back if install fails)
+    remove <name>                          Drop a dependency and its vendor/ copy
+    tree                                   Print the dependency tree
+    verify                                 Re-hash vendor/ against spider.lock;
+                                           exit 1 on drift, naming the package
+    search <query> [--local]               Find packages in the local registry and
+                                           vendor/ (no network in v1)
+    publish --to-dir <dir>                 Write <dir>/<name>/<version>/ with a
+                                           sha256.txt, ready for a static registry
     test [--filter SUBSTR] [--list]        Run every examples/*.matrix file (or
                                            a project's tests/*.matrix) through the
                                            three-engine differential
@@ -86,6 +101,15 @@ COMMANDS:
                                            completion, formatting)
     version                                Print version information
     help                                   Print this help
+
+EXTERNAL COMMANDS:
+    spidr-<name> [args...]                 Any executable named `spidr-<name>`
+                                           on PATH runs with the remaining
+                                           arguments; its exit code becomes
+                                           spid3r's. Names may not start with
+                                           `-` or contain a path separator.
+                                           On Windows only .exe/.com are
+                                           dispatched (never .bat/.cmd).
 
 EXIT CODES:
     0 success, 1 user-program error, 2 usage error
@@ -112,6 +136,15 @@ pub fn run(args: Vec<String>) -> i32 {
         }
     };
     let mut rest: Vec<String> = it.collect();
+    // Plugins are discovered from disk once per process, before any engine
+    // installs its natives. Only for commands that can run or check a program:
+    // `spidr version` must not read a plugin directory.
+    if matches!(
+        cmd.as_str(),
+        "run" | "check" | "compile" | "exec" | "test" | "bench" | "debug" | "gui" | "repl"
+    ) {
+        load_plugins();
+    }
     // `--json` makes the error printer emit one JSON object instead of the
     // human form. It is a *diagnostic* flag, so it is consumed here rather than
     // by a subcommand, and only for commands whose output is diagnostics.
@@ -153,6 +186,123 @@ pub fn run(args: Vec<String>) -> i32 {
     }
 }
 
+/// Discover and register plugins from the search path.
+///
+/// Runs once per process. A plugin that fails to load is a **warning**, not a
+/// fatal error: one broken plugin in a shared directory must not stop the
+/// toolchain from running a program. `SPID3R_PLUGINS` is the way to pin an
+/// exact set when that is not what you want.
+fn load_plugins() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Discovery is unconditional: a Spid3r-source plugin needs no wasmi, so
+        // a `--no-default-features` build can still use one.
+        for e in crate::plugin::load_all() {
+            eprintln!("warning: plugin: {}", e);
+        }
+    });
+}
+
+/// Whether an unknown subcommand may be handed to `spidr-<name>`.
+///
+/// This is a **security boundary**, not a convenience check. The executable
+/// path is built by concatenation (`spidr-` + name), so a name carrying a path
+/// separator, a drive/UNC prefix, or a `..` component would let
+/// `spidr ../../bin/sh` run an arbitrary program. Only a plain token is
+/// accepted, it may not begin with `-` (that is an option, and dispatching
+/// `spidr --bogus` to a file named `spidr---bogus` would be a trap), and it
+/// may not begin with `.` or contain `..`.
+fn is_dispatchable_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 64 {
+        return false;
+    }
+    if name.starts_with('-') || name.starts_with('.') || name.contains("..") {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Locate `spidr-<name>` on `PATH`.
+///
+/// On Windows the `PATHEXT` candidates are tried, but **only `.EXE` and
+/// `.COM`**. Batch shims (`.BAT`/`.CMD`) are deliberately excluded: `cmd.exe`
+/// re-parses the command line it is handed, so a single argument containing
+/// `&` or `|` becomes a second command. A tool such as
+/// `spidr lint "$PR_FILE"` would then execute whatever a pull request put in
+/// the filename. That is a command injection in the toolchain, and no amount
+/// of argument quoting makes batch dispatch safe — so a Windows tool must ship
+/// a real executable. (Git for Windows refuses to dispatch to batch files for
+/// the same reason.)
+///
+/// On other platforms the bare name must be a file; the OS decides whether it
+/// is executable.
+///
+/// `PATH` entries are split with [`std::env::split_paths`], so the platform
+/// separator is honoured. Empty entries are skipped; a *relative* entry such as
+/// `.` is honoured as given, exactly as the shell does — putting `.` on `PATH`
+/// is the user's decision, and silently ignoring it would make `spidr` behave
+/// differently from every other command they run.
+fn find_external_tool(name: &str) -> Option<PathBuf> {
+    let stem = format!("spidr-{}", name);
+    let path = std::env::var_os("PATH")?;
+    let exts: Vec<String> = if cfg!(windows) {
+        // `PATHEXT` minus the batch entries; see the doc comment above.
+        let from_env: Vec<String> = std::env::var("PATHEXT")
+            .map(|v| {
+                v.split(';')
+                    .map(|s| s.trim().to_ascii_uppercase())
+                    .filter(|s| s == ".EXE" || s == ".COM")
+                    .collect()
+            })
+            .unwrap_or_default();
+        if from_env.is_empty() {
+            vec![".COM".to_string(), ".EXE".to_string()]
+        } else {
+            from_env
+        }
+    } else {
+        Vec::new()
+    };
+    for dir in std::env::split_paths(&path) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let direct = dir.join(&stem);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        for ext in &exts {
+            let cand = dir.join(format!("{}{}", stem, ext));
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Run `spidr-<name>` with the remaining arguments, returning its exit code.
+///
+/// `None` means "not an external tool" — the caller then reports the ordinary
+/// unknown-command usage error. The child inherits stdin/stdout/stderr, so it
+/// behaves exactly as if the user had invoked it directly, and its exit code
+/// becomes ours (a death by signal maps to the generic user-error code, since
+/// Spid3r's own contract only defines 0/1/2).
+fn dispatch_external(name: &str, rest: &[String]) -> Option<i32> {
+    if !is_dispatchable_name(name) {
+        return None;
+    }
+    let exe = find_external_tool(name)?;
+    match std::process::Command::new(&exe).args(rest).status() {
+        Ok(status) => Some(status.code().unwrap_or(EXIT_USER_ERROR)),
+        Err(e) => {
+            eprintln!("error[usage]: cannot run '{}': {}", exe.display(), e);
+            Some(EXIT_USAGE)
+        }
+    }
+}
+
 fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnostic> {
     if rest.iter().any(|a| a == "--help" || a == "-h") {
         if let Some(help_text) = subcommand_help(&cmd) {
@@ -186,12 +336,25 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "fmt" => cmd_fmt(&rest),
         "lsp" => Ok(crate::lsp::cmd_lsp()),
         "init" => cmd_init(&rest),
+        "modules" => cmd_modules(&rest),
+        "verify" => cmd_verify(&rest),
+        "tree" => cmd_tree(&rest),
+        "add" => cmd_add(&rest),
+        "remove" => cmd_remove(&rest),
+        "search" => cmd_search(&rest),
+        "publish" => cmd_publish(&rest),
         "install" => cmd_install(&rest),
         "dist" => cmd_project_build(&rest),
         "pack" => cmd_pack(&rest),
         "unpack" => cmd_unpack(&rest),
         "debug" => cmd_debug(&rest),
         other => {
+            // `spidr-<name>` extension tools. Checked before the usage error so
+            // an installed external command is indistinguishable from a
+            // built-in one; `--help` above already gave the tool its chance.
+            if let Some(code) = dispatch_external(other, &rest) {
+                return Ok(code);
+            }
             eprintln!("error[usage]: unknown command '{}'\n{}", other, HELP);
             return Ok(EXIT_USAGE);
         }
@@ -446,6 +609,21 @@ USAGE:
 
 OPTIONS:
     -h, --help             Print help information
+"),
+        "modules" => Some("\
+spid3r modules - List the modules a program imports
+
+USAGE:
+    spidr modules <file.matrix> [--tree]
+
+OPTIONS:
+    --tree                 Print the dependency graph instead of a flat list
+    -h, --help             Print help information
+
+Each line is `<origin><TAB><path>`. The origin is where the resolver found the
+module: `disk` (beside the importer or on the search path), `vendor` (from
+vendor/), `embedded` (the stdlib table compiled into the binary) or `plugin`.
+A module imported by two others is listed once and marked `(*)` in the tree.
 "),
         "install" => Some("\
 spid3r install - Install and vendor dependencies
@@ -1458,6 +1636,307 @@ fn cmd_debug(args: &[String]) -> Result<i32, Diagnostic> {
 ///
 /// `spid3r pack [-o out.tar]` — archive the project (spider.toml + src/) into
 /// a deterministic uncompressed tar for distribution.
+/// The project root: the working directory, which must hold a `spider.toml`.
+fn project_root() -> Result<PathBuf, Diagnostic> {
+    let root = std::env::current_dir().map_err(|e| usage(&format!("cannot read cwd: {}", e)))?;
+    if !root.join("spider.toml").is_file() {
+        return Err(usage(
+            "no spider.toml in this directory — run `spidr init` first",
+        ));
+    }
+    Ok(root)
+}
+
+/// `spidr verify`: re-hash every vendored dependency against `spider.lock`.
+///
+/// Exit 1 on any drift, with the offending package named — this is the command
+/// a CI job runs after `install` to prove the tree it compiled is the tree the
+/// lock file describes.
+fn cmd_verify(args: &[String]) -> Result<i32, Diagnostic> {
+    if let Some(a) = args.first() {
+        return Err(usage(&format!("unknown argument '{}'", a)));
+    }
+    let root = project_root()?;
+    let report = crate::pkg::ops::verify(&root).map_err(|e| usage(&e))?;
+    if report.ok() {
+        println!(
+            "ok: {} vendored package(s) match spider.lock",
+            report.checked
+        );
+        return Ok(EXIT_OK);
+    }
+    for issue in &report.issues {
+        eprintln!("error[verify]: {}: {}", issue.name, issue.detail);
+    }
+    eprintln!(
+        "{} problem(s) across {} checked package(s)",
+        report.issues.len(),
+        report.checked
+    );
+    Ok(EXIT_USER_ERROR)
+}
+
+/// `spidr tree`: the declared dependency tree.
+fn cmd_tree(args: &[String]) -> Result<i32, Diagnostic> {
+    if let Some(a) = args.first() {
+        return Err(usage(&format!("unknown argument '{}'", a)));
+    }
+    let root = project_root()?;
+    print!(
+        "{}",
+        crate::pkg::ops::dep_tree(&root).map_err(|e| usage(&e))?
+    );
+    Ok(EXIT_OK)
+}
+
+/// `spidr add <name> (--path P | --git URL [--rev R] | --version V)`.
+///
+/// The manifest is edited first, then `install` runs. If install fails the
+/// manifest edit is rolled back, so a typo cannot leave the project in a state
+/// that does not resolve.
+fn cmd_add(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut name: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut git: Option<String> = None;
+    let mut rev: Option<String> = None;
+    let mut version: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let need = |i: usize| -> Result<String, Diagnostic> {
+            args.get(i + 1)
+                .cloned()
+                .ok_or_else(|| usage(&format!("{} needs a value", args[i])))
+        };
+        match args[i].as_str() {
+            "--path" => {
+                path = Some(need(i)?);
+                i += 1;
+            }
+            "--git" => {
+                git = Some(need(i)?);
+                i += 1;
+            }
+            "--rev" => {
+                rev = Some(need(i)?);
+                i += 1;
+            }
+            "--version" => {
+                version = Some(need(i)?);
+                i += 1;
+            }
+            a if a.starts_with('-') => return Err(usage(&format!("unknown argument '{}'", a))),
+            a => {
+                if name.is_some() {
+                    return Err(usage("add takes exactly one package name"));
+                }
+                name = Some(a.to_string());
+            }
+        }
+        i += 1;
+    }
+    let name = name.ok_or_else(|| usage("add needs a package name"))?;
+    if path.is_some() && git.is_some() {
+        return Err(usage("--path and --git are mutually exclusive"));
+    }
+    let value = match (&path, &git, &version) {
+        (Some(p), None, _) => format!("{{ path = \"{}\" }}", p),
+        (None, Some(url), _) => match &rev {
+            Some(r) => format!("{{ git = \"{}\", rev = \"{}\" }}", url, r),
+            None => format!("{{ git = \"{}\" }}", url),
+        },
+        (None, None, Some(v)) => format!("{{ version = \"{}\" }}", v),
+        (None, None, None) => {
+            return Err(usage(
+                "add needs a source: --path P, --git URL, or --version V",
+            ))
+        }
+        // Rejected above; listed so the match stays exhaustive if that guard
+        // ever moves.
+        (Some(_), Some(_), _) => return Err(usage("--path and --git are mutually exclusive")),
+    };
+    // A `--version` alongside --path/--git is a constraint; on its own it is
+    // the source, already folded into `value` above.
+    let constraint = match (&path, &git) {
+        (Some(_), _) | (_, Some(_)) => version.as_deref(),
+        _ => None,
+    };
+
+    let root = project_root()?;
+    // Snapshot the manifest so a failed install can restore the exact bytes,
+    // not a re-serialised approximation of them.
+    let manifest_path = root.join("spider.toml");
+    let before = std::fs::read(&manifest_path)
+        .map_err(|e| usage(&format!("cannot read spider.toml: {}", e)))?;
+    let changed =
+        crate::pkg::ops::add_dependency(&root, &name, &value, constraint).map_err(|e| usage(&e))?;
+    if !changed {
+        println!("{} is already declared in spider.toml", name);
+        return Ok(EXIT_OK);
+    }
+    match crate::pkg::install(&root) {
+        Ok(report) => {
+            println!("added {}", name);
+            println!(
+                "vendored {} package(s), {} unchanged",
+                report.vendored, report.unchanged
+            );
+            Ok(EXIT_OK)
+        }
+        Err(e) => {
+            // Roll back to the exact previous document: a dependency that does
+            // not resolve must not stay in the manifest, and a partial edit
+            // (an empty `[dependencies]` header) is still a change.
+            let _ = std::fs::write(&manifest_path, &before);
+            Err(usage(&format!(
+                "cannot add '{}': {}\n(the manifest was left unchanged)",
+                name, e
+            )))
+        }
+    }
+}
+
+/// `spidr remove <name>`: drop the declaration and its vendored copy.
+fn cmd_remove(args: &[String]) -> Result<i32, Diagnostic> {
+    let name = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| usage("remove needs a package name"))?
+        .clone();
+    if args.iter().filter(|a| !a.starts_with('-')).count() > 1 {
+        return Err(usage("remove takes exactly one package name"));
+    }
+    let root = project_root()?;
+    let removed = crate::pkg::ops::remove_dependency(&root, &name).map_err(|e| usage(&e))?;
+    if !removed {
+        eprintln!("warning: '{}' is not declared in spider.toml", name);
+        return Ok(EXIT_USER_ERROR);
+    }
+    // Prune the vendored copy so `verify` does not report it as unlocked.
+    crate::pkg::valid_pkg_name(&name).map_err(|e| usage(&e))?;
+    let dir = root.join("vendor").join(&name);
+    if dir.is_dir() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| usage(&format!("cannot remove {}: {}", dir.display(), e)))?;
+    }
+    // Rewrite `spider.lock` without the removed package. Without this, the lock
+    // still names a vendored directory that no longer exists and `verify`
+    // reports it missing — a remove that leaves the project unverifiable.
+    if let Err(e) = crate::pkg::install(&root) {
+        eprintln!("warning: could not rewrite spider.lock: {}", e);
+    }
+    println!("removed {}", name);
+    Ok(EXIT_OK)
+}
+
+/// `spidr search <query> [--local]`.
+///
+/// v1 is local-only: the local registry (`SPID3R_REGISTRY`) and `vendor/`. A
+/// remote index is P8 in `plan.txt`; saying "no results" for a network search
+/// would be a lie, so `--local` is accepted and the remote case says so.
+fn cmd_search(args: &[String]) -> Result<i32, Diagnostic> {
+    let local = args.iter().any(|a| a == "--local");
+    let query = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| usage("search needs a query"))?
+        .clone();
+    if !local {
+        eprintln!(
+            "note: only the local registry is searched in this version (see docs/REGISTRY.md)"
+        );
+    }
+    let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let found = crate::pkg::ops::search_local(&root, &query).map_err(|e| usage(&e))?;
+    if found.is_empty() {
+        println!("no packages matching '{}'", query);
+        return Ok(EXIT_OK);
+    }
+    for (name, origin) in found {
+        println!("{}\t{}", name, origin);
+    }
+    Ok(EXIT_OK)
+}
+
+/// `spidr publish --to-dir <dir>`: write a registry-shaped package tree.
+fn cmd_publish(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut to_dir: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--to-dir" => {
+                to_dir = Some(
+                    args.get(i + 1)
+                        .cloned()
+                        .ok_or_else(|| usage("--to-dir needs a path"))?,
+                );
+                i += 1;
+            }
+            a => return Err(usage(&format!("unknown argument '{}'", a))),
+        }
+        i += 1;
+    }
+    let to_dir =
+        to_dir.ok_or_else(|| usage("publish needs a destination: spidr publish --to-dir <dir>"))?;
+    let root = project_root()?;
+    let (dest, hash) =
+        crate::pkg::ops::publish_to_dir(&root, &PathBuf::from(&to_dir)).map_err(|e| usage(&e))?;
+    println!("published to {}", dest.display());
+    println!("sha256: {}", hash);
+    Ok(EXIT_OK)
+}
+
+/// `spidr modules <file> [--tree]`: make the resolver's decisions inspectable.
+///
+/// Prints every module reachable from `file` with the origin the resolver
+/// assigned it. Nothing is executed and nothing is type-checked — this is the
+/// command you reach for when a build fails and you need to know which file an
+/// `import` actually named.
+fn cmd_modules(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut tree = false;
+    let mut file: Option<String> = None;
+    for a in args {
+        match a.as_str() {
+            "--tree" => tree = true,
+            other if other.starts_with('-') => {
+                return Err(usage(&format!("unknown argument '{}'", other)))
+            }
+            other => {
+                if file.is_some() {
+                    return Err(usage("modules takes exactly one file"));
+                }
+                file = Some(other.to_string());
+            }
+        }
+    }
+    let file = file.ok_or_else(|| usage("modules needs a file: spidr modules <file.matrix>"))?;
+    let path = PathBuf::from(&file);
+    if !path.is_file() {
+        return Err(usage(&format!("'{}' is not a file", file)));
+    }
+
+    // No extra dirs: `resolve_module` already searches the documented roots,
+    // including `SPID3R_PATH`, `./stdlib`, the shipped stdlib and `vendor/`.
+    let graph = crate::modules::graph::build(&path, &[])?;
+
+    if tree {
+        print!("{}", crate::modules::graph::render_tree(&graph));
+        return Ok(EXIT_OK);
+    }
+    println!("{}", crate::modules::graph::render_flat(&graph));
+    let counts = graph.count_by_origin();
+    let summary: Vec<String> = counts
+        .iter()
+        .map(|(origin, n)| format!("{} {}", n, origin.as_str()))
+        .collect();
+    println!(
+        "{} module(s) ({}); {} import edge(s)",
+        graph.nodes.len(),
+        summary.join(", "),
+        graph.nodes.iter().map(|n| n.imports.len()).sum::<usize>()
+    );
+    Ok(EXIT_OK)
+}
+
 fn cmd_pack(args: &[String]) -> Result<i32, Diagnostic> {
     let mut out: Option<String> = None;
     let mut i = 0;
@@ -2017,7 +2496,36 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
 
 #[cfg(test)]
 mod tests {
-    use super::differ_report;
+    use super::{differ_report, is_dispatchable_name};
+
+    /// The dispatch filter is a security boundary, so it is pinned directly:
+    /// deleting any clause of `is_dispatchable_name` must fail here.
+    #[test]
+    fn only_plain_tokens_are_dispatchable() {
+        for ok in ["fmt-ext", "lint2", "a_b", "tool.v2", "x"] {
+            assert!(is_dispatchable_name(ok), "{ok:?} should be dispatchable");
+        }
+        for bad in [
+            "",        // empty
+            "--bogus", // an option, not a subcommand
+            "-v",      // short option
+            ".hidden", // a hidden file, not a command
+            "..",      // traversal
+            "../echo", // traversal with a target
+            "a/b",     // separator (POSIX)
+            "a\\b",    // separator (Windows)
+            "C:/x",    // drive prefix
+            "a b",     // whitespace would split the argv entry
+            "a&b",     // cmd metacharacter
+            "a|b",     // cmd metacharacter
+            "a$b",     // shell metacharacter
+        ] {
+            assert!(!is_dispatchable_name(bad), "{bad:?} must be rejected");
+        }
+        // The length cap keeps the concatenated executable name sane.
+        assert!(is_dispatchable_name(&"a".repeat(64)));
+        assert!(!is_dispatchable_name(&"a".repeat(65)));
+    }
 
     #[test]
     fn differ_report_is_readable() {

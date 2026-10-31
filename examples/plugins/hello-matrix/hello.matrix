@@ -1,0 +1,19 @@
+// A Spid3r plugin: nothing but `public fn`s.
+//
+// These are ordinary functions — same language, same stdlib, same debugger.
+// The only difference from a normal module is that the toolchain can expose
+// them to another program by name.
+
+public fn greet(name) {
+    return "Hello, " + name + "! (from Spid3r)";
+}
+
+public fn sum_to(n) {
+    let total = 0;
+    let i = 1;
+    while (i <= n) {
+        total = total + i;
+        i = i + 1;
+    }
+    return total;
+}

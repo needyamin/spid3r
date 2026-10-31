@@ -1,0 +1,5 @@
+fn main() {
+    println(hello_greet("Ada"));
+    println(hello_sum(20, 22));
+    return 0;
+}

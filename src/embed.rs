@@ -277,6 +277,20 @@ impl Engine {
                 ))
             });
         }
+        // A plugin function is not in `Capability::natives()` — that list is a
+        // fixed vocabulary of builtins — so its declared permission has to be
+        // matched explicitly. Without this, `deny(Network)` would silently let
+        // a plugin's network function through.
+        for f in crate::plugin::registered_functions() {
+            if f.permission == Some(capability) {
+                let name = f.name;
+                self = self.register(name, move |_args| {
+                    Err(format!(
+                        "capability denied: '{name}' is not available to this script"
+                    ))
+                });
+            }
+        }
         self
     }
 

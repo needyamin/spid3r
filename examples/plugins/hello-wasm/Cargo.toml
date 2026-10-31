@@ -1,0 +1,17 @@
+[package]
+name = "spid3r-plugin-hello-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Sample Spid3r WASM plugin: sandboxed, no ambient authority."
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[profile.release]
+# Small guest module; the host interprets it, so code size matters more than
+# optimisation level.
+opt-level = "s"
+lto = true
+panic = "abort"

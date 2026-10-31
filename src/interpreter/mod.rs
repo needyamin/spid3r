@@ -306,6 +306,31 @@ impl Interp {
         result
     }
 
+    /// Run a module body: every top-level statement, and **no `fn main`
+    /// required**.
+    ///
+    /// [`run_program`] is the *program* entry: it executes the top level and
+    /// then calls `main`. A module has no entry point — the definitions are the
+    /// point — so a loader needs this instead. A Spid3r-source plugin is exactly
+    /// that case: its `public fn`s must be bound without inventing a `main`.
+    pub fn run_module(&self, program: &Program) -> Result<(), Diagnostic> {
+        let _guard_sweep = GuardSweep {
+            interp: self,
+            mark: self.guard_mark(),
+        };
+        let lowered = crate::lower::lower(program);
+        let _active = crate::sched::enter_active();
+        let env = self.globals.clone();
+        for stmt in &lowered.as_ref().stmts {
+            match self.exec_stmt(stmt, &env) {
+                Flow::Value(_) => {}
+                Flow::Error(d) | Flow::Fatal(d) => return Err(d),
+                other => return Err(self.invalid_flow(&other, stmt.span())),
+            }
+        }
+        Ok(())
+    }
+
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
         // On a panic (which unwinds out of the whole run), release every user
         // mutex this interpreter still holds; see `GuardSweep`.

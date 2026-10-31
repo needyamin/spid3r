@@ -1,6 +1,15 @@
 //! Module loading: `import "name";` resolves relative to the importing file
 //! first, then the documented search path. Modules are cached by canonical
-//! path. Circular imports fail. No package manager in v1.
+//! path. Circular imports fail.
+//!
+//! Resolution itself lives in [`resolve`] and is the **only** implementation:
+//! the tree interpreter, the bytecode compiler, the VM's run-time fallback and
+//! the AOT flattener all call [`resolve::resolve_module`]. Vendored
+//! dependencies installed by `spidr install` are on that search path (see
+//! [`default_module_dirs`]); the package manager itself is [`crate::pkg`].
+
+pub mod graph;
+pub mod resolve;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -150,6 +159,26 @@ pub fn circular_import_message(in_progress: &[PathBuf], path: &str) -> String {
     )
 }
 
+/// The chain to show in a cycle message.
+///
+/// The compile-time traversals (bytecode and AOT) seed their in-progress list
+/// with the program entry, because a program importing itself is also a cycle.
+/// The tree interpreter never claims the entry — it is the program, not an
+/// imported module — so its chain starts at the first imported module.
+///
+/// By construction the seeded entry is always element 0 and is never removed,
+/// so dropping it (when anything follows) makes all three backends produce
+/// byte-identical text, which is what `docs/ENGINE_CONTRACT.md` requires. A
+/// single-element chain is kept: that is a program importing itself, and the
+/// tree names it too.
+pub fn cycle_chain(in_progress: &[PathBuf]) -> Vec<PathBuf> {
+    if in_progress.len() > 1 {
+        in_progress[1..].to_vec()
+    } else {
+        in_progress.to_vec()
+    }
+}
+
 /// Import paths are search-relative by contract (importing file's directory,
 /// then SPID3R_PATH / vendor walk-up / ./stdlib). Absolute paths, drive/UNC
 /// prefixes, root-anchored forms, and `..` components would escape those
@@ -157,9 +186,15 @@ pub fn circular_import_message(in_progress: &[PathBuf], path: &str) -> String {
 /// loading) reject them with a clear diagnostic.
 pub fn check_import_path(path: &str) -> Result<(), Diagnostic> {
     let p = std::path::Path::new(path);
+    // `<` and `>` are rejected on every platform: they are illegal in a Windows
+    // filename anyway, and the synthetic embedded-module marker is
+    // `<stdlib>/name.matrix` — a spec containing angle brackets must never be
+    // confused with a module served from the embedded table.
     if p.is_absolute()
         || p.has_root()
         || path.contains(':')
+        || path.contains('<')
+        || path.contains('>')
         || p.components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
     {
@@ -174,42 +209,14 @@ pub fn check_import_path(path: &str) -> Result<(), Diagnostic> {
     Ok(())
 }
 
-fn resolve(interp: &Interp, path: &str) -> Result<PathBuf, Diagnostic> {
-    check_import_path(path)?;
-    let candidates: Vec<PathBuf> = {
-        let mut v = Vec::new();
-        let base = PathBuf::from(interp.file.as_ref());
-        if let Some(dir) = base.parent() {
-            v.push(dir.join(path));
-            v.push(dir.join(format!("{}.matrix", path)));
-        }
-        for d in &interp.module_dirs {
-            v.push(d.join(path));
-            v.push(d.join(format!("{}.matrix", path)));
-        }
-        v
-    };
-    for c in candidates {
-        if c.is_file() {
-            // Canonicalize so the module cache and cycle detection key on the
-            // real file, not the import spelling: `import "lib/util"` and
-            // `import "./lib/util"` (or a Windows case variant) must resolve
-            // to ONE module instance. Strip the `\\?\` device prefix Windows
-            // canonicalize adds for local drives so diagnostics keep showing
-            // ordinary paths (UNC paths keep their prefix).
-            return Ok(clean_canonical(&c));
-        }
-    }
-    if let Some(p) = embedded_path(path) {
-        return Ok(p);
-    }
-    Err(Diagnostic::new(
-        Phase::Semantic,
-        format!(
-            "module '{}' not found (looked next to the importing file and on SPID3R_PATH)",
-            path
-        ),
-    ))
+/// Resolve an import for the tree interpreter.
+///
+/// A thin adapter over [`resolve::resolve_module`]: the interpreter's search
+/// list is the documented default plus whatever the host added through
+/// `add_module_dir`. Every other backend calls the shared resolver directly,
+/// so all four agree by construction.
+fn resolve_for(interp: &Interp, path: &str) -> Result<PathBuf, Diagnostic> {
+    resolve::resolve_module(interp.file.as_ref(), path, &interp.module_dirs).map(|r| r.path)
 }
 
 /// `fs::canonicalize`, with Windows' `\\?\C:\...` device prefix reduced back
@@ -225,10 +232,6 @@ pub fn canonical_key(p: &std::path::Path) -> PathBuf {
         }
     }
     canon
-}
-
-fn clean_canonical(p: &std::path::Path) -> PathBuf {
-    canonical_key(p)
 }
 
 /// Load a module and return its exported names with their mutability
@@ -275,7 +278,7 @@ pub fn load(
     path: &str,
     span: &Span,
 ) -> Result<Vec<(String, Value, bool)>, Diagnostic> {
-    let resolved = resolve(interp, path)?;
+    let resolved = resolve_for(interp, path)?;
     // Claim the path atomically with the cache check: two tasks importing the
     // same new module must load it exactly once (the second waits), and a
     // same-thread re-entry is the genuine circular-import error.
@@ -356,40 +359,15 @@ pub fn load(
 }
 
 /// Search path from the SPID3R_PATH environment variable, plus ./stdlib.
+///
+/// Kept as a plain directory list because the LSP, the bundler and the CLI
+/// only need the roots, not their trust tier. The resolver itself uses
+/// [`resolve::search_roots`], which carries the origin alongside each root.
 pub fn default_module_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(path) = std::env::var("SPID3R_PATH") {
-        for part in path.split(';') {
-            for d in std::env::split_paths(part.trim()) {
-                let s = d.to_string_lossy();
-                let trimmed = s.trim();
-                if !trimmed.is_empty() {
-                    dirs.push(PathBuf::from(trimmed));
-                }
-            }
-        }
-    }
-    dirs.push(PathBuf::from("stdlib"));
-    // The stdlib shipped beside the executable (installer / release tarball
-    // layout) or in an ancestor directory (development layout e.g. target/release/../../stdlib),
-    // so `import "http"` (and implicit "bigint" for 123n) works from any working directory.
-    if let Ok(exe) = std::env::current_exe() {
-        let mut cur = exe.parent();
-        while let Some(dir) = cur {
-            let shipped = dir.join("stdlib");
-            if shipped.is_dir() {
-                dirs.push(shipped);
-                break;
-            }
-            cur = dir.parent();
-        }
-    }
-    // Project dependencies vendored by `spid3r install`. Inside a workspace
-    // member the shared `vendor/` lives at the workspace root, so walk up.
-    if let Some(vendor) = find_vendor_dir() {
-        dirs.push(vendor);
-    }
-    dirs
+    resolve::search_roots()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect()
 }
 
 /// Nearest `vendor/` directory at or above the current working directory.
@@ -442,29 +420,15 @@ pub fn module_info_of_in(
     span: &Span,
     extra_dirs: &[std::path::PathBuf],
 ) -> Result<ModuleScan, Diagnostic> {
-    check_import_path(path)?;
-    let base = PathBuf::from(importer_file);
-    let mut dirs = default_module_dirs();
-    dirs.extend(extra_dirs.iter().cloned());
-    if let Some(dir) = base.parent() {
-        dirs.insert(0, dir.to_path_buf());
-    }
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    for d in &dirs {
-        candidates.push(d.join(path));
-        candidates.push(d.join(format!("{}.matrix", path)));
-    }
-    let resolved = candidates
-        .into_iter()
-        .find(|c| c.is_file())
-        .or_else(|| embedded_path(path))
-        .ok_or_else(|| {
-            Diagnostic::at(
-                Phase::Semantic,
-                span.clone(),
-                format!("module '{}' not found", path),
-            )
-        })?;
+    // Same resolver as every backend, so the names the checker sees come from
+    // the same file the engines will load. The diagnostic carries this
+    // import's span instead of the module-internal one the resolver builds.
+    let resolved = resolve::resolve_module(importer_file, path, extra_dirs)
+        .map_err(|mut e| {
+            e.span = Some(span.clone());
+            e
+        })?
+        .path;
     let src = read_module_source(&resolved).map_err(|e| {
         Diagnostic::at(
             Phase::Semantic,

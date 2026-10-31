@@ -216,6 +216,54 @@ the launcher and the `spid3r gui` runtime it starts append them to
 `%LOCALAPPDATA%\Spid3r\logs\spid3r.log` (1 MiB, rotated to `.log.1`;
 `SPID3R_LOG=0` disables, `SPID3R_LOG_FILE` overrides the path).
 
+### Module resolution
+
+Every backend resolves `import "name"` through **one** implementation,
+`src/modules/resolve.rs`. The tree interpreter, the bytecode compiler, the VM's
+run-time fallback and the AOT flattener all call it, so they cannot disagree
+about which file an import names. The order is fixed and documented:
+
+| # | Root | Trust tier |
+| --- | --- | --- |
+| 1 | the importing file's directory | project source (T1) |
+| 2 | `SPID3R_PATH` (split on `;`) | T1 |
+| 3 | `./stdlib` (relative to the working directory) | project-local override (T1) |
+| 4 | `stdlib/` beside the executable, or in an ancestor of it | shipped stdlib (T0) |
+| 5 | `vendor/` from the nearest enclosing package | vendored, checksummed (T2) |
+| 6 | the embedded stdlib table compiled into the binary | T0 |
+
+Each candidate is tried both as written and with a `.matrix` suffix. Disk always
+wins over the embedded table, which is what lets a project pin a patched
+`stdlib/semver.matrix`; the embedded table is the last resort that makes a
+single-file app work on a machine with no `stdlib/` at all.
+
+The resolved path is canonicalized, so two spellings of the same file
+(`import "lib/util"` and `import "./lib/util"`) are one module instance whose
+top-level body runs once — including in a diamond, where two importers both
+depend on it.
+
+An import spec may not escape these roots: an absolute path, a drive/UNC
+prefix, angle brackets, or a `..` component is rejected with
+`error[semantic]: invalid module path …` on **every** backend. (Only the tree
+walker enforced this before the resolver was unified, so `import "../x"` used
+to load on two engines and fail on the third.) `tests/module_resolution.rs` and
+a row in `tests/engine_matrix.rs` pin both the precedence and the rejection.
+
+**Known limitation:** the check is lexical, on the spec. It stops `..` and
+absolute paths, but not a symlink or NTFS junction *inside* a searched
+directory that points outside it — `import "ext/secret"` follows a junction
+named `ext` the same way a normal file read would. This is not a privilege
+crossing (anything that can plant the junction can already write the module
+file next to it), and closing it would mean re-validating every canonical path
+against its root, which rejects legitimate layouts such as a symlinked project
+directory. It is documented rather than fixed.
+
+The AOT flattener and the VM's run-time fallback receive the *resolved* path,
+not the source literal. An operand that is already an absolute, existing file
+is therefore used as-is instead of being re-validated as a spec — otherwise an
+older `.matrixc` whose embedded table lacks an import would be rejected by its
+own resolved path. See `Vm::resolve_module_path` in `src/vm/mod.rs`.
+
 ### Native backend limits
 
 `spid3r build` flattens `import` (including `import "x" as alias;`) before codegen, so a

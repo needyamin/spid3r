@@ -15,3 +15,6 @@
 *.ico binary
 *.bmp binary
 *.matrixc binary
+# A plugin guest module is committed with its sample; keep git from ever
+# normalising its bytes.
+*.wasm binary

@@ -1,0 +1,10 @@
+fn main() {
+    println(hello_greet("Ada"));
+    let v = hello_env("SPID3R_DEMO_VAR");
+    if (v == null) {
+        println("(SPID3R_DEMO_VAR is not set)");
+    } else {
+        println(v);
+    }
+    return 0;
+}

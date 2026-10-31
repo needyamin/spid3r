@@ -1,0 +1,26 @@
+# A plugin written in Spid3r.
+#
+# `kind = "matrix"` means the plugin IS a Spid3r file. Its `public fn`s become
+# callable from any program, with no Rust, no WebAssembly and no build step.
+#
+# Trust: a matrix plugin is script code. It has exactly the authority a script
+# has — the same builtins, the same filesystem access. It is tier T1, the same
+# trust as your project's own source. Use kind = "wasm" for code you did not
+# write.
+
+[plugin]
+name = "hello-matrix"
+version = "0.1.0"
+abi = "spid3r-plugin-abi-1"
+kind = "matrix"
+entry = "hello.matrix"
+
+# One block per public function. The name must match the `public fn` in the
+# file, and `arity` must match its parameter count.
+[[function]]
+name = "greet"
+arity = 1
+
+[[function]]
+name = "sum_to"
+arity = 1

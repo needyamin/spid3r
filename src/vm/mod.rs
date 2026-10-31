@@ -19,7 +19,7 @@ pub use debug::{DebugState, StepMode, DEBUG_QUIT};
 pub use opt::{optimize_script, OptStats};
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::ast::{BinOp, Program, UnOp};
@@ -342,6 +342,19 @@ impl Vm {
                 .lock()
                 .unwrap()
                 .insert(name.to_string(), Value::Native(Arc::new(native)));
+        }
+        // WASM plugin functions: closures over a guest instance. The VM already
+        // dispatches `Value::NativeClosure`, so this is the whole engine-side
+        // change needed to make a plugin native available on the bytecode path.
+        for (name, func) in crate::plugin::registered_closures() {
+            let data = crate::value::NativeClosureData {
+                name: name.clone(),
+                func,
+            };
+            self.globals
+                .lock()
+                .unwrap()
+                .insert(name, Value::NativeClosure(Arc::new(data)));
         }
         let object = Arc::new(VmClass {
             name: "Object".to_string(),
@@ -2973,39 +2986,25 @@ impl Vm {
     // ------------------------------------------------------------- modules
 
     fn resolve_module_path(&self, path: &str) -> Result<PathBuf, VmError> {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-        let base = PathBuf::from(self.file.as_ref());
-        if let Some(dir) = base.parent() {
-            candidates.push(dir.join(path));
-            candidates.push(dir.join(format!("{}.matrix", path)));
+        // The `Import` op carries the module's RESOLVED path, not the source
+        // literal. An absolute operand is therefore already a filesystem path
+        // and must not be run through the import-spec validator (which
+        // correctly rejects absolute specs). This is the one case where the
+        // run-time fallback legitimately bypasses `resolve_module`: an older
+        // `.matrixc` whose embedded table lacks this import.
+        let operand = Path::new(path);
+        if operand.is_absolute() && operand.is_file() {
+            return Ok(crate::modules::canonical_key(operand));
         }
-        for d in &self.module_dirs {
-            candidates.push(d.join(path));
-            candidates.push(d.join(format!("{}.matrix", path)));
-        }
-        for c in candidates {
-            if c.is_file() {
-                // Canonicalize (matching the tree interpreter's module cache)
-                // so the same file imported under different spellings is one
-                // module instance, not two. Strip Windows' `\\?\` device
-                // prefix for local drives so diagnostics stay readable.
-                let canon = std::fs::canonicalize(&c).unwrap_or(c);
-                let s = canon.to_string_lossy().to_string();
-                if let Some(rest) = s.strip_prefix(r"\\?\") {
-                    if rest.len() >= 2 && rest.as_bytes()[1] == b':' {
-                        return Ok(PathBuf::from(rest));
-                    }
-                }
-                return Ok(canon);
-            }
-        }
-        Err(VmError {
-            fatal: false,
-            thrown: None,
-            message: format!("module '{}' not found", path),
-            span: self.cur_span(),
-            trace: Vec::new(),
-        })
+        crate::modules::resolve::resolve_module(self.file.as_ref(), path, &self.module_dirs)
+            .map(|r| r.path)
+            .map_err(|e| VmError {
+                fatal: false,
+                thrown: None,
+                message: e.message,
+                span: self.cur_span(),
+                trace: Vec::new(),
+            })
     }
 
     fn import_module(&mut self, path: &str) -> Result<Vec<(String, Value, bool)>, VmError> {

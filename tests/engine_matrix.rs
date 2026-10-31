@@ -900,6 +900,62 @@ fn imports_behave_identically_on_tree_and_vm() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An import spec that escapes the search roots is rejected **identically** by
+/// every backend.
+///
+/// This is a contract row, not a style check: the tree walker validated the
+/// spec (`src/modules::check_import_path`) and the VM/AOT resolvers did not, so
+/// `import "../escape"` loaded a file outside the module tree on two engines
+/// and failed on the third — "compiles but computes differently", the failure
+/// mode `docs/ENGINE_CONTRACT.md` ranks worst. Resolution now goes through
+/// `src/modules/resolve.rs` for all of them, and this row keeps it that way.
+#[test]
+fn an_escaping_import_spec_is_rejected_identically_on_tree_and_vm() {
+    // Pid-suffixed like every other suite: a fixed name lets two concurrent
+    // test processes delete each other's fixture mid-run.
+    let dir = std::env::temp_dir().join(format!(
+        "spid3r_matrix_import_escape_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    // The escape target exists, so a resolver that skipped validation would
+    // load it instead of erroring.
+    std::fs::write(
+        dir.join("escape.matrix"),
+        "public fn f() {\n    return 1;\n}\n",
+    )
+    .expect("write module");
+    let src = "import \"../escape\";\nfn main() {\n    println(f());\n    return 0;\n}\n";
+    let path = dir.join("main.matrix");
+    std::fs::write(&path, src).expect("write main");
+
+    let mut seen: Option<(i32, String)> = None;
+    for engine in ["tree", "vm"] {
+        let o = Command::new(bin())
+            .args(["run", "--engine", engine, path.to_str().unwrap()])
+            .current_dir(&dir)
+            .output()
+            .expect("spawn");
+        let err = String::from_utf8_lossy(&o.stderr).to_string();
+        let first = err.lines().next().unwrap_or("").trim().to_string();
+        let code = o.status.code().unwrap_or(-1);
+        assert_eq!(code, 1, "[{engine}] expected a semantic error: {err}");
+        assert!(
+            first.contains("invalid module path"),
+            "[{engine}] expected the spec diagnostic: {first}"
+        );
+        match &seen {
+            None => seen = Some((code, first)),
+            Some((c0, m0)) => {
+                assert_eq!(&code, c0, "[{engine}] exit code differs from tree");
+                assert_eq!(&first, m0, "[{engine}] stderr differs from tree");
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A program with none of the surface-only nodes is passed through **by
 /// reference**: `lower` returns `Cow::Borrowed`, so nothing is copied and no
 /// existing behaviour can change. This is the property that makes the pass safe

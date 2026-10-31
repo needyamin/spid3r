@@ -1,0 +1,22 @@
+# plugin.toml — a sandboxed plugin.
+#
+# `kind = "wasm"` means the toolchain interprets `entry` as a WebAssembly
+# module. The module is linked against NO imports, so it has no ambient
+# authority: no filesystem, no process, no network, no clock, no randomness.
+# Whatever it needs must arrive as an argument.
+
+[plugin]
+name = "hello-wasm"
+version = "0.1.0"
+abi = "spid3r-plugin-abi-1"
+kind = "wasm"
+entry = "plugin.wasm"
+
+# The module exports one function per entry below, each `(i32, i32) -> i64`.
+[[function]]
+name = "hello_greet"
+arity = 1
+
+[[function]]
+name = "hello_sum"
+arity = 2

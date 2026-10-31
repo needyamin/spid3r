@@ -1,0 +1,25 @@
+# plugin.toml — the manifest is the contract.
+#
+# `abi` must match the toolchain's ABI string *exactly*. A mismatch is rejected
+# before any plugin code runs: a plugin built against a different contract is
+# not "probably fine".
+
+[plugin]
+name = "hello"
+version = "0.1.0"
+abi = "spid3r-plugin-abi-1"
+kind = "host"
+capabilities = ["environment"]
+
+# Every function the plugin offers must be declared here, with the same arity.
+# A function offered at run time that this file does not declare is a
+# registration error, not an extension.
+
+[[function]]
+name = "hello_greet"
+arity = 1
+
+[[function]]
+name = "hello_env"
+arity = 1
+permission = "environment"

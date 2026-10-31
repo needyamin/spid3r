@@ -20,6 +20,7 @@ pub mod lsp;
 pub mod modules;
 pub mod parser;
 pub mod pkg;
+pub mod plugin;
 pub mod repl;
 pub mod sched;
 pub mod semantic;

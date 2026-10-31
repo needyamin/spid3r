@@ -42,9 +42,11 @@ pub type NativeDef = (
     fn(&NativeCtx, Vec<Value>) -> Result<Value, String>,
 );
 
-/// All builtin natives. Shared by the tree-walk interpreter (which installs
-/// into an `Env`) and the bytecode VM (which installs into a flat global map).
-pub fn native_defs() -> Vec<NativeDef> {
+/// The builtin natives only — no plugin functions.
+///
+/// Separate from [`native_defs`] so the plugin registry can check a plugin's
+/// function names against the builtins without recursing into itself.
+pub fn builtin_defs() -> Vec<NativeDef> {
     let mut defs: Vec<NativeDef> = vec![
         ("print", n_print),
         ("println", n_println),
@@ -191,10 +193,32 @@ pub fn native_defs() -> Vec<NativeDef> {
     defs
 }
 
+/// Every native a script can call: the builtins, plus whatever a host plugin
+/// registered at startup.
+///
+/// This is the **single leverage point** for the plugin API: the tree
+/// interpreter, the bytecode VM and the AOT backend all install from this list,
+/// so a plugin function needs no per-engine code at all.
+pub fn native_defs() -> Vec<NativeDef> {
+    let mut defs = builtin_defs();
+    defs.extend(crate::plugin::registered());
+    defs
+}
+
 pub fn install(globals: &Env, sched: Arc<Scheduler>) {
     for (name, func) in native_defs() {
         let native = NativeFn { name, func };
         environment::define(globals, name, Value::Native(Arc::new(native)));
+    }
+    // WASM plugin functions are closures, not `fn` pointers: a guest instance is
+    // captured state. The interpreter already knows how to call
+    // `Value::NativeClosure`, so this needs no evaluator change.
+    for (name, func) in crate::plugin::registered_closures() {
+        let data = crate::value::NativeClosureData {
+            name: name.clone(),
+            func,
+        };
+        environment::define(globals, &name, Value::NativeClosure(Arc::new(data)));
     }
     let _ = sched;
 }

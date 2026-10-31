@@ -39,15 +39,58 @@ Values are reference counted, so ordinary garbage dies the moment it is dropped.
 
 ![Five deployment targets](docs/diagrams/targets.svg)
 
+## Ecosystem
+
+![Seven routes by which third-party code reaches a Spid3r program](docs/diagrams/ecosystem.svg)
+
+Third-party code reaches a program through seven routes, and only one of them can be sandboxed.
+
+**Packages** ship today. A package is a `spider.toml` plus a `src/` tree; `spidr add` declares and vendors it, `spidr tree` shows what that resolved to, and `spidr verify` re-hashes every vendored file against `spider.lock` so a hand-edited dependency fails instead of compiling. `spidr publish --to-dir` writes a static registry entry with a checksum. No network, no build scripts — installing a package never executes its code.
+
+**Host plugins work.** A plugin declares itself in a `plugin.toml` (exact-match ABI string, one block per function with its arity and permission), implements one trait, and is registered by its host at startup. Registration merges its functions into the native table all three engines already read, so a plugin function needs no per-engine code. There is no dynamic loading: a plugin is compiled into its host, because a native function is a Rust pointer over `Value` and `Value` has no stable C representation.
+
+A *host* plugin is trusted code — same address space, same authority, and no capability filter can revoke that. Its declared permission is what lets a host stop a *script* from calling it.
+
+**WASM plugins are the sandboxed route**, and they need no rebuild: `spidr run` discovers `plugin.toml` + `plugin.wasm` on the plugin search path and interprets the module. The host links an empty linker, so a guest that imports anything — a file, a clock, a socket — fails to instantiate. Nothing is revoked at run time because nothing was ever granted, and a fuel budget means a `loop {}` traps instead of hanging.
+
+```console
+$ SPID3R_PLUGINS=examples/plugins spidr run examples/plugins/hello-wasm/demo.matrix
+Hello, Ada! (from wasm)
+42
+```
+
+`spidr build` refuses a program that calls a plugin function: a standalone native executable cannot link one, and that is a compile-time error rather than a binary that throws at run time.
+
+```rust
+spid3r_lang::plugin::register(Box::new(HelloPlugin::new()))?;
+```
+
+Both samples are in the repository: [`hello-host`](examples/plugins/hello-host) (compiled in) and [`hello-wasm`](examples/plugins/hello-wasm) (sandboxed).
+
+| Route | Trust | Status |
+|---|---|---|
+| Embedded stdlib | immutable, compiled in | shipped |
+| Project `.matrix` files | your own source | shipped |
+| Spid3r plugins (`kind = "matrix"`) | written in the language, script trust | shipped |
+| Vendored packages | checksummed, re-checked by `spidr verify` | shipped |
+| WASM plugins | sandboxed, loaded from disk | shipped |
+| Host plugins | trusted code, not sandboxable | shipped |
+| FFI (`extern fn`) | trusted code, AOT only | planned |
+
+```bash
+$ spid3r modules src/main.matrix --tree   # which file does each import name?
+$ spid3r verify                           # is the vendored tree the one the lock describes?
+```
+
 ## What's inside
 
 | Aspect | Detail |
 |---|---|
-| **Implementation** | 76,585 lines of Rust · no third-party crates in the core |
+| **Implementation** | 80,115 lines of Rust · zero dependencies in the core (`--no-default-features`) |
 | **Engines** | tree · bytecode VM · LLVM AOT · WebAssembly |
 | **Bytecode** | 59 opcodes · serialized `.matrixc` format |
 | **Standard library** | 29 modules, compiled into the binary |
-| **Tests** | 1,051 test functions · three-engine differential |
+| **Tests** | 1,083 tests · three-engine differential |
 | **Binary** | one 11 MB file · static CRT · runs with no installed runtime |
 
 ## The language
@@ -96,15 +139,19 @@ cargo install --path . --no-default-features
 | `spid3r build` | native executable |
 | `spid3r bundle --target wasm` | offline web app |
 | `spid3r init` · `install` · `dist` | projects, dependencies, release build |
+| `spid3r add` · `remove` · `tree` · `verify` | declare, inspect and check dependencies |
+| `spid3r modules` · `publish` · `search` | module origins, registry entries |
 
 ## Documentation
 
 | Guide | What's in it |
 |---|---|
 | [Developer guide](docs/html/doc.html) | 15-chapter tutorial, API reference, runnable samples |
+| [Plugin guide](docs/html/plugin.html) | how to write a plugin, and how it works |
 | [Playground](docs/html/playground.html) | run Spid3r in the browser |
 | [Grammar](docs/GRAMMAR.md) | EBNF and precedence |
 | [Standard library](docs/STANDARD_LIBRARY.md) | every builtin and module |
+| [Ecosystem](docs/ECOSYSTEM.md) · [Registry](docs/REGISTRY.md) | packages, plugins, trust model · publishing |
 | [Data structures](docs/DATA_STRUCTURES.md) | all 20+ containers |
 | [Bytecode & VM](docs/BYTECODE.md) | `.matrixc` format, opcodes, scheduler |
 | [Garbage collection](docs/GC.md) | cycle collector design |

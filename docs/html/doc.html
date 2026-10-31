@@ -1335,6 +1335,9 @@
         title="Open Interactive In-Browser Runtime">
         <span>⚡</span> In-Browser Runtime
       </a>
+      <a href="plugin.html" class="btn-top" title="Developer guide to writing plugins">
+        <span>🔌</span> Plugins
+      </a>
     </div>
   </header>
 
@@ -1355,6 +1358,8 @@
           <a href="#hello-world" class="sb-link"><span>Your First Program</span></a>
           <a href="#architecture" class="sb-link"><span>Engine Architecture</span></a>
           <a href="#cli" class="sb-link"><span>Toolchain CLI</span><span class="sb-tag">spid3r</span></a>
+          <a href="#module-resolution" class="sb-link"><span>Module Resolution</span><span class="sb-tag">import</span></a>
+          <a href="#ecosystem" class="sb-link"><span>Ecosystem &amp; Trust</span><span class="sb-tag">pkg</span></a>
         </div>
       </div>
 
@@ -1860,6 +1865,61 @@
                 </td>
               </tr>
               <tr>
+                <td><code>spid3r add &lt;name&gt;</code></td>
+                <td><code>spid3r add mathlib --path ../mathlib</code></td>
+                <td>Declare a dependency in <code>spider.toml</code> and vendor it in one step. Sources:
+                  <code>--path P</code>, <code>--git URL [--rev R]</code>, or <code>--version V</code> for the local
+                  registry. <code>--version</code> alongside a path/git source is a constraint. If the dependency does
+                  not resolve the manifest is restored byte-for-byte, so a typo cannot leave the project broken.
+                </td>
+              </tr>
+              <tr>
+                <td><code>spid3r remove &lt;name&gt;</code></td>
+                <td><code>spid3r remove mathlib</code></td>
+                <td>Delete the declaration from <code>[dependencies]</code>, prune <code>vendor/&lt;name&gt;/</code>,
+                  and rewrite <code>spider.lock</code> so the project stays verifiable.
+                </td>
+              </tr>
+              <tr>
+                <td><code>spid3r tree</code></td>
+                <td><code>spid3r tree</code></td>
+                <td>Print the declared dependency tree with each package's locked version and origin. A path
+                  dependency's own manifest is followed, so transitive path dependencies appear nested.
+                </td>
+              </tr>
+              <tr>
+                <td><code>spid3r verify</code></td>
+                <td><code>spid3r verify</code></td>
+                <td>Re-hash every vendored package against the <code>sha256</code> recorded in
+                  <code>spider.lock</code>. Exits 1 and names the package, with both hashes, if a vendored file was
+                  edited by hand; also reports a vendored directory that no lock entry covers.
+                </td>
+              </tr>
+              <tr>
+                <td><code>spid3r search &lt;query&gt;</code></td>
+                <td><code>spid3r search math --local</code></td>
+                <td>Find packages by name in the local registry (<code>SPID3R_REGISTRY</code>) and in
+                  <code>vendor/</code>. v1 is local-only: there is no network index yet.
+                </td>
+              </tr>
+              <tr>
+                <td><code>spid3r publish --to-dir &lt;dir&gt;</code></td>
+                <td><code>spid3r publish --to-dir ../registry</code></td>
+                <td>Write <code>&lt;dir&gt;/&lt;name&gt;/&lt;version&gt;/</code> containing <code>spider.toml</code>,
+                  <code>src/</code> and a <code>sha256.txt</code> — the layout the local registry resolver reads.
+                  Republishing an existing version is refused rather than overwritten.
+                </td>
+              </tr>
+              <tr>
+                <td><code>spid3r modules &lt;file&gt;</code></td>
+                <td><code>spid3r modules main.matrix --tree</code></td>
+                <td>List every module a program imports as <code>origin&lt;TAB&gt;path</code>, where origin is
+                  <code>disk</code>, <code>vendor</code>, <code>embedded</code> or <code>plugin</code>;
+                  <code>--tree</code> prints the dependency graph. Nothing is executed — this is the command to reach
+                  for when a build fails and you need to know which file an <code>import</code> actually named.
+                </td>
+              </tr>
+              <tr>
                 <td><code>spid3r dist [-o out]</code></td>
                 <td><code>spid3r dist</code></td>
                 <td>Compile the project entry named by <code>spider.toml</code> into
@@ -1881,6 +1941,292 @@
             </tbody>
           </table>
         </div>
+
+        <h3 class="section-h3" id="module-resolution">Module Resolution</h3>
+        <p>
+          Every backend resolves <code>import "name"</code> through <strong>one</strong> implementation, so the tree
+          interpreter, the bytecode VM and the AOT compiler cannot disagree about which file an import names. The
+          search order is fixed, and <code>spidr modules</code> prints which root won:
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Root</th>
+                <th>Origin label</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td>
+                <td>The importing file's own directory</td>
+                <td><code>disk</code></td>
+              </tr>
+              <tr>
+                <td>2</td>
+                <td><code>SPID3R_PATH</code> (a <code>;</code>-separated list)</td>
+                <td><code>disk</code></td>
+              </tr>
+              <tr>
+                <td>3</td>
+                <td><code>./stdlib</code>, relative to the working directory</td>
+                <td><code>disk</code></td>
+              </tr>
+              <tr>
+                <td>4</td>
+                <td><code>stdlib/</code> beside the executable, or above it</td>
+                <td><code>disk</code></td>
+              </tr>
+              <tr>
+                <td>5</td>
+                <td><code>vendor/</code> from the nearest enclosing package</td>
+                <td><code>vendor</code></td>
+              </tr>
+              <tr>
+                <td>6</td>
+                <td>The stdlib table compiled into the binary</td>
+                <td><code>embedded</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Each candidate is tried as written and then with a <code>.matrix</code> suffix. Disk always wins over the
+          embedded table, which is what lets a project pin a patched <code>stdlib/semver.matrix</code>; the embedded
+          table is the last resort that makes a single-file app work on a machine with no <code>stdlib/</code> at all.
+          An import spec may not escape these roots: an absolute path, a drive letter, angle brackets or a
+          <code>..</code> component is rejected with <code>error[semantic]: invalid module path</code> on every
+          backend. (Only the tree walker enforced that before resolution was unified, so <code>import "../x"</code>
+          used to load on two engines and fail on the third.)
+        </p>
+        <p>
+          A vendored package is a directory: <code>vendor/mathlib/lib.matrix</code> is imported as
+          <code>import "mathlib/lib"</code>. Which root a module came from — and therefore how much you should trust it
+          — is the subject of the next section.
+        </p>
+
+        <h3 class="section-h3" id="ecosystem">The Ecosystem: Packages, Plugins and Trust</h3>
+        <p>
+          Third-party code reaches a program through seven routes, and they do not carry the same authority. The tiers
+          below are the whole trust model; anything not on this list is not a supported extension point.
+        </p>
+
+        <figure class="diagram">
+          <img src="../diagrams/ecosystem.svg"
+            alt="A Spid3r program receives code through seven routes: the embedded standard library, project source files, Spid3r plugins, vendored packages, WASM plugins and host plugins (all shipped today), plus FFI (planned). Only the WASM plugin route is sandboxed; the Spid3r and host plugin routes are trusted code by definition.">
+          <figcaption>Seven routes in, six of them shipped. Only one — WASM plugins — can be sandboxed, and it is not
+            built yet. Dashed routes are planned, not available.</figcaption>
+        </figure>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tier</th>
+                <th>What</th>
+                <th>Guarantee</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>T0</td>
+                <td>Built-in stdlib</td>
+                <td>Embedded, immutable, no disk override from the install tree</td>
+                <td>shipped</td>
+              </tr>
+              <tr>
+                <td>T1</td>
+                <td>Project <code>.matrix</code> files</td>
+                <td>Same trust as the project's own source</td>
+                <td>shipped</td>
+              </tr>
+              <tr>
+                <td>T1</td>
+                <td>Spid3r plugins (<code>kind = "matrix"</code>)</td>
+                <td>Written in the language and loaded from disk; script authority, like your own source</td>
+                <td>shipped</td>
+              </tr>
+              <tr>
+                <td>T2</td>
+                <td>Vendored packages</td>
+                <td>Checksummed against <code>spider.lock</code>; <code>spidr verify</code> re-checks</td>
+                <td>shipped</td>
+              </tr>
+              <tr>
+                <td>T3</td>
+                <td>WASM plugins</td>
+                <td>Sandboxed — no ambient authority, manifest-declared permissions, fuel-limited</td>
+                <td>planned</td>
+              </tr>
+              <tr>
+                <td>T4</td>
+                <td>Host plugins</td>
+                <td>Trusted code. Not sandboxed, and cannot be</td>
+                <td>shipped</td>
+              </tr>
+              <tr>
+                <td>T5</td>
+                <td>FFI (<code>extern fn</code>)</td>
+                <td>Trusted code, AOT-only</td>
+                <td>planned</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Two things this page will not overstate. Capability filtering is a <strong>policy filter, not a
+          sandbox</strong>: it replaces known builtin natives with stubs that return a catchable
+          <code>capability denied</code> error, and a host function a plugin registers keeps whatever authority it was
+          given — no filter can take that back. And dependency installation <strong>never executes package
+          code</strong> — there are no build scripts, unlike Cargo — which is a real security advantage and is
+          deliberate.
+        </p>
+
+        <h4 id="packages" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">Packages</h4>
+        <p>
+          A package is a directory with a <code>spider.toml</code> and a <code>src/</code> tree. <code>spidr add</code>
+          declares it and vendors it in one step, <code>spidr tree</code> shows what that resolved to,
+          <code>spidr verify</code> proves the vendored bytes are the ones the lock file describes, and
+          <code>spidr publish --to-dir</code> writes a static registry entry with a checksum. None of it touches the
+          network, and none of it runs the package's code.
+        </p>
+        <div
+          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
+          <div style="color: var(--fg-muted); margin-bottom: 4px;"># Which file does `import "semver"` actually name?
+          </div>
+          <div style="color: var(--cyan); margin-bottom: 8px;">spid3r modules src/main.matrix --tree</div>
+          <div style="color: var(--fg-muted); margin-bottom: 4px;"># Declare, inspect, then prove the tree is intact
+          </div>
+          <div style="color: var(--cyan); margin-bottom: 8px;">spid3r add mathlib --path ../mathlib</div>
+          <div style="color: var(--cyan); margin-bottom: 8px;">spid3r tree</div>
+          <div style="color: var(--cyan); margin-bottom: 8px;">spid3r verify</div>
+          <div style="color: var(--fg-muted); margin-bottom: 4px;"># Publish into a static registry directory</div>
+          <div style="color: var(--fg-primary);">spid3r publish --to-dir ../registry</div>
+        </div>
+
+        <h4 id="plugins" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">Plugins</h4>
+        <p>
+          Host plugins work today. A plugin declares itself in a <code>plugin.toml</code>, implements one trait, and is
+          registered by its host at startup. There is <strong>no dynamic loading</strong>: a plugin is compiled into
+          the host that uses it, because a native function is a Rust function pointer over <code>Value</code>, and
+          <code>Value</code> has no stable representation that could cross a C ABI boundary.
+        </p>
+        <p>
+          The payoff of the design is that registration merges the plugin's functions into
+          <code>stdlib::native_defs()</code> — the one list the tree interpreter, the bytecode VM and the AOT backend
+          all install from. A plugin function needs <strong>no per-engine code</strong>.
+        </p>
+        <div
+          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
+          <div style="color: var(--fg-muted); margin-bottom: 4px;"># plugin.toml — the manifest is the contract</div>
+          <div style="color: var(--fg-primary);">[plugin]</div>
+          <div style="color: var(--fg-primary);">name = "hello"</div>
+          <div style="color: var(--fg-primary);">abi = "spid3r-plugin-abi-1"</div>
+          <div style="color: var(--fg-primary);">capabilities = ["environment"]</div>
+          <div style="color: var(--fg-muted); margin: 8px 0 4px;"># one block per function, with its arity and
+            permission</div>
+          <div style="color: var(--fg-primary);">[[function]]</div>
+          <div style="color: var(--fg-primary);">name = "hello_env"</div>
+          <div style="color: var(--fg-primary);">arity = 1</div>
+          <div style="color: var(--fg-primary);">permission = "environment"</div>
+        </div>
+        <p>
+          <code>register</code> rejects, <strong>before any plugin code runs</strong>: an <code>abi</code> that is not
+          exactly <code>spid3r-plugin-abi-1</code>; a function the manifest never declared, or one whose arity
+          disagrees; a <code>permission</code> the manifest's <code>capabilities</code> does not announce; a duplicate
+          name; and a function that would shadow a builtin — <code>write_file</code> must not be interceptable. A
+          plugin whose <code>start()</code> fails is recorded as <code>Failed</code> and simply never offers its
+          functions, so one broken plugin cannot take the host down.
+        </p>
+        <p>
+          The permission gate is the same mechanism as for builtins: <code>Engine::deny(Capability::Environment)</code>
+          replaces <code>hello_env</code> with a stub returning a <em>catchable</em>
+          <code>capability denied</code> error, while the plugin's other functions keep working.
+        </p>
+        <p>
+          A complete sample lives at <code>examples/plugins/hello-host/</code> — a manifest, a <code>PluginHost</code>
+          implementation, a host binary and two scripts, including one that demonstrates the gate. See
+          <code>docs/PLUGINS.md</code> for the full contract.
+        </p>
+        <h5 id="wasm-plugins" style="font-size: 0.98rem; font-weight: 600; margin: 20px 0 8px; color: var(--fg-primary);">WASM plugins: the sandboxed route</h5>
+        <p>
+          A WASM plugin is the opposite of a host plugin: it exists only as a file. The toolchain reads
+          <code>plugin.toml</code> and <code>plugin.wasm</code> from the plugin search path and interprets the module, so
+          <code>spidr run</code> can call it without the binary being rebuilt.
+        </p>
+        <div
+          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
+          <div style="color: var(--fg-muted); margin-bottom: 4px;"># discovery order</div>
+          <div style="color: var(--fg-primary); margin-bottom: 8px;">SPID3R_PLUGINS · ./plugins · &lt;exe&gt;/plugins · ~/.spidr/plugins</div>
+          <div style="color: var(--fg-muted); margin-bottom: 4px;"># run a program that calls a sandboxed plugin</div>
+          <div style="color: var(--cyan); margin-bottom: 8px;">SPID3R_PLUGINS=examples/plugins spid3r run app.matrix</div>
+          <div style="color: var(--fg-muted); margin-bottom: 4px;"># the guest must export its memory and two helpers</div>
+          <div style="color: var(--fg-primary);">memory · alloc(i32) -&gt; i32 · dealloc(i32, i32)</div>
+        </div>
+        <p>
+          Each manifest function is one export with the signature <code>(i32, i32) -&gt; i64</code>: the host writes the
+          arguments into linear memory, calls the export, and reads the result back. There is no dispatch table inside
+          the guest. The wire format is a small typed binary encoding — <code>null</code>, <code>int</code>,
+          <code>float</code>, <code>bool</code>, <code>string</code>, <code>list</code> — rather than JSON, so a plugin
+          author does not have to ship a JSON parser <em>into</em> the sandbox.
+        </p>
+        <p>
+          The sandbox is structural: the host builds an <strong>empty linker</strong>, so a module that imports anything
+          — <code>fd_write</code>, a clock, randomness — fails to instantiate. Nothing is revoked at run time, because
+          nothing was ever granted. Every call also carries a fuel budget, so a <code>loop {}</code> traps instead of
+          hanging the interpreter; that is the one place a limit is enforceable <em>below</em> the language, and it is
+          what makes running an untrusted plugin safe.
+        </p>
+        <p>
+          <code>spidr build</code> and <code>spidr dist</code> deliberately do <strong>not</strong> load plugins: a
+          standalone native executable cannot link one. A program that calls a plugin function is rejected at compile
+          time, with a note explaining why — not compiled into a binary that throws at run time.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Route</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Host plugins (compiled into the host)</td>
+                <td>works</td>
+              </tr>
+              <tr>
+                <td>WASM plugins (<code>kind = "wasm"</code>, loaded from disk)</td>
+                <td>works — <code>wasmi</code>, behind the default <code>plugins-wasm</code> feature</td>
+              </tr>
+              <tr>
+                <td>FFI (<code>extern fn</code>)</td>
+                <td>not implemented</td>
+              </tr>
+              <tr>
+                <td><code>spidr plugin list/enable/disable</code></td>
+                <td>not implemented — a plugin is discovered per run, so there is no process-independent list</td>
+              </tr>
+              <tr>
+                <td>Dynamic loading of <em>native</em> code (<code>dlopen</code>)</td>
+                <td>deliberately not implemented — there is no stable ABI to load against</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          The distinction that matters: a host plugin is <em>trusted code</em> — same address space, same authority, and
+          no filter can revoke what it already has. A WASM plugin is the only route that can be sandboxed, and it is
+          the one to prefer for anything you did not write. Both samples are in the repository:
+          <code>examples/plugins/hello-host</code> and <code>examples/plugins/hello-wasm</code>.
+        </p>
+        <p>
+          The full developer guide &mdash; the manifest contract, the guest ABI, the wire format and a
+          troubleshooting table &mdash; is its own page:/r
+          <a href="plugin.html"><strong>Writing Spid3r Plugins &rarr;</strong></a>
+        </p>
 
         <h3 class="section-h3" id="native-compilation">Native Machine-Code Compilation (AOT)</h3>
         <p>

@@ -79,11 +79,74 @@ Same grammar as path/git dependencies (`src/pkg`):
 The chosen directory's `spider.toml` version must also satisfy the constraint
 (checked after resolution, exactly like a path dependency).
 
+## Publishing into a registry
+
+`spidr publish --to-dir <dir>` writes the layout above without any network:
+
+```
+<dir>/<name>/<version>/
+  spider.toml
+  src/…
+  sha256.txt      # content hash of src/, checked on install
+```
+
+Republishing an existing `<name>/<version>` is **refused** rather than
+overwritten: a registry entry is immutable, and silently replacing one would
+make every `spider.lock` that pins it a lie. Bump the version instead.
+
+The round trip is local and offline:
+
+```console
+$ spidr publish --to-dir ../registry
+published to ../registry/mathlib/0.1.0
+sha256: 308a5889…
+
+# in a consumer project
+[dependencies]
+mathlib = { version = "^0.1.0" }
+
+$ SPID3R_REGISTRY=../registry spidr install
+$ spidr verify
+ok: 1 vendored package(s) match spider.lock
+```
+
+`spidr search <query> --local` matches package names in `SPID3R_REGISTRY` and in
+`vendor/`. It does not reach the network — there is no remote index yet.
+
+## Integrity
+
+`install` verifies a registry package's `sha256.txt` when the package ships one,
+and `spidr verify` re-hashes every vendored tree against the `sha256` in
+`spider.lock` afterwards. Editing one vendored file therefore fails the build
+gate instead of being silently compiled:
+
+```console
+$ spidr verify
+error[verify]: mathlib: vendor/mathlib does not match spider.lock
+  expected 308a5889…
+  actual   31e79255…
+1 problem(s) across 1 checked package(s)
+$ echo $?
+1
+```
+
+It also reports a directory under `vendor/` that no lock entry covers — a
+package nobody declared is not something to trust.
+
 ## What it does not do (v1)
 
 - **No network fetch.** Point `SPID3R_REGISTRY` at a local/checked-out tree. A
   remote index + download is a deliberate future step (it needs an HTTP client,
-  which the zero-dependency default avoids).
+  which the zero-dependency default avoids). `spidr publish --to-dir` writes the
+  registry layout and `spidr search --local` reads it, so the whole cycle works
+  offline; only *distribution* is missing.
+- **No signature verification.** TLS plus the SHA-256 in `spider.lock` is the v1
+  trust model. Ed25519 signing needs a new dependency and key management, and is
+  out of scope; do not describe the checksum as a signature.
+- **No version-range intersection across the graph.** A constraint is checked
+  against the resolved version, not unified across importers: a diamond where
+  two packages demand incompatible ranges is reported as a conflict, not solved
+  by backtracking. Greedy highest-satisfying is the v1 rule.
 - **Transitive resolution is supported** for all three source kinds (path, git,
   registry): `install` walks each dependency's own `[dependencies]` breadth-first
   with cycle detection and a same-name/different-source conflict check, so a

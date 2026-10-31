@@ -24,11 +24,13 @@ pub fn flatten_imports(program: &Program, importer_file: &str) -> Result<Program
     let mut out: Vec<Stmt> = Vec::new();
     let mut done: HashSet<PathBuf> = HashSet::new();
     let mut done_aliased: HashSet<(PathBuf, String)> = HashSet::new();
-    let mut in_progress: HashSet<PathBuf> = HashSet::new();
-    let importer_path = PathBuf::from(importer_file);
-    if importer_path.is_file() {
-        in_progress.insert(crate::modules::canonical_key(&importer_path));
-    }
+    // A Vec, not a HashSet: the cycle diagnostic prints the chain in order.
+    // Import depth is tiny, so `contains` being O(n) does not matter.
+    let mut in_progress: Vec<PathBuf> = Vec::new();
+    // Seeded unconditionally so element 0 is always the program entry, which
+    // is what `cycle_chain` relies on. `canonical_key` falls back to the raw
+    // path when the file does not exist (a synthetic payload name).
+    in_progress.push(crate::modules::canonical_key(&PathBuf::from(importer_file)));
     flatten_stmts(
         &program.stmts,
         importer_file,
@@ -46,21 +48,26 @@ fn flatten_stmts(
     out: &mut Vec<Stmt>,
     done: &mut HashSet<PathBuf>,
     done_aliased: &mut HashSet<(PathBuf, String)>,
-    in_progress: &mut HashSet<PathBuf>,
+    in_progress: &mut Vec<PathBuf>,
 ) -> Result<(), Diagnostic> {
     for s in stmts {
         if let Stmt::Import { path, alias, span } = s {
             if let Some(alias_name) = alias {
-                let resolved = resolve_module(importer_file, path)?;
+                // The one resolver, shared with the tree interpreter and
+                // both VM paths; see `crate::modules::resolve`.
+                let resolved =
+                    crate::modules::resolve::resolve_module(importer_file, path, &[])?.path;
                 let canon = crate::modules::canonical_key(&resolved);
                 let key = (canon.clone(), alias_name.clone());
                 if done_aliased.contains(&key) {
                     continue;
                 }
                 if in_progress.contains(&canon) {
+                    // Same phase + message as the tree and the VM.
+                    let chain = crate::modules::cycle_chain(in_progress);
                     return Err(Diagnostic::new(
                         Phase::Semantic,
-                        format!("circular import of '{}'", path),
+                        crate::modules::circular_import_message(&chain, path),
                     ));
                 }
                 // `read_module_source`, not `fs::read_to_string`: an embedded
@@ -75,7 +82,7 @@ fn flatten_stmts(
                 crate::semantic::check_file(&module, false, &resolved_str)?;
                 let lowered = crate::lower::lower(&module);
                 let mut sub_stmts = Vec::new();
-                in_progress.insert(canon.clone());
+                in_progress.push(canon.clone());
                 flatten_stmts(
                     &lowered.stmts,
                     &resolved_str,
@@ -84,20 +91,21 @@ fn flatten_stmts(
                     done_aliased,
                     in_progress,
                 )?;
-                in_progress.remove(&canon);
+                in_progress.retain(|p| p != &canon);
                 done_aliased.insert(key);
                 mangle_aliased_module(&sub_stmts, alias_name, span, out);
                 continue;
             }
-            let resolved = resolve_module(importer_file, path)?;
+            let resolved = crate::modules::resolve::resolve_module(importer_file, path, &[])?.path;
             let canon = crate::modules::canonical_key(&resolved);
             if done.contains(&canon) {
                 continue; // already inlined by another importer
             }
             if in_progress.contains(&canon) {
+                let chain = crate::modules::cycle_chain(in_progress);
                 return Err(Diagnostic::new(
                     Phase::Semantic,
-                    format!("circular import of '{}'", path),
+                    crate::modules::circular_import_message(&chain, path),
                 ));
             }
             let src = crate::modules::read_module_source(&resolved).map_err(|e| {
@@ -110,7 +118,7 @@ fn flatten_stmts(
             // Same seam as the other backends: an imported module is lowered
             // before its statements are flattened into the caller.
             let lowered = crate::lower::lower(&module);
-            in_progress.insert(canon.clone());
+            in_progress.push(canon.clone());
             flatten_stmts(
                 &lowered.stmts,
                 &resolved_str,
@@ -119,7 +127,7 @@ fn flatten_stmts(
                 done_aliased,
                 in_progress,
             )?;
-            in_progress.remove(&canon);
+            in_progress.retain(|p| p != &canon);
             done.insert(canon);
         } else {
             out.push(s.clone());
@@ -687,45 +695,6 @@ fn collect_pattern_bindings(p: &Pattern, out: &mut HashSet<String>) {
         }
         Pattern::Wild | Pattern::Literal(_) => {}
     }
-}
-
-/// Resolve an import path relative to the importing file's directory first,
-/// then [`crate::modules::default_module_dirs`] (`SPID3R_PATH`, `stdlib/`,
-/// `vendor/`) — mirroring [`crate::vm::compiler`]'s resolver so both the
-/// bytecode and AOT paths agree on module lookup.
-///
-/// The final [`crate::modules::embedded_path`] fallback is what makes a
-/// `stdlib/` directory optional: without it `spid3r build` reported
-/// `module 'semver' not found` on an install that had no `stdlib/` on disk,
-/// while `spid3r run` in the same directory succeeded off the embedded table.
-/// Disk still wins, so a project-local `stdlib/` or `vendor/` copy keeps
-/// overriding the built-in one, exactly as on the other two backends.
-fn resolve_module(importer_file: &str, path: &str) -> Result<PathBuf, Diagnostic> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    let base = PathBuf::from(importer_file);
-    if let Some(dir) = base.parent() {
-        candidates.push(dir.join(path));
-        candidates.push(dir.join(format!("{}.matrix", path)));
-    }
-    for d in crate::modules::default_module_dirs() {
-        candidates.push(d.join(path));
-        candidates.push(d.join(format!("{}.matrix", path)));
-    }
-    for c in candidates {
-        if c.is_file() {
-            return Ok(c);
-        }
-    }
-    if let Some(p) = crate::modules::embedded_path(path) {
-        return Ok(p);
-    }
-    Err(Diagnostic::new(
-        Phase::Semantic,
-        format!(
-            "module '{}' not found (looked next to the importing file and on SPID3R_PATH)",
-            path
-        ),
-    ))
 }
 
 #[cfg(test)]

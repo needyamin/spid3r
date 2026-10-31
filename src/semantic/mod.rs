@@ -145,6 +145,24 @@ pub fn check_file(program: &Program, is_main: bool, source_file: &str) -> SpidRe
 /// Like [`check_file`], but also returns the lint warnings.
 ///
 /// Errors still short-circuit: a file that does not check produces no warnings.
+/// Teach a checker that a host plugin's functions exist.
+///
+/// A plugin native is merged into `stdlib::native_defs()` (or, for a WASM
+/// plugin, installed as a closure) and is callable from a script, so the
+/// checker must not reject the call as an unknown name. Read once per check
+/// rather than on every identifier lookup, so `known()` stays a set membership
+/// test.
+fn seed_plugin_externals(c: &mut Checker) {
+    for f in crate::plugin::registered_functions() {
+        c.externals.insert(f.name.to_string());
+    }
+    // WASM plugin functions are closures rather than `fn` pointers, but they are
+    // natives in exactly the same sense and must pass the same check.
+    for (name, _) in crate::plugin::registered_closures() {
+        c.externals.insert(name);
+    }
+}
+
 /// Callers that only care about validity keep using `check_file`.
 pub fn check_file_with_warnings(
     program: &Program,
@@ -152,6 +170,7 @@ pub fn check_file_with_warnings(
     source_file: &str,
 ) -> Result<Vec<Diagnostic>, Diagnostic> {
     let mut c = Checker::new(is_main, source_file);
+    seed_plugin_externals(&mut c);
     c.check_program(program)?;
     // Warnings surface when a scope closes, which is inside-out; sort them so
     // they read top-to-bottom like the source.
@@ -189,6 +208,7 @@ pub fn check_file_with(
 ) -> SpidResult<()> {
     let mut c = Checker::new(is_main, source_file);
     c.externals = externals.names.clone();
+    seed_plugin_externals(&mut c);
     c.module_dirs = externals.module_dirs.clone();
     c.check_program(program).map(|_| ())
 }

@@ -1,0 +1,9 @@
+fn main() {
+    try {
+        println(hello_env("SPID3R_DEMO_VAR"));
+    } catch (e) {
+        println("caught: " + e);
+    }
+    println(hello_greet("still works"));
+    return 0;
+}
