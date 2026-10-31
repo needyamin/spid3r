@@ -12,7 +12,9 @@ use spid3r_lang::modules;
 use spid3r_lang::parser;
 use spid3r_lang::semantic;
 use spid3r_lang::vm::Vm;
+use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 
 fn run_tree(src: &str, name: &str) -> Result<i32, Diagnostic> {
     let program = parser::parse_file(src, Arc::from(name))?;
@@ -29,16 +31,44 @@ fn run_vm(src: &str, name: &str) -> Result<i32, Diagnostic> {
     vm.run_program(&program)
 }
 
+/// How long one case may take on one engine before the harness gives up.
+///
+/// These cases talk over real sockets, so a blocked `accept` or `recv` can
+/// stall forever. Without this bound a single hung case consumes the whole
+/// CI step's 30-minute budget and reports only "the action timed out", which
+/// says nothing about *which* case hung — it cost exactly that on
+/// windows-latest once (2026-11-01, `graceful_shutdown_stops_the_accept_loop`).
+/// A named failure in a minute is worth far more than a silent 30.
+const CASE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One engine entry point, as a value so the loop below can name it.
+type Runner = fn(&str, &str) -> Result<i32, Diagnostic>;
+
 fn run_both(name: &str, src: &str) {
-    match run_tree(src, name) {
-        Ok(0) => {}
-        Ok(code) => panic!("[{}] tree engine exited {}", name, code),
-        Err(e) => panic!("[{}] tree engine failed: {:?}", name, e),
-    }
-    match run_vm(src, name) {
-        Ok(0) => {}
-        Ok(code) => panic!("[{}] vm engine exited {}", name, code),
-        Err(e) => panic!("[{}] vm engine failed: {:?}", name, e),
+    let cases: [(&str, Runner); 2] = [("tree", run_tree), ("vm", run_vm)];
+    for (engine, run) in cases {
+        let (tx, rx) = mpsc::channel();
+        let src = src.to_string();
+        let label = name.to_string();
+        // A big stack for the same reason the engines use one: parsing and
+        // checking recurse per nesting level.
+        std::thread::Builder::new()
+            .name(format!("{name}-{engine}"))
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                let _ = tx.send(run(&src, &label));
+            })
+            .expect("failed to spawn the case thread");
+        match rx.recv_timeout(CASE_TIMEOUT) {
+            Ok(Ok(0)) => {}
+            Ok(Ok(code)) => panic!("[{name}/{engine}] exited {code}"),
+            Ok(Err(e)) => panic!("[{name}/{engine}] failed: {e:?}"),
+            Err(_) => panic!(
+                "[{name}/{engine}] did not finish within {:?} — the case is hung. A blocked \
+                 accept/recv is the usual cause; check that the server notices request_shutdown().",
+                CASE_TIMEOUT
+            ),
+        }
     }
 }
 
