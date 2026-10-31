@@ -518,6 +518,7 @@
         <a href="#choose">Which kind to write</a>
         <a href="#matrix">Spid3r plugins</a>
         <a href="#manifest">The manifest</a>
+        <a href="#abi">ABI v1</a>
         <a href="#host">Host plugins</a>
         <a href="#wasm">WASM plugins</a>
         <a href="#wire">The wire format</a>
@@ -547,7 +548,7 @@
           <span class="pill ok">wasm plugin · works</span>
           <span class="pill ok">host plugin · works</span>
           <span class="pill ok">ffi · works (AOT)</span>
-          <span class="pill">abi v1</span>
+          <span class="pill ok">abi v1 · enforced</span>
         </div>
         <p class="pill-note">
           <strong>abi v1</strong> is the contract version every plugin declares:
@@ -968,7 +969,7 @@ spidr run app.matrix
           "probably fine". Rejecting it before <code>start()</code> runs means a mismatched plugin can never half-work.
         </div>
 
-        <h3>The ABI is versioned, and you can inspect it</h3>
+        <h3 id="abi">The ABI is versioned, and you can inspect it</h3>
         <p>
           <code>spid3r-plugin-abi-1</code> is a contract with three parts — the manifest, the function
           surface, and (for WASM) the wire format. It is matched exactly, so the toolchain also gives you a
@@ -996,7 +997,44 @@ spidr plugin check examples/plugins/hello-wasm
           <code>kind = "host"</code> directory cannot be validated from disk — it is Rust compiled into a host —
           and the command says so rather than passing it.
         </p>
-        <p>The full contract, including what forces a v2: <code>docs/PLUGIN_ABI.md</code>.</p>
+        <div class="tw">
+          <table>
+            <thead>
+              <tr>
+                <th>ABI v1 fixes</th>
+                <th>What would force a v2</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>The manifest keys and what each one means</td>
+                <td>a new <em>required</em> key, or a changed meaning for an existing one</td>
+              </tr>
+              <tr>
+                <td>What a declared <code>arity</code> means</td>
+                <td>a different rule for matching it</td>
+              </tr>
+              <tr>
+                <td>The value tags: null, int, float, bool, string, list</td>
+                <td>a new tag, or a changed payload for an existing one</td>
+              </tr>
+              <tr>
+                <td>The guest exports: <code>memory</code>, <code>alloc</code>, <code>dealloc</code>,
+                  <code>(i32, i32) -&gt; i64</code></td>
+                <td>a changed signature or a new required export</td>
+              </tr>
+              <tr>
+                <td>Exact-match versioning — no negotiation, no compatibility range</td>
+                <td>accepting a second version string at the same time (a v2 loader alongside v1)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Adding an <em>optional</em> manifest key an older plugin can omit does not force a bump; the parser
+          must accept its absence. The full contract, including how a v2 would coexist with v1:
+          <code>docs/PLUGIN_ABI.md</code>.
+        </p>
       </section>
 
       <!-- ================================================================ 4 -->
