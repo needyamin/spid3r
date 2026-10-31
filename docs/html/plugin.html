@@ -1094,13 +1094,18 @@ spidr run app.matrix
 
         <h3>Directory layout</h3>
         <div class="code">
-          <div class="bar"><span>my-plugin/</span><span class="lang">tree</span></div>
+          <div class="bar"><span>my-plugin/</span><span class="lang">tree · the Rust sample's layout</span></div>
           <pre><code>my-plugin/
 ├── plugin.toml      <span class="c"># kind = "wasm", entry = "plugin.wasm"</span>
-├── plugin.wasm      <span class="c"># the built module</span>
-├── Cargo.toml       <span class="c"># crate-type = ["cdylib"]</span>
-└── src/lib.rs       <span class="c"># the guest</span>
+├── plugin.wasm      <span class="c"># the built module — the only file the host reads</span>
+├── Cargo.toml       <span class="c"># Rust only: crate-type = ["cdylib"]</span>
+└── src/lib.rs       <span class="c"># Rust only: the guest source</span>
 </code></pre>
+        <p>
+          Only the first two lines are part of the plugin. Everything else is whatever build system produced
+          <code>plugin.wasm</code> — for C that would be <code>guest.c</code> and a Makefile, and the directory would
+          look the same to the host.
+        </p>
         </div>
 
         <h3>The guest contract</h3>
@@ -1208,7 +1213,13 @@ spidr run app.matrix
             else.</figcaption>
         </figure>
 
-        <h3>A complete guest</h3>
+        <h3>A complete guest, in Rust</h3>
+        <p>
+          The guest is <strong>any program that produces a wasm module</strong>. Rust is used here only because the
+          shipped sample is a Rust crate and Rust targets <code>wasm32-unknown-unknown</code> with no ceremony — the
+          contract is the exports and the bytes, not the language. A C, Zig, Go or AssemblyScript guest that exports the
+          same five symbols is equally valid.
+        </p>
         <div class="code">
           <div class="bar"><span>src/lib.rs</span><span class="lang">rust</span></div>
           <pre><code><span class="c">// Responses are copied into a static buffer, so the guest never hands the</span>
@@ -1257,7 +1268,57 @@ spidr run app.matrix
         <p><code>decode_one_string</code> / <code>encode_string</code> / <code>encode_error</code> are the wire
           format, described next. A full working version is in <code>examples/plugins/hello-wasm/src/lib.rs</code>.</p>
 
+        <p>The same function in C, compiled with <code>clang --target=wasm32 -nostdlib</code>, is the proof that
+          nothing above is Rust-specific:</p>
+
+        <div class="code">
+          <div class="bar"><span>guest.c</span><span class="lang">c · same contract</span></div>
+          <pre><code><span class="k">static</span> <span class="k">unsigned</span> <span class="k">char</span> OUT[<span class="n">65536</span>];
+
+<span class="c">// The host calls alloc(len) and writes the request there.</span>
+<span class="t">__attribute__</span>((export_name(<span class="s">"alloc"</span>)))
+<span class="k">unsigned</span> <span class="k">int</span> <span class="f">alloc</span>(<span class="k">unsigned</span> <span class="k">int</span> len) {
+    <span class="k">static</span> <span class="k">unsigned</span> <span class="k">char</span> buf[<span class="n">65536</span>];
+    (<span class="k">void</span>)len;
+    <span class="k">return</span> (<span class="k">unsigned</span> <span class="k">int</span>)(<span class="k">unsigned</span> <span class="k">long</span>)buf;
+}
+
+<span class="t">__attribute__</span>((export_name(<span class="s">"dealloc"</span>)))
+<span class="k">void</span> <span class="f">dealloc</span>(<span class="k">unsigned</span> <span class="k">int</span> ptr, <span class="k">unsigned</span> <span class="k">int</span> len) { (<span class="k">void</span>)ptr; (<span class="k">void</span>)len; }
+
+<span class="c">// hello_greet(name) -&gt; string: tag 4, u32 len, utf8.</span>
+<span class="t">__attribute__</span>((export_name(<span class="s">"hello_greet"</span>)))
+<span class="k">long</span> <span class="k">long</span> <span class="f">hello_greet</span>(<span class="k">unsigned</span> <span class="k">int</span> ptr, <span class="k">unsigned</span> <span class="k">int</span> len) {
+    <span class="k">const</span> <span class="k">unsigned</span> <span class="k">char</span> *req = (<span class="k">const</span> <span class="k">unsigned</span> <span class="k">char</span> *)ptr;
+    <span class="c">// req[0] = argc, req[1] = tag 4, req[2..6] = u32 len, then the bytes.</span>
+    <span class="k">unsigned</span> <span class="k">int</span> n = *(<span class="k">const</span> <span class="k">unsigned</span> <span class="k">int</span> *)(req + <span class="n">2</span>);
+    <span class="k">const</span> <span class="k">char</span> *name = (<span class="k">const</span> <span class="k">char</span> *)(req + <span class="n">6</span>);
+
+    <span class="k">unsigned</span> <span class="k">int</span> o = <span class="n">0</span>;
+    OUT[o++] = <span class="n">4</span>;                       <span class="c">// tag: string</span>
+    <span class="k">unsigned</span> <span class="k">int</span> at = o; o += <span class="n">4</span>;          <span class="c">// length, patched below</span>
+    <span class="k">const</span> <span class="k">char</span> *p = <span class="s">"Hello, "</span>;
+    <span class="k">while</span> (*p) OUT[o++] = *p++;
+    <span class="k">for</span> (<span class="k">unsigned</span> <span class="k">int</span> i = <span class="n">0</span>; i &lt; n; i++) OUT[o++] = name[i];
+    OUT[o++] = <span class="s">'!'</span>;
+    *(<span class="k">unsigned</span> <span class="k">int</span> *)(OUT + at) = o - at - <span class="n">4</span>;
+    (<span class="k">void</span>)len;
+
+    <span class="k">return</span> ((<span class="k">long</span> <span class="k">long</span>)(<span class="k">unsigned</span> <span class="k">int</span>)(<span class="k">unsigned</span> <span class="k">long</span>)OUT &lt;&lt; <span class="n">32</span>) | o;
+}
+</code></pre>
+        </div>
+
+        <div class="callout warn">
+          <strong>Can I write a WASM plugin in Spid3r itself?</strong> Not yet, and this page will not pretend
+          otherwise. Spid3r compiles <em>to</em> WebAssembly only as its own runtime — <code>web/spid3r.wasm</code> is
+          the interpreter, and <code>bundle --target wasm</code> wraps a program around it. There is no code generator
+          that emits a module exporting <code>alloc</code> and your functions, so today a sandboxed plugin has to come
+          from a language that does. Writing one in Spid3r is the obvious next step, not a current feature.
+        </div>
+
         <h3>Build it</h3>
+        <p>The only requirement is that the output is a wasm module exporting the five symbols. Rust is one toolchain:</p>
         <div class="code">
           <div class="bar"><span>shell</span><span class="lang">bash</span></div>
           <pre><code><span class="c"># Cargo.toml needs: crate-type = ["cdylib"]</span>
@@ -1266,6 +1327,10 @@ cargo build --target wasm32-unknown-unknown --release
 
 <span class="c"># the module must sit next to plugin.toml</span>
 cp target/wasm32-unknown-unknown/release/my_plugin.wasm plugin.wasm
+
+<span class="c"># or, with C — same contract, no Rust involved</span>
+clang --target=wasm32 -nostdlib -Wl,--no-entry -Wl,--export-dynamic \
+      -o plugin.wasm guest.c
 </code></pre>
         </div>
 
