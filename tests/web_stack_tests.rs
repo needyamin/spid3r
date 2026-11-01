@@ -203,7 +203,6 @@ import "http";
 import "multipart";
 {client}
 fn main() {{
-    reset_shutdown();
     let app = web_app();
     app.post("/upload", fn(req) {{
         let f = multipart_form(req);
@@ -277,7 +276,6 @@ fn keep_alive_serves_several_requests_per_connection() {
 import "http";
 {client}
 fn main() {{
-    reset_shutdown();
     let app = web_app();
     let hits = map("n", 0);
     app.get("/ping", fn(req) {{
@@ -329,7 +327,6 @@ import "http";
 import "session";
 {client}
 fn main() {{
-    reset_shutdown();
     let store = session_store("a-secret-long-enough-to-be-real", map("idle", 3600)).unwrap();
     let app = web_app();
     app.use_next(store.middleware());
@@ -435,7 +432,6 @@ import "http";
 import "middleware" as mw;
 {client}
 fn main() {{
-    reset_shutdown();
     let app = web_app();
     // Recover first (wraps everything), then the rest.
     app.use_next(mw.mw_recover(map("log", false)));
@@ -522,7 +518,6 @@ import "http";
 import "middleware" as mw;
 {client}
 fn main() {{
-    reset_shutdown();
     let app = web_app();
     app.use_next(mw.mw_rate_limit(map("limit", 2, "window", 60)));
     app.get("/limited", fn(req) {{ return json_response(200, map("ok", true)); }});
@@ -698,7 +693,6 @@ fn fastcgi_responder_speaks_the_protocol() {
 import "fastcgi";
 {fcgi}
 fn main() {{
-    reset_shutdown();
     let app = web_app();
     app.post("/echo", fn(req) {{
         return json_response(200, map(

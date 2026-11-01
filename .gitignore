@@ -24,6 +24,7 @@
 # --- Test/verification scratch ----------------------------------------------
 # tools/native_diff.sh writes built programs and logs here.
 target/isolated/
+/x.db
 
 # --- Fuzzing artifacts -------------------------------------------------------
 fuzz/target/

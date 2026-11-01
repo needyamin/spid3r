@@ -384,35 +384,23 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
     let watch_signals = opt(opts, "watch_signals", true);
 
     let counter = mutex(map("n", 0));
-    let stopping = map("v", false);
-
-    // Ctrl+C / SIGTERM. The accept below is bounded, so the loop notices the
-    // flag by itself; this watcher only closes the listener so a waiting accept
-    // returns at once instead of after one poll interval.
-    if watch_signals {
-        spawn fn() {
-            while not stopping["v"] {
-                if shutdown_requested() {
-                    tcp_close(listener);
-                    return 0;
-                }
-                sleep_ms(200);
-            }
-            return 0;
-        };
-    }
 
     let accepted = 0;
     while max_connections < 0 or accepted < max_connections {
+        if watch_signals and shutdown_requested() {
+            tcp_close(listener);
+            break;
+        }
         // A *bounded* accept, not a blocking one. Interrupting a blocked
         // accept() is best-effort at best: std guarantees nothing, and the
         // self-connect that tcp_close uses to poke it can fail (seen on
         // windows-latest, where the accept then stayed blocked forever and the
         // server never noticed the shutdown). Polling gives the loop a bound it
         // owns, so shutdown is deterministic on every platform.
-        let c = tcp_accept_timeout(listener, 200);
+        let c = tcp_accept_timeout(listener, 50);
         if c == null {
             if watch_signals and shutdown_requested() {
+                tcp_close(listener);
                 break;
             }
             continue;
@@ -439,7 +427,9 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
             return 0;
         };
     }
-    stopping["v"] = true;
+    if watch_signals and shutdown_requested() {
+        tcp_close(listener);
+    }
 
     // Drain: give in-flight requests a bounded window to finish.
     let waited = 0;

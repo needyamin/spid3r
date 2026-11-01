@@ -511,6 +511,9 @@ fn n_tcp_accept_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
                 ))))));
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if lookup(id).is_none() {
+                    break err("tcp_accept: listener closed");
+                }
                 if Instant::now() >= deadline {
                     break Ok(Value::Null);
                 }
@@ -759,19 +762,25 @@ fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             Ok(Value::Bool(true))
         }
         Some(Sock::Listener(l)) => {
-            // std cannot interrupt a blocking accept(); poke it with a
+            // If another thread is currently blocked in `tcp_accept`, std
+            // cannot interrupt a blocking accept() directly; poke it with a
             // short-lived connection so the acceptor notices the closure.
-            if let Ok(mut addr) = l.local_addr() {
-                if addr.ip().is_unspecified() {
-                    addr = match addr {
-                        SocketAddr::V4(a) => SocketAddr::from(([127, 0, 0, 1], a.port())),
-                        SocketAddr::V6(a) => {
-                            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, a.port()))
-                        }
-                    };
+            // When `strong_count == 1`, no acceptor holds a clone of `l`, so
+            // dropping `l` below closes the OS listener socket immediately.
+            if Arc::strong_count(&l) > 1 {
+                if let Ok(mut addr) = l.local_addr() {
+                    if addr.ip().is_unspecified() {
+                        addr = match addr {
+                            SocketAddr::V4(a) => SocketAddr::from(([127, 0, 0, 1], a.port())),
+                            SocketAddr::V6(a) => {
+                                SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, a.port()))
+                            }
+                        };
+                    }
+                    let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(250));
                 }
-                let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(250));
             }
+            drop(l);
             Ok(Value::Bool(true))
         }
         None => Ok(Value::Bool(false)),
