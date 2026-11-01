@@ -1,0 +1,41 @@
+/* public/css/app.css - Spid3rWeb Theme & UI Styling */
+
+:root {
+  --spid3r-cyan: #38bdf8;
+  --spid3r-indigo: #818cf8;
+  --spid3r-emerald: #34d399;
+  --spid3r-bg: #0b0f17;
+  --spid3r-surface: #111722;
+  --spid3r-card: #161e2e;
+  --spid3r-border: rgba(255, 255, 255, 0.08);
+}
+
+body {
+  background-color: var(--spid3r-bg);
+  color: #f1f5f9;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.text-info {
+  color: var(--spid3r-cyan) !important;
+}
+
+.btn-info {
+  background-color: var(--spid3r-cyan);
+  border-color: var(--spid3r-cyan);
+}
+
+.btn-info:hover {
+  background-color: #0284c7;
+  border-color: #0284c7;
+}
+
+.card {
+  border-radius: 12px;
+}
+
+pre, code {
+  font-family: 'JetBrains Mono', Consolas, Monaco, monospace;
+}

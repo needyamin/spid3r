@@ -1,0 +1,24 @@
+// database/migrations/003_create_sessions_table.matrix
+import "framework/Database/Schema";
+
+public class CreateSessionsTable {
+    public let name;
+
+    fn new() {
+        self.name = "003_create_sessions_table";
+    }
+
+    public fn up(self) {
+        Schema.create("sessions", fn(table) {
+            table.id();
+            table.string("token").unique();
+            table.integer("user_id");
+            table.string("payload");
+            table.integer("last_activity");
+        });
+    }
+
+    public fn down(self) {
+        Schema.dropIfExists("sessions");
+    }
+}

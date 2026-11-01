@@ -1,0 +1,94 @@
+// app/Models/Post.matrix
+import "framework/Database/Model";
+import "framework/Database/DB";
+
+public class Post {
+    public let model;
+
+    fn new(attrs = null) {
+        self.model = new Model("posts", list("title", "slug", "content", "category", "status", "user_id", "views_count"), attrs);
+    }
+
+    public fn get(self, key: string, default_val = null) {
+        return self.model.get(key, default_val);
+    }
+
+    public fn set(self, key: string, value) {
+        self.model.set(key, value);
+        return self;
+    }
+
+    public fn save(self) {
+        self.model.save();
+        return self;
+    }
+
+    public fn update(self, attrs) {
+        self.model.update(attrs);
+        return self;
+    }
+
+    public fn delete(self) {
+        return self.model.delete();
+    }
+
+    public fn to_map(self) {
+        return self.model.to_map();
+    }
+
+    public fn author(self) {
+        let uid = self.get("user_id");
+        return DB.table("users").where("id", "=", uid).first();
+    }
+}
+
+public class PostStatic {
+    fn new() {}
+
+    public fn find(self, id) {
+        let row = DB.table("posts").where("id", "=", id).first();
+        if row != null {
+            return new Post(row);
+        }
+        return null;
+    }
+
+    public fn findBySlug(self, slug: string) {
+        let row = DB.table("posts").where("slug", "=", slug).first();
+        if row != null {
+            return new Post(row);
+        }
+        return null;
+    }
+
+    public fn create(self, attrs) {
+        let post = new Post(attrs);
+        post.save();
+        return post;
+    }
+
+    public fn published(self) {
+        let rows = DB.table("posts")
+            .where("status", "=", "published")
+            .orderBy("id", "DESC")
+            .get();
+        let posts = list();
+        for r in rows {
+            posts.push(new Post(r));
+        }
+        return posts;
+    }
+
+    public fn all(self) {
+        let rows = DB.table("posts")
+            .orderBy("id", "DESC")
+            .get();
+        let posts = list();
+        for r in rows {
+            posts.push(new Post(r));
+        }
+        return posts;
+    }
+}
+
+public let PostModel = new PostStatic();

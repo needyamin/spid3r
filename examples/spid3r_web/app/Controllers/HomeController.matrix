@@ -1,0 +1,36 @@
+// app/Controllers/HomeController.matrix
+import "framework/Response";
+import "framework/View/BD";
+import "framework/Auth/Auth";
+import "framework/Database/DB";
+import "app/Models/Post";
+
+public class HomeController {
+    fn new() {}
+
+    public fn index(self, _req) {
+        let posts_raw = DB.table("posts")
+            .where("status", "=", "published")
+            .orderBy("id", "DESC")
+            .limit(10)
+            .get();
+
+        let is_auth = Auth.check();
+        let user_name = "";
+        if is_auth {
+            user_name = Auth.user()["name"];
+        }
+
+        let total_posts = DB.table("posts").count();
+        let total_users = DB.table("users").count();
+
+        return view("home", map(
+            "title", "Home",
+            "posts", posts_raw,
+            "is_auth", is_auth,
+            "user_name", user_name,
+            "total_posts", total_posts,
+            "total_users", total_users
+        ));
+    }
+}

@@ -3,7 +3,7 @@ name = "spid3r"
 version = "1.0.0"
 edition = "2021"
 # MSRV: the toolchain is pinned in rust-toolchain.toml and ci.yml.
-rust-version = "1.99"
+rust-version = "1.98"
 description = "Spid3r - A professional programming language. The compiler and VM are written in Rust."
 license = "GPL-3.0-or-later"
 default-run = "spid3r"
@@ -31,7 +31,7 @@ required-features = ["gui"]
 #   gui    - embedded webview GUI via wry + tao.
 #   native - LLVM AOT backend (machine code) via inkwell, like rustc; needs
 #            LLVM 18.1+ installed to build (see docs/BUILDING.md).
-default = ["gui", "native", "plugins-wasm"]
+default = ["gui", "native", "plugins-wasm", "tls"]
 native = ["dep:inkwell"]
 gui = ["dep:wry", "dep:tao"]
 # TLS for `http_fetch` (https://) via native-tls: schannel on Windows,

@@ -1,0 +1,518 @@
+// framework/Request.matrix
+// Spid3rWeb HTTP Request Representation & Validation Engine
+
+import "http";
+
+public class Validator {
+    public let errors;
+    public let failed;
+
+    fn new() {
+        self.errors = map();
+        self.failed = false;
+    }
+
+    public fn add_error(self, field: string, message: string) {
+        self.failed = true;
+        if not self.errors.has(field) {
+            self.errors[field] = list();
+        }
+        self.errors[field].push(message);
+    }
+
+    public fn fails(self) -> bool {
+        return self.failed;
+    }
+
+    public fn passes(self) -> bool {
+        return not self.failed;
+    }
+
+    public fn error_messages(self) {
+        return self.errors;
+    }
+
+    public fn first_error(self, field: string) {
+        if self.errors.has(field) and self.errors[field].len() > 0 {
+            return self.errors[field][0];
+        }
+        return "";
+    }
+
+    public fn first(self) -> string {
+        for f in self.errors.keys() {
+            let list_err = self.errors[f];
+            if list_err != null and list_err.len() > 0 {
+                return string(list_err[0]);
+            }
+        }
+        return "";
+    }
+
+    public fn all_errors(self) {
+        let all = list();
+        for f in self.errors.keys() {
+            let list_err = self.errors[f];
+            if list_err != null {
+                for msg in list_err {
+                    all.push(string(msg));
+                }
+            }
+        }
+        return all;
+    }
+
+    public fn error_summary(self, sep: string = " ") -> string {
+        let all = self.all_errors();
+        if all.len() == 0 {
+            return "";
+        }
+        return all.join(sep);
+    }
+}
+
+public class Request {
+    public let method;
+    public let path;
+    public let params;
+    public let query_params;
+    public let headers;
+    public let body;
+    public let data;
+    public let session_id;
+
+    fn new(raw_req = null) {
+        self.params = map();
+        self.query_params = map();
+        self.headers = map();
+        self.data = map();
+        self.body = "";
+        self.method = "GET";
+        self.path = "/";
+        self.session_id = "";
+
+        if raw_req != null {
+            self.init_from_raw(raw_req);
+        }
+    }
+
+    fn init_from_raw(self, raw) {
+        if raw.has("method") {
+            self.method = string(raw["method"]).upper();
+        }
+        if raw.has("path") {
+            self.path = string(raw["path"]);
+        }
+        if raw.has("params") and raw["params"] != null {
+            self.params = raw["params"];
+        }
+        if raw.has("headers") and raw["headers"] != null {
+            let h = raw["headers"];
+            for k in h.keys() {
+                self.headers[string(k).lower()] = string(h[k]);
+            }
+        }
+
+        // Direct data injection (useful for tests and programmatic dispatch)
+        if raw.has("data") and raw["data"] != null and type_of(raw["data"]) == "map" {
+            let d = raw["data"];
+            for k in d.keys() {
+                self.data[string(k)] = d[k];
+            }
+        }
+
+        // Query parameters from parsed server map
+        if raw.has("query") and raw["query"] != null and type_of(raw["query"]) == "map" {
+            let q = raw["query"];
+            for k in q.keys() {
+                let sk = string(k);
+                let sv = string(q[k]);
+                self.query_params[sk] = sv;
+                if not self.data.has(sk) {
+                    self.data[sk] = sv;
+                }
+            }
+        }
+
+        // Raw query string from server map
+        if raw.has("raw_query") and raw["raw_query"] != null {
+            let rq = string(raw["raw_query"]);
+            if rq != "" {
+                self.parse_query_string(rq);
+            }
+        }
+
+        // Parse query string if present in path (e.g., /posts?page=2&sort=desc)
+        if self.path.contains("?") {
+            let parts = self.path.split("?");
+            self.path = parts[0];
+            if parts.len() > 1 {
+                self.parse_query_string(parts[1]);
+            }
+        }
+
+        // Extract body: support JSON and URL-encoded form data
+        let is_json = false;
+        let parsed_json = http_body_json(raw);
+        if parsed_json.is_ok() {
+            let val = parsed_json.unwrap();
+            if type_of(val) == "map" {
+                for k in val.keys() {
+                    self.data[string(k)] = val[k];
+                }
+                is_json = true;
+            }
+        }
+
+        if raw.has("body") and raw["body"] != null {
+            self.body = string(raw["body"]);
+            if not is_json and self.body != "" {
+                let ct = "";
+                if self.headers.has("content-type") {
+                    ct = string(self.headers["content-type"]).lower();
+                }
+                if ct.contains("application/x-www-form-urlencoded") or (ct == "" and self.body.contains("=")) {
+                    self.parse_form_encoded(self.body);
+                }
+            }
+        }
+
+        // Extract Session Cookie or Bearer Token
+        self.session_id = self.extract_session_token();
+    }
+
+    fn parse_query_string(self, qs: string) {
+        let clean_qs = qs.trim();
+        if clean_qs.starts_with("?") {
+            clean_qs = clean_qs.slice(1);
+        }
+        let pairs = clean_qs.split("&");
+        for p in pairs {
+            let p_trim = p.trim();
+            if p_trim != "" {
+                let eq = p_trim.index_of("=");
+                if eq >= 0 {
+                    let k = url_decode(p_trim.slice(0, eq).trim());
+                    let v = url_decode(p_trim.slice(eq + 1));
+                    self.query_params[k] = v;
+                    if not self.data.has(k) {
+                        self.data[k] = v;
+                    }
+                } else {
+                    let k = url_decode(p_trim);
+                    self.query_params[k] = "";
+                    if not self.data.has(k) {
+                        self.data[k] = "";
+                    }
+                }
+            }
+        }
+    }
+
+    fn parse_form_encoded(self, body_text: string) {
+        let clean_body = body_text.trim();
+        let pairs = clean_body.split("&");
+        for p in pairs {
+            let p_trim = p.trim();
+            if p_trim != "" {
+                let eq = p_trim.index_of("=");
+                if eq >= 0 {
+                    let k = url_decode(p_trim.slice(0, eq).trim());
+                    let v = url_decode(p_trim.slice(eq + 1));
+                    self.data[k] = v;
+                } else {
+                    let k = url_decode(p_trim);
+                    self.data[k] = "";
+                }
+            }
+        }
+    }
+
+    fn extract_session_token(self) -> string {
+        // 1. Authorization: Bearer <token>
+        if self.headers.has("authorization") {
+            let auth = self.headers["authorization"];
+            if auth.starts_with("Bearer ") {
+                return auth.replace("Bearer ", "").trim();
+            }
+        }
+        // 2. Cookie: spid3r_session=<token>
+        if self.headers.has("cookie") {
+            let cookies = self.headers["cookie"].split(";");
+            for c in cookies {
+                let pair = c.trim().split("=");
+                if pair[0] == "spid3r_session" and pair.len() > 1 {
+                    return pair[1].trim();
+                }
+            }
+        }
+        return "";
+    }
+
+    // ------------------------------------------------------------------------
+    // Input Accessors
+    // ------------------------------------------------------------------------
+
+    public fn input(self, key: string, default_val = null) {
+        if self.data.has(key) {
+            return self.data[key];
+        }
+        if self.query_params.has(key) {
+            return self.query_params[key];
+        }
+        if self.params.has(key) {
+            return self.params[key];
+        }
+        return default_val;
+    }
+
+    public fn string(self, key: string, default_val: string = "") -> string {
+        let v = self.input(key, null);
+        if v == null { return default_val; }
+        return string(v);
+    }
+
+    public fn int(self, key: string, default_val: int = 0) -> int {
+        let v = self.input(key, null);
+        if v == null { return default_val; }
+        try {
+            return int(v);
+        } catch (_e) {
+            return default_val;
+        }
+    }
+
+    public fn has(self, key: string) -> bool {
+        return self.data.has(key) or self.query_params.has(key) or self.params.has(key);
+    }
+
+    public fn all(self) {
+        return self.data;
+    }
+
+    public fn param(self, key: string, default_val = null) {
+        if self.params.has(key) {
+            return self.params[key];
+        }
+        return default_val;
+    }
+
+    public fn query(self, key: string, default_val = null) {
+        if self.query_params.has(key) {
+            return self.query_params[key];
+        }
+        return default_val;
+    }
+
+    public fn header(self, key: string, default_val = null) {
+        let lkey = string(key).lower();
+        if self.headers.has(lkey) {
+            return self.headers[lkey];
+        }
+        return default_val;
+    }
+
+    // ------------------------------------------------------------------------
+    // Declarative Validation
+    // ------------------------------------------------------------------------
+    public fn validate(self, rules) {
+        let validator = new Validator();
+
+        for field in rules.keys() {
+            let rule_str = string(rules[field]);
+            let field_rules = rule_str.split("|");
+            let val = self.input(field, null);
+            let val_str = "";
+            if val != null { val_str = string(val).trim(); }
+
+            for r in field_rules {
+                let r_trimmed = r.trim();
+                let rule_name = r_trimmed;
+                let rule_arg = "";
+                let colon_idx = r_trimmed.index_of(":");
+                if colon_idx >= 0 {
+                    rule_name = r_trimmed.slice(0, colon_idx).trim();
+                    rule_arg = r_trimmed.slice(colon_idx + 1).trim();
+                }
+
+                if rule_name == "required" {
+                    if val == null or (type_of(val) == "string" and val_str == "") or (type_of(val) == "list" and val.len() == 0) {
+                        validator.add_error(field, "The " + field + " field is required.");
+                    }
+                } elif rule_name == "min" {
+                    if val_str != "" {
+                        let min_len = int(rule_arg);
+                        if val_str.len() < min_len {
+                            validator.add_error(field, "The " + field + " must be at least " + rule_arg + " characters.");
+                        }
+                    }
+                } elif rule_name == "max" {
+                    if val_str != "" {
+                        let max_len = int(rule_arg);
+                        if val_str.len() > max_len {
+                            validator.add_error(field, "The " + field + " must not exceed " + rule_arg + " characters.");
+                        }
+                    }
+                } elif rule_name == "numeric" {
+                    if val_str != "" {
+                        try {
+                            let _f = float(val_str);
+                        } catch (_e) {
+                            validator.add_error(field, "The " + field + " must be a number.");
+                        }
+                    }
+                } elif rule_name == "integer" or rule_name == "int" {
+                    if val_str != "" {
+                        try {
+                            let _i = int(val_str);
+                        } catch (_e) {
+                            validator.add_error(field, "The " + field + " must be an integer.");
+                        }
+                    }
+                } elif rule_name == "email" {
+                    if val_str != "" {
+                        if not self.is_valid_email(val_str) {
+                            validator.add_error(field, "The " + field + " must be a valid email address.");
+                        }
+                    }
+                } elif rule_name == "confirmed" {
+                    let conf_val = self.input(field + "_confirmation", null);
+                    let conf_str = "";
+                    if conf_val != null { conf_str = string(conf_val).trim(); }
+                    if val_str != conf_str {
+                        validator.add_error(field, "The " + field + " confirmation does not match.");
+                    }
+                } elif rule_name == "same" {
+                    let same_val = self.input(rule_arg, null);
+                    let same_str = "";
+                    if same_val != null { same_str = string(same_val).trim(); }
+                    if val_str != same_str {
+                        validator.add_error(field, "The " + field + " and " + rule_arg + " must match.");
+                    }
+                } elif rule_name == "in" {
+                    if val_str != "" {
+                        let allowed = rule_arg.split(",");
+                        let matched = false;
+                        for a in allowed {
+                            if a.trim() == val_str {
+                                matched = true;
+                            }
+                        }
+                        if not matched {
+                            validator.add_error(field, "The selected " + field + " is invalid.");
+                        }
+                    }
+                } elif rule_name == "boolean" or rule_name == "bool" {
+                    if val_str != "" {
+                        let b_lower = val_str.lower();
+                        if b_lower != "true" and b_lower != "false" and b_lower != "1" and b_lower != "0" and b_lower != "yes" and b_lower != "no" {
+                            validator.add_error(field, "The " + field + " field must be true or false.");
+                        }
+                    }
+                } elif rule_name == "alpha" {
+                    if val_str != "" {
+                        let allowed_alpha = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+                        let all_alpha = true;
+                        for ch in val_str.split("") {
+                            if not allowed_alpha.contains(ch) {
+                                all_alpha = false;
+                            }
+                        }
+                        if not all_alpha {
+                            validator.add_error(field, "The " + field + " must only contain letters.");
+                        }
+                    }
+                } elif rule_name == "alphanumeric" or rule_name == "alpha_num" {
+                    if val_str != "" {
+                        let allowed_alphanum = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+                        let all_alphanum = true;
+                        for ch in val_str.split("") {
+                            if not allowed_alphanum.contains(ch) {
+                                all_alphanum = false;
+                            }
+                        }
+                        if not all_alphanum {
+                            validator.add_error(field, "The " + field + " must only contain letters and numbers.");
+                        }
+                    }
+                }
+            }
+        }
+
+        return validator;
+    }
+
+    fn is_valid_email(self, val_str: string) -> bool {
+        if val_str.len() < 3 or val_str.len() > 254 {
+            return false;
+        }
+        if val_str.contains(" ") or val_str.contains("\t") or val_str.contains("\r") or val_str.contains("\n") {
+            return false;
+        }
+        let at_parts = val_str.split("@");
+        if at_parts.len() != 2 {
+            return false;
+        }
+        let user = at_parts[0];
+        let domain = at_parts[1];
+
+        if user.len() == 0 or user.len() > 64 {
+            return false;
+        }
+        if user.starts_with(".") or user.ends_with(".") or user.contains("..") {
+            return false;
+        }
+
+        if domain.len() == 0 or domain.len() > 255 {
+            return false;
+        }
+        if domain.starts_with(".") or domain.ends_with(".") or domain.contains("..") or not domain.contains(".") {
+            return false;
+        }
+
+        let allowed_user_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.!#$%&'*+-/=?^_`{|}~";
+        for ch in user.split("") {
+            if not allowed_user_chars.contains(ch) {
+                return false;
+            }
+        }
+
+        let dot_parts = domain.split(".");
+        if dot_parts.len() < 2 {
+            return false;
+        }
+
+        let allowed_domain_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+        for label in dot_parts {
+            if label.len() == 0 or label.len() > 63 {
+                return false;
+            }
+            if label.starts_with("-") or label.ends_with("-") {
+                return false;
+            }
+            for ch in label.split("") {
+                if not allowed_domain_chars.contains(ch) {
+                    return false;
+                }
+            }
+        }
+
+        let tld = dot_parts[dot_parts.len() - 1];
+        if tld.len() < 2 {
+            return false;
+        }
+        let digits = "0123456789";
+        let all_digits = true;
+        for ch in tld.split("") {
+            if not digits.contains(ch) {
+                all_digits = false;
+            }
+        }
+        if all_digits {
+            return false;
+        }
+
+        return true;
+    }
+}
+

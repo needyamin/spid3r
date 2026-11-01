@@ -3698,6 +3698,33 @@ impl<'ctx> Ir<'ctx> {
         for s in &program.stmts {
             if let Stmt::Class(c) = s {
                 self.register_class(c)?;
+            } else if let Stmt::Const {
+                name,
+                value: Expr::Ident(target, _),
+                ..
+            }
+            | Stmt::Let {
+                name,
+                value: Some(Expr::Ident(target, _)),
+                ..
+            } = s
+            {
+                if program
+                    .stmts
+                    .iter()
+                    .any(|st| matches!(st, Stmt::Class(c) if &c.name == target))
+                {
+                    let (np, _) = self.str_global(name);
+                    let cls = self.global_value(target);
+                    let f = self.tramp(
+                        "spid3r_global_set",
+                        &[self.ptr_ty().into(), self.ptr_ty().into()],
+                        None,
+                    );
+                    self.builder
+                        .build_call(f, &[np.into(), cls.into()], "")
+                        .unwrap();
+                }
             }
         }
         for s in &program.stmts {
@@ -3729,6 +3756,17 @@ impl<'ctx> Ir<'ctx> {
     }
 
     fn register_class(&mut self, c: &ClassDecl) -> IrResult<()> {
+        let display_name = c
+            .name
+            .strip_prefix("__mod_")
+            .and_then(|s| s.split_once('_').map(|(_, rest)| rest))
+            .or_else(|| {
+                c.name
+                    .strip_prefix("__sel_")
+                    .and_then(|s| s.split_once('_').map(|(_, rest)| rest))
+            })
+            .unwrap_or(&c.name);
+        let (display_ptr, _) = self.str_global(display_name);
         let (name_ptr, _) = self.str_global(&c.name);
         let parent_ptr = match &c.parent {
             Some(p) => {
@@ -3737,7 +3775,7 @@ impl<'ctx> Ir<'ctx> {
             }
             None => self.null_ptr(),
         };
-        let cls = self.call2p("spid3r_class_register", name_ptr, parent_ptr);
+        let cls = self.call2p("spid3r_class_register", display_ptr, parent_ptr);
         // NOTE: the class becomes a global only after all fields/methods/ctor
         // are registered — the runtime mutates the class through its unique
         // Arc while no other reference exists.

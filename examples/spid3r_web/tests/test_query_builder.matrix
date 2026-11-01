@@ -1,0 +1,58 @@
+// tests/test_query_builder.matrix
+// Unit tests for Spid3rWeb Database & QueryBuilder
+
+import "framework/Database/DB";
+
+fn test_query_builder_crud() {
+    let now = string(unix_time());
+
+    // 1. Insert
+    let user_id = DB.table("users").insert(map(
+        "name", "Test User",
+        "email", "test_" + now + "@example.com",
+        "password", "hashed_pw_test",
+        "created_at", now,
+        "updated_at", now
+    ));
+    assert(user_id > 0, "Insert should return last_id > 0");
+
+    // 2. Find
+    let user = DB.table("users").find(user_id);
+    assert(user != null, "find(id) should return inserted user");
+    assert(user["name"] == "Test User", "User name should match");
+
+    // 3. Where
+    let found = DB.table("users")
+        .where("id", "=", user_id)
+        .first();
+    assert(found != null, "where query should find user");
+
+    // 4. Count
+    let total = DB.table("users").count();
+    assert(total > 0, "Users count should be greater than 0");
+
+    // 5. Update
+    let changes = DB.table("users")
+        .where("id", "=", user_id)
+        .update(map("name", "Updated Test User"));
+    assert(changes > 0, "Update should return changes > 0");
+
+    let updated_user = DB.table("users").find(user_id);
+    assert(updated_user["name"] == "Updated Test User", "Updated name should match");
+
+    // 6. Delete
+    let deleted_count = DB.table("users")
+        .where("id", "=", user_id)
+        .delete();
+    assert(deleted_count > 0, "Delete should return changes > 0");
+
+    let after_delete = DB.table("users").find(user_id);
+    assert(after_delete == null, "User should no longer exist after delete");
+    println("  [PASS] test_query_builder_crud");
+}
+
+fn main() {
+    println("\n=== Running QueryBuilder Test Suite ===");
+    test_query_builder_crud();
+    println("=== All QueryBuilder Tests Passed! ===\n");
+}

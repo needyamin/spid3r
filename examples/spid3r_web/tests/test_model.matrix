@@ -1,0 +1,65 @@
+// tests/test_model.matrix
+// Unit tests for Spid3rWeb Active Record Models
+
+import "app/Models/User";
+import "app/Models/Post";
+
+fn test_user_post_models() {
+    let now = string(unix_time());
+
+    // 1. Create User
+    let user = UserModel.create(map(
+        "name", "Linus Torvalds",
+        "email", "linus_" + now + "@kernel.org",
+        "password", "secret_git"
+    ));
+    assert(user != null, "User should be created");
+    assert(user.get("id") != null, "User should have id");
+    let uid = int(user.get("id"));
+
+    // 2. Find User
+    let found_user = UserModel.find(uid);
+    assert(found_user != null, "UserModel.find should return user");
+    assert(found_user.get("name") == "Linus Torvalds", "User name should match");
+
+    // 3. Create Post
+    let post = PostModel.create(map(
+        "title", "Git: Fast Version Control",
+        "slug", "git-fast-vcs-" + now,
+        "content", "Git was designed for high performance and reliability.",
+        "category", "Tools",
+        "user_id", uid,
+        "status", "published",
+        "views_count", 100
+    ));
+    assert(post != null, "Post should be created");
+    let pid = int(post.get("id"));
+
+    // 4. Test Relationships
+    let user_posts = user.posts();
+    assert(user_posts.len() > 0, "User should have at least 1 post");
+    assert(user_posts[0]["title"] == "Git: Fast Version Control", "Post title should match");
+
+    let author = post.author();
+    assert(author != null, "Post author should be resolved");
+    assert(author["name"] == "Linus Torvalds", "Author name should match");
+
+    // 5. Update Post
+    post.update(map("title", "Git: Distributed Version Control"));
+    let reloaded_post = PostModel.find(pid);
+    assert(reloaded_post.get("title") == "Git: Distributed Version Control", "Updated title should match");
+
+    // 6. Clean up
+    post.delete();
+    user.delete();
+
+    assert(PostModel.find(pid) == null, "Post should be deleted");
+    assert(UserModel.find(uid) == null, "User should be deleted");
+    println("  [PASS] test_user_post_models");
+}
+
+fn main() {
+    println("\n=== Running Model Test Suite ===");
+    test_user_post_models();
+    println("=== All Model Tests Passed! ===\n");
+}

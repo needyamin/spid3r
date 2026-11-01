@@ -1,0 +1,14 @@
+// config/database.matrix
+// Spid3rWeb Database Configuration
+
+public let config_database = map(
+    "default", "sqlite",
+    "connections", map(
+        "sqlite", map(
+            "driver", "sqlite",
+            "database", "database/database.sqlite",
+            "foreign_key_constraints", true,
+            "journal_mode", "WAL"
+        )
+    )
+);

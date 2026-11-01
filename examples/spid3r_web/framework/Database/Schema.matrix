@@ -1,0 +1,141 @@
+﻿// framework/Database/Schema.matrix
+// Spid3rWeb DDL Schema Builder & Blueprint
+
+import "DB";
+
+public class ColumnDefinition {
+    public let name;
+    public let type;
+    public let is_primary;
+    public let is_unique;
+    public let is_nullable;
+    public let default_value;
+
+    fn new(name: string, type: string) {
+        self.name = name;
+        self.type = type;
+        self.is_primary = false;
+        self.is_unique = false;
+        self.is_nullable = false;
+        self.default_value = null;
+    }
+
+    public fn unique(self) {
+        self.is_unique = true;
+        return self;
+    }
+
+    public fn nullable(self) {
+        self.is_nullable = true;
+        return self;
+    }
+
+    public fn default(self, val) {
+        self.default_value = val;
+        return self;
+    }
+
+    public fn to_sql(self) -> string {
+        let parts = list(self.name, self.type);
+        if self.is_primary {
+            parts.push("PRIMARY KEY");
+        }
+        if self.is_unique {
+            parts.push("UNIQUE");
+        }
+        if not self.is_nullable and not self.is_primary {
+            parts.push("NOT NULL");
+        }
+        if self.default_value != null {
+            if type_of(self.default_value) == "string" {
+                parts.push("DEFAULT '" + string(self.default_value) + "'");
+            } else {
+                parts.push("DEFAULT " + string(self.default_value));
+            }
+        }
+        return parts.join(" ");
+    }
+}
+
+public class Blueprint {
+    public let columns;
+
+    fn new() {
+        self.columns = list();
+    }
+
+    public fn id(self, name: string = "id") {
+        let col = new ColumnDefinition(name, "INTEGER PRIMARY KEY AUTOINCREMENT");
+        self.columns.push(col);
+        return col;
+    }
+
+    public fn string(self, name: string, _len: int = 255) {
+        let col = new ColumnDefinition(name, "TEXT");
+        self.columns.push(col);
+        return col;
+    }
+
+    public fn text(self, name: string) {
+        let col = new ColumnDefinition(name, "TEXT");
+        self.columns.push(col);
+        return col;
+    }
+
+    public fn integer(self, name: string) {
+        let col = new ColumnDefinition(name, "INTEGER");
+        self.columns.push(col);
+        return col;
+    }
+
+    public fn float(self, name: string) {
+        let col = new ColumnDefinition(name, "REAL");
+        self.columns.push(col);
+        return col;
+    }
+
+    public fn boolean(self, name: string) {
+        let col = new ColumnDefinition(name, "INTEGER");
+        self.columns.push(col);
+        return col;
+    }
+
+    public fn timestamps(self) {
+        let c1 = new ColumnDefinition("created_at", "TEXT");
+        c1.nullable();
+        self.columns.push(c1);
+
+        let c2 = new ColumnDefinition("updated_at", "TEXT");
+        c2.nullable();
+        self.columns.push(c2);
+    }
+
+    public fn to_sql(self, table_name: string) -> string {
+        let col_defs = list();
+        for col in self.columns {
+            col_defs.push(col.to_sql());
+        }
+        return "CREATE TABLE IF NOT EXISTS " + table_name + " (\n  " + col_defs.join(",\n  ") + "\n);";
+    }
+}
+
+public class SchemaBuilder {
+    fn new() {}
+
+    public fn create(self, table_name: string, callback) {
+        let blueprint = new Blueprint();
+        callback(blueprint);
+        let sql = blueprint.to_sql(table_name);
+        DB.statement(sql);
+        return true;
+    }
+
+    public fn dropIfExists(self, table_name: string) {
+        let sql = "DROP TABLE IF EXISTS " + table_name + ";";
+        DB.statement(sql);
+        return true;
+    }
+}
+
+public let Schema = new SchemaBuilder();
+

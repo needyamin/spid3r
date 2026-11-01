@@ -1,0 +1,88 @@
+// framework/Middleware.matrix
+// Spid3rWeb Middleware Pipeline & Built-in Guards
+
+import "framework/Response";
+import "framework/Auth/Auth";
+
+public class Pipeline {
+    public let passable;
+    public let pipes;
+
+    fn new() {
+        self.passable = null;
+        self.pipes = list();
+    }
+
+    public fn send(self, passable) {
+        self.passable = passable;
+        return self;
+    }
+
+    public fn through(self, pipes_list) {
+        self.pipes = pipes_list;
+        return self;
+    }
+
+    public fn then(self, destination) {
+        let req = self.passable;
+        let index = 0;
+
+        // Recursive or iterative pipeline execution
+        for pipe in self.pipes {
+            let res = pipe.handle(req);
+            // If middleware returns a response (short-circuit), stop pipeline
+            if res != null {
+                return res;
+            }
+        }
+
+        return destination(req);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Built-in Framework Middleware
+// ----------------------------------------------------------------------------
+
+public class CorsMiddleware {
+    fn new() {}
+
+    public fn handle(self, req) {
+        if req.method == "OPTIONS" {
+            let res = response("", 204);
+            res.header("access-control-allow-origin", "*");
+            res.header("access-control-allow-methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
+            res.header("access-control-allow-headers", "content-type, authorization, x-requested-with");
+            return res;
+        }
+        return null; // proceed
+    }
+}
+
+public class LoggerMiddleware {
+    fn new() {}
+
+    public fn handle(self, req) {
+        println("[Spid3rWeb] " + req.method + " " + req.path);
+        return null;
+    }
+}
+
+public class AuthMiddleware {
+    fn new() {}
+
+    public fn handle(self, req) {
+        // Authenticate session if token present
+        if req.session_id != "" and not Auth.check() {
+            Auth.authenticate_token(req.session_id);
+        }
+
+        if not Auth.check() {
+            if req.path.starts_with("/api/") or req.header("accept", "").contains("application/json") {
+                return json(map("error", "Unauthorized", "message", "Authentication required."), 401);
+            }
+            return redirect("/login");
+        }
+        return null;
+    }
+}

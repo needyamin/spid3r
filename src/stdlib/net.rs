@@ -89,6 +89,50 @@ enum Sock {
     Ws(Arc<Conn>),
 }
 
+enum ConnStream {
+    Plain(TcpStream),
+    #[cfg(feature = "tls")]
+    Tls(Box<native_tls::TlsStream<TcpStream>>),
+}
+
+impl std::ops::Deref for ConnStream {
+    type Target = TcpStream;
+    fn deref(&self) -> &TcpStream {
+        match self {
+            ConnStream::Plain(s) => s,
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref(),
+        }
+    }
+}
+
+impl Read for ConnStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            ConnStream::Plain(s) => s.read(buf),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for ConnStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            ConnStream::Plain(s) => s.write(buf),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.write(buf),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            ConnStream::Plain(s) => s.flush(),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.flush(),
+        }
+    }
+}
+
 /// A TCP connection with the state a readiness probe needs.
 ///
 /// The stream lives behind its own mutex: a readiness probe flips the socket
@@ -96,14 +140,22 @@ enum Sock {
 /// holds bytes the probe read ahead, so polling never loses data - the next
 /// `tcp_read` hands them over first.
 struct Conn {
-    stream: Mutex<TcpStream>,
+    stream: Mutex<ConnStream>,
     pending: Mutex<Vec<u8>>,
 }
 
 impl Conn {
     fn new(stream: TcpStream) -> Conn {
         Conn {
-            stream: Mutex::new(stream),
+            stream: Mutex::new(ConnStream::Plain(stream)),
+            pending: Mutex::new(Vec::new()),
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    fn new_tls(stream: native_tls::TlsStream<TcpStream>) -> Conn {
+        Conn {
+            stream: Mutex::new(ConnStream::Tls(Box::new(stream))),
             pending: Mutex::new(Vec::new()),
         }
     }
@@ -1152,12 +1204,15 @@ fn ws_conn(id: i64, who: &str) -> Result<Arc<Conn>, String> {
     }
 }
 
-/// Parse `ws://host[:port]/path` (and tolerate `wss://` by rejecting it with
-/// a clear message - the TLS layer is a separate feature).
-fn parse_ws_url(url: &str) -> Result<(String, String), String> {
-    let rest = url.strip_prefix("ws://").ok_or_else(|| {
-        "ws_connect: only ws:// URLs are supported (no TLS in this build)".to_string()
-    })?;
+/// Parse `ws://host[:port]/path` or `wss://host[:port]/path`.
+fn parse_ws_url(url: &str) -> Result<(bool, String, String, String), String> {
+    let (secure, rest) = if let Some(r) = url.strip_prefix("ws://") {
+        (false, r)
+    } else if let Some(r) = url.strip_prefix("wss://") {
+        (true, r)
+    } else {
+        return Err("ws_connect: only ws:// and wss:// URLs are supported".to_string());
+    };
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
@@ -1165,12 +1220,17 @@ fn parse_ws_url(url: &str) -> Result<(String, String), String> {
     if authority.is_empty() {
         return Err("ws_connect: the URL has no host".to_string());
     }
+    let default_port = if secure { 443 } else { 80 };
     let host_port = if authority.contains(':') {
         authority.to_string()
     } else {
-        format!("{}:80", authority)
+        format!("{}:{}", authority, default_port)
     };
-    Ok((host_port, path.to_string()))
+    let host = match authority.rsplit_once(':') {
+        Some((h, _)) if !h.contains(']') => h.to_string(),
+        _ => authority.to_string(),
+    };
+    Ok((secure, host, host_port, path.to_string()))
 }
 
 /// `ws_connect(url)` -> `ok(handle)`. Performs the RFC 6455 client
@@ -1179,12 +1239,32 @@ fn n_ws_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     const WHO: &str = "ws_connect";
     arity(WHO, &args, 1)?;
     let url = want_str(&args[0], WHO)?;
-    let (host_port, path) = parse_ws_url(&url)?;
+    let (secure, host, host_port, path) = parse_ws_url(&url)?;
     let key = ws_client_key();
     let stream =
         TcpStream::connect(&host_port).map_err(|e| format!("ws_connect '{}': {}", url, e))?;
     let _ = stream.set_nodelay(true);
-    let conn = Arc::new(Conn::new(stream));
+    let conn = if secure {
+        #[cfg(feature = "tls")]
+        {
+            let connector = native_tls::TlsConnector::new()
+                .map_err(|e| format!("ws_connect '{}': TLS setup failed: {}", url, e))?;
+            let tls = connector
+                .connect(&host, stream)
+                .map_err(|e| format!("ws_connect '{}': TLS handshake failed: {}", url, e))?;
+            Arc::new(Conn::new_tls(tls))
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            let _ = host;
+            return Err(
+                "ws_connect: wss:// needs the `tls` feature (rebuild with --features tls)"
+                    .to_string(),
+            );
+        }
+    } else {
+        Arc::new(Conn::new(stream))
+    };
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
         path, host_port, key

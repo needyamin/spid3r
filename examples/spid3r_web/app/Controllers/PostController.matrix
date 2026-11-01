@@ -1,0 +1,194 @@
+// app/Controllers/PostController.matrix
+import "framework/Response";
+import "framework/View/BD";
+import "framework/Auth/Auth";
+import "framework/Database/DB";
+import "app/Models/Post";
+
+public class PostController {
+    fn new() {}
+
+    public fn index(self, _req) {
+        let posts = DB.table("posts")
+            .where("status", "=", "published")
+            .orderBy("id", "DESC")
+            .get();
+
+        return view("posts.index", map(
+            "title", "All Articles - Spid3rWeb",
+            "posts", posts,
+            "is_auth", Auth.check()
+        ));
+    }
+
+    public fn show(self, req) {
+        let id_param = req.param("id");
+        let id = int(id_param);
+        let post = PostModel.find(id);
+
+        if post == null {
+            return redirect("/posts");
+        }
+
+        // Increment views count
+        let cur_views = int(post.get("views_count", 0));
+        post.update(map("views_count", cur_views + 1));
+
+        return view("posts.show", map(
+            "title", post.get("title"),
+            "post", post.to_map(),
+            "is_auth", Auth.check()
+        ));
+    }
+
+    public fn create(self, _req) {
+        if not Auth.check() {
+            return redirect("/login");
+        }
+        return view("posts.create", map(
+            "title", "Publish New Article - Spid3rWeb",
+            "error", ""
+        ));
+    }
+
+    public fn store(self, req) {
+        if not Auth.check() {
+            return redirect("/login");
+        }
+
+        let validator = req.validate(map(
+            "title", "required|min:5",
+            "content", "required|min:10",
+            "category", "required"
+        ));
+
+        if validator.fails() {
+            return view("posts.create", map(
+                "title", "Publish New Article - Spid3rWeb",
+                "error", validator.error_summary()
+            ));
+        }
+
+        let title = req.string("title").trim();
+        let slug = title.lower().replace(" ", "-").replace("?", "").replace("!", "");
+        let user_id = Auth.id();
+
+        let post = PostModel.create(map(
+            "title", title,
+            "slug", slug,
+            "content", req.string("content").trim(),
+            "category", req.string("category").trim(),
+            "user_id", user_id,
+            "status", "published",
+            "views_count", 0
+        ));
+
+        return redirect("/posts/" + string(post.get("id")));
+    }
+
+    public fn edit(self, req) {
+        if not Auth.check() {
+            return redirect("/login");
+        }
+
+        let id = int(req.param("id"));
+        let post = PostModel.find(id);
+        if post == null {
+            return redirect("/posts");
+        }
+
+        return view("posts.edit", map(
+            "title", "Edit: " + post.get("title"),
+            "post", post.to_map(),
+            "error", ""
+        ));
+    }
+
+    public fn update(self, req) {
+        if not Auth.check() {
+            return redirect("/login");
+        }
+
+        let id = int(req.param("id"));
+        let post = PostModel.find(id);
+        if post == null {
+            return redirect("/posts");
+        }
+
+        let validator = req.validate(map(
+            "title", "required|min:5",
+            "content", "required|min:10",
+            "category", "required"
+        ));
+
+        if validator.fails() {
+            return view("posts.edit", map(
+                "title", "Edit: " + post.get("title"),
+                "post", post.to_map(),
+                "error", validator.error_summary()
+            ));
+        }
+
+        post.update(map(
+            "title", req.string("title").trim(),
+            "content", req.string("content").trim(),
+            "category", req.string("category").trim()
+        ));
+
+        return redirect("/posts/" + string(id));
+    }
+
+    public fn destroy(self, req) {
+        if not Auth.check() {
+            return redirect("/login");
+        }
+
+        let id = int(req.param("id"));
+        let post = PostModel.find(id);
+        if post != null {
+            post.delete();
+        }
+        return redirect("/posts");
+    }
+
+    // ------------------------------------------------------------------------
+    // JSON REST API Methods
+    // ------------------------------------------------------------------------
+
+    public fn apiIndex(self, _req) {
+        let posts = DB.table("posts").orderBy("id", "DESC").get();
+        return json(map("data", posts, "count", posts.len()));
+    }
+
+    public fn apiShow(self, req) {
+        let id = int(req.param("id"));
+        let post = PostModel.find(id);
+        if post == null {
+            return json(map("error", "Post not found"), 404);
+        }
+        return json(map("data", post.to_map()));
+    }
+
+    public fn apiStore(self, req) {
+        let validator = req.validate(map(
+            "title", "required|min:3",
+            "content", "required|min:5"
+        ));
+
+        if validator.fails() {
+            return json(map("error", "Validation Failed", "errors", validator.error_messages()), 422);
+        }
+
+        let post = PostModel.create(map(
+            "title", req.string("title"),
+            "slug", req.string("title").lower().replace(" ", "-"),
+            "content", req.string("content"),
+            "category", req.string("category", "API"),
+            "user_id", Auth.id(),
+            "status", "published",
+            "views_count", 0
+        ));
+
+        return json(map("status", "created", "data", post.to_map()), 201);
+    }
+}

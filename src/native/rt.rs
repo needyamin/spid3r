@@ -1003,8 +1003,12 @@ fn spid3r_method_inner(
     let object = to_owned(obj);
     let name = cstr(name);
     let args = unsafe { args_vec(argc, argv) };
-    if let Value::CInstance(inst) = &object {
-        let class = inst.lock().unwrap().class.clone();
+    let maybe_class = match &object {
+        Value::CInstance(inst) => Some(inst.lock().unwrap().class.clone()),
+        Value::CClass(c) => Some(c.clone()),
+        _ => None,
+    };
+    if let Some(class) = maybe_class {
         if let Some((_, cfn)) = find_method_cclass(&class, &name) {
             // Same wording as the VM/tree runtime dispatch (PAR-04): the
             // message counts the *declared* parameters and the *passed*

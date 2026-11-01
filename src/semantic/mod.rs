@@ -911,6 +911,133 @@ impl Checker {
                 _ => {}
             }
         }
+        let mut default_iface_methods: HashMap<String, Vec<FnProto>> = HashMap::new();
+        for s in &program.stmts {
+            if let Stmt::Import { path, alias, span } = s {
+                let selections = alias
+                    .as_deref()
+                    .and_then(crate::modules::parse_import_selections);
+                if alias.is_none() || selections.is_some() {
+                    let src_file = if self.source_file.is_empty() {
+                        span.file.as_ref()
+                    } else {
+                        self.source_file.as_str()
+                    };
+                    if let Ok(exports) = crate::modules::module_exports_of_in(
+                        path,
+                        src_file,
+                        span,
+                        &self.module_dirs,
+                    ) {
+                        for i in exports.interfaces {
+                            if seen.contains(&i.name) || self.interfaces.contains_key(&i.name) {
+                                continue;
+                            }
+                            let mut methods = HashMap::new();
+                            for (mname, params, ret, _) in &i.methods {
+                                methods.insert(mname.clone(), (params.len(), ret.clone()));
+                            }
+                            if !i.default_methods.is_empty() {
+                                default_iface_methods
+                                    .insert(i.name.clone(), i.default_methods.clone());
+                            }
+                            if let Some(sel) = &selections {
+                                for (exp, loc) in sel {
+                                    if exp == &i.name && loc != &i.name && !seen.contains(loc) {
+                                        self.interfaces.insert(loc.clone(), methods.clone());
+                                        if !i.default_methods.is_empty() {
+                                            default_iface_methods
+                                                .insert(loc.clone(), i.default_methods.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            self.interfaces.insert(i.name.clone(), methods);
+                        }
+                        for c in exports.classes {
+                            if seen.contains(&c.name) || self.classes.contains_key(&c.name) {
+                                continue;
+                            }
+                            let mut fields = HashMap::new();
+                            for f in &c.fields {
+                                fields.insert(f.name.clone(), (f.vis, f.ty.clone()));
+                            }
+                            let mut methods = HashMap::new();
+                            for m in &c.methods {
+                                let mname = m.name.clone().unwrap_or_default();
+                                methods.insert(
+                                    mname,
+                                    MethodInfo {
+                                        vis: m.vis,
+                                        params: m.params.iter().map(|p| p.ty.clone()).collect(),
+                                        param_names: m
+                                            .params
+                                            .iter()
+                                            .map(|p| p.name.clone())
+                                            .collect(),
+                                        ret: m.ret.clone(),
+                                        min_arity: m.min_arity(),
+                                    },
+                                );
+                            }
+                            let ci = ClassInfo {
+                                parent: c.parent.clone(),
+                                interfaces: c.interfaces.clone(),
+                                fields,
+                                methods,
+                                is_abstract: c.is_abstract,
+                                abstracts: c.abstracts.clone(),
+                            };
+                            if let Some(sel) = &selections {
+                                for (exp, loc) in sel {
+                                    if exp == &c.name && loc != &c.name && !seen.contains(loc) {
+                                        self.classes.insert(loc.clone(), ci.clone());
+                                    }
+                                }
+                            }
+                            self.classes.insert(c.name.clone(), ci);
+                        }
+                        for e in exports.enums {
+                            if seen.contains(&e.name) || self.enums.contains_key(&e.name) {
+                                continue;
+                            }
+                            let mut vnames = Vec::new();
+                            for v in &e.variants {
+                                self.variant_enum.insert(v.name.clone(), e.name.clone());
+                                vnames.push(v.name.clone());
+                            }
+                            self.enums.insert(e.name.clone(), vnames);
+                        }
+                    }
+                }
+            }
+        }
+        for s in &program.stmts {
+            if let Stmt::Interface(i) = s {
+                let mut methods = HashMap::new();
+                for (name, params, ret, span) in &i.methods {
+                    if params.first().map(|p| p.name.as_str()) != Some("self") {
+                        return Err(
+                            self.err(span, format!("interface method '{}' must take self", name))
+                        );
+                    }
+                    methods.insert(name.clone(), (params.len(), ret.clone()));
+                }
+                for dm in &i.default_methods {
+                    let dm_name = dm.name.clone().unwrap_or_default();
+                    if dm.params.first().map(|p| p.name.as_str()) != Some("self") {
+                        return Err(self.err(
+                            &dm.span,
+                            format!("interface method '{}' must take self", dm_name),
+                        ));
+                    }
+                }
+                if !i.default_methods.is_empty() {
+                    default_iface_methods.insert(i.name.clone(), i.default_methods.clone());
+                }
+                self.interfaces.insert(i.name.clone(), methods);
+            }
+        }
         // class registry
         for s in &program.stmts {
             if let Stmt::Class(c) = s {
@@ -949,8 +1076,25 @@ impl Checker {
                         ));
                     }
                 }
+                for iface in &c.interfaces {
+                    if let Some(defaults) = default_iface_methods.get(iface) {
+                        for dm in defaults {
+                            let dm_name = dm.name.clone().unwrap_or_default();
+                            methods.entry(dm_name).or_insert_with(|| MethodInfo {
+                                vis: Vis::Public,
+                                params: dm.params.iter().map(|p| p.ty.clone()).collect(),
+                                param_names: dm.params.iter().map(|p| p.name.clone()).collect(),
+                                ret: dm.ret.clone(),
+                                min_arity: dm.min_arity(),
+                            });
+                        }
+                    }
+                }
                 if let Some(parent) = &c.parent {
-                    if parent != "Object" && !seen.contains(parent) {
+                    if parent != "Object"
+                        && !seen.contains(parent)
+                        && !self.classes.contains_key(parent)
+                    {
                         return Err(self.err(
                             &c.span,
                             format!("parent class '{}' is not declared", parent),
@@ -982,6 +1126,9 @@ impl Checker {
         }
         let names: Vec<String> = self.classes.keys().cloned().collect();
         for name in names {
+            if !class_spans.contains_key(&name) {
+                continue;
+            }
             let Some(ci) = self.classes.get(&name).cloned() else {
                 continue;
             };
@@ -1030,20 +1177,6 @@ impl Checker {
                         ),
                     ));
                 }
-            }
-        }
-        for s in &program.stmts {
-            if let Stmt::Interface(i) = s {
-                let mut methods = HashMap::new();
-                for (name, params, ret, span) in &i.methods {
-                    if params.first().map(|p| p.name.as_str()) != Some("self") {
-                        return Err(
-                            self.err(span, format!("interface method '{}' must take self", name))
-                        );
-                    }
-                    methods.insert(name.clone(), (params.len(), ret.clone()));
-                }
-                self.interfaces.insert(i.name.clone(), methods);
             }
         }
         // implements conformance
@@ -1422,6 +1555,13 @@ impl Checker {
             } => {
                 matches!(**expr, Expr::Int(..) | Expr::Float(..))
             }
+            Expr::List(items, _) => items.iter().all(Self::is_const_default),
+            Expr::Call { callee, args, .. } => {
+                matches!(
+                    &**callee,
+                    Expr::Ident(n, _) if matches!(n.as_str(), "map" | "list" | "set" | "tuple")
+                ) && args.iter().all(Self::is_const_default)
+            }
             _ => false,
         }
     }
@@ -1574,7 +1714,68 @@ impl Checker {
                     self.unexported_module_names
                         .insert(u_name, (mod_display, kind));
                 }
-                if let Some(alias_name) = alias {
+                if let Some(selections) = alias
+                    .as_deref()
+                    .and_then(crate::modules::parse_import_selections)
+                {
+                    for (export_name, local_name) in selections {
+                        let Some((_, is_const)) =
+                            names.iter().find(|(n, _)| n == &export_name).cloned()
+                        else {
+                            if let Some((mod_display, kind)) =
+                                self.unexported_module_names.get(&export_name).cloned()
+                            {
+                                return Err(self.err(
+                                    span,
+                                    format!(
+                                        "{} '{}' in module '{}' is private (add 'public' to export it)",
+                                        kind, export_name, mod_display
+                                    ),
+                                ));
+                            }
+                            return Err(self.err(
+                                span,
+                                format!("module '{}' does not export '{}'", path, export_name),
+                            ));
+                        };
+                        let local_here = self
+                            .scopes
+                            .last()
+                            .and_then(|s| s.get(&local_name))
+                            .map(|v| !v.is_import)
+                            .unwrap_or(false);
+                        if local_here && !self.predeclared.contains(&local_name) {
+                            return Err(self.err(
+                                span,
+                                format!("import '{}' shadows a local binding", local_name),
+                            ));
+                        }
+                        if let Some(v) = self.scopes.last().and_then(|s| s.get(&local_name)) {
+                            if v.is_import {
+                                return Err(self.err(
+                                    span,
+                                    format!(
+                                        "import collision: '{}' is imported by multiple modules",
+                                        local_name
+                                    ),
+                                ));
+                            }
+                        }
+                        let scope = self.scopes.last_mut().unwrap();
+                        scope.insert(
+                            local_name,
+                            VarInfo {
+                                is_const,
+                                class: None,
+                                ty: None,
+                                is_import: true,
+                                kind: BindKind::Import,
+                                decl: Some(span.clone()),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                } else if let Some(alias_name) = alias {
                     let local_here = self
                         .scopes
                         .last()
@@ -1762,7 +1963,7 @@ impl Checker {
                     )?;
                 }
                 if let Some(ret) = &f.ret {
-                    self.check_type_name(&ret.name, &ret.span)?;
+                    self.check_type_expr(ret)?;
                 }
                 let saved_ret = self.current_ret.take();
                 self.current_ret = f.ret.as_ref().map(|t| self.resolve_type(t));
@@ -1798,11 +1999,11 @@ impl Checker {
                     if is_decl {
                         for p in &m.params {
                             if let Some(t) = &p.ty {
-                                self.check_type_name(&t.name, &t.span)?;
+                                self.check_type_expr(t)?;
                             }
                         }
                         if let Some(ret) = &m.ret {
-                            self.check_type_name(&ret.name, &ret.span)?;
+                            self.check_type_expr(ret)?;
                         }
                         continue;
                     }
@@ -1903,7 +2104,7 @@ impl Checker {
                 ..
             } => {
                 if let Some(t) = ty {
-                    self.check_type_name(&t.name, &t.span)?;
+                    self.check_type_expr(t)?;
                 }
                 let class = match value {
                     Some(Expr::New { class, .. }) if self.classes.contains_key(class) => {
@@ -1973,7 +2174,7 @@ impl Checker {
                 ..
             } => {
                 if let Some(t) = ty {
-                    self.check_type_name(&t.name, &t.span)?;
+                    self.check_type_expr(t)?;
                 }
                 self.check_expr(value)?;
                 if let Some(t) = ty {
@@ -2098,7 +2299,7 @@ impl Checker {
                 } = &**init
                 {
                     if let Some(t) = ty {
-                        self.check_type_name(&t.name, &t.span)?;
+                        self.check_type_expr(t)?;
                     }
                     if let Some(e) = value {
                         self.check_expr(e)?;
@@ -2228,9 +2429,9 @@ impl Checker {
     /// Resolve a parsed `: Type` annotation into a `Ty`. Unknown-but-validated
     /// names fall back to `Any`; `check_type_name` has already rejected truly
     /// unknown names before this is called.
-    fn resolve_type(&self, t: &TypeExpr) -> Ty {
+    fn resolve_single_type(&self, t: &TypeExpr) -> Ty {
         let lower = t.name.to_ascii_lowercase();
-        match lower.as_str() {
+        let base = match lower.as_str() {
             "any" => Ty::Any,
             "int" => Ty::Int,
             "float" => Ty::Float,
@@ -2254,6 +2455,24 @@ impl Checker {
                     Ty::Any
                 }
             }
+        };
+        if t.nullable {
+            Ty::Nullable(Box::new(base))
+        } else {
+            base
+        }
+    }
+
+    fn resolve_type(&self, t: &TypeExpr) -> Ty {
+        let first = self.resolve_single_type(t);
+        if t.union.is_empty() {
+            first
+        } else {
+            let mut members = vec![first];
+            for u in &t.union {
+                members.push(self.resolve_single_type(u));
+            }
+            Ty::Union(members)
         }
     }
 
@@ -2262,18 +2481,30 @@ impl Checker {
     /// Best-effort static class of a receiver expression (F6): `self` maps to
     /// the class whose member is being checked; a binding contributes its
     /// declared class or class annotation; any other expression falls back to
-    /// the gradual type computer. Only locally declared classes are returned —
-    /// imported or builtin-class receivers stay dynamically unchecked, exactly
-    /// as bare-Ident receivers behaved before.
+    /// the gradual type computer.
     fn receiver_class(&self, e: &Expr) -> Option<String> {
         match e {
             Expr::Ident(n, _) if n == "self" => self.current_class.clone(),
             Expr::Ident(n, _) => {
-                let v = self.lookup(n)?;
-                v.class.clone().or_else(|| match &v.ty {
-                    Some(Ty::Class(c)) if self.classes.contains_key(c) => Some(c.clone()),
-                    _ => None,
-                })
+                if let Some(v) = self.lookup(n) {
+                    v.class
+                        .clone()
+                        .or_else(|| match &v.ty {
+                            Some(Ty::Class(c)) if self.classes.contains_key(c) => Some(c.clone()),
+                            _ => None,
+                        })
+                        .or_else(|| {
+                            if v.is_import && self.classes.contains_key(n) {
+                                Some(n.clone())
+                            } else {
+                                None
+                            }
+                        })
+                } else if self.classes.contains_key(n) {
+                    Some(n.clone())
+                } else {
+                    None
+                }
             }
             other => match self.type_of(other) {
                 Ty::Class(c) if self.classes.contains_key(&c) => Some(c),
@@ -2512,8 +2743,7 @@ impl Checker {
                 Ty::Any
             }
             Expr::Method { object, name, .. } => {
-                let recv = self.type_of(object);
-                if let Ty::Class(c) = recv {
+                if let Some(c) = self.receiver_class(object) {
                     if let Some(mi) = self.method_sig(&c, name) {
                         return mi
                             .ret
@@ -2564,6 +2794,18 @@ impl Checker {
         }
         if let Ty::Any = from {
             return true;
+        }
+        if let Ty::Union(members) = from {
+            return members.iter().all(|m| self.assignable(m, to));
+        }
+        if let Ty::Union(members) = to {
+            return members.iter().any(|m| self.assignable(from, m));
+        }
+        if let Ty::Nullable(inner) = to {
+            return matches!(from, Ty::Null) || self.assignable(from, inner);
+        }
+        if let Ty::Nullable(inner) = from {
+            return self.assignable(&Ty::Null, to) && self.assignable(inner, to);
         }
         match (from, to) {
             (Ty::Int, Ty::Int)
@@ -2661,12 +2903,27 @@ impl Checker {
         false
     }
 
+    fn check_type_expr(&self, t: &TypeExpr) -> SpidResult<()> {
+        self.check_type_name(&t.name, &t.span)?;
+        if let Some(arg) = &t.arg {
+            self.check_type_expr(arg)?;
+        }
+        for u in &t.union {
+            self.check_type_name(&u.name, &u.span)?;
+            if let Some(arg) = &u.arg {
+                self.check_type_expr(arg)?;
+            }
+        }
+        Ok(())
+    }
+
     fn check_type_name(&self, name: &str, span: &Span) -> SpidResult<()> {
         const TYPES: &[&str] = &[
             "int",
             "float",
             "bool",
             "string",
+            "null",
             "list",
             "vec",
             "stack",

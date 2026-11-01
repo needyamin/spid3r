@@ -92,8 +92,13 @@ fn flatten_stmts(
                     in_progress,
                 )?;
                 in_progress.retain(|p| p != &canon);
+                let sel_idx = done_aliased.len();
                 done_aliased.insert(key);
-                mangle_aliased_module(&sub_stmts, alias_name, span, out);
+                if let Some(selections) = crate::modules::parse_import_selections(alias_name) {
+                    mangle_selective_module(&sub_stmts, &selections, sel_idx, span, out);
+                } else {
+                    mangle_aliased_module(&sub_stmts, alias_name, span, out);
+                }
                 continue;
             }
             let resolved = crate::modules::resolve::resolve_module(importer_file, path, &[])?.path;
@@ -187,6 +192,67 @@ fn mangle_aliased_module(stmts: &[Stmt], alias: &str, span: &Span, out: &mut Vec
         },
         span: span.clone(),
     });
+}
+
+fn mangle_selective_module(
+    stmts: &[Stmt],
+    selections: &[(String, String)],
+    idx: usize,
+    span: &Span,
+    out: &mut Vec<Stmt>,
+) {
+    let prefix = format!("__sel_{}_", idx);
+    let mut top_names: HashSet<String> = HashSet::new();
+    let mut const_names: HashSet<String> = HashSet::new();
+    for s in stmts {
+        match s {
+            Stmt::Fn(p) => {
+                if let Some(name) = &p.name {
+                    top_names.insert(name.clone());
+                }
+            }
+            Stmt::Class(c) => {
+                top_names.insert(c.name.clone());
+            }
+            Stmt::Let { name, .. } => {
+                top_names.insert(name.clone());
+            }
+            Stmt::Const { name, .. } => {
+                top_names.insert(name.clone());
+                const_names.insert(name.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let mut scopes: Vec<HashSet<String>> = Vec::new();
+    for s in stmts {
+        out.push(rewrite_top_stmt(s, &prefix, &top_names, &mut scopes));
+    }
+
+    for (exp, loc) in selections {
+        if !top_names.contains(exp) {
+            continue;
+        }
+        let target = Expr::Ident(format!("{}{}", prefix, exp), span.clone());
+        if const_names.contains(exp) {
+            out.push(Stmt::Const {
+                vis: Vis::Private,
+                name: loc.clone(),
+                ty: None,
+                value: target,
+                span: span.clone(),
+            });
+        } else {
+            out.push(Stmt::Let {
+                vis: Vis::Private,
+                name: loc.clone(),
+                ty: None,
+                value: Some(target),
+                span: span.clone(),
+            });
+        }
+    }
 }
 
 fn is_shadowed(name: &str, scopes: &[HashSet<String>]) -> bool {

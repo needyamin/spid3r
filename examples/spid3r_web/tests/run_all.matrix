@@ -1,0 +1,84 @@
+// tests/run_all.matrix
+// Spid3rWeb Complete Test Suite Runner
+
+fn run_test(path: string) -> bool {
+    println("------------------------------------------------------------------");
+    println("Running: " + path);
+    println("------------------------------------------------------------------");
+
+    let spid3r_bin = "spid3r";
+    let candidates = list(
+        "target/release/spid3r.exe",
+        "../../target/release/spid3r.exe",
+        "target/release/spid3r",
+        "../../target/release/spid3r"
+    );
+    for c in candidates {
+        if file_exists(c) {
+            spid3r_bin = c;
+            break;
+        }
+    }
+
+    let res = exec_capture(spid3r_bin, list("run", path), null);
+    if res.is_ok() {
+        let out = res.unwrap();
+        print(out["stdout"]);
+        if out["stderr"] != "" {
+            print(out["stderr"]);
+        }
+        return out["code"] == 0;
+    } else {
+        println("[EXEC ERROR] " + res.unwrap_err());
+        return false;
+    }
+}
+
+fn main() {
+    if file_exists("framework") {
+        env_set("SPID3R_PATH", ".");
+    } elif file_exists("examples/spid3r_web/framework") {
+        env_set("SPID3R_PATH", "examples/spid3r_web");
+    }
+
+    println("==================================================================");
+    println("            Spid3rWeb Complete Test Suite Execution               ");
+    println("==================================================================");
+
+    let tests = list(
+        "tests/test_router.matrix",
+        "tests/test_validator.matrix",
+        "tests/test_query_builder.matrix",
+        "tests/test_model.matrix",
+        "tests/test_bd.matrix",
+        "tests/test_http_lifecycle.matrix"
+    );
+
+    let passed = 0;
+    for t in tests {
+        let p = t;
+        let candidates = list(
+            t,
+            "examples/spid3r_web/" + t
+        );
+        for c in candidates {
+            if file_exists(c) {
+                p = c;
+                break;
+            }
+        }
+        if run_test(p) {
+            passed = passed + 1;
+        } else {
+            println("[FAILED]: " + t);
+        }
+    }
+
+    println("==================================================================");
+    println("Test Summary: " + string(passed) + "/" + string(tests.len()) + " test suites passed.");
+    println("==================================================================");
+    if passed < tests.len() {
+        return 1;
+    }
+    return 0;
+}

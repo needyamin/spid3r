@@ -1,0 +1,81 @@
+// app/Models/User.matrix
+import "framework/Database/Model";
+import "framework/Database/DB";
+
+public class User {
+    public let model;
+
+    fn new(attrs = null) {
+        self.model = new Model("users", list("name", "email", "password"), attrs);
+    }
+
+    public fn get(self, key: string, default_val = null) {
+        return self.model.get(key, default_val);
+    }
+
+    public fn set(self, key: string, value) {
+        self.model.set(key, value);
+        return self;
+    }
+
+    public fn save(self) {
+        self.model.save();
+        return self;
+    }
+
+    public fn update(self, attrs) {
+        self.model.update(attrs);
+        return self;
+    }
+
+    public fn delete(self) {
+        return self.model.delete();
+    }
+
+    public fn to_map(self) {
+        return self.model.to_map();
+    }
+
+    public fn posts(self) {
+        let user_id = self.get("id");
+        return DB.table("posts").where("user_id", "=", user_id).get();
+    }
+}
+
+public class UserStatic {
+    fn new() {}
+
+    public fn find(self, id) {
+        let row = DB.table("users").where("id", "=", id).first();
+        if row != null {
+            return new User(row);
+        }
+        return null;
+    }
+
+    public fn findByEmail(self, email: string) {
+        let clean = string(email).trim().lower();
+        let row = DB.table("users").where("email", "=", clean).first();
+        if row != null {
+            return new User(row);
+        }
+        return null;
+    }
+
+    public fn create(self, attrs) {
+        let user = new User(attrs);
+        user.save();
+        return user;
+    }
+
+    public fn all(self) {
+        let rows = DB.table("users").get();
+        let users = list();
+        for r in rows {
+            users.push(new User(r));
+        }
+        return users;
+    }
+}
+
+public let UserModel = new UserStatic();

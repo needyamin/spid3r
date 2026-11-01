@@ -28,6 +28,9 @@ pub struct Parser {
     /// expression may omit its `;`, because it is the branch's value:
     /// `let x = if (c) { 1 } else { 2 };`
     value_block_depth: usize,
+    /// True while parsing a `match` arm's `if <guard>` expression so a bare
+    /// identifier or parenthesized guard before `=>` is not parsed as an arrow closure.
+    in_match_guard: bool,
 }
 
 pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
@@ -47,6 +50,7 @@ pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
         pos: 0,
         depth: 0,
         value_block_depth: 0,
+        in_match_guard: false,
     };
     p.parse_program()
 }
@@ -72,6 +76,7 @@ pub(crate) fn hole_is_expression(raw: &str, depth: u32) -> bool {
         pos: 0,
         depth: crate::lexer::MAX_INTERP_DEPTH as usize,
         value_block_depth: 0,
+        in_match_guard: false,
     };
     match sub.parse_expr() {
         Ok(expr) => {
@@ -108,6 +113,7 @@ pub fn parse_expression(src: &str, file: std::sync::Arc<str>) -> SpidResult<Expr
         pos: 0,
         depth: 0,
         value_block_depth: 0,
+        in_match_guard: false,
     };
     let e = p.parse_expr()?;
     if !p.at(&TokenKind::Eof) {
@@ -338,6 +344,46 @@ impl Parser {
 
     fn parse_import(&mut self) -> SpidResult<Stmt> {
         let sp = self.expect_kw(Keyword::Import)?;
+        if self.eat(&TokenKind::LBrace) {
+            let mut specs = Vec::new();
+            while !self.at(&TokenKind::RBrace) {
+                let (export_name, _) = self.expect_ident()?;
+                if self.eat_kw(Keyword::As) {
+                    let (local_name, _) = self.expect_ident()?;
+                    specs.push(format!("{}:{}", export_name, local_name));
+                } else {
+                    specs.push(export_name);
+                }
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            if specs.is_empty() {
+                return Err(self.err_here("selective import requires at least one symbol"));
+            }
+            self.expect(&TokenKind::RBrace, "'}' after selective import list")?;
+            match self.kind() {
+                TokenKind::Ident(s) if s == "from" => {
+                    self.pos += 1;
+                }
+                _ => return Err(self.err_here("expected 'from' after selective import list")),
+            }
+            let path = match self.kind().clone() {
+                TokenKind::Str(s) => {
+                    self.pos += 1;
+                    s
+                }
+                _ => return Err(self.err_here(
+                    "import expects a quoted module path, e.g. import { a } from \"math_util\";",
+                )),
+            };
+            self.expect(&TokenKind::Semi, "';' after import")?;
+            return Ok(Stmt::Import {
+                path,
+                alias: Some(format!("{{{}}}", specs.join(","))),
+                span: sp,
+            });
+        }
         let path = match self.kind().clone() {
             TokenKind::Str(s) => {
                 self.pos += 1;
@@ -571,6 +617,32 @@ impl Parser {
         Ok(params)
     }
 
+    fn parse_single_type(&mut self) -> SpidResult<TypeExpr> {
+        let (name, span) = match self.kind().clone() {
+            TokenKind::Kw(Keyword::Null) => {
+                let sp = self.span();
+                self.pos += 1;
+                ("null".to_string(), sp)
+            }
+            _ => self.expect_ident()?,
+        };
+        let arg = if self.eat(&TokenKind::Lt) {
+            let t = self.parse_type()?;
+            self.expect(&TokenKind::Gt, "'>'")?;
+            Some(Box::new(t))
+        } else {
+            None
+        };
+        let nullable = self.eat(&TokenKind::Question);
+        Ok(TypeExpr {
+            name,
+            arg,
+            nullable,
+            union: Vec::new(),
+            span,
+        })
+    }
+
     fn parse_type(&mut self) -> SpidResult<TypeExpr> {
         if self.depth >= MAX_PARSE_DEPTH {
             return Err(err_at(
@@ -581,15 +653,12 @@ impl Parser {
         }
         self.depth += 1;
         let res = (|| {
-            let (name, span) = self.expect_ident()?;
-            let arg = if self.eat(&TokenKind::Lt) {
-                let t = self.parse_type()?;
-                self.expect(&TokenKind::Gt, "'>'")?;
-                Some(Box::new(t))
-            } else {
-                None
-            };
-            Ok(TypeExpr { name, arg, span })
+            let mut first = self.parse_single_type()?;
+            while self.eat(&TokenKind::Pipe) {
+                let next = self.parse_single_type()?;
+                first.union.push(next);
+            }
+            Ok(first)
         })();
         self.depth -= 1;
         res
@@ -660,6 +729,12 @@ impl Parser {
             if !is_abstract_method && self.eat_kw(Keyword::Abstract) {
                 is_abstract_method = true;
             }
+            let is_static_method = if matches!(self.kind(), TokenKind::Ident(s) if s == "static") {
+                self.pos += 1;
+                true
+            } else {
+                false
+            };
             if self.eat_kw(Keyword::Let) {
                 let (fname, fspan) = self.expect_ident()?;
                 let ty = if self.eat(&TokenKind::Colon) {
@@ -674,7 +749,11 @@ impl Parser {
                     ty,
                     span: fspan,
                 });
-            } else if is_abstract_method || self.at_kw(Keyword::Fn) || self.at_kw(Keyword::Async) {
+            } else if is_abstract_method
+                || is_static_method
+                || self.at_kw(Keyword::Fn)
+                || self.at_kw(Keyword::Async)
+            {
                 let is_async = self.eat_kw(Keyword::Async);
                 let _ = self.eat_kw(Keyword::Fn);
                 let (mname, mspan) = if self.at_kw(Keyword::New) {
@@ -684,7 +763,21 @@ impl Parser {
                 } else {
                     self.expect_ident()?
                 };
-                let params = self.parse_params()?;
+                let mut params = self.parse_params()?;
+                if is_static_method
+                    && mname != "new"
+                    && params.first().map(|p| p.name.as_str()) != Some("self")
+                {
+                    params.insert(
+                        0,
+                        Param {
+                            name: "self".to_string(),
+                            ty: None,
+                            default: None,
+                            span: mspan.clone(),
+                        },
+                    );
+                }
                 let ret = if self.eat(&TokenKind::Arrow) || self.eat(&TokenKind::Colon) {
                     Some(self.parse_type()?)
                 } else {
@@ -818,10 +911,12 @@ impl Parser {
         let (name, _) = self.expect_ident()?;
         self.expect(&TokenKind::LBrace, "'{' to open the interface body")?;
         let mut methods = Vec::new();
+        let mut default_methods = Vec::new();
         while !self.at(&TokenKind::RBrace) {
             if self.at(&TokenKind::Eof) {
                 return Err(self.err_here("unterminated interface body"));
             }
+            let _ = self.eat_kw(Keyword::Public);
             self.expect_kw(Keyword::Fn)?;
             let (mname, mspan) = self.expect_ident()?;
             let params = self.parse_params()?;
@@ -830,14 +925,31 @@ impl Parser {
             } else {
                 None
             };
-            self.expect(&TokenKind::Semi, "';' after interface method")?;
-            methods.push((mname, params, ret, mspan));
+            if self.at(&TokenKind::LBrace) {
+                let body = self.parse_block()?;
+                let body_span = body.span.clone();
+                default_methods.push(FnProto {
+                    vis: Vis::Public,
+                    is_async: false,
+                    is_extern: false,
+                    name: Some(mname),
+                    params,
+                    ret,
+                    type_params: Vec::new(),
+                    body,
+                    span: join(mspan, body_span),
+                });
+            } else {
+                self.expect(&TokenKind::Semi, "';' after interface method")?;
+                methods.push((mname, params, ret, mspan));
+            }
         }
         let end = self.expect_kw_rbrace()?;
         Ok(InterfaceDecl {
             vis,
             name,
             methods,
+            default_methods,
             span: join(start, end),
         })
     }
@@ -1132,7 +1244,11 @@ impl Parser {
             let arm_start = self.span();
             let pattern = self.parse_pattern()?;
             let guard = if self.eat_kw(Keyword::If) {
-                Some(self.parse_expr()?)
+                let prev = self.in_match_guard;
+                self.in_match_guard = true;
+                let g = self.parse_expr();
+                self.in_match_guard = prev;
+                Some(g?)
             } else {
                 None
             };
@@ -1958,6 +2074,26 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.pos += 1;
+                if !self.in_match_guard && self.eat(&TokenKind::FatArrow) {
+                    let body = self.parse_arrow_body()?;
+                    let span = join(sp.clone(), body.span.clone());
+                    return Ok(Expr::Fn(Box::new(FnProto {
+                        vis: Vis::Private,
+                        is_async: false,
+                        is_extern: false,
+                        name: None,
+                        params: vec![Param {
+                            name,
+                            ty: None,
+                            default: None,
+                            span: sp,
+                        }],
+                        ret: None,
+                        type_params: Vec::new(),
+                        body,
+                        span,
+                    })));
+                }
                 Ok(Expr::Ident(name, sp))
             }
             TokenKind::Kw(Keyword::New) => {
@@ -1970,6 +2106,34 @@ impl Parser {
             TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => {
                 let proto = self.parse_fn(true, None, false)?;
                 Ok(Expr::Fn(Box::new(proto)))
+            }
+            TokenKind::LBrace => {
+                self.pos += 1;
+                let mut args = Vec::new();
+                if !self.at(&TokenKind::RBrace) {
+                    loop {
+                        let key = self.parse_expr()?;
+                        self.expect(&TokenKind::Colon, "':' after map key")?;
+                        let val = self.parse_expr()?;
+                        args.push(key);
+                        args.push(val);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                        if self.at(&TokenKind::RBrace) {
+                            break;
+                        }
+                    }
+                }
+                let end = self
+                    .expect(&TokenKind::RBrace, "'}'")
+                    .map(|()| self.prev_span())?;
+                let span = join(sp, end);
+                Ok(Expr::Call {
+                    callee: Box::new(Expr::Ident("map".to_string(), span.clone())),
+                    args,
+                    span,
+                })
             }
             TokenKind::LBracket => {
                 self.pos += 1;
@@ -1994,6 +2158,28 @@ impl Parser {
                 Ok(Expr::List(items, span))
             }
             TokenKind::LParen => {
+                if !self.in_match_guard && self.is_arrow_closure_at_lparen() {
+                    let params = self.parse_params()?;
+                    let ret = if self.eat(&TokenKind::Arrow) {
+                        Some(self.parse_type()?)
+                    } else {
+                        None
+                    };
+                    self.expect(&TokenKind::FatArrow, "'=>' after arrow parameters")?;
+                    let body = self.parse_arrow_body()?;
+                    let span = join(sp, body.span.clone());
+                    return Ok(Expr::Fn(Box::new(FnProto {
+                        vis: Vis::Private,
+                        is_async: false,
+                        is_extern: false,
+                        name: None,
+                        params,
+                        ret,
+                        type_params: Vec::new(),
+                        body,
+                        span,
+                    })));
+                }
                 self.pos += 1;
                 // `(e)` is a parenthesized expression; `(a, b, c)` is a tuple
                 // literal, desugared into the `tuple(...)` constructor call
@@ -2051,6 +2237,101 @@ impl Parser {
                 ))
             }
             _ => Err(self.err_here(format!("unexpected {}", describe(&kind)))),
+        }
+    }
+
+    /// Look ahead from `(` (`self.pos`) to see if this parenthesized list is an
+    /// arrow closure parameter list `(a, b) => ...` or `(a: int) -> int => ...`.
+    fn is_arrow_closure_at_lparen(&self) -> bool {
+        let mut idx = self.pos + 1;
+        match self.toks.get(idx).map(|t| &t.kind) {
+            Some(TokenKind::RParen) | Some(TokenKind::Ident(_)) => {}
+            _ => return false,
+        }
+        let mut depth = 1usize;
+        while idx < self.toks.len() && depth > 0 {
+            match &self.toks[idx].kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => depth -= 1,
+                TokenKind::Semi | TokenKind::Eof => return false,
+                _ => {}
+            }
+            idx += 1;
+        }
+        if depth != 0 {
+            return false;
+        }
+        if matches!(self.toks.get(idx).map(|t| &t.kind), Some(TokenKind::Arrow)) {
+            idx += 1;
+            loop {
+                match self.toks.get(idx).map(|t| &t.kind) {
+                    Some(TokenKind::Ident(_)) | Some(TokenKind::Kw(Keyword::Null)) => idx += 1,
+                    _ => return false,
+                }
+                if matches!(self.toks.get(idx).map(|t| &t.kind), Some(TokenKind::Lt)) {
+                    let mut adepth = 1usize;
+                    idx += 1;
+                    while idx < self.toks.len() && adepth > 0 {
+                        match &self.toks[idx].kind {
+                            TokenKind::Lt => adepth += 1,
+                            TokenKind::Gt => adepth -= 1,
+                            TokenKind::Eof => return false,
+                            _ => {}
+                        }
+                        idx += 1;
+                    }
+                }
+                if matches!(
+                    self.toks.get(idx).map(|t| &t.kind),
+                    Some(TokenKind::Question)
+                ) {
+                    idx += 1;
+                }
+                if matches!(self.toks.get(idx).map(|t| &t.kind), Some(TokenKind::Pipe)) {
+                    idx += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        matches!(
+            self.toks.get(idx).map(|t| &t.kind),
+            Some(TokenKind::FatArrow)
+        )
+    }
+
+    fn parse_arrow_body(&mut self) -> SpidResult<Block> {
+        let is_map_lit = self.at(&TokenKind::LBrace)
+            && !matches!(
+                self.peek_kind(1),
+                TokenKind::RBrace
+                    | TokenKind::Kw(Keyword::Let)
+                    | TokenKind::Kw(Keyword::Const)
+                    | TokenKind::Kw(Keyword::Return)
+                    | TokenKind::Kw(Keyword::If)
+                    | TokenKind::Kw(Keyword::While)
+                    | TokenKind::Kw(Keyword::For)
+                    | TokenKind::Kw(Keyword::Try)
+                    | TokenKind::Kw(Keyword::Throw)
+                    | TokenKind::Kw(Keyword::Break)
+                    | TokenKind::Kw(Keyword::Continue)
+                    | TokenKind::Kw(Keyword::Yield)
+                    | TokenKind::Kw(Keyword::Fn)
+                    | TokenKind::Kw(Keyword::Class)
+            )
+            && self.peek_kind(2) == &TokenKind::Colon;
+        if self.at(&TokenKind::LBrace) && !is_map_lit {
+            self.parse_block()
+        } else {
+            let e = self.parse_expr()?;
+            let span = e.span().clone();
+            Ok(Block {
+                stmts: vec![Stmt::Return {
+                    value: Some(e),
+                    span: span.clone(),
+                }],
+                span,
+            })
         }
     }
 }
@@ -2153,6 +2434,7 @@ impl Parser {
                                 saw_bigint_lit: false,
                                 saw_yield: false,
                                 value_block_depth: self.value_block_depth,
+                                in_match_guard: false,
                             };
                             match sub.parse_expr() {
                                 Ok(e) if sub.at(&TokenKind::Eof) => Some((e, sub.saw_bigint_lit)),

@@ -28,6 +28,8 @@ pub struct Param {
 pub struct TypeExpr {
     pub name: String,
     pub arg: Option<Box<TypeExpr>>,
+    pub nullable: bool,
+    pub union: Vec<TypeExpr>,
     pub span: Span,
 }
 
@@ -154,6 +156,8 @@ pub struct InterfaceDecl {
     pub name: String,
     /// Method signatures: name, params, return type. No bodies.
     pub methods: Vec<(String, Vec<Param>, Option<TypeExpr>, Span)>,
+    /// Optional default method implementations declared with a `{ ... }` body.
+    pub default_methods: Vec<FnProto>,
     pub span: Span,
 }
 

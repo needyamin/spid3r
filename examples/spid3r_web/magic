@@ -1,0 +1,33 @@
+// magic
+// Spid3rWeb Magic Command-Line Tool
+
+import "framework/Console/ConsoleKernel";
+import "routes/web";
+import "routes/api";
+import "database/migrations/001_create_users_table";
+import "database/migrations/002_create_posts_table";
+import "database/migrations/003_create_sessions_table";
+import "database/seeders/DatabaseSeeder";
+
+fn main() {
+    // 1. Register routes so route:list can inspect them
+    register_web_routes();
+    register_api_routes();
+
+    // 2. Setup Console Kernel
+    let kernel = new ConsoleKernel();
+
+    // 3. Register Migrations
+    kernel.register_migration(new CreateUsersTable());
+    kernel.register_migration(new CreatePostsTable());
+    kernel.register_migration(new CreateSessionsTable());
+
+    // 4. Register Seeders
+    kernel.register_seeder(fn() {
+        run_database_seeder();
+    });
+
+    // 5. Parse command line arguments
+    let cli_args = args();
+    return kernel.handle(cli_args);
+}

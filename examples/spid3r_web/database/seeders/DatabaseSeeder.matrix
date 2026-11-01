@@ -1,0 +1,62 @@
+// database/seeders/DatabaseSeeder.matrix
+import "framework/Database/DB";
+import "framework/Auth/Hash";
+
+public fn run_database_seeder() {
+    // 1. Seed demo user
+    let users_count = DB.table("users").count();
+    if users_count == 0 {
+        let hashed_pw = Hash.make("secret123");
+        let now = string(unix_time());
+        DB.table("users").insert(map(
+            "name", "Ada Lovelace",
+            "email", "ada@example.com",
+            "password", hashed_pw,
+            "created_at", now,
+            "updated_at", now
+        ));
+        println("  -> Seeded demo user: ada@example.com (Password: secret123)");
+    }
+
+    // 2. Seed initial posts
+    let posts_count = DB.table("posts").count();
+    if posts_count == 0 {
+        let now = string(unix_time());
+        DB.table("posts").insert(map(
+            "title", "Welcome to Spid3rWeb: The Modern Full-Stack Framework for Spid3r",
+            "slug", "welcome-to-spid3rweb",
+            "content", "Spid3rWeb brings elegant syntax and developer productivity directly to the Spid3r language. Features include an Active Record ORM, fluent migrations, SpiderBD template compiler, and Magic CLI tooling.",
+            "category", "Announcements",
+            "user_id", 1,
+            "status", "published",
+            "views_count", 42,
+            "created_at", now,
+            "updated_at", now
+        ));
+
+        DB.table("posts").insert(map(
+            "title", "Building High-Throughput REST APIs with Spid3r",
+            "slug", "high-throughput-rest-apis",
+            "content", "Thanks to Spid3r's native HTTP engine, route pipeline, and zero runtime dependencies, API responses achieve sub-millisecond latencies across Windows, Linux, and WebAssembly.",
+            "category", "Performance",
+            "user_id", 1,
+            "status", "published",
+            "views_count", 18,
+            "created_at", now,
+            "updated_at", now
+        ));
+
+        DB.table("posts").insert(map(
+            "title", "Database Migrations and the Active Record Pattern",
+            "slug", "migrations-and-active-record",
+            "content", "With Spid3rWeb's Schema builder and QueryBuilder, creating tables, managing transactions, and querying rows is declarative and type-safe.",
+            "category", "Tutorials",
+            "user_id", 1,
+            "status", "published",
+            "views_count", 29,
+            "created_at", now,
+            "updated_at", now
+        ));
+        println("  -> Seeded 3 baseline blog posts.");
+    }
+}

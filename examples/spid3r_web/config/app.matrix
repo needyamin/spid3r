@@ -1,0 +1,11 @@
+// config/app.matrix
+// Spid3rWeb Application Configuration
+
+public let config_app = map(
+    "name", "Spid3rWeb Developer Platform",
+    "env", "development",
+    "debug", true,
+    "url", "http://localhost:8000",
+    "timezone", "UTC",
+    "locale", "en"
+);

@@ -1,0 +1,63 @@
+// tests/test_bd.matrix
+// Unit tests for Spid3rWeb SpiderBD Template Engine (.bd.html)
+
+import "framework/View/BD";
+
+fn test_html_escape() {
+    let raw = "<script>alert('xss & dangerous')</script>";
+    let escaped = html_escape(raw);
+    assert(not escaped.contains("<script>"), "Tags should be escaped");
+    assert(escaped.contains("&lt;script&gt;"), "&lt; should replace <");
+    assert(escaped.contains("&amp;"), "&amp; should replace &");
+    println("  [PASS] test_html_escape");
+}
+
+fn test_bd_view_rendering() {
+    let rendered = global_bd.render("home", map(
+        "title", "Home Page",
+        "posts", list(
+            map(
+                "id", 1,
+                "title", "BD Architecture in Spid3r",
+                "slug", "bd-architecture",
+                "content", "Full templating capabilities with layouts and sections in .bd.html templates.",
+                "category", "Engine",
+                "status", "published",
+                "views_count", 99
+            )
+        ),
+        "is_auth", true,
+        "user_name", "Ada Lovelace",
+        "total_posts", 1,
+        "total_users", 1
+    ));
+    assert(rendered.contains("Welcome to Spid3rWeb"), "Page title should be rendered");
+    assert(rendered.contains("BD Architecture in Spid3r"), "Post title should be interpolated");
+    assert(rendered.contains("Ada Lovelace"), "User name should be interpolated in auth section");
+    assert(rendered.contains("Spid3rWeb"), "Layout brand should be rendered");
+    println("  [PASS] test_bd_view_rendering");
+}
+
+fn test_auth_views_rendering() {
+    let login_html = global_bd.render("auth.login", map(
+        "title", "Sign In",
+        "error", "Invalid credentials test"
+    ));
+    assert(login_html.contains("Sign In"), "Login title should be present");
+    assert(login_html.contains("Invalid credentials test"), "Error banner should be rendered");
+
+    let register_html = global_bd.render("auth.register", map(
+        "title", "Register",
+        "error", ""
+    ));
+    assert(register_html.contains("Register"), "Register title should be present");
+    println("  [PASS] test_auth_views_rendering");
+}
+
+fn main() {
+    println("\n=== Running SpiderBD Test Suite ===");
+    test_html_escape();
+    test_bd_view_rendering();
+    test_auth_views_rendering();
+    println("=== All SpiderBD Tests Passed! ===\n");
+}

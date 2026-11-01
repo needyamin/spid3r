@@ -538,7 +538,22 @@ impl Interp {
             )),
             Stmt::Import { path, alias, span } => match crate::modules::load(self, path, span) {
                 Ok(names) => {
-                    if let Some(alias_name) = alias {
+                    if let Some(selections) = alias
+                        .as_deref()
+                        .and_then(crate::modules::parse_import_selections)
+                    {
+                        for (export_name, local_name) in selections {
+                            if let Some((_, value, is_const)) =
+                                names.iter().find(|(n, _, _)| n == &export_name)
+                            {
+                                if *is_const {
+                                    environment::define_const(env, &local_name, value.clone());
+                                } else {
+                                    environment::define(env, &local_name, value.clone());
+                                }
+                            }
+                        }
+                    } else if let Some(alias_name) = alias {
                         let mut entries = Vec::new();
                         let mut frozen = std::collections::HashSet::new();
                         for (name, value, is_const) in names {
@@ -1177,6 +1192,13 @@ impl Interp {
                         vals.push(self.eval(a, env)?);
                     }
                     return self.call_instance_method(inst, name, vals, span);
+                }
+                if let Value::Class(class) = &obj {
+                    let mut vals = Vec::with_capacity(args.len());
+                    for a in args {
+                        vals.push(self.eval(a, env)?);
+                    }
+                    return self.call_class_method(class, obj.clone(), name, vals, span);
                 }
                 let mut vals = Vec::with_capacity(args.len());
                 for a in args {
@@ -1912,7 +1934,7 @@ impl Interp {
         span: &Span,
     ) -> Result<Value, Flow> {
         let class = { inst.lock().unwrap().class.clone() };
-        self.call_class_method(&class, inst, name, args, span)
+        self.call_class_method(&class, Value::Instance(inst.clone()), name, args, span)
     }
 
     /// Evaluate a resolved `super` call. Kept out of line (see the match arm).
@@ -1971,7 +1993,7 @@ impl Interp {
             None => return Err(self.rt(span, format!("unknown class '{}'", parent))),
         };
         match method {
-            Some(m) => self.call_class_method(&class, &inst, m, args, span),
+            Some(m) => self.call_class_method(&class, Value::Instance(inst), m, args, span),
             None => self.call_parent_constructor(&class, &inst, args, span),
         }
     }
@@ -2050,11 +2072,11 @@ impl Interp {
         }
     }
 
-    /// Call a method of `class` (searching its inheritance chain) on `inst`.
+    /// Call a method of `class` (searching its inheritance chain) on `recv`.
     fn call_class_method(
         &self,
         class: &Arc<crate::value::ClassData>,
-        inst: &crate::value::Ref<InstanceData>,
+        recv: Value,
         name: &str,
         args: Vec<Value>,
         span: &Span,
@@ -2089,7 +2111,7 @@ impl Interp {
             .lock()
             .unwrap()
             .push((TraceCallee::Method(class.clone(), fd.clone()), span.clone()));
-        let obj = Value::Instance(inst.clone());
+        let obj = recv;
         let mut vars = HashMap::with_capacity(fd.proto.params.len());
         vars.insert("self".to_string(), obj);
         let argc = args.len();

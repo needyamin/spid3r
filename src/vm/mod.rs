@@ -1803,8 +1803,12 @@ impl Vm {
                                 self.frames[nf].slots[recv_idx] = Value::Int(n);
                                 continue;
                             }
-                            Value::VInstance(inst) => {
-                                let class = inst.lock().unwrap().class.clone();
+                            Value::VInstance(_) | Value::VClass(_) => {
+                                let class = match &self.frames[nf].slots[recv_idx] {
+                                    Value::VInstance(inst) => inst.lock().unwrap().class.clone(),
+                                    Value::VClass(c) => c.clone(),
+                                    _ => unreachable!(),
+                                };
                                 let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
                                 let key = (chunk_ptr, ip);
                                 let class_id = Arc::as_ptr(&class) as usize;
@@ -2441,6 +2445,25 @@ impl Vm {
                     };
                     match self.import_module(&path) {
                         Ok(exports) => {
+                            if let Some(selections) =
+                                crate::modules::parse_import_selections(&alias)
+                            {
+                                let mut consts = self.global_consts.lock().unwrap();
+                                let frame_globals = self.frames[nf].globals.clone();
+                                let mut g = frame_globals.lock().unwrap();
+                                for (export_name, local_name) in selections {
+                                    if let Some((_, value, is_const)) =
+                                        exports.iter().find(|(n, _, _)| n == &export_name)
+                                    {
+                                        if *is_const {
+                                            consts.insert(local_name.clone());
+                                        }
+                                        g.insert(local_name, value.clone());
+                                    }
+                                }
+                                self.frames[nf].slots.push(Value::Null);
+                                continue;
+                            }
                             let mut entries = Vec::new();
                             let mut frozen = std::collections::HashSet::new();
                             for (name, value, is_const) in exports {

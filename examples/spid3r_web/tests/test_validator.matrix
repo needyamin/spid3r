@@ -1,0 +1,230 @@
+// tests/test_validator.matrix
+// Unit tests for Spid3rWeb Validator
+
+import "framework/Request";
+
+fn test_required_validation() {
+    let req = new Request();
+    req.data["email"] = "";
+    req.data["password"] = "secret123";
+
+    let v = req.validate(map(
+        "email", "required",
+        "password", "required"
+    ));
+
+    assert(v.fails(), "Validation should fail for empty required email");
+    assert(v.first_error("email") != "", "Email should have error message");
+    assert(v.first_error("password") == "", "Password should have no error");
+    println("  [PASS] test_required_validation");
+}
+
+fn test_email_validation() {
+    let req1 = new Request();
+    req1.data["email"] = "not-an-email";
+    let v1 = req1.validate(map("email", "email"));
+    assert(v1.fails(), "Validation should fail for invalid email");
+
+    let req2 = new Request();
+    req2.data["email"] = "ada@lovelace.dev";
+    let v2 = req2.validate(map("email", "email"));
+    assert(v2.passes(), "Validation should pass for valid email");
+    println("  [PASS] test_email_validation");
+}
+
+fn test_min_max_numeric_validation() {
+    let req = new Request();
+    req.data["short_name"] = "a";
+    req.data["long_name"] = "this string is way too long for max rule";
+    req.data["age"] = "not_a_number";
+    req.data["score"] = "98.5";
+    req.data["optional_bio"] = "";
+
+    let v = req.validate(map(
+        "short_name", "min:3",
+        "long_name", "max:10",
+        "age", "numeric",
+        "score", "numeric",
+        "optional_bio", "min:10"
+    ));
+
+    assert(v.fails(), "Should fail on min, max, and numeric rules");
+    assert(v.first_error("short_name") != "", "short_name should fail min:3");
+    assert(v.first_error("long_name") != "", "long_name should fail max:10");
+    assert(v.first_error("age") != "", "age should fail numeric");
+    assert(v.first_error("score") == "", "score should pass numeric");
+    assert(v.first_error("optional_bio") == "", "optional empty field should not fail min rule");
+    println("  [PASS] test_min_max_numeric_validation");
+}
+
+fn test_url_decode() {
+    let s = url_decode("developer%40example.com");
+    assert(s == "developer@example.com", "url_decode should convert %40 to @");
+    let s2 = url_decode("Ada+Lovelace");
+    assert(s2 == "Ada Lovelace", "url_decode should convert + to space");
+    println("  [PASS] test_url_decode");
+}
+
+fn test_form_encoded_email() {
+    let req = new Request(map(
+        "headers", map("content-type", "application/x-www-form-urlencoded"),
+        "body", "name=Ada+Lovelace&email=developer%40example.com&password=secret123"
+    ));
+    assert(req.string("name") == "Ada Lovelace", "name should be url decoded");
+    assert(req.string("email") == "developer@example.com", "email should be url decoded");
+    let v = req.validate(map("email", "email"));
+    assert(v.passes(), "Email validation should pass for url-encoded developer%40example.com");
+    println("  [PASS] test_form_encoded_email");
+}
+
+fn test_email_edge_cases() {
+    let invalid_emails = list(
+        "not-an-email",
+        "@example.com",
+        "user@",
+        "user@domain",
+        "user@domain.",
+        "user@.domain.com",
+        "user@domain..com",
+        "user name@domain.com",
+        "user\tname@domain.com",
+        "user\nname@domain.com",
+        "user@@domain.com",
+        "user@domain.c",
+        ".user@example.com",
+        "user.@example.com",
+        "user..name@example.com",
+        "user@domain.123",
+        "user@-domain.com",
+        "user@domain-.com",
+        "user;name@example.com",
+        "user,name@example.com",
+        "user(comment)@example.com"
+    );
+
+    for bad in invalid_emails {
+        let req = new Request();
+        req.data["email"] = bad;
+        let v = req.validate(map("email", "email"));
+        assert(v.fails(), "Email rule should fail for invalid email: " + bad);
+    }
+
+    let valid_emails = list(
+        "ada@lovelace.dev",
+        "user.name+tag@sub.domain.co.uk",
+        "hello@world.io",
+        "UPPERCASE@EXAMPLE.COM",
+        "john.doe+work@example.com",
+        "test-user_123@my-domain.net"
+    );
+
+    for good in valid_emails {
+        let req = new Request();
+        req.data["email"] = good;
+        let v = req.validate(map("email", "email"));
+        assert(v.passes(), "Email rule should pass for valid email: " + good);
+    }
+    println("  [PASS] test_email_edge_cases");
+}
+
+fn test_form_encoded_special_chars() {
+    let req = new Request(map(
+        "headers", map("content-type", "application/x-www-form-urlencoded"),
+        "body", "redirect=http%3A%2F%2Fexample.com%2Fpath%3Ffoo%3Dbar%26baz%3D1&tag=c%2B%2B+programming&user_email=john.doe%2Bwork%40example.com"
+    ));
+    assert(req.string("redirect") == "http://example.com/path?foo=bar&baz=1", "redirect url should preserve full value containing = and &");
+    assert(req.string("tag") == "c++ programming", "plus should decode to space and %2B to literal +");
+    assert(req.string("user_email") == "john.doe+work@example.com", "email should decode properly");
+    let v = req.validate(map("user_email", "email"));
+    assert(v.passes(), "Decoded email with + should pass email rule");
+    println("  [PASS] test_form_encoded_special_chars");
+}
+
+fn test_query_string_url_decoding() {
+    let req = new Request(map(
+        "path", "/search?query=spid3r%20framework&email=search%40query.com"
+    ));
+    assert(req.query("query") == "spid3r framework", "query should decode %20");
+    assert(req.query("email") == "search@query.com", "email in query should decode %40");
+    let v = req.validate(map("email", "email"));
+    assert(v.passes(), "email from query should validate");
+    println("  [PASS] test_query_string_url_decoding");
+}
+
+fn test_validator_helpers_and_new_rules() {
+    let req = new Request();
+    req.data["num"] = "42";
+    req.data["not_num"] = "abc";
+    req.data["password"] = "secret123";
+    req.data["password_confirmation"] = "secret123";
+    req.data["status"] = "active";
+    req.data["is_admin"] = "true";
+    req.data["username"] = "ada";
+    req.data["code"] = "abc123";
+    req.data["pin"] = "999";
+    req.data["pin_match"] = "999";
+
+    let v_pass = req.validate(map(
+        "num", "integer",
+        "password", "confirmed",
+        "status", "in:active,inactive",
+        "is_admin", "boolean",
+        "username", "alpha",
+        "code", "alphanumeric",
+        "pin_match", "same:pin"
+    ));
+    assert(v_pass.passes(), "All rules should pass: " + v_pass.error_summary());
+
+    let req_fail = new Request();
+    req_fail.data["num"] = "not_int";
+    req_fail.data["password"] = "secret123";
+    req_fail.data["password_confirmation"] = "mismatch";
+    req_fail.data["status"] = "deleted";
+    req_fail.data["is_admin"] = "maybe";
+    req_fail.data["username"] = "ada_123";
+    req_fail.data["code"] = "abc-123!";
+    req_fail.data["pin_match"] = "000";
+
+    let v_fail = req_fail.validate(map(
+        "num", "integer",
+        "password", "confirmed",
+        "status", "in:active,inactive",
+        "is_admin", "boolean",
+        "username", "alpha",
+        "code", "alphanumeric",
+        "pin_match", "same:pin"
+    ));
+    assert(v_fail.fails(), "Rules should fail");
+    assert(v_fail.first() != "", "first() should return first error");
+    assert(v_fail.all_errors().len() == 7, "all_errors() should return all 7 errors, got: " + string(v_fail.all_errors().len()));
+    assert(v_fail.error_summary().contains("integer"), "error_summary() should contain integer error");
+    println("  [PASS] test_validator_helpers_and_new_rules");
+}
+
+fn test_form_encoded_trailing_newlines() {
+    let req = new Request(map(
+        "headers", map("content-type", "application/x-www-form-urlencoded"),
+        "body", "name=Ada+Lovelace&email=developer%40example.com&password=secret123\r\n"
+    ));
+    assert(req.string("name") == "Ada Lovelace", "name trimmed and decoded");
+    assert(req.string("email") == "developer@example.com", "email should not have trailing newline");
+    assert(req.string("password") == "secret123", "password should not have trailing newline");
+    let v = req.validate(map("email", "email"));
+    assert(v.passes(), "Email should pass validation without newline corruption");
+    println("  [PASS] test_form_encoded_trailing_newlines");
+}
+
+fn main() {
+    println("\n=== Running Validator Test Suite ===");
+    test_url_decode();
+    test_form_encoded_email();
+    test_required_validation();
+    test_email_validation();
+    test_email_edge_cases();
+    test_min_max_numeric_validation();
+    test_form_encoded_special_chars();
+    test_query_string_url_decoding();
+    test_validator_helpers_and_new_rules();
+    test_form_encoded_trailing_newlines();
+    println("=== All Validator Tests Passed! ===\n");
+}

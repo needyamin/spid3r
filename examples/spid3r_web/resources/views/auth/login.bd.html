@@ -1,0 +1,52 @@
+@extends('layouts/app')
+
+@section('title', 'Sign In - Spid3rWeb')
+
+@section('content')
+<div class="container py-5">
+  <div class="row justify-content-center">
+    <div class="col-md-6 col-lg-5">
+      <div class="card bg-dark border-secondary border-opacity-25 shadow-lg p-4">
+        <div class="text-center mb-4">
+          <div class="d-inline-flex align-items-center justify-content-center bg-info text-dark rounded-3 mb-2" style="width: 48px; height: 48px; font-weight: 800; font-size: 1.5rem;">S</div>
+          <h3 class="fw-bold text-light">Welcome Back</h3>
+          <p class="text-secondary small">Sign in to your Spid3rWeb account</p>
+        </div>
+
+        @if(error)
+        <div class="alert alert-danger py-2 px-3 small mb-3">
+          <i class="bi bi-exclamation-circle me-1"></i>{{ error }}
+        </div>
+        @endif
+
+        <form action="/login" method="POST">
+          <div class="mb-3">
+            <label class="form-label text-light small fw-semibold">Email Address</label>
+            <input type="email" name="email" class="form-control bg-black text-light border-secondary" placeholder="ada@example.com" required autofocus>
+          </div>
+
+          <div class="mb-4">
+            <label class="form-label text-light small fw-semibold">Password</label>
+            <input type="password" name="password" class="form-control bg-black text-light border-secondary" placeholder="••••••••" required>
+          </div>
+
+          <button type="submit" class="btn btn-info w-100 text-dark fw-bold py-2 mb-3">
+            Sign In
+          </button>
+
+          <div class="text-center">
+            <small class="text-secondary">
+              Don't have an account? <a href="/register" class="text-info text-decoration-none">Register here</a>
+            </small>
+          </div>
+        </form>
+      </div>
+
+      <!-- Demo Credentials Helper -->
+      <div class="card bg-secondary bg-opacity-10 border-0 p-3 mt-3 text-center small text-secondary">
+        <div><strong>Demo Credentials:</strong> <code>ada@example.com</code> / <code>secret123</code></div>
+      </div>
+    </div>
+  </div>
+</div>
+@endsection

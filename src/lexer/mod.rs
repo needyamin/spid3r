@@ -126,6 +126,19 @@ impl<'a> Lexer<'a> {
                 Some(b' ' | b'\t' | b'\r' | b'\n') => {
                     self.bump();
                 }
+                Some(b'#') if self.line == 1 && self.col == 1 && self.peek_at(1) == Some(b'!') => {
+                    let (line, col) = (self.line, self.col);
+                    let begin = self.pos;
+                    while let Some(c) = self.peek() {
+                        if c == b'\n' {
+                            break;
+                        }
+                        self.bump();
+                    }
+                    let raw = String::from_utf8_lossy(&self.src[begin..self.pos]);
+                    let text = raw.trim_end_matches('\r').to_string();
+                    self.comments.push(Comment { line, col, text });
+                }
                 Some(b'/') if self.peek_at(1) == Some(b'/') => {
                     let (line, col) = (self.line, self.col);
                     let begin = self.pos;
@@ -198,6 +211,12 @@ impl<'a> Lexer<'a> {
 
         if c.is_ascii_digit() {
             return self.lex_number(line, col);
+        }
+        if c == b'r'
+            && (self.peek_at(1) == Some(b'"')
+                || (self.peek_at(1) == Some(b'#') && self.peek_at(2) == Some(b'"')))
+        {
+            return self.lex_raw_string(line, col, start_pos);
         }
         if c.is_ascii_alphabetic() || c == b'_' {
             let s = self.lex_ident();
@@ -305,6 +324,10 @@ impl<'a> Lexer<'a> {
             b':' => TokenKind::Colon,
             b';' => TokenKind::Semi,
             b'.' => TokenKind::Dot,
+            b'#' if self.peek() == Some(b'{') => {
+                self.bump();
+                TokenKind::LBrace
+            }
             _ => {
                 if let Ok(rest) = std::str::from_utf8(&self.src[start_pos..]) {
                     if let Some(ch) = rest.chars().next() {
@@ -692,6 +715,9 @@ impl<'a> Lexer<'a> {
                         b't' => s.push('\t'),
                         b'\\' => s.push('\\'),
                         b'"' => s.push('"'),
+                        b'\'' => s.push('\''),
+                        b'{' => s.push('{'),
+                        b'}' => s.push('}'),
                         b'u' => self.unicode_escape(bs_line, bs_col, &mut s)?,
                         _ => {
                             return Err(err_at(
@@ -835,6 +861,67 @@ impl<'a> Lexer<'a> {
             }
         }
         Ok(v)
+    }
+
+    /// Raw string literal (`r"..."` or `r#"..."#`) with no escape or `{...}`
+    /// interpolation processing.
+    fn lex_raw_string(&mut self, line: u32, col: u32, start_pos: usize) -> SpidResult<Token> {
+        self.bump(); // 'r'
+        let has_hash = if self.peek() == Some(b'#') {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        self.bump(); // opening '"'
+        let content_start = self.pos;
+        loop {
+            let Some(c) = self.bump() else {
+                return Err(err_at(
+                    crate::diagnostics::Phase::Lexer,
+                    Span::new(self.file.clone(), line, col, 1),
+                    "unterminated raw string literal",
+                ));
+            };
+            if c == b'"' {
+                if has_hash {
+                    if self.peek() == Some(b'#') {
+                        let content_end = self.pos - 1;
+                        self.bump();
+                        let s = std::str::from_utf8(&self.src[content_start..content_end])
+                            .map_err(|_| {
+                                err_at(
+                                    crate::diagnostics::Phase::Lexer,
+                                    Span::new(self.file.clone(), line, col, 1),
+                                    "invalid UTF-8 in raw string literal",
+                                )
+                            })?
+                            .to_string();
+                        let len = (self.pos - start_pos) as u32;
+                        return Ok(Token {
+                            kind: TokenKind::Str(s),
+                            span: Span::new(self.file.clone(), line, col, len.max(1)),
+                        });
+                    }
+                } else {
+                    let content_end = self.pos - 1;
+                    let s = std::str::from_utf8(&self.src[content_start..content_end])
+                        .map_err(|_| {
+                            err_at(
+                                crate::diagnostics::Phase::Lexer,
+                                Span::new(self.file.clone(), line, col, 1),
+                                "invalid UTF-8 in raw string literal",
+                            )
+                        })?
+                        .to_string();
+                    let len = (self.pos - start_pos) as u32;
+                    return Ok(Token {
+                        kind: TokenKind::Str(s),
+                        span: Span::new(self.file.clone(), line, col, len.max(1)),
+                    });
+                }
+            }
+        }
     }
 }
 

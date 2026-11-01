@@ -32,6 +32,7 @@ COMMANDS:
                                            --coverage records line coverage;
                                            --no-opt disables bytecode optimizations;
                                            --budget caps the work for untrusted code
+    magic [command] [args...]              Execute Spid3r project magic commands
     check <file.matrix> [--json]           Lex, parse, semantic-check; no run.
       [--deny-warnings] [--allow LINT]     Lints: unused-variable, unused-parameter,
                                            unused-import, unreachable-code
@@ -144,7 +145,16 @@ pub fn run(args: Vec<String>) -> i32 {
     // `spidr version` must not read a plugin directory.
     if matches!(
         cmd.as_str(),
-        "run" | "check" | "compile" | "exec" | "test" | "bench" | "debug" | "gui" | "repl"
+        "run"
+            | "check"
+            | "compile"
+            | "exec"
+            | "test"
+            | "bench"
+            | "debug"
+            | "gui"
+            | "repl"
+            | "magic"
     ) {
         load_plugins();
     }
@@ -324,6 +334,7 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
             return Ok(EXIT_OK);
         }
         "run" => cmd_run(&rest),
+        "magic" => cmd_magic(&rest),
         "check" => cmd_check_with(&rest, json),
         "compile" => cmd_compile(&rest),
         "build" => cmd_build(&rest),
@@ -423,6 +434,16 @@ fn one_line(message: &str) -> String {
 /// is called directly, so the two cannot drift apart.
 pub(crate) fn subcommand_help(cmd: &str) -> Option<&'static str> {
     match cmd {
+        "magic" => Some("\
+spid3r magic - Execute Spid3r project magic commands
+
+USAGE:
+    spid3r magic [options] [command] [args...]
+
+OPTIONS:
+    --engine <tree|vm>     Execution engine: tree-walk or bytecode VM (default: tree)
+    -h, --help             Print help information
+"),
         "run" => Some("\
 spid3r run - Compile and run a program
 
@@ -767,6 +788,116 @@ fn reject_gui_program(path: &str) -> Result<(), Diagnostic> {
 
 // ----------------------------------------------------------------- commands
 
+fn cmd_magic(rest: &[String]) -> Result<i32, Diagnostic> {
+    let cwd = std::env::current_dir()
+        .map_err(|e| usage(&format!("cannot determine current directory: {}", e)))?;
+
+    let mut current: Option<&Path> = Some(&cwd);
+    let mut found_dir = None;
+    let mut found_target = None;
+
+    while let Some(dir) = current {
+        let cand_bare = dir.join("magic");
+        if cand_bare.is_file() {
+            found_dir = Some(dir.to_path_buf());
+            found_target = Some(cand_bare);
+            break;
+        }
+        let cand_matrix = dir.join("magic.matrix");
+        if cand_matrix.is_file() {
+            found_dir = Some(dir.to_path_buf());
+            found_target = Some(cand_matrix);
+            break;
+        }
+        current = dir.parent();
+    }
+
+    let (magic_path, project_dir) = match (found_target, found_dir) {
+        (Some(target), Some(dir)) => (target, dir),
+        _ => {
+            return Err(usage(
+                "no 'magic' file found in current directory (or any parent directory). Are you inside a Spid3r project?",
+            ));
+        }
+    };
+
+    if let Err(e) = std::env::set_current_dir(&project_dir) {
+        return Err(usage(&format!(
+            "cannot change directory to '{}': {}",
+            project_dir.display(),
+            e
+        )));
+    }
+
+    let new_spid3r_path = match std::env::var("SPID3R_PATH") {
+        Ok(existing) if !existing.is_empty() => {
+            let mut paths = vec![project_dir.clone()];
+            paths.extend(std::env::split_paths(&existing));
+            std::env::join_paths(paths).unwrap_or_else(|_| project_dir.clone().into_os_string())
+        }
+        _ => project_dir.clone().into_os_string(),
+    };
+    std::env::set_var("SPID3R_PATH", &new_spid3r_path);
+
+    let mut run_args: Vec<String> = Vec::new();
+    let mut rest_iter = rest.iter().peekable();
+    let mut script_args: Vec<String> = Vec::new();
+
+    while let Some(arg) = rest_iter.next() {
+        match arg.as_str() {
+            "--engine" => {
+                run_args.push(arg.clone());
+                if let Some(val) = rest_iter.next() {
+                    run_args.push(val.clone());
+                }
+            }
+            "--coverage-out" => {
+                run_args.push(arg.clone());
+                if let Some(val) = rest_iter.next() {
+                    run_args.push(val.clone());
+                }
+            }
+            "--budget" => {
+                run_args.push(arg.clone());
+                if let Some(val) = rest_iter.next() {
+                    run_args.push(val.clone());
+                }
+            }
+            a if a.starts_with("--engine=") => {
+                let val = a.strip_prefix("--engine=").unwrap();
+                run_args.push("--engine".to_string());
+                run_args.push(val.to_string());
+            }
+            a if a.starts_with("--budget=") => {
+                let val = a.strip_prefix("--budget=").unwrap();
+                run_args.push("--budget".to_string());
+                run_args.push(val.to_string());
+            }
+            a if a.starts_with("--coverage-out=") => {
+                let val = a.strip_prefix("--coverage-out=").unwrap();
+                run_args.push("--coverage-out".to_string());
+                run_args.push(val.to_string());
+            }
+            "--prof" | "--coverage" | "--no-opt" => {
+                run_args.push(arg.clone());
+            }
+            _ => {
+                script_args.push(arg.clone());
+                for trailing in rest_iter {
+                    script_args.push(trailing.clone());
+                }
+                break;
+            }
+        }
+    }
+
+    let magic_file_str = magic_path.to_string_lossy().to_string();
+    run_args.push(magic_file_str);
+    run_args.extend(script_args);
+
+    cmd_run(&run_args)
+}
+
 fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     let mut engine = "tree";
     let mut file: Option<String> = None;
@@ -778,6 +909,13 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     let mut script_args: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
+        if file.is_some() {
+            // Positionals and flags after the script path are the program's own
+            // arguments (installed for `args()` below).
+            script_args.push(args[i].clone());
+            i += 1;
+            continue;
+        }
         match args[i].as_str() {
             "--no-opt" => no_opt = true,
             "--prof" => prof = true,
@@ -797,12 +935,29 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                     None => return Err(usage("--budget needs a step count")),
                 }
             }
+            a if a.starts_with("--budget=") => {
+                let v = a.strip_prefix("--budget=").unwrap();
+                match v.parse::<u64>() {
+                    Ok(n) => budget = Some(n),
+                    Err(_) => {
+                        return Err(usage(&format!(
+                            "--budget expects a non-negative step count, got '{}'",
+                            v
+                        )))
+                    }
+                }
+            }
             "--coverage-out" => {
                 i += 1;
                 match args.get(i) {
                     Some(p) => coverage_out = Some(p.clone()),
                     None => return Err(usage("--coverage-out needs a file path")),
                 }
+                coverage = true;
+            }
+            a if a.starts_with("--coverage-out=") => {
+                let p = a.strip_prefix("--coverage-out=").unwrap();
+                coverage_out = Some(p.to_string());
                 coverage = true;
             }
             "--engine" => {
@@ -813,15 +968,17 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                     None => return Err(usage("--engine needs a value")),
                 }
             }
+            a if a.starts_with("--engine=") => {
+                let e = a.strip_prefix("--engine=").unwrap();
+                if e == "tree" || e == "vm" {
+                    engine = e;
+                } else {
+                    return Err(usage(&format!("unknown engine '{}'", e)));
+                }
+            }
             a if a.starts_with("--") => return Err(usage(&format!("unknown option '{}'", a))),
             a => {
-                if file.is_none() {
-                    file = Some(a.to_string());
-                } else {
-                    // Positionals after the script path are the program's own
-                    // arguments (installed for `args()` below).
-                    script_args.push(a.to_string());
-                }
+                file = Some(a.to_string());
             }
         }
         i += 1;

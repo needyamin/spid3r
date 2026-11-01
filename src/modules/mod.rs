@@ -414,6 +414,161 @@ pub fn public_names_of_in(
 /// type-complexity limit (CI runs clippy with `-D warnings`).
 pub type ModuleScan = (Vec<(String, bool)>, Vec<(String, String, &'static str)>);
 
+/// Parse a selective-import alias descriptor `"{A,B:C}"` into `(export_name, local_name)` pairs.
+pub fn parse_import_selections(alias: &str) -> Option<Vec<(String, String)>> {
+    let inner = alias.strip_prefix('{')?.strip_suffix('}')?;
+    let mut out = Vec::new();
+    for item in inner.split(',').filter(|s| !s.is_empty()) {
+        if let Some((exp, loc)) = item.split_once(':') {
+            out.push((exp.to_string(), loc.to_string()));
+        } else {
+            out.push((item.to_string(), item.to_string()));
+        }
+    }
+    Some(out)
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ModuleExports {
+    pub names: Vec<(String, bool)>,
+    pub unexported: Vec<(String, String, &'static str)>,
+    pub classes: Vec<crate::ast::ClassDecl>,
+    pub interfaces: Vec<crate::ast::InterfaceDecl>,
+    pub enums: Vec<crate::ast::EnumDecl>,
+}
+
+pub fn module_exports_of_in(
+    path: &str,
+    importer_file: &str,
+    span: &Span,
+    extra_dirs: &[std::path::PathBuf],
+) -> Result<ModuleExports, Diagnostic> {
+    let mut visited = std::collections::HashSet::new();
+    module_exports_inner(path, importer_file, span, extra_dirs, &mut visited, true)
+}
+
+fn module_exports_inner(
+    path: &str,
+    importer_file: &str,
+    span: &Span,
+    extra_dirs: &[std::path::PathBuf],
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    direct: bool,
+) -> Result<ModuleExports, Diagnostic> {
+    let resolved = resolve::resolve_module(importer_file, path, extra_dirs)
+        .map_err(|mut e| {
+            e.span = Some(span.clone());
+            e
+        })?
+        .path;
+    let canon = canonical_key(&resolved);
+    if !visited.insert(canon) {
+        return Ok(ModuleExports::default());
+    }
+    let src = read_module_source(&resolved).map_err(|e| {
+        Diagnostic::at(
+            Phase::Semantic,
+            span.clone(),
+            format!("cannot import '{}': {}", path, e),
+        )
+    })?;
+    let file: Arc<str> = Arc::from(resolved.to_string_lossy().to_string());
+    let program = parser::parse_file(&src, file)?;
+    let mod_display = resolved
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path)
+        .to_string();
+    let mut out = ModuleExports::default();
+    let resolved_str = resolved.to_string_lossy().to_string();
+    for stmt in &program.stmts {
+        match stmt {
+            crate::ast::Stmt::Import {
+                path: sub_path,
+                alias: None,
+                span: sub_span,
+            } => {
+                if let Ok(sub) = module_exports_inner(
+                    sub_path,
+                    &resolved_str,
+                    sub_span,
+                    extra_dirs,
+                    visited,
+                    false,
+                ) {
+                    out.classes.extend(sub.classes);
+                    out.interfaces.extend(sub.interfaces);
+                    out.enums.extend(sub.enums);
+                }
+            }
+            crate::ast::Stmt::Fn(f) if direct => {
+                if let Some(n) = &f.name {
+                    if f.vis == crate::ast::Vis::Public {
+                        out.names.push((n.clone(), false));
+                    } else {
+                        out.unexported.push((n.clone(), mod_display.clone(), "fn"));
+                    }
+                }
+            }
+            crate::ast::Stmt::Class(c) => {
+                if c.vis == crate::ast::Vis::Public {
+                    if direct {
+                        out.names.push((c.name.clone(), false));
+                    }
+                    out.classes.push(c.clone());
+                } else if direct {
+                    out.unexported
+                        .push((c.name.clone(), mod_display.clone(), "class"));
+                }
+            }
+            crate::ast::Stmt::Interface(i) => {
+                if i.vis == crate::ast::Vis::Public {
+                    if direct {
+                        out.names.push((i.name.clone(), false));
+                    }
+                    out.interfaces.push(i.clone());
+                } else if direct {
+                    out.unexported
+                        .push((i.name.clone(), mod_display.clone(), "interface"));
+                }
+            }
+            crate::ast::Stmt::Enum(e) => {
+                if e.vis == crate::ast::Vis::Public {
+                    if direct {
+                        for v in &e.variants {
+                            out.names.push((v.name.clone(), false));
+                        }
+                    }
+                    out.enums.push(e.clone());
+                } else if direct {
+                    for v in &e.variants {
+                        out.unexported
+                            .push((v.name.clone(), mod_display.clone(), "enum"));
+                    }
+                }
+            }
+            crate::ast::Stmt::Let { name, vis, .. } if direct => {
+                if *vis == crate::ast::Vis::Public {
+                    out.names.push((name.clone(), false));
+                } else {
+                    out.unexported
+                        .push((name.clone(), mod_display.clone(), "let"));
+                }
+            }
+            crate::ast::Stmt::Const { name, vis, .. } if direct => {
+                if *vis == crate::ast::Vis::Public {
+                    out.names.push((name.clone(), true));
+                } else {
+                    out.unexported
+                        .push((name.clone(), mod_display.clone(), "const"));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
 pub fn module_info_of_in(
     path: &str,
     importer_file: &str,

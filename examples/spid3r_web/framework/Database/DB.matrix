@@ -1,0 +1,317 @@
+// framework/Database/DB.matrix
+// Spid3rWeb Database Connection & Query Facade
+
+public class QueryBuilder {
+    public let table_name;
+    public let db_manager;
+    public let select_cols;
+    public let wheres;
+    public let joins;
+    public let order_col;
+    public let order_dir;
+    public let limit_count;
+    public let offset_count;
+
+    fn new(table: string, manager = null) {
+        self.table_name = table;
+        self.db_manager = manager;
+        self.select_cols = list("*");
+        self.wheres = list();
+        self.joins = list();
+        self.order_col = "";
+        self.order_dir = "ASC";
+        self.limit_count = -1;
+        self.offset_count = 0;
+    }
+
+    public fn select(self, cols) {
+        if type_of(cols) == "list" {
+            self.select_cols = cols;
+        } else {
+            self.select_cols = list(string(cols));
+        }
+        return self;
+    }
+
+    public fn where(self, column: string, op: string, val = null) {
+        if val == null {
+            // where("id", 5) shorthand for where("id", "=", 5)
+            val = op;
+            op = "=";
+        }
+        self.wheres.push(map(
+            "col", column,
+            "op", op,
+            "val", val,
+            "bool", "AND"
+        ));
+        return self;
+    }
+
+    public fn orWhere(self, column: string, op: string, val = null) {
+        if val == null {
+            val = op;
+            op = "=";
+        }
+        self.wheres.push(map(
+            "col", column,
+            "op", op,
+            "val", val,
+            "bool", "OR"
+        ));
+        return self;
+    }
+
+    public fn orderBy(self, column: string, dir: string = "ASC") {
+        self.order_col = column;
+        self.order_dir = string(dir).upper();
+        return self;
+    }
+
+    public fn limit(self, count: int) {
+        self.limit_count = count;
+        return self;
+    }
+
+    public fn offset(self, count: int) {
+        self.offset_count = count;
+        return self;
+    }
+
+    // ------------------------------------------------------------------------
+    // SQL Compiler
+    // ------------------------------------------------------------------------
+
+    fn build_select_sql(self) {
+        let sql = "SELECT " + self.select_cols.join(", ") + " FROM " + self.table_name;
+        let params = list();
+
+        if self.wheres.len() > 0 {
+            sql = sql + " WHERE ";
+            let first = true;
+            for w in self.wheres {
+                if not first {
+                    sql = sql + " " + w["bool"] + " ";
+                }
+                sql = sql + w["col"] + " " + w["op"] + " ?";
+                params.push(w["val"]);
+                first = false;
+            }
+        }
+
+        if self.order_col != "" {
+            sql = sql + " ORDER BY " + self.order_col + " " + self.order_dir;
+        }
+
+        if self.limit_count > 0 {
+            sql = sql + " LIMIT " + string(self.limit_count);
+            if self.offset_count > 0 {
+                sql = sql + " OFFSET " + string(self.offset_count);
+            }
+        }
+
+        return map("sql", sql, "params", params);
+    }
+
+    fn get_connection(self) {
+        return self.db_manager.connection();
+    }
+
+    // ------------------------------------------------------------------------
+    // Execution Methods
+    // ------------------------------------------------------------------------
+
+    public fn get(self) {
+        let compiled = self.build_select_sql();
+        let conn = self.get_connection();
+        return conn.query(compiled["sql"], compiled["params"]);
+    }
+
+    public fn first(self) {
+        self.limit(1);
+        let rows = self.get();
+        if rows.len() > 0 {
+            return rows[0];
+        }
+        return null;
+    }
+
+    public fn find(self, id) {
+        return self.where("id", "=", id).first();
+    }
+
+    public fn count(self) -> int {
+        let sql = "SELECT count(*) as c FROM " + self.table_name;
+        let params = list();
+
+        if self.wheres.len() > 0 {
+            sql = sql + " WHERE ";
+            let first = true;
+            for w in self.wheres {
+                if not first {
+                    sql = sql + " " + w["bool"] + " ";
+                }
+                sql = sql + w["col"] + " " + w["op"] + " ?";
+                params.push(w["val"]);
+                first = false;
+            }
+        }
+
+        let conn = self.get_connection();
+        let rows = conn.query(sql, params);
+        if rows.len() > 0 and rows[0].has("c") {
+            return int(rows[0]["c"]);
+        }
+        return 0;
+    }
+
+    public fn insert(self, data) {
+        let keys = list();
+        let placeholders = list();
+        let params = list();
+
+        for k in data.keys() {
+            keys.push(k);
+            placeholders.push("?");
+            params.push(data[k]);
+        }
+
+        let sql = "INSERT INTO " + self.table_name + " (" + keys.join(", ") + ") VALUES (" + placeholders.join(", ") + ")";
+        let conn = self.get_connection();
+        let res = conn.run(sql, params);
+        if res.has("last_id") {
+            return int(res["last_id"]);
+        }
+        return 0;
+    }
+
+    public fn update(self, data) {
+        let set_clauses = list();
+        let params = list();
+
+        for k in data.keys() {
+            set_clauses.push(k + " = ?");
+            params.push(data[k]);
+        }
+
+        let sql = "UPDATE " + self.table_name + " SET " + set_clauses.join(", ");
+
+        if self.wheres.len() > 0 {
+            sql = sql + " WHERE ";
+            let first = true;
+            for w in self.wheres {
+                if not first {
+                    sql = sql + " " + w["bool"] + " ";
+                }
+                sql = sql + w["col"] + " " + w["op"] + " ?";
+                params.push(w["val"]);
+                first = false;
+            }
+        }
+
+        let conn = self.get_connection();
+        let res = conn.run(sql, params);
+        if res.has("changes") {
+            return int(res["changes"]);
+        }
+        return 0;
+    }
+
+    public fn delete(self) {
+        let sql = "DELETE FROM " + self.table_name;
+        let params = list();
+
+        if self.wheres.len() > 0 {
+            sql = sql + " WHERE ";
+            let first = true;
+            for w in self.wheres {
+                if not first {
+                    sql = sql + " " + w["bool"] + " ";
+                }
+                sql = sql + w["col"] + " " + w["op"] + " ?";
+                params.push(w["val"]);
+                first = false;
+            }
+        }
+
+        let conn = self.get_connection();
+        let res = conn.run(sql, params);
+        if res.has("changes") {
+            return int(res["changes"]);
+        }
+        return 0;
+    }
+}
+
+public class DatabaseManager {
+    public let db_handle;
+    public let db_path;
+
+    fn new() {
+        self.db_path = self.resolve_database_path();
+        self.db_handle = null;
+    }
+
+    fn resolve_database_path(self) -> string {
+        let candidates = list(
+            "database/database.sqlite",
+            "examples/spid3r_web/database/database.sqlite"
+        );
+        for p in candidates {
+            if file_exists(p) {
+                return p;
+            }
+        }
+        for p in candidates {
+            if p == "database/database.sqlite" and file_exists("database") {
+                return p;
+            }
+            if p == "examples/spid3r_web/database/database.sqlite" and file_exists("examples/spid3r_web/database") {
+                return p;
+            }
+        }
+        return "database/database.sqlite";
+    }
+
+    public fn connection(self) {
+        if self.db_handle == null {
+            // Ensure directory exists if needed
+            self.db_handle = db_open(self.db_path);
+            self.db_handle.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
+        }
+        return self.db_handle;
+    }
+
+    public fn select(self, sql: string, params = null) {
+        if params == null {
+            params = list();
+        }
+        let conn = self.connection();
+        return conn.query(sql, params);
+    }
+
+    public fn statement(self, sql: string, params = null) {
+        if params == null {
+            params = list();
+        }
+        let conn = self.connection();
+        if params.len() == 0 {
+            return conn.exec(sql);
+        }
+        return conn.run(sql, params);
+    }
+
+    public fn table(self, table_name: string) {
+        return new QueryBuilder(table_name, self);
+    }
+
+    public fn close(self) {
+        if self.db_handle != null {
+            self.db_handle.close();
+            self.db_handle = null;
+        }
+    }
+}
+
+// Global DB Facade Singleton
+public let DB = new DatabaseManager();

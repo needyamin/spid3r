@@ -26,6 +26,10 @@ pub enum Ty {
     Coll(String, Option<Box<Ty>>),
     Class(String),
     Interface(String),
+    /// Nullable type `T?` (accepts `T` or `null`).
+    Nullable(Box<Ty>),
+    /// Union type `A | B` (accepts any member type).
+    Union(Vec<Ty>),
     /// A function value (lambda or named function). When its parameter/return
     /// annotations are known, the carried signature lets the checker validate
     /// calls through let-bound functions, nested declarations, and lambdas —
@@ -65,6 +69,12 @@ impl Ty {
             Ty::Coll(n, None) => n.clone(),
             Ty::Class(c) => c.clone(),
             Ty::Interface(i) => i.clone(),
+            Ty::Nullable(inner) => format!("{}?", inner.name()),
+            Ty::Union(members) => members
+                .iter()
+                .map(|m| m.name())
+                .collect::<Vec<_>>()
+                .join(" | "),
             Ty::Fn(_) => "function".to_string(),
         }
     }

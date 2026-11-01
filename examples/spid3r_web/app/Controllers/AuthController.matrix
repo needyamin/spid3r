@@ -1,0 +1,121 @@
+// app/Controllers/AuthController.matrix
+import "framework/Response";
+import "framework/View/BD";
+import "framework/Auth/Auth";
+import "framework/Auth/Hash";
+import "framework/Database/DB";
+import "app/Models/User";
+
+public class AuthController {
+    fn new() {}
+
+    public fn showLogin(self, _req) {
+        if Auth.check() {
+            return redirect("/");
+        }
+        return view("auth.login", map("title", "Sign In - Spid3rWeb", "error", ""));
+    }
+
+    public fn login(self, req) {
+        let validator = req.validate(map(
+            "email", "required|email",
+            "password", "required"
+        ));
+
+        if validator.fails() {
+            if req.path.starts_with("/api/") {
+                return json(map("error", "Validation Failed", "messages", validator.error_messages()), 422);
+            }
+            return view("auth.login", map(
+                "title", "Sign In - Spid3rWeb",
+                "error", validator.error_summary()
+            ));
+        }
+
+        let email = req.string("email").trim().lower();
+        let password = req.string("password");
+
+        if Auth.attempt(email, password) {
+            if req.path.starts_with("/api/") {
+                return json(map("status", "success", "token", Auth.token(), "user", Auth.user()));
+            }
+            let res = redirect("/");
+            res.cookie("spid3r_session", Auth.token(), "/", 86400);
+            return res;
+        }
+
+        if req.path.starts_with("/api/") {
+            return json(map("error", "Invalid credentials"), 401);
+        }
+
+        return view("auth.login", map(
+            "title", "Sign In - Spid3rWeb",
+            "error", "Invalid email or password combination."
+        ));
+    }
+
+    public fn showRegister(self, _req) {
+        if Auth.check() {
+            return redirect("/");
+        }
+        return view("auth.register", map("title", "Create Account - Spid3rWeb", "error", ""));
+    }
+
+    public fn register(self, req) {
+        let validator = req.validate(map(
+            "name", "required|min:2",
+            "email", "required|email",
+            "password", "required|min:6"
+        ));
+
+        if validator.fails() {
+            if req.path.starts_with("/api/") {
+                return json(map("error", "Validation Failed", "messages", validator.error_messages()), 422);
+            }
+            return view("auth.register", map(
+                "title", "Create Account - Spid3rWeb",
+                "error", validator.error_summary()
+            ));
+        }
+
+        let email = req.string("email").trim().lower();
+        let name = req.string("name").trim();
+        let existing = UserModel.findByEmail(email);
+        if existing != null {
+            if req.path.starts_with("/api/") {
+                return json(map("error", "Email already in use"), 422);
+            }
+            return view("auth.register", map(
+                "title", "Create Account - Spid3rWeb",
+                "error", "This email address is already registered."
+            ));
+        }
+
+        let hashed = Hash.make(req.string("password"));
+        let user = UserModel.create(map(
+            "name", name,
+            "email", email,
+            "password", hashed
+        ));
+
+        Auth.login(user.to_map());
+
+        if req.path.starts_with("/api/") {
+            return json(map("status", "created", "token", Auth.token(), "user", user.to_map()), 201);
+        }
+
+        let res = redirect("/");
+        res.cookie("spid3r_session", Auth.token(), "/", 86400);
+        return res;
+    }
+
+    public fn logout(self, req) {
+        Auth.logout();
+        if req.path.starts_with("/api/") {
+            return json(map("status", "logged_out"));
+        }
+        let res = redirect("/");
+        res.cookie("spid3r_session", "", "/", 0);
+        return res;
+    }
+}

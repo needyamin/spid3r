@@ -83,7 +83,10 @@ const COL_FLOAT: i32 = 2;
 #[cfg(not(target_arch = "wasm32"))]
 const COL_TEXT: i32 = 3;
 #[cfg(not(target_arch = "wasm32"))]
-const COL_BLOB: i32 = 5;
+const COL_BLOB: i32 = 4;
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+const COL_NULL: i32 = 5;
 
 #[cfg(all(not(target_arch = "wasm32"), windows))]
 mod loader {
@@ -180,10 +183,15 @@ fn candidate_paths() -> Vec<std::path::PathBuf> {
         }
     }
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
+        let mut cur = exe.parent();
+        while let Some(dir) = cur {
             for name in loader::library_names() {
-                out.push(dir.join(name));
+                let cand = dir.join(name);
+                if cand.is_file() {
+                    out.push(cand);
+                }
             }
+            cur = dir.parent();
         }
     }
     for name in loader::library_names() {
@@ -199,7 +207,8 @@ fn load_sqlite() -> Result<&'static SqliteApi, String> {
         let mut tried: Vec<String> = Vec::new();
         let mut handle: Option<loader::Handle> = None;
         for path in candidate_paths() {
-            if !path.exists() {
+            let is_bare = path.parent().is_none_or(|p| p.as_os_str().is_empty());
+            if !is_bare && !path.exists() {
                 tried.push(format!("{} (not found)", path.display()));
                 continue;
             }
@@ -672,7 +681,7 @@ mod tests {
         // Round-trip a statement through the shared run_sql path.
         let outcome = run_sql(
             db,
-            "CREATE TABLE IF NOT EXISTS t (x INT); INSERT INTO t VALUES (42);",
+            "DROP TABLE IF EXISTS t; CREATE TABLE t (x INT); INSERT INTO t VALUES (42);",
             &[],
             &mut |_, _| {},
         )

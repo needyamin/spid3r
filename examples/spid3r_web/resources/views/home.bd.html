@@ -1,0 +1,75 @@
+@extends('layouts/app')
+
+@section('title', 'Welcome to Spid3rWeb')
+
+@section('content')
+<div class="container">
+  <!-- Hero Section -->
+  <div class="p-5 mb-5 rounded-4 border border-secondary border-opacity-25" style="background: radial-gradient(circle at 50% 0%, rgba(56, 189, 248, 0.15) 0%, transparent 75%), #111722;">
+    <div class="row align-items-center">
+      <div class="col-lg-8">
+        <span class="badge bg-info-subtle text-info border border-info px-3 py-2 rounded-pill mb-3">
+          <i class="bi bi-stars me-1"></i>Spid3r Full-Stack Web Architecture
+        </span>
+        <h1 class="display-5 fw-bold text-light mb-3">
+          The Web Framework for <span class="text-info">Spid3r Developers</span>
+        </h1>
+        <p class="lead text-secondary mb-4">
+          Spid3rWeb provides modern architectural elegance with the raw performance and single-binary simplicity of Spid3r.
+          Featuring Active Record ORM, SpiderBD template compiler, and Magic CLI.
+        </p>
+        <div class="d-flex gap-3">
+          <a href="/posts" class="btn btn-info btn-lg text-dark fw-bold px-4">
+            <i class="bi bi-book me-1"></i>Explore Articles
+          </a>
+          <a href="/posts/create" class="btn btn-outline-light btn-lg px-4">
+            <i class="bi bi-pencil me-1"></i>Publish Post
+          </a>
+        </div>
+      </div>
+      <div class="col-lg-4 text-center mt-4 mt-lg-0">
+        <div class="card bg-dark border-secondary border-opacity-25 p-4 text-start shadow-lg">
+          <h6 class="text-info fw-bold mb-3"><i class="bi bi-magic me-2"></i>Magic Quick Start</h6>
+          <pre class="bg-black p-3 rounded text-info small mb-0 font-monospace"><code># Native Spid3r Magic CLI:
+$ spid3r magic serve
+$ spid3r magic migrate
+$ spid3r magic db:seed
+$ spid3r magic route:list</code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent Articles Grid -->
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h3 class="fw-bold text-light mb-0">Latest Articles</h3>
+    <a href="/posts" class="btn btn-outline-info btn-sm">View All &rarr;</a>
+  </div>
+
+  <div class="row g-4">
+    @foreach(posts as p)
+    <div class="col-md-6 col-lg-4">
+      <div class="card h-100 bg-dark border-secondary border-opacity-25 shadow-sm">
+        <div class="card-body d-flex flex-column">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <span class="badge bg-secondary-subtle text-info">{{ $p.category }}</span>
+            <small class="text-muted"><i class="bi bi-eye me-1"></i>{{ $p.views_count }} views</small>
+          </div>
+          <h5 class="card-title text-light fw-bold mb-2">
+            <a href="/posts/{{ $p.id }}" class="text-decoration-none text-light">{{ $p.title }}</a>
+          </h5>
+          <p class="card-text text-secondary small flex-grow-1">
+            {{ $p.content }}
+          </p>
+          <div class="pt-3 border-top border-secondary border-opacity-25 mt-auto">
+            <a href="/posts/{{ $p.id }}" class="btn btn-outline-info btn-sm w-100">
+              Read Article &rarr;
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+    @endforeach
+  </div>
+</div>
+@endsection

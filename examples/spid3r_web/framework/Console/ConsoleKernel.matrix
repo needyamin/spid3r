@@ -1,0 +1,310 @@
+// framework/Console/ConsoleKernel.matrix
+// Spid3rWeb Magic CLI Command Engine
+
+import "framework/Router";
+import "framework/Application";
+import "framework/Database/DB";
+import "framework/Database/Schema";
+import "framework/Database/Migration";
+
+public class ConsoleKernel {
+    public let migrations_list;
+    public let seeders_list;
+
+    fn new() {
+        self.migrations_list = list();
+        self.seeders_list = list();
+    }
+
+    public fn register_migration(self, migration) {
+        self.migrations_list.push(migration);
+    }
+
+    public fn register_seeder(self, seeder_fn) {
+        self.seeders_list.push(seeder_fn);
+    }
+
+    public fn handle(self, cli_args) {
+        if cli_args.len() == 0 or cli_args[0] == "help" or cli_args[0] == "--help" or cli_args[0] == "-h" {
+            self.print_help();
+            return 0;
+        }
+
+        let command = cli_args[0];
+
+        if command == "serve" {
+            let port = "8000";
+            let dry_run = false;
+            let i = 1;
+            while i < cli_args.len() {
+                let p_arg = cli_args[i];
+                if p_arg.starts_with("--port=") {
+                    port = p_arg.replace("--port=", "");
+                } elif p_arg == "--port" and i + 1 < cli_args.len() {
+                    i = i + 1;
+                    port = cli_args[i];
+                } elif p_arg == "--dry-run" or p_arg == "--check" {
+                    dry_run = true;
+                } else {
+                    port = p_arg;
+                }
+                i = i + 1;
+            }
+            return self.command_serve(int(port), dry_run);
+        } elif command == "route:list" {
+            return self.command_route_list();
+        } elif command == "migrate" {
+            return self.command_migrate();
+        } elif command == "migrate:rollback" {
+            return self.command_rollback();
+        } elif command == "migrate:status" {
+            return self.command_migrate_status();
+        } elif command == "db:seed" {
+            return self.command_db_seed();
+        } elif command == "make:controller" {
+            if cli_args.len() < 2 {
+                println("Error: Not enough arguments (missing controller name). Usage: make:controller <Name>");
+                return 1;
+            }
+            return self.command_make_controller(cli_args[1]);
+        } elif command == "make:model" {
+            if cli_args.len() < 2 {
+                println("Error: Not enough arguments (missing model name). Usage: make:model <Name> [-m]");
+                return 1;
+            }
+            let make_mig = false;
+            if cli_args.len() > 2 and cli_args[2] == "-m" {
+                make_mig = true;
+            }
+            return self.command_make_model(cli_args[1], make_mig);
+        } elif command == "make:migration" {
+            if cli_args.len() < 2 {
+                println("Error: Not enough arguments (missing migration name). Usage: make:migration <name>");
+                return 1;
+            }
+            return self.command_make_migration(cli_args[1]);
+        } else {
+            println("Unknown command: '" + command + "'. Run 'spid3r magic help' for a list of available commands.");
+            return 1;
+        }
+    }
+
+    fn print_help(self) {
+        println("==================================================================");
+        println("         Spid3rWeb Magic CLI (Developer Tooling for Spid3r)       ");
+        println("==================================================================");
+        println("Usage:");
+        println("  spid3r magic <command> [arguments] [options]\n");
+        println("Available commands:");
+        println("  serve [--port N]          Start the Spid3rWeb local development server");
+        println("  route:list                List all registered application routes");
+        println("  migrate                   Run outstanding database migrations");
+        println("  migrate:rollback          Rollback the last database migration batch");
+        println("  migrate:status            Show the status of each migration");
+        println("  db:seed                   Seed the database with records");
+        println("  make:controller <Name>    Create a new controller class");
+        println("  make:model <Name> [-m]    Create a new Active Record model (optional migration)");
+        println("  make:migration <name>     Create a new database migration file");
+        println("  help                      Display this help message\n");
+    }
+
+    // ------------------------------------------------------------------------
+    // Command Implementations
+    // ------------------------------------------------------------------------
+
+    fn command_serve(self, port: int, dry_run: bool = false) -> int {
+        println("Starting Spid3rWeb development server: http://127.0.0.1:" + string(port));
+        println("Press Ctrl+C to stop the server.");
+        if dry_run {
+            return 0;
+        }
+        let app = new Application();
+        app.listen(port);
+        return 0;
+    }
+
+    fn command_route_list(self) -> int {
+        let routes = Route.routes();
+        println("\n+--------+------------------------------------+--------------------------------+");
+        println("| Method | URI                                | Action                         |");
+        println("+--------+------------------------------------+--------------------------------+");
+
+        for r in routes {
+            let m_pad = r.method;
+            while m_pad.len() < 6 { m_pad = m_pad + " "; }
+
+            let path_pad = r.path;
+            while path_pad.len() < 34 { path_pad = path_pad + " "; }
+
+            let action_str = "Closure";
+            if type_of(r.handler) == "string" {
+                action_str = r.handler;
+            }
+            let a_pad = action_str;
+            while a_pad.len() < 30 { a_pad = a_pad + " "; }
+
+            println("| " + m_pad + " | " + path_pad + " | " + a_pad + " |");
+        }
+        println("+--------+------------------------------------+--------------------------------+\n");
+        return 0;
+    }
+
+    fn command_migrate(self) -> int {
+        let runner = new MigrationRunner();
+        runner.migrate(self.migrations_list);
+        return 0;
+    }
+
+    fn command_rollback(self) -> int {
+        let runner = new MigrationRunner();
+        runner.rollback(self.migrations_list);
+        return 0;
+    }
+
+    fn command_migrate_status(self) -> int {
+        let runner = new MigrationRunner();
+        runner.status(self.migrations_list);
+        return 0;
+    }
+
+    fn command_db_seed(self) -> int {
+        println("[Database Seeder] Seeding database...");
+        let count = 0;
+        for seeder in self.seeders_list {
+            seeder();
+            count = count + 1;
+        }
+        println("[Database Seeder] Complete. Executed " + string(count) + " seeders.");
+        return 0;
+    }
+
+    fn resolve_root(self) -> string {
+        let candidates = list(
+            "",
+            "examples/spid3r_web/"
+        );
+        for c in candidates {
+            if file_exists(c + "framework/Router.matrix") {
+                return c;
+            }
+        }
+        return "";
+    }
+
+    fn command_make_controller(self, name: string) -> int {
+        let clean_name = name;
+        if not clean_name.ends_with("Controller") {
+            clean_name = clean_name + "Controller";
+        }
+        let file_path = self.resolve_root() + "app/Controllers/" + clean_name + ".matrix";
+
+        let content = "// app/Controllers/" + clean_name + ".matrix
+import \"framework/Response\";
+import \"framework/View/BD\";
+
+public class " + clean_name + " {
+    fn new() {}
+
+    public fn index(self, req) {
+        return json(map(\"message\", \"Hello from " + clean_name + "\"));
+    }
+
+    public fn show(self, req) {
+        let id = req.param(\"id\");
+        return json(map(\"id\", id));
+    }
+}
+";
+        let res = write_file(file_path, content);
+        if res.is_err() {
+            println("[Magic Error] " + res.unwrap_err());
+            return 1;
+        }
+        println("[Magic] Controller created successfully: " + file_path);
+        return 0;
+    }
+
+    fn command_make_model(self, name: string, with_migration: bool) -> int {
+        let file_path = self.resolve_root() + "app/Models/" + name + ".matrix";
+        let table_name = string(name).lower() + "s";
+
+        let content = "// app/Models/" + name + ".matrix
+import \"framework/Database/Model\";
+import \"framework/Database/DB\";
+
+public class " + name + " {
+    public let model;
+
+    fn new(attrs = null) {
+        self.model = new Model(\"" + table_name + "\", list(), attrs);
+    }
+
+    public fn get(self, key: string, default_val = null) {
+        return self.model.get(key, default_val);
+    }
+
+    public fn set(self, key: string, value) {
+        self.model.set(key, value);
+        return self;
+    }
+
+    public fn save(self) {
+        self.model.save();
+        return self;
+    }
+
+    public fn to_map(self) {
+        return self.model.to_map();
+    }
+}
+";
+        let res = write_file(file_path, content);
+        if res.is_err() {
+            println("[Magic Error] " + res.unwrap_err());
+            return 1;
+        }
+        println("[Magic] Model created successfully: " + file_path);
+
+        if with_migration {
+            self.command_make_migration("create_" + table_name + "_table");
+        }
+        return 0;
+    }
+
+    fn command_make_migration(self, name: string) -> int {
+        let ts = string(unix_time());
+        let file_name = ts + "_" + name + ".matrix";
+        let file_path = self.resolve_root() + "database/migrations/" + file_name;
+
+        let content = "// database/migrations/" + file_name + "
+import \"framework/Database/Schema\";
+
+public class Migration_" + ts + " {
+    public let name;
+
+    fn new() {
+        self.name = \"" + name + "\";
+    }
+
+    public fn up(self) {
+        Schema.create(\"sample\", fn(table) {
+            table.id();
+            table.timestamps();
+        });
+    }
+
+    public fn down(self) {
+        Schema.dropIfExists(\"sample\");
+    }
+}
+";
+        let res = write_file(file_path, content);
+        if res.is_err() {
+            println("[Magic Error] " + res.unwrap_err());
+            return 1;
+        }
+        println("[Magic] Migration created successfully: " + file_path);
+        return 0;
+    }
+}
+

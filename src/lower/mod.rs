@@ -85,6 +85,7 @@ pub fn lower(program: &Program) -> Cow<'_, Program> {
         variants: std::collections::HashMap::new(),
         fns: std::collections::HashMap::new(),
         classes: std::collections::HashMap::new(),
+        default_iface_methods: std::collections::HashMap::new(),
     };
     Cow::Owned(l.program(program))
 }
@@ -104,18 +105,37 @@ fn program_needs_lowering(p: &Program) -> bool {
     p.stmts.iter().any(stmt_needs_lowering)
 }
 
+fn is_scalar_default(e: &Expr) -> bool {
+    match e {
+        Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Null(..) => true,
+        Expr::Unary {
+            op: crate::ast::UnOp::Neg,
+            expr,
+            ..
+        } => matches!(&**expr, Expr::Int(..) | Expr::Float(..)),
+        _ => false,
+    }
+}
+
+fn fn_needs_lowering(f: &FnProto) -> bool {
+    f.params
+        .iter()
+        .any(|p| p.default.as_ref().is_some_and(|d| !is_scalar_default(d)))
+        || block_needs_lowering(&f.body)
+}
+
 fn stmt_needs_lowering(s: &Stmt) -> bool {
     match s {
         // `yield` is rewritten by `fn_proto`'s generator pass.
         Stmt::Yield { .. } => true,
-        Stmt::Import { .. } | Stmt::Interface(_) | Stmt::Break { .. } | Stmt::Continue { .. } => {
-            false
-        }
+        Stmt::Import { .. } => true,
+        Stmt::Interface(i) => !i.default_methods.is_empty(),
+        Stmt::Break { .. } | Stmt::Continue { .. } => false,
         // An enum always needs lowering: its declaration becomes constructor
         // functions, and a match always needs lowering into an arm chain.
         Stmt::Enum(_) => true,
-        Stmt::Fn(f) => block_needs_lowering(&f.body),
-        Stmt::Class(c) => c.methods.iter().any(|m| block_needs_lowering(&m.body)),
+        Stmt::Fn(f) => fn_needs_lowering(f),
+        Stmt::Class(c) => !c.interfaces.is_empty() || c.methods.iter().any(fn_needs_lowering),
         Stmt::Let { value, .. } => value.as_ref().map(expr_needs_lowering).unwrap_or(false),
         Stmt::Const { value, .. } => expr_needs_lowering(value),
         // Both always need lowering: they expand into ordinary statements.
@@ -197,7 +217,7 @@ fn expr_needs_lowering(e: &Expr) -> bool {
         // An already-resolved `SuperCall` needs no further lowering.
         Expr::SuperCall { .. } => false,
         Expr::List(items, _) => items.iter().any(expr_needs_lowering),
-        Expr::Fn(f) => block_needs_lowering(&f.body),
+        Expr::Fn(f) => fn_needs_lowering(f),
         Expr::Unary { expr, .. } => expr_needs_lowering(expr),
         Expr::Binary { l, r, .. } | Expr::Logical { l, r, .. } => {
             expr_needs_lowering(l) || expr_needs_lowering(r)
@@ -248,6 +268,8 @@ struct Lower {
     /// Variant name -> payload field names, collected from the program's own
     /// `enum` declarations. A match needs the field names to bind them.
     variants: std::collections::HashMap<String, Vec<String>>,
+    /// Interface name -> default method implementations.
+    default_iface_methods: std::collections::HashMap<String, Vec<FnProto>>,
 }
 
 impl Lower {
@@ -294,6 +316,84 @@ impl Lower {
         // names against these signatures; the reorder is purely positional.
         for s in &p.stmts {
             match s {
+                Stmt::Import { path, alias, span } => {
+                    let selections = alias
+                        .as_deref()
+                        .and_then(crate::modules::parse_import_selections);
+                    if alias.is_none() || selections.is_some() {
+                        if let Ok(exports) = crate::modules::module_exports_of_in(
+                            path,
+                            &span.file,
+                            span,
+                            &crate::modules::default_module_dirs(),
+                        ) {
+                            for i in exports.interfaces {
+                                if !i.default_methods.is_empty() {
+                                    self.default_iface_methods
+                                        .entry(i.name.clone())
+                                        .or_insert_with(|| i.default_methods.clone());
+                                    if let Some(sel) = &selections {
+                                        for (exp, loc) in sel {
+                                            if exp == &i.name && loc != &i.name {
+                                                self.default_iface_methods
+                                                    .entry(loc.clone())
+                                                    .or_insert_with(|| i.default_methods.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            for c in exports.classes {
+                                let mut cp = ClassParams {
+                                    parent: c.parent.clone(),
+                                    ctor: None,
+                                    methods: std::collections::HashMap::new(),
+                                };
+                                for m in &c.methods {
+                                    if m.name.as_deref() == Some("new") {
+                                        cp.ctor = Some(m.params.clone());
+                                    } else if let Some(mn) = &m.name {
+                                        let params = if m.params.first().map(|p| p.name.as_str())
+                                            == Some("self")
+                                        {
+                                            m.params[1..].to_vec()
+                                        } else {
+                                            m.params.clone()
+                                        };
+                                        cp.methods.insert(mn.clone(), params);
+                                    }
+                                }
+                                if let Some(sel) = &selections {
+                                    for (exp, loc) in sel {
+                                        if exp == &c.name && loc != &c.name {
+                                            self.classes.entry(loc.clone()).or_insert_with(|| {
+                                                ClassParams {
+                                                    parent: cp.parent.clone(),
+                                                    ctor: cp.ctor.clone(),
+                                                    methods: cp.methods.clone(),
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                                self.classes.entry(c.name.clone()).or_insert(cp);
+                            }
+                            for e in exports.enums {
+                                for v in &e.variants {
+                                    self.variants
+                                        .entry(v.name.clone())
+                                        .or_insert_with(|| v.fields.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                Stmt::Interface(i) => {
+                    if !i.default_methods.is_empty() {
+                        self.default_iface_methods
+                            .insert(i.name.clone(), i.default_methods.clone());
+                    }
+                }
                 Stmt::Fn(f) => {
                     if let Some(name) = &f.name {
                         self.fns.insert(name.clone(), f.params.clone());
@@ -749,8 +849,48 @@ impl Lower {
                 ..out
             };
         }
+        let mut params = f.params.clone();
+        let mut init_stmts = Vec::new();
+        for p in &mut params {
+            if let Some(d) = p.default.take() {
+                if is_scalar_default(&d) {
+                    p.default = Some(d);
+                } else {
+                    let (d_low, mut pre) = self.expr(&d);
+                    let sp = p.span.clone();
+                    p.default = Some(Expr::Null(sp.clone()));
+                    pre.push(Stmt::Expr(Expr::Assign {
+                        target: Box::new(Expr::Ident(p.name.clone(), sp.clone())),
+                        op: crate::ast::AssignOp::Assign,
+                        value: Box::new(d_low),
+                        span: sp.clone(),
+                    }));
+                    init_stmts.push(Stmt::If {
+                        cond: Expr::Binary {
+                            op: crate::ast::BinOp::Eq,
+                            l: Box::new(Expr::Ident(p.name.clone(), sp.clone())),
+                            r: Box::new(Expr::Null(sp.clone())),
+                            span: sp.clone(),
+                        },
+                        then: Block {
+                            stmts: pre,
+                            span: sp.clone(),
+                        },
+                        elifs: Vec::new(),
+                        els: None,
+                        span: sp,
+                    });
+                }
+            }
+        }
+        let mut body = self.block(&f.body);
+        if !init_stmts.is_empty() {
+            init_stmts.append(&mut body.stmts);
+            body.stmts = init_stmts;
+        }
         FnProto {
-            body: self.block(&f.body),
+            params,
+            body,
             ..f.clone()
         }
     }
@@ -761,7 +901,21 @@ impl Lower {
         // lowering can resolve `super` without the checker rewriting the AST.
         let outer_parent = self.current_parent.clone();
         self.current_parent = c.parent.clone();
-        let methods = c.methods.iter().map(|m| self.fn_proto(m)).collect();
+        let mut raw_methods = c.methods.clone();
+        for iface in &c.interfaces {
+            if let Some(defaults) = self.default_iface_methods.get(iface).cloned() {
+                for dm in defaults {
+                    let dm_name = dm.name.clone().unwrap_or_default();
+                    if !raw_methods
+                        .iter()
+                        .any(|m| m.name.as_deref() == Some(dm_name.as_str()))
+                    {
+                        raw_methods.push(dm);
+                    }
+                }
+            }
+        }
+        let methods = raw_methods.iter().map(|m| self.fn_proto(m)).collect();
         self.current_parent = outer_parent;
         ClassDecl {
             methods,
