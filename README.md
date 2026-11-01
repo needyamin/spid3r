@@ -96,22 +96,26 @@ $ spid3r verify                           # is the vendored tree the one the loc
 ## The language
 
 ```spid3r
-fn add(a: int, b: int) -> int { return a + b; }
-
-class User {
-    public let name;
-    fn new(name) { self.name = name; }
+interface Greetable {
     public fn greet(self) -> string { return "Hi, " + self.name; }
+}
+
+class User implements Greetable {
+    public let name: string;
+    fn new(name: string) { self.name = name; }
+    public static fn guest() { return new User("Guest"); }
 }
 
 fn main() {
     let u = User("Ada");
-    println(u.greet() + " / 2 + 3 = " + string(add(2, 3)));
+    let scores = { "math": 95, "cs": 100 };
+    let doubled = [1, 2, 3].map(x => x * 2);
+    println(u.greet() + " / cs=" + string(scores["cs"]) + " / " + string(doubled));
     return 0;
 }
 ```
 
-Types are optional. Classes, interfaces, closures, `try`/`catch`, `spawn` and channels, 20+ native containers, vectors and matrices — all in the core.
+Types are optional (including nullable `T?` and union `int | string` annotations). Classes with `static fn` methods, interfaces with default method bodies, selective cross-module imports (`import { A, B as C } from "mod"`), arrow closures (`x => expr`), map literals (`{ "k": v }`), raw strings (`r"..."`), `try`/`catch`, `spawn` and channels, 20+ native containers, vectors and matrices — all in the core.
 
 ## Install
 
@@ -141,6 +145,7 @@ cargo install --path . --no-default-features
 | `spid3r init` · `install` · `dist` | projects, dependencies, release build |
 | `spid3r add` · `remove` · `tree` · `verify` | declare, inspect and check dependencies |
 | `spid3r modules` · `publish` · `search` | module origins, registry entries |
+| `spid3r magic <cmd>` | run project-root `magic` framework CLI from any subdirectory |
 
 ## Documentation
 

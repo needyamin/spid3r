@@ -9,23 +9,21 @@ import "http";
 // ============================================================================
 
 fn resolve_db_path() -> string {
-    let candidates = list(
+    let existing = list(
         "data/ecommerce.db",
-        "ecommerce.db",
-        "../data/ecommerce.db",
         "examples/demo_apps/ecommerce/data/ecommerce.db",
-        "examples/demo_apps/ecommerce/ecommerce.db",
-        "c:/Users/needyamin/OneDrive/Desktop/spid3r/examples/demo_apps/ecommerce/data/ecommerce.db",
-        "c:/Users/needyamin/OneDrive/Desktop/spid3r/examples/demo_apps/ecommerce/ecommerce.db"
+        "../data/ecommerce.db"
     );
-    for p in candidates {
-        try {
-            let test_db = db_open(p);
-            test_db.close();
+    for p in existing {
+        if file_exists(p) {
             return p;
-        } catch (_e) {
-            // try next candidate
         }
+    }
+    if is_dir("examples/demo_apps/ecommerce/data") {
+        return "examples/demo_apps/ecommerce/data/ecommerce.db";
+    }
+    if is_dir("../data") {
+        return "../data/ecommerce.db";
     }
     return "data/ecommerce.db";
 }

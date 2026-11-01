@@ -194,6 +194,17 @@ fn candidate_paths() -> Vec<std::path::PathBuf> {
             cur = dir.parent();
         }
     }
+    if cfg!(windows) {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let installed = std::path::PathBuf::from(local)
+                .join("Programs")
+                .join("Spid3r")
+                .join("sqlite3.dll");
+            if installed.is_file() {
+                out.push(installed);
+            }
+        }
+    }
     for name in loader::library_names() {
         out.push(std::path::PathBuf::from(name));
     }

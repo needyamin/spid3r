@@ -20,11 +20,14 @@
 # The wry/tao and LLVM-C DLLs that build.rs copies next to binaries live under
 # target/ (already covered), but guard the root just in case.
 /LLVM-C.dll
+/sqlite3.dll
 
 # --- Test/verification scratch ----------------------------------------------
 # tools/native_diff.sh writes built programs and logs here.
 target/isolated/
-/x.db
+/*.db
+/*.db-shm
+/*.db-wal
 
 # --- Fuzzing artifacts -------------------------------------------------------
 fuzz/target/

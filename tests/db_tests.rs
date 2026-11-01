@@ -41,8 +41,15 @@ fn find_sqlite() -> Option<PathBuf> {
             }
         }
     }
-    // A Python installation commonly ships one (documented convenience).
+    // Installed Spid3r toolchain directory and Python installations on Windows.
     if let Ok(home) = std::env::var("LOCALAPPDATA") {
+        let spid3r_dll = PathBuf::from(&home)
+            .join("Programs")
+            .join("Spid3r")
+            .join("sqlite3.dll");
+        if spid3r_dll.exists() {
+            return Some(spid3r_dll);
+        }
         for entry in std::fs::read_dir(format!("{}\\Programs\\Python", home))
             .into_iter()
             .flatten()

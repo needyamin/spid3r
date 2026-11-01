@@ -2510,9 +2510,9 @@
             const APP_NAME = "Spid3rApp";
             println("Buffer: " + string(MAX_BUFFER) + " for " + APP_NAME);
 
-            // Optional type annotations are supported:
-            let port: int = 8080;
-            let host: string = "127.0.0.1";
+            // Optional, nullable (T?), and union (A | B) type annotations are supported:
+            let port: int | string = 8080;
+            let host: string? = "127.0.0.1";
             let is_secure: bool = false;
             println("Server listening on " + host + ":" + string(port));
             return 0;
@@ -2567,10 +2567,10 @@
               </tr>
               <tr>
                 <td><code>string</code></td>
-                <td>Double quotes</td>
-                <td><code>"hello"</code>, <code>"line 1\nline 2"</code>, <code>"\u{1F600}"</code></td>
+                <td>Double quotes, Raw <code>r"..."</code></td>
+                <td><code>"hello"</code>, <code>r"C:\path\file"</code>, <code>r#"raw "quote""#</code></td>
                 <td>Immutable UTF-8 scalar sequence. Supports negative indexing (<code>s[-1]</code>), character slices,
-                  and interpolation.</td>
+                  raw literals, and interpolation (use <code>\{</code> / <code>\}</code> for literal braces).</td>
               </tr>
               <tr>
                 <td><code>null</code></td>
@@ -2887,8 +2887,8 @@
               <tr>
                 <td><strong>Modules &amp; Casting</strong></td>
                 <td><code>import</code></td>
-                <td><code>import math;</code></td>
-                <td>Imports external scripts or standard library modules.</td>
+                <td><code>import "math" as m;</code> / <code>import { A, B as C } from "mod";</code></td>
+                <td>Imports external scripts or standard library modules (whole-module or selective symbol imports).</td>
               </tr>
               <tr>
                 <td><strong>Modules &amp; Casting</strong></td>
@@ -3046,11 +3046,13 @@
           sequences, and a complete suite of native methods.
         </p>
 
-        <h3 class="section-h3">String Interpolation Syntax</h3>
+        <h3 class="section-h3">String Interpolation &amp; Raw Strings</h3>
         <p>
           Spid3r supports concise string interpolation using <code>{identifier}</code> or <code>{object.field}</code>.
           Note: there must be <strong>no whitespace inside the braces</strong> (e.g. <code>"{name}"</code> works, while
-          <code>"{ name }"</code> remains literal text for templating compatibility).
+          <code>"{ name }"</code> remains literal text for templating compatibility). Escape braces with
+          <code>\{</code> and <code>\}</code> when literal braces are needed, or use raw string literals
+          (<code>r"..."</code> and <code>r#"..."#</code>) where backslashes and braces are never interpreted.
         </p>
 
         <div class="table-wrap">
@@ -3292,11 +3294,14 @@
           returned from closures, and chained using higher-order collection methods.
         </p>
 
-        <h3 class="section-h3">Function Syntax &amp; Default Parameters</h3>
+        <h3 class="section-h3">Function Syntax, Arrow Closures &amp; Default Parameters</h3>
         <p>
-          Declare functions using <code>fn name(params) -> return_type { ... }</code>. Trailing parameters may specify
-          default constant literals. Unused parameters prefixed with an underscore (such as <code>_event</code>)
-          suppress unused-parameter compiler warnings.
+          Declare functions using <code>fn name(params) -> return_type { ... }</code>, or write concise inline closures
+          with arrow syntax: <code>x =&gt; x * 2</code>, <code>(a, b) =&gt; a + b</code>, or
+          <code>() =&gt; "ready"</code>. Trailing parameters may specify default scalar or collection literals
+          (such as <code>items = []</code> or <code>opts = {}</code>, which allocate a fresh mutable collection on every
+          call). Unused parameters prefixed with an underscore (such as <code>_event</code>) suppress unused-parameter
+          compiler warnings.
         </p>
 
         <!-- Example Card 8 -->
@@ -3326,15 +3331,15 @@ let acc = make_accumulator(100);
 println(" acc(20): " + string(acc(20))); // 120
 println(" acc(15): " + string(acc(15))); // 135
 
-// Functional higher-order methods (.map, .filter, .reduce):
+// Functional higher-order methods with concise arrow closures (.map, .filter, .reduce):
 let nums = [1, 2, 3, 4, 5, 6];
 let squared_evens = nums
-    .filter(fn(x) { return x % 2 == 0; })
-    .map(fn(x) { return x * x; });
+    .filter(x => x % 2 == 0)
+    .map(x => x * x);
 
 println(" Squared evens: " + string(squared_evens)); // [4, 16, 36]
 
-let sum_all = nums.reduce(0, fn(acc, n) { return acc + n; });
+let sum_all = nums.reduce(0, (acc, n) => acc + n);
 println(" Sum via reduce: " + string(sum_all));      // 21
 </div>
           <div class=" w3-card-footer">
@@ -3498,8 +3503,10 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           <li id="oop-super"><strong>Super Delegation:</strong> Subclasses call <code>super(args)</code> in their
             constructor to initialize the parent fields, and <code>super.method(args)</code> to delegate to the parent
             method.</li>
-          <li id="oop-abstract"><strong>Abstract Classes:</strong> Declared with <code>abstract class Base</code>,
-            abstract classes define method contracts that cannot be instantiated directly.</li>
+          <li id="oop-abstract"><strong>Abstract Classes &amp; Static Methods:</strong> Declared with
+            <code>abstract class Base</code>, abstract classes define method contracts that cannot be instantiated
+            directly. Classes may also declare class-level methods with <code>public static fn name(args) { ... }</code>
+            (called directly on the class as <code>ClassName.name(args)</code> without <code>self</code>).</li>
         </ul>
 
         <!-- Example Card 11 -->
@@ -3557,10 +3564,11 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           </div>
         </div>
 
-        <h3 class="section-h3" id="oop-interfaces">Interfaces &amp; Polymorphism</h3>
+        <h3 class="section-h3" id="oop-interfaces">Interfaces, Default Methods &amp; Polymorphism</h3>
         <p>
-          Interfaces define structural method contracts that implementing classes must satisfy. The semantic checker
-          statically verifies that all methods match:
+          Interfaces define structural method contracts that implementing classes must satisfy. Interfaces can also
+          provide default method implementations (<code>fn describe(self) -> string { ... }</code>) that implementing
+          classes inherit automatically unless overridden:
         </p>
 
         <!-- Example Card 12 -->
@@ -3655,7 +3663,7 @@ println(" Sum via reduce: " + string(sum_all));      // 21
               </tr>
               <tr id="maps">
                 <td><strong>Map</strong></td>
-                <td><code>map("k", 1)</code></td>
+                <td><code>map("k", 1)</code> or <code>{"k": 1}</code></td>
                 <td><code>get</code>, <code>set</code>, <code>m[k]</code>, <code>remove</code>, <code>has</code>,
                   <code>keys</code>, <code>values</code>, <code>items</code>, <code>len</code>, <code>clear</code>
                 </td>
@@ -4397,10 +4405,11 @@ println(" Sum via reduce: " + string(sum_all));      // 21
         <h3 class="section-h3" id="stdlib-modules">The 29 Standard Library Modules (<code>stdlib/</code>)</h3>
         <p>
           Spid3r includes 29 zero-dependency standard library modules in <code>stdlib/</code>, automatically
-          discoverable via <code>import "name" as alias;</code>. In Spid3r, top-level symbols in imported files must be
-          marked with the <code>public</code> modifier (e.g., <code>public fn</code>, <code>public class</code>,
-          <code>public let</code>) to be exported; unexported names are private to their module and cannot be accessed
-          externally.
+          discoverable via <code>import "name" as alias;</code> or selective symbol imports
+          (<code>import { ClassA, helper as h } from "name";</code>). In Spid3r, top-level symbols in imported files must
+          be marked with the <code>public</code> modifier (e.g., <code>public fn</code>, <code>public class</code>,
+          <code>public interface</code>, <code>public enum</code>, <code>public let</code>) to be exported; unexported
+          names are private to their module and cannot be accessed externally.
         </p>
         <div class="table-wrap">
           <table>
