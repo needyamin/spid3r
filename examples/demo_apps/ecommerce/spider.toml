@@ -1,0 +1,10 @@
+[package]
+name = "ecommerce"
+version = "1.0.0"
+entry = "src/server.matrix"
+description = "Professional Mini E-Commerce Platform with Spid3r HTTP REST backend, SQLite 3 persistence, and Bootstrap 5 + jQuery frontend."
+
+[dependencies]
+# Zero external packages required: Spid3r standard library provides
+# native HTTP/1.1 networking, SQLite 3 dynamic bindings, JSON serialization,
+# and thread synchronization.

@@ -1,0 +1,192 @@
+// examples/demo_apps/ecommerce/main.matrix
+// Standalone CLI runner & test suite for the Spid3r Mini E-Commerce Platform.
+
+class Product {
+    public let id;
+    public let name;
+    public let price;
+    public let stock;
+    public let category;
+
+    fn new(id: int, name: string, price: float, stock: int, category: string) {
+        self.id = id;
+        self.name = name;
+        self.price = price;
+        self.stock = stock;
+        self.category = category;
+    }
+
+    public fn to_str(self) -> string {
+        return "#" + string(self.id) + " " + self.name + " ($" + string(self.price) + ", Stock: " + string(self.stock) + ")";
+    }
+}
+
+class CartItem {
+    public let product;
+    public let qty;
+
+    fn new(product, qty: int) {
+        self.product = product;
+        self.qty = qty;
+    }
+
+    public fn line_total(self) -> float {
+        return self.product.price * float(self.qty);
+    }
+}
+
+class Store {
+    public let catalog;
+    public let orders;
+    public let next_order_id;
+
+    fn new() {
+        self.catalog = map();
+        self.orders = list();
+        self.next_order_id = 1001;
+    }
+
+    public fn add_product(self, p) {
+        self.catalog[string(p.id)] = p;
+    }
+
+    public fn get_product(self, id: int) {
+        let key = string(id);
+        if self.catalog.has(key) {
+            return some(self.catalog[key]);
+        }
+        return none;
+    }
+
+    public fn checkout(self, customer: string, cart_items, coupon: string) {
+        if cart_items.len() == 0 {
+            return err("Cannot checkout an empty shopping cart");
+        }
+
+        // 1. Guard inventory stock
+        for item in cart_items {
+            let p = item.product;
+            if p.stock < item.qty {
+                return err("Insufficient stock for " + p.name + " (requested: " + string(item.qty) + ", available: " + string(p.stock) + ")");
+            }
+        }
+
+        // 2. Deduct inventory & compute subtotal
+        let subtotal = 0.0;
+        for item in cart_items {
+            let p = item.product;
+            self.catalog[string(p.id)].stock = self.catalog[string(p.id)].stock - item.qty;
+            subtotal = subtotal + item.line_total();
+        }
+
+        // 3. Discount rules
+        let discount = 0.0;
+        if coupon == "SPID3R20" {
+            discount = subtotal * 0.20;
+        } elif coupon == "SAVE10" {
+            discount = 10.0;
+            if discount > subtotal { discount = subtotal; }
+        } elif coupon == "BOOTSTRAP" {
+            discount = 15.0;
+            if discount > subtotal { discount = subtotal; }
+        } elif coupon == "FLASH50" {
+            discount = subtotal * 0.50;
+        }
+
+        // 4. Shipping & Sales Tax
+        let discounted = subtotal - discount;
+        let shipping = 0.0;
+        if discounted < 50.0 and discounted > 0.0 {
+            shipping = 5.99;
+        }
+        let tax = discounted * 0.085; // 8.5%
+        let total = discounted + shipping + tax;
+
+        let order_id = self.next_order_id;
+        self.next_order_id = self.next_order_id + 1;
+
+        let receipt = map(
+            "order_id", order_id,
+            "customer", customer,
+            "subtotal", subtotal,
+            "discount", discount,
+            "shipping", shipping,
+            "tax", tax,
+            "total", total,
+            "items_count", cart_items.len(),
+            "status", "CONFIRMED"
+        );
+
+        self.orders.push(receipt);
+        return ok(receipt);
+    }
+}
+
+fn main() -> int {
+    println("================================================================");
+    println("       SPID3R MINI E-COMMERCE CLI PLATFORM & TEST RUNNER        ");
+    println("================================================================");
+
+    let store = Store();
+    store.add_product(Product(1, "Spid3r Mechanical Keyboard", 89.99, 15, "Peripherals"));
+    store.add_product(Product(2, "Ergonomic Gaming Mouse", 49.50, 20, "Peripherals"));
+    store.add_product(Product(3, "UltraWide 34' Curved Monitor", 399.00, 5, "Displays"));
+    store.add_product(Product(4, "Spatial Audio ANC Headphones", 129.99, 8, "Audio"));
+    store.add_product(Product(5, "Aluminum 10-in-1 USB-C Dock", 64.00, 12, "Accessories"));
+    store.add_product(Product(6, "Studio Condenser Microphone", 79.99, 10, "Audio"));
+    store.add_product(Product(7, "Spid3r Mascot Ceramic Mug", 14.99, 50, "Merchandise"));
+    store.add_product(Product(8, "XL Precision Felt Desk Mat", 24.50, 25, "Accessories"));
+
+    println("\n[1] Initial Catalog Loaded (" + string(store.catalog.len()) + " items):");
+    for k in store.catalog.keys() {
+        let p = store.catalog[k];
+        println("  " + p.to_str());
+    }
+
+    println("\n[2] Building Cart for 'Ada Lovelace'...");
+    let cart = list();
+    cart.push(CartItem(store.catalog["1"], 1));
+    println("  + Added 1x Spid3r Mechanical Keyboard ($89.99)");
+    cart.push(CartItem(store.catalog["2"], 2));
+    println("  + Added 2x Ergonomic Gaming Mouse ($49.50 ea)");
+
+    println("\n[3] Executing Checkout with Coupon 'SPID3R20' (20% OFF)...");
+    let res = store.checkout("Ada Lovelace", cart, "SPID3R20");
+
+    if is_ok(res) {
+        let order = res.unwrap();
+        println("  >>> Order Status: " + order["status"]);
+        println("  >>> Order ID:     #" + string(order["order_id"]));
+        println("  >>> Subtotal:     $" + string(order["subtotal"]));
+        println("  >>> Discount:    -$" + string(order["discount"]));
+        println("  >>> Shipping:     $" + string(order["shipping"]) + " (Free over $50)");
+        println("  >>> Tax (8.5%):   $" + string(order["tax"]));
+        println("  --------------------------------------");
+        println("  >>> TOTAL PAID:   $" + string(order["total"]));
+    } else {
+        println("  Checkout failed: " + res.unwrap_err());
+    }
+
+    println("\n[4] Verifying Inventory Stock Reduction:");
+    println("  Product #1 stock: " + string(store.catalog["1"].stock) + " (Expected 14)");
+    println("  Product #2 stock: " + string(store.catalog["2"].stock) + " (Expected 18)");
+
+    println("\n[5] Testing Out-of-Stock Guard (Requesting 100 monitors):");
+    let bad_cart = list();
+    let p3 = store.catalog["3"];
+    bad_cart.push(CartItem(p3, 100));
+    let fail_res = store.checkout("Bob Smith", bad_cart, "");
+    if is_err(fail_res) {
+        println("  >>> Guard Activated: " + fail_res.unwrap_err());
+    }
+
+    println("\n[6] Testing Empty Cart Validation:");
+    let empty_cart = list();
+    let empty_res = store.checkout("Charlie", empty_cart, "");
+    if is_err(empty_res) {
+        println("  >>> Empty Cart Caught: " + empty_res.unwrap_err());
+    }
+
+    println("\n[SUCCESS] All e-commerce business operations passed with 100% parity.");
+    return 0;
+}

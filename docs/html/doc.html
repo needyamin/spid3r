@@ -1335,9 +1335,6 @@
         title="Open Interactive In-Browser Runtime">
         <span>⚡</span> In-Browser Runtime
       </a>
-      <a href="plugin.html" class="btn-top" title="Developer guide to writing plugins">
-        <span>🔌</span> Plugins
-      </a>
     </div>
   </header>
 
@@ -1358,7 +1355,8 @@
           <a href="#hello-world" class="sb-link"><span>Your First Program</span></a>
           <a href="#architecture" class="sb-link"><span>Engine Architecture</span></a>
           <a href="#cli" class="sb-link"><span>Toolchain CLI</span><span class="sb-tag">spid3r</span></a>
-          <a href="#module-resolution" class="sb-link"><span>Module Resolution</span><span class="sb-tag">import</span></a>
+          <a href="#module-resolution" class="sb-link"><span>Module Resolution</span><span
+              class="sb-tag">import</span></a>
           <a href="#ecosystem" class="sb-link"><span>Ecosystem &amp; Trust</span><span class="sb-tag">pkg</span></a>
         </div>
       </div>
@@ -1486,6 +1484,21 @@
         <div class="sb-links">
           <a href="benchmark.html" class="sb-link"><span>Benchmarks</span></a>
         </div>
+
+        <div class="sb-links">
+          <a href="project.html" class="sb-link">
+            Projects
+          </a>
+        </div>
+
+        <div class="sb-links">
+          <a href="plugin.html" class="sb-link">
+            Plugins
+          </a>
+        </div>
+
+
+
       </div>
 
     </nav>
@@ -1564,7 +1577,8 @@
             <p style="font-size: 13.5px; margin-bottom: 8px;">
               Run this single command in your terminal. It detects your operating system and CPU architecture, downloads
               the pre-built binary, installs it into <code>~/.spid3r/bin</code> (override with
-              <code>--dir &lt;path&gt;</code> or <code>SPID3R_INSTALL_DIR</code>), deletes any <code>stdlib/</code> folder
+              <code>--dir &lt;path&gt;</code> or <code>SPID3R_INSTALL_DIR</code>), deletes any <code>stdlib/</code>
+              folder
               left by an older install (the standard library is compiled into the binary), adds that directory to your
               shell <code>PATH</code> (<code>--no-modify-path</code> to skip), and verifies execution:
             </p>
@@ -1586,7 +1600,8 @@
               <li>Adds the <code>spid3r.exe</code> compiler and VM toolchain to your system <code>PATH</code>.</li>
               <li>Registers <code>.matrix</code> source files so double-clicking executes them.</li>
               <li>Installs no separate standard-library folder: every <code>stdlib</code> module is compiled into
-                <code>spid3r.exe</code>, so <code>import "json"</code> works with nothing else on disk.</li>
+                <code>spid3r.exe</code>, so <code>import "json"</code> works with nothing else on disk.
+              </li>
             </ul>
 
             <!-- Option 3: Cargo Source Build -->
@@ -2086,14 +2101,15 @@
         </div>
         <p>
           Two things this page will not overstate. Capability filtering is a <strong>policy filter, not a
-          sandbox</strong>: it replaces known builtin natives with stubs that return a catchable
+            sandbox</strong>: it replaces known builtin natives with stubs that return a catchable
           <code>capability denied</code> error, and a host function a plugin registers keeps whatever authority it was
           given — no filter can take that back. And dependency installation <strong>never executes package
-          code</strong> — there are no build scripts, unlike Cargo — which is a real security advantage and is
+            code</strong> — there are no build scripts, unlike Cargo — which is a real security advantage and is
           deliberate.
         </p>
 
-        <h4 id="packages" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">Packages</h4>
+        <h4 id="packages" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Packages</h4>
         <p>
           A package is a directory with a <code>spider.toml</code> and a <code>src/</code> tree. <code>spidr add</code>
           declares it and vendors it in one step, <code>spidr tree</code> shows what that resolved to,
@@ -2115,7 +2131,8 @@
           <div style="color: var(--fg-primary);">spid3r publish --to-dir ../registry</div>
         </div>
 
-        <h4 id="plugins" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">Plugins</h4>
+        <h4 id="plugins" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Plugins</h4>
         <p>
           Host plugins work today. A plugin declares itself in a <code>plugin.toml</code>, implements one trait, and is
           registered by its host at startup. There is <strong>no dynamic loading</strong>: a plugin is compiled into
@@ -2159,19 +2176,25 @@
           implementation, a host binary and two scripts, including one that demonstrates the gate. See
           <code>docs/PLUGINS.md</code> for the full contract.
         </p>
-        <h5 id="wasm-plugins" style="font-size: 0.98rem; font-weight: 600; margin: 20px 0 8px; color: var(--fg-primary);">WASM plugins: the sandboxed route</h5>
+        <h5 id="wasm-plugins"
+          style="font-size: 0.98rem; font-weight: 600; margin: 20px 0 8px; color: var(--fg-primary);">WASM plugins: the
+          sandboxed route</h5>
         <p>
           A WASM plugin is the opposite of a host plugin: it exists only as a file. The toolchain reads
-          <code>plugin.toml</code> and <code>plugin.wasm</code> from the plugin search path and interprets the module, so
+          <code>plugin.toml</code> and <code>plugin.wasm</code> from the plugin search path and interprets the module,
+          so
           <code>spidr run</code> can call it without the binary being rebuilt.
         </p>
         <div
           style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
           <div style="color: var(--fg-muted); margin-bottom: 4px;"># discovery order</div>
-          <div style="color: var(--fg-primary); margin-bottom: 8px;">SPID3R_PLUGINS · ./plugins · &lt;exe&gt;/plugins · ~/.spidr/plugins</div>
+          <div style="color: var(--fg-primary); margin-bottom: 8px;">SPID3R_PLUGINS · ./plugins · &lt;exe&gt;/plugins ·
+            ~/.spidr/plugins</div>
           <div style="color: var(--fg-muted); margin-bottom: 4px;"># run a program that calls a sandboxed plugin</div>
-          <div style="color: var(--cyan); margin-bottom: 8px;">SPID3R_PLUGINS=examples/plugins spid3r run app.matrix</div>
-          <div style="color: var(--fg-muted); margin-bottom: 4px;"># the guest must export its memory and two helpers</div>
+          <div style="color: var(--cyan); margin-bottom: 8px;">SPID3R_PLUGINS=examples/plugins spid3r run app.matrix
+          </div>
+          <div style="color: var(--fg-muted); margin-bottom: 4px;"># the guest must export its memory and two helpers
+          </div>
           <div style="color: var(--fg-primary);">memory · alloc(i32) -&gt; i32 · dealloc(i32, i32)</div>
         </div>
         <p>
@@ -2221,7 +2244,8 @@
               <tr>
                 <td><code>spidr plugin abi|list|check</code></td>
                 <td>works — <code>abi</code> prints the version, <code>list</code> reports the search path,
-                  <code>check</code> validates a directory against ABI v1</td>
+                  <code>check</code> validates a directory against ABI v1
+                </td>
               </tr>
               <tr>
                 <td><code>spidr plugin enable/disable</code></td>
@@ -4557,17 +4581,20 @@ println(" Sum via reduce: " + string(sum_all));      // 21
               <tr>
                 <td><code>import "toml" as toml;</code></td>
                 <td><code>toml.toml_parse(text)</code>, <code>toml.toml_get(m, path)</code> — not
-                  <code>parse()</code></td>
+                  <code>parse()</code>
+                </td>
               </tr>
               <tr>
                 <td><code>import "event" as ev;</code></td>
                 <td><code>ev.start()</code>, <code>ev.run(loop, timeout_ms)</code>, <code>ev.stop(loop)</code>,
-                  <code>ev.on_readable(loop, conn, cb)</code> — not <code>new()</code></td>
+                  <code>ev.on_readable(loop, conn, cb)</code> — not <code>new()</code>
+                </td>
               </tr>
               <tr>
                 <td><code>bcrypt_hash</code> <em>(builtin)</em></td>
                 <td><code>bcrypt_hash(pw, cost=10)</code>, <code>bcrypt_verify(pw, hash)</code> — no
-                  <code>import</code> needed; <code>cost</code> must be <strong>4–31</strong></td>
+                  <code>import</code> needed; <code>cost</code> must be <strong>4–31</strong>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -4701,7 +4728,8 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; overflow-x: auto;">
           <div style="color: var(--fg-primary);">let engine = Engine::new().deny(Capability::FileSystem);</div>
           <div style="color: var(--fg-primary);">let engine = Engine::new().deny_all();</div>
-          <div style="color: var(--fg-muted); margin-top: 6px;"># Capability::FileSystem | Process | Network | Environment</div>
+          <div style="color: var(--fg-muted); margin-top: 6px;"># Capability::FileSystem | Process | Network |
+            Environment</div>
         </div>
 
         <figure class="diagram">
@@ -4872,6 +4900,7 @@ println(" Sum via reduce: " + string(sum_all));      // 21
     <div class="footer-links">
       <a href="doc.html">Documentation Home</a>
       <a href="playground.html">Interactive WASM Playground</a>
+      <a href="project.html">Live Projects &amp; E-Commerce Demo</a>
     </div>
     <p>
       Spid3r Programming Language — Built with zero external dependencies compiled to native machine code &amp;
