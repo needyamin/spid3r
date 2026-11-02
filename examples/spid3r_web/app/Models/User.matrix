@@ -1,51 +1,37 @@
 // app/Models/User.matrix
+// Spid3rWeb User Model — Modern Active Record with Inheritance & Static Methods
+
 import "framework/Database/Model";
 import "framework/Database/DB";
 
-public class User {
+public class User extends Model {
     public let model;
 
     fn new(attrs = null) {
-        self.model = new Model("users", list("name", "email", "password"), attrs);
+        super("users", ["name", "email", "password"], attrs);
+        self.model = self;
     }
 
-    public fn get(self, key: string, default_val = null) {
-        return self.model.get(key, default_val);
-    }
-
-    public fn set(self, key: string, value) {
-        self.model.set(key, value);
-        return self;
-    }
-
-    public fn save(self) {
-        self.model.save();
-        return self;
-    }
-
-    public fn update(self, attrs) {
-        self.model.update(attrs);
-        return self;
-    }
-
-    public fn delete(self) {
-        return self.model.delete();
-    }
-
-    public fn to_map(self) {
-        return self.model.to_map();
-    }
+    // ------------------------------------------------------------------------
+    // Relationships
+    // ------------------------------------------------------------------------
 
     public fn posts(self) {
         let user_id = self.get("id");
         return DB.table("posts").where("user_id", "=", user_id).get();
     }
-}
 
-public class UserStatic {
-    fn new() {}
+    // ------------------------------------------------------------------------
+    // Static Query & Persistence Methods
+    // ------------------------------------------------------------------------
 
-    public fn find(self, id) {
+    public static fn query() {
+        let _ = self;
+        return DB.table("users");
+    }
+
+    public static fn find(id) {
+        let _ = self;
         let row = DB.table("users").where("id", "=", id).first();
         if row != null {
             return new User(row);
@@ -53,7 +39,8 @@ public class UserStatic {
         return null;
     }
 
-    public fn findByEmail(self, email: string) {
+    public static fn findByEmail(email: string) {
+        let _ = self;
         let clean = string(email).trim().lower();
         let row = DB.table("users").where("email", "=", clean).first();
         if row != null {
@@ -62,15 +49,17 @@ public class UserStatic {
         return null;
     }
 
-    public fn create(self, attrs) {
+    public static fn create(attrs) {
+        let _ = self;
         let user = new User(attrs);
         user.save();
         return user;
     }
 
-    public fn all(self) {
+    public static fn all() {
+        let _ = self;
         let rows = DB.table("users").get();
-        let users = list();
+        let users = [];
         for r in rows {
             users.push(new User(r));
         }
@@ -78,4 +67,8 @@ public class UserStatic {
     }
 }
 
-public let UserModel = new UserStatic();
+// ----------------------------------------------------------------------------
+// Backwards Compatibility Aliases
+// ----------------------------------------------------------------------------
+public let UserModel = User;
+public let UserStatic = User;

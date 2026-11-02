@@ -32,7 +32,7 @@ public class Response {
     }
 
     public fn cookie(self, name: string, value: string, path: string = "/", max_age: int = 86400) {
-        let cookie_str = name + "=" + value + "; Path=" + path + "; Max-Age=" + string(max_age) + "; SameSite=Lax";
+        let cookie_str = name + "=" + value + "; Path=" + path + "; Max-Age=" + string(max_age) + "; HttpOnly; SameSite=Lax";
         self.headers["set-cookie"] = cookie_str;
         return self;
     }
@@ -64,6 +64,13 @@ public fn json(data, status: int = 200) {
 public fn html(content: string, status: int = 200) {
     let res = new Response(content, status);
     res.header("content-type", "text/html; charset=utf-8");
+    return res;
+}
+
+public fn text_405(allow: string) {
+    let res = new Response("405 Method Not Allowed", 405);
+    res.header("content-type", "text/plain; charset=utf-8");
+    res.header("allow", allow);
     return res;
 }
 

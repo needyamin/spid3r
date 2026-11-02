@@ -5,6 +5,7 @@ import "framework/Application";
 import "routes/web";
 import "routes/api";
 import "app/Models/User";
+import "framework/Database/DB";
 
 fn test_lifecycle_requests() {
     let app = new Application();
@@ -136,5 +137,7 @@ fn test_lifecycle_requests() {
 fn main() {
     println("\n=== Running HTTP Lifecycle Test Suite ===");
     test_lifecycle_requests();
+    DB.close();
     println("=== All HTTP Lifecycle Tests Passed! ===\n");
+    return 0;
 }

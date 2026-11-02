@@ -1,0 +1,425 @@
+// tests/e2e/tier1_features_advanced.matrix
+// Tier 1: Feature Coverage for Middleware, SpiderBD, Auth, Hash, and Static Delivery (F12-F17)
+
+import "tests/e2e/test_helpers";
+import "framework/Middleware";
+import "framework/View/BD";
+import "framework/Auth/Auth";
+import "framework/Auth/Hash";
+import "framework/Application";
+import "framework/Response";
+import "framework/Request";
+import "app/Models/User";
+
+fn unique_suffix() -> string {
+    return string(unix_ms()) + "_" + string(random_int(1000, 9999));
+}
+
+fn main() {
+    println("\n==================================================================");
+    println("  Tier 1: Feature Coverage - Middleware, Views, Auth & Static   ");
+    println("==================================================================");
+
+    let runner = new TestRunner("Tier 1: Advanced Features");
+
+    // ------------------------------------------------------------------------
+    // Feature 12: Global & Route Middleware Pipeline
+    // ------------------------------------------------------------------------
+
+    runner.test("F12.1: Pipeline sequential execution", fn() {
+        let p = new Pipeline();
+        let log = list();
+
+        let mw1 = map("handle", fn(_r) {
+            log.push("m1");
+            return null;
+        });
+        let mw2 = map("handle", fn(_r) {
+            log.push("m2");
+            return null;
+        });
+
+        p.send(new Request()).through(list(mw1, mw2)).then(fn(_r) {
+            log.push("dest");
+            return response("done", 200);
+        });
+
+        test_assert_eq(log.len(), 3, "Pipeline should execute 2 middlewares and destination");
+        test_assert_eq(log[0], "m1", "First middleware executed");
+        test_assert_eq(log[1], "m2", "Second middleware executed");
+        test_assert_eq(log[2], "dest", "Destination handler executed");
+    });
+
+    runner.test("F12.2: Pipeline short-circuit on non-null response", fn() {
+        let p = new Pipeline();
+        let dest_ran = false;
+
+        let blocking_mw = map("handle", fn(_r) {
+            return response("blocked", 403);
+        });
+
+        let res = p.send(new Request()).through(list(blocking_mw)).then(fn(_r) {
+            dest_ran = true;
+            return response("ok", 200);
+        });
+
+        test_assert(not dest_ran, "Destination must not execute when middleware returns response");
+        test_assert_eq(res.status_code, 403, "Response from blocking middleware should be returned");
+    });
+
+    runner.test("F12.3: Pipeline pass-through when middleware returns null", fn() {
+        let p = new Pipeline();
+        let pass_mw = map("handle", fn(_r) { return null; });
+
+        let res = p.send(new Request()).through(list(pass_mw)).then(fn(_r) {
+            return response("passed", 200);
+        });
+
+        test_assert_eq(res.body, "passed", "Destination should execute when middleware returns null");
+    });
+
+    runner.test("F12.4: CorsMiddleware handles OPTIONS request with 204", fn() {
+        let cors = new CorsMiddleware();
+        let req_opt = new Request(make_request("OPTIONS", "/api/v1/posts"));
+        let res = cors.handle(req_opt);
+
+        test_assert_not_null(res, "CORS middleware should intercept OPTIONS");
+        test_assert_eq(res.status_code, 204, "CORS preflight should return 204 No Content");
+        test_assert(res.headers.has("access-control-allow-origin"), "Must have CORS allow-origin header");
+    });
+
+    runner.test("F12.5: AuthMiddleware blocks unauthenticated requests", fn() {
+        Auth.clear();
+        let auth_mw = new AuthMiddleware();
+
+        // 1. API request without auth -> 401
+        let req_api = new Request(make_request("GET", "/api/v1/posts"));
+        let res_api = auth_mw.handle(req_api);
+        test_assert_not_null(res_api, "Auth middleware should intercept unauthenticated API request");
+        test_assert_eq(res_api.status_code, 401, "API unauthenticated response should be 401");
+
+        // 2. Web request without auth -> 302 redirect
+        let req_web = new Request(make_request("GET", "/posts/create"));
+        let res_web = auth_mw.handle(req_web);
+        test_assert_not_null(res_web, "Auth middleware should intercept unauthenticated web request");
+        test_assert_eq(res_web.status_code, 302, "Web unauthenticated response should redirect 302");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 13: SpiderBD Variable Interpolation (Dot-Notation)
+    // ------------------------------------------------------------------------
+
+    runner.test("F13.1: SpiderBD simple variable interpolation", fn() {
+        let temp_view = "resources/views/e2e_var_test.bd.html";
+        write_file(temp_view, "<h1>" + "{{" + " title " + "}}" + "</h1>");
+        let rendered = global_bd.render("e2e_var_test", map("title", "Hello Spid3r"));
+        file_delete(temp_view);
+
+        test_assert_contains(rendered, "<h1>Hello Spid3r</h1>", "Variable title should interpolate");
+    });
+
+    runner.test("F13.2: SpiderBD raw unescaped output", fn() {
+        let temp_view = "resources/views/e2e_raw_test.bd.html";
+        write_file(temp_view, "<div>" + "{!!" + " raw_html " + "!!}" + "</div>");
+        let raw = "<strong>bold & safe</strong>";
+        let rendered = global_bd.render("e2e_raw_test", map("raw_html", raw));
+        file_delete(temp_view);
+
+        test_assert_contains(rendered, raw, "Raw directive must not escape HTML tags");
+    });
+
+    runner.test("F13.3: SpiderBD escaped HTML entities", fn() {
+        let raw = "<script>alert('xss')</script>";
+        let escaped = html_escape(raw);
+        test_assert(not escaped.contains("<script>"), "Escaped variable must not contain raw <script>");
+        test_assert_contains(escaped, "&lt;script&gt;", "Tags must be escaped to &lt; &gt;");
+    });
+
+    runner.test("F13.4: SpiderBD nested dot-notation variable interpolation (M3 contract)", fn() {
+        // Contract requirement: PROJECT.md Feature 10 / Survey 1:
+        // Support nested variable access ({{ post.title }}, {!! user.name !!}) outside @foreach
+        let rendered = global_bd.render("posts.show", map(
+            "post", map(
+                "id", 1,
+                "title", "Modern Spid3r Web",
+                "slug", "modern-spid3r",
+                "content", "Full stack framework for Spid3r.",
+                "category", "Web",
+                "views_count", 42
+            ),
+            "is_auth", false
+        ));
+        test_assert_contains(rendered, "Modern Spid3r Web", "Dot notation post.title should resolve in posts.show view");
+    });
+
+    runner.test("F13.5: SpiderBD whitespace tolerance in tags", fn() {
+        let temp_view = "resources/views/e2e_space_test.bd.html";
+        write_file(temp_view, "<div>" + "{{" + "$name" + "}}" + " " + "{{" + "  $name  " + "}}" + "</div>");
+        let rendered = global_bd.render("e2e_space_test", map("name", "Spid3r"));
+        file_delete(temp_view);
+
+        test_assert_contains(rendered, "Spid3r Spid3r", "No-space and multiple-space tags should interpolate");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 14: SpiderBD Directives & Layout Inheritance
+    // ------------------------------------------------------------------------
+
+    runner.test("F14.1: SpiderBD @extends and @yield layout structure", fn() {
+        let rendered = global_bd.render("home", map(
+            "title", "Home Test Page",
+            "posts", list(),
+            "is_auth", false,
+            "total_posts", 0,
+            "total_users", 0
+        ));
+        test_assert_contains(rendered, "<title>Welcome to Spid3rWeb</title>", "Layout title should be rendered via yield");
+        test_assert_contains(rendered, "The Web Framework for", "Home view content section should be yielded into layout");
+    });
+
+    runner.test("F14.2: SpiderBD @section parsing and rendering", fn() {
+        let rendered = global_bd.render("auth.login", map(
+            "title", "Sign In - Test",
+            "error", "Custom Error Message"
+        ));
+        test_assert_contains(rendered, "<title>Sign In - Spid3rWeb</title>", "Login view section title should be yielded");
+        test_assert_contains(rendered, "Custom Error Message", "Error message section content should be rendered");
+    });
+
+    runner.test("F14.3: SpiderBD @yield default fallback", fn() {
+        let temp_layout = "resources/views/layouts/e2e_layout_test.bd.html";
+        let temp_view = "resources/views/e2e_child_test.bd.html";
+        write_file(temp_layout, "<title>@yield('meta_title', 'Default Fallback')</title>\n<body>\n@yield('body')\n</body>");
+        write_file(temp_view, "@extends('layouts/e2e_layout_test')\n@section('body')\n<p>Body</p>\n@endsection");
+
+        let rendered = global_bd.render("e2e_child_test", map());
+        file_delete(temp_view);
+        file_delete(temp_layout);
+
+        test_assert_contains(rendered, "<title>Default Fallback</title>", "Missing section should yield default fallback");
+        test_assert_contains(rendered, "<p>Body</p>", "Body section should be yielded");
+    });
+
+    runner.test("F14.4: SpiderBD @if @else conditional rendering", fn() {
+        let rendered_guest = global_bd.render("home", map(
+            "title", "Home",
+            "posts", list(),
+            "is_auth", false,
+            "total_posts", 0,
+            "total_users", 0
+        ));
+        test_assert_contains(rendered_guest, "Sign In", "Guest should see Sign In link");
+        test_assert(not rendered_guest.contains("Logout"), "Guest must not see Logout link");
+
+        let rendered_auth = global_bd.render("home", map(
+            "title", "Home",
+            "posts", list(),
+            "is_auth", true,
+            "user_name", "Ada Lovelace",
+            "total_posts", 0,
+            "total_users", 0
+        ));
+        test_assert_contains(rendered_auth, "Logout", "Authenticated user should see Logout button");
+        test_assert_contains(rendered_auth, "Ada Lovelace", "Authenticated user name should be rendered");
+    });
+
+    runner.test("F14.5: SpiderBD @foreach loop iteration", fn() {
+        let post1 = map("id", 1, "title", "Post Alpha", "slug", "alpha", "content", "Text 1", "category", "Cat1", "status", "published", "views_count", 10);
+        let post2 = map("id", 2, "title", "Post Beta", "slug", "beta", "content", "Text 2", "category", "Cat2", "status", "published", "views_count", 20);
+
+        let rendered = global_bd.render("home", map(
+            "title", "Home",
+            "posts", list(post1, post2),
+            "is_auth", false,
+            "total_posts", 2,
+            "total_users", 1
+        ));
+        test_assert_contains(rendered, "Post Alpha", "First post should be rendered in loop");
+        test_assert_contains(rendered, "Post Beta", "Second post should be rendered in loop");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 15: Authentication & CSPRNG Session Lifecycle
+    // ------------------------------------------------------------------------
+
+    runner.test("F15.1: Auth.attempt authenticates valid credentials", fn() {
+        let suffix = unique_suffix();
+        let email = "auth_att_" + suffix + "@example.com";
+        let password = "valid_password_123";
+        let hashed = Hash.make(password);
+
+        let user = UserModel.create(map(
+            "name", "Auth Attempt User",
+            "email", email,
+            "password", hashed
+        ));
+
+        let ok = Auth.attempt(email, password);
+        test_assert(ok, "Auth.attempt should succeed with correct credentials");
+        test_assert(Auth.check(), "Auth.check() should be true after successful login");
+        test_assert_eq(Auth.user()["email"], email, "Current user should match authenticated email");
+
+        // Teardown
+        Auth.clear();
+        user.delete();
+    });
+
+    runner.test("F15.2: Auth.attempt rejects invalid password", fn() {
+        let suffix = unique_suffix();
+        let email = "auth_fail_" + suffix + "@example.com";
+        let user = UserModel.create(map(
+            "name", "Auth Fail User",
+            "email", email,
+            "password", Hash.make("correct_password")
+        ));
+
+        Auth.clear();
+        let ok = Auth.attempt(email, "wrong_password");
+        test_assert(not ok, "Auth.attempt should fail with incorrect password");
+        test_assert(not Auth.check(), "Auth.check() must remain false");
+
+        // Teardown
+        user.delete();
+    });
+
+    runner.test("F15.3: Auth session token generation on login", fn() {
+        let user_map = map("id", 9999, "email", "sess@example.com");
+        Auth.login(user_map);
+
+        let token = Auth.token();
+        test_assert(token != "", "Session token should not be empty");
+        test_assert_contains(token, "sess_", "Session token should start with sess_ prefix");
+
+        Auth.clear();
+    });
+
+    runner.test("F15.4: Auth session restoration via authenticate_token", fn() {
+        let suffix = unique_suffix();
+        let user = UserModel.create(map(
+            "name", "Session Restored User",
+            "email", "sess_rest_" + suffix + "@example.com",
+            "password", Hash.make("pass")
+        ));
+
+        Auth.login(user.to_map());
+        let token = Auth.token();
+
+        // Clear in-memory auth state
+        Auth.clear();
+        test_assert(not Auth.check(), "Auth state cleared");
+
+        // Restore via token
+        let restored = Auth.authenticate_token(token);
+        test_assert(restored, "Auth.authenticate_token should restore user from DB");
+        test_assert(Auth.check(), "Auth.check() should be true after restoring token");
+
+        // Teardown
+        Auth.logout();
+        user.delete();
+    });
+
+    runner.test("F15.5: Auth.logout revokes active session", fn() {
+        let user_map = map("id", 8888, "email", "logout@example.com");
+        Auth.login(user_map);
+        test_assert(Auth.check(), "Should be logged in");
+
+        Auth.logout();
+        test_assert(not Auth.check(), "Auth.check() should be false after logout");
+        test_assert_eq(Auth.token(), "", "Session token should be cleared after logout");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 16: Password Hashing (Bcrypt) & Verification
+    // ------------------------------------------------------------------------
+
+    runner.test("F16.1: Hash.make generates bcrypt hash with prefix", fn() {
+        let hash = Hash.make("my_secret_pass");
+        test_assert(hash != "", "Hash string should not be empty");
+        test_assert_contains(hash, "$2", "Bcrypt hash should start with $2 identifier");
+    });
+
+    runner.test("F16.2: Hash.check verifies matching password", fn() {
+        let plain = "Spid3rPassword2026!";
+        let hash = Hash.make(plain);
+        let valid = Hash.check(plain, hash);
+        test_assert(valid, "Hash.check must return true for matching plain password");
+    });
+
+    runner.test("F16.3: Hash.check rejects mismatching password", fn() {
+        let hash = Hash.make("correct_password");
+        let valid = Hash.check("wrong_password", hash);
+        test_assert(not valid, "Hash.check must return false for mismatching plain password");
+    });
+
+    runner.test("F16.4: Hash.make generates unique salts per invocation", fn() {
+        let plain = "identical_password";
+        let h1 = Hash.make(plain);
+        let h2 = Hash.make(plain);
+        test_assert_ne(h1, h2, "Each bcrypt hash invocation should use a unique cryptographic salt");
+        test_assert(Hash.check(plain, h1), "First hash should verify");
+        test_assert(Hash.check(plain, h2), "Second hash should verify");
+    });
+
+    runner.test("F16.5: Hash.check handles malformed hash gracefully without crash", fn() {
+        let ok = Hash.check("password", "invalid_not_a_bcrypt_hash");
+        test_assert(not ok, "Malformed hash check should return false without uncaught panic");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 17: Static Asset Delivery & Security Traversal Defense
+    // ------------------------------------------------------------------------
+
+    runner.test("F17.1: Static CSS asset delivery", fn() {
+        let app = new Application();
+        let raw = make_request("GET", "/css/app.css");
+        let res = app.handle_request(raw);
+
+        test_assert_eq(res["status"], 200, "Static CSS request should return 200 OK");
+        test_assert(res["headers"].has("content-type"), "Headers must include content-type");
+        test_assert_contains(res["headers"]["content-type"], "text/css", "Content-Type must be text/css");
+    });
+
+    runner.test("F17.2: Static JS asset delivery", fn() {
+        let app = new Application();
+        let raw = make_request("GET", "/js/app.js");
+        let res = app.handle_request(raw);
+
+        test_assert_eq(res["status"], 200, "Static JS request should return 200 OK");
+        test_assert_contains(res["headers"]["content-type"], "javascript", "Content-Type must be javascript");
+    });
+
+    runner.test("F17.3: Static file delivery sets cache-control header", fn() {
+        let app = new Application();
+        let raw = make_request("GET", "/css/app.css");
+        let res = app.handle_request(raw);
+
+        test_assert(res["headers"].has("cache-control"), "Must set cache-control header");
+        test_assert_contains(res["headers"]["cache-control"], "no-cache", "Cache control should be no-cache");
+    });
+
+    runner.test("F17.4: Non-existent static file returns 404", fn() {
+        let app = new Application();
+        let raw = make_request("GET", "/css/non_existent_file_99999.css");
+        let res = app.handle_request(raw);
+
+        test_assert_eq(res["status"], 404, "Missing static file should return 404 Not Found");
+    });
+
+    runner.test("F17.5: Static path traversal attack rejection (M4 contract)", fn() {
+        // Contract requirement: PROJECT.md Feature 13 / Survey 1:
+        // try_serve_static in Application.matrix must sanitize paths and reject ../ traversal attacks
+        let app = new Application();
+        let raw = make_request("GET", "/css/../../spider.toml");
+        let res = app.handle_request(raw);
+
+        // Path traversal should be rejected (status 404 or 400), never returning spider.toml
+        test_assert(res["status"] == 404 or res["status"] == 400, "Traversal path must return 404 or 400");
+        test_assert(not string(res["body"]).contains("name = \"spid3r_web\""), "Static server must not serve spider.toml across traversal");
+    });
+
+    let success = runner.summary();
+    if not success {
+        return 1;
+    }
+    return 0;
+}

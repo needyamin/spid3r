@@ -1,4 +1,4 @@
-﻿// framework/Database/Schema.matrix
+// framework/Database/Schema.matrix
 // Spid3rWeb DDL Schema Builder & Blueprint
 
 import "DB";
@@ -36,7 +36,7 @@ public class ColumnDefinition {
     }
 
     public fn to_sql(self) -> string {
-        let parts = list(self.name, self.type);
+        let parts = [self.name, self.type];
         if self.is_primary {
             parts.push("PRIMARY KEY");
         }
@@ -61,7 +61,7 @@ public class Blueprint {
     public let columns;
 
     fn new() {
-        self.columns = list();
+        self.columns = [];
     }
 
     public fn id(self, name: string = "id") {
@@ -111,7 +111,7 @@ public class Blueprint {
     }
 
     public fn to_sql(self, table_name: string) -> string {
-        let col_defs = list();
+        let col_defs = [];
         for col in self.columns {
             col_defs.push(col.to_sql());
         }
@@ -131,7 +131,7 @@ public class SchemaBuilder {
     }
 
     public fn dropIfExists(self, table_name: string) {
-        let sql = "DROP TABLE IF EXISTS " + table_name + ";";
+        let sql = "DROP TABLE IF EXISTS {table_name};";
         DB.statement(sql);
         return true;
     }

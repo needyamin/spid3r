@@ -11,14 +11,14 @@ public class Model {
     public let exists;
     public let uses_timestamps;
 
-    fn new(table_name: string = "models", fillable_list = null, attrs = null) {
+    fn new(table_name: string = "models", fillable_list = [], attrs = {}) {
         self.table = table_name;
         self.primary_key = "id";
         self.fillable = fillable_list;
         if self.fillable == null {
-            self.fillable = list();
+            self.fillable = [];
         }
-        self.attributes = map();
+        self.attributes = {};
         self.exists = false;
         self.uses_timestamps = true;
 
@@ -57,7 +57,7 @@ public class Model {
 
         if self.exists {
             // Update
-            let data_to_update = map();
+            let data_to_update = {};
             for k in self.attributes.keys() {
                 if k != self.primary_key {
                     data_to_update[k] = self.attributes[k];
@@ -73,7 +73,7 @@ public class Model {
             return self;
         } else {
             // Insert
-            let data_to_insert = map();
+            let data_to_insert = {};
             for k in self.attributes.keys() {
                 if self.fillable.len() == 0 or self.fillable.contains(k) {
                     data_to_insert[k] = self.attributes[k];
@@ -117,7 +117,7 @@ public class Model {
     }
 
     public fn to_map(self) {
-        let out = map();
+        let out = {};
         for k in self.attributes.keys() {
             out[k] = self.attributes[k];
         }

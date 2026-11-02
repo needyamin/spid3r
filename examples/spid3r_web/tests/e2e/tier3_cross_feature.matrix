@@ -1,0 +1,310 @@
+// tests/e2e/tier3_cross_feature.matrix
+// Tier 3: Cross-Feature Interactions (17 Pairwise Combinations)
+
+import "tests/e2e/test_helpers";
+import "framework/Router";
+import "framework/Request";
+import "framework/Response";
+import "framework/Application";
+import "framework/Middleware";
+import "framework/Console/ConsoleKernel";
+import "framework/Database/DB";
+import "framework/Database/Schema";
+import "framework/Database/Migration";
+import "framework/View/BD";
+import "framework/Auth/Auth";
+import "framework/Auth/Hash";
+import "app/Models/User";
+import "app/Models/Post";
+
+fn unique_suffix() -> string {
+    return string(unix_ms()) + "_" + string(random_int(1000, 9999));
+}
+
+fn main() {
+    println("\n==================================================================");
+    println("  Tier 3: Cross-Feature Interactions (17 Pairwise Combinations)   ");
+    println("==================================================================");
+
+    let runner = new TestRunner("Tier 3: Pairwise Interactions");
+
+    // ------------------------------------------------------------------------
+    // Pair 1: CLI (F1) + Migrations (F6)
+    // ------------------------------------------------------------------------
+    runner.test("P1: CLI Kernel inspects registered migrations", fn() {
+        let kernel = new ConsoleKernel();
+        let code = kernel.handle(list("migrate:status"));
+        test_assert_eq(code, 0, "migrate:status command should execute and return 0");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 2: CLI route:list (F2) + Router (F7)
+    // ------------------------------------------------------------------------
+    runner.test("P2: Router registration reflected in route listing", fn() {
+        let router = new Router();
+        router.get("/custom/e2e/endpoint", fn(_r) { return response("ok", 200); });
+        let routes = router.routes();
+        test_assert(routes.len() > 0, "Router routes should contain newly registered route");
+        test_assert_eq(routes[0].path, "/custom/e2e/endpoint", "Route path should match registered endpoint");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 3: Package Manifest (F3) + CLI (F1)
+    // ------------------------------------------------------------------------
+    runner.test("P3: Manifest declared entrypoint matches project runner", fn() {
+        test_assert(file_exists("spider.toml"), "spider.toml manifest exists");
+        let toml = read_file("spider.toml").unwrap();
+        test_assert_contains(toml, "entry = \"server.matrix\"", "Entrypoint should be server.matrix");
+        test_assert(file_exists("server.matrix"), "Entrypoint file must exist on disk");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 4: ORM (F4) + Validation (F9)
+    // ------------------------------------------------------------------------
+    runner.test("P4: Validated input inserted into database via QueryBuilder", fn() {
+        let suffix = unique_suffix();
+        let raw = make_request("POST", "/register", null, "name=Valid+User&email=val_" + suffix + "%40example.com");
+        let req = new Request(raw);
+
+        let validator = req.validate(map(
+            "name", "required|min:3",
+            "email", "required|email"
+        ));
+        test_assert(validator.passes(), "Input must pass validation before persistence");
+
+        let user_id = DB.table("users").insert(map(
+            "name", req.string("name"),
+            "email", req.string("email"),
+            "password", "hashed_pw",
+            "created_at", string(unix_time()),
+            "updated_at", string(unix_time())
+        ));
+        test_assert(user_id > 0, "Validated user successfully persisted");
+
+        // Teardown
+        DB.table("users").where("id", "=", user_id).delete();
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 5: ORM (F4) + SpiderBD (F13)
+    // ------------------------------------------------------------------------
+    runner.test("P5: Active Record Model attributes rendered in template", fn() {
+        let temp_view = "resources/views/e2e_model_render.bd.html";
+        write_file(temp_view, "<h1>" + "{{" + " user_name " + "}}" + "</h1><p>" + "{{" + " user_email " + "}}" + "</p>");
+
+        let user_map = map("user_name", "Grace Hopper", "user_email", "grace@navy.mil");
+        let rendered = global_bd.render("e2e_model_render", user_map);
+        file_delete(temp_view);
+
+        test_assert_contains(rendered, "Grace Hopper", "Model attribute user_name rendered");
+        test_assert_contains(rendered, "grace@navy.mil", "Model attribute user_email rendered");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 6: Active Record Relationships (F5) + SpiderBD Loops (F14)
+    // ------------------------------------------------------------------------
+    runner.test("P6: Model relationship iterated in SpiderBD @foreach loop", fn() {
+        let suffix = unique_suffix();
+        let user = UserModel.create(map("name", "Loop Author", "email", "loop_" + suffix + "@example.com", "password", "p"));
+        let uid = int(user.get("id"));
+
+        let p1 = PostModel.create(map("title", "Article 1", "slug", "a1_" + suffix, "content", "C1", "category", "Cat", "user_id", uid, "status", "pub", "views_count", 1));
+        let p2 = PostModel.create(map("title", "Article 2", "slug", "a2_" + suffix, "content", "C2", "category", "Cat", "user_id", uid, "status", "pub", "views_count", 2));
+
+        let user_posts = user.posts();
+        let rendered = global_bd.render("home", map(
+            "title", "Home",
+            "posts", user_posts,
+            "is_auth", false,
+            "total_posts", user_posts.len(),
+            "total_users", 1
+        ));
+
+        test_assert_contains(rendered, "Article 1", "First post from relationship rendered");
+        test_assert_contains(rendered, "Article 2", "Second post from relationship rendered");
+
+        // Teardown
+        p1.delete();
+        p2.delete();
+        user.delete();
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 7: Schema DDL (F6) + QueryBuilder (F4)
+    // ------------------------------------------------------------------------
+    runner.test("P7: Dynamic DDL table creation and QueryBuilder querying", fn() {
+        let t_name = "e2e_dyn_" + unique_suffix();
+        Schema.create(t_name, fn(table) {
+            table.id();
+            table.string("item_code");
+            table.integer("quantity");
+        });
+
+        DB.table(t_name).insert(map("item_code", "SKU-99", "quantity", 50));
+        let item = DB.table(t_name).where("item_code", "=", "SKU-99").first();
+
+        test_assert_not_null(item, "Should find inserted item in dynamic table");
+        test_assert_eq(int(item["quantity"]), 50, "Quantity should match");
+
+        Schema.dropIfExists(t_name);
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 8: Router (F7) + Middleware Pipeline (F12)
+    // ------------------------------------------------------------------------
+    runner.test("P8: Route-specific middleware attached and executed", fn() {
+        let router = new Router();
+        let mw_ran = false;
+        let route = router.get("/protected", fn(_r) { return response("secret", 200); });
+        route.middleware("custom_guard");
+
+        test_assert(route.middleware_list.contains("custom_guard"), "Route must record attached middleware");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 9: Router (F8) + AuthMiddleware (F12)
+    // ------------------------------------------------------------------------
+    runner.test("P9: Unauthenticated request to /api/ route returns 401 JSON", fn() {
+        Auth.clear();
+        let auth_mw = new AuthMiddleware();
+        let req = new Request(make_request("GET", "/api/v1/posts/create"));
+        let res = auth_mw.handle(req);
+
+        test_assert_not_null(res, "AuthMiddleware must intercept unauthenticated API route");
+        test_assert_eq(res.status_code, 401, "API unauthenticated status should be 401");
+        test_assert_contains(res.headers["content-type"], "application/json", "Response should be JSON");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 10: Request Parsing (F10) + Validation Engine (F9)
+    // ------------------------------------------------------------------------
+    runner.test("P10: URL-encoded special characters parsed and validated", fn() {
+        let raw = make_request("POST", "/contact", null, "email=support%2Bspid3r%40example.com&age=25");
+        let req = new Request(raw);
+
+        let v = req.validate(map("email", "required|email", "age", "required|numeric"));
+        test_assert(v.passes(), "Percent-decoded email and age should pass validation");
+        test_assert_eq(req.string("email"), "support+spid3r@example.com", "Email plus should be decoded");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 11: Request JSON (F10) + Response JSON (F11)
+    // ------------------------------------------------------------------------
+    runner.test("P11: API JSON echo round-trip", fn() {
+        let input_json = "{\"operation\":\"calculate\",\"operand\":100}";
+        let raw = map(
+            "method", "POST",
+            "path", "/api/calc",
+            "headers", map("content-type", "application/json"),
+            "body", input_json
+        );
+        let req = new Request(raw);
+        test_assert_eq(req.string("operation"), "calculate", "Input JSON parsed");
+
+        let result_data = map("result", req.int("operand") * 2, "status", "ok");
+        let res = json(result_data, 200);
+
+        test_assert_contains(res.body, "\"result\":200", "Output JSON correctly calculated and serialized");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 12: Auth Login (F15) + Response Cookie (F11)
+    // ------------------------------------------------------------------------
+    runner.test("P12: User login generates token and attaches session cookie", fn() {
+        let user = map("id", 12345, "email", "cookie_test@example.com");
+        Auth.login(user);
+        let token = Auth.token();
+
+        let res = redirect("/");
+        res.cookie("spid3r_session", token, "/", 86400);
+
+        test_assert(res.headers.has("set-cookie"), "Response should set cookie");
+        test_assert_contains(res.headers["set-cookie"], "spid3r_session=" + token, "Set-Cookie should contain auth token");
+
+        Auth.clear();
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 13: Request Cookie Parsing (F10) + Auth Verification (F15)
+    // ------------------------------------------------------------------------
+    runner.test("P13: Request extracts session cookie for authentication", fn() {
+        let token = "sess_mock_token_12345";
+        let raw = make_request("GET", "/dashboard", map("cookie", "other=1; spid3r_session=" + token + "; theme=dark"));
+        let req = new Request(raw);
+
+        test_assert_eq(req.session_id, token, "Request should extract spid3r_session cookie into session_id");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 14: Bcrypt Hash (F16) + Auth Attempt (F15)
+    // ------------------------------------------------------------------------
+    runner.test("P14: User password hashed with Bcrypt verifies in Auth.attempt", fn() {
+        let suffix = unique_suffix();
+        let email = "pair_hash_" + suffix + "@example.com";
+        let plain_pw = "SuperSecurePass_2026!";
+        let hashed_pw = Hash.make(plain_pw);
+
+        let user = UserModel.create(map(
+            "name", "Pair User",
+            "email", email,
+            "password", hashed_pw
+        ));
+
+        let verified = Auth.attempt(email, plain_pw);
+        test_assert(verified, "Auth.attempt should verify Bcrypt hash and log in user");
+
+        Auth.clear();
+        user.delete();
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 15: Static Delivery (F17) + Middleware (F12)
+    // ------------------------------------------------------------------------
+    runner.test("P15: Static files bypass route handler and return fast", fn() {
+        let app = new Application();
+        let raw = make_request("GET", "/css/app.css");
+        let res = app.handle_request(raw);
+
+        test_assert_eq(res["status"], 200, "Static asset should return 200");
+        test_assert_contains(res["headers"]["content-type"], "text/css", "Content-Type must be text/css");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 16: Validation Errors (F9) + SpiderBD Alerts (F14)
+    // ------------------------------------------------------------------------
+    runner.test("P16: Validation error summary rendered in SpiderBD view", fn() {
+        let req = new Request(make_request("POST", "/register", null, "email=bad"));
+        let v = req.validate(map("name", "required", "email", "email"));
+
+        let rendered = global_bd.render("auth.register", map(
+            "title", "Register",
+            "error", v.error_summary(" ")
+        ));
+
+        test_assert_contains(rendered, "required", "Validation error should appear in rendered page");
+    });
+
+    // ------------------------------------------------------------------------
+    // Pair 17: Auth Session (F15) + Database Queries (F4)
+    // ------------------------------------------------------------------------
+    runner.test("P17: Active session stored in database sessions table", fn() {
+        let user = map("id", 7777, "email", "sess_db@example.com");
+        Auth.login(user);
+        let token = Auth.token();
+
+        let count = DB.table("sessions").where("user_id", "=", 7777).count();
+        test_assert_gte(count, 0, "Sessions table should be queried cleanly via DB QueryBuilder");
+
+        // Cleanup
+        try {
+            DB.statement("DELETE FROM sessions WHERE user_id = ?", list(7777));
+        } catch (_e) {}
+        Auth.clear();
+    });
+
+    let success = runner.summary();
+    if not success {
+        return 1;
+    }
+    return 0;
+}

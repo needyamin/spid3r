@@ -35,7 +35,19 @@ public class Application {
     // ------------------------------------------------------------------------
     // Static Asset Delivery
     // ------------------------------------------------------------------------
+    // Reject anything that could escape the public/ directory: parent
+    // segments, backslashes, NUL bytes and their percent-encoded forms.
+    fn is_unsafe_path(self, path: string) -> bool {
+        let lower = path.lower();
+        return path.contains("..") or path.contains("\\") or path.contains(chr(0))
+            or lower.contains("%2e") or lower.contains("%2f") or lower.contains("%5c")
+            or lower.contains("%00");
+    }
+
     fn try_serve_static(self, path: string) {
+        if self.is_unsafe_path(path) {
+            return null;
+        }
         let clean = path;
         if clean.starts_with("/") {
             clean = clean.slice(1, clean.len());
@@ -43,8 +55,7 @@ public class Application {
 
         let candidates = list(
             "public/" + clean,
-            "examples/spid3r_web/public/" + clean,
-            clean
+            "examples/spid3r_web/public/" + clean
         );
 
         for p in candidates {
@@ -84,11 +95,17 @@ public class Application {
             if static_res != null {
                 return static_res.to_http();
             }
+            if self.is_unsafe_path(req.path) {
+                return self.render_404(req);
+            }
         }
 
         // 2. Global Pipeline (CORS, Logging)
         let pipeline = new Pipeline();
-        pipeline.send(req).through(self.global_middleware);
+        let early = pipeline.send(req).through(self.global_middleware).then(fn(_r) { return null; });
+        if early != null {
+            return early.to_http();
+        }
 
         let match_result = self.router.match_route(req.method, req.path);
 
@@ -96,6 +113,10 @@ public class Application {
             // Check if static root (e.g. /favicon.ico)
             if req.path == "/favicon.ico" {
                 return http_response(204, map("content-type", "image/x-icon"), "");
+            }
+            let allowed = self.router.allowed_methods(req.path);
+            if allowed.len() > 0 {
+                return text_405(allowed.join(", ")).to_http();
             }
             return self.render_404(req);
         }

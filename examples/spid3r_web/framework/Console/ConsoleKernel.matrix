@@ -51,6 +51,8 @@ public class ConsoleKernel {
                 i = i + 1;
             }
             return self.command_serve(int(port), dry_run);
+        } elif command == "test" {
+            return self.command_test(cli_args);
         } elif command == "route:list" {
             return self.command_route_list();
         } elif command == "migrate" {
@@ -97,6 +99,7 @@ public class ConsoleKernel {
         println("  spid3r magic <command> [arguments] [options]\n");
         println("Available commands:");
         println("  serve [--port N]          Start the Spid3rWeb local development server");
+        println("  test [options]            Run the Spid3rWeb automated test suite");
         println("  route:list                List all registered application routes");
         println("  migrate                   Run outstanding database migrations");
         println("  migrate:rollback          Rollback the last database migration batch");
@@ -116,10 +119,184 @@ public class ConsoleKernel {
         println("Starting Spid3rWeb development server: http://127.0.0.1:" + string(port));
         println("Press Ctrl+C to stop the server.");
         if dry_run {
+            DB.close();
             return 0;
         }
         let app = new Application();
         app.listen(port);
+        DB.close();
+        return 0;
+    }
+
+    fn resolve_spid3r_binary(self) -> string {
+        let cur = exe_path();
+        if cur.is_ok() {
+            let p = cur.unwrap();
+            if file_exists(p) {
+                return p;
+            }
+        }
+
+        let env_keys = list(
+            "SPID3R_BIN",
+            "SPID3R_EXE",
+            "CARGO_BIN_EXE_spid3r",
+            "CARGO_BIN_EXE_spidr"
+        );
+        for k in env_keys {
+            let v = env(k);
+            if v.is_some() {
+                let p = v.unwrap();
+                if file_exists(p) {
+                    return p;
+                }
+            }
+        }
+
+        let candidates = list(
+            "target/debug/spid3r.exe",
+            "target/debug/spid3r",
+            "../../target/debug/spid3r.exe",
+            "../../target/debug/spid3r",
+            "target/release/spid3r.exe",
+            "target/release/spid3r",
+            "../../target/release/spid3r.exe",
+            "../../target/release/spid3r"
+        );
+        for c in candidates {
+            if file_exists(c) {
+                return c;
+            }
+        }
+
+        return "spid3r";
+    }
+
+    fn cleanup_db_artifacts(self) {
+        let root = self.resolve_root();
+        let candidates = list(
+            root + "database/database.sqlite",
+            "database/database.sqlite",
+            "examples/spid3r_web/database/database.sqlite"
+        );
+        for p in candidates {
+            let shm_file = p + "-shm";
+            let wal_file = p + "-wal";
+            if file_exists(shm_file) {
+                file_delete(shm_file);
+            }
+            if file_exists(wal_file) {
+                file_delete(wal_file);
+            }
+        }
+    }
+
+    fn command_test(self, cli_args = null) -> int {
+        let root = self.resolve_root();
+        if root != "" {
+            env_set("SPID3R_PATH", root);
+        } else {
+            env_set("SPID3R_PATH", ".");
+        }
+
+        let spid3r_bin = self.resolve_spid3r_binary();
+
+        let filter_substr = "";
+        let engine_override = "";
+        if cli_args != null {
+            let i = 1;
+            while i < cli_args.len() {
+                let arg = cli_args[i];
+                if arg.starts_with("--filter=") {
+                    filter_substr = arg.replace("--filter=", "");
+                } elif arg == "--filter" and i + 1 < cli_args.len() {
+                    i = i + 1;
+                    filter_substr = cli_args[i];
+                } elif arg.starts_with("--engine=") {
+                    engine_override = arg.replace("--engine=", "");
+                } elif arg == "--engine" and i + 1 < cli_args.len() {
+                    i = i + 1;
+                    engine_override = cli_args[i];
+                }
+                i = i + 1;
+            }
+        }
+
+        println("==================================================================");
+        println("            Spid3rWeb Complete Test Suite Execution               ");
+        println("==================================================================");
+
+        let test_suites = list(
+            "tests/test_router.matrix",
+            "tests/test_validator.matrix",
+            "tests/test_query_builder.matrix",
+            "tests/test_model.matrix",
+            "tests/test_bd.matrix",
+            "tests/test_http_lifecycle.matrix"
+        );
+
+        let total_run = 0;
+        let passed = 0;
+
+        for suite in test_suites {
+            if filter_substr != "" and not suite.contains(filter_substr) {
+                continue;
+            }
+
+            let test_path = suite;
+            let candidates = list(
+                suite,
+                root + suite,
+                "examples/spid3r_web/" + suite
+            );
+            for c in candidates {
+                if file_exists(c) {
+                    test_path = c;
+                    break;
+                }
+            }
+
+            println("------------------------------------------------------------------");
+            println("Running: " + suite);
+            println("------------------------------------------------------------------");
+
+            let run_args = list("run");
+            if engine_override != "" {
+                run_args.push("--engine");
+                run_args.push(engine_override);
+            }
+            run_args.push(test_path);
+
+            let res = exec_capture(spid3r_bin, run_args, null);
+            total_run = total_run + 1;
+
+            if res.is_ok() {
+                let out = res.unwrap();
+                print(out["stdout"]);
+                if out["stderr"] != "" {
+                    print(out["stderr"]);
+                }
+                if out["code"] == 0 {
+                    passed = passed + 1;
+                } else {
+                    println("[FAILED]: " + suite + " (exit code " + string(out["code"]) + ")");
+                }
+            } else {
+                println("[EXEC ERROR] " + res.unwrap_err());
+                println("[FAILED]: " + suite);
+            }
+        }
+
+        DB.close();
+        self.cleanup_db_artifacts();
+
+        println("==================================================================");
+        println("Test Summary: " + string(passed) + "/" + string(total_run) + " test suites passed.");
+        println("==================================================================");
+
+        if total_run == 0 or passed < total_run {
+            return 1;
+        }
         return 0;
     }
 
@@ -152,18 +329,21 @@ public class ConsoleKernel {
     fn command_migrate(self) -> int {
         let runner = new MigrationRunner();
         runner.migrate(self.migrations_list);
+        DB.close();
         return 0;
     }
 
     fn command_rollback(self) -> int {
         let runner = new MigrationRunner();
         runner.rollback(self.migrations_list);
+        DB.close();
         return 0;
     }
 
     fn command_migrate_status(self) -> int {
         let runner = new MigrationRunner();
         runner.status(self.migrations_list);
+        DB.close();
         return 0;
     }
 
@@ -175,6 +355,7 @@ public class ConsoleKernel {
             count = count + 1;
         }
         println("[Database Seeder] Complete. Executed " + string(count) + " seeders.");
+        DB.close();
         return 0;
     }
 
@@ -232,31 +413,42 @@ public class " + clean_name + " {
 import \"framework/Database/Model\";
 import \"framework/Database/DB\";
 
-public class " + name + " {
+public class " + name + " extends Model {
     public let model;
 
     fn new(attrs = null) {
-        self.model = new Model(\"" + table_name + "\", list(), attrs);
+        super(\"" + table_name + "\", [], attrs);
+        self.model = self;
     }
 
-    public fn get(self, key: string, default_val = null) {
-        return self.model.get(key, default_val);
+    public static fn find(id) {
+        let _ = self;
+        let row = DB.table(\"" + table_name + "\").where(\"id\", \"=\", id).first();
+        if row != null {
+            return new " + name + "(row);
+        }
+        return null;
     }
 
-    public fn set(self, key: string, value) {
-        self.model.set(key, value);
-        return self;
+    public static fn create(attrs) {
+        let _ = self;
+        let m = new " + name + "(attrs);
+        m.save();
+        return m;
     }
 
-    public fn save(self) {
-        self.model.save();
-        return self;
-    }
-
-    public fn to_map(self) {
-        return self.model.to_map();
+    public static fn all() {
+        let _ = self;
+        let rows = DB.table(\"" + table_name + "\").get();
+        let items = [];
+        for r in rows {
+            items.push(new " + name + "(r));
+        }
+        return items;
     }
 }
+
+public let " + name + "Model = " + name + ";
 ";
         let res = write_file(file_path, content);
         if res.is_err() {
@@ -278,16 +470,15 @@ public class " + name + " {
 
         let content = "// database/migrations/" + file_name + "
 import \"framework/Database/Schema\";
+import \"framework/Database/Migration\";
 
-public class Migration_" + ts + " {
-    public let name;
-
-    fn new() {
-        self.name = \"" + name + "\";
+public class Migration_" + ts + " extends Migration {
+    fn new(name: string = \"" + name + "\") {
+        super(name);
     }
 
     public fn up(self) {
-        Schema.create(\"sample\", fn(table) {
+        Schema.create(\"sample\", table => {
             table.id();
             table.timestamps();
         });

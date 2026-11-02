@@ -1,15 +1,14 @@
 // database/migrations/002_create_posts_table.matrix
 import "framework/Database/Schema";
+import "framework/Database/Migration";
 
-public class CreatePostsTable {
-    public let name;
-
-    fn new() {
-        self.name = "002_create_posts_table";
+public class CreatePostsTable extends Migration {
+    fn new(name: string = "002_create_posts_table") {
+        super(name);
     }
 
     public fn up(self) {
-        Schema.create("posts", fn(table) {
+        Schema.create("posts", table => {
             table.id();
             table.string("title");
             table.string("slug").unique();

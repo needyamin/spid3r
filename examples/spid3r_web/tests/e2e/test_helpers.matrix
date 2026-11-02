@@ -1,0 +1,120 @@
+// tests/e2e/test_helpers.matrix
+// Spid3rWeb E2E Testing Framework & Assertion Utilities
+
+public fn test_assert(cond: bool, msg: string) {
+    if not cond {
+        throw "AssertionError: " + msg;
+    }
+}
+
+public fn test_assert_eq(actual, expected, msg: string) {
+    if actual != expected {
+        throw "AssertionError: " + msg + " [Expected: '" + string(expected) + "', Got: '" + string(actual) + "']";
+    }
+}
+
+public fn test_assert_ne(actual, expected, msg: string) {
+    if actual == expected {
+        throw "AssertionError: " + msg + " [Expected not equal to: '" + string(expected) + "']";
+    }
+}
+
+public fn test_assert_contains(haystack: string, needle: string, msg: string) {
+    let s = string(haystack);
+    if not s.contains(needle) {
+        let snippet = s;
+        if snippet.len() > 120 {
+            snippet = snippet.slice(0, 120) + "...";
+        }
+        throw "AssertionError: " + msg + " [Substring '" + needle + "' not found in: '" + snippet + "']";
+    }
+}
+
+public fn test_assert_not_contains(haystack: string, needle: string, msg: string) {
+    let s = string(haystack);
+    if s.contains(needle) {
+        throw "AssertionError: " + msg + " [Substring '" + needle + "' was unexpectedly found]";
+    }
+}
+
+public fn test_assert_null(val, msg: string) {
+    if val != null {
+        throw "AssertionError: " + msg + " [Expected null, got: '" + string(val) + "']";
+    }
+}
+
+public fn test_assert_not_null(val, msg: string) {
+    if val == null {
+        throw "AssertionError: " + msg + " [Expected non-null value]";
+    }
+}
+
+public fn test_assert_gte(actual: int, min_val: int, msg: string) {
+    if actual < min_val {
+        throw "AssertionError: " + msg + " [Expected >= " + string(min_val) + ", got: " + string(actual) + "]";
+    }
+}
+
+public fn test_assert_lte(actual: int, max_val: int, msg: string) {
+    if actual > max_val {
+        throw "AssertionError: " + msg + " [Expected <= " + string(max_val) + ", got: " + string(actual) + "]";
+    }
+}
+
+public fn make_request(method: string, path: string, headers = null, body: string = "") {
+    if headers == null {
+        headers = map();
+    }
+    return map(
+        "method", method,
+        "path", path,
+        "headers", headers,
+        "body", body
+    );
+}
+
+public class TestRunner {
+    public let name;
+    public let total;
+    public let passed;
+    public let failed;
+    public let failures;
+    public let start_time;
+
+    fn new(suite_name: string) {
+        self.name = suite_name;
+        self.total = 0;
+        self.passed = 0;
+        self.failed = 0;
+        self.failures = list();
+        self.start_time = unix_ms();
+    }
+
+    public fn test(self, case_name: string, test_fn) {
+        self.total = self.total + 1;
+        try {
+            test_fn();
+            self.passed = self.passed + 1;
+            println("    [PASS] " + case_name);
+        } catch (e) {
+            self.failed = self.failed + 1;
+            let err_msg = string(e);
+            self.failures.push(case_name + " -> " + err_msg);
+            println("    [FAIL] " + case_name + " -> " + err_msg);
+        }
+    }
+
+    public fn summary(self) -> bool {
+        let elapsed = unix_ms() - self.start_time;
+        println("\n--- " + self.name + " Summary ---");
+        println("Total: " + string(self.total) + " | Passed: " + string(self.passed) + " | Failed: " + string(self.failed) + " (" + string(elapsed) + "ms)");
+        if self.failed > 0 {
+            println("Failures (" + string(self.failed) + "):");
+            for f in self.failures {
+                println("  * " + f);
+            }
+        }
+        println("-----------------------------------\n");
+        return self.failed == 0;
+    }
+}

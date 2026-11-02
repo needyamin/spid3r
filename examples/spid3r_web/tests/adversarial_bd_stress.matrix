@@ -1,0 +1,570 @@
+// tests/adversarial_bd_stress.matrix
+// EMPIRICAL CHALLENGER Adversarial Stress Suite for SpiderBD Template Engine (Milestone M3)
+
+import "framework/View/BD";
+import "app/Models/User";
+import "app/Models/Post";
+import "framework/Database/DB";
+
+fn assert_contains(haystack: string, needle: string, msg: string) {
+    assert(haystack.contains(needle), msg + " [Needle '" + needle + "' not found in output]");
+}
+
+fn assert_not_contains(haystack: string, needle: string, msg: string) {
+    assert(not haystack.contains(needle), msg + " [Needle '" + needle + "' unexpectedly found in output]");
+}
+
+// ----------------------------------------------------------------------------
+// 1. Full Page Rendering for All Views with Real Active Record Models
+// ----------------------------------------------------------------------------
+
+fn test_views_posts_show_with_real_model() {
+    let now = string(unix_time());
+    let email = "challenger_show_" + now + "@spid3r.dev";
+
+    // Create real User
+    let user = User.create({
+        "name": "Grace Hopper",
+        "email": email,
+        "password": "compiler_queen"
+    });
+    assert(user != null, "User should be created");
+    let uid = int(user.get("id"));
+
+    // Create real Post with special characters for escaping check
+    let post = Post.create({
+        "title": "Adversarial Architecture & Hardening <Post>",
+        "slug": "adv-arch-" + now,
+        "content": "Deep analysis of <template> injection & security.",
+        "category": "Security",
+        "user_id": uid,
+        "status": "published",
+        "views_count": 742
+    });
+    assert(post != null, "Post should be created");
+    let pid = int(post.get("id"));
+
+    // Case 1A: Render posts.show with real Post instance and is_auth=true
+    let rendered_auth = global_bd.render("posts.show", {
+        "post": post,
+        "user": user,
+        "is_auth": true
+    });
+
+    // Check title in <title> and body
+    assert_contains(rendered_auth, "<title>Adversarial Architecture &amp; Hardening &lt;Post&gt; - Spid3rWeb</title>",
+        "Layout title @yield must interpolate post.title with proper HTML escaping");
+    assert_contains(rendered_auth, "Adversarial Architecture &amp; Hardening &lt;Post&gt;",
+        "Post title in breadcrumb/header must be escaped");
+    assert_contains(rendered_auth, "Security", "Category must be rendered");
+    assert_contains(rendered_auth, "742 views", "Views count must be rendered");
+    assert_contains(rendered_auth, "Deep analysis of &lt;template&gt; injection &amp; security.",
+        "Post content must be rendered and escaped");
+
+    // Check Edit and Delete actions when authenticated
+    assert_contains(rendered_auth, "/posts/" + string(pid) + "/edit", "Edit button must have post id");
+    assert_contains(rendered_auth, "/posts/" + string(pid) + "/delete", "Delete action must have post id");
+    assert_contains(rendered_auth, "Grace Hopper", "Auth user name from User model instance must appear in nav bar");
+    assert_contains(rendered_auth, "Logout", "Logout form must appear when authenticated");
+
+    // Case 1B: Render posts.show with is_auth=false
+    let rendered_guest = global_bd.render("posts.show", {
+        "post": post,
+        "is_auth": false
+    });
+    assert_not_contains(rendered_guest, "/posts/" + string(pid) + "/edit",
+        "Edit button must NOT appear for guests");
+    assert_not_contains(rendered_guest, "/posts/" + string(pid) + "/delete",
+        "Delete button must NOT appear for guests");
+    assert_contains(rendered_guest, "Sign In", "Sign in link must appear for guests");
+    assert_contains(rendered_guest, "Register", "Register link must appear for guests");
+
+    // Teardown
+    post.delete();
+    user.delete();
+    println("  [PASS] test_views_posts_show_with_real_model");
+}
+
+fn test_views_posts_edit_with_real_model() {
+    let now = string(unix_time());
+    let post = Post.create({
+        "title": "Refactoring View Pipeline",
+        "slug": "refactor-view-" + now,
+        "content": "Step-by-step refactoring guide.",
+        "category": "Refactoring",
+        "user_id": 1,
+        "status": "draft",
+        "views_count": 15
+    });
+    assert(post != null, "Post should be created");
+    let pid = int(post.get("id"));
+
+    // Case 2A: Render posts.edit without error
+    let rendered_clean = global_bd.render("posts.edit", {
+        "post": post,
+        "error": ""
+    });
+    assert_contains(rendered_clean, "<title>Edit Article - Spid3rWeb</title>", "Edit page title must be rendered");
+    assert_contains(rendered_clean, "value=\"Refactoring View Pipeline\"", "Post title must populate input");
+    assert_contains(rendered_clean, "value=\"Refactoring\"", "Post category must populate input");
+    assert_contains(rendered_clean, "Step-by-step refactoring guide.", "Post content must populate textarea");
+    assert_contains(rendered_clean, "action=\"/posts/" + string(pid) + "/update\"", "Form action must point to post update URL");
+    assert_not_contains(rendered_clean, "alert alert-danger", "Error banner should not be present when error is empty");
+
+    // Case 2B: Render posts.edit with error banner
+    let rendered_err = global_bd.render("posts.edit", {
+        "post": post,
+        "error": "Title contains forbidden tokens"
+    });
+    assert_contains(rendered_err, "alert alert-danger", "Error banner must appear when error is non-empty");
+    assert_contains(rendered_err, "Title contains forbidden tokens", "Error message must be displayed");
+
+    // Teardown
+    post.delete();
+    println("  [PASS] test_views_posts_edit_with_real_model");
+}
+
+fn test_views_posts_index_with_real_models() {
+    let now = string(unix_time());
+
+    // Create 3 real posts
+    let p1 = Post.create({
+        "title": "Article Alpha " + now,
+        "slug": "alpha-" + now,
+        "content": "Alpha content body",
+        "category": "AlphaCat",
+        "user_id": 1,
+        "status": "published",
+        "views_count": 101
+    });
+    let p2 = Post.create({
+        "title": "Article Beta " + now,
+        "slug": "beta-" + now,
+        "content": "Beta content body",
+        "category": "BetaCat",
+        "user_id": 1,
+        "status": "published",
+        "views_count": 202
+    });
+    let p3 = Post.create({
+        "title": "Article Gamma " + now,
+        "slug": "gamma-" + now,
+        "content": "Gamma content body",
+        "category": "GammaCat",
+        "user_id": 1,
+        "status": "published",
+        "views_count": 303
+    });
+
+    let posts_list = [p1, p2, p3];
+
+    // Case 3A: Render posts.index with list of real Post instances, authenticated
+    let rendered_idx = global_bd.render("posts.index", {
+        "posts": posts_list,
+        "is_auth": true
+    });
+    assert_contains(rendered_idx, "<title>All Articles - Spid3rWeb</title>", "Index title must be present");
+    assert_contains(rendered_idx, "Article Alpha " + now, "Alpha post title must appear");
+    assert_contains(rendered_idx, "Article Beta " + now, "Beta post title must appear");
+    assert_contains(rendered_idx, "Article Gamma " + now, "Gamma post title must appear");
+    assert_contains(rendered_idx, "AlphaCat", "Alpha category badge must appear");
+    assert_contains(rendered_idx, "BetaCat", "Beta category badge must appear");
+    assert_contains(rendered_idx, "GammaCat", "Gamma category badge must appear");
+    assert_contains(rendered_idx, "101", "Alpha views must appear");
+    assert_contains(rendered_idx, "202", "Beta views must appear");
+    assert_contains(rendered_idx, "303", "Gamma views must appear");
+    assert_contains(rendered_idx, "/posts/" + string(p1.get("id")), "Alpha read more link must appear");
+    assert_contains(rendered_idx, "/posts/" + string(p2.get("id")), "Beta read more link must appear");
+    assert_contains(rendered_idx, "/posts/" + string(p3.get("id")), "Gamma read more link must appear");
+    assert_contains(rendered_idx, "New Article", "New article button must appear when authenticated");
+
+    // Case 3B: Render posts.index with is_auth=false
+    let rendered_guest = global_bd.render("posts.index", {
+        "posts": posts_list,
+        "is_auth": false
+    });
+    assert_not_contains(rendered_guest, "New Article", "New article button must NOT appear for guests");
+
+    // Case 3C: Render posts.index with empty list []
+    let rendered_empty = global_bd.render("posts.index", {
+        "posts": [],
+        "is_auth": false
+    });
+    assert_contains(rendered_empty, "Developer Articles", "Header still renders for empty list");
+    assert_not_contains(rendered_empty, "Read More", "No post cards should be rendered");
+
+    // Teardown
+    p1.delete();
+    p2.delete();
+    p3.delete();
+    println("  [PASS] test_views_posts_index_with_real_models");
+}
+
+fn test_views_layouts_app_and_yields() {
+    let now = string(unix_time());
+    let user = User.create({
+        "name": "Dennis Ritchie",
+        "email": "dennis_" + now + "@bell-labs.com",
+        "password": "c_language_secret"
+    });
+    assert(user != null, "User should be created");
+
+    // Case 4A: Child view extending layouts/app WITHOUT title section (Tests @yield fallback in layouts/app)
+    let t_view_fallback = "resources/views/test_app_fallback.bd.html";
+    write_file(t_view_fallback, "@extends('layouts/app')\n@section('content')\n<div id=\"content\">Default Title Test</div>\n@endsection");
+
+    let rendered_fallback = global_bd.render("test_app_fallback", {
+        "is_auth": false
+    });
+    file_delete(t_view_fallback);
+
+    assert_contains(rendered_fallback, "<title>Spid3rWeb Developer Platform</title>",
+        "layouts/app @yield('title') fallback must render 'Spid3rWeb Developer Platform' when section is missing");
+    assert_contains(rendered_fallback, "Sign In", "layouts/app guest navigation must render Sign In");
+    assert_contains(rendered_fallback, "Register", "layouts/app guest navigation must render Register");
+    assert_contains(rendered_fallback, "Default Title Test", "Content section must be yielded into layouts/app");
+
+    // Case 4B: Child view extending layouts/app WITH custom @section('title') and real User model instance
+    let t_view_custom = "resources/views/test_app_custom.bd.html";
+    write_file(t_view_custom, "@extends('layouts/app')\n@section('title', 'Custom Ritchie Workspace')\n@section('alerts')\n<div class=\"alert alert-info\">System Nominal</div>\n@endsection\n@section('content')\n<div>Main App Content</div>\n@endsection");
+
+    let rendered_custom = global_bd.render("test_app_custom", {
+        "is_auth": true,
+        "user": user
+    });
+    file_delete(t_view_custom);
+
+    assert_contains(rendered_custom, "<title>Custom Ritchie Workspace</title>",
+        "layouts/app @yield('title') must be populated by child view section");
+    assert_contains(rendered_custom, "System Nominal", "layouts/app @yield('alerts') slot must be populated");
+    assert_contains(rendered_custom, "Dennis Ritchie",
+        "User name from Model instance user.name must render in navbar badge in layouts/app");
+    assert_contains(rendered_custom, "Logout", "Logout button must render for auth user in layouts/app");
+    assert_not_contains(rendered_custom, "Sign In", "Sign In must not appear for authenticated user");
+
+    // Case 4C: Test layouts/app with flattened user_name string
+    let t_view_user_str = "resources/views/test_app_str.bd.html";
+    write_file(t_view_user_str, "@extends('layouts/app')\n@section('content')\n<div>String User Content</div>\n@endsection");
+
+    let rendered_layout_user_str = global_bd.render("test_app_str", {
+        "is_auth": true,
+        "user_name": "Ken Thompson"
+    });
+    file_delete(t_view_user_str);
+
+    assert_contains(rendered_layout_user_str, "Ken Thompson",
+        "User name from user_name string must render in navbar badge in layouts/app");
+
+    // Case 4D: Direct render of layouts/app (template standalone)
+    let rendered_direct = global_bd.render("layouts/app", {
+        "is_auth": true,
+        "user": user
+    });
+    assert_contains(rendered_direct, "Dennis Ritchie", "Direct render of layouts/app must evaluate user.name variable");
+    assert_contains(rendered_direct, "Logout", "Direct render of layouts/app must evaluate conditionals");
+
+    // Teardown
+    user.delete();
+    println("  [PASS] test_views_layouts_app_and_yields");
+}
+
+fn test_views_all_other_templates() {
+    // 1. posts/create
+    let rendered_create = global_bd.render("posts.create", {
+        "is_auth": true,
+        "error": "Title required"
+    });
+    assert_contains(rendered_create, "<title>Write Article - Spid3rWeb</title>", "posts.create title");
+    assert_contains(rendered_create, "Title required", "posts.create error alert");
+
+    // 2. home
+    let rendered_home = global_bd.render("home", {
+        "is_auth": false,
+        "posts": [
+            {
+                "id": 42,
+                "title": "Welcome Spid3r Post",
+                "category": "News",
+                "content": "Framework overview",
+                "views_count": 88
+            }
+        ]
+    });
+    assert_contains(rendered_home, "Welcome to Spid3rWeb", "home title");
+    assert_contains(rendered_home, "Welcome Spid3r Post", "home post title");
+    assert_contains(rendered_home, "News", "home post category");
+
+    // 3. auth/login
+    let rendered_login = global_bd.render("auth.login", {
+        "error": "Bad credentials"
+    });
+    assert_contains(rendered_login, "Sign In - Spid3rWeb", "auth.login title");
+    assert_contains(rendered_login, "Bad credentials", "auth.login error");
+
+    // 4. auth/register
+    let rendered_reg = global_bd.render("auth.register", {
+        "error": "Email already registered"
+    });
+    assert_contains(rendered_reg, "Register - Spid3rWeb", "auth.register title");
+    assert_contains(rendered_reg, "Email already registered", "auth.register error");
+
+    println("  [PASS] test_views_all_other_templates");
+}
+
+// ----------------------------------------------------------------------------
+// 2. Malformed Templates & Syntactic Torture
+// ----------------------------------------------------------------------------
+
+fn test_malformed_unclosed_tags() {
+    let t_file = "resources/views/test_malformed_unclosed.bd.html";
+
+    let cases = [
+        "{{" + " unclosed",
+        "{{" + " unclosed without end delimiter",
+        "{!!" + " unclosed raw delimiter",
+        "prefix text " + "{{" + " unclosed suffix",
+        "{{" + " unclosed line 1\nline 2\nline 3",
+        "text " + "{{" + " a " + "{{" + " b " + "{{" + " c",
+        "{!!" + " raw without closing at EOF"
+    ];
+
+    let i = 0;
+    while i < cases.len() {
+        let content = cases[i];
+        write_file(t_file, content);
+
+        let rendered = global_bd.render("test_malformed_unclosed", {
+            "a": "A",
+            "b": "B"
+        });
+
+        // Unclosed tags must NOT crash and must retain text
+        assert(rendered != null, "Rendered output must not be null for unclosed tag: " + content);
+        assert(rendered.len() > 0, "Rendered output should retain unclosed tag content");
+        i = i + 1;
+    }
+
+    file_delete(t_file);
+    println("  [PASS] test_malformed_unclosed_tags");
+}
+
+fn test_malformed_mismatched_delimiters() {
+    let t_file = "resources/views/test_malformed_mismatch.bd.html";
+
+    // Delimiters that start with {{ but end with !!}, or start with {!! but end with }}
+    let cases = [
+        "1:" + "{{" + " val !!" + "}",
+        "2:" + "{!!" + " val " + "}}",
+        "3:" + "{{" + " $val !!" + "}",
+        "4:" + "{!!" + " $val " + "}}",
+        "5:" + "{{" + " post.title !!" + "}",
+        "6:" + "{!!" + " post.title " + "}}"
+    ];
+
+    let content = cases.join("\n");
+    write_file(t_file, content);
+
+    let rendered = global_bd.render("test_malformed_mismatch", {
+        "val": "MismatchedVal",
+        "post": { "title": "MismatchedTitle" }
+    });
+    file_delete(t_file);
+
+    assert(rendered != null, "Rendered output must not be null for mismatched delimiters");
+    // Since delimiters don't match their expected closing tags, they terminate cleanly without crash
+    assert(rendered.contains("1:") and rendered.contains("6:"),
+        "All mismatched delimiter lines must survive without crash or truncation");
+
+    println("  [PASS] test_malformed_mismatched_delimiters");
+}
+
+fn test_malformed_nested_tags() {
+    let t_file = "resources/views/test_malformed_nested.bd.html";
+
+    let cases = [
+        "nested1: [" + "{{" + " " + "{{" + " val " + "}}" + " " + "}}" + "]",
+        "nested2: [" + "{{" + " " + "{{" + " val " + "}}" + "]",
+        "nested3: [" + "{{" + "{" + " val " + "}" + "}}" + "]",
+        "nested4: [" + "{!!" + " " + "{{" + " val " + "}}" + " !!" + "}" + "]",
+        "nested5: [" + "{{" + " " + "{!!" + " val " + "!!" + "}" + " " + "}}" + "]",
+        "nested6: [" + "{{" + " " + "{{" + " " + "{{" + " deep " + "}}" + " }}" + " }}" + "]"
+    ];
+
+    let content = cases.join("\n");
+    write_file(t_file, content);
+
+    let rendered = global_bd.render("test_malformed_nested", {
+        "val": "NestedContent",
+        "deep": "DeepContent"
+    });
+    file_delete(t_file);
+
+    assert(rendered != null, "Rendered output must not be null for nested tags");
+    assert(rendered.contains("nested1:") and rendered.contains("nested6:"),
+        "Nested tags must not trigger infinite loops or crashes");
+
+    println("  [PASS] test_malformed_nested_tags");
+}
+
+fn test_malformed_empty_expressions() {
+    let t_file = "resources/views/test_malformed_empty.bd.html";
+
+    let content = "empty1:[" + "{{" + "}}" + "] " +
+                  "empty2:[" + "{{" + "   }}" + "] " +
+                  "empty3:[" + "{!!" + "!!}" + "] " +
+                  "empty4:[" + "{!!" + "   !!}" + "] " +
+                  "empty5:[" + "{{" + "\t\n  }}" + "] " +
+                  "empty6:[" + "{{" + " $ " + "}}" + "]";
+
+    write_file(t_file, content);
+
+    let rendered = global_bd.render("test_malformed_empty", {});
+    file_delete(t_file);
+
+    // Empty expressions should evaluate to empty string
+    assert_contains(rendered, "empty1:[]", "Empty {{}} must evaluate to empty string");
+    assert_contains(rendered, "empty2:[]", "Empty {{   }} must evaluate to empty string");
+    assert_contains(rendered, "empty3:[]", "Empty {!!!!} must evaluate to empty string");
+    assert_contains(rendered, "empty4:[]", "Empty {!!   !!} must evaluate to empty string");
+    assert_contains(rendered, "empty5:[]", "Empty whitespace with newlines must evaluate to empty string");
+    assert_contains(rendered, "empty6:[]", "Empty lone $ must evaluate to empty string");
+
+    println("  [PASS] test_malformed_empty_expressions");
+}
+
+fn test_adversarial_injection_and_boundaries() {
+    let t_file = "resources/views/test_adversarial_sec.bd.html";
+
+    // 1. Single-pass injection defense: post.title contains a template tag.
+    // If the engine did dual-pass re-evaluation, the injected tag would resolve.
+    // In single-pass evaluation, the injected literal remains literal and is escaped!
+    let content = "P1:[" + "{{" + " post.title " + "}}" + "] " +
+                  "P2:[" + "{!!" + " post.raw_html " + "!!}" + "] " +
+                  "P3:[" + "{{" + " post.deep.missing.path.chain " + "}}" + "] " +
+                  "P4:[" + "{{" + " post.scalar.property " + "}}" + "] " +
+                  "P5:[" + "{{" + " zero_int " + "}}" + "] " +
+                  "P6:[" + "{{" + " zero_float " + "}}" + "] " +
+                  "P7:[" + "{{" + " false_val " + "}}" + "] " +
+                  "P8:[" + "{{" + " list_data.1.name " + "}}" + "] " +
+                  "P9:[" + "{{" + " list_data.99.name " + "}}" + "]";
+
+    write_file(t_file, content);
+
+    let rendered = global_bd.render("test_adversarial_sec", {
+        "post": {
+            "title": "{{" + " injected_secret " + "}} & <script>alert(1)</script>",
+            "raw_html": "<b>Raw Allowed</b>",
+            "scalar": 12345
+        },
+        "injected_secret": "SHOULD_NEVER_BE_EVALUATED",
+        "zero_int": 0,
+        "zero_float": 0.0,
+        "false_val": false,
+        "list_data": [
+            { "name": "Item0" },
+            { "name": "Item1" }
+        ]
+    });
+    file_delete(t_file);
+
+    // Single-pass check: Injected {{ injected_secret }} must NOT be expanded to SHOULD_NEVER_BE_EVALUATED
+    assert_not_contains(rendered, "SHOULD_NEVER_BE_EVALUATED",
+        "Single-pass scanner must NEVER evaluate injected tags in variable values");
+    // Escaping check: <script> must be escaped
+    assert_contains(rendered, "&lt;script&gt;alert(1)&lt;/script&gt;", "Injected HTML tags must be escaped");
+    // Raw output check
+    assert_contains(rendered, "P2:[<b>Raw Allowed</b>]", "Raw tags must allow raw markup");
+    // Deep missing path check
+    assert_contains(rendered, "P3:[]", "Deep non-existent path chain must resolve to empty string");
+    // Scalar property check
+    assert_contains(rendered, "P4:[]", "Property lookup on scalar must safely return empty string");
+    // Numeric zero check
+    assert_contains(rendered, "P5:[0]", "Integer zero must resolve to '0'");
+    // Float zero check
+    assert_contains(rendered, "P6:[0]", "Float zero must resolve to string zero");
+    // Boolean false check
+    assert_contains(rendered, "P7:[false]", "Boolean false must resolve to 'false'");
+    // List index resolution check
+    assert_contains(rendered, "P8:[Item1]", "List numeric index navigation must work");
+    // List out of bounds check
+    assert_contains(rendered, "P9:[]", "Out of bounds list index must return empty string");
+
+    println("  [PASS] test_adversarial_injection_and_boundaries");
+}
+
+fn test_rapid_adjacent_and_stress_volume() {
+    let t_file = "resources/views/test_volume.bd.html";
+
+    // 1. Rapid adjacent tags
+    let adjacent_template = "{{" + "a" + "}}" + "{{" + "b" + "}}" + "{{" + "c" + "}}" +
+                            "{!!" + "a" + "!!}" + "{!!" + "b" + "!!}";
+    write_file(t_file, adjacent_template);
+
+    let rendered_adj = global_bd.render("test_volume", {
+        "a": "1",
+        "b": "2",
+        "c": "3"
+    });
+    assert_contains(rendered_adj, "12312", "Rapid adjacent tags must resolve sequentially without gap or loss");
+
+    // 2. Volume stress: 300 tags
+    let stress_parts = [];
+    let i = 0;
+    while i < 300 {
+        stress_parts.push("{{" + " item_" + string(i) + " " + "}}");
+        i = i + 1;
+    }
+    let stress_template = stress_parts.join(" ");
+    write_file(t_file, stress_template);
+
+    let stress_data = {};
+    let j = 0;
+    while j < 300 {
+        stress_data["item_" + string(j)] = "V" + string(j);
+        j = j + 1;
+    }
+
+    let rendered_stress = global_bd.render("test_volume", stress_data);
+    file_delete(t_file);
+
+    assert_contains(rendered_stress, "V0", "First item in 300 tags must resolve");
+    assert_contains(rendered_stress, "V150", "Middle item in 300 tags must resolve");
+    assert_contains(rendered_stress, "V299", "Last item in 300 tags must resolve");
+
+    println("  [PASS] test_rapid_adjacent_and_stress_volume");
+}
+
+// ----------------------------------------------------------------------------
+// Main Harness
+// ----------------------------------------------------------------------------
+
+fn main() {
+    println("\n==================================================================");
+    println("  EMPIRICAL CHALLENGER: Adversarial SpiderBD Stress Harness (M3)  ");
+    println("==================================================================");
+
+    // Section 1: Full Page Rendering for All Views with Real Active Record Models
+    test_views_posts_show_with_real_model();
+    test_views_posts_edit_with_real_model();
+    test_views_posts_index_with_real_models();
+    test_views_layouts_app_and_yields();
+    test_views_all_other_templates();
+
+    // Section 2: Malformed Templates & Syntactic Stress
+    test_malformed_unclosed_tags();
+    test_malformed_mismatched_delimiters();
+    test_malformed_nested_tags();
+    test_malformed_empty_expressions();
+
+    // Section 3: Adversarial Injection, Boundaries & Volume Stress
+    test_adversarial_injection_and_boundaries();
+    test_rapid_adjacent_and_stress_volume();
+
+    // Section 4: DB Clean Connection Teardown
+    DB.close();
+
+    println("==================================================================");
+    println("  All Adversarial SpiderBD Stress Tests PASSED! (0 Failures)      ");
+    println("==================================================================\n");
+    return 0;
+}

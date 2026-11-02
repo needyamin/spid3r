@@ -2,6 +2,7 @@
 // Unit tests for Spid3rWeb SpiderBD Template Engine (.bd.html)
 
 import "framework/View/BD";
+import "app/Models/Post";
 
 fn test_html_escape() {
     let raw = "<script>alert('xss & dangerous')</script>";
@@ -9,6 +10,7 @@ fn test_html_escape() {
     assert(not escaped.contains("<script>"), "Tags should be escaped");
     assert(escaped.contains("&lt;script&gt;"), "&lt; should replace <");
     assert(escaped.contains("&amp;"), "&amp; should replace &");
+    assert(html_escape(null) == "", "html_escape(null) should return empty string");
     println("  [PASS] test_html_escape");
 }
 
@@ -54,10 +56,136 @@ fn test_auth_views_rendering() {
     println("  [PASS] test_auth_views_rendering");
 }
 
+fn test_dot_notation_and_nesting() {
+    let t_view = "resources/views/test_nested.bd.html";
+    let content = "<p>" + "{{" + " post.title " + "}}" + "</p>" +
+                  "<span>" + "{{" + " $post.author.name " + "}}" + "</span>" +
+                  "<article>" + "{!!" + " post.meta.raw_badge " + "!!}" + "</article>";
+    write_file(t_view, content);
+
+    let rendered = global_bd.render("test_nested", map(
+        "post", map(
+            "title", "Modern SpiderBD Engine",
+            "author", map("name", "Ada Lovelace"),
+            "meta", map("raw_badge", "<span class='badge'>Verified</span>")
+        )
+    ));
+    file_delete(t_view);
+
+    assert(rendered.contains("<p>Modern SpiderBD Engine</p>"), "1-level dot notation must resolve");
+    assert(rendered.contains("<span>Ada Lovelace</span>"), "2-level deep nesting with $ prefix must resolve");
+    assert(rendered.contains("<span class='badge'>Verified</span>"), "Raw tag with nested dot notation must not escape HTML");
+    println("  [PASS] test_dot_notation_and_nesting");
+}
+
+fn test_whitespace_tolerance() {
+    let t_view = "resources/views/test_ws.bd.html";
+    let content = "1:" + "{{" + "$name" + "}}" + " " +
+                  "2:" + "{{" + " $name " + "}}" + " " +
+                  "3:" + "{{" + "  $name  " + "}}" + " " +
+                  "4:" + "{{" + "name" + "}}" + " " +
+                  "5:" + "{{" + " name " + "}}" + " " +
+                  "6:" + "{!!" + "$raw" + "!!}" + " " +
+                  "7:" + "{!!" + " $raw " + "!!}";
+    write_file(t_view, content);
+
+    let rendered = global_bd.render("test_ws", map(
+        "name", "Spid3r",
+        "raw", "<b>OK</b>"
+    ));
+    file_delete(t_view);
+
+    assert(rendered.contains("1:Spid3r 2:Spid3r 3:Spid3r 4:Spid3r 5:Spid3r 6:<b>OK</b> 7:<b>OK</b>"),
+        "Template tags with zero, single, or multiple spaces must resolve identically");
+    println("  [PASS] test_whitespace_tolerance");
+}
+
+fn test_null_safety_and_missing_properties() {
+    let t_view = "resources/views/test_null_safe.bd.html";
+    let content = "A:[" + "{{" + " missing_var " + "}}" + "] " +
+                  "B:[" + "{{" + " post.missing_prop " + "}}" + "] " +
+                  "C:[" + "{{" + " post.author.name " + "}}" + "] " +
+                  "D:[" + "{{" + " count " + "}}" + "]";
+    write_file(t_view, content);
+
+    let rendered = global_bd.render("test_null_safe", map(
+        "post", map("id", 1, "author", null),
+        "count", 0
+    ));
+    file_delete(t_view);
+
+    assert(rendered.contains("A:[]"), "Missing root variable should resolve to empty string");
+    assert(rendered.contains("B:[]"), "Missing property on map should resolve to empty string");
+    assert(rendered.contains("C:[]"), "Null intermediate property should resolve to empty string without crash");
+    assert(rendered.contains("D:[0]"), "Numeric zero must interpolate as '0'");
+    println("  [PASS] test_null_safety_and_missing_properties");
+}
+
+fn test_model_dot_notation() {
+    let post = new Post(map(
+        "title", "Active Record in BD",
+        "category", "Architecture",
+        "views_count", 100
+    ));
+
+    let t_view = "resources/views/test_model.bd.html";
+    let content = "<h1>" + "{{" + " post.title " + "}}" + "</h1>" +
+                  "<span>" + "{{" + " post.category " + "}}" + "</span>" +
+                  "<small>" + "{{" + " post.views_count " + "}}" + "</small>";
+    write_file(t_view, content);
+
+    let rendered = global_bd.render("test_model", map("post", post));
+    file_delete(t_view);
+
+    assert(rendered.contains("<h1>Active Record in BD</h1>"), "Model title attribute must resolve");
+    assert(rendered.contains("<span>Architecture</span>"), "Model category attribute must resolve");
+    assert(rendered.contains("<small>100</small>"), "Model integer attribute must resolve");
+    println("  [PASS] test_model_dot_notation");
+}
+
+fn test_posts_show_and_edit_views() {
+    // Test posts.show
+    let rendered_show = global_bd.render("posts.show", map(
+        "post", map(
+            "id", 99,
+            "title", "Architecture Patterns",
+            "slug", "architecture-patterns",
+            "content", "Building scalable Spid3r web apps.",
+            "category", "Guides",
+            "views_count", 250
+        ),
+        "is_auth", true
+    ));
+    assert(rendered_show.contains("Architecture Patterns"), "Post title should resolve in posts.show view");
+    assert(rendered_show.contains("Guides"), "Post category should resolve in posts.show view");
+    assert(rendered_show.contains("250 views"), "Post view count should resolve in posts.show view");
+    assert(rendered_show.contains("/posts/99/edit"), "Post id should resolve in edit link");
+
+    // Test posts.edit
+    let rendered_edit = global_bd.render("posts.edit", map(
+        "post", map(
+            "id", 99,
+            "title", "Architecture Patterns",
+            "category", "Guides",
+            "content", "Building scalable Spid3r web apps."
+        ),
+        "error", ""
+    ));
+    assert(rendered_edit.contains("value=\"Architecture Patterns\""), "Post title should populate edit input");
+    assert(rendered_edit.contains("value=\"Guides\""), "Post category should populate edit input");
+    assert(rendered_edit.contains("/posts/99/update"), "Post id should populate form action");
+    println("  [PASS] test_posts_show_and_edit_views");
+}
+
 fn main() {
     println("\n=== Running SpiderBD Test Suite ===");
     test_html_escape();
     test_bd_view_rendering();
     test_auth_views_rendering();
+    test_dot_notation_and_nesting();
+    test_whitespace_tolerance();
+    test_null_safety_and_missing_properties();
+    test_model_dot_notation();
+    test_posts_show_and_edit_views();
     println("=== All SpiderBD Tests Passed! ===\n");
 }

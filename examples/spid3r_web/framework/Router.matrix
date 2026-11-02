@@ -135,6 +135,21 @@ public class Router {
         return null;
     }
 
+    // Verbs registered for a path; drives 405 Method Not Allowed + Allow header.
+    public fn allowed_methods(self, request_path: string) {
+        let target_path = request_path;
+        if target_path.len() > 1 and target_path.ends_with("/") {
+            target_path = target_path.slice(0, target_path.len() - 1);
+        }
+        let found = list();
+        for route in self.routes_list {
+            if self.match_path(route.path, target_path) != null and not found.contains(route.method) {
+                found.push(route.method);
+            }
+        }
+        return found;
+    }
+
     fn match_path(self, pattern: string, actual: string) {
         if pattern == actual {
             return map();

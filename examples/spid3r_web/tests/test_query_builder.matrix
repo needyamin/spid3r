@@ -51,8 +51,134 @@ fn test_query_builder_crud() {
     println("  [PASS] test_query_builder_crud");
 }
 
+fn test_query_builder_joins_sql() {
+    // 1. Standard 4-arg inner join
+    let q1 = DB.table("posts").join("users", "posts.user_id", "=", "users.id");
+    assert(q1.toSql() == "SELECT * FROM posts INNER JOIN users ON posts.user_id = users.id", "q1 toSql mismatch");
+
+    // 2. Shorthand 3-arg inner join
+    let q2 = DB.table("posts").join("users", "posts.user_id", "users.id");
+    assert(q2.toSql() == "SELECT * FROM posts INNER JOIN users ON posts.user_id = users.id", "q2 toSql mismatch");
+
+    // 3. Explicit innerJoin alias
+    let q3 = DB.table("posts").innerJoin("users", "posts.user_id", "=", "users.id");
+    assert(q3.toSql() == "SELECT * FROM posts INNER JOIN users ON posts.user_id = users.id", "q3 toSql mismatch");
+
+    // 4. Left join
+    let q4 = DB.table("users").leftJoin("posts", "users.id", "=", "posts.user_id");
+    assert(q4.toSql() == "SELECT * FROM users LEFT JOIN posts ON users.id = posts.user_id", "q4 toSql mismatch");
+
+    // 5. Right join
+    let q5 = DB.table("posts").rightJoin("users", "posts.user_id", "=", "users.id");
+    assert(q5.toSql() == "SELECT * FROM posts RIGHT JOIN users ON posts.user_id = users.id", "q5 toSql mismatch");
+
+    // 6. Cross join
+    let q6 = DB.table("users").crossJoin("roles");
+    assert(q6.toSql() == "SELECT * FROM users CROSS JOIN roles", "q6 toSql mismatch");
+
+    // 7. Chained joins with select, where, orderBy, limit, offset
+    let q7 = DB.table("posts")
+        .select(["posts.id", "posts.title", "users.name as author"])
+        .join("users", "posts.user_id", "=", "users.id")
+        .leftJoin("categories", "posts.category_id", "=", "categories.id")
+        .where("posts.status", "=", "published")
+        .where("users.id", ">", 0)
+        .orderBy("posts.created_at", "DESC")
+        .limit(10)
+        .offset(5);
+
+    let compiled7 = q7.build_select_sql();
+    let expected_sql = "SELECT posts.id, posts.title, users.name as author FROM posts INNER JOIN users ON posts.user_id = users.id LEFT JOIN categories ON posts.category_id = categories.id WHERE posts.status = ? AND users.id > ? ORDER BY posts.created_at DESC LIMIT 10 OFFSET 5";
+    assert(compiled7["sql"] == expected_sql, "q7 sql mismatch");
+    assert(compiled7["params"].len() == 2, "q7 params count mismatch");
+    assert(compiled7["params"][0] == "published", "q7 param 0 mismatch");
+    assert(compiled7["params"][1] == 0, "q7 param 1 mismatch");
+    assert(q7.toSql() == expected_sql, "q7 toSql mismatch");
+    println("  [PASS] test_query_builder_joins_sql");
+}
+
+fn test_query_builder_joins_execution() {
+    let now = string(unix_time());
+
+    // 1. Create test user A with post
+    let user_a_id = DB.table("users").insert({
+        "name": "Join User A",
+        "email": "join_a_" + now + "@example.com",
+        "password": "secret",
+        "created_at": now,
+        "updated_at": now
+    });
+
+    let post_id = DB.table("posts").insert({
+        "title": "Join Test Post",
+        "slug": "join-test-post-" + now,
+        "content": "Join test content body",
+        "category": "Tech",
+        "user_id": user_a_id,
+        "status": "published",
+        "views_count": 15,
+        "created_at": now,
+        "updated_at": now
+    });
+
+    // 2. Create test user B with no posts
+    let user_b_id = DB.table("users").insert({
+        "name": "Join User B",
+        "email": "join_b_" + now + "@example.com",
+        "password": "secret",
+        "created_at": now,
+        "updated_at": now
+    });
+
+    // 3. Test INNER JOIN execution
+    let inner_rows = DB.table("posts")
+        .select(["posts.title", "users.name", "posts.user_id"])
+        .join("users", "posts.user_id", "=", "users.id")
+        .where("posts.id", "=", post_id)
+        .get();
+    assert(inner_rows.len() == 1, "INNER JOIN should return 1 row");
+    assert(inner_rows[0]["title"] == "Join Test Post", "Title should match");
+    assert(inner_rows[0]["name"] == "Join User A", "Author name should match");
+
+    // 4. Test LEFT JOIN execution (user with no posts)
+    let left_rows = DB.table("users")
+        .select(["users.name", "posts.title"])
+        .leftJoin("posts", "users.id", "=", "posts.user_id")
+        .where("users.id", "=", user_b_id)
+        .get();
+    assert(left_rows.len() == 1, "LEFT JOIN should return 1 row for lonely user");
+    assert(left_rows[0]["name"] == "Join User B", "User name should match");
+    assert(left_rows[0]["title"] == null, "Post title should be null for user with no posts");
+
+    // 5. Test count() with JOIN and WHERE condition
+    let joined_count = DB.table("posts")
+        .join("users", "posts.user_id", "=", "users.id")
+        .where("users.id", "=", user_a_id)
+        .count();
+    assert(joined_count == 1, "Count with JOIN should return 1");
+
+    // Teardown
+    DB.table("posts").where("id", "=", post_id).delete();
+    DB.table("users").where("id", "=", user_a_id).delete();
+    DB.table("users").where("id", "=", user_b_id).delete();
+    println("  [PASS] test_query_builder_joins_execution");
+}
+
+fn test_database_busy_timeout() {
+    let conn = DB.connection();
+    let rows = conn.query("PRAGMA busy_timeout;");
+    assert(rows.len() > 0, "PRAGMA busy_timeout should return at least one row");
+    assert(int(rows[0]["timeout"]) == 5000, "busy_timeout should be 5000 ms");
+    println("  [PASS] test_database_busy_timeout");
+}
+
 fn main() {
     println("\n=== Running QueryBuilder Test Suite ===");
     test_query_builder_crud();
+    test_query_builder_joins_sql();
+    test_query_builder_joins_execution();
+    test_database_busy_timeout();
+    DB.close();
     println("=== All QueryBuilder Tests Passed! ===\n");
+    return 0;
 }

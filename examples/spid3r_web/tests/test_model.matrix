@@ -3,6 +3,7 @@
 
 import "app/Models/User";
 import "app/Models/Post";
+import "framework/Database/DB";
 
 fn test_user_post_models() {
     let now = string(unix_time());
@@ -58,8 +59,77 @@ fn test_user_post_models() {
     println("  [PASS] test_user_post_models");
 }
 
+fn test_modern_static_and_inheritance() {
+    let now = string(unix_time());
+
+    // 1. Test direct static method User.create and class inheritance
+    let email = "ada_" + now + "@lovelace.org";
+    let user = User.create({
+        "name": "Ada Lovelace",
+        "email": email,
+        "password": "analytical_engine"
+    });
+    assert(user != null, "User.create should succeed");
+    assert(user.get("name") == "Ada Lovelace", "user.get should work via Model inheritance");
+    assert(user.model != null, "user.model property must exist for backward compatibility");
+    let uid = int(user.get("id"));
+
+    // 2. Test direct static method User.find & User.findByEmail
+    let found = User.find(uid);
+    assert(found != null, "User.find should locate user");
+    assert(found.get("name") == "Ada Lovelace", "Found user name should match");
+
+    let found_by_email = User.findByEmail(email);
+    assert(found_by_email != null, "User.findByEmail should locate user");
+    assert(int(found_by_email.get("id")) == uid, "Found by email ID should match");
+
+    // 3. Test direct static method Post.create and Post.findBySlug
+    let slug = "first-algorithm-" + now;
+    let post = Post.create({
+        "title": "Note G: The First Algorithm",
+        "slug": slug,
+        "content": "Algorithm for calculating Bernoulli numbers.",
+        "category": "History",
+        "user_id": uid,
+        "status": "published",
+        "views_count": 42
+    });
+    assert(post != null, "Post.create should succeed");
+    let pid = int(post.get("id"));
+
+    let found_slug = Post.findBySlug(slug);
+    assert(found_slug != null, "Post.findBySlug should locate post");
+    assert(found_slug.get("title") == "Note G: The First Algorithm", "Post title should match");
+
+    // 4. Test Post.published() and Post.all()
+    let pub_posts = Post.published();
+    assert(pub_posts.len() > 0, "Post.published should return at least 1 post");
+
+    let all_posts = Post.all();
+    assert(all_posts.len() > 0, "Post.all should return at least 1 post");
+
+    // 5. Test User.all()
+    let all_users = User.all();
+    assert(all_users.len() > 0, "User.all should return at least 1 user");
+
+    // 6. Test Model to_map()
+    let post_map = post.to_map();
+    assert(post_map.has("title"), "to_map should contain title");
+    assert(post_map["slug"] == slug, "to_map slug should match");
+
+    // Teardown
+    post.delete();
+    user.delete();
+    assert(User.find(uid) == null, "User should be deleted");
+    assert(Post.find(pid) == null, "Post should be deleted");
+    println("  [PASS] test_modern_static_and_inheritance");
+}
+
 fn main() {
     println("\n=== Running Model Test Suite ===");
     test_user_post_models();
+    test_modern_static_and_inheritance();
+    DB.close();
     println("=== All Model Tests Passed! ===\n");
+    return 0;
 }

@@ -15,9 +15,9 @@ public class QueryBuilder {
     fn new(table: string, manager = null) {
         self.table_name = table;
         self.db_manager = manager;
-        self.select_cols = list("*");
-        self.wheres = list();
-        self.joins = list();
+        self.select_cols = ["*"];
+        self.wheres = [];
+        self.joins = [];
         self.order_col = "";
         self.order_dir = "ASC";
         self.limit_count = -1;
@@ -28,7 +28,7 @@ public class QueryBuilder {
         if type_of(cols) == "list" {
             self.select_cols = cols;
         } else {
-            self.select_cols = list(string(cols));
+            self.select_cols = [string(cols)];
         }
         return self;
     }
@@ -39,12 +39,12 @@ public class QueryBuilder {
             val = op;
             op = "=";
         }
-        self.wheres.push(map(
-            "col", column,
-            "op", op,
-            "val", val,
-            "bool", "AND"
-        ));
+        self.wheres.push({
+            "col": column,
+            "op": op,
+            "val": val,
+            "bool": "AND"
+        });
         return self;
     }
 
@@ -53,12 +53,12 @@ public class QueryBuilder {
             val = op;
             op = "=";
         }
-        self.wheres.push(map(
-            "col", column,
-            "op", op,
-            "val", val,
-            "bool", "OR"
-        ));
+        self.wheres.push({
+            "col": column,
+            "op": op,
+            "val": val,
+            "bool": "OR"
+        });
         return self;
     }
 
@@ -79,12 +79,98 @@ public class QueryBuilder {
     }
 
     // ------------------------------------------------------------------------
+    // Joins
+    // ------------------------------------------------------------------------
+
+    public fn join(self, table: string, first_col: string, op: string, second_col = null) {
+        if second_col == null {
+            second_col = op;
+            op = "=";
+        }
+        self.joins.push({
+            "type": "INNER",
+            "table": table,
+            "first": first_col,
+            "op": op,
+            "second": second_col
+        });
+        return self;
+    }
+
+    public fn innerJoin(self, table: string, first_col: string, op: string, second_col = null) {
+        return self.join(table, first_col, op, second_col);
+    }
+
+    public fn leftJoin(self, table: string, first_col: string, op: string, second_col = null) {
+        if second_col == null {
+            second_col = op;
+            op = "=";
+        }
+        self.joins.push({
+            "type": "LEFT",
+            "table": table,
+            "first": first_col,
+            "op": op,
+            "second": second_col
+        });
+        return self;
+    }
+
+    public fn rightJoin(self, table: string, first_col: string, op: string, second_col = null) {
+        if second_col == null {
+            second_col = op;
+            op = "=";
+        }
+        self.joins.push({
+            "type": "RIGHT",
+            "table": table,
+            "first": first_col,
+            "op": op,
+            "second": second_col
+        });
+        return self;
+    }
+
+    public fn crossJoin(self, table: string) {
+        self.joins.push({
+            "type": "CROSS",
+            "table": table,
+            "first": "",
+            "op": "",
+            "second": ""
+        });
+        return self;
+    }
+
+    public fn toSql(self) -> string {
+        let compiled = self.build_select_sql();
+        return compiled["sql"];
+    }
+
+    public fn getBindings(self) {
+        let compiled = self.build_select_sql();
+        return compiled["params"];
+    }
+
+    // ------------------------------------------------------------------------
     // SQL Compiler
     // ------------------------------------------------------------------------
 
-    fn build_select_sql(self) {
+    public fn build_select_sql(self) {
         let sql = "SELECT " + self.select_cols.join(", ") + " FROM " + self.table_name;
-        let params = list();
+        let params = [];
+
+        if self.joins.len() > 0 {
+            for j in self.joins {
+                let j_type = j["type"];
+                let j_table = j["table"];
+                if j_type == "CROSS" {
+                    sql = sql + " CROSS JOIN " + j_table;
+                } else {
+                    sql = sql + " " + j_type + " JOIN " + j_table + " ON " + j["first"] + " " + j["op"] + " " + j["second"];
+                }
+            }
+        }
 
         if self.wheres.len() > 0 {
             sql = sql + " WHERE ";
@@ -110,7 +196,7 @@ public class QueryBuilder {
             }
         }
 
-        return map("sql", sql, "params", params);
+        return { "sql": sql, "params": params };
     }
 
     fn get_connection(self) {
@@ -142,7 +228,19 @@ public class QueryBuilder {
 
     public fn count(self) -> int {
         let sql = "SELECT count(*) as c FROM " + self.table_name;
-        let params = list();
+        let params = [];
+
+        if self.joins.len() > 0 {
+            for j in self.joins {
+                let j_type = j["type"];
+                let j_table = j["table"];
+                if j_type == "CROSS" {
+                    sql = sql + " CROSS JOIN " + j_table;
+                } else {
+                    sql = sql + " " + j_type + " JOIN " + j_table + " ON " + j["first"] + " " + j["op"] + " " + j["second"];
+                }
+            }
+        }
 
         if self.wheres.len() > 0 {
             sql = sql + " WHERE ";
@@ -166,9 +264,9 @@ public class QueryBuilder {
     }
 
     public fn insert(self, data) {
-        let keys = list();
-        let placeholders = list();
-        let params = list();
+        let keys = [];
+        let placeholders = [];
+        let params = [];
 
         for k in data.keys() {
             keys.push(k);
@@ -186,8 +284,8 @@ public class QueryBuilder {
     }
 
     public fn update(self, data) {
-        let set_clauses = list();
-        let params = list();
+        let set_clauses = [];
+        let params = [];
 
         for k in data.keys() {
             set_clauses.push(k + " = ?");
@@ -219,7 +317,7 @@ public class QueryBuilder {
 
     public fn delete(self) {
         let sql = "DELETE FROM " + self.table_name;
-        let params = list();
+        let params = [];
 
         if self.wheres.len() > 0 {
             sql = sql + " WHERE ";
@@ -253,10 +351,17 @@ public class DatabaseManager {
     }
 
     fn resolve_database_path(self) -> string {
-        let candidates = list(
+        let env_path = env("SPID3R_DB_PATH");
+        if env_path.is_some() {
+            let val = env_path.unwrap();
+            if string(val) != "" {
+                return string(val);
+            }
+        }
+        let candidates = [
             "database/database.sqlite",
             "examples/spid3r_web/database/database.sqlite"
-        );
+        ];
         for p in candidates {
             if file_exists(p) {
                 return p;
@@ -277,14 +382,14 @@ public class DatabaseManager {
         if self.db_handle == null {
             // Ensure directory exists if needed
             self.db_handle = db_open(self.db_path);
-            self.db_handle.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
+            self.db_handle.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
         }
         return self.db_handle;
     }
 
     public fn select(self, sql: string, params = null) {
         if params == null {
-            params = list();
+            params = [];
         }
         let conn = self.connection();
         return conn.query(sql, params);
@@ -292,7 +397,7 @@ public class DatabaseManager {
 
     public fn statement(self, sql: string, params = null) {
         if params == null {
-            params = list();
+            params = [];
         }
         let conn = self.connection();
         if params.len() == 0 {
@@ -305,11 +410,37 @@ public class DatabaseManager {
         return new QueryBuilder(table_name, self);
     }
 
+    public fn checkpoint(self) {
+        if self.db_handle != null {
+            self.db_handle.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+    }
+
+    public fn cleanup_artifacts(self) {
+        let candidates = [
+            self.db_path,
+            "database/database.sqlite",
+            "examples/spid3r_web/database/database.sqlite"
+        ];
+        for p in candidates {
+            let shm_path = p + "-shm";
+            let wal_path = p + "-wal";
+            if file_exists(shm_path) {
+                file_delete(shm_path);
+            }
+            if file_exists(wal_path) {
+                file_delete(wal_path);
+            }
+        }
+    }
+
     public fn close(self) {
         if self.db_handle != null {
+            self.db_handle.exec("PRAGMA wal_checkpoint(TRUNCATE);");
             self.db_handle.close();
             self.db_handle = null;
         }
+        self.cleanup_artifacts();
     }
 }
 

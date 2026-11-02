@@ -1,0 +1,301 @@
+// tests/e2e/tier1_features_http.matrix
+// Tier 1: Feature Coverage for Router, Validation, Request & Response (Features 7, 8, 9, 10, 11)
+
+import "tests/e2e/test_helpers";
+import "framework/Router";
+import "framework/Request";
+import "framework/Response";
+import "framework/Application";
+
+fn main() {
+    println("\n==================================================================");
+    println("  Tier 1: Feature Coverage - HTTP, Routing & Validation (F7-F11)  ");
+    println("==================================================================");
+
+    let runner = new TestRunner("Tier 1: HTTP & Routing");
+
+    // ------------------------------------------------------------------------
+    // Feature 7: Router Pattern & Param Extraction
+    // ------------------------------------------------------------------------
+
+    runner.test("F7.1: Exact route matching", fn() {
+        let router = new Router();
+        router.get("/dashboard", fn(_r) { return response("Dashboard", 200); });
+        let match_res = router.match_route("GET", "/dashboard");
+        test_assert_not_null(match_res, "Exact path /dashboard should match");
+        test_assert_eq(match_res["route"].path, "/dashboard", "Matched route path should be /dashboard");
+    });
+
+    runner.test("F7.2: Single parameter extraction (:id)", fn() {
+        let router = new Router();
+        router.get("/articles/:id", fn(r) { return response("Art " + r.param("id"), 200); });
+        let match_res = router.match_route("GET", "/articles/54321");
+        test_assert_not_null(match_res, "Route with :id parameter should match");
+        test_assert(match_res["params"].has("id"), "Params must contain 'id'");
+        test_assert_eq(match_res["params"]["id"], "54321", "Extracted 'id' value must be 54321");
+    });
+
+    runner.test("F7.3: Multiple parameter extraction (:org_id, :team_id)", fn() {
+        let router = new Router();
+        router.get("/orgs/:org_id/teams/:team_id", fn(_r) { return response("ok", 200); });
+        let match_res = router.match_route("GET", "/orgs/alpha/teams/devs");
+        test_assert_not_null(match_res, "Multi-param route should match");
+        test_assert_eq(match_res["params"]["org_id"], "alpha", "org_id must match");
+        test_assert_eq(match_res["params"]["team_id"], "devs", "team_id must match");
+    });
+
+    runner.test("F7.4: Brace parameter syntax", fn() {
+        let router = new Router();
+        let pattern = "/users/{" + "user_id" + "}/profile";
+        router.get(pattern, fn(_r) { return response("ok", 200); });
+        let match_res = router.match_route("GET", "/users/888/profile");
+        test_assert_not_null(match_res, "Brace parameterized route should match");
+        test_assert_eq(match_res["params"]["user_id"], "888", "Extracted user_id must be 888");
+    });
+
+    runner.test("F7.5: Route group prefix application", fn() {
+        let router = new Router();
+        router.group(map("prefix", "/api/v2"), fn() {
+            router.get("/health", fn(_r) { return response("ok", 200); });
+            router.post("/items", fn(_r) { return response("created", 201); });
+        });
+
+        let m1 = router.match_route("GET", "/api/v2/health");
+        test_assert_not_null(m1, "Prefix /api/v2 should apply to /health");
+        let m2 = router.match_route("POST", "/api/v2/items");
+        test_assert_not_null(m2, "Prefix /api/v2 should apply to /items");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 8: Router Method Dispatch & 405 Status
+    // ------------------------------------------------------------------------
+
+    runner.test("F8.1: Distinct handlers for distinct HTTP verbs on same path", fn() {
+        let router = new Router();
+        router.get("/resource", fn(_r) { return response("GET handler", 200); });
+        router.post("/resource", fn(_r) { return response("POST handler", 201); });
+
+        let m_get = router.match_route("GET", "/resource");
+        let m_post = router.match_route("POST", "/resource");
+
+        test_assert_not_null(m_get, "GET /resource must match");
+        test_assert_not_null(m_post, "POST /resource must match");
+
+        let res_get = router.dispatch(m_get["route"].handler, new Request());
+        let res_post = router.dispatch(m_post["route"].handler, new Request());
+
+        test_assert_eq(res_get.body, "GET handler", "GET handler output should match");
+        test_assert_eq(res_post.body, "POST handler", "POST handler output should match");
+    });
+
+    runner.test("F8.2: RESTful verbs matching (PUT, DELETE, PATCH)", fn() {
+        let router = new Router();
+        router.put("/items/:id", fn(_r) { return response("updated", 200); });
+        router.delete("/items/:id", fn(_r) { return response("deleted", 204); });
+        router.patch("/items/:id", fn(_r) { return response("patched", 200); });
+
+        test_assert_not_null(router.match_route("PUT", "/items/1"), "PUT /items/1 must match");
+        test_assert_not_null(router.match_route("DELETE", "/items/1"), "DELETE /items/1 must match");
+        test_assert_not_null(router.match_route("PATCH", "/items/1"), "PATCH /items/1 must match");
+    });
+
+    runner.test("F8.3: Direct closure dispatch returns Response object", fn() {
+        let router = new Router();
+        let executed = false;
+        router.get("/dispatch_test", fn(_r) {
+            executed = true;
+            return response("dispatched", 200);
+        });
+
+        let m = router.match_route("GET", "/dispatch_test");
+        let res = router.dispatch(m["route"].handler, new Request());
+        test_assert(executed, "Closure handler should have executed");
+        test_assert_eq(res.status_code, 200, "Dispatched response status should be 200");
+    });
+
+    runner.test("F8.4: Non-existent route returns 404 in Application", fn() {
+        let app = new Application();
+        let raw_req = make_request("GET", "/this-route-does-not-exist-at-all-404");
+        let res = app.handle_request(raw_req);
+        test_assert_eq(res["status"], 404, "Application must return 404 for undefined route");
+    });
+
+    runner.test("F8.5: Method mismatch returns 405 Method Not Allowed (M4 contract)", fn() {
+        // Contract requirement from PROJECT.md Feature 14 & TEST_INFRA Feature 8:
+        // Returning 405 Method Not Allowed when path matches another verb
+        let app = new Application();
+        Route.get("/e2e-405-probe", fn(_r) { return response("ok", 200); });
+        let raw_req = make_request("POST", "/e2e-405-probe"); // GET only
+        let res = app.handle_request(raw_req);
+        test_assert_eq(res["status"], 405, "Application must return 405 when route path exists for other verbs");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 9: Request Validation Engine
+    // ------------------------------------------------------------------------
+
+    runner.test("F9.1: Validator required rule", fn() {
+        let req_empty = new Request(make_request("POST", "/test", null, "name=&email="));
+        let v1 = req_empty.validate(map("name", "required"));
+        test_assert(v1.fails(), "Empty field should fail required rule");
+
+        let req_ok = new Request(make_request("POST", "/test", null, "name=Ada"));
+        let v2 = req_ok.validate(map("name", "required"));
+        test_assert(v2.passes(), "Populated field should pass required rule");
+    });
+
+    runner.test("F9.2: Validator email rule", fn() {
+        let req_bad = new Request(make_request("POST", "/test", null, "email=not-an-email"));
+        let v1 = req_bad.validate(map("email", "email"));
+        test_assert(v1.fails(), "Invalid email syntax should fail");
+
+        let req_ok = new Request(make_request("POST", "/test", null, "email=ada%40example.com"));
+        let v2 = req_ok.validate(map("email", "email"));
+        test_assert(v2.passes(), "Valid email address should pass");
+    });
+
+    runner.test("F9.3: Validator min and max length rules", fn() {
+        let req = new Request(make_request("POST", "/test", null, "short=ab&long=thisiswaytoolongforthelimit"));
+        let v_short = req.validate(map("short", "min:3"));
+        test_assert(v_short.fails(), "Value with length 2 should fail min:3");
+
+        let v_long = req.validate(map("long", "max:10"));
+        test_assert(v_long.fails(), "Value with length > 10 should fail max:10");
+
+        let v_ok = req.validate(map("short", "min:2", "long", "max:50"));
+        test_assert(v_ok.passes(), "Values satisfying length bounds should pass");
+    });
+
+    runner.test("F9.4: Validator numeric and integer rules", fn() {
+        let req = new Request(make_request("POST", "/test", null, "str=hello&num=42.5&int_val=100"));
+        let v_bad_num = req.validate(map("str", "numeric"));
+        test_assert(v_bad_num.fails(), "Non-numeric string should fail numeric rule");
+
+        let v_bad_int = req.validate(map("num", "integer"));
+        test_assert(v_bad_int.fails(), "Float string 42.5 should fail integer rule");
+
+        let v_ok = req.validate(map("num", "numeric", "int_val", "integer"));
+        test_assert(v_ok.passes(), "Valid numeric and integer values should pass");
+    });
+
+    runner.test("F9.5: Validator pipe composition and error messages", fn() {
+        let req = new Request(make_request("POST", "/test", null, "email=a"));
+        let v = req.validate(map("email", "required|email|min:6"));
+        test_assert(v.fails(), "Combined rules should fail for 'a'");
+        test_assert(v.error_messages().has("email"), "Error map should contain 'email' key");
+        test_assert_gte(v.error_messages()["email"].len(), 1, "Should have error message for failed rule");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 10: Request Parsing & Binary Body
+    // ------------------------------------------------------------------------
+
+    runner.test("F10.1: Request form-urlencoded body parsing", fn() {
+        let raw = make_request("POST", "/submit",
+            map("content-type", "application/x-www-form-urlencoded"),
+            "username=john_doe&role=admin&active=1"
+        );
+        let req = new Request(raw);
+        test_assert_eq(req.string("username"), "john_doe", "Parsed username should match");
+        test_assert_eq(req.string("role"), "admin", "Parsed role should match");
+        test_assert_eq(req.int("active"), 1, "Parsed active integer should match");
+    });
+
+    runner.test("F10.2: Request JSON body parsing", fn() {
+        let raw = map(
+            "method", "POST",
+            "path", "/api/data",
+            "headers", map("content-type", "application/json"),
+            "body", "{\"message\":\"hello\",\"count\":99}"
+        );
+        let req = new Request(raw);
+        test_assert_eq(req.string("message"), "hello", "JSON field message should be parsed");
+        test_assert_eq(req.int("count"), 99, "JSON field count should be parsed as int");
+    });
+
+    runner.test("F10.3: Request query string URL decoding", fn() {
+        let raw = make_request("GET", "/search?q=full%20text%20search&tag=web%2Bstack");
+        let req = new Request(raw);
+        test_assert_eq(req.query("q"), "full text search", "URL percent-encoding %20 should decode to space");
+        test_assert_eq(req.query("tag"), "web+stack", "URL percent-encoding %2B should decode to plus");
+    });
+
+    runner.test("F10.4: Request input accessor methods", fn() {
+        let raw = make_request("GET", "/posts/42?page=3");
+        raw["params"] = map("id", "42");
+        let req = new Request(raw);
+
+        test_assert_eq(req.param("id"), "42", "param('id') should return 42");
+        test_assert_eq(req.query("page"), "3", "query('page') should return 3");
+        test_assert_eq(req.int("page"), 3, "int('page') should return integer 3");
+        test_assert(req.has("id"), "has('id') should return true");
+        test_assert(req.has("page"), "has('page') should return true");
+        test_assert(not req.has("missing"), "has('missing') should return false");
+        test_assert_eq(req.input("missing", "default_val"), "default_val", "Default value should return on missing key");
+    });
+
+    runner.test("F10.5: Request headers case-insensitivity", fn() {
+        let raw = make_request("GET", "/", map(
+            "Authorization", "Bearer tok_12345",
+            "X-Custom-Header", "SecretVal"
+        ));
+        let req = new Request(raw);
+        test_assert_eq(req.header("authorization"), "Bearer tok_12345", "Lowercase header lookup must match");
+        test_assert_eq(req.header("Authorization"), "Bearer tok_12345", "Uppercase header lookup must match");
+        test_assert_eq(req.header("x-custom-header"), "SecretVal", "Custom header lookup must match");
+    });
+
+    // ------------------------------------------------------------------------
+    // Feature 11: Response & Cookie Formatting
+    // ------------------------------------------------------------------------
+
+    runner.test("F11.1: Response json helper formats headers and body", fn() {
+        let res = json(map("success", true, "code", 200), 200);
+        test_assert_eq(res.status_code, 200, "Status code should be 200");
+        test_assert(res.headers.has("content-type"), "Headers must contain content-type");
+        test_assert_contains(res.headers["content-type"], "application/json", "content-type must be application/json");
+        test_assert_contains(res.body, "\"success\":true", "JSON body should be serialized");
+    });
+
+    runner.test("F11.2: Response html helper formats text/html content-type", fn() {
+        let res = html("<h1>Welcome</h1>", 200);
+        test_assert_eq(res.status_code, 200, "Status code should be 200");
+        test_assert_contains(res.headers["content-type"], "text/html", "content-type must be text/html");
+        test_assert_eq(res.body, "<h1>Welcome</h1>", "HTML body should match");
+    });
+
+    runner.test("F11.3: Response redirect helper formats 302 and Location header", fn() {
+        let res = redirect("/login");
+        test_assert_eq(res.status_code, 302, "Redirect status should be 302");
+        test_assert(res.headers.has("location"), "Headers must have location");
+        test_assert_eq(res.headers["location"], "/login", "Location header must be /login");
+    });
+
+    runner.test("F11.4: Response cookie helper formats Set-Cookie header with flags", fn() {
+        let res = response("ok", 200);
+        res.cookie("my_cookie", "cookie_value_123", "/", 3600);
+        test_assert(res.headers.has("set-cookie"), "Headers must have set-cookie");
+        let cookie_str = res.headers["set-cookie"];
+        test_assert_contains(cookie_str, "my_cookie=cookie_value_123", "Cookie string should contain name=value");
+        test_assert_contains(cookie_str, "Path=/", "Cookie string should contain Path=/");
+        test_assert_contains(cookie_str, "Max-Age=3600", "Cookie string should contain Max-Age");
+        test_assert_contains(cookie_str, "SameSite=Lax", "Cookie string should contain SameSite=Lax");
+    });
+
+    runner.test("F11.5: Response custom headers via withHeaders", fn() {
+        let res = response("ok", 200);
+        res.withHeaders(map(
+            "X-Frame-Options", "DENY",
+            "X-XSS-Protection", "1; mode=block"
+        ));
+        test_assert(res.headers.has("x-frame-options"), "Header x-frame-options should be set");
+        test_assert_eq(res.headers["x-frame-options"], "DENY", "Header value should match");
+        test_assert(res.headers.has("x-xss-protection"), "Header x-xss-protection should be set");
+    });
+
+    let success = runner.summary();
+    if not success {
+        return 1;
+    }
+    return 0;
+}

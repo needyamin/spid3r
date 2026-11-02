@@ -3,8 +3,11 @@
 
 import "framework/Response";
 
-public fn html_escape(text: string) -> string {
-    return string(text)
+public fn html_escape(value) -> string {
+    if value == null {
+        return "";
+    }
+    return string(value)
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
@@ -111,14 +114,20 @@ public class BD {
         for raw_line in lines {
             let line = raw_line.trim();
 
-            // Simple 1-line section: @section('title', 'My Page')
+            // Simple 1-line section: @section('title', 'My Page') or @section('title', post.title)
             if line.starts_with("@section(") and line.contains(",") and line.ends_with(")") {
-                let inner = line.replace("@section(", "");
-                inner = inner.slice(0, inner.len() - 1).trim();
-                let parts = inner.split(",");
-                if parts.len() >= 2 {
-                    let sec_name = parts[0].trim().replace("'", "").replace("\"", "");
-                    let sec_val = parts[1].trim().replace("'", "").replace("\"", "");
+                let inner = line.slice(9, line.len() - 1).trim();
+                let comma_idx = inner.index_of(",");
+                if comma_idx > 0 {
+                    let sec_name = inner.slice(0, comma_idx).trim().replace("'", "").replace("\"", "");
+                    let raw_val = inner.slice(comma_idx + 1, inner.len()).trim();
+                    let sec_val = raw_val;
+                    if (raw_val.starts_with("'") and raw_val.ends_with("'")) or (raw_val.starts_with("\"") and raw_val.ends_with("\"")) {
+                        sec_val = raw_val.slice(1, raw_val.len() - 1);
+                    } else {
+                        // Unquoted expression (e.g. post.title): wrap in {{ ... }} so layout @yield renders the evaluated title
+                        sec_val = "{{" + raw_val + "}}";
+                    }
                     sections[sec_name] = sec_val;
                 }
                 continue;
@@ -152,17 +161,26 @@ public class BD {
         let lines = layout.split("\n");
 
         for raw_line in lines {
-            if raw_line.contains("@yield(") {
-                let start_idx = raw_line.index_of("@yield(");
-                let end_idx = raw_line.index_of(")");
+            let line = raw_line;
+            while line.contains("@yield(") {
+                let start_idx = line.index_of("@yield(");
+                let end_idx = line.index_of(")");
                 if start_idx >= 0 and end_idx > start_idx {
-                    let yield_call = raw_line.slice(start_idx, end_idx + 1);
-                    let inner = yield_call.replace("@yield(", "").replace(")", "").trim();
+                    let yield_call = line.slice(start_idx, end_idx + 1);
+                    let inner = yield_call.replace("@yield(", "");
+                    if inner.ends_with(")") {
+                        inner = inner.slice(0, inner.len() - 1);
+                    }
+                    inner = inner.trim();
                     let replacement = "";
-                    if inner.contains(",") {
-                        let parts = inner.split(",");
-                        let sec_name = parts[0].trim().replace("'", "").replace("\"", "");
-                        let def_val = parts[1].trim().replace("'", "").replace("\"", "");
+                    let comma_idx = inner.index_of(",");
+                    if comma_idx > 0 {
+                        let sec_name = inner.slice(0, comma_idx).trim().replace("'", "").replace("\"", "");
+                        let def_raw = inner.slice(comma_idx + 1, inner.len()).trim();
+                        let def_val = def_raw;
+                        if (def_raw.starts_with("'") and def_raw.ends_with("'")) or (def_raw.starts_with("\"") and def_raw.ends_with("\"")) {
+                            def_val = def_raw.slice(1, def_raw.len() - 1);
+                        }
                         if sections.has(sec_name) {
                             replacement = sections[sec_name];
                         } else {
@@ -174,13 +192,12 @@ public class BD {
                             replacement = sections[sec_name];
                         }
                     }
-                    out_lines.push(raw_line.replace(yield_call, replacement));
+                    line = line.replace(yield_call, replacement);
                 } else {
-                    out_lines.push(raw_line);
+                    break;
                 }
-            } else {
-                out_lines.push(raw_line);
             }
+            out_lines.push(line);
         }
 
         return out_lines.join("\n");
@@ -298,8 +315,11 @@ public class BD {
                 expr = expr.slice(0, expr.len() - 1).trim(); // "$items as $item"
                 let parts = expr.split(" as ");
                 if parts.len() == 2 {
-                    loop_list_name = parts[0].trim().replace("$", "");
-                    loop_item_name = parts[1].trim().replace("$", "");
+                    loop_list_name = parts[0].trim();
+                    loop_item_name = parts[1].trim();
+                    if loop_item_name.starts_with("$") {
+                        loop_item_name = loop_item_name.slice(1, loop_item_name.len()).trim();
+                    }
                 }
                 loop_body_lines = list();
                 continue;
@@ -308,20 +328,18 @@ public class BD {
             if in_loop and line == "@endforeach" {
                 in_loop = false;
                 // Render loop items
-                if data.has(loop_list_name) {
-                    let items = data[loop_list_name];
-                    if type_of(items) == "list" {
-                        for item in items {
-                            let item_data = map();
-                            // copy parent scope
-                            for k in data.keys() {
-                                item_data[k] = data[k];
-                            }
-                            item_data[loop_item_name] = item;
-
-                            let rendered_body = self.render_loop_iteration(loop_body_lines, item_data, loop_item_name);
-                            result_lines.push(rendered_body);
+                let items = self.resolve_expression(loop_list_name, data);
+                if items != null and type_of(items) == "list" {
+                    for item in items {
+                        let item_data = map();
+                        // copy parent scope
+                        for k in data.keys() {
+                            item_data[k] = data[k];
                         }
+                        item_data[loop_item_name] = item;
+
+                        let rendered_body = self.render_loop_iteration(loop_body_lines, item_data, loop_item_name);
+                        result_lines.push(rendered_body);
                     }
                 }
                 loop_body_lines = list();
@@ -340,55 +358,182 @@ public class BD {
 
     fn render_loop_iteration(self, body_lines, data, item_var_name: string) -> string {
         let block = body_lines.join("\n");
-        let item = data[item_var_name];
-
-        if type_of(item) == "map" {
-            for key in item.keys() {
-                let val = string(item[key]);
-
-                // Raw: {!! $item.key !!}
-                let raw_token = "{!! $" + item_var_name + "." + key + " !!}";
-                block = block.replace(raw_token, val);
-
-                // Escaped: {{ $item.key }}
-                let esc_token = "{{ $" + item_var_name + "." + key + " }}";
-                block = block.replace(esc_token, html_escape(val));
-            }
-        } else {
-            let val = string(item);
-            let raw_token = "{!! $" + item_var_name + " !!}";
-            block = block.replace(raw_token, val);
-            let esc_token = "{{ $" + item_var_name + " }}";
-            block = block.replace(esc_token, html_escape(val));
-        }
-
-        // Also evaluate any generic variables in scope
         return self.evaluate_variables(block, data);
     }
 
-    fn evaluate_variables(self, text: string, data) -> string {
-        let result = text;
+    fn resolve_expression(self, raw_expr: string, data) {
+        let expr = raw_expr.trim();
+        if expr.starts_with("$") {
+            expr = expr.slice(1, expr.len()).trim();
+        }
+        if expr == "" {
+            return null;
+        }
+        return self.resolve_dot_path(expr, data);
+    }
 
-        for key in data.keys() {
-            let val = data[key];
+    fn resolve_dot_path(self, path: string, data) {
+        if path == "" or data == null {
+            return null;
+        }
+
+        // Fast-path: if type_of(data) == "map" and data.has(path), return data[path]
+        if type_of(data) == "map" and data.has(path) {
+            return data[path];
+        }
+
+        let parts = path.split(".");
+        let first = parts[0].trim();
+        if type_of(data) != "map" or not data.has(first) {
+            return null;
+        }
+
+        let curr = data[first];
+        let i = 1;
+        while i < parts.len() {
+            let seg = parts[i].trim();
+            if curr == null {
+                return null;
+            }
+            curr = self.resolve_property(curr, seg);
+            i = i + 1;
+        }
+
+        return curr;
+    }
+
+    fn resolve_property(self, obj, prop: string) {
+        if obj == null {
+            return null;
+        }
+
+        let t = type_of(obj);
+
+        // 1. Spid3r Map
+        if t == "map" {
+            if obj.has(prop) {
+                return obj[prop];
+            }
+            return null;
+        }
+
+        // 2. Class Instance (Active Record Model or Domain Object)
+        if t == "instance" {
+            // Check Active Record Model attributes map
+            try {
+                let attrs = obj.attributes;
+                if attrs != null and type_of(attrs) == "map" {
+                    if attrs.has(prop) {
+                        return attrs[prop];
+                    }
+                }
+            } catch (_e1) {}
+
+            // Check obj.get(prop) method on Model
+            try {
+                let val = obj.get(prop);
+                if val != null {
+                    return val;
+                }
+            } catch (_e2) {}
+
+            // Check Active Record relation methods (e.g. post.author(), user.posts())
+            if prop == "author" {
+                try {
+                    let rel = obj.author();
+                    if rel != null {
+                        return rel;
+                    }
+                } catch (_e3) {}
+            }
+            if prop == "posts" {
+                try {
+                    let rel = obj.posts();
+                    if rel != null {
+                        return rel;
+                    }
+                } catch (_e4) {}
+            }
+
+            return null;
+        }
+
+        // 3. List (numeric indexing: items.0.title)
+        if t == "list" {
+            try {
+                let idx = int(prop);
+                if idx >= 0 and idx < obj.len() {
+                    return obj[idx];
+                }
+            } catch (_e5) {}
+            return null;
+        }
+
+        return null;
+    }
+
+    fn evaluate_variables(self, text: string, data) -> string {
+        let result = "";
+        let remaining = text;
+
+        while true {
+            let raw_idx = remaining.index_of("{!!");
+            let esc_idx = remaining.index_of("{{");
+
+            // No more tags to process
+            if raw_idx < 0 and esc_idx < 0 {
+                result = result + remaining;
+                break;
+            }
+
+            // Determine which tag delimiter appears first
+            let is_raw = false;
+            let start_idx = -1;
+            let open_len = 0;
+            let close_tag = "";
+
+            if raw_idx >= 0 and (esc_idx < 0 or raw_idx < esc_idx) {
+                is_raw = true;
+                start_idx = raw_idx;
+                open_len = 3; // "{!!".len()
+                close_tag = "!!}";
+            } else {
+                is_raw = false;
+                start_idx = esc_idx;
+                open_len = 2; // "{{".len()
+                close_tag = "}}";
+            }
+
+            // Emit plain template text preceding the tag
+            result = result + remaining.slice(0, start_idx);
+            let after_open = remaining.slice(start_idx + open_len, remaining.len());
+
+            let end_idx = after_open.index_of(close_tag);
+            if end_idx < 0 {
+                // Malformed tag without closing delimiter: emit verbatim and terminate
+                let open_str = "{{";
+                if is_raw {
+                    open_str = "{!!";
+                }
+                result = result + open_str + after_open;
+                break;
+            }
+
+            // Extract expression and trim surrounding whitespace (guarantees whitespace tolerance)
+            let expr = after_open.slice(0, end_idx).trim();
+            remaining = after_open.slice(end_idx + close_tag.len(), after_open.len());
+
+            let val = self.resolve_expression(expr, data);
             let s_val = "";
             if val != null {
                 s_val = string(val);
             }
 
-            // 1. Raw {!! $key !!}
-            let raw_token = "{!! $" + key + " !!}";
-            result = result.replace(raw_token, s_val);
-
-            let raw_token2 = "{!! " + key + " !!}";
-            result = result.replace(raw_token2, s_val);
-
-            // 2. Escaped {{ $key }}
-            let esc_token = "{{ $" + key + " }}";
-            result = result.replace(esc_token, html_escape(s_val));
-
-            let esc_token2 = "{{ " + key + " }}";
-            result = result.replace(esc_token2, html_escape(s_val));
+            if is_raw {
+                result = result + s_val;
+            } else {
+                result = result + html_escape(s_val);
+            }
         }
 
         return result;

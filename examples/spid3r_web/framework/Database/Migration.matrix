@@ -31,7 +31,7 @@ public class MigrationRunner {
 
     public fn get_applied(self) {
         let rows = DB.select("SELECT migration, batch FROM migrations ORDER BY id ASC");
-        let applied_map = map();
+        let applied_map = {};
         for r in rows {
             applied_map[string(r["migration"])] = int(r["batch"]);
         }
@@ -61,11 +61,11 @@ public class MigrationRunner {
         for m in migrations_list {
             let m_name = m.name;
             if not applied.has(m_name) {
-                println("[Migrate] Running: " + m_name);
+                println("[Migrate] Running: {m_name}");
                 m.up();
                 let now = string(unix_time());
-                DB.statement("INSERT INTO migrations (migration, batch, applied_at) VALUES (?, ?, ?)", list(m_name, next_batch, now));
-                println("[Migrate] Done:    " + m_name);
+                DB.statement("INSERT INTO migrations (migration, batch, applied_at) VALUES (?, ?, ?)", [m_name, next_batch, now]);
+                println("[Migrate] Done:    {m_name}");
                 ran_count = ran_count + 1;
             }
         }
@@ -88,17 +88,17 @@ public class MigrationRunner {
             return 0;
         }
         let last_batch = int(val);
-        let batch_rows = DB.select("SELECT migration FROM migrations WHERE batch = ? ORDER BY id DESC", list(last_batch));
+        let batch_rows = DB.select("SELECT migration FROM migrations WHERE batch = ? ORDER BY id DESC", [last_batch]);
 
         let rolled_count = 0;
         for r in batch_rows {
             let target_name = string(r["migration"]);
             for m in migrations_list {
                 if m.name == target_name {
-                    println("[Rollback] Rolling back: " + m.name);
+                    println("[Rollback] Rolling back: {m.name}");
                     m.down();
-                    DB.statement("DELETE FROM migrations WHERE migration = ?", list(m.name));
-                    println("[Rollback] Reverted:     " + m.name);
+                    DB.statement("DELETE FROM migrations WHERE migration = ?", [m.name]);
+                    println("[Rollback] Reverted:     {m.name}");
                     rolled_count = rolled_count + 1;
                 }
             }
@@ -115,13 +115,14 @@ public class MigrationRunner {
         for m in migrations_list {
             let status = "No";
             if applied.has(m.name) {
-                status = "Yes (" + string(applied[m.name]) + ")";
+                let batch_num = applied[m.name];
+                status = "Yes ({batch_num})";
             }
             let name_padded = m.name;
             while name_padded.len() < 46 {
                 name_padded = name_padded + " ";
             }
-            println("| " + name_padded + " | " + status + "   |");
+            println("| {name_padded} | {status}   |");
         }
         println("+------------------------------------------------+-------+\n");
     }
