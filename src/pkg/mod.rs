@@ -817,7 +817,7 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<Vec<String>, String> {
 
 #[path = "sha256.rs"]
 mod sha256;
-pub use sha256::{hex_encode, sha256_bytes, sha256_hex};
+pub use sha256::{hex_decode, hex_encode, sha256_bytes, sha256_hex};
 
 /// Inspect/edit half of the package manager: `verify`, `tree`, `add`,
 /// `remove`, `publish --to-dir`, `search --local`.

@@ -201,6 +201,15 @@ rather than an infinity or a panic.
 | `request_shutdown()` | Set the flag (an admin endpoint, a supervisor, a test). |
 | `reset_shutdown()` | Clear the flag. |
 
+## Runtime configuration & diagnostics
+
+| Function | Description |
+|---|---|
+| `spid3rinfo()` | Map of runtime information (version, OS, config, modules, memory). Modes: `spid3rinfo("html")`, `spid3rinfo("json")`, `spid3rinfo("text")`, `spid3rinfo("map", no_redact)`. Sensitive values are redacted by default. See `docs/AGENT.md`. |
+| `config_get(key)` | Live `spid3r.ini` value as a string, or `null`. Sensitive-looking keys are redacted. |
+| `config_set(key, value)` | Set a known key in the live configuration (validated). |
+| `config_reload()` | Re-read `spid3r.ini`; returns the path that was loaded (or empty). |
+
 ## Networking & HTTP
 
 Built directly on `std::net` with zero third-party dependencies. Sockets are represented as integer handles.
@@ -336,7 +345,7 @@ import "ml" as ml;
 
 ---
 
-## 1. `web.matrix` — Express / PHP Alternative
+## 1. `web.matrix` — Express Alternative
 
 Built on core networking and crypto primitives (`tcp_listen`, `tcp_accept`, `http_read_request`, `http_write_response`, `url_decode`, `json_parse`, `json_write`, `hmac_sha256`, and `bytes`).
 

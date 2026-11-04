@@ -63,8 +63,8 @@ fn arithmetic_promotes_ints_to_floats() {
 #[test]
 fn integer_overflow_is_an_error_not_a_silent_wrap() {
     // The audit flagged silent wraparound as data corruption: `max * 2` used
-    // to become -2. It is a runtime error now (Python raises; PHP converts to
-    // float - nobody silently corrupts).
+    // to become -2. It is a runtime error now (Python raises - nobody
+    // silently corrupts).
     expect_err(
         r#"
         fn main() {

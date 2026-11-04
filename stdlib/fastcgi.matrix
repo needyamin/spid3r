@@ -9,7 +9,7 @@
 //   // nginx:  location / { fastcgi_pass 127.0.0.1:9000; include fastcgi_params; }
 //   fastcgi_serve("127.0.0.1:9000", fn(req) { return app.handle(req); }, map());
 //
-// This is the deployment story PHP has with php-fpm: the process speaks the
+// This is the classic FastCGI deployment story: the process speaks the
 // FastCGI protocol, the reverse proxy (nginx, Apache mod_proxy_fcgi, Caddy)
 // owns TLS, static files, compression and connection handling, and the app is
 // a plain request -> response function.

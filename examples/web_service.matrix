@@ -1,6 +1,6 @@
 // ============================================================
 // Web Service in Spid3r
-// Demonstrating stdlib/web.matrix (Express / PHP Alternative)
+// Demonstrating stdlib/web.matrix (Express Alternative)
 // ============================================================
 
 import "web" as w;

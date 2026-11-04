@@ -1020,8 +1020,8 @@ pub fn no_field_error(value: &Value, field: &str) -> String {
 /// Checked integer arithmetic shared by every engine (the interpreter, the VM,
 /// and the native backend's `spid3r_binop` all route through here). Integer
 /// overflow is a runtime error, not a silent wrap: `9223372036854775807 + 1`
-/// must not quietly become the smallest i64 (Python raises, PHP converts to
-/// float - Spid3r previously corrupted the value, which the audit flagged).
+/// must not quietly become the smallest i64 (Python raises - Spid3r previously
+/// corrupted the value, which the audit flagged).
 pub fn checked_int(op: &'static str, a: i64, b: i64) -> Result<i64, String> {
     let r = match op {
         "+" => a.checked_add(b),

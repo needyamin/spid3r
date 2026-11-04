@@ -150,7 +150,7 @@ fn bitwise_precedence_and_shift_bounds() {
 
 #[test]
 fn null_coalescing_is_null_only() {
-    // `??` is null-coalescing (PHP semantics): `none` is an option value, not
+    // `??` is null-coalescing: `none` is an option value, not
     // null, so it is returned unchanged.
     assert_all_engines(
         "coalesce",

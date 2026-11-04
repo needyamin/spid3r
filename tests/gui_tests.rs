@@ -37,14 +37,39 @@ fn write_case(name: &str, src: &str) -> String {
 fn dry_run_replays_the_counter_demo() {
     // The demo: two synthetic clicks (from main), then `ready` (the page load
     // event) which installs the HTML and re-renders the count.
+    let src = r#"
+        let clicks = 0;
+        fn set_count() {
+            let label = "clicks: " + string(clicks);
+            gui_eval("document.getElementById('count').textContent = " + json_write(label) + ";");
+        }
+        fn on_ready(event, payload) {
+            gui_set_html("<button id=\"go\" onclick=\"window.spid3r.emit('click','go')\">click me</button> <span id=\"count\"></span>");
+            set_count();
+            return null;
+        }
+        fn on_click(event, payload) {
+            clicks = clicks + 1;
+            set_count();
+            return null;
+        }
+        fn main() {
+            gui_title("spid3r gui - counter");
+            gui_on("ready", on_ready);
+            gui_on("click", on_click);
+            gui_emit("click", "go");
+            gui_emit("click", "go");
+            return 0;
+        }
+    "#;
+    let path = write_case("counter", src);
     let expected = concat!(
         "js: document.getElementById('count').textContent = \"clicks: 1\";\n",
         "js: document.getElementById('count').textContent = \"clicks: 2\";\n",
         "js: document.getElementById('spid3r-root').innerHTML = \"<button id=\\\"go\\\" onclick=\\\"window.spid3r.emit('click','go')\\\">click me</button> <span id=\\\"count\\\"></span>\";\n",
         "js: document.getElementById('count').textContent = \"clicks: 2\";\n",
     );
-    let out =
-        gui(&["gui", "examples/gui/counter.matrix", "--dry-run"]).expect("dry-run must succeed");
+    let out = gui(&["gui", &path, "--dry-run"]).expect("dry-run must succeed");
     assert_eq!(out, expected);
 }
 
@@ -104,7 +129,8 @@ fn gui_eval_checks_its_argument_count() {
 
 #[test]
 fn gui_rejects_unknown_options_and_missing_files() {
-    let err = gui(&["gui", "examples/gui/counter.matrix", "--nope"]).expect_err("must fail");
+    let dummy = write_case("dummy", "fn main() { return 0; }");
+    let err = gui(&["gui", &dummy, "--nope"]).expect_err("must fail");
     assert!(err.contains("unknown option '--nope'"), "got: {}", err);
 
     let err = gui(&["gui", "examples/gui/does_not_exist.matrix"]).expect_err("must fail");
@@ -214,18 +240,6 @@ fn dry_run_prints_set_html_before_handler_queued_js() {
     );
 }
 
-#[test]
-fn calculator_binary_dry_run_renders_initial_state() {
-    let calc_bin = PathBuf::from(env!("CARGO_BIN_EXE_calculator"));
-    let output = Command::new(&calc_bin)
-        .arg("--dry-run")
-        .output()
-        .expect("run calculator --dry-run");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("window.calc.render"));
-    assert!(stdout.contains("document.getElementById('spid3r-root')"));
-}
 
 // `--payload` runs a program embedded by `build --embed`. Building an exe
 // needs LLVM, so these cover the resolution rules instead: a missing path, a

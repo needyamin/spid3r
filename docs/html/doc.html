@@ -1464,6 +1464,20 @@
 
       <div class="sb-group">
         <div class="sb-group-header" onclick="toggleGroup(this)">
+          <span class="group-title"><span>🛠️</span> Runtime &amp; Remote Mgmt</span>
+          <span class="sb-arrow">▼</span>
+        </div>
+        <div class="sb-links">
+          <a href="#runtime-config" class="sb-link"><span>spid3r.ini</span><span class="sb-tag">config</span></a>
+          <a href="#spid3rinfo" class="sb-link"><span>spid3rinfo()</span></a>
+          <a href="#agent" class="sb-link"><span>Management Agent</span><span class="sb-tag">remote</span></a>
+          <a href="#agent-cli" class="sb-link"><span>spid3r admin</span></a>
+          <a href="#agent-security" class="sb-link"><span>Auth, Roles &amp; Audit</span></a>
+        </div>
+      </div>
+
+      <div class="sb-group">
+        <div class="sb-group-header" onclick="toggleGroup(this)">
           <span class="group-title"><span>⚙️</span> VM Architecture &amp; GC</span>
           <span class="sb-arrow">▼</span>
         </div>
@@ -1483,12 +1497,6 @@
         </div>
         <div class="sb-links">
           <a href="benchmark.html" class="sb-link"><span>Benchmarks</span></a>
-        </div>
-
-        <div class="sb-links">
-          <a href="project.html" class="sb-link">
-            Projects
-          </a>
         </div>
 
         <div class="sb-links">
@@ -1866,6 +1874,33 @@
                 <td><code>spid3r lsp</code></td>
                 <td>Language Server over stdio: diagnostics, hover, definition, references, rename, symbols, completion,
                   semantic tokens, code actions and formatting.</td>
+              </tr>
+              <tr id="cli-info">
+                <td><code>spid3r info</code></td>
+                <td><code>spid3r info --json</code></td>
+                <td>Runtime information, one self-describing report. Flags: <code>--json</code>,
+                  <code>--html</code>, <code>--no-redact</code> (local operator only). Same collector as
+                  <code>spid3rinfo()</code>.</td>
+              </tr>
+              <tr id="cli-config">
+                <td><code>spid3r config</code></td>
+                <td><code>spid3r config get agent.port</code></td>
+                <td>Read and write <code>spid3r.ini</code>. Subcommands: <code>get KEY</code>,
+                  <code>set KEY VALUE</code>, <code>list</code>, <code>path</code>, <code>validate</code>,
+                  <code>reload</code>, <code>init</code>.</td>
+              </tr>
+              <tr id="cli-agent">
+                <td><code>spid3r agent</code></td>
+                <td><code>spid3r agent start</code></td>
+                <td>Local management agent. Subcommands: <code>start</code>, <code>pair [--role R] [--name N]</code>,
+                  <code>status</code>, <code>ops</code>. Listens on <code>[agent] bind:port</code> (default
+                  <code>127.0.0.1:9527</code>). No unrestricted shell.</td>
+              </tr>
+              <tr id="cli-admin">
+                <td><code>spid3r admin</code></td>
+                <td><code>spid3r admin --host web-1 ping</code></td>
+                <td>Remote administration client. Pair first with <code>spid3r admin pair &lt;host:port&gt; &lt;code&gt;</code>,
+                  then call operations against the paired name.</td>
               </tr>
               <tr>
                 <td><code>spid3r init [dir]</code></td>
@@ -4059,6 +4094,33 @@ println(" Sum via reduce: " + string(sum_all));      // 21
                 <td><code>read_line()</code></td>
                 <td>Reads a line of input from standard input (returns <code>string</code>).</td>
               </tr>
+              <tr id="stdlib-runtime">
+                <td><strong>Runtime</strong></td>
+                <td><code>spid3rinfo</code></td>
+                <td><code>spid3rinfo(mode?)</code></td>
+                <td>Comprehensive runtime information (version, OS, config, modules, memory). Default returns a map.
+                  Modes: <code>"html"</code>, <code>"json"</code>, <code>"text"</code>, <code>"map"</code>. Optional
+                  second truthy argument disables redaction.</td>
+              </tr>
+              <tr>
+                <td><strong>Runtime</strong></td>
+                <td><code>config_get</code></td>
+                <td><code>config_get(key)</code></td>
+                <td>Live <code>spid3r.ini</code> value as a string, or <code>null</code>. Sensitive-looking keys are
+                  redacted.</td>
+              </tr>
+              <tr>
+                <td><strong>Runtime</strong></td>
+                <td><code>config_set</code></td>
+                <td><code>config_set(key, value)</code></td>
+                <td>Set a known, validated key in the live configuration.</td>
+              </tr>
+              <tr>
+                <td><strong>Runtime</strong></td>
+                <td><code>config_reload</code></td>
+                <td><code>config_reload()</code></td>
+                <td>Re-read <code>spid3r.ini</code>; returns the path that was loaded (or <code>""</code>).</td>
+              </tr>
               <tr id="stdlib-fs">
                 <td><strong>Filesystem</strong></td>
                 <td><code>read_file</code></td>
@@ -4424,7 +4486,7 @@ println(" Sum via reduce: " + string(sum_all));      // 21
               <tr>
                 <td><code>web.matrix</code></td>
                 <td><code>import "web" as w;</code></td>
-                <td>Express/PHP alternative router, HTTP request/response handler, URL param decoding.</td>
+                <td>Express-style router, HTTP request/response handler, URL param decoding.</td>
               </tr>
               <tr>
                 <td><code>dataframe.matrix</code></td>
@@ -4608,6 +4670,310 @@ println(" Sum via reduce: " + string(sum_all));      // 21
             </tbody>
           </table>
         </div>
+
+      </section>
+
+      <!-- CHAPTER 14b: RUNTIME CONFIG & REMOTE MANAGEMENT -->
+      <section class="chapter" id="runtime-config">
+        <h2 class="chapter-title"><span class="ch-num">14b.</span> Runtime Configuration &amp; Remote Management</h2>
+        <p class="chapter-lead">
+          Spid3r has <code>spid3r.ini</code>,
+          <code>spid3rinfo()</code>, and an encrypted management agent. One installed binary can be inspected,
+          reconfigured, and operated from another machine — without a shell.
+        </p>
+
+        <h3 class="section-h3" id="ini">The <code>spid3r.ini</code> File</h3>
+        <p>
+          A single INI file configures the runtime. Search order (first hit wins):
+        </p>
+        <ol>
+          <li><code>$SPID3R_INI</code></li>
+          <li><code>spid3r.ini</code> next to the <code>spid3r</code> executable</li>
+          <li>platform config dir (<code>%APPDATA%\Spid3r</code>, <code>$XDG_CONFIG_HOME/spid3r</code>,
+            <code>~/.config/spid3r</code>)</li>
+          <li><code>./spid3r.ini</code></li>
+        </ol>
+        <p>
+          Precedence, highest first: process environment → <code>[env.&lt;name&gt;]</code> (selected by
+          <code>SPID3R_ENV</code> or <code>[spid3r] env</code>) → the INI file → compiled defaults. Unknown keys are
+          reported by <code>spid3r config validate</code> and never abort a run. Live reload:
+          <code>spid3r config reload</code>, <code>SIGHUP</code> on Unix, or the agent's reload operation.
+        </p>
+
+        <div class="w3-card-example" id="ex-ini">
+          <div class="w3-card-header">
+            <span class="w3-card-title"><span>⚡</span> Example: A Minimal spid3r.ini</span>
+            <div class="w3-card-actions">
+              <button class="btn-copy" onclick="copySnippet(this)" title="Copy code">⧉</button>
+            </div>
+          </div>
+          <div class="w3-code-body" data-lang="ini">[spid3r]
+engine = vm
+max_workers = 256
+gc = true
+
+[memory]
+max_steps = 0            ; 0 = unlimited
+max_call_depth = 1000
+
+[agent]
+enabled = false
+bind = 127.0.0.1         ; 0.0.0.0 to accept other hosts
+port = 9527
+
+[security]
+allow_remote = false
+
+[env.production]
+agent.enabled = true
+agent.bind = 0.0.0.0
+</div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Section</th>
+                <th>Key</th>
+                <th>Default</th>
+                <th>Effect</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>[spid3r]</code></td>
+                <td><code>engine</code></td>
+                <td><code>vm</code></td>
+                <td>Default engine for <code>spid3r run</code> when <code>--engine</code> is omitted
+                  (<code>tree</code> or <code>vm</code>).</td>
+              </tr>
+              <tr>
+                <td><code>[spid3r]</code></td>
+                <td><code>max_workers</code></td>
+                <td><code>256</code></td>
+                <td>Ceiling for the grow-on-demand task pool.</td>
+              </tr>
+              <tr>
+                <td><code>[spid3r]</code></td>
+                <td><code>gc</code></td>
+                <td><code>true</code></td>
+                <td>Automatic cycle collection at statement boundaries.</td>
+              </tr>
+              <tr>
+                <td><code>[memory]</code></td>
+                <td><code>max_steps</code></td>
+                <td><code>0</code></td>
+                <td>Execution budget in engine steps; <code>0</code> disables the limit.</td>
+              </tr>
+              <tr>
+                <td><code>[memory]</code></td>
+                <td><code>max_call_depth</code></td>
+                <td><code>1000</code></td>
+                <td>Interpreter call-depth limit.</td>
+              </tr>
+              <tr>
+                <td><code>[modules]</code></td>
+                <td><code>allow_wasm</code></td>
+                <td><code>true</code></td>
+                <td>Allow loading sandboxed <code>.wasm</code> plugins.</td>
+              </tr>
+              <tr>
+                <td><code>[security]</code></td>
+                <td><code>allow_remote</code></td>
+                <td><code>false</code></td>
+                <td>Master switch for the management agent.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>enabled</code> / <code>bind</code> / <code>port</code></td>
+                <td><code>false</code> / <code>127.0.0.1</code> / <code>9527</code></td>
+                <td>Agent listener. Bind <code>127.0.0.1</code> unless you actually need other hosts.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>
+          Scripts read and write the live values with <code>config_get(key)</code>,
+          <code>config_set(key, value)</code> and <code>config_reload()</code>. The CLI is
+          <code>spid3r config get|set|list|path|validate|reload|init</code>.
+        </p>
+
+        <h3 class="section-h3" id="spid3rinfo">The <code>spid3rinfo()</code> Builtin</h3>
+        <p>
+          Spid3r's own runtime introspection. One collector, three renderers, one redaction pass.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Call</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>spid3rinfo()</code></td>
+                <td>Map of <code>section -&gt; {key: value}</code></td>
+              </tr>
+              <tr>
+                <td><code>spid3rinfo("html")</code></td>
+                <td>Standalone HTML page</td>
+              </tr>
+              <tr>
+                <td><code>spid3rinfo("json")</code></td>
+                <td>JSON string</td>
+              </tr>
+              <tr>
+                <td><code>spid3rinfo("text")</code></td>
+                <td>Aligned plain text</td>
+              </tr>
+              <tr>
+                <td><code>spid3rinfo("map", true)</code></td>
+                <td>Map without redaction (local operator choice)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Sections: <strong>Spid3r</strong> (version, language, Rust, profile), <strong>System</strong> (OS, arch,
+          memory, CPUs), <strong>Installation</strong> (exe, ini, log, state), <strong>Features</strong> (gui, native,
+          tls, wasm, agent), <strong>Modules</strong> (embedded stdlib, plugins), <strong>Configuration</strong>,
+          <strong>Environment</strong>, <strong>Memory</strong>, <strong>Agent</strong>. Keys matching
+          <code>token</code>, <code>secret</code>, <code>shared</code>, <code>credential</code>,
+          <code>authorization</code>, <code>cookie</code>, <code>api_key</code>, <code>private</code> are replaced with
+          <code>[redacted sha256:&lt;12 hex&gt;]</code>. Remote callers never receive unredacted output.
+        </p>
+
+        <div class="w3-card-example" id="ex-spid3rinfo">
+          <div class="w3-card-header">
+            <span class="w3-card-title"><span>⚡</span> Example: spid3rinfo() from a Script</span>
+            <div class="w3-card-actions">
+              <button class="btn-copy" onclick="copySnippet(this)" title="Copy code">⧉</button>
+            </div>
+          </div>
+          <div class="w3-code-body" data-lang="spid3r">fn main() {
+    let m = spid3rinfo();
+    println("version: " + m["Spid3r"]["Spid3r version"]);
+    println("os: " + m["System"]["OS"]);
+    println("json is " + type_of(spid3rinfo("json")));
+
+    let port = config_get("agent.port");
+    println("agent.port = " + port);
+    println(config_set("agent.name", "docs-demo"));
+    println("name is now " + config_get("agent.name"));
+    return 0;
+}
+</div>
+        </div>
+
+        <h3 class="section-h3" id="agent">The Management Agent</h3>
+        <p>
+          <code>spid3r agent start</code> listens on <code>[agent] bind:port</code> and speaks
+          <code>spid3r-agent/1</code> over TCP. There is <strong>no unrestricted shell</strong>. Every operation is a
+          predefined name checked against the caller's role. The same protocol runs on Windows, Linux and macOS with
+          no certificate store and no third-party crates.
+        </p>
+
+        <div class="w3-card-example" id="ex-agent">
+          <div class="w3-card-header">
+            <span class="w3-card-title"><span>⚡</span> Example: Pair and Operate Another Host</span>
+            <div class="w3-card-actions">
+              <button class="btn-copy" onclick="copySnippet(this)" title="Copy code">⧉</button>
+            </div>
+          </div>
+          <div class="w3-code-body" data-lang="console"># On the host that will be managed:
+$ spid3r agent start
+$ spid3r agent pair --role operator --name laptop-1
+pairing code (operator): 9f2c…        # 48 hex chars, single use, short TTL
+
+# On the administrator's machine:
+$ spid3r admin pair 192.168.1.10:9527 9f2c… --name laptop-1
+$ spid3r admin --host laptop-1 ping
+$ spid3r admin --host laptop-1 status
+$ spid3r admin --host laptop-1 info
+$ spid3r admin --host laptop-1 config.get --key agent.port
+$ spid3r admin --host laptop-1 config.set --key agent.name --value web-1
+$ spid3r admin --host laptop-1 logs.tail --lines 80
+$ spid3r admin --host laptop-1 modules.list
+$ spid3r admin --host laptop-1 devices.list
+$ spid3r admin --host laptop-1 ops.run --op-name self_test
+$ spid3r admin --host laptop-1 reload
+</div>
+        </div>
+
+        <p>
+          Predefined operations (<code>ops.run --name …</code>): <code>ping</code>, <code>reload_config</code>,
+          <code>rotate_log</code>, <code>gc_collect</code>, <code>self_test</code>, <code>dump_diagnostics</code>,
+          <code>restart_runtime</code>. <code>restart_runtime</code> spawns the same executable and exits; run the
+          agent under a service manager (Windows service, systemd) in production.
+        </p>
+
+        <h3 class="section-h3" id="agent-cli">Wire Protocol</h3>
+        <p>
+          Pairing is out-of-band: the host prints a one-time code; the client sends it once. Both sides derive the
+          long-term shared key as <code>SHA-256(code)</code>. The shared key <strong>never crosses the wire</strong>.
+          After pairing, every data frame is:
+        </p>
+        <div class="code-block">
+          <div style="color: var(--fg-primary); font-family: var(--font-mono); font-size: 0.85rem;">
+magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
+          </div>
+        </div>
+        <p>
+          <code>kind = pair</code> is plaintext JSON (the code is the secret). <code>kind = data</code> is ChaCha20
+          encrypted and HMAC-SHA256 authenticated (encrypt-then-MAC). Subkeys come from HKDF-SHA256. The frame header
+          is AAD, so a swapped payload fails the tag. Nonces are random 96-bit values; the server keeps a short replay
+          window.
+        </p>
+
+        <h3 class="section-h3" id="agent-security">Roles, Devices and Audit</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Role</th>
+                <th>May call</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>viewer</code></td>
+                <td><code>status</code>, <code>info</code>, <code>config.get</code>, <code>logs.tail</code>,
+                  <code>modules.list</code>, <code>devices.list</code></td>
+              </tr>
+              <tr>
+                <td><code>operator</code></td>
+                <td>viewer + <code>config.set</code>, <code>ops.run</code>, <code>reload</code></td>
+              </tr>
+              <tr>
+                <td><code>admin</code></td>
+                <td>everything, including <code>devices.revoke</code> and <code>pair.create</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Role lists are configurable via <code>agent.role_viewer</code> / <code>role_operator</code> /
+          <code>role_admin</code> (<code>*</code> = all). Every accepted or rejected operation is one JSON line in
+          <code>&lt;state&gt;/audit.log</code>. Disable with <code>[logging] audit = false</code>.
+        </p>
+        <p>
+          State files: <code>devices.json</code> (paired devices), <code>clients.json</code> (admin-client known
+          hosts), <code>audit.log</code>. <code>&lt;state&gt;</code> is
+          <code>%LOCALAPPDATA%\Spid3r\state</code>, <code>$XDG_STATE_HOME/spid3r</code>, or
+          <code>SPID3R_STATE_DIR</code>. Those files are <code>0600</code> on Unix.
+        </p>
+        <p>
+          Security notes: scripts still run with process authority (see the trust model). The agent is a management
+          plane, not a sandbox. There is no <code>exec</code>, no <code>spawn_process</code>, and no path-based file
+          write. Remote <code>info</code> and <code>config.get</code> are always redacted. Pair on a network you trust:
+          the code is high-entropy and short-lived, but it is not a PAKE.
+        </p>
+        <p>
+          Full operator manual: <code>docs/AGENT.md</code>.
+        </p>
 
       </section>
 
@@ -4909,7 +5275,6 @@ println(" Sum via reduce: " + string(sum_all));      // 21
     <div class="footer-links">
       <a href="doc.html">Documentation Home</a>
       <a href="playground.html">Interactive WASM Playground</a>
-      <a href="project.html">Live Projects &amp; E-Commerce Demo</a>
     </div>
     <p>
       Spid3r Programming Language — Built with zero external dependencies compiled to native machine code &amp;
@@ -5048,7 +5413,7 @@ println("SHA-256 of sum: " + sha256(string(sum)));
           '(?<type>\\b(?:int|float|string|bool|list|vec|tuple|map|set|bag|stack|queue|deque|heap|priority_queue|binary_tree|bst|trie|graph|matrix|vector|ring_buffer|linked_list|hash_table|option|result|ref|weak|any|void)\\b)',
           '(?<kw>\\b(?:fn|let|const|if|elif|else|while|for|in|return|break|continue|throw|try|catch|finally|spawn|async|await|class|extends|implements|public|private|new|import|as|self|super|match|enum|interface|abstract|yield|and|or|not)\\b)',
           '(?<lit>\\b(?:true|false|null|some|none|ok|err)\\b)',
-          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex)\\b)',
+          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|spid3rinfo|config_get|config_set|config_reload)\\b)',
           '(?<op>==|!=|<=|>=|=>|->|\\+\\+|--|\\+=|-=|\\*=|\\/=|%=|&&|\\|\\||\\?\\.|\\?\\?|[+\\-*\\/%!=<>~&|^?:])'
         ].join('|'),
         'g'

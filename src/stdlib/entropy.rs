@@ -25,6 +25,11 @@ use crate::value::{new_ref, type_name, NativeCtx, Value};
 /// Refuse absurd requests: the caller wants a token, not a data blob.
 const MAX_BYTES: i64 = 1024 * 1024;
 
+/// Expose the OS CSPRNG to host modules (agent pairing, tokens).
+pub fn fill_random(buf: &mut [u8]) -> Result<(), String> {
+    fill(buf)
+}
+
 pub fn native_defs() -> Vec<NativeDef> {
     vec![("random_bytes", n_random_bytes)]
 }

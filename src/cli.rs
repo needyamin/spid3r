@@ -103,6 +103,11 @@ COMMANDS:
                                            (JSON-RPC: diagnostics, hover,
                                            go-to-definition, symbols,
                                            completion, formatting)
+    info [--json|--html] [--no-redact]     Runtime information (spid3rinfo)
+    config [get KEY | set KEY VALUE | list | path | validate | reload | init]
+                                           Read and write spid3r.ini
+    agent start|pair|status|ops             Local management agent
+    admin --host NAME <op> [flags]          Remote administration client
     version                                Print version information
     help                                   Print this help
 
@@ -325,6 +330,12 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
     }
 
     let outcome = match cmd.as_str() {
+        "info" => cmd_info(&rest),
+        "config" => cmd_config(&rest),
+        #[cfg(not(target_arch = "wasm32"))]
+        "agent" => Ok(crate::agent::cmd_agent(&rest)),
+        #[cfg(not(target_arch = "wasm32"))]
+        "admin" => Ok(crate::agent::cmd_admin(&rest)),
         "version" | "--version" | "-V" => {
             println!("{}", version_text());
             return Ok(EXIT_OK);
@@ -2059,6 +2070,114 @@ fn cmd_publish(args: &[String]) -> Result<i32, Diagnostic> {
     println!("published to {}", dest.display());
     println!("sha256: {}", hash);
     Ok(EXIT_OK)
+}
+
+/// `spid3r info [--json|--html] [--no-redact]`
+fn cmd_info(args: &[String]) -> Result<i32, Diagnostic> {
+    let mut json = false;
+    let mut html = false;
+    let mut no_redact = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json = true,
+            "--html" => html = true,
+            "--no-redact" => no_redact = true,
+            "--help" | "-h" => {
+                println!("USAGE: spid3r info [--json|--html] [--no-redact]");
+                return Ok(EXIT_OK);
+            }
+            other => {
+                return Err(usage(&format!("info: unknown flag '{}'", other)));
+            }
+        }
+    }
+    if json && html {
+        return Err(usage("info: --json and --html are mutually exclusive"));
+    }
+    crate::runtime_info::print_for_cli(json, html, no_redact);
+    Ok(EXIT_OK)
+}
+
+/// `spid3r config [get KEY | set KEY VALUE | list | path | validate | reload | init]`
+fn cmd_config(args: &[String]) -> Result<i32, Diagnostic> {
+    let sub = args.first().map(String::as_str).unwrap_or("list");
+    let rest = if args.is_empty() { &args[0..0] } else { &args[1..] };
+    match sub {
+        "get" => {
+            let Some(key) = rest.first() else {
+                return Err(usage("config get KEY"));
+            };
+            match crate::config::get(key) {
+                Some(v) => {
+                    println!("{}", crate::runtime_info::redact_value(key, &v));
+                    Ok(EXIT_OK)
+                }
+                None => {
+                    eprintln!("error[config]: unknown key '{}'", key);
+                    Ok(EXIT_USER_ERROR)
+                }
+            }
+        }
+        "set" => {
+            if rest.len() != 2 {
+                return Err(usage("config set KEY VALUE"));
+            }
+            let key = &rest[0];
+            let value = &rest[1];
+            crate::config::set_live(key, value).map_err(|e| usage(&e))?;
+            let cfg = crate::config::snapshot();
+            let path = crate::config::save(&cfg).map_err(|e| usage(&e))?;
+            println!("{} = {} ({})", key, value, path.display());
+            Ok(EXIT_OK)
+        }
+        "list" => {
+            let cfg = crate::config::snapshot();
+            for (k, v) in &cfg.values {
+                println!("{} = {}", k, crate::runtime_info::redact_value(k, v));
+            }
+            Ok(EXIT_OK)
+        }
+        "path" => {
+            for p in crate::config::candidate_paths() {
+                println!("{}", p.display());
+            }
+            Ok(EXIT_OK)
+        }
+        "validate" => {
+            let cfg = crate::config::snapshot();
+            let problems = crate::config::validate(&cfg);
+            if problems.is_empty() {
+                println!("ok");
+                Ok(EXIT_OK)
+            } else {
+                for p in problems {
+                    eprintln!("{}", p);
+                }
+                Ok(EXIT_USER_ERROR)
+            }
+        }
+        "reload" => {
+            let cfg = crate::config::reload();
+            println!(
+                "reloaded {}",
+                cfg.path
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(defaults)".into())
+            );
+            Ok(EXIT_OK)
+        }
+        "init" => {
+            let path = rest.first().map(PathBuf::from);
+            let written = crate::config::write_default_ini(path.as_deref()).map_err(|e| usage(&e))?;
+            println!("wrote {}", written.display());
+            Ok(EXIT_OK)
+        }
+        "--help" | "-h" | "help" => {
+            println!("USAGE: spid3r config [get KEY | set KEY VALUE | list | path | validate | reload | init]");
+            Ok(EXIT_OK)
+        }
+        other => Err(usage(&format!("config: unknown subcommand '{}'", other))),
+    }
 }
 
 /// `spidr plugin abi | list | check <dir>` — inspect the plugin contract.

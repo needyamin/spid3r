@@ -8,9 +8,8 @@ A curated collection of runnable sample programs, native GUI applications, multi
 
 | Directory | Description | Readme / Guide |
 | :--- | :--- | :--- |
-| [gui/](gui/) | **Desktop GUI Apps**: Native window apps with Tao/Wry webview and bidirectional IPC bridge. Contains `counter.matrix` and the `data_studio/` analytics suite. | [gui/README.md](gui/README.md) |
 | [web/](web/) | **Web & HTTP Servers**: Multi-threaded REST APIs and web servers using `import "http"` and `import "web"`. Contains `server.matrix` and `cloudops_hub/`. | [web/README.md](web/README.md) |
-| [demo_apps/](demo_apps/) | **Flagship Demo Applications**: Full-featured desktop native calculator (`calculator.exe`) and web calculator. | [demo_apps/native_calculator/README.md](demo_apps/native_calculator/README.md) |
+| [demo_apps/](demo_apps/) | **Flagship Demo Applications**: Interactive in-browser web calculator. | [demo_apps/web_calculator/README.md](demo_apps/web_calculator/README.md) |
 
 ---
 

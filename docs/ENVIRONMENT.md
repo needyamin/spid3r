@@ -23,6 +23,18 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_LOG_FILE` | `%LOCALAPPDATA%\Spid3r\logs\spid3r.log` | Log path override. |
 | `SPID3R_RUN_PAYLOAD_DEBUG` | off | The launcher prints the runtime it chose and the payload path to stderr. |
 
+## Configuration, state, and the management agent
+
+| Variable | Default | Effect |
+|---|---|---|
+| `SPID3R_INI` | — | Explicit path to `spid3r.ini`. First hit in the search order. |
+| `SPID3R_CONFIG_DIR` | platform config dir | Directory that may hold `spid3r.ini`. |
+| `SPID3R_STATE_DIR` | `%LOCALAPPDATA%\Spid3r\state` / `$XDG_STATE_HOME/spid3r` | Paired devices, admin-client book, audit log. |
+| `SPID3R_ENV` | `default` (or `[spid3r] env`) | Selects `[env.<name>]` overrides in the INI. |
+| `SPID3R_<SECTION>_<KEY>` | — | Per-key override (`SPID3R_AGENT_PORT`, `SPID3R_AGENT_BIND`, …). |
+
+See `docs/AGENT.md` for the full management-agent manual.
+
 ## Building and the native backend
 
 | Variable | Default | Effect |

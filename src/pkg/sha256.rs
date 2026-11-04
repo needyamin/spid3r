@@ -108,3 +108,21 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 pub fn sha256_hex(data: &[u8]) -> String {
     hex_encode(&sha256_bytes(data))
 }
+
+/// Decode lowercase/uppercase hex into bytes. `None` on odd length or a
+/// non-hex digit.
+/// Used by the management agent; also compiled into build.rs via #[path].
+#[allow(dead_code)]
+pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    if b.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(b.len() / 2);
+    for i in (0..b.len()).step_by(2) {
+        let hi = (b[i] as char).to_digit(16)?;
+        let lo = (b[i + 1] as char).to_digit(16)?;
+        out.push(((hi * 16) + lo) as u8);
+    }
+    Some(out)
+}

@@ -244,9 +244,6 @@ fn windows_installer() {
     build
         .current_dir(&root)
         .args(["build", "--release", "--bin", "spid3r"]);
-    if gui {
-        build.args(["--bin", "calculator"]);
-    }
     build
         .args(["--lib", "--no-default-features"])
         .arg("--target")
@@ -594,10 +591,7 @@ fn windows_resources() {
     // that claims OriginalFilename "spid3r.exe" — visible in the Properties
     // dialog — and, before this, left it with no icon at all because only the
     // spid3r bin was ever given the resource.
-    let mut bins = vec![("spid3r", "Spid3r Language Toolchain", "spid3r.exe")];
-    if env::var_os("CARGO_FEATURE_GUI").is_some() {
-        bins.push(("calculator", "Spid3r Calculator", "calculator.exe"));
-    }
+    let bins = vec![("spid3r", "Spid3r Language Toolchain", "spid3r.exe")];
 
     for (bin, description, original) in bins {
         let rc_path = out_dir.join(format!("{bin}.rc"));

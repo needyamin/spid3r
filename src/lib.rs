@@ -3,11 +3,15 @@
 
 #![allow(clippy::mutable_key_type)]
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod agent;
 pub mod ast;
 pub mod budget;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod bundle;
 pub mod cli;
+pub mod config;
+pub mod crypto;
 pub mod diagnostics;
 pub mod embed;
 pub mod environment;
@@ -15,6 +19,7 @@ pub mod fmt;
 pub mod interpreter;
 pub mod lexer;
 pub mod logging;
+pub mod runtime_info;
 pub mod lower;
 pub mod lsp;
 pub mod modules;

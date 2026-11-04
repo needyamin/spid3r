@@ -10,7 +10,7 @@ issue IDs (documented in `docs/AUDIT_REPORT.md` and `docs/ROADMAP.md`).
 
 | Gap (verified) | Fix | Status |
 | --- | --- | --- |
-| No directory listing / stat / process context (could not walk a directory or read a file's size — the #1 real-app blocker vs PHP/Python/Java) | `list_dir` (sorted, no `.`/`..`), `is_dir`, `is_file`, `file_size`, `file_mtime`, `cwd`, `chdir`, `env_set` natives; `Environment` capability now covers `env_set`, `FileSystem` covers the new stat/list/chdir natives | **done** |
+| No directory listing / stat / process context (could not walk a directory or read a file's size — the #1 real-app blocker vs Python/Java) | `list_dir` (sorted, no `.`/`..`), `is_dir`, `is_file`, `file_size`, `file_mtime`, `cwd`, `chdir`, `env_set` natives; `Environment` capability now covers `env_set`, `FileSystem` covers the new stat/list/chdir natives | **done** |
 | No lexical path helpers (users hand-rolled separator handling, breaking on Windows) | `path_join`, `basename`, `dirname`, `path_ext` — pure string natives; both `/` and `\` are separators on every OS, results normalize to `/` | **done** |
 | `yaml_parse` silently misparsed unbalanced flow collections (`"a: [1, 2"` → string) | `flow_close_index` rejects unterminated/mismatched/trailing-text collections with a catchable error; 120-case differential byte-identical on valid input | **done** |
 | No execution budget (untrusted scripts could loop forever — documented hole in SECURITY.md) | `Budget` (shared saturating counter); tree engine charges per statement + per loop iteration, VM charges per instruction poll; exhaustion is a **fatal** error that `try`/`catch` cannot intercept; shared with spawned tasks and module init; `Engine::budget(n)` + `spid3r run --budget N` | **done** |
@@ -97,4 +97,4 @@ issue IDs (documented in `docs/AUDIT_REPORT.md` and `docs/ROADMAP.md`).
   go bignum. The fix is BigInt for the cases that need it, not slowing down
   every increment. Documented behavior.
 - **Byte strings for indexing**: the char-indexed model is *more* correct
-  than PHP's; keep it.
+  than byte-indexed alternatives; keep it.

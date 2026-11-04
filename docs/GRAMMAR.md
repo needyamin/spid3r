@@ -203,7 +203,7 @@ fnLit          = [ "async" ] "fn" "(" [ params ] ")" block ;
   `{{` escape: a hole is recognised only when `{` is followed immediately by an
   identifier.
 - `??` binds looser than `or` and tighter than assignment; `?.` is postfix.
-  `??` is **null**-coalescing (PHP semantics): the right side is evaluated
+  `??` is **null**-coalescing: the right side is evaluated
   only when the left side is `null`. `none` is an option value, not null, so
   `none ?? fallback` yields `none`; use `.unwrap_or(fallback)` for options.
   Both, and the value-position `if`, are rewritten by `crate::lower` into a

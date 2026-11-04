@@ -149,6 +149,10 @@ pub fn builtin_defs() -> Vec<NativeDef> {
         ("random_int", n_random_int),
         ("json_parse", n_json_parse),
         ("json_write", n_json_write),
+        ("spid3rinfo", n_spid3rinfo),
+        ("config_get", n_config_get),
+        ("config_set", n_config_set),
+        ("config_reload", n_config_reload),
         ("type_of", n_type_of),
         ("is_failure", n_is_failure),
         ("gc_collect", n_gc_collect),
@@ -2713,10 +2717,18 @@ fn n_json_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Str(out.into()))
 }
 
+/// Host-code JSON writer over the same `write_json` the builtin uses.
+pub fn json_write_text(v: &Value) -> Result<String, String> {
+    let mut out = String::new();
+    write_json(v, &mut out, 0)?;
+    Ok(out)
+}
+
 /// Text → JSON `Value`, for host code that speaks JSON over a wire (the LSP
-/// server) rather than through a `json_parse` builtin call. Same parser, same
-/// errors, same depth guard — one implementation, not two.
-pub(crate) fn json_parse_text(s: &str) -> Result<Value, String> {
+/// server, the management agent) rather than through a `json_parse` builtin
+/// call. Same parser, same errors, same depth guard — one implementation, not
+/// two.
+pub fn json_parse_text(s: &str) -> Result<Value, String> {
     let mut parser = JsonParser {
         chars: s.chars().collect(),
         pos: 0,
@@ -3802,4 +3814,44 @@ mod launch_resolution_tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// ------------------------------------------------------- runtime config/info
+
+fn n_spid3rinfo(ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    crate::runtime_info::n_spid3rinfo(ctx, args)
+}
+
+fn n_config_get(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.is_empty() || args.len() > 1 {
+        return Err(format!("config_get expects 1 argument, got {}", args.len()));
+    }
+    let key = want_str(&args[0], "config_get")?;
+    match crate::config::get(&key) {
+        Some(v) => {
+            let redacted = crate::runtime_info::redact_value(&key, &v);
+            Ok(Value::Str(redacted.into()))
+        }
+        None => Ok(Value::Null),
+    }
+}
+
+fn n_config_set(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!("config_set expects 2 arguments, got {}", args.len()));
+    }
+    let key = want_str(&args[0], "config_set")?;
+    let value = want_str(&args[1], "config_set")?;
+    crate::config::set_live(&key, &value)?;
+    Ok(Value::Bool(true))
+}
+
+fn n_config_reload(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    let cfg = crate::config::reload();
+    Ok(Value::Str(
+        cfg.path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| String::new())
+            .into(),
+    ))
 }
