@@ -4695,9 +4695,15 @@ println(" Sum via reduce: " + string(sum_all));      // 21
         </ol>
         <p>
           Precedence, highest first: process environment → <code>[env.&lt;name&gt;]</code> (selected by
-          <code>SPID3R_ENV</code> or <code>[spid3r] env</code>) → the INI file → compiled defaults. Unknown keys are
-          reported by <code>spid3r config validate</code> and never abort a run. Live reload:
-          <code>spid3r config reload</code>, <code>SIGHUP</code> on Unix, or the agent's reload operation.
+          <code>SPID3R_ENV</code> or <code>[spid3r] env</code>) → the INI file → compiled defaults. Every layer is
+          validated with the same rules: a value that fails its type/range check is ignored with a note and the
+          compiled default stays in effect (a bool must be <code>true/false/1/0/on/off/yes/no</code>; a typo like
+          <code>ture</code> is an error, not a silent true). A UTF-8 BOM at the start of the file is tolerated.
+          Unknown keys are reported by <code>spid3r config validate</code> and never abort a run. Live reload:
+          <code>spid3r config reload</code>, <code>SIGHUP</code> on Unix, or the agent's reload operation. The
+          <code>[logging]</code> keys <code>enabled</code>, <code>file</code> and <code>audit</code> are honored
+          (the <code>SPID3R_LOG</code>/<code>SPID3R_LOG_FILE</code> env vars override the INI). Config and state
+          files are written atomically (temp file + rename).
         </p>
 
         <div class="w3-card-example" id="ex-ini">
@@ -4782,7 +4788,8 @@ agent.bind = 0.0.0.0
                 <td><code>[security]</code></td>
                 <td><code>allow_remote</code></td>
                 <td><code>false</code></td>
-                <td>Master switch for the management agent.</td>
+                <td>Serves the management agent when true; the agent also serves when <code>[agent] enabled</code>
+                  is true (either switch starts it, bound to <code>agent.bind</code>).</td>
               </tr>
               <tr>
                 <td><code>[agent]</code></td>
@@ -4838,11 +4845,16 @@ agent.bind = 0.0.0.0
         </div>
         <p>
           Sections: <strong>Spid3r</strong> (version, language, Rust, profile), <strong>System</strong> (OS, arch,
-          memory, CPUs), <strong>Installation</strong> (exe, ini, log, state), <strong>Features</strong> (gui, native,
-          tls, wasm, agent), <strong>Modules</strong> (embedded stdlib, plugins), <strong>Configuration</strong>,
-          <strong>Environment</strong>, <strong>Memory</strong>, <strong>Agent</strong>. Keys matching
+          memory, CPUs), <strong>Installation</strong> (exe, ini, log, state), <strong>Features</strong>
+          (<code>gui</code>, <code>native (LLVM AOT)</code>, <code>tls</code>, <code>plugins-wasm</code>,
+          <code>agent</code>, <code>spid3rinfo</code>), <strong>Modules</strong> (embedded stdlib, plugins),
+          <strong>Configuration</strong>, <strong>Environment</strong>, <strong>Memory</strong>,
+          <strong>Agent</strong>. On <code>wasm32</code> (the playground build) the Environment and Agent sections
+          are omitted — there is no OS process or environment there. Keys containing or ending in
+          <code>password</code>, <code>passwd</code>, <code>pwd</code>, <code>passphrase</code>,
           <code>token</code>, <code>secret</code>, <code>shared</code>, <code>credential</code>,
-          <code>authorization</code>, <code>cookie</code>, <code>api_key</code>, <code>private</code> are replaced with
+          <code>authorization</code>, <code>cookie</code>, <code>api_key</code>, <code>apikey</code>,
+          <code>private</code>, or any <code>…_key</code>/<code>…-key</code> name are replaced with
           <code>[redacted sha256:&lt;12 hex&gt;]</code>. Remote callers never receive unredacted output.
         </p>
 
@@ -4906,8 +4918,9 @@ $ spid3r admin --host laptop-1 reload
         <p>
           Predefined operations (<code>ops.run --name …</code>): <code>ping</code>, <code>reload_config</code>,
           <code>rotate_log</code>, <code>gc_collect</code>, <code>self_test</code>, <code>dump_diagnostics</code>,
-          <code>restart_runtime</code>. <code>restart_runtime</code> spawns the same executable and exits; run the
-          agent under a service manager (Windows service, systemd) in production.
+          <code>restart_runtime</code>. <code>restart_runtime</code> acknowledges the caller first, then exits and
+          spawns the same executable; the new process retries its bind for a few seconds so the handover cannot
+          lose the port. Run the agent under a service manager (Windows service, systemd) in production.
         </p>
 
         <h3 class="section-h3" id="agent-cli">Wire Protocol</h3>
@@ -4924,8 +4937,11 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
         <p>
           <code>kind = pair</code> is plaintext JSON (the code is the secret). <code>kind = data</code> is ChaCha20
           encrypted and HMAC-SHA256 authenticated (encrypt-then-MAC). Subkeys come from HKDF-SHA256. The frame header
-          is AAD, so a swapped payload fails the tag. Nonces are random 96-bit values; the server keeps a short replay
-          window.
+          is AAD, so a swapped payload fails the tag. Nonces are random 96-bit values; the server keeps a
+          <strong>server-wide</strong> replay window (device + nonce, entries expire after ~1 hour, capped at 4096
+          frames) — a captured frame cannot be replayed on a fresh connection or after a restart. A frame whose
+          declared size exceeds <code>agent.max_body</code> (+16 bytes of tag) is rejected straight after the
+          header, before the body is read.
         </p>
 
         <h3 class="section-h3" id="agent-security">Roles, Devices and Audit</h3>
@@ -4940,12 +4956,12 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
             <tbody>
               <tr>
                 <td><code>viewer</code></td>
-                <td><code>status</code>, <code>info</code>, <code>config.get</code>, <code>logs.tail</code>,
-                  <code>modules.list</code>, <code>devices.list</code></td>
+                <td><code>status</code>, <code>ping</code>, <code>info</code>, <code>config.get</code>,
+                  <code>logs.tail</code>, <code>modules.list</code>, <code>devices.list</code></td>
               </tr>
               <tr>
                 <td><code>operator</code></td>
-                <td>viewer + <code>config.set</code>, <code>ops.run</code>, <code>reload</code></td>
+                <td>viewer + <code>config.set</code>, <code>ops.run</code>, <code>config.reload</code></td>
               </tr>
               <tr>
                 <td><code>admin</code></td>
@@ -4957,7 +4973,12 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
         <p>
           Role lists are configurable via <code>agent.role_viewer</code> / <code>role_operator</code> /
           <code>role_admin</code> (<code>*</code> = all). Every accepted or rejected operation is one JSON line in
-          <code>&lt;state&gt;/audit.log</code>. Disable with <code>[logging] audit = false</code>.
+          <code>&lt;state&gt;/audit.log</code>. Disable with <code>[logging] audit = false</code> — locally only:
+          the remote <code>config.set</code> op refuses a fixed set of security-relevant keys
+          (<code>security.*</code>, <code>logging.*</code>, <code>agent.role_*</code>,
+          <code>agent.enabled/bind/port/max_connections</code>), so a paired operator cannot grant itself more
+          operations, silence the audit trail, or re-bind the listener. Benign keys (e.g. <code>agent.name</code>)
+          stay remotely settable; change the rest by editing <code>spid3r.ini</code> on the host.
         </p>
         <p>
           State files: <code>devices.json</code> (paired devices), <code>clients.json</code> (admin-client known
@@ -4968,7 +4989,8 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
         <p>
           Security notes: scripts still run with process authority (see the trust model). The agent is a management
           plane, not a sandbox. There is no <code>exec</code>, no <code>spawn_process</code>, and no path-based file
-          write. Remote <code>info</code> and <code>config.get</code> are always redacted. Pair on a network you trust:
+          write. Remote <code>info</code> and <code>config.get</code> are always redacted. Devices and config state
+          are saved atomically (temp file + rename). Pair on a network you trust:
           the code is high-entropy and short-lived, but it is not a PAKE.
         </p>
         <p>

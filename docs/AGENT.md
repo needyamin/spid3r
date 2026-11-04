@@ -16,7 +16,12 @@ A single INI file configures the runtime. Search order (first hit wins):
 
 `spid3r config init` writes a commented default. `spid3r config path` prints
 the search list. `spid3r config validate` reports unknown keys and type
-errors; it never aborts a run.
+errors; it never aborts a run. Every layer is validated with the same
+rules: a value from the INI file, an `[env.<name>]` section, or a process
+env var that fails its type/range check is ignored with a note and the
+compiled default stays in effect (a bool must be one of
+`true/false/1/0/on/off/yes/no`; a typo like `ture` is an error, not a
+silent true). A UTF-8 BOM at the start of the file is tolerated.
 
 Precedence, highest first:
 
@@ -57,6 +62,11 @@ Scripts read and write the live values with `config_get(key)`,
 `config_set(key, value)` and `config_reload()`. Sensitive-looking values are
 redacted on read unless the caller is local.
 
+`[logging] enabled`, `[logging] file` and `[logging] audit` are honored
+(for this process; the `SPID3R_LOG` / `SPID3R_LOG_FILE` env vars override
+the INI values). All config state files are written atomically
+(temp file + rename), so a crash mid-write cannot truncate them.
+
 ## 2. `spid3rinfo()`
 
 Spid3r's own runtime introspection. One collector, three renderers, one
@@ -80,12 +90,16 @@ $ spid3r info --no-redact
 ```
 
 Sections: Spid3r (version, language, Rust, profile), System (OS, arch,
-memory, CPUs), Installation (exe, ini, log, state), Features (gui, native,
-tls, wasm, agent), Modules (embedded stdlib, plugins), Configuration,
-Environment, Memory, Agent.
+memory, CPUs), Installation (exe, ini, log, state), Features (`gui`,
+`native (LLVM AOT)`, `tls`, `plugins-wasm`, `agent`, `spid3rinfo`),
+Modules (embedded stdlib, plugins), Configuration, Environment, Memory,
+Agent. On `wasm32` (the playground build) the Environment and Agent
+sections are omitted — there is no OS process or environment there.
 
-Keys matching `password`, `token`, `secret`, `shared`, `credential`,
-`authorization`, `cookie`, `api_key`, `apikey`, `private` are replaced with
+Keys containing or ending in `password`, `passwd`, `pwd`, `passphrase`,
+`token`, `secret`, `shared`, `credential`, `authorization`, `cookie`,
+`api_key`, `apikey`, `private`, or any `…_key` / `…-key` name
+(`signing_key`, `access_key`, …) are replaced with
 `[redacted sha256:<12 hex>]`. Remote callers never receive unredacted output.
 
 ## 3. Management agent
@@ -123,16 +137,33 @@ Predefined operations (`ops.run --name …`):
 `ping`, `reload_config`, `rotate_log`, `gc_collect`, `self_test`,
 `dump_diagnostics`, `restart_runtime`.
 
-`restart_runtime` spawns the same executable and exits. In production run
-the agent under a service manager (Windows service, systemd unit) and treat
-exit as "the manager restarts it".
+`restart_runtime` acknowledges the caller first, then exits and spawns the
+same executable; the new process retries its bind for a few seconds so the
+handover cannot lose the port. In production run the agent under a service
+manager (Windows service, systemd unit) and treat exit as "the manager
+restarts it".
+
+### Remote `config.set` restrictions
+
+`config.set` only accepts known, validated keys — and a fixed set of
+security-relevant keys **cannot be changed remotely at all**:
+
+* `security.*` (e.g. `allow_remote`) and `logging.*` (audit trail, log
+  target/switch)
+* `agent.role_viewer` / `role_operator` / `role_admin` (an operator must
+  not be able to grant itself more operations)
+* `agent.enabled`, `agent.bind`, `agent.port`, `agent.max_connections`
+  (a remote change would take effect on the next restart)
+
+Change these by editing `spid3r.ini` on the host (or via the local CLI).
+Benign keys — e.g. `agent.name` — stay remotely settable.
 
 ### Roles
 
 | Role | May call |
 |---|---|
-| `viewer` | `status`, `info`, `config.get`, `logs.tail`, `modules.list`, `devices.list` |
-| `operator` | viewer + `config.set`, `ops.run`, `reload` |
+| `viewer` | `status`, `ping`, `info`, `config.get`, `logs.tail`, `modules.list`, `devices.list` |
+| `operator` | viewer + `config.set`, `ops.run`, `config.reload` |
 | `admin` | everything, including `devices.revoke` and `pair.create` |
 
 Lists are configurable via `agent.role_viewer` / `role_operator` /
@@ -155,7 +186,11 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
 `kind = data` is ChaCha20 encrypted and HMAC-SHA256 authenticated
 (encrypt-then-MAC). Subkeys come from HKDF-SHA256. The frame header is AAD,
 so a swapped payload fails the tag. Nonces are random 96-bit values; the
-server keeps a short replay window.
+server keeps a **server-wide** replay window (device + nonce, entries expire
+after ~1 hour, capped at 4096 frames) — a captured frame cannot be replayed
+on a fresh connection or after a restart. A frame whose declared size
+exceeds `agent.max_body` (+16 bytes of tag) is rejected straight after the
+header, before the body is read.
 
 There is no TLS and no certificate store. The same protocol runs on
 Windows, Linux and macOS. Bind `127.0.0.1` unless you actually need other
@@ -188,7 +223,9 @@ Disable with `[logging] audit = false`.
 * Scripts still run with process authority (see `docs/SECURITY.md`). The
   agent does not change that. It is a management plane, not a sandbox.
 * No `exec`, no `spawn_process`, no path-based file write. `config.set`
-  only accepts known, validated keys.
+  only accepts known, validated keys — and the security-relevant ones are
+  not settable remotely at all (see "Remote `config.set` restrictions").
+  `config.set` cannot disable the audit trail or re-bind the listener.
 * Remote `info` and `config.get` are always redacted.
 * A stolen `devices.json` is game over for that host: rotate by revoking
   the device and re-pairing. Keep the file off backups you do not encrypt.
