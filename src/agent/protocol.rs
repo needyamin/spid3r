@@ -13,7 +13,8 @@
 //! ```
 //!
 //! `kind = pair` payloads are plaintext JSON (the pairing code is the secret).
-//! `kind = data` payloads are ChaCha20-Poly1305(key, nonce, aad = header, json).
+//! `kind = data` payloads are ChaCha20 + HMAC-SHA256 (encrypt-then-MAC) over
+//! (key, nonce, aad = header, json).
 //! The header is bound as AAD, so a replayed header with a swapped payload
 //! fails the tag.
 
@@ -111,6 +112,18 @@ pub fn read_frame(
     r: &mut impl std::io::Read,
     key_lookup: &dyn Fn(&[u8; 16]) -> Option<[u8; KEY_LEN]>,
 ) -> Result<(Header, Vec<u8>)> {
+    read_frame_bounded(r, key_lookup, MAX_PAYLOAD)
+}
+
+/// Like `read_frame`, but rejects a declared frame body above `max_wire`
+/// bytes immediately after the header is decoded — before the body is
+/// read and buffered. The server uses `agent.max_body + TAG_LEN` here so
+/// an unauthenticated peer cannot park megabytes in server memory.
+pub fn read_frame_bounded(
+    r: &mut impl std::io::Read,
+    key_lookup: &dyn Fn(&[u8; 16]) -> Option<[u8; KEY_LEN]>,
+    max_wire: usize,
+) -> Result<(Header, Vec<u8>)> {
     let mut hdr_buf = [0u8; HEADER_LEN];
     r.read_exact(&mut hdr_buf).map_err(|e| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -120,7 +133,7 @@ pub fn read_frame(
         }
     })?;
     let hdr = Header::decode(&hdr_buf)?;
-    if hdr.len as usize > MAX_PAYLOAD {
+    if hdr.len as usize > max_wire {
         return Err(format!("frame too large: {}", hdr.len));
     }
     let mut body = vec![0u8; hdr.len as usize];

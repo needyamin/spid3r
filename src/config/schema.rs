@@ -45,7 +45,15 @@ impl KeySpec {
     pub fn coerce(&self, raw: &str) -> Result<(), String> {
         match self.kind {
             ConfigValue::Bool => {
-                parse_bool(raw);
+                // Strict: a typo like `ture` used to pass validation and then
+                // silently mean "true" at the use site.
+                let v = raw.trim().to_ascii_lowercase();
+                if !matches!(
+                    v.as_str(),
+                    "" | "0" | "1" | "true" | "false" | "on" | "off" | "yes" | "no"
+                ) {
+                    return Err(format!("expected a boolean, found {:?}", raw));
+                }
                 Ok(())
             }
             ConfigValue::Int => {
@@ -346,7 +354,7 @@ pub static KEYS: &[KeySpec] = &[
         "false",
         None,
         None,
-        "Master switch for the management agent; agent.enabled also must be true."
+        "Serve the management agent when true; the agent also serves when [agent] enabled is true (either switch starts it, bound to agent.bind)."
     ),
     // [agent]
     key!(
@@ -426,7 +434,7 @@ pub static KEYS: &[KeySpec] = &[
         "agent",
         "role_viewer",
         ConfigValue::Str,
-        "status,info,config.get,logs.tail,modules.list,devices.list",
+        "status,ping,info,config.get,logs.tail,modules.list,devices.list",
         None,
         None,
         "Operations granted to the viewer role."
@@ -435,7 +443,7 @@ pub static KEYS: &[KeySpec] = &[
         "agent",
         "role_operator",
         ConfigValue::Str,
-        "status,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,reload",
+        "status,ping,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,config.reload",
         None,
         None,
         "Operations granted to the operator role."
@@ -607,6 +615,17 @@ mod tests {
         let k = known_key("spid3r.engine").unwrap();
         assert!(k.coerce("vm").is_ok());
         assert!(k.coerce("wasm").is_err());
+    }
+
+    #[test]
+    fn coerce_bool_is_strict() {
+        let k = known_key("agent.enabled").unwrap();
+        for good in ["true", "false", "1", "0", "on", "off", "yes", "no", ""] {
+            assert!(k.coerce(good).is_ok(), "{good:?} should coerce");
+        }
+        // A typo used to pass validation and silently mean true.
+        assert!(k.coerce("banana").is_err());
+        assert!(k.coerce("ture").is_err());
     }
 
     #[test]

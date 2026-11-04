@@ -42,6 +42,26 @@ fn now() -> i64 {
     crate::stdlib::datetime::unix_time()
 }
 
+/// Serialises every store read-modify-write cycle process-wide. Each
+/// connection thread opens its own copy of devices.json; without this lock,
+/// concurrent saves are last-writer-wins and can erase newer devices or
+/// double-consume a pairing code. Guard spans open -> mutate -> save only.
+static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn lock() -> std::sync::MutexGuard<'static, ()> {
+    STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn atomic_write(path: &std::path::Path, text: &str) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("write {}: {}", tmp.display(), e))?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename {}: {}", path.display(), e));
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn open() -> Store {
         let dir = config::state_dir();
@@ -65,8 +85,9 @@ impl Store {
                 .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
         }
         let text = crate::stdlib::json_write_text(&self.to_json())?;
-        std::fs::write(&self.path, text)
-            .map_err(|e| format!("write {}: {}", self.path.display(), e))?;
+        // Temp file + rename: a crash mid-write used to truncate
+        // devices.json and silently forget every paired device.
+        atomic_write(&self.path, &text)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -243,7 +264,7 @@ impl Store {
 }
 
 /// Shared key derived from the pairing code. Both sides run this after they
-/// have mixed in the two ephemeral nonces (see `protocol::pair_shared`).
+/// have received the pairing code (there is no PAKE: see docs/AGENT.md).
 pub fn derive_shared_from_code(code: &str) -> Result<[u8; crypto::SHARED_KEY_LEN], String> {
     let mut buf = [0u8; crypto::SHARED_KEY_LEN];
     // The code itself is already 24 random bytes as hex; hash it to 32.
@@ -481,8 +502,7 @@ impl ClientBook {
                 .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
         }
         let text = crate::stdlib::json_write_text(&v)?;
-        std::fs::write(&self.path, text)
-            .map_err(|e| format!("write {}: {}", self.path.display(), e))?;
+        atomic_write(&self.path, &text)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

@@ -36,6 +36,8 @@ impl Section {
 const SENSITIVE_SUBSTR: &[&str] = &[
     "password",
     "passwd",
+    "pwd",
+    "passphrase",
     "token",
     "secret",
     "shared",
@@ -48,9 +50,21 @@ const SENSITIVE_SUBSTR: &[&str] = &[
 ];
 
 /// True when a key looks like it carries a credential.
+///
+/// Substring matches above, plus a suffix rule for `_key`/`-key`/`key`
+/// endings (signing_key, access_key, encryption_key, ...). Redacting a bit
+/// too much is the safe side; a bare value under a key literally named
+/// "monkey" is an acceptable false positive.
 pub fn is_sensitive_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    SENSITIVE_SUBSTR.iter().any(|s| k.contains(s))
+    if SENSITIVE_SUBSTR.iter().any(|s| k.contains(s)) {
+        return true;
+    }
+    k.ends_with("key")
+        || k.ends_with("_key")
+        || k.ends_with("-key")
+        || k.ends_with("secret")
+        || k.ends_with("token")
 }
 
 /// Replace a sensitive value with a stable prefix + hash, so an operator can

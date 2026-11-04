@@ -34,22 +34,38 @@ const MAX_LINE: usize = 8 * 1024;
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Whether logging is enabled for this process.
+///
+/// Precedence: the SPID3R_LOG env var (direct, current-process control)
+/// wins, then `[logging] enabled` from spid3r.ini — which used to be dead:
+/// this function only read the env var, so `enabled = false` in the file
+/// silently did nothing.
 pub fn enabled() -> bool {
-    match std::env::var("SPID3R_LOG") {
-        Ok(v) => {
-            let v = v.trim();
-            !(v == "0"
-                || v.eq_ignore_ascii_case("false")
-                || v.eq_ignore_ascii_case("off")
-                || v.eq_ignore_ascii_case("no"))
-        }
-        Err(_) => true,
+    if let Ok(v) = std::env::var("SPID3R_LOG") {
+        let v = v.trim();
+        return !(v == "0"
+            || v.eq_ignore_ascii_case("false")
+            || v.eq_ignore_ascii_case("off")
+            || v.eq_ignore_ascii_case("no"));
+    }
+    match crate::config::get("logging.enabled") {
+        Some(v) => crate::config::schema::parse_bool(&v),
+        None => true,
     }
 }
 
 /// The log file for this process, if a location could be determined.
+///
+/// Precedence: SPID3R_LOG_FILE env var (direct), then `[logging] file`
+/// from spid3r.ini (previously ignored entirely), then platform defaults.
+/// The env var is checked before the config snapshot because the snapshot
+/// may have been captured before the env var was set.
 pub fn path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("SPID3R_LOG_FILE") {
+        if !p.is_empty() {
+            return Some(PathBuf::from(p));
+        }
+    }
+    if let Some(p) = crate::config::get("logging.file") {
         if !p.is_empty() {
             return Some(PathBuf::from(p));
         }

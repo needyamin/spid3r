@@ -80,6 +80,10 @@ pub fn parse_ini(text: &str) -> (IniDoc, Vec<String>) {
     let mut doc = IniDoc::default();
     let mut problems = Vec::new();
     let mut section = String::new();
+    // Strip a UTF-8 BOM: Notepad and many Windows editors write one by
+    // default, and it would otherwise glue onto the first section header
+    // ("\u{feff}[agent]") and silently discard the whole first section.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     for (lineno, raw) in text.lines().enumerate() {
         let line = strip_comment(raw).trim();
         if line.is_empty() {
@@ -337,6 +341,20 @@ pub fn load() -> Config {
         .or_else(|| doc.get("spid3r", "env").map(String::from))
         .unwrap_or_else(|| "default".to_string());
 
+    build_from_doc(doc, path, mtime, notes, &env_name)
+}
+
+/// Merge the parsed INI document over the compiled defaults, then the
+/// `[env.<name>]` section, then process env vars. Split out from `load`
+/// so the layering (and its validation) can be tested without touching
+/// the filesystem.
+fn build_from_doc(
+    doc: IniDoc,
+    path: Option<PathBuf>,
+    mtime: Option<std::time::SystemTime>,
+    mut notes: Vec<String>,
+    env_name: &str,
+) -> Config {
     let mut values: BTreeMap<String, String> = DEFAULTS
         .iter()
         .map(|(k, _, v)| (k.to_string(), v.to_string()))
@@ -362,14 +380,26 @@ pub fn load() -> Config {
         }
     }
 
-    // Environment-specific section overrides.
+    // Environment-specific section overrides. Coerced like every other
+    // layer: an out-of-range or mistyped value here used to go live
+    // unvalidated (e.g. agent.port = 99999 silently fell back to 9527).
     let env_prefix = format!("env.{}.", env_name);
     for (k, v) in doc.flatten() {
         if let Some(rest) = k.strip_prefix(&env_prefix) {
-            if known_key(rest).is_some() {
-                values.insert(rest.to_string(), v);
-            } else {
-                notes.push(format!("unknown key '{}' in [env.{}]", rest, env_name));
+            match known_key(rest) {
+                Some(spec) => {
+                    if let Err(e) = spec.coerce(&v) {
+                        notes.push(format!(
+                            "[env.{}] {}: {} (using default)",
+                            env_name, rest, e
+                        ));
+                        continue;
+                    }
+                    values.insert(rest.to_string(), v);
+                }
+                None => {
+                    notes.push(format!("unknown key '{}' in [env.{}]", rest, env_name));
+                }
             }
         }
     }
@@ -385,7 +415,6 @@ pub fn load() -> Config {
         mtime,
     }
 }
-
 fn apply_process_env(values: &mut BTreeMap<String, String>, notes: &mut Vec<String>) {
     // Documented legacy names first.
     let legacy = [
@@ -401,6 +430,14 @@ fn apply_process_env(values: &mut BTreeMap<String, String>, notes: &mut Vec<Stri
     for (env, key) in legacy {
         if let Ok(v) = std::env::var(env) {
             if !v.is_empty() {
+                // Coerce like every other layer: SPID3R_MAX_WORKERS=banana
+                // used to land in the live values verbatim.
+                if let Some(spec) = known_key(key) {
+                    if let Err(e) = spec.coerce(&v) {
+                        notes.push(format!("{}: {} (ignored)", env, e));
+                        continue;
+                    }
+                }
                 values.insert(key.to_string(), v);
             }
         }
@@ -477,8 +514,14 @@ pub fn save(cfg: &Config) -> Result<PathBuf, String> {
             doc.set(spec.section, spec.name, v);
         }
     }
-    std::fs::write(&path, write_ini(&doc))
-        .map_err(|e| format!("write {}: {}", path.display(), e))?;
+    // Write to a temp file and rename: a crash mid-write must not truncate
+    // the operator's INI (the old direct write could leave an empty file).
+    let tmp = path.with_extension("ini.tmp");
+    std::fs::write(&tmp, write_ini(&doc)).map_err(|e| format!("write {}: {}", tmp.display(), e))?;
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("rename {}: {}", path.display(), e));
+    }
     Ok(path)
 }
 
@@ -554,6 +597,27 @@ mod tests {
         let (back, _) = parse_ini(&text);
         assert_eq!(back.get("agent", "bind"), Some("127.0.0.1"));
         assert_eq!(back.get("agent", "port"), Some("9527"));
+    }
+
+    #[test]
+    fn utf8_bom_is_ignored() {
+        // Notepad writes a BOM; without stripping it the first section
+        // header ("\u{feff}[agent]") was skipped and its keys lost.
+        let (doc, probs) = parse_ini("\u{feff}[agent]\nport = 7001\n");
+        assert!(probs.is_empty());
+        assert_eq!(doc.get("agent", "port"), Some("7001"));
+    }
+
+    #[test]
+    fn env_section_values_are_validated() {
+        // The [env.<name>] layer must coerce like the file and env-var
+        // layers: an out-of-range value falls back to the default (with a
+        // note) instead of going live unvalidated.
+        let (doc, _) = parse_ini("[env.prod]\nagent.port = 99999\nagent.enabled = banana\n");
+        let cfg = build_from_doc(doc, None, None, Vec::new(), "prod");
+        assert_eq!(cfg.get("agent.port"), Some("9527"));
+        assert!(cfg.notes.iter().any(|n| n.contains("agent.port")));
+        assert!(cfg.notes.iter().any(|n| n.contains("agent.enabled")));
     }
 
     #[test]

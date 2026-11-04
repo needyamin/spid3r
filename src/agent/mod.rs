@@ -7,7 +7,8 @@
 //!   predefined name checked against the caller's role.
 //! * `spid3r admin ...` — pair to a host, then call those operations.
 //!
-//! Transport is ChaCha20-Poly1305 over TCP (`spid3r-agent/1`). There is no
+//! Transport is ChaCha20 + HMAC-SHA256 (encrypt-then-MAC) over TCP
+//! (`spid3r-agent/1`). There is no
 //! plaintext data frame. Pairing uses a one-time 48-hex code the operator
 //! reads off the host and types into the client; the code never becomes a
 //! long-lived key.
@@ -16,6 +17,7 @@ pub mod protocol;
 pub mod store;
 
 use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::config;
@@ -24,6 +26,21 @@ use crate::value::{MapKey, Value};
 use store::Store;
 
 use protocol::{KIND_DATA, KIND_ERROR, KIND_PAIR};
+
+/// Set by the SIGHUP handler (async-signal-safe: only this flag store); the
+/// accept loop and every connection loop perform the actual reload.
+static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Set when `ops.run restart_runtime` has acked the client and the process
+/// should exit so the freshly spawned child can take over the port.
+static EXIT_AFTER_REPLY: AtomicBool = AtomicBool::new(false);
+
+/// Perform a pending SIGHUP reload, if one was requested.
+fn maybe_reload() {
+    if RELOAD_REQUESTED.swap(false, Ordering::Relaxed) {
+        config::reload();
+    }
+}
 
 // ------------------------------------------------------------------- helpers
 
@@ -110,23 +127,49 @@ pub fn serve() -> Result<(), String> {
         .unwrap_or(262_144);
 
     let addr = format!("{}:{}", bind, port);
-    let listener = TcpListener::bind(&addr).map_err(|e| format!("bind {}: {}", addr, e))?;
+    // Retry the bind for a few seconds: `ops.run restart_runtime` spawns the
+    // child before the parent's listener socket is released, so without a
+    // retry the child can lose the race, exit on EADDRINUSE and leave the
+    // host with no agent at all.
+    let mut listener = None;
+    for attempt in 0..50 {
+        match TcpListener::bind(&addr) {
+            Ok(l) => {
+                listener = Some(l);
+                break;
+            }
+            Err(e) if attempt < 49 => {
+                if attempt == 0 {
+                    eprintln!("agent: bind {} busy ({}), retrying...", addr, e);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(format!("bind {}: {}", addr, e)),
+        }
+    }
+    let listener = listener.ok_or_else(|| format!("bind {}: unavailable", addr))?;
     eprintln!("agent: listening on {} (spid3r-agent/1)", addr);
 
     let live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // SIGHUP reload on Unix.
+    // Server-wide replay window, shared by every connection: nonces seen
+    // recently, with their arrival time. (A per-connection window let a
+    // captured frame be replayed on a fresh TCP connection.)
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::<(
+        String,
+        i64,
+    )>::new()));
+
+    // SIGHUP reload on Unix: the handler only raises a flag (allocations,
+    // locks and file I/O are not async-signal-safe); the loops reload.
     #[cfg(unix)]
-    {
-        let stop2 = stop.clone();
-        unsafe {
-            libc_signal(1, sig_handler);
-        }
-        let _ = stop2;
+    unsafe {
+        libc_signal(1, sig_handler);
     }
 
     loop {
+        maybe_reload();
         if stop.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
@@ -138,12 +181,21 @@ pub fn serve() -> Result<(), String> {
                 }
                 live.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let live2 = live.clone();
+                let seen2 = seen.clone();
                 let timeout = Duration::from_millis(timeout_ms);
                 std::thread::spawn(move || {
                     let _ = stream.set_read_timeout(Some(timeout));
                     let _ = stream.set_write_timeout(Some(timeout));
                     let _ = stream.set_nodelay(true);
-                    let _ = handle_conn(stream, peer.to_string(), max_body);
+                    // catch_unwind: a panic inside handle_conn must not skip
+                    // the connection-counter decrement, or after max_conn
+                    // panics the agent silently refuses every new client.
+                    let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _ = handle_conn(stream, peer.to_string(), max_body, &seen2);
+                    }));
+                    if done.is_err() {
+                        crate::logging::record("agent", "connection handler panicked");
+                    }
                     live2.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 });
             }
@@ -158,8 +210,9 @@ pub fn serve() -> Result<(), String> {
 
 #[cfg(unix)]
 extern "C" fn sig_handler(_sig: i32) {
-    // Reload configuration; the next request picks it up.
-    config::reload();
+    // Async-signal-safe by construction: a single lock-free atomic store.
+    // The real reload (locks + file I/O) happens in maybe_reload().
+    RELOAD_REQUESTED.store(true, Ordering::SeqCst);
 }
 
 #[cfg(unix)]
@@ -173,9 +226,18 @@ unsafe fn libc_signal(sig: i32, handler: extern "C" fn(i32)) {
     signal(sig, handler as usize);
 }
 
-fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(), String> {
-    // Replay window: nonces seen recently.
-    let mut seen: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+/// Half-open window for replayed nonces: an entry older than this is evicted
+/// even under the cap (frames older than the window are stale anyway —
+/// clients rotate nonces per frame).
+const REPLAY_TTL_SEC: i64 = 3600;
+const REPLAY_CAP: usize = 4096;
+
+fn handle_conn(
+    mut stream: TcpStream,
+    peer: String,
+    max_body: usize,
+    seen: &std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(String, i64)>>>,
+) -> Result<(), String> {
     let lookup = |device: &[u8; 16]| -> Option<[u8; KEY_LEN]> {
         let st = Store::open();
         let hex = protocol::device_hex(device);
@@ -190,16 +252,25 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
     };
 
     loop {
-        let (hdr, payload) = match protocol::read_frame(&mut stream, &lookup) {
-            Ok(x) => x,
-            Err(e) => {
-                // A clean EOF (client closed after one request) is normal.
-                if e != "closed" && e != "authentication failed" && !e.contains("unknown device") {
-                    crate::logging::record("agent", &format!("{}: {}", peer, e));
+        maybe_reload();
+        // Reject an oversized frame right after the header, BEFORE reading
+        // and buffering the body: agent.max_body is far smaller than the
+        // 8 MiB wire cap, and an unauthenticated peer could otherwise park
+        // 8 MiB per connection in server memory.
+        let (hdr, payload) =
+            match protocol::read_frame_bounded(&mut stream, &lookup, max_body + crypto::TAG_LEN) {
+                Ok(x) => x,
+                Err(e) => {
+                    // A clean EOF (client closed after one request) is normal.
+                    if e != "closed"
+                        && e != "authentication failed"
+                        && !e.contains("unknown device")
+                    {
+                        crate::logging::record("agent", &format!("{}: {}", peer, e));
+                    }
+                    return Err(e);
                 }
-                return Err(e);
-            }
-        };
+            };
         if payload.len() > max_body {
             let _ = reply(
                 &mut stream,
@@ -221,15 +292,27 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                         continue;
                     }
                 };
-                let mut st = Store::open();
-                st.sweep();
-                let code = json_str_field(&req, "code").unwrap_or_default();
-                let name = json_str_field(&req, "name").unwrap_or_default();
-                match st.consume_pairing(&code, &name) {
-                    Ok((device, shared)) => {
-                        if let Err(e) = st.save() {
-                            crate::logging::record("agent", &format!("save devices: {}", e));
+                // The pairing consume is a read-modify-write on devices.json;
+                // hold the process-wide store lock so two concurrent pair
+                // requests cannot consume one code twice.
+                let pair_result = {
+                    let _guard = store::lock();
+                    let mut st = Store::open();
+                    st.sweep();
+                    let code = json_str_field(&req, "code").unwrap_or_default();
+                    let name = json_str_field(&req, "name").unwrap_or_default();
+                    match st.consume_pairing(&code, &name) {
+                        Ok((device, shared)) => {
+                            if let Err(e) = st.save() {
+                                crate::logging::record("agent", &format!("save devices: {}", e));
+                            }
+                            Ok((device, shared))
                         }
+                        Err(e) => Err(e),
+                    }
+                };
+                match pair_result {
+                    Ok((device, shared)) => {
                         store::audit(
                             &device.name,
                             &device.role,
@@ -277,12 +360,24 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                     }
                 };
                 // Replay guard: reject a nonce we have already accepted.
+                // Server-wide and time-bounded, so a captured frame cannot be
+                // replayed on a fresh TCP connection or after eviction.
                 let nonce_id = format!(
                     "{}:{}",
                     protocol::device_hex(&hdr.device),
                     crate::pkg::hex_encode(&hdr.nonce)
                 );
-                if seen.contains(&nonce_id) {
+                let t = now();
+                let mut seen_w = seen.lock().unwrap_or_else(|e| e.into_inner());
+                while let Some((_, ts)) = seen_w.front() {
+                    if t - ts > REPLAY_TTL_SEC {
+                        seen_w.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+                if seen_w.iter().any(|(id, _)| *id == nonce_id) {
+                    drop(seen_w);
                     let _ = reply(
                         &mut stream,
                         KIND_ERROR,
@@ -293,14 +388,39 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                     );
                     continue;
                 }
-                seen.push_back(nonce_id);
-                while seen.len() > 256 {
-                    seen.pop_front();
+                seen_w.push_back((nonce_id, t));
+                while seen_w.len() > REPLAY_CAP {
+                    seen_w.pop_front();
                 }
+                drop(seen_w);
 
                 let hex_id = protocol::device_hex(&hdr.device);
-                let mut st = Store::open();
-                let Some(device) = st.find_device(&hex_id).cloned() else {
+                // touch+save is a read-modify-write; hold the store lock so a
+                // concurrent connection's stale snapshot cannot erase newer
+                // devices from devices.json.
+                {
+                    let _guard = store::lock();
+                    let mut st = Store::open();
+                    if st.find_device(&hex_id).is_none() {
+                        drop(_guard);
+                        let _ = reply(
+                            &mut stream,
+                            KIND_ERROR,
+                            &hdr.device,
+                            &lookup,
+                            err_json("unknown device"),
+                            &peer,
+                        );
+                        continue;
+                    }
+                    st.touch(&hex_id);
+                    let _ = st.save();
+                }
+                let device = {
+                    let st = Store::open();
+                    st.find_device(&hex_id).cloned()
+                };
+                let Some(device) = device else {
                     let _ = reply(
                         &mut stream,
                         KIND_ERROR,
@@ -311,8 +431,6 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                     );
                     continue;
                 };
-                st.touch(&hex_id);
-                let _ = st.save();
                 let op = json_str_field(&req, "op").unwrap_or_default();
                 let allowed = store::op_allowed(&device.role, &op);
                 store::audit(&device.name, &device.role, &op, allowed, &peer, "");
@@ -329,6 +447,12 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                 }
                 let resp = dispatch(&op, &req, &device);
                 let _ = reply(&mut stream, KIND_DATA, &hdr.device, &lookup, resp, &peer);
+                // restart_runtime acks first and exits only after the reply
+                // frame is on the wire; previously the process died inside
+                // dispatch and every client saw a dropped connection.
+                if EXIT_AFTER_REPLY.load(Ordering::SeqCst) {
+                    std::process::exit(0);
+                }
             }
             other => {
                 let _ = reply_plain(&mut stream, err_json(&format!("unknown kind {}", other)));
@@ -423,6 +547,30 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
             let Some(value) = json_str_field(req, "value") else {
                 return err_json("missing value");
             };
+            // Remote config.set must not be able to grant itself more power
+            // or cover its tracks. Role lists (operator -> admin escalation),
+            // the bind/enable switches (network self-exposure on the next
+            // restart), and the audit toggle (trail suppression) are all
+            // plain config keys, so they are blocked here. Benign agent keys
+            // (e.g. agent.name) stay settable; everything else uses the
+            // local CLI.
+            const REMOTE_SET_BLOCKED_PREFIXES: &[&str] = &["security.", "logging.", "agent.role_"];
+            const REMOTE_SET_BLOCKED_KEYS: &[&str] = &[
+                "agent.enabled",
+                "agent.bind",
+                "agent.port",
+                "agent.max_connections",
+            ];
+            let blocked = REMOTE_SET_BLOCKED_PREFIXES
+                .iter()
+                .any(|p| key.starts_with(p))
+                || REMOTE_SET_BLOCKED_KEYS.iter().any(|k| *k == key);
+            if blocked {
+                return err_json(&format!(
+                    "key '{}' may not be changed remotely (edit spid3r.ini on the host)",
+                    key
+                ));
+            }
             match config::set_live(&key, &value) {
                 Ok(()) => {
                     // Persist through the file when we can.
@@ -503,9 +651,16 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
             let Some(id) = json_str_field(req, "device_id") else {
                 return err_json("missing device_id");
             };
-            let mut st = Store::open();
-            if st.revoke(&id) {
-                let _ = st.save();
+            let revoked = {
+                let _guard = store::lock();
+                let mut st = Store::open();
+                let hit = st.revoke(&id);
+                if hit {
+                    let _ = st.save();
+                }
+                hit
+            };
+            if revoked {
                 ok_json(vec![(MapKey::Str("revoked".into()), Value::Bool(true))])
             } else {
                 err_json("no such device")
@@ -519,15 +674,22 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(300)
             });
-            let mut st = Store::open();
-            match st.create_pairing(&role, &name, ttl) {
-                Ok(code) => {
-                    let _ = st.save();
-                    ok_json(vec![
-                        (MapKey::Str("code".into()), Value::Str(code.into())),
-                        (MapKey::Str("role".into()), Value::Str(role.into())),
-                    ])
+            let code = {
+                let _guard = store::lock();
+                let mut st = Store::open();
+                match st.create_pairing(&role, &name, ttl) {
+                    Ok(code) => {
+                        let _ = st.save();
+                        Ok(code)
+                    }
+                    Err(e) => Err(e),
                 }
+            };
+            match code {
+                Ok(code) => ok_json(vec![
+                    (MapKey::Str("code".into()), Value::Str(code.into())),
+                    (MapKey::Str("role".into()), Value::Str(role.into())),
+                ]),
                 Err(e) => err_json(&e),
             }
         }
@@ -629,6 +791,10 @@ fn run_op(name: &str) -> Value {
 
 /// Spawn this executable as a new agent and exit. A service manager should
 /// supervise the process in production; this is the in-place restart.
+///
+/// The reply is written by the caller BEFORE the process exits (via
+/// EXIT_AFTER_REPLY); the child retries its bind because the parent's
+/// listener socket is still held at spawn time.
 fn restart_runtime() -> Value {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
@@ -642,7 +808,8 @@ fn restart_runtime() -> Value {
         .spawn()
     {
         Ok(_) => {
-            std::process::exit(0);
+            EXIT_AFTER_REPLY.store(true, Ordering::SeqCst);
+            ok_json(vec![(MapKey::Str("restarting".into()), Value::Bool(true))])
         }
         Err(e) => err_json(&format!("spawn: {}", e)),
     }
@@ -1104,4 +1271,64 @@ fn pretty_json(text: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req_json(body: &str) -> Value {
+        crate::stdlib::json_parse_text(body).expect("test json")
+    }
+
+    #[test]
+    fn remote_config_set_blocks_security_keys() {
+        let device = store::Device {
+            id: "0".repeat(32),
+            name: "t".into(),
+            role: "operator".into(),
+            shared: String::new(),
+            created: 0,
+            last_seen: 0,
+        };
+        // Role escalation: an operator must not be able to rewrite its own
+        // role list.
+        let resp = dispatch(
+            "config.set",
+            &req_json(r#"{"op":"config.set","key":"agent.role_operator","value":"*"}"#),
+            &device,
+        );
+        assert_eq!(
+            json_str_field(&resp, "error").unwrap(),
+            "key 'agent.role_operator' may not be changed remotely (edit spid3r.ini on the host)"
+        );
+
+        // Audit suppression.
+        let resp = dispatch(
+            "config.set",
+            &req_json(r#"{"op":"config.set","key":"logging.audit","value":"false"}"#),
+            &device,
+        );
+        assert!(json_str_field(&resp, "error").is_some());
+
+        // Network self-exposure on restart.
+        for key in [
+            "agent.bind",
+            "security.allow_remote",
+            "agent.enabled",
+            "agent.max_connections",
+        ] {
+            let body = format!(r#"{{"op":"config.set","key":"{}","value":"0.0.0.0"}}"#, key);
+            let resp = dispatch("config.set", &req_json(&body), &device);
+            assert!(
+                json_str_field(&resp, "error").is_some(),
+                "{} must be blocked",
+                key
+            );
+        }
+
+        // Benign keys still work is NOT exercised here: dispatch would
+        // persist to the developer's real spid3r.ini. The deny-list is
+        // prefix-based; agent.name passes the gate by construction.
+    }
 }
