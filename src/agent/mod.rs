@@ -148,6 +148,13 @@ pub fn serve() -> Result<(), String> {
         }
     }
     let listener = listener.ok_or_else(|| format!("bind {}: unavailable", addr))?;
+    // Non-blocking accept: the loop below polls every 100ms, which lets a
+    // pending SIGHUP reload flag be consumed even when no client ever
+    // connects. With the blocking accept, an idle agent only reloaded when
+    // the next connection arrived.
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("nonblocking: {}", e))?;
     eprintln!("agent: listening on {} (spid3r-agent/1)", addr);
 
     let live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -176,6 +183,9 @@ pub fn serve() -> Result<(), String> {
         match listener.accept() {
             Ok((stream, peer)) => {
                 if live.load(std::sync::atomic::Ordering::Relaxed) >= max_conn {
+                    // Refusal must be visible: otherwise an operator watching
+                    // only the log sees a silent connection black hole.
+                    crate::logging::record("agent", "connection refused: max_connections reached");
                     drop(stream);
                     continue;
                 }
@@ -191,7 +201,7 @@ pub fn serve() -> Result<(), String> {
                     // the connection-counter decrement, or after max_conn
                     // panics the agent silently refuses every new client.
                     let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let _ = handle_conn(stream, peer.to_string(), max_body, &seen2);
+                        let _ = handle_conn(stream, peer.to_string(), max_body, &seen2, timeout);
                     }));
                     if done.is_err() {
                         crate::logging::record("agent", "connection handler panicked");
@@ -200,6 +210,12 @@ pub fn serve() -> Result<(), String> {
                 });
             }
             Err(e) => {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    // Nothing to accept: consume a pending reload and yield.
+                    maybe_reload();
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
                 crate::logging::record("agent", &format!("accept: {}", e));
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -233,11 +249,20 @@ const REPLAY_TTL_SEC: i64 = 3600;
 const REPLAY_CAP: usize = 4096;
 
 fn handle_conn(
-    mut stream: TcpStream,
+    stream: TcpStream,
     peer: String,
     max_body: usize,
     seen: &std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<(String, i64)>>>,
+    frame_timeout: Duration,
 ) -> Result<(), String> {
+    // Reads go through a deadline wrapper (a per-read socket timeout is
+    // re-armed by `read_exact` on every byte, so a dribbling peer could hold
+    // a slot forever); writes keep the original stream handle.
+    let mut rdr = match stream.try_clone() {
+        Ok(s) => protocol::DeadlineReader::new(s, frame_timeout),
+        Err(e) => return Err(format!("clone stream: {}", e)),
+    };
+    let mut stream = stream;
     let lookup = |device: &[u8; 16]| -> Option<[u8; KEY_LEN]> {
         let st = Store::open();
         let hex = protocol::device_hex(device);
@@ -251,20 +276,26 @@ fn handle_conn(
         Some(key)
     };
 
+    let mut pair_failures = 0usize;
     loop {
         maybe_reload();
         // Reject an oversized frame right after the header, BEFORE reading
         // and buffering the body: agent.max_body is far smaller than the
         // 8 MiB wire cap, and an unauthenticated peer could otherwise park
         // 8 MiB per connection in server memory.
+        // The deadline is per frame: a new budget for every request.
+        rdr.set_deadline(frame_timeout);
         let (hdr, payload) =
-            match protocol::read_frame_bounded(&mut stream, &lookup, max_body + crypto::TAG_LEN) {
+            match protocol::read_frame_bounded(&mut rdr, &lookup, max_body + crypto::TAG_LEN) {
                 Ok(x) => x,
                 Err(e) => {
-                    // A clean EOF (client closed after one request) is normal.
+                    // A clean EOF (client closed after one request) is normal,
+                    // and so is a dribbling client killed by the deadline —
+                    // logging those only enables a log-flood DoS.
                     if e != "closed"
                         && e != "authentication failed"
                         && !e.contains("unknown device")
+                        && !e.contains("deadline")
                     {
                         crate::logging::record("agent", &format!("{}: {}", peer, e));
                     }
@@ -313,6 +344,7 @@ fn handle_conn(
                 };
                 match pair_result {
                     Ok((device, shared)) => {
+                        pair_failures = 0;
                         store::audit(
                             &device.name,
                             &device.role,
@@ -339,12 +371,33 @@ fn handle_conn(
                         let _ = reply_plain(&mut stream, resp);
                     }
                     Err(e) => {
+                        pair_failures += 1;
                         store::audit("unknown", "?", "pair", false, &peer, &e);
                         let _ = reply_plain(&mut stream, err_json(&e));
+                        // A code-guessing client gets five tries per
+                        // connection, then the connection goes away: the
+                        // next attempt pays a fresh TCP connect.
+                        if pair_failures >= 5 {
+                            return Err("too many pairing failures".to_string());
+                        }
                     }
                 }
             }
-            KIND_DATA | KIND_ERROR => {
+            KIND_ERROR => {
+                // Only the agent sends error frames; a client-sent one is
+                // protocol abuse (an attempt to inject fake failures into
+                // the stream or probe the parser), not a request.
+                let _ = reply(
+                    &mut stream,
+                    KIND_ERROR,
+                    &hdr.device,
+                    &lookup,
+                    err_json("clients may not send error frames"),
+                    &peer,
+                );
+                return Err("client sent an error frame".to_string());
+            }
+            KIND_DATA => {
                 let req = match crate::stdlib::json_parse_text(&String::from_utf8_lossy(&payload)) {
                     Ok(v) => v,
                     Err(e) => {
@@ -734,18 +787,32 @@ fn run_op(name: &str) -> Value {
             )])
         }
         "rotate_log" => {
-            // Force a rotation by appending a marker and calling the logger's
-            // internal path; simplest correct action is to note the request.
-            crate::logging::record("agent", "rotate_log requested");
-            ok_json(vec![(
-                MapKey::Str("path".into()),
-                Value::Str(
-                    crate::logging::path()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default()
-                        .into(),
+            // Actually rotate both logs: rename the current files to `.1`.
+            // The old code only wrote a log line saying rotation was
+            // requested, so the operator's call did nothing.
+            let log_path = crate::logging::rotate_now();
+            let audit_path = store::rotate_audit_now();
+            crate::logging::record("agent", "rotate_log: rotated spid3r.log and audit.log");
+            ok_json(vec![
+                (
+                    MapKey::Str("log".into()),
+                    Value::Str(
+                        log_path
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default()
+                            .into(),
+                    ),
                 ),
-            )])
+                (
+                    MapKey::Str("audit".into()),
+                    Value::Str(
+                        audit_path
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default()
+                            .into(),
+                    ),
+                ),
+            ])
         }
         "gc_collect" => {
             crate::value::gc::collect();

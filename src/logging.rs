@@ -169,6 +169,18 @@ fn rotate_if_needed(file: &std::path::Path) {
     let _ = std::fs::rename(file, rotated);
 }
 
+/// Force a rotation now: rename the current log to `<name>.1` unconditionally
+/// (removing any previous `.1`). Returns the rotated path, or `None` when no
+/// log location could be determined or the rename failed. Used by the
+/// agent's `rotate_log` operation.
+pub fn rotate_now() -> Option<PathBuf> {
+    let file = path()?;
+    let rotated = file.with_extension("log.1");
+    let _ = std::fs::remove_file(&rotated);
+    std::fs::rename(&file, &rotated).ok()?;
+    Some(rotated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

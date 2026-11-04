@@ -152,6 +152,53 @@ pub fn read_frame_bounded(
 
 pub type Result<T> = std::result::Result<T, String>;
 
+/// Wraps a TcpStream and enforces an overall deadline across every
+/// `read()` call: the socket timeout handed to the OS is capped at the
+/// time remaining, and once the deadline passes the reader errors. This
+/// turns the per-call read timeout (which `read_exact` re-arms per byte)
+/// into a true per-frame deadline, so a dribbling peer cannot hold a
+/// connection slot forever.
+pub struct DeadlineReader {
+    inner: std::net::TcpStream,
+    base: std::time::Duration,
+    deadline: std::time::Instant,
+}
+
+impl DeadlineReader {
+    /// Deadline starts now and runs for `base`.
+    pub fn new(inner: std::net::TcpStream, base: std::time::Duration) -> DeadlineReader {
+        DeadlineReader {
+            deadline: std::time::Instant::now() + base,
+            inner,
+            base,
+        }
+    }
+
+    /// Restart the deadline from now (call once per frame).
+    pub fn set_deadline(&mut self, base: std::time::Duration) {
+        self.base = base;
+        self.deadline = std::time::Instant::now() + base;
+    }
+}
+
+impl std::io::Read for DeadlineReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let now = std::time::Instant::now();
+        if now >= self.deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "connection deadline exceeded",
+            ));
+        }
+        // The socket timeout only has to cover the time that is still left;
+        // a full-base timeout here would re-arm the slowloris window.
+        let _ = self
+            .inner
+            .set_read_timeout(Some(self.base.min(self.deadline - now)));
+        self.inner.read(buf)
+    }
+}
+
 /// Device id as 16 raw bytes from 32 hex chars.
 pub fn device_bytes(hex: &str) -> Option<[u8; 16]> {
     if hex.len() != 32 {
@@ -200,5 +247,37 @@ mod tests {
         let b = [7u8; 16];
         let h = device_hex(&b);
         assert_eq!(device_bytes(&h).unwrap(), b);
+    }
+
+    #[test]
+    fn oversize_frame_rejected_before_body() {
+        // The header declares a body far above the small max_wire cap; the
+        // rejection must happen with no body bytes present at all.
+        let hdr = Header {
+            kind: KIND_PAIR,
+            device: [0u8; 16],
+            nonce: [0u8; NONCE_LEN],
+            len: 4096,
+        };
+        let buf = hdr.encode();
+        let lookup = |_: &[u8; 16]| -> Option<[u8; KEY_LEN]> { None };
+        let err = read_frame_bounded(&mut &buf[..], &lookup, 64).unwrap_err();
+        assert!(err.contains("frame too large"), "{}", err);
+    }
+
+    #[test]
+    fn deadline_reader_errors_once_past() {
+        // base = ZERO: the deadline is already elapsed when read() runs.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // Connect BEFORE accept: accept() blocks this thread, so the
+        // listener's backlog holds the connection until we drain it.
+        let client = std::net::TcpStream::connect(addr).unwrap();
+        let _server = listener.accept();
+        use std::io::Read as _;
+        let mut rdr = DeadlineReader::new(client, std::time::Duration::ZERO);
+        let mut buf = [0u8; 16];
+        let err = rdr.read(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
     }
 }

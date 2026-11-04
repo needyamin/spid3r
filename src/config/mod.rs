@@ -13,10 +13,9 @@
 //! (`;` and `#`), `key = value`, `[section]`, quoted strings, and inline
 //! `key.subkey` dotted names inside a section. No third-party crates.
 //!
-//! Live reload re-reads the file when its mtime changes (polled on access)
-//! or when an operator asks for it (`spid3r config reload`, `SIGHUP` on Unix,
-//! or `POST /api/v1/config/reload` on the management agent). Unknown keys are
-//! kept and reported by `validate`; they never abort a run.
+//! Reload happens only when explicitly asked: `spid3r config reload`,
+//! `SIGHUP` on Unix, or the management agent's `config.reload`. Unknown keys
+//! are kept and reported by `validate`; they never abort a run.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -282,7 +281,7 @@ pub struct Config {
     pub path: Option<PathBuf>,
     /// Parse/validation notes (unknown keys, type errors that fell back).
     pub notes: Vec<String>,
-    /// mtime of the file at load, for live-reload polling.
+    /// mtime of the file at load (informational; nothing polls it).
     pub mtime: Option<SystemTime>,
 }
 
@@ -539,23 +538,6 @@ pub fn validate(cfg: &Config) -> Vec<String> {
         }
     }
     problems
-}
-
-/// Poll mtime and reload if the file changed. Cheap enough to call per CLI run.
-pub fn maybe_reload_from_disk() {
-    let need = {
-        let g = global().read().unwrap_or_else(|e| e.into_inner());
-        match (&g.path, g.mtime) {
-            (Some(p), Some(old)) => match std::fs::metadata(p).and_then(|m| m.modified()) {
-                Ok(new) => new != old,
-                Err(_) => false,
-            },
-            _ => false,
-        }
-    };
-    if need {
-        reload();
-    }
 }
 
 /// Write a commented default `spid3r.ini` next to the first candidate path.

@@ -20,6 +20,8 @@ on:
       - "src/parser/**"
       - "src/semantic/**"
       - "src/vm/bytecode.rs"
+      - "src/agent/**"
+      - "src/config/**"
       - "fuzz/**"
       - ".github/workflows/fuzz.yml"
 
@@ -33,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [fuzz_lexer, fuzz_parser, fuzz_bytecode]
+        target: [fuzz_lexer, fuzz_parser, fuzz_bytecode, fuzz_agent_frame, fuzz_ini_parser]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

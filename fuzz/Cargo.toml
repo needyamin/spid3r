@@ -34,3 +34,17 @@ path = "fuzz_targets/fuzz_bytecode.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_agent_frame"
+path = "fuzz_targets/fuzz_agent_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_ini_parser"
+path = "fuzz_targets/fuzz_ini_parser.rs"
+test = false
+doc = false
+bench = false

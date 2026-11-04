@@ -376,6 +376,39 @@ pub fn op_allowed(role: &str, op: &str) -> bool {
     ops.iter().any(|o| o == op)
 }
 
+/// Rotate audit.log once it passes this size (1 MiB, mirrors logging.rs).
+const AUDIT_MAX_BYTES: u64 = 1_048_576;
+
+/// Keep audit.log bounded: rename to `audit.log.1` once it exceeds the
+/// cap (mirrors logging.rs). Best effort.
+fn rotate_audit_if_over(file: &std::path::Path, max: u64) {
+    let too_big = std::fs::metadata(file)
+        .map(|m| m.len() > max)
+        .unwrap_or(false);
+    if !too_big {
+        return;
+    }
+    // `with_extension("log.1")` on "audit.log" yields "audit.log.1".
+    let rotated = file.with_extension("log.1");
+    let _ = std::fs::remove_file(&rotated);
+    let _ = std::fs::rename(file, rotated);
+}
+
+/// Force an audit-log rotation now: rename `audit.log` to `audit.log.1`
+/// unconditionally (removing any previous `.1`). Returns the rotated path,
+/// or `None` when the file did not exist or the rename failed. Used by the
+/// agent's `rotate_log` operation.
+pub fn rotate_audit_now() -> Option<PathBuf> {
+    let path = config::state_dir().join("audit.log");
+    if !path.is_file() {
+        return None;
+    }
+    let rotated = path.with_extension("log.1");
+    let _ = std::fs::remove_file(&rotated);
+    std::fs::rename(&path, &rotated).ok()?;
+    Some(rotated)
+}
+
 /// Append one audit record. Never fails the caller.
 pub fn audit(device: &str, role: &str, op: &str, ok: bool, peer: &str, detail: &str) {
     if !config::get("logging.audit")
@@ -386,6 +419,7 @@ pub fn audit(device: &str, role: &str, op: &str, ok: bool, peer: &str, detail: &
     }
     let dir = config::state_dir();
     let path = dir.join("audit.log");
+    rotate_audit_if_over(&path, AUDIT_MAX_BYTES);
     let line = format!(
         "{{\"ts\":{},\"device\":\"{}\",\"role\":\"{}\",\"op\":\"{}\",\"ok\":{},\"peer\":\"{}\",\"detail\":\"{}\"}}\n",
         now(),
@@ -531,4 +565,134 @@ fn host_from_json(v: &crate::value::Value) -> Option<ClientHost> {
         device_id: get("device_id")?,
         shared: get("shared")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tests below mutate process-global env vars, so they serialise.
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn op_allowed_matrix() {
+        // No explicit load: config::get lazily initialises the global
+        // snapshot with the compiled defaults (no spid3r.ini is present in
+        // the test environment), so this asserts the schema defaults.
+        // Viewer: read-only surface.
+        for op in [
+            "ping",
+            "info",
+            "config.get",
+            "logs.tail",
+            "modules.list",
+            "devices.list",
+            "status",
+        ] {
+            assert!(op_allowed("viewer", op), "viewer must call {}", op);
+        }
+        for op in ["ops.run", "config.set", "config.reload", "devices.revoke"] {
+            assert!(!op_allowed("viewer", op), "viewer must not call {}", op);
+        }
+        // Operator: adds config mutation and ops.run, but not revocation.
+        for op in ["config.set", "ops.run", "config.reload", "ping"] {
+            assert!(op_allowed("operator", op), "operator must call {}", op);
+        }
+        assert!(!op_allowed("operator", "devices.revoke"));
+        // Admin: everything (role_admin defaults to "*").
+        assert!(op_allowed("admin", "devices.revoke"));
+        assert!(op_allowed("admin", "pair.create"));
+        // Unknown role: nothing.
+        assert!(!op_allowed("ghost", "ping"));
+    }
+
+    #[test]
+    fn consumed_pairing_code_is_single_use() {
+        let mut st = Store::default();
+        let code = st.create_pairing("operator", "t", 300).unwrap();
+        let first = st.consume_pairing(&code, "client");
+        assert!(first.is_ok());
+        let second = st.consume_pairing(&code, "client");
+        assert!(second.is_err(), "a consumed code must not pair twice");
+    }
+
+    #[test]
+    fn expired_pairing_code_rejected() {
+        let mut st = Store::default();
+        let code = st.create_pairing("viewer", "t", 0).unwrap();
+        assert!(st.consume_pairing(&code, "client").is_err());
+        let code = st.create_pairing("viewer", "t", -1).unwrap();
+        assert!(st.consume_pairing(&code, "client").is_err());
+    }
+
+    #[test]
+    fn store_survives_corrupt_file() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("SPID3R_STATE_DIR").ok();
+        let dir = std::env::temp_dir().join(format!("spid3r_store_corrupt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SPID3R_STATE_DIR", &dir);
+        std::fs::write(dir.join("devices.json"), "{not json at all").unwrap();
+        let st = Store::open();
+        assert!(
+            st.devices.is_empty() && st.pairings.is_empty(),
+            "a corrupt file is an empty store, not a crash"
+        );
+        match old {
+            Some(v) => std::env::set_var("SPID3R_STATE_DIR", v),
+            None => std::env::remove_var("SPID3R_STATE_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn store_roundtrip() {
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var("SPID3R_STATE_DIR").ok();
+        let dir = std::env::temp_dir().join(format!("spid3r_store_rt_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("SPID3R_STATE_DIR", &dir);
+
+        let mut st = Store::open();
+        let code = st.create_pairing("operator", "roundtrip", 300).unwrap();
+        let (device, _) = st.consume_pairing(&code, "client-1").unwrap();
+        st.save().unwrap();
+
+        let reopened = Store::open();
+        let back = reopened.find_device(&device.id).expect("device survived");
+        assert_eq!(back.id, device.id);
+        assert_eq!(back.role, "operator");
+        assert_eq!(back.name, "client-1");
+        assert_eq!(back.shared, device.shared);
+
+        match old {
+            Some(v) => std::env::set_var("SPID3R_STATE_DIR", v),
+            None => std::env::remove_var("SPID3R_STATE_DIR"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn audit_rotation_unit() {
+        let dir = std::env::temp_dir().join(format!("spid3r_audit_rot_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Over the threshold: the file moves to `.1`.
+        let big = dir.join("audit.log");
+        std::fs::write(&big, vec![b'x'; 32]).unwrap();
+        rotate_audit_if_over(&big, 16);
+        assert!(!big.exists(), "oversized audit.log must be renamed away");
+        assert!(dir.join("audit.log.1").exists());
+
+        // Under the threshold: untouched.
+        let small = dir.join("audit.log");
+        std::fs::write(&small, b"tiny").unwrap();
+        rotate_audit_if_over(&small, 16);
+        assert!(small.exists());
+        assert_eq!(std::fs::metadata(&small).unwrap().len(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
