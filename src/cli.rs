@@ -2072,29 +2072,54 @@ fn cmd_publish(args: &[String]) -> Result<i32, Diagnostic> {
     Ok(EXIT_OK)
 }
 
-/// `spid3r info [--json|--html] [--no-redact]`
+/// `spid3r info [--json|--html] [--no-redact] [--out <path>]`
 fn cmd_info(args: &[String]) -> Result<i32, Diagnostic> {
     let mut json = false;
     let mut html = false;
     let mut no_redact = false;
-    for a in args {
-        match a.as_str() {
+    let mut out: Option<PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
             "--json" => json = true,
             "--html" => html = true,
             "--no-redact" => no_redact = true,
+            "--out" => {
+                let Some(p) = args.get(i + 1) else {
+                    return Err(usage("info: --out needs a file path"));
+                };
+                out = Some(PathBuf::from(p));
+                i += 1;
+            }
             "--help" | "-h" => {
-                println!("USAGE: spid3r info [--json|--html] [--no-redact]");
+                println!("USAGE: spid3r info [--json|--html] [--no-redact] [--out <path>]");
                 return Ok(EXIT_OK);
             }
             other => {
                 return Err(usage(&format!("info: unknown flag '{}'", other)));
             }
         }
+        i += 1;
     }
     if json && html {
         return Err(usage("info: --json and --html are mutually exclusive"));
     }
-    crate::runtime_info::print_for_cli(json, html, no_redact);
+    match out {
+        None => crate::runtime_info::print_for_cli(json, html, no_redact),
+        Some(path) => {
+            let text = crate::runtime_info::render_for_cli(json, html, no_redact);
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        usage(&format!("info: cannot create {}: {}", parent.display(), e))
+                    })?;
+                }
+            }
+            std::fs::write(&path, &text)
+                .map_err(|e| usage(&format!("info: cannot write {}: {}", path.display(), e)))?;
+            println!("wrote {}", path.display());
+        }
+    }
     Ok(EXIT_OK)
 }
 
@@ -2136,8 +2161,27 @@ fn cmd_config(args: &[String]) -> Result<i32, Diagnostic> {
         }
         "list" => {
             let cfg = crate::config::snapshot();
+            // Group keys by their dotted prefix (agent.*, logging.*, ...)
+            // and print one organized block per section.
+            let mut groups: std::collections::BTreeMap<String, Vec<(String, String)>> =
+                std::collections::BTreeMap::new();
             for (k, v) in &cfg.values {
-                println!("{} = {}", k, crate::runtime_info::redact_value(k, v));
+                let (sec, short) = match k.split_once('.') {
+                    Some((s, r)) => (s.to_string(), r.to_string()),
+                    None => ("general".to_string(), k.clone()),
+                };
+                let shown = crate::runtime_info::redact_value(k, v);
+                groups.entry(sec).or_default().push((short, shown));
+            }
+            println!("Spid3r configuration ({})", cfg.values.len());
+            for (sec, mut rows) in groups {
+                rows.sort();
+                println!();
+                println!("[{}]", sec);
+                let width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+                for (k, v) in rows {
+                    println!("  {:<width$} = {}", k, v, width = width);
+                }
             }
             Ok(EXIT_OK)
         }

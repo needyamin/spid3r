@@ -100,7 +100,7 @@ pub fn collect(redact: bool) -> Vec<Section> {
             "release"
         },
     );
-    s.push("Target triple", std::env::consts::ARCH);
+    s.push("Target triple", target_triple());
     s.push("License", "GPL-3.0-or-later");
     s.push("Homepage", "https://github.com/needyamin/spid3r");
     out.push(s);
@@ -329,6 +329,15 @@ fn rustc_version() -> String {
         .to_string()
 }
 
+/// Full target triple when the build recorded it (build.rs passes TARGET
+/// through), otherwise the bare architecture.
+fn target_triple() -> String {
+    match option_env!("SPID3R_TARGET") {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => std::env::consts::ARCH.to_string(),
+    }
+}
+
 /// (total, free) human strings, best effort per OS.
 fn memory_totals() -> (Option<String>, Option<String>) {
     #[cfg(target_os = "linux")]
@@ -483,61 +492,130 @@ fn html_escape(s: &str) -> String {
     out
 }
 
-/// HTML table for the info dump. Caller is responsible for wrapping
-/// in a full document; `render_html_page` does that.
+/// HTML fragment: one card per section. Shared by the standalone page and
+/// any embedder (GUI webview, docs tooling).
 pub fn render_html(sections: &[Section]) -> String {
     let mut out = String::new();
     out.push_str("<div class=\"spid3rinfo\">\n");
+    out.push_str("<header class=\"si-hero\"><div class=\"si-brand\">Spid<span class=\"si-accent\">3</span>r</div>");
     out.push_str(&format!(
-        "<h1>Spid3r {}</h1>\n",
+        "<span class=\"si-chip\">{}</span><span class=\"si-chip si-dim\">runtime information</span></header>\n",
         html_escape(crate::VERSION)
     ));
+    out.push_str("<div class=\"si-grid\">\n");
     for sec in sections {
+        out.push_str("<section class=\"si-card\">\n");
         out.push_str(&format!("<h2>{}</h2>\n", html_escape(&sec.name)));
-        out.push_str("<table>\n");
+        out.push_str("<dl>\n");
         for (k, v) in &sec.rows {
-            out.push_str("<tr><th>");
-            out.push_str(&html_escape(k));
-            out.push_str("</th><td>");
-            out.push_str(&html_escape(v));
-            out.push_str("</td></tr>\n");
+            out.push_str(&format!(
+                "<div class=\"si-row\"><dt>{}</dt><dd>{}</dd></div>\n",
+                html_escape(k),
+                html_escape(v)
+            ));
         }
-        out.push_str("</table>\n");
+        out.push_str("</dl>\n</section>\n");
     }
-    out.push_str("</div>\n");
+    out.push_str("</div>\n</div>\n");
     out
 }
 
-/// Full standalone HTML page.
+/// Full standalone HTML page (`spid3r info --html`, `spid3rinfo("html")`).
+/// Self-contained: system fonts only, dark/light follows the OS setting.
 pub fn render_html_page(sections: &[Section]) -> String {
     let mut s = String::new();
-    s.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
+    s.push_str("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">");
+    s.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     s.push_str("<title>spid3rinfo()</title>");
     s.push_str("<style>");
-    s.push_str("body{font-family:system-ui,sans-serif;margin:2rem;background:#111;color:#eee}");
-    s.push_str("h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.5rem;color:#8cf}");
-    s.push_str("table{border-collapse:collapse;width:100%;max-width:64rem;margin-bottom:0.5rem}");
+    s.push_str(":root{--bg:#0b0f17;--card:#161e2e;--card-alt:#1a2335;--line:#1e293b;");
+    s.push_str("--fg:#f1f5f9;--dim:#94a3b8;--accent:#38bdf8;--green:#04aa6d}");
+    s.push_str("@media (prefers-color-scheme: light){:root{--bg:#f8fafc;--card:#ffffff;");
+    s.push_str("--card-alt:#f1f5f9;--line:#e2e8f0;--fg:#0f172a;--dim:#475569;");
+    s.push_str("--accent:#0284c7;--green:#059862}}");
+    s.push_str("*{box-sizing:border-box}");
+    s.push_str("body{margin:0;background:var(--bg);color:var(--fg);");
     s.push_str(
-        "th,td{border:1px solid #333;padding:0.25rem 0.6rem;text-align:left;vertical-align:top}",
+        "font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;line-height:1.55}",
     );
-    s.push_str("th{background:#1a1a1a;font-weight:600;width:18rem;word-break:break-all}");
-    s.push_str("td{word-break:break-all;font-family:ui-monospace,monospace;font-size:0.85rem}");
+    s.push_str(".spid3rinfo{max-width:1180px;margin:0 auto;padding:2.2rem 1.4rem 3rem}");
+    s.push_str(".si-hero{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;");
+    s.push_str("padding-bottom:1.1rem;border-bottom:1px solid var(--line);margin-bottom:1.4rem}");
+    s.push_str(".si-brand{font-size:1.7rem;font-weight:800;letter-spacing:-0.02em}");
+    s.push_str(".si-accent{color:var(--green)}");
+    s.push_str(".si-chip{background:var(--card);border:1px solid var(--line);border-radius:999px;");
+    s.push_str("padding:.22rem .8rem;font-size:.8rem;color:var(--dim);");
+    s.push_str("font-family:ui-monospace,Consolas,monospace}");
+    s.push_str(".si-dim{color:var(--dim)}");
+    s.push_str(
+        ".si-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:1rem}",
+    );
+    s.push_str(".si-card{background:var(--card);border:1px solid var(--line);border-radius:12px;");
+    s.push_str("padding:1rem 1.15rem;overflow:hidden}");
+    s.push_str(".si-card h2{margin:0 0 .6rem;font-size:.8rem;text-transform:uppercase;");
+    s.push_str(
+        "letter-spacing:.12em;color:var(--accent);font-family:ui-monospace,Consolas,monospace}",
+    );
+    s.push_str(".si-card dl{margin:0}");
+    s.push_str(".si-row{display:grid;grid-template-columns:minmax(9rem,42%) 1fr;gap:.8rem;");
+    s.push_str("padding:.32rem 0;border-bottom:1px solid var(--line)}");
+    s.push_str(".si-row:last-child{border-bottom:none}");
+    s.push_str(".si-row dt{color:var(--dim);font-size:.85rem;word-break:break-word}");
+    s.push_str(".si-row dd{margin:0;font-family:ui-monospace,Consolas,monospace;font-size:.83rem;");
+    s.push_str(
+        "word-break:break-all;background:var(--card-alt);border-radius:6px;padding:.06rem .45rem}",
+    );
     s.push_str("</style></head><body>\n");
     s.push_str(&render_html(sections));
     s.push_str("</body></html>\n");
     s
 }
 
-/// Aligned plain-text dump (CLI default).
+/// Aligned plain-text dump (CLI default). Organized for both surfaces that
+/// show it: a color terminal (ANSI, TTY only) and a plain console (the
+/// playground/browser, pipes) where the same layout reads cleanly without
+/// escapes.
 pub fn render_text(sections: &[Section]) -> String {
+    #[cfg(target_arch = "wasm32")]
+    let tty = false;
+    #[cfg(not(target_arch = "wasm32"))]
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+    const BOLD: &str = "\x1b[1m";
+    const CYAN: &str = "\x1b[36m";
+    const DIM: &str = "\x1b[2m";
+    const RESET: &str = "\x1b[0m";
+
     let mut out = String::new();
+    if tty {
+        out.push_str(&format!(
+            "{BOLD}{CYAN}Spid3r {}{RESET} · runtime information\n",
+            crate::VERSION
+        ));
+    } else {
+        out.push_str(&format!(
+            "Spid3r {} - runtime information\n",
+            crate::VERSION
+        ));
+    }
     for sec in sections {
-        out.push_str(&format!("== {} ==\n", sec.name));
         let width = sec.rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-        for (k, v) in &sec.rows {
-            out.push_str(&format!("{:width$}  {}\n", k, v, width = width));
+        let sec_name = &sec.name;
+        if tty {
+            out.push_str(&format!(
+                "\n{BOLD}{CYAN} {sec_name}{RESET} {DIM}{}\n{RESET}",
+                "─".repeat(38)
+            ));
+        } else {
+            out.push_str(&format!("\n[{}]\n", sec.name));
         }
-        out.push('\n');
+        for (k, v) in &sec.rows {
+            if tty {
+                out.push_str(&format!("{DIM}  {k:<width$}{RESET}  {v}\n"));
+            } else {
+                out.push_str(&format!("  {k:<width$}  {v}\n"));
+            }
+        }
     }
     out
 }
@@ -640,6 +718,21 @@ pub fn n_spid3rinfo(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
         "text" => Value::Str(render_text(&sections).into()),
         _ => unreachable!(),
     })
+}
+
+/// Render the info payload as a string in the requested format.
+///
+/// Used by `spid3r info --out <path>` so the output can be redirected to a
+/// file without relying on shell piping (e.g. from a GUI or script runner).
+pub fn render_for_cli(json: bool, html: bool, no_redact: bool) -> String {
+    let sections = collect(!no_redact);
+    if json {
+        render_json(&sections)
+    } else if html {
+        render_html_page(&sections)
+    } else {
+        render_text(&sections)
+    }
 }
 
 /// CLI convenience: print the selected rendering to stdout.

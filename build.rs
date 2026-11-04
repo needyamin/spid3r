@@ -48,6 +48,16 @@ fn main() {
             println!("cargo:rustc-env=SPID3R_TARGET={target}");
         }
     }
+    // The compiler version for `spid3r info` (runtime_info::rustc_version
+    // reads RUSTC_VERSION; without this it printed "unknown").
+    if let Ok(rustc) = env::var("RUSTC") {
+        if let Ok(out) = Command::new(&rustc).arg("-V").output() {
+            let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !v.is_empty() {
+                println!("cargo:rustc-env=RUSTC_VERSION={}", v.replace('\n', " "));
+            }
+        }
+    }
     if env::var_os("CARGO_FEATURE_NATIVE").is_some() {
         native_llvm();
     }

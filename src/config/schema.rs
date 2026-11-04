@@ -507,12 +507,12 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         (
             "agent.role_viewer",
             ConfigValue::Str,
-            "status,info,config.get,logs.tail,modules.list,devices.list",
+            "status,ping,info,config.get,logs.tail,modules.list,devices.list",
         ),
         (
             "agent.role_operator",
             ConfigValue::Str,
-            "status,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,reload",
+            "status,ping,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,config.reload",
         ),
         ("agent.role_admin", ConfigValue::Str, "*"),
     ]
@@ -577,8 +577,8 @@ request_timeout_ms = 10000
 max_body = 262144
 pairing_ttl_sec = 300
 name =
-role_viewer = status,info,config.get,logs.tail,modules.list,devices.list
-role_operator = status,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,reload
+role_viewer = status,ping,info,config.get,logs.tail,modules.list,devices.list
+role_operator = status,ping,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,config.reload
 role_admin = *
 
 # [env.production]

@@ -228,7 +228,11 @@ mod tests {
         std::env::remove_var("SPID3R_LOG_FILE");
 
         let text = std::fs::read_to_string(&file).unwrap();
-        assert!(text.len() < MAX_LINE + 200, "{}", text.len());
+        // Parallel tests may append to the same file while the env override
+        // is set, so assert on this test's own line rather than the file size.
+        let ours: Vec<&str> = text.lines().filter(|l| l.contains("test: é")).collect();
+        assert_eq!(ours.len(), 1, "{}", text);
+        assert!(ours[0].len() < MAX_LINE + 200, "{}", ours[0].len());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

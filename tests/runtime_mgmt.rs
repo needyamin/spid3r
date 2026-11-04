@@ -51,15 +51,22 @@ fn info_html_and_text() {
     assert!(stdout.contains("spid3rinfo"));
     let (code, stdout, _) = run_cli(&["info"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("== Spid3r =="));
+    assert!(stdout.contains("Spid3r ") && stdout.contains("runtime information"));
 }
 
 #[test]
 fn config_list_and_validate() {
     let (code, stdout, _) = run_cli(&["config", "list"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("agent.port = 9527"));
-    assert!(stdout.contains("spid3r.engine = vm"));
+    // Grouped layout: one [section] header per dotted prefix.
+    assert!(
+        stdout.contains("[agent]"),
+        "missing [agent] group in {}",
+        stdout
+    );
+    assert!(stdout.contains("port") && stdout.contains("9527"));
+    assert!(stdout.contains("[spid3r]"), "missing [spid3r] group");
+    assert!(stdout.contains("engine") && stdout.contains("vm"));
     let (code, stdout, _) = run_cli(&["config", "validate"]);
     assert_eq!(code, 0, "{}", stdout);
     assert!(stdout.contains("ok"));
