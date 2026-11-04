@@ -5,6 +5,8 @@ and one encrypted management agent. This page is the operator manual. The
 implementation lives in `src/config/`, `src/runtime_info/`, `src/agent/` and
 `src/crypto/`.
 
+![Runtime configuration and remote management: the spid3r.ini precedence layers, the encrypted spid3r-agent/1 wire protocol, role-checked predefined operations, the audit log, and atomic config saves](diagrams/runtime-management.svg)
+
 ## 1. `spid3r.ini`
 
 A single INI file configures the runtime. Search order (first hit wins):
@@ -31,9 +33,8 @@ Precedence, highest first:
 3. the INI file
 4. compiled defaults (`src/config/schema.rs`)
 
-Live reload: `spid3r config reload`, `SIGHUP` on Unix,
-`POST /api/v1/config/reload` on the agent, or mtime polling on the next CLI
-run.
+Live reload: `spid3r config reload`, `SIGHUP` on Unix, or
+`POST /api/v1/config/reload` on the agent.
 
 ```ini
 [spid3r]
@@ -137,6 +138,10 @@ Predefined operations (`ops.run --name …`):
 `ping`, `reload_config`, `rotate_log`, `gc_collect`, `self_test`,
 `dump_diagnostics`, `restart_runtime`.
 
+`rotate_log` rotates both `spid3r.log` and `audit.log` immediately (each is
+renamed to `<name>.1`, replacing any previous `.1`) and returns both new
+paths in its response.
+
 `restart_runtime` acknowledges the caller first, then exits and spawns the
 same executable; the new process retries its bind for a few seconds so the
 handover cannot lose the port. In production run the agent under a service
@@ -174,7 +179,9 @@ Lists are configurable via `agent.role_viewer` / `role_operator` /
 Pairing is out-of-band: the host prints a 192-bit one-time code; the client
 sends it once. Both sides derive the long-term shared key as
 `SHA-256(code)`. The shared key **never crosses the wire**. The code is
-single-use and expires (`agent.pairing_ttl_sec`, default 300s).
+single-use and expires (`agent.pairing_ttl_sec`, default 300s). A connection
+that fails pairing five times is closed by the agent, so code guessing pays
+a fresh TCP connect per batch of attempts.
 
 After pairing, every data frame is:
 
@@ -205,7 +212,9 @@ Every accepted or rejected operation is one JSON line in
 {"ts":1762252800,"device":"laptop-1","role":"operator","op":"config.set","ok":true,"peer":"192.168.1.4:51000","detail":""}
 ```
 
-Disable with `[logging] audit = false`.
+The audit log rotates at 1 MiB: the current file is renamed to
+`audit.log.1` and a fresh `audit.log` starts. Disable with
+`[logging] audit = false`.
 
 ### State files
 

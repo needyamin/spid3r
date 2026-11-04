@@ -155,7 +155,7 @@ prototypes and embedded module chunks) recursively and rejects:
 
 Additionally, `deserialize_vmfunc` validates every serialized item count against
 the remaining byte slice before allocating vectors, caps function/module nesting
-at `MAX_DESERIALIZE_DEPTH` (128 — the parser's own limit is 96), and rejects
+at `MAX_DESERIALIZE_DEPTH` (96 — the parser's own limit is 64), and rejects
 **trailing bytes** after the last structure. The opcode decoder itself is a safe
 `OpCode::from_u8` table (no `mem::transmute`), the VM's instruction fetch is
 bounds-checked (`ip` outside the code section is a clean VM error, not an index

@@ -8,7 +8,8 @@ or a file:line you can check in this repository, so nothing here depends on the
 audit's local scratch tree (which has also been removed — it was gitignored and
 fully regenerable).
 
-**Last verified:** 2026-10-31 against `fb1c0f4` + working tree.
+**Last verified:** 2026-11-04 against the working tree (both `tools/` gates
+re-run green: 37/37 doc claims, 19/19 snippets; `cargo test` 1,190 passed).
 
 ---
 

@@ -58,7 +58,8 @@ issue IDs (documented in `docs/AUDIT_REPORT.md` and `docs/ROADMAP.md`).
    declaration index, file-scoped, shadow-aware; nested-block extents were
    narrowed per block so shadowing is modeled correctly. 6 wire tests added
    (23 LSP tests total). Remaining sub-items: cross-file references (needs
-   the import graph), signatureHelp, codeAction.
+   the import graph) and signatureHelp; codeAction shipped since then
+   (`textDocument/codeAction`, quick fixes derived from our own diagnostics).
 5. ~~**Profiler**~~ — **done 2026-10-22** (this round): `spid3r run --prof`
    (vm) counts every executed instruction by opcode — one array increment per
    instruction, zero cost when off — and prints a sorted per-opcode report

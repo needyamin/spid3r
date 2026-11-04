@@ -33,7 +33,7 @@ wants to expose its own internals.
 
 A host plugin cannot be loaded from disk: it is Rust code, and `Value` has no
 stable C ABI to hand it across. The other two *only* exist on disk, which is why
-`spidr run app.matrix` can call them without being rebuilt.
+`spid3r run app.matrix` can call them without being rebuilt.
 
 ## Why a host plugin has no dynamic loading
 
@@ -49,7 +49,7 @@ serialisation hop or a handle table, plus `dlopen`. ABI v1 does none of that:
 **a plugin is compiled into its host**, like a Cargo build-dependency.
 
 The consequence, stated plainly: the `spidr` binary itself registers no plugins,
-so `spidr run` cannot call a plugin function. A host that embeds `spid3r_lang`
+so `spid3r run` cannot call a plugin function. A host that embeds `spid3r_lang`
 calls `plugin::register` at startup, and its scripts can.
 
 ## The manifest
@@ -217,8 +217,8 @@ plugin directories), `./plugins`, `<exe>/plugins`, `~/.spidr/plugins`. A plugin 
 a directory holding `plugin.toml`; the load order is sorted, so a name clash
 reports the same plugin every time.
 
-`spidr run`, `check`, `compile`, `exec`, `test`, `bench`, `debug`, `gui` and
-`repl` load plugins. **`build` and `dist` do not**, because a standalone native
+`spid3r run`, `check`, `compile`, `exec`, `test`, `bench`, `debug`, `gui`,
+`magic` and `repl` load plugins. **`build` and `dist` do not**, because a standalone native
 executable cannot link one — a program that calls a plugin function is rejected
 at compile time with an explanation rather than producing a binary that throws
 `null is not callable` at run time.
@@ -304,17 +304,17 @@ are deliberate exclusions rather than gaps.
 | Host plugins (compiled in) | **works** |
 | WASM plugins (`kind = "wasm"`, loaded from disk) | **works** — `wasmi`, behind the `plugins-wasm` feature |
 | FFI (`extern fn`) | **works** — AOT only; see `docs/FFI.md` |
-| `spidr plugin abi/list/check` | **works** — `abi` prints the version, `list` reports the search path, `check` validates a directory |
-| `spidr plugin enable/disable` | not implemented — a plugin is discovered per run, so there is no persistent enable list |
+| `spid3r plugin abi/list/check` | **works** — `abi` prints the version, `list` reports the search path, `check` validates a directory |
+| `spid3r plugin enable/disable` | not implemented — a plugin is discovered per run, so there is no persistent enable list |
 | Dynamic loading of *native* code (`dlopen`) | deliberately not implemented — no stable ABI to load against |
 
-`spidr plugin list` prints what the **search path** would load — name, kind and
+`spid3r plugin list` prints what the **search path** would load — name, kind and
 function count per directory — which is the question an author actually has. It
 does not list what is *registered* in the current process: a host plugin belongs
 to the binary that registered it, so a process-independent list of those does not
 exist.
 
-`spidr plugin check <dir>` validates one directory against the ABI using the
+`spid3r plugin check <dir>` validates one directory against the ABI using the
 loader's own code path, without registering anything. See `docs/PLUGIN_ABI.md`.
 
 ### Build configurations

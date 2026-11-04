@@ -148,13 +148,13 @@ ignored format.
 | `map(k, v, …)` | Insertion-order map. `get`, `set`/index-assign `m[k] = v`, `remove`/`delete`, `has`/`contains`, `keys`, `values`, `items` (list of `(k, v)` tuples), `len`, `is_empty`, `clear`. |
 | `set(a, b, …)` | Unique members. `add`, `remove`, `contains`, `union`, `intersection`/`intersect`, `difference`, `is_subset`, `is_superset`, `len`, `is_empty`, `clear`. |
 | `bag()` | Multiset (counts duplicates). `add`, `count_of`, `remove`, `len`, `is_empty`, `clear`. |
-| `hash_table(n)` | Open addressing; `get`, `set`, `remove`, `contains`, `len`, `clear`. |
+| `hash_table()` | Separate chaining (8 buckets, grows); no constructor arguments. `get`, `set`, `remove`, `contains`, `bucket_count`, `load_factor`, `keys`, `len`, `is_empty`, `clear`. |
 
 ## Linked nodes
 
 | Type | Notes |
 |---|---|
-| `linked_list()` | Singly linked list. `push_back`, `push_front`, `pop_front`, `pop_back`, `insert_after`, `set_at`, `remove_at`, `contains`, `peek`, `len`, `reverse`. |
+| `linked_list()` | Singly linked list. `push_back`, `push_front`, `pop_front`, `pop_back`, `peek_front`, `peek_back`, `get`, `contains`, `remove`, `to_list`, `len`, `is_empty`, `clear`, `clone`. |
 | `singly_linked_list()` | Singly linked list (same surface as `linked_list`). |
 | `doubly_linked_list()` | Doubly linked list; fast `pop_back`, `push_front`/`push_back`. |
 
@@ -305,7 +305,7 @@ and `inverse` throw catchable runtime errors (`"matrix is singular"`).
 |---|---|
 | `option` | `some(v)` / `none`. `is_some`, `is_none`, `unwrap`, `unwrap_or(d)`. |
 | `result` | `ok(v)` / `err(e)`. `is_ok`, `is_err`, `unwrap`, `unwrap_or(d)`, `unwrap_err`. |
-| `enum` | Declared via `enum Name { Variant1, Variant2(data) }`. Dispatched with `match (v) { Name::Variant1 => ..., Name::Variant2(d) => ... }`. Variants carry `.kind` string, `.data` payload, and display as `Name::Variant`. |
+| `enum` | Declared via `enum Name { Variant1, Variant2(field) }`. Each variant lowers to an ordinary **public constructor function**, so `Variant2(42)` is a normal call — it works across `import` with no name-resolution step. A variant value is a map carrying `__tag` (the variant name), `__fields` (field order), and one key per payload field. `match` arms use the bare variant name: `match (v) { Variant1 => ..., Variant2(d) => ... }`. |
 
 ## Binary `bytes` & Serialization
 

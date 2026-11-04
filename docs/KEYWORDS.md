@@ -92,7 +92,7 @@ Constructors are called like functions: `list(10, 20, 30)`, `stack()`,
 | Arithmetic | `+` `-` `*` `/` `%` |
 | Bitwise | `&` `|` `^` `<<` `>>` |
 | Comparison | `==` `!=` `<` `<=` `>` `>=` |
-| Logical | `and` `or` `not` |
+| Logical | `and` `or` `not` `&&` `||` |
 | Null safety & coalescing | `?.` `??` `?` |
 | Assignment | `=` `+=` `-=` `*=` `/=` `%=` |
 | Pattern Matching & Functions | `=>` `->` |
@@ -116,7 +116,8 @@ nest.
 
 ## 6. Standard library names
 
-Global functions (see `STANDARD_LIBRARY.md`): `print`, `println`, `eprint`,
+A sample of the global functions (the full list is in `STANDARD_LIBRARY.md`):
+`print`, `println`, `eprint`,
 `read_line`, `read_file`, `write_file`, `file_exists`, `sleep_ms`, `now`, `env`,
 `args`, `spawn_process`, `yield`, `task_count`, `len`, `abs`, `sqrt`, `pow`,
 `min`, `max`, `int`, `float`, `string`, `bool`, `random_int`, `json_parse`,

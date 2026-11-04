@@ -130,7 +130,7 @@ fn main() {
 
 ```console
 $ clang -c cmath.c -o cmath.o
-$ spidr build app.matrix -o app --link-lib cmath.o
+$ spid3r build app.matrix -o app --link-lib cmath.o
 ```
 
 Marshalling is explicit because Spidr values are boxed pointers here: each

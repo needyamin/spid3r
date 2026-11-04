@@ -34,33 +34,41 @@ This document details two complete, production-grade applications written in the
 
 ---
 
-## 2. Web Application: CloudOps & Telemetry Hub
+## 2. Web Application: Spid3rWeb Blog Platform
 
-- **Directory**: `examples/web/cloudops_hub/`
-- **Server Script**: [`server.matrix`](../examples/web/cloudops_hub/server.matrix)
-- **Dashboard SPA**: [`dashboard.html`](../examples/web/cloudops_hub/dashboard.html)
-- **Batch Launcher**: [`run_server.bat`](../examples/web/cloudops_hub/run_server.bat)
-- **URL**: [http://127.0.0.1:8090/](http://127.0.0.1:8090/)
+- **Directory**: `examples/spid3r_web/`
+- **Server Script**: [`server.matrix`](../examples/spid3r_web/server.matrix)
+- **Full guide**: [docs/html/spid3rweb.html](html/spid3rweb.html)
+- **URL**: [http://127.0.0.1:8000/](http://127.0.0.1:8000/) (default port 8000; override by passing a port as the first CLI argument)
 
 ### Architecture
-- Powered by `stdlib/web.matrix` and `stdlib/http.matrix`.
-- Native router with middleware pipeline, request logging, parameter extraction, and cookie management.
-- Complete Single-Page Application (SPA) dashboard served at root `GET /`.
+- Powered by **Spid3rWeb**, the full-stack web framework that ships in `examples/spid3r_web/framework/` (see `docs/html/spid3rweb.html`).
+- Expressive router (`Route.get`/`Route.post`) with parameterized paths (`/posts/:id`), route names, and middleware guards.
+- Active Record ORM on native SQLite (WAL mode), transactional migrations and seeders (`database/`).
+- SpiderBD template engine: `.bd.html` views in `resources/views/` with `@extends`, `@section`, `@foreach`, `@if`, and `{{ $var }}` interpolation.
+- Built-in authentication: bcrypt password hashing (`bcrypt_hash` / `bcrypt_verify`), session tokens, and cookie headers.
+- `magic` CLI (`spid3r magic <command>`) for migrations, scaffolding, and the dev server, driven by the extensionless `magic` root file.
 
-### Endpoints
+### Routes
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Serves the dark-mode CloudOps telemetry dashboard. |
-| `GET` | `/api/info` | Returns system metadata, runtime engine, uptime, and request count. |
-| `GET` | `/api/metrics` | Real-time system telemetry and memory estimation. |
-| `POST` | `/api/stats` | Accepts JSON array of numbers, executes statistical reduction, returns metrics. |
-| `POST` | `/api/ml/regression` | Fits linear regression model on coordinates $(X, Y)$ and returns slope, intercept, and $R^2$. |
-| `POST` | `/api/auth/token` | Generates a signed JWT session cookie via HMAC-SHA256 and base64url. |
-| `GET` | `/api/auth/verify` | Authenticates incoming request from signed cookie token. |
+| `GET` | `/` | Home page. |
+| `GET` | `/posts` | List all posts. |
+| `GET` | `/posts/create` · `POST` `/posts` | Create a post (auth middleware). |
+| `GET` | `/posts/:id` | Show a single post. |
+| `GET` | `/posts/:id/edit` · `POST` `/posts/:id/update` | Edit and update a post (auth middleware). |
+| `POST` | `/posts/:id/delete` | Delete a post (auth middleware). |
+| `GET` | `/login` · `POST` `/login` | Log in. |
+| `GET` | `/register` · `POST` `/register` | Register a new user. |
+| `POST` | `/logout` | Log out. |
+| `GET` | `/status` | JSON health/status endpoint (API routes). |
 
 ### Running the Web Server
 ```powershell
-# Start web server on port 8090
-.\target\debug\spid3r.exe run --engine tree examples\web\cloudops_hub\server.matrix
+# From examples/spid3r_web/ — start the app server on port 8000
+.\..\..\target\debug\spid3r.exe run server.matrix
+
+# Or with an explicit port
+.\..\..\target\debug\spid3r.exe run server.matrix -- 8080
 ```
-Then navigate to [http://127.0.0.1:8090/](http://127.0.0.1:8090/) in any modern web browser.
+Then navigate to [http://127.0.0.1:8000/](http://127.0.0.1:8000/) in any modern web browser.

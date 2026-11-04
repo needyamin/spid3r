@@ -82,7 +82,7 @@ supported version.
    and the reader's max supported version. Never `panic!`, never
    `unreachable!()`.
 4. Deserializer item counts are checked against remaining bytes before
-   allocation; nesting stays capped at `MAX_DESERIALIZE_DEPTH` (128).
+   allocation; nesting stays capped at `MAX_DESERIALIZE_DEPTH` (96).
 5. Update `docs/BYTECODE.md` (format) and this file (promise class of the
    change) in the same PR.
 
@@ -100,6 +100,6 @@ supported version.
 - Current format version: **2** (2026-10-22 — v2 added trailing constant
   parameter defaults to function prototypes; the reader accepts v1 and v2,
   the writer emits v2). Magic: `SPID3R` (6 bytes).
-- All changes so far (opcodes 55–57, embedded modules, validator hardening)
+- All changes so far (opcodes 55–58, embedded modules, validator hardening)
   were class-1 additive; the promise above holds retroactively for every
   shipped artifact.

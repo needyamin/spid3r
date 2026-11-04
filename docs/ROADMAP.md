@@ -41,7 +41,7 @@ suite (unit, integration, and the tree == vm == exec differential run).
   `value::collections` layer.
 - **Differential testing:** every `examples/*.matrix` runs three ways
   (`run --engine tree`, `run --engine vm`, `compile` + `exec`) with identical
-  stdout. The harness is `difftest.sh`, the `spid3r test` command, and a
+  stdout. The harness is `tools/difftest.sh`, the `spid3r test` command, and a
   `cargo test` integration target (`tests/difftest.rs`).
 - **Self-contained bytecode:** imported modules are resolved, compiled, and
   embedded into the `.matrixc` at compile time (transitively, flattened into one

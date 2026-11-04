@@ -116,7 +116,7 @@ documented, safe restriction — the leak persists while tasks run).
   instance whose field points at itself, and a two-node mutual cycle.
 - **Safety:** a stress test that churns many cycles + live acyclic values and
   asserts outputs are unchanged and nothing crashes (run under the full suite).
-- **Parity:** `spid3r test` (tree == vm == exec) must stay 23/23; the gate 9/9.
+- **Parity:** `spid3r test` (tree == vm == exec) must stay 25/25; the gate 9/9.
 - A `gc_live_cells()` diagnostic builtin (returns the registry size) makes the
   reclamation assertion precise and portable, and doubles as a leak probe.
 

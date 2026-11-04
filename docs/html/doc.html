@@ -3753,7 +3753,7 @@ println(" Sum via reduce: " + string(sum_all));      // 21
                 <td><strong>Deque</strong></td>
                 <td><code>deque()</code></td>
                 <td><code>push_front</code>, <code>push_back</code>, <code>pop_front</code>, <code>pop_back</code>,
-                  <code>peek_front</code>
+                  <code>peek_front</code>, <code>peek_back</code>
                 </td>
                 <td>O(1) double-ended queue operations</td>
               </tr>
@@ -4681,6 +4681,15 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           <code>spid3rinfo()</code>, and an encrypted management agent. One installed binary can be inspected,
           reconfigured, and operated from another machine — without a shell.
         </p>
+
+        <figure class="diagram">
+          <img src="../diagrams/runtime-management.svg"
+            alt="The host runs spid3r agent start on [agent] bind:port; an operator's machine pairs once with a one-time 48-hex code and then speaks spid3r-agent/1 over TCP with ChaCha20 plus HMAC-SHA256. Every request is role-checked (viewer, operator, admin) against an ops allow-list and dispatched to a predefined operation; calls land in audit.log and config is saved atomically. Below, the spid3r.ini precedence chain and the remote config.set deny-list.">
+          <figcaption>Runtime configuration &amp; remote management. The wire never reaches a shell: an unknown
+            operation is refused, every call is role-checked and audited, and <code>security.*</code>,
+            <code>logging.*</code>, <code>agent.role_*</code> and the <code>agent.enabled/bind/port</code> keys are
+            read-only over the wire.</figcaption>
+        </figure>
 
         <h3 class="section-h3" id="ini">The <code>spid3r.ini</code> File</h3>
         <p>

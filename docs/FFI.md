@@ -16,7 +16,7 @@ fn main() {
 
 ```console
 $ clang -c cmath.c -o cmath.o
-$ spidr build app.matrix -o app --link-lib cmath.o
+$ spid3r build app.matrix -o app --link-lib cmath.o
 $ ./app
 42
 Hello, Ada!
@@ -67,15 +67,15 @@ returns. If it needs to keep the data, copy it on the C side.
 `.dylib`) is passed to the linker as given.
 
 ```console
-$ spidr build app.matrix -o app --link-lib m          # -lm
-$ spidr build app.matrix -o app --link-lib ../lib/libfoo.a
+$ spid3r build app.matrix -o app --link-lib m          # -lm
+$ spid3r build app.matrix -o app --link-lib ../lib/libfoo.a
 ```
 
 A symbol nothing defines is a **link error**, so the build fails and no binary
 is produced:
 
 ```console
-$ spidr build app.matrix -o app
+$ spid3r build app.matrix -o app
 error[usage]: linking failed (…/link.exe):
 spid3r_app.o : error LNK2019: unresolved external symbol no_such_symbol …
 ```
@@ -86,9 +86,9 @@ symbol can never reach a user as a crash.
 ## On the script engines
 
 ```console
-$ spidr run app.matrix
+$ spid3r run app.matrix
 error[usage]: extern fn 'c_add' needs a native executable: the tree interpreter
-cannot call C. Build with `spidr build`.
+cannot call C. Build with `spid3r build`.
 $ echo $?
 2
 ```
@@ -118,7 +118,7 @@ has no imports, so it has no ambient authority to abuse.
 | Callbacks into Spidr | a Spidr closure is a GC'd `Value`, not a C function pointer |
 | C++ symbols | name mangling is compiler-specific |
 | Varargs | no way to express them in the declaration |
-| Calling C from `spidr run` | the tree/VM link nothing — by design |
+| Calling C from `spid3r run` | the tree/VM link nothing — by design |
 
 ## Files
 

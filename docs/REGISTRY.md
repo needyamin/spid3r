@@ -81,7 +81,7 @@ The chosen directory's `spider.toml` version must also satisfy the constraint
 
 ## Publishing into a registry
 
-`spidr publish --to-dir <dir>` writes the layout above without any network:
+`spid3r publish --to-dir <dir>` writes the layout above without any network:
 
 ```
 <dir>/<name>/<version>/
@@ -97,7 +97,7 @@ make every `spider.lock` that pins it a lie. Bump the version instead.
 The round trip is local and offline:
 
 ```console
-$ spidr publish --to-dir ../registry
+$ spid3r publish --to-dir ../registry
 published to ../registry/mathlib/0.1.0
 sha256: 308a5889…
 
@@ -106,22 +106,22 @@ sha256: 308a5889…
 mathlib = { version = "^0.1.0" }
 
 $ SPID3R_REGISTRY=../registry spidr install
-$ spidr verify
+$ spid3r verify
 ok: 1 vendored package(s) match spider.lock
 ```
 
-`spidr search <query> --local` matches package names in `SPID3R_REGISTRY` and in
+`spid3r search <query> --local` matches package names in `SPID3R_REGISTRY` and in
 `vendor/`. It does not reach the network — there is no remote index yet.
 
 ## Integrity
 
 `install` verifies a registry package's `sha256.txt` when the package ships one,
-and `spidr verify` re-hashes every vendored tree against the `sha256` in
+and `spid3r verify` re-hashes every vendored tree against the `sha256` in
 `spider.lock` afterwards. Editing one vendored file therefore fails the build
 gate instead of being silently compiled:
 
 ```console
-$ spidr verify
+$ spid3r verify
 error[verify]: mathlib: vendor/mathlib does not match spider.lock
   expected 308a5889…
   actual   31e79255…
@@ -137,8 +137,8 @@ package nobody declared is not something to trust.
 
 - **No network fetch.** Point `SPID3R_REGISTRY` at a local/checked-out tree. A
   remote index + download is a deliberate future step (it needs an HTTP client,
-  which the zero-dependency default avoids). `spidr publish --to-dir` writes the
-  registry layout and `spidr search --local` reads it, so the whole cycle works
+  which the zero-dependency default avoids). `spid3r publish --to-dir` writes the
+  registry layout and `spid3r search --local` reads it, so the whole cycle works
   offline; only *distribution* is missing.
 - **No signature verification.** TLS plus the SHA-256 in `spider.lock` is the v1
   trust model. Ed25519 signing needs a new dependency and key management, and is
@@ -171,6 +171,10 @@ spid3r run src/main.matrix
 name = "mathlib"
 version = "1.2.0"
 source = "registry+1.2.0"
+used-by = "app"
 files = 1
 sha256 = "…"
 ```
+
+`used-by` names the workspace member(s) that depend on the package (for the
+single-project case it is simply the project).

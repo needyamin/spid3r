@@ -7,7 +7,7 @@ spid3r-plugin-abi-1
 ```
 
 ```console
-$ spidr plugin abi
+$ spid3r plugin abi
 spid3r-plugin-abi-1
 ```
 
@@ -124,15 +124,15 @@ at once.
 ## Tooling
 
 ```console
-$ spidr plugin abi                # the version string this build implements
+$ spid3r plugin abi                # the version string this build implements
 spid3r-plugin-abi-1
 
-$ spidr plugin list               # what the search path would load
+$ spid3r plugin list               # what the search path would load
 examples/plugins
   hello-matrix (matrix) — 2 function(s)
   hello-wasm (wasm) — 2 function(s)
 
-$ spidr plugin check examples/plugins/hello-wasm
+$ spid3r plugin check examples/plugins/hello-wasm
 ok: examples/plugins/hello-wasm conforms to spid3r-plugin-abi-1
   kind wasm · 2 function(s) · capabilities []
   2 export(s) resolved · 65745 byte(s) of module

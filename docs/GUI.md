@@ -263,7 +263,7 @@ fn main() {
 }
 ```
 
-The exe grows by the size of `spid3r.exe` (~11 MB). The first launch extracts the
+The exe grows by the size of `spid3r.exe` (~13 MB). The first launch extracts the
 runtime to `%LOCALAPPDATA%\Spid3r\runtime\<content-hash>`; later launches reuse
 it. The extraction is written to a temporary file and renamed into place, so two
 launches at once cannot read or execute a half-written copy, and a cached file is

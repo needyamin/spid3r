@@ -885,7 +885,7 @@ Every container is constructed by its builtin (`list(…)`, `stack()`, `map(…)
 | `list(…)`, `vec(…)` | `len is_empty clear capacity push pop peek get set insert remove_at remove index_of contains reverse sort slice join append clone sorted reversed` |
 | `stack()` | LIFO: `push pop peek contains to_list` (+ `len is_empty clear clone`) |
 | `queue()` | FIFO: `push` (back) `pop` (front) `peek contains to_list` (+ `len is_empty clear clone`) |
-| `deque()` | front-only deque: `push_front pop_front peek_front contains to_list` (+ `len is_empty clear clone`) |
+| `deque()` | double-ended: `push_front push_back pop_front pop_back peek_front peek_back contains to_list` (+ `len is_empty clear clone`) |
 | `linked_list()`, `singly_linked_list()`, `doubly_linked_list()` | `push_back push_front pop_front pop_back peek_front peek_back get contains remove to_list` (+ `len is_empty clear clone`) |
 | `map(…)` | insertion-ordered: `set get remove delete has items contains keys values` (+ `len is_empty clear clone`); `m[k] = v` is an alias for `set` |
 | `hash_table(…)` | `set get remove contains bucket_count load_factor keys` (+ `len is_empty clear clone`) |
@@ -893,11 +893,11 @@ Every container is constructed by its builtin (`list(…)`, `stack()`, `map(…)
 | `bag(…)` | multiset: `remove count_of contains` (+ `len is_empty clear clone`) |
 | `bst()` | ordered: `insert contains remove root inorder preorder postorder` (+ `len is_empty clear clone`) |
 | `binary_tree()` | `insert root inorder preorder postorder level_order` (+ `len is_empty clear clone`) |
-| `heap()` | `push pop peek is_min` (+ `len is_empty clear clone`) |
+| `heap(direction)` | `direction` is `"min"` or `"max"`: `push pop peek is_min change_priority merge` (+ `len is_empty clear clone`) |
 | `priority_queue()` | `push pop peek` (+ `len is_empty clear clone`) |
 | `ring_buffer(n)` | bounded: `push peek pop is_full capacity contains` (+ `len is_empty clear clone`) |
 | `trie()` | prefix tree: `insert contains starts_with with_prefix all_words` (+ `len is_empty clear clone`) |
-| `graph(directed?)` | `add_node has_node add_edge neighbors path_exists find_path bfs dfs nodes edge_count is_directed` (+ `len is_empty clear clone`) |
+| `graph(direction)` | `direction` is `"directed"` or `"undirected"`: `add_node has_node add_edge remove_node remove_edge neighbors path_exists find_path bfs dfs nodes n_nodes n_edges edge_count is_directed is_connected cycle has_cycle replace dijkstra` (+ `len is_empty clear clone`) |
 | `vector(…)` | numeric: `get set push slice to_list add sub mul div sum mean variance std min max argmin argmax dot norm cumsum diff sort argsort save_npy` (+ `len is_empty clear`) |
 | `matrix(rows, cols, fill)` | 2-D numeric: `get set row col to_list transpose scale trace sum mean solve inverse det eigen_sym save_npy` (+ `rows cols is_empty`) |
 | `ref(v)` | interior mutable cell: `get set` (weak references via `weak`/`deref`) |

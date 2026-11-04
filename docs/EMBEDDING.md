@@ -31,8 +31,6 @@ assert_eq!(out.exit_code, 0);
 assert_eq!(out.output, "HI 1.0\n");
 ```
 
-A runnable version ships as an example: `cargo run --example embed_hello`.
-
 ## API reference
 
 ### `Engine` (builder; cheap to clone)
@@ -48,8 +46,6 @@ A runnable version ships as an example: `cargo run --example embed_hello`.
 | `.budget(steps)` | Cap the work one run may do. After roughly `steps` units (statements in the tree engine) the run fails with the **fatal** error `execution budget exhausted`, which the script's `try`/`catch` cannot intercept. Per run, shared with spawned tasks; `None` (default) is unlimited. See `docs/SECURITY.md` |
 | `.set_script_args(vec)` | `args()` for the script. **Process-global** (shared with the CLI); set once per process |
 | `.run(name, src)` | Parse → check → execute on a dedicated big-stack thread → `Result<RunResult, ScriptError>`. `RunResult { exit_code, output }`: `main`'s return value and the captured `print`/`println`/`eprint` text of the main thread |
-| `.run_source(name, src)` | Alias of `run` returning only the exit code |
-| `.run_source_captured(name, src)` | Alias of `run` returning `(exit_code, output)` |
 
 `ScriptError { diagnostic, output }` — the phase diagnostic plus whatever was
 printed before the failure (empty for lex/parse/check failures).
@@ -94,9 +90,8 @@ Every accessor returns `Option`; nothing guesses.
   callbacks incl. collection callbacks, stdlib override, shadowing, module
   resolution from host dirs, deep-data runs on the worker, capture isolation
   between concurrent engines, phase-tagged errors, conversions round-trip).
-* `src/embed.rs` `#[cfg(test)]` — 6 unit tests (stateful closure counters,
+* `src/embed.rs` `#[cfg(test)]` — 9 unit tests (stateful closure counters,
   catchable host errors, `type_of` parity, partial output on failure).
-* `cargo run --example embed_hello` — end-to-end host demo.
 
 Known follow-ups (see plan.html R7 residuals): a compiled-bytecode (VM)
 embedding path; per-run script args (removing the process-global static);

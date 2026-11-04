@@ -2,6 +2,13 @@
 
 *Date: 2026-10-18 · Auditor: independent full-repo audit (AutoClaw) · Baseline commit `eeac01f`*
 
+> **Provenance note (2026-11-04):** this is a point-in-time record. Working
+> scratch artifacts it references — `audit/findings/`, `audit_notes/`,
+> `assessment/`, `plan.html`/`plan.txt`, `sitemap.txt`,
+> `tools/bench_compare.py` — were removed from the repository after the audit
+> concluded and are **no longer present**; the findings and fixes described
+> below remain valid history.
+
 Every claim below was executed against the code, not inferred: 236 pre-existing Rust
 tests were run as the baseline, a 30-program differential probe suite (tree vs VM vs
 compile+exec) was written and run, and every fix was verified by re-running the full

@@ -7,7 +7,9 @@ this document without guessing.
 ```
 program        = { import } { declaration } ;
 
-import         = "import" string [ "as" ident ] ";" ;
+import         = "import" string [ "as" ident ] ";"
+               | "import" "{" ident [ "as" ident ] { "," ident [ "as" ident ] } "}"
+                 "from" string ";" ;
 
 declaration    = { decorator } ( fnDecl | classDecl | enumDecl | interfaceDecl | statement ) ;
 
@@ -38,7 +40,8 @@ param          = "self" | ident [ ":" type ] [ "=" literal ] ;
 (* defaults are trailing-only (parser-enforced) and must be constant literals;
    omitted trailing arguments are filled from them at the callee *)
 
-type           = ident [ "<" type ">" ] ;
+type           = singleType { "|" singleType } ;   (* union, e.g. int | string *)
+singleType     = ( ident | "null" ) [ "<" type ">" ] [ "?" ] ;   (* "?" = nullable *)
 
 statement      = letStmt | constStmt | ifStmt | whileStmt | forStmt
                | returnStmt | breakStmt | continueStmt | yieldStmt | block | spawnStmt
@@ -63,7 +66,7 @@ spawnStmt      = "spawn" fnLit ";" ;            (* the operand must be a fn lite
                                                   a `spawn` expression is also
                                                   accepted in unary position *)
 
-tryStmt        = "try" block [ "catch" "(" ident ")" block ] [ "finally" block ] ;
+tryStmt        = "try" block [ "catch" ( "(" ident ")" | ident ) block ] [ "finally" block ] ;
                                                 (* at least one of catch/finally
                                                   is required *)
 throwStmt      = "throw" expr ";" ;
@@ -136,8 +139,9 @@ primary        = intLit | bigintLit | floatLit | stringLit | "true" | "false" | 
 parenExpr      = "(" expr ")" ;
 tupleLit       = "(" [ [ expr ] "," [ args ] ] ")" ;
 
-(* `if` in value position; a branch's last expression may omit its `;` *)
-ifExpr         = "if" "(" expr ")" valueBlock [ "else" valueBlock ] ;
+(* `if` in value position; a branch's last expression may omit its `;`.
+   The condition is a plain `expr` — parentheses are optional. *)
+ifExpr         = "if" expr valueBlock [ "else" valueBlock ] ;
 
 (* `match` is an expression; in statement position its trailing `;` is optional *)
 matchExpr      = "match" "(" expr ")" "{" arm { [ "," ] arm } "}" ;
