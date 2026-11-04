@@ -1,0 +1,180 @@
+name: Release
+
+# Builds the prebuilt Linux/macOS tarballs that install.sh downloads.
+#
+# Why this workflow exists: install.sh fetches
+#   https://github.com/needyamin/spid3r/releases/download/v<VERSION>/spid3r-<TARGET>.tar.gz
+# for exactly these four targets:
+#   x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,
+#   x86_64-apple-darwin,      aarch64-apple-darwin
+# The v1.0.0 release shipped only the Windows NSIS installer, so every
+# Linux/macOS install (and CI runner using install.sh) 404'd. Tagging a
+# release with this workflow attached fixes that: it builds all four
+# tarballs and attaches them as release assets named exactly
+# `spid3r-<target>.tar.gz`.
+#
+# Build configuration: `--no-default-features` (core-only). The default
+# features need LLVM 18 (`native`) and WebKit2GTK (`gui`), which are heavy
+# system dependencies no release tarball should carry; core-only is what
+# `install.sh --source --core` produces, so tarballs and source builds match.
+#
+# The `tls` feature is deliberately NOT enabled: native-tls on Linux resolves
+# to openssl-sys, which needs libssl-dev headers at build time AND links
+# libssl.so.3 dynamically — that would turn a zero-dependency binary into one
+# that fails on machines without OpenSSL 3 runtime. macOS (Security.framework)
+# would be safe, but all four tarballs are kept uniform. Users who need
+# https in `http_fetch` can build from source with --features tls.
+#
+# Asset protection: the publish job uses `clobber: false`, so re-running the
+# workflow against an existing release FAILS instead of silently replacing a
+# published tarball that users may already have verified by checksum. To
+# replace assets, delete them (or the release) first, deliberately.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # install.sh warns on musl (Alpine); these are glibc builds, as it documents.
+  SPID3R_NO_INSTALLER: "1"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64 Linux: stock runner, plain cargo, no cross tooling.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+          # aarch64 Linux: free arm64 runner for public repos; the binary is
+          # built AND executed natively (a real smoke test, not emulation).
+          # If this runner label is ever retired, switch to cross-rs:
+          #   os: ubuntu-24.04 + `cargo install cross` + `cross build ...`
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          # Both macOS targets build on one arm64 runner: aarch64 natively,
+          # x86_64 via `rustup target add` + `cargo --target` (Xcode's
+          # toolchain cross-links x86_64 out of the box). The x86_64 binary
+          # is not executed here (see the smoke-test step's `if:`).
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Pinned to the same toolchain as rust-toolchain.toml and ci.yml
+      # (1.99.1). Bump all three together — see the comment in ci.yml.
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+          targets: ${{ matrix.target }}
+
+      - name: Build (core-only, zero system dependencies)
+        timeout-minutes: 45
+        run: cargo build --release --locked --target ${{ matrix.target }} --no-default-features
+
+      # Run the binary where we can. The one exception is the x86_64 macOS
+      # binary built on an arm64 host — it is inspected with `file` instead
+      # so packaging never depends on Rosetta being present.
+      - name: Smoke test the built binary
+        if: matrix.cross != true
+        run: ./target/${{ matrix.target }}/release/spid3r --version
+
+      - name: Inspect the cross-compiled binary
+        if: matrix.cross == true
+        run: |
+          file target/${{ matrix.target }}/release/spid3r
+          file target/${{ matrix.target }}/release/spid3r | grep -q "x86_64"
+
+      # Binary at the tarball ROOT (no wrapping directory) — the cleanest
+      # layout for install.sh, which `find`s the binary either way.
+      - name: Package tarball
+        run: |
+          tar czf "spid3r-${{ matrix.target }}.tar.gz" \
+              -C "target/${{ matrix.target }}/release" spid3r
+          # `sha256sum` on Linux, `shasum -a 256` on macOS (BSD shasum ships
+          # with the OS; GNU coreutils is not guaranteed on runner images).
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "spid3r-${{ matrix.target }}.tar.gz" > "spid3r-${{ matrix.target }}.tar.gz.sha256"
+          else
+            shasum -a 256 "spid3r-${{ matrix.target }}.tar.gz" > "spid3r-${{ matrix.target }}.tar.gz.sha256"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            spid3r-${{ matrix.target }}.tar.gz
+            spid3r-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish release assets
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify all four tarballs are present
+        run: |
+          cd dist
+          for t in \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            x86_64-apple-darwin \
+            aarch64-apple-darwin; do
+            test -s "spid3r-${t}.tar.gz" || { echo "MISSING: spid3r-${t}.tar.gz"; exit 1; }
+          done
+          ls -l
+
+      - name: Generate combined checksum file
+        run: |
+          cd dist
+          cat *.sha256 > sha256sums.txt
+          # Self-check: every listed checksum must verify.
+          sha256sum -c sha256sums.txt
+
+      # Attaches the tarballs to the release of the pushed tag (creates the
+      # release object if the tag exists without one). `clobber: false` is
+      # the default and pinned explicitly: an accidental re-run against an
+      # already-published release must fail, not overwrite assets.
+      - name: Attach assets to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/spid3r-*.tar.gz
+            dist/sha256sums.txt
+          clobber: false
+          fail_on_unmatched_files: true
+          body: |
+            Prebuilt spid3r binaries (core toolchain: VM + interpreter + AOT-free backends, stdlib compiled in).
+
+            Install on Linux/macOS:
+            ```
+            curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | sh
+            ```
+
+            Or download `spid3r-<target>.tar.gz` for your platform, untar, and put `spid3r` on your PATH. SHA-256 sums: `sha256sums.txt`.
+
+            Builds are core-only (no LLVM/WebKit system dependencies). The GUI (`spid3r gui`) and the native AOT backend require building from source — see `docs/BUILDING.md`.

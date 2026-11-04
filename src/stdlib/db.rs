@@ -336,8 +336,13 @@ fn errmsg_of(api: &SqliteApi, db: *mut c_void) -> String {
     if p.is_null() {
         "unknown SQLite error".to_string()
     } else {
-        String::from_utf8_lossy(unsafe { std::ffi::CStr::from_ptr(p as *const i8) }.to_bytes())
-            .into_owned()
+        // `c_char` is `i8` on x86_64 but `u8` on aarch64 Linux — hardcoding
+        // either breaks the other target, so always cast through c_char.
+        String::from_utf8_lossy(unsafe {
+            std::ffi::CStr::from_ptr(p as *const std::ffi::c_char)
+        }
+        .to_bytes())
+        .into_owned()
     }
 }
 
@@ -491,7 +496,7 @@ fn column_names(api: &SqliteApi, stmt: *mut c_void) -> Vec<String> {
                 format!("col{}", c)
             } else {
                 String::from_utf8_lossy(
-                    unsafe { std::ffi::CStr::from_ptr(p as *const i8) }.to_bytes(),
+                    unsafe { std::ffi::CStr::from_ptr(p as *const std::ffi::c_char) }.to_bytes(),
                 )
                 .into_owned()
             }

@@ -291,3 +291,14 @@ else
 fi
 say "    spid3r --help"
 say "    spid3r run hello.matrix"
+
+# On GitHub Actions the PATH edits above only reach NEW shells; the current
+# job step (and often the whole job, if it uses a pre-set PATH) still cannot
+# find spid3r. GITHUB_PATH is exported by the Actions runner, so when it is
+# present give the caller the one-liner that fixes the remaining steps.
+if [ -n "${GITHUB_PATH-}" ]; then
+    say ""
+    say "GitHub Actions detected: ${INSTALL_DIR} is not on PATH for the current step."
+    say "To expose it to subsequent steps of this job, run before the next step:"
+    say '    echo "$HOME/.spid3r/bin" >> "$GITHUB_PATH"'
+fi
