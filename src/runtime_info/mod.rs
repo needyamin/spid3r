@@ -78,7 +78,14 @@ pub fn collect(redact: bool) -> Vec<Section> {
     s.push("Language version", crate::LANGUAGE_VERSION);
     s.push("Host language", "Rust");
     s.push("Rust compiler", rustc_version());
-    s.push("Build profile", if cfg!(debug_assertions) { "debug" } else { "release" });
+    s.push(
+        "Build profile",
+        if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
+    );
     s.push("Target triple", std::env::consts::ARCH);
     s.push("License", "GPL-3.0-or-later");
     s.push("Homepage", "https://github.com/needyamin/spid3r");
@@ -88,26 +95,69 @@ pub fn collect(redact: bool) -> Vec<Section> {
     s.push("OS", os_name());
     s.push("OS family", std::env::consts::FAMILY);
     s.push("Architecture", std::env::consts::ARCH);
-    s.push("Pointer width", format!("{}-bit", std::mem::size_of::<usize>() * 8));
+    s.push(
+        "Pointer width",
+        format!("{}-bit", std::mem::size_of::<usize>() * 8),
+    );
     s.push("Hostname", hostname());
     s.push("Username", whoami());
     s.push("Process id", std::process::id().to_string());
-    s.push("Endian", if cfg!(target_endian = "big") { "big" } else { "little" });
+    s.push(
+        "Endian",
+        if cfg!(target_endian = "big") {
+            "big"
+        } else {
+            "little"
+        },
+    );
     let (total, free) = memory_totals();
     s.push("Memory total", total.unwrap_or_else(|| "?".into()));
     s.push("Memory free", free.unwrap_or_else(|| "?".into()));
     s.push("Process RSS", process_rss().unwrap_or_else(|| "?".into()));
-    s.push("Logical CPUs", std::thread::available_parallelism().map(|n| n.get().to_string()).unwrap_or_else(|_| "?".into()));
+    s.push(
+        "Logical CPUs",
+        std::thread::available_parallelism()
+            .map(|n| n.get().to_string())
+            .unwrap_or_else(|_| "?".into()),
+    );
     out.push(s);
 
     let mut s = Section::new("Installation");
     s.push("Executable", exe);
-    s.push("Working directory", std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_else(|_| "?".into()));
-    s.push("Config file", config::snapshot().path.map(|p| p.display().to_string()).unwrap_or_else(|| "(none; defaults)".into()));
-    s.push("Config directory", config::config_dir().map(|p| p.display().to_string()).unwrap_or_else(|| "?".into()));
+    s.push(
+        "Working directory",
+        std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "?".into()),
+    );
+    s.push(
+        "Config file",
+        config::snapshot()
+            .path
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "(none; defaults)".into()),
+    );
+    s.push(
+        "Config directory",
+        config::config_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "?".into()),
+    );
     s.push("State directory", config::state_dir().display().to_string());
-    s.push("Log file", crate::logging::path().map(|p| p.display().to_string()).unwrap_or_else(|| "?".into()));
-    s.push("INI search", config::candidate_paths().iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join("; "));
+    s.push(
+        "Log file",
+        crate::logging::path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "?".into()),
+    );
+    s.push(
+        "INI search",
+        config::candidate_paths()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join("; "),
+    );
     out.push(s);
 
     let mut s = Section::new("Features");
@@ -120,19 +170,33 @@ pub fn collect(redact: bool) -> Vec<Section> {
     out.push(s);
 
     let mut s = Section::new("Modules");
-    s.push("Embedded stdlib", format!("{} modules", crate::stdlib_embed::names().len()));
+    s.push(
+        "Embedded stdlib",
+        format!("{} modules", crate::stdlib_embed::names().len()),
+    );
     s.push("Plugin ABI", crate::plugin::ABI_V1);
     let plugins = crate::plugin::registered();
     s.push("Host plugin functions", plugins.len().to_string());
     if !plugins.is_empty() {
-        s.push("Host plugin names", plugins.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", "));
+        s.push(
+            "Host plugin names",
+            plugins
+                .iter()
+                .map(|(n, _)| *n)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
     }
     out.push(s);
 
     let cfg = config::snapshot();
     let mut s = Section::new("Configuration");
     for (k, v) in &cfg.values {
-        let shown = if redact { redact_value(k, v) } else { v.clone() };
+        let shown = if redact {
+            redact_value(k, v)
+        } else {
+            v.clone()
+        };
         s.push(k.as_str(), shown);
     }
     if !cfg.notes.is_empty() {
@@ -156,8 +220,14 @@ pub fn collect(redact: bool) -> Vec<Section> {
     let mut s = Section::new("Memory (interpreter)");
     s.push("auto GC", config::get("spid3r.gc").unwrap_or_default());
     s.push("live cells", crate::value::gc::live_cells().to_string());
-    s.push("max steps", config::get("memory.max_steps").unwrap_or_default());
-    s.push("max call depth", config::get("memory.max_call_depth").unwrap_or_default());
+    s.push(
+        "max steps",
+        config::get("memory.max_steps").unwrap_or_default(),
+    );
+    s.push(
+        "max call depth",
+        config::get("memory.max_call_depth").unwrap_or_default(),
+    );
     out.push(s);
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -171,7 +241,10 @@ pub fn collect(redact: bool) -> Vec<Section> {
             "allow_remote",
             config::get("security.allow_remote").unwrap_or_default(),
         );
-        s.push("transport", "ChaCha20 + HMAC-SHA256 over TCP (spid3r-agent/1)");
+        s.push(
+            "transport",
+            "ChaCha20 + HMAC-SHA256 over TCP (spid3r-agent/1)",
+        );
         let store = crate::agent::store::Store::open();
         s.push("registered devices", store.devices.len().to_string());
         if redact {
@@ -299,7 +372,14 @@ fn memory_totals() -> (Option<String>, Option<String>) {
     {
         // sysctl hw.memsize for total; skip free (needs mach).
         extern "C" {
-            fn sysctl(name: *const i32, namelen: u32, oldp: *mut u8, oldlenp: *mut usize, newp: *mut u8, newlen: usize) -> i32;
+            fn sysctl(
+                name: *const i32,
+                namelen: u32,
+                oldp: *mut u8,
+                oldlenp: *mut usize,
+                newp: *mut u8,
+                newlen: usize,
+            ) -> i32;
         }
         // CTL_HW = 6, HW_MEMSIZE = 24 on Darwin
         let name: [i32; 2] = [6, 24];
@@ -345,6 +425,9 @@ fn process_rss() -> Option<String> {
     }
 }
 
+// Only the OS-specific memory collectors below use this; they are all
+// cfg-gated to native targets, so the helper does not exist on wasm.
+#[cfg(not(target_arch = "wasm32"))]
 fn human_bytes(n: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = n as f64;
@@ -408,14 +491,12 @@ pub fn render_html_page(sections: &[Section]) -> String {
     s.push_str("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\">");
     s.push_str("<title>spid3rinfo()</title>");
     s.push_str("<style>");
-    s.push_str(
-        "body{font-family:system-ui,sans-serif;margin:2rem;background:#111;color:#eee}",
-    );
+    s.push_str("body{font-family:system-ui,sans-serif;margin:2rem;background:#111;color:#eee}");
     s.push_str("h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:1.5rem;color:#8cf}");
+    s.push_str("table{border-collapse:collapse;width:100%;max-width:64rem;margin-bottom:0.5rem}");
     s.push_str(
-        "table{border-collapse:collapse;width:100%;max-width:64rem;margin-bottom:0.5rem}",
+        "th,td{border:1px solid #333;padding:0.25rem 0.6rem;text-align:left;vertical-align:top}",
     );
-    s.push_str("th,td{border:1px solid #333;padding:0.25rem 0.6rem;text-align:left;vertical-align:top}");
     s.push_str("th{background:#1a1a1a;font-weight:600;width:18rem;word-break:break-all}");
     s.push_str("td{word-break:break-all;font-family:ui-monospace,monospace;font-size:0.85rem}");
     s.push_str("</style></head><body>\n");
@@ -487,7 +568,10 @@ pub fn sections_to_value(sections: &[Section]) -> Value {
     for sec in sections {
         let mut rows = Vec::new();
         for (k, v) in &sec.rows {
-            rows.push((MapKey::Str(k.as_str().into()), Value::Str(v.as_str().into())));
+            rows.push((
+                MapKey::Str(k.as_str().into()),
+                Value::Str(v.as_str().into()),
+            ));
         }
         outer.push((
             MapKey::Str(sec.name.clone().into()),

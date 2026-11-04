@@ -100,91 +100,355 @@ macro_rules! key {
 /// Every known key. Order is documentation order (the default INI).
 pub static KEYS: &[KeySpec] = &[
     // [spid3r]
-    key!("spid3r", "env", ConfigValue::Str, "default", None, None,
-        "Configuration environment name; selects [env.<name>] overrides."),
-    key!("spid3r", "engine", ConfigValue::Enum(&["tree", "vm"]), "vm", None, None,
-        "Default engine for `spid3r run` when --engine is omitted."),
-    key!("spid3r", "max_workers", ConfigValue::Int, "256", Some(1), Some(4096),
-        "Ceiling for the grow-on-demand task pool."),
-    key!("spid3r", "queue_cap", ConfigValue::Int, "65536", Some(16), Some(1_048_576),
-        "Bound on the shared ready queue."),
-    key!("spid3r", "deadlock_abort", ConfigValue::Bool, "true", None, None,
-        "Abort when no task can ever wake a wait."),
-    key!("spid3r", "task_drain_ms", ConfigValue::Int, "2000", Some(0), Some(60_000),
-        "How long exit waits for still-running tasks."),
-    key!("spid3r", "gc", ConfigValue::Bool, "true", None, None,
-        "Automatic cycle collection at statement boundaries."),
+    key!(
+        "spid3r",
+        "env",
+        ConfigValue::Str,
+        "default",
+        None,
+        None,
+        "Configuration environment name; selects [env.<name>] overrides."
+    ),
+    key!(
+        "spid3r",
+        "engine",
+        ConfigValue::Enum(&["tree", "vm"]),
+        "vm",
+        None,
+        None,
+        "Default engine for `spid3r run` when --engine is omitted."
+    ),
+    key!(
+        "spid3r",
+        "max_workers",
+        ConfigValue::Int,
+        "256",
+        Some(1),
+        Some(4096),
+        "Ceiling for the grow-on-demand task pool."
+    ),
+    key!(
+        "spid3r",
+        "queue_cap",
+        ConfigValue::Int,
+        "65536",
+        Some(16),
+        Some(1_048_576),
+        "Bound on the shared ready queue."
+    ),
+    key!(
+        "spid3r",
+        "deadlock_abort",
+        ConfigValue::Bool,
+        "true",
+        None,
+        None,
+        "Abort when no task can ever wake a wait."
+    ),
+    key!(
+        "spid3r",
+        "task_drain_ms",
+        ConfigValue::Int,
+        "2000",
+        Some(0),
+        Some(60_000),
+        "How long exit waits for still-running tasks."
+    ),
+    key!(
+        "spid3r",
+        "gc",
+        ConfigValue::Bool,
+        "true",
+        None,
+        None,
+        "Automatic cycle collection at statement boundaries."
+    ),
     // [memory]
-    key!("memory", "max_steps", ConfigValue::Int, "0", Some(0), Some(i64::MAX),
-        "Execution budget in engine steps; 0 disables the limit."),
-    key!("memory", "max_call_depth", ConfigValue::Int, "1000", Some(16), Some(100_000),
-        "Interpreter call-depth limit."),
-    key!("memory", "gc_threshold", ConfigValue::Int, "0", Some(0), Some(1_000_000_000),
-        "Live-cell threshold that triggers an extra collection; 0 uses the default."),
-    key!("memory", "allocation_cap_mb", ConfigValue::Int, "0", Some(0), Some(1_048_576),
-        "Soft cap on a single allocation, in MiB; 0 disables."),
+    key!(
+        "memory",
+        "max_steps",
+        ConfigValue::Int,
+        "0",
+        Some(0),
+        Some(i64::MAX),
+        "Execution budget in engine steps; 0 disables the limit."
+    ),
+    key!(
+        "memory",
+        "max_call_depth",
+        ConfigValue::Int,
+        "1000",
+        Some(16),
+        Some(100_000),
+        "Interpreter call-depth limit."
+    ),
+    key!(
+        "memory",
+        "gc_threshold",
+        ConfigValue::Int,
+        "0",
+        Some(0),
+        Some(1_000_000_000),
+        "Live-cell threshold that triggers an extra collection; 0 uses the default."
+    ),
+    key!(
+        "memory",
+        "allocation_cap_mb",
+        ConfigValue::Int,
+        "0",
+        Some(0),
+        Some(1_048_576),
+        "Soft cap on a single allocation, in MiB; 0 disables."
+    ),
     // [debug]
-    key!("debug", "enabled", ConfigValue::Bool, "false", None, None,
-        "Master debug switch (verbose diagnostics, extra checks)."),
-    key!("debug", "log_level", ConfigValue::Enum(&["error", "warn", "info", "debug", "trace"]),
-        "info", None, None, "Minimum level written to the diagnostic log."),
-    key!("debug", "log_stdout", ConfigValue::Bool, "false", None, None,
-        "Mirror diagnostic log lines to stderr."),
+    key!(
+        "debug",
+        "enabled",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Master debug switch (verbose diagnostics, extra checks)."
+    ),
+    key!(
+        "debug",
+        "log_level",
+        ConfigValue::Enum(&["error", "warn", "info", "debug", "trace"]),
+        "info",
+        None,
+        None,
+        "Minimum level written to the diagnostic log."
+    ),
+    key!(
+        "debug",
+        "log_stdout",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Mirror diagnostic log lines to stderr."
+    ),
     // [logging]
-    key!("logging", "enabled", ConfigValue::Bool, "true", None, None,
-        "Write the append-only diagnostic log."),
-    key!("logging", "file", ConfigValue::Str, "", None, None,
-        "Log path override (empty = platform default)."),
-    key!("logging", "rotate_mb", ConfigValue::Int, "1", Some(1), Some(1024),
-        "Rotate the log once it passes this size."),
-    key!("logging", "audit", ConfigValue::Bool, "true", None, None,
-        "Append remote-management actions to the audit log."),
+    key!(
+        "logging",
+        "enabled",
+        ConfigValue::Bool,
+        "true",
+        None,
+        None,
+        "Write the append-only diagnostic log."
+    ),
+    key!(
+        "logging",
+        "file",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Log path override (empty = platform default)."
+    ),
+    key!(
+        "logging",
+        "rotate_mb",
+        ConfigValue::Int,
+        "1",
+        Some(1),
+        Some(1024),
+        "Rotate the log once it passes this size."
+    ),
+    key!(
+        "logging",
+        "audit",
+        ConfigValue::Bool,
+        "true",
+        None,
+        None,
+        "Append remote-management actions to the audit log."
+    ),
     // [modules]
-    key!("modules", "path", ConfigValue::Str, "", None, None,
-        "Extra module search directories, semicolon-separated."),
-    key!("modules", "plugins", ConfigValue::Str, "", None, None,
-        "Plugin search path (defaults to SPID3R_PLUGINS)."),
-    key!("modules", "allow_wasm", ConfigValue::Bool, "true", None, None,
-        "Allow loading sandboxed .wasm plugins."),
-    key!("modules", "allow_host", ConfigValue::Bool, "true", None, None,
-        "Allow host-registered plugins (compiled into the embedding host)."),
+    key!(
+        "modules",
+        "path",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Extra module search directories, semicolon-separated."
+    ),
+    key!(
+        "modules",
+        "plugins",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Plugin search path (defaults to SPID3R_PLUGINS)."
+    ),
+    key!(
+        "modules",
+        "allow_wasm",
+        ConfigValue::Bool,
+        "true",
+        None,
+        None,
+        "Allow loading sandboxed .wasm plugins."
+    ),
+    key!(
+        "modules",
+        "allow_host",
+        ConfigValue::Bool,
+        "true",
+        None,
+        None,
+        "Allow host-registered plugins (compiled into the embedding host)."
+    ),
     // [security]
-    key!("security", "deny_filesystem", ConfigValue::Bool, "false", None, None,
-        "Deny filesystem natives to scripts (embed-style policy)."),
-    key!("security", "deny_process", ConfigValue::Bool, "false", None, None,
-        "Deny process natives to scripts."),
-    key!("security", "deny_network", ConfigValue::Bool, "false", None, None,
-        "Deny network natives to scripts."),
-    key!("security", "deny_environment", ConfigValue::Bool, "false", None, None,
-        "Deny environment natives to scripts."),
-    key!("security", "allow_remote", ConfigValue::Bool, "false", None, None,
-        "Master switch for the management agent; agent.enabled also must be true."),
+    key!(
+        "security",
+        "deny_filesystem",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Deny filesystem natives to scripts (embed-style policy)."
+    ),
+    key!(
+        "security",
+        "deny_process",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Deny process natives to scripts."
+    ),
+    key!(
+        "security",
+        "deny_network",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Deny network natives to scripts."
+    ),
+    key!(
+        "security",
+        "deny_environment",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Deny environment natives to scripts."
+    ),
+    key!(
+        "security",
+        "allow_remote",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Master switch for the management agent; agent.enabled also must be true."
+    ),
     // [agent]
-    key!("agent", "enabled", ConfigValue::Bool, "false", None, None,
-        "Start the management agent when `spid3r agent start` runs."),
-    key!("agent", "bind", ConfigValue::Str, "127.0.0.1", None, None,
-        "Listen address. 127.0.0.1 is local-only; 0.0.0.0 is required for other hosts."),
-    key!("agent", "port", ConfigValue::Int, "9527", Some(1), Some(65535),
-        "TCP port of the encrypted management API."),
-    key!("agent", "max_connections", ConfigValue::Int, "16", Some(1), Some(256),
-        "Concurrent management connections."),
-    key!("agent", "request_timeout_ms", ConfigValue::Int, "10000", Some(1000), Some(300_000),
-        "Per-request deadline."),
-    key!("agent", "max_body", ConfigValue::Int, "262144", Some(1024), Some(8_388_608),
-        "Largest accepted (decrypted) request body, in bytes."),
-    key!("agent", "pairing_ttl_sec", ConfigValue::Int, "300", Some(30), Some(3600),
-        "How long a one-time pairing code remains valid."),
-    key!("agent", "name", ConfigValue::Str, "", None, None,
-        "Friendly name advertised to administrators (empty = hostname)."),
+    key!(
+        "agent",
+        "enabled",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Start the management agent when `spid3r agent start` runs."
+    ),
+    key!(
+        "agent",
+        "bind",
+        ConfigValue::Str,
+        "127.0.0.1",
+        None,
+        None,
+        "Listen address. 127.0.0.1 is local-only; 0.0.0.0 is required for other hosts."
+    ),
+    key!(
+        "agent",
+        "port",
+        ConfigValue::Int,
+        "9527",
+        Some(1),
+        Some(65535),
+        "TCP port of the encrypted management API."
+    ),
+    key!(
+        "agent",
+        "max_connections",
+        ConfigValue::Int,
+        "16",
+        Some(1),
+        Some(256),
+        "Concurrent management connections."
+    ),
+    key!(
+        "agent",
+        "request_timeout_ms",
+        ConfigValue::Int,
+        "10000",
+        Some(1000),
+        Some(300_000),
+        "Per-request deadline."
+    ),
+    key!(
+        "agent",
+        "max_body",
+        ConfigValue::Int,
+        "262144",
+        Some(1024),
+        Some(8_388_608),
+        "Largest accepted (decrypted) request body, in bytes."
+    ),
+    key!(
+        "agent",
+        "pairing_ttl_sec",
+        ConfigValue::Int,
+        "300",
+        Some(30),
+        Some(3600),
+        "How long a one-time pairing code remains valid."
+    ),
+    key!(
+        "agent",
+        "name",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Friendly name advertised to administrators (empty = hostname)."
+    ),
     // Roles are stored as name=ops pairs; the schema keeps the three built-ins.
-    key!("agent", "role_viewer", ConfigValue::Str,
+    key!(
+        "agent",
+        "role_viewer",
+        ConfigValue::Str,
         "status,info,config.get,logs.tail,modules.list,devices.list",
-        None, None, "Operations granted to the viewer role."),
-    key!("agent", "role_operator", ConfigValue::Str,
+        None,
+        None,
+        "Operations granted to the viewer role."
+    ),
+    key!(
+        "agent",
+        "role_operator",
+        ConfigValue::Str,
         "status,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,reload",
-        None, None, "Operations granted to the operator role."),
-    key!("agent", "role_admin", ConfigValue::Str, "*", None, None,
-        "Operations granted to the admin role (* = all)."),
+        None,
+        None,
+        "Operations granted to the operator role."
+    ),
+    key!(
+        "agent",
+        "role_admin",
+        ConfigValue::Str,
+        "*",
+        None,
+        None,
+        "Operations granted to the admin role (* = all)."
+    ),
 ];
 
 /// Dotted default map (`agent.bind` -> `"127.0.0.1"`).
@@ -205,7 +469,11 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("memory.gc_threshold", ConfigValue::Int, "0"),
         ("memory.allocation_cap_mb", ConfigValue::Int, "0"),
         ("debug.enabled", ConfigValue::Bool, "false"),
-        ("debug.log_level", ConfigValue::Enum(&["error", "warn", "info", "debug", "trace"]), "info"),
+        (
+            "debug.log_level",
+            ConfigValue::Enum(&["error", "warn", "info", "debug", "trace"]),
+            "info",
+        ),
         ("debug.log_stdout", ConfigValue::Bool, "false"),
         ("logging.enabled", ConfigValue::Bool, "true"),
         ("logging.file", ConfigValue::Str, ""),

@@ -321,10 +321,7 @@ pub fn load() -> Config {
             Ok(text) => {
                 let (d, probs) = parse_ini(&text);
                 notes = probs;
-                (
-                    d,
-                    std::fs::metadata(p).and_then(|m| m.modified()).ok(),
-                )
+                (d, std::fs::metadata(p).and_then(|m| m.modified()).ok())
             }
             Err(e) => {
                 notes.push(format!("cannot read {}: {}", p.display(), e));
@@ -471,7 +468,8 @@ pub fn save(cfg: &Config) -> Result<PathBuf, String> {
                 .join("spid3r.ini")
         });
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
     let mut doc = IniDoc::default();
     for (k, v) in &cfg.values {
@@ -524,7 +522,8 @@ pub fn write_default_ini(path: Option<&Path>) -> Result<PathBuf, String> {
         .or_else(|| candidate_paths().into_iter().next())
         .unwrap_or_else(|| config_dir().unwrap_or_default().join("spid3r.ini"));
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
     }
     std::fs::write(&path, schema::DEFAULT_INI_TEXT)
         .map_err(|e| format!("write {}: {}", path.display(), e))?;

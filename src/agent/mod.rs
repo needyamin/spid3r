@@ -139,7 +139,6 @@ pub fn serve() -> Result<(), String> {
                 live.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let live2 = live.clone();
                 let timeout = Duration::from_millis(timeout_ms);
-                let max_body = max_body;
                 std::thread::spawn(move || {
                     let _ = stream.set_read_timeout(Some(timeout));
                     let _ = stream.set_write_timeout(Some(timeout));
@@ -192,17 +191,21 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
             Ok(x) => x,
             Err(e) => {
                 // A clean EOF (client closed after one request) is normal.
-                if e != "closed"
-                    && e != "authentication failed"
-                    && !e.contains("unknown device")
-                {
+                if e != "closed" && e != "authentication failed" && !e.contains("unknown device") {
                     crate::logging::record("agent", &format!("{}: {}", peer, e));
                 }
                 return Err(e);
             }
         };
         if payload.len() > max_body {
-            let _ = reply(&mut stream, KIND_ERROR, &hdr.device, &lookup, err_json("body too large"), &peer);
+            let _ = reply(
+                &mut stream,
+                KIND_ERROR,
+                &hdr.device,
+                &lookup,
+                err_json("body too large"),
+                &peer,
+            );
             return Err("body too large".to_string());
         }
 
@@ -237,8 +240,14 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                         // already holds (SHA-256 of the code).
                         let check = crate::pkg::sha256_hex(&shared);
                         let resp = ok_json(vec![
-                            (MapKey::Str("device_id".into()), Value::Str(device.id.into())),
-                            (MapKey::Str("check".into()), Value::Str(check[..8].to_string().into())),
+                            (
+                                MapKey::Str("device_id".into()),
+                                Value::Str(device.id.into()),
+                            ),
+                            (
+                                MapKey::Str("check".into()),
+                                Value::Str(check[..8].to_string().into()),
+                            ),
                             (MapKey::Str("role".into()), Value::Str(device.role.into())),
                         ]);
                         let _ = reply_plain(&mut stream, resp);
@@ -253,7 +262,14 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                 let req = match crate::stdlib::json_parse_text(&String::from_utf8_lossy(&payload)) {
                     Ok(v) => v,
                     Err(e) => {
-                        let _ = reply(&mut stream, KIND_ERROR, &hdr.device, &lookup, err_json(&format!("bad json: {}", e)), &peer);
+                        let _ = reply(
+                            &mut stream,
+                            KIND_ERROR,
+                            &hdr.device,
+                            &lookup,
+                            err_json(&format!("bad json: {}", e)),
+                            &peer,
+                        );
                         continue;
                     }
                 };
@@ -264,7 +280,14 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                     crate::pkg::hex_encode(&hdr.nonce)
                 );
                 if seen.contains(&nonce_id) {
-                    let _ = reply(&mut stream, KIND_ERROR, &hdr.device, &lookup, err_json("replayed frame"), &peer);
+                    let _ = reply(
+                        &mut stream,
+                        KIND_ERROR,
+                        &hdr.device,
+                        &lookup,
+                        err_json("replayed frame"),
+                        &peer,
+                    );
                     continue;
                 }
                 seen.push_back(nonce_id);
@@ -275,7 +298,14 @@ fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(
                 let hex_id = protocol::device_hex(&hdr.device);
                 let mut st = Store::open();
                 let Some(device) = st.find_device(&hex_id).cloned() else {
-                    let _ = reply(&mut stream, KIND_ERROR, &hdr.device, &lookup, err_json("unknown device"), &peer);
+                    let _ = reply(
+                        &mut stream,
+                        KIND_ERROR,
+                        &hdr.device,
+                        &lookup,
+                        err_json("unknown device"),
+                        &peer,
+                    );
                     continue;
                 };
                 st.touch(&hex_id);
@@ -322,8 +352,7 @@ fn reply(
         return Err("no key".to_string());
     };
     let text = crate::stdlib::json_write_text(&v)?;
-    protocol::write_frame(w, kind, device, text.as_bytes(), Some(&key))
-        .map_err(|e| e.to_string())
+    protocol::write_frame(w, kind, device, text.as_bytes(), Some(&key)).map_err(|e| e.to_string())
 }
 
 // ----------------------------------------------------------------- operations
@@ -333,7 +362,10 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
         "ping" => ok_json(vec![
             (MapKey::Str("pong".into()), Value::Bool(true)),
             (MapKey::Str("ts".into()), Value::Int(now())),
-            (MapKey::Str("agent".into()), Value::Str("spid3r-agent/1".into())),
+            (
+                MapKey::Str("agent".into()),
+                Value::Str("spid3r-agent/1".into()),
+            ),
         ]),
         "status" => status_json(),
         "info" => {
@@ -429,7 +461,10 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
             let names = crate::stdlib_embed::names();
             let items: Vec<Value> = names.into_iter().map(|s| Value::Str(s.into())).collect();
             let plugins = crate::plugin::registered();
-            let plugin_names: Vec<Value> = plugins.iter().map(|(n, _)| Value::Str((*n).into())).collect();
+            let plugin_names: Vec<Value> = plugins
+                .iter()
+                .map(|(n, _)| Value::Str((*n).into()))
+                .collect();
             ok_json(vec![
                 (MapKey::Str("stdlib".into()), make_list(items)),
                 (MapKey::Str("plugins".into()), make_list(plugin_names)),
@@ -446,8 +481,14 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
                 .map(|d| {
                     Value::Map(new_ref(MapData::from_entries(vec![
                         (MapKey::Str("id".into()), Value::Str(d.id.clone().into())),
-                        (MapKey::Str("name".into()), Value::Str(d.name.clone().into())),
-                        (MapKey::Str("role".into()), Value::Str(d.role.clone().into())),
+                        (
+                            MapKey::Str("name".into()),
+                            Value::Str(d.name.clone().into()),
+                        ),
+                        (
+                            MapKey::Str("role".into()),
+                            Value::Str(d.role.clone().into()),
+                        ),
                         (MapKey::Str("created".into()), Value::Int(d.created)),
                         (MapKey::Str("last_seen".into()), Value::Int(d.last_seen)),
                     ])))
@@ -470,12 +511,11 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
         "pair.create" => {
             let role = json_str_field(req, "role").unwrap_or_else(|| "operator".into());
             let name = json_str_field(req, "name").unwrap_or_default();
-            let ttl = json_int_field(req, "ttl")
-                .unwrap_or_else(|| {
-                    config::get("agent.pairing_ttl_sec")
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(300)
-                });
+            let ttl = json_int_field(req, "ttl").unwrap_or_else(|| {
+                config::get("agent.pairing_ttl_sec")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(300)
+            });
             let mut st = Store::open();
             match st.create_pairing(&role, &name, ttl) {
                 Ok(code) => {
@@ -608,10 +648,22 @@ fn restart_runtime() -> Value {
 fn status_json() -> Value {
     let st = Store::open();
     ok_json(vec![
-        (MapKey::Str("version".into()), Value::Str(crate::VERSION.into())),
-        (MapKey::Str("language".into()), Value::Str(crate::LANGUAGE_VERSION.into())),
-        (MapKey::Str("os".into()), Value::Str(std::env::consts::OS.into())),
-        (MapKey::Str("arch".into()), Value::Str(std::env::consts::ARCH.into())),
+        (
+            MapKey::Str("version".into()),
+            Value::Str(crate::VERSION.into()),
+        ),
+        (
+            MapKey::Str("language".into()),
+            Value::Str(crate::LANGUAGE_VERSION.into()),
+        ),
+        (
+            MapKey::Str("os".into()),
+            Value::Str(std::env::consts::OS.into()),
+        ),
+        (
+            MapKey::Str("arch".into()),
+            Value::Str(std::env::consts::ARCH.into()),
+        ),
         (
             MapKey::Str("uptime_sec".into()),
             Value::Int(now() - process_start()),
@@ -620,12 +672,18 @@ fn status_json() -> Value {
             MapKey::Str("live_cells".into()),
             Value::Int(crate::value::gc::live_cells() as i64),
         ),
-        (MapKey::Str("devices".into()), Value::Int(st.devices.len() as i64)),
+        (
+            MapKey::Str("devices".into()),
+            Value::Int(st.devices.len() as i64),
+        ),
         (
             MapKey::Str("agent_name".into()),
             Value::Str(config::get("agent.name").unwrap_or_default().into()),
         ),
-        (MapKey::Str("proto".into()), Value::Str("spid3r-agent/1".into())),
+        (
+            MapKey::Str("proto".into()),
+            Value::Str("spid3r-agent/1".into()),
+        ),
     ])
 }
 
@@ -686,9 +744,13 @@ pub fn pair(addr: &str, code: &str, name: &str, role: &str) -> Result<store::Cli
 }
 
 /// Call one operation on a paired host.
-pub fn call(host: &store::ClientHost, op: &str, extra: Vec<(MapKey, Value)>) -> Result<Value, String> {
-    let mut stream = TcpStream::connect(&host.addr)
-        .map_err(|e| format!("connect {}: {}", host.addr, e))?;
+pub fn call(
+    host: &store::ClientHost,
+    op: &str,
+    extra: Vec<(MapKey, Value)>,
+) -> Result<Value, String> {
+    let mut stream =
+        TcpStream::connect(&host.addr).map_err(|e| format!("connect {}: {}", host.addr, e))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(15)));
     let dev = protocol::device_bytes(&host.device_id).ok_or("bad device id")?;
@@ -899,7 +961,10 @@ pub fn cmd_admin(args: &[String]) -> i32 {
     while j < rest.len() {
         match rest[j].as_str() {
             "--key" if j + 1 < rest.len() => {
-                extra.push((MapKey::Str("key".into()), Value::Str(rest[j + 1].clone().into())));
+                extra.push((
+                    MapKey::Str("key".into()),
+                    Value::Str(rest[j + 1].clone().into()),
+                ));
                 j += 2;
             }
             "--value" if j + 1 < rest.len() => {
@@ -924,15 +989,24 @@ pub fn cmd_admin(args: &[String]) -> i32 {
                 j += 2;
             }
             "--role" if j + 1 < rest.len() => {
-                extra.push((MapKey::Str("role".into()), Value::Str(rest[j + 1].clone().into())));
+                extra.push((
+                    MapKey::Str("role".into()),
+                    Value::Str(rest[j + 1].clone().into()),
+                ));
                 j += 2;
             }
             "--name" if j + 1 < rest.len() => {
-                extra.push((MapKey::Str("name".into()), Value::Str(rest[j + 1].clone().into())));
+                extra.push((
+                    MapKey::Str("name".into()),
+                    Value::Str(rest[j + 1].clone().into()),
+                ));
                 j += 2;
             }
             "--op-name" if j + 1 < rest.len() => {
-                extra.push((MapKey::Str("name".into()), Value::Str(rest[j + 1].clone().into())));
+                extra.push((
+                    MapKey::Str("name".into()),
+                    Value::Str(rest[j + 1].clone().into()),
+                ));
                 j += 2;
             }
             other => {
@@ -960,7 +1034,7 @@ pub fn cmd_admin(args: &[String]) -> i32 {
         other => (other, extra),
     };
 
-    match call(&host, &wire_op, extra) {
+    match call(&host, wire_op, extra) {
         Ok(v) => {
             match crate::stdlib::json_write_text(&v) {
                 Ok(text) => println!("{}", pretty_json(&text)),

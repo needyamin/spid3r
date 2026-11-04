@@ -240,7 +240,6 @@ fn dry_run_prints_set_html_before_handler_queued_js() {
     );
 }
 
-
 // `--payload` runs a program embedded by `build --embed`. Building an exe
 // needs LLVM, so these cover the resolution rules instead: a missing path, a
 // file with no payload, and the loose-folder fallback beside the executable.

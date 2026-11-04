@@ -2101,7 +2101,11 @@ fn cmd_info(args: &[String]) -> Result<i32, Diagnostic> {
 /// `spid3r config [get KEY | set KEY VALUE | list | path | validate | reload | init]`
 fn cmd_config(args: &[String]) -> Result<i32, Diagnostic> {
     let sub = args.first().map(String::as_str).unwrap_or("list");
-    let rest = if args.is_empty() { &args[0..0] } else { &args[1..] };
+    let rest = if args.is_empty() {
+        &args[0..0]
+    } else {
+        &args[1..]
+    };
     match sub {
         "get" => {
             let Some(key) = rest.first() else {
@@ -2168,7 +2172,8 @@ fn cmd_config(args: &[String]) -> Result<i32, Diagnostic> {
         }
         "init" => {
             let path = rest.first().map(PathBuf::from);
-            let written = crate::config::write_default_ini(path.as_deref()).map_err(|e| usage(&e))?;
+            let written =
+                crate::config::write_default_ini(path.as_deref()).map_err(|e| usage(&e))?;
             println!("wrote {}", written.display());
             Ok(EXIT_OK)
         }

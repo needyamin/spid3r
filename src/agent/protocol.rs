@@ -80,8 +80,7 @@ pub fn write_frame(
     key: Option<&[u8; KEY_LEN]>,
 ) -> std::io::Result<()> {
     let mut nonce = [0u8; NONCE_LEN];
-    crypto::random_fill(&mut nonce)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    crypto::random_fill(&mut nonce).map_err(std::io::Error::other)?;
     // The length field is always the number of bytes that follow the header,
     // so for an encrypted frame it is plaintext + TAG_LEN. That is also the
     // header we bind as AAD, or the peer cannot open the frame.
@@ -129,8 +128,7 @@ pub fn read_frame(
     let plaintext = match hdr.kind {
         KIND_PAIR => body,
         KIND_DATA | KIND_ERROR => {
-            let key = key_lookup(&hdr.device)
-                .ok_or_else(|| "unknown device".to_string())?;
+            let key = key_lookup(&hdr.device).ok_or_else(|| "unknown device".to_string())?;
             crypto::aead_open(&key, &hdr.nonce, &hdr.aad(), &body)
                 .map_err(|_| "authentication failed".to_string())?
         }

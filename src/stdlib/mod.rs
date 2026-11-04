@@ -3838,7 +3838,10 @@ fn n_config_get(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_config_set(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if args.len() != 2 {
-        return Err(format!("config_set expects 2 arguments, got {}", args.len()));
+        return Err(format!(
+            "config_set expects 2 arguments, got {}",
+            args.len()
+        ));
     }
     let key = want_str(&args[0], "config_set")?;
     let value = want_str(&args[1], "config_set")?;
@@ -3851,7 +3854,7 @@ fn n_config_reload(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String>
     Ok(Value::Str(
         cfg.path
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| String::new())
+            .unwrap_or_default()
             .into(),
     ))
 }

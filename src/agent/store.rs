@@ -53,7 +53,7 @@ impl Store {
         };
         if let Ok(text) = std::fs::read_to_string(&st.path) {
             if let Ok(v) = crate::stdlib::json_parse_text(&text) {
-                st.from_json(&v);
+                st.load_json(&v);
             }
         }
         st
@@ -76,17 +76,26 @@ impl Store {
     }
 
     fn to_json(&self) -> crate::value::Value {
-        use crate::value::{new_ref, MapKey, Value};
         use crate::value::collections::MapData;
+        use crate::value::{new_ref, MapKey, Value};
         let devices: Vec<_> = self
             .devices
             .iter()
             .map(|d| {
                 Value::Map(new_ref(MapData::from_entries(vec![
                     (MapKey::Str("id".into()), Value::Str(d.id.clone().into())),
-                    (MapKey::Str("name".into()), Value::Str(d.name.clone().into())),
-                    (MapKey::Str("role".into()), Value::Str(d.role.clone().into())),
-                    (MapKey::Str("shared".into()), Value::Str(d.shared.clone().into())),
+                    (
+                        MapKey::Str("name".into()),
+                        Value::Str(d.name.clone().into()),
+                    ),
+                    (
+                        MapKey::Str("role".into()),
+                        Value::Str(d.role.clone().into()),
+                    ),
+                    (
+                        MapKey::Str("shared".into()),
+                        Value::Str(d.shared.clone().into()),
+                    ),
                     (MapKey::Str("created".into()), Value::Int(d.created)),
                     (MapKey::Str("last_seen".into()), Value::Int(d.last_seen)),
                 ])))
@@ -97,9 +106,18 @@ impl Store {
             .iter()
             .map(|p| {
                 Value::Map(new_ref(MapData::from_entries(vec![
-                    (MapKey::Str("code".into()), Value::Str(p.code.clone().into())),
-                    (MapKey::Str("role".into()), Value::Str(p.role.clone().into())),
-                    (MapKey::Str("name".into()), Value::Str(p.name.clone().into())),
+                    (
+                        MapKey::Str("code".into()),
+                        Value::Str(p.code.clone().into()),
+                    ),
+                    (
+                        MapKey::Str("role".into()),
+                        Value::Str(p.role.clone().into()),
+                    ),
+                    (
+                        MapKey::Str("name".into()),
+                        Value::Str(p.name.clone().into()),
+                    ),
                     (MapKey::Str("expires".into()), Value::Int(p.expires)),
                     (MapKey::Str("used".into()), Value::Bool(p.used)),
                 ])))
@@ -112,7 +130,7 @@ impl Store {
         ])))
     }
 
-    fn from_json(&mut self, v: &crate::value::Value) {
+    fn load_json(&mut self, v: &crate::value::Value) {
         use crate::value::Value;
         let Value::Map(m) = v else { return };
         let m = m.lock().unwrap();
@@ -163,8 +181,7 @@ impl Store {
             expires: now() + ttl,
             used: false,
         });
-        self.pairings
-            .retain(|p| !p.used && p.expires > now());
+        self.pairings.retain(|p| !p.used && p.expires > now());
         Ok(code)
     }
 
@@ -175,10 +192,9 @@ impl Store {
         client_name: &str,
     ) -> Result<(Device, [u8; crypto::SHARED_KEY_LEN]), String> {
         let t = now();
-        let idx = self
-            .pairings
-            .iter()
-            .position(|p| !p.used && p.expires > t && crypto::ct_eq(p.code.as_bytes(), code.as_bytes()));
+        let idx = self.pairings.iter().position(|p| {
+            !p.used && p.expires > t && crypto::ct_eq(p.code.as_bytes(), code.as_bytes())
+        });
         let Some(idx) = idx else {
             return Err("invalid or expired pairing code".to_string());
         };
@@ -186,7 +202,7 @@ impl Store {
         self.pairings[idx].used = true;
 
         let id = crypto::random_hex(16)?;
-        let shared_bytes = derive_shared_from_code(&code)?;
+        let shared_bytes = derive_shared_from_code(code)?;
         let device = Device {
             id: id.clone(),
             name: if client_name.is_empty() {
@@ -363,7 +379,11 @@ pub fn audit(device: &str, role: &str, op: &str, ok: bool, peer: &str, detail: &
         let _ = std::fs::create_dir_all(parent);
     }
     use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -426,17 +446,29 @@ impl ClientBook {
 
     pub fn save(&self) -> Result<(), String> {
         use crate::value::collections::seq::make_list;
-        use crate::value::{new_ref, MapKey, Value};
         use crate::value::collections::MapData;
+        use crate::value::{new_ref, MapKey, Value};
         let items: Vec<_> = self
             .hosts
             .values()
             .map(|h| {
                 Value::Map(new_ref(MapData::from_entries(vec![
-                    (MapKey::Str("name".into()), Value::Str(h.name.clone().into())),
-                    (MapKey::Str("addr".into()), Value::Str(h.addr.clone().into())),
-                    (MapKey::Str("device_id".into()), Value::Str(h.device_id.clone().into())),
-                    (MapKey::Str("shared".into()), Value::Str(h.shared.clone().into())),
+                    (
+                        MapKey::Str("name".into()),
+                        Value::Str(h.name.clone().into()),
+                    ),
+                    (
+                        MapKey::Str("addr".into()),
+                        Value::Str(h.addr.clone().into()),
+                    ),
+                    (
+                        MapKey::Str("device_id".into()),
+                        Value::Str(h.device_id.clone().into()),
+                    ),
+                    (
+                        MapKey::Str("shared".into()),
+                        Value::Str(h.shared.clone().into()),
+                    ),
                 ])))
             })
             .collect();

@@ -18,7 +18,11 @@ fn bin() -> std::path::PathBuf {
     let exe = std::env::current_exe().unwrap();
     let profile = exe.parent().and_then(|d| d.parent()).unwrap();
     let cand = profile.join(format!("spid3r{}", std::env::consts::EXE_SUFFIX));
-    assert!(cand.is_file(), "spid3r binary not found at {}", cand.display());
+    assert!(
+        cand.is_file(),
+        "spid3r binary not found at {}",
+        cand.display()
+    );
     cand
 }
 
@@ -170,14 +174,25 @@ fn agent_pair_and_ping() {
         .unwrap_or_else(|| panic!("no code in {}", stdout));
 
     let out = Command::new(&exe)
-        .args(["admin", "pair", &format!("127.0.0.1:{}", port), &code, "--name", "ci"])
+        .args([
+            "admin",
+            "pair",
+            &format!("127.0.0.1:{}", port),
+            &code,
+            "--name",
+            "ci",
+        ])
         .envs(envs.iter().map(|(a, b)| (a, b)))
         .output()
         .expect("pair");
     let pstdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let pstderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(out.status.success(), "pair failed: {} {}", pstdout, pstderr);
-    assert!(pstdout.contains("paired"), "unexpected pair output {}", pstdout);
+    assert!(
+        pstdout.contains("paired"),
+        "unexpected pair output {}",
+        pstdout
+    );
 
     let call = |args: &[&str]| -> (bool, String, String) {
         let out = Command::new(&exe)
@@ -200,7 +215,8 @@ fn agent_pair_and_ping() {
     assert!(ok, "status: {} {}", stdout, stderr);
     assert!(stdout.contains("version"), "status body {}", stdout);
 
-    let (ok, stdout, stderr) = call(&["admin", "--host", "ci", "ops.run", "--op-name", "self_test"]);
+    let (ok, stdout, stderr) =
+        call(&["admin", "--host", "ci", "ops.run", "--op-name", "self_test"]);
     assert!(ok, "self_test: {} {}", stdout, stderr);
     assert!(stdout.contains("passed"), "self_test body {}", stdout);
 
@@ -209,6 +225,8 @@ fn agent_pair_and_ping() {
     assert!(stdout.contains("Spid3r"), "info body {}", stdout);
 
     let _ = child.kill();
+    // Reap the killed process so it does not linger as a zombie.
+    let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
 

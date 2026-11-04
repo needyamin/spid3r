@@ -38,8 +38,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # cargo-fuzz compiles core/std from source via `-Z build-std`, which
+      # requires the rust-src component of the nightly toolchain.
       - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
 
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@v2

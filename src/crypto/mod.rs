@@ -65,7 +65,11 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// HKDF-SHA256 extract (RFC 5869).
 pub fn hkdf_extract(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
-    let salt = if salt.is_empty() { &[0u8; 32][..] } else { salt };
+    let salt = if salt.is_empty() {
+        &[0u8; 32][..]
+    } else {
+        salt
+    };
     hmac_sha256(salt, ikm)
 }
 
@@ -106,12 +110,8 @@ fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
     state[2] = 0x7962_2d32;
     state[3] = 0x6b20_6574;
     for i in 0..8 {
-        state[4 + i] = u32::from_le_bytes([
-            key[i * 4],
-            key[i * 4 + 1],
-            key[i * 4 + 2],
-            key[i * 4 + 3],
-        ]);
+        state[4 + i] =
+            u32::from_le_bytes([key[i * 4], key[i * 4 + 1], key[i * 4 + 2], key[i * 4 + 3]]);
     }
     state[12] = counter;
     for i in 0..3 {
@@ -212,7 +212,13 @@ fn poly1305(key: &[u8; 32], msg: &[u8]) -> [u8; 16] {
         h[3] = h[3].wrapping_add(((b2 >> 14) | (b3 << 18)) & 0x03ff_ffff);
         h[4] = h[4].wrapping_add(((b3 >> 8) & 0x03ff_ffff) | hibit);
 
-        let hh = [h[0] as u64, h[1] as u64, h[2] as u64, h[3] as u64, h[4] as u64];
+        let hh = [
+            h[0] as u64,
+            h[1] as u64,
+            h[2] as u64,
+            h[3] as u64,
+            h[4] as u64,
+        ];
         let rr = [r0 as u64, r1 as u64, r2 as u64, r3 as u64, r4 as u64];
         let s1 = r1 as u64 * 5;
         let s2 = r2 as u64 * 5;
@@ -351,6 +357,8 @@ pub fn aead_seal(
 }
 
 /// Decrypt. `Err(())` on authentication failure.
+// Err(()) is deliberate: an authentication failure must not leak any detail.
+#[allow(clippy::result_unit_err)]
 pub fn aead_open(
     key: &[u8; KEY_LEN],
     nonce: &[u8; NONCE_LEN],
@@ -473,7 +481,9 @@ mod tests {
     #[test]
     fn hkdf_rfc5869_case1() {
         let ikm = [0x0b_u8; 22];
-        let salt = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c];
+        let salt = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
+        ];
         let prk = hkdf_extract(&salt, &ikm);
         let info = [0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
         let okm = hkdf_expand(&prk, &info, 42);
