@@ -101,6 +101,10 @@ pub fn collect(redact: bool) -> Vec<Section> {
     );
     s.push("Hostname", hostname());
     s.push("Username", whoami());
+    // std::process::id() panics (abort) on wasm32-unknown-unknown: there is
+    // no OS process there. The playground calls spid3rinfo(), so this row is
+    // native-only.
+    #[cfg(not(target_arch = "wasm32"))]
     s.push("Process id", std::process::id().to_string());
     s.push(
         "Endian",
@@ -204,18 +208,23 @@ pub fn collect(redact: bool) -> Vec<Section> {
     }
     out.push(s);
 
-    let mut s = Section::new("Environment");
-    let mut env: Vec<(String, String)> = std::env::vars().collect();
-    env.sort();
-    for (k, v) in env {
-        // Skip huge values; a full dump should not include the entire environment either.
-        if v.len() > 512 {
-            continue;
+    // std::env::vars() panics on wasm32-unknown-unknown (no process
+    // environment exists there), and an env dump would be empty anyway.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut s = Section::new("Environment");
+        let mut env: Vec<(String, String)> = std::env::vars().collect();
+        env.sort();
+        for (k, v) in env {
+            // Skip huge values; a full dump should not include the entire environment either.
+            if v.len() > 512 {
+                continue;
+            }
+            let shown = if redact { redact_value(&k, &v) } else { v };
+            s.push(&k, shown);
         }
-        let shown = if redact { redact_value(&k, &v) } else { v };
-        s.push(&k, shown);
+        out.push(s);
     }
-    out.push(s);
 
     let mut s = Section::new("Memory (interpreter)");
     s.push("auto GC", config::get("spid3r.gc").unwrap_or_default());
@@ -413,7 +422,7 @@ fn process_rss() -> Option<String> {
         let text = std::fs::read_to_string("/proc/self/status").ok()?;
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("VmRSS:") {
-                let kb = rest.trim().split_whitespace().next()?;
+                let kb = rest.split_whitespace().next()?;
                 return kb.parse::<u64>().ok().map(|n| human_bytes(n * 1024));
             }
         }

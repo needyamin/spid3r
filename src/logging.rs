@@ -66,7 +66,16 @@ pub fn path() -> Option<PathBuf> {
                 std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
             })
             .map(|base| base.join("spid3r").join("spid3r.log"))
-            .or_else(|| Some(std::env::temp_dir().join("spid3r.log")))
+            // std::env::temp_dir() panics on wasm32-unknown-unknown (no
+            // filesystem), and the playground calls spid3rinfo() which reads
+            // the log path. No env vars on wasm means None anyway.
+            .or_else(|| {
+                if cfg!(target_arch = "wasm32") {
+                    None
+                } else {
+                    Some(std::env::temp_dir().join("spid3r.log"))
+                }
+            })
     }
 }
 

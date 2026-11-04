@@ -165,9 +165,12 @@ extern "C" fn sig_handler(_sig: i32) {
 #[cfg(unix)]
 unsafe fn libc_signal(sig: i32, handler: extern "C" fn(i32)) {
     extern "C" {
-        fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+        // Same signature as the declaration in stdlib/shutdown.rs: a
+        // mismatched redeclaration of the same libc symbol is a hard clippy
+        // error. The handler is passed as usize and cast inside.
+        fn signal(sig: i32, handler: usize) -> usize;
     }
-    signal(sig, handler);
+    signal(sig, handler as usize);
 }
 
 fn handle_conn(mut stream: TcpStream, peer: String, max_body: usize) -> Result<(), String> {

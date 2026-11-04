@@ -12,14 +12,21 @@ const docPath = fs.existsSync(path.join(__dirname, '../docs/html/doc.html'))
 const html = fs.readFileSync(docPath, 'utf8');
 
 // 1. Check all snippets in .w3-code-body
-const regex = /<div class="w3-code-body"[^>]*>([\s\S]*?)<\/div>/g;
+// The page marks every sample with data-lang: "spid3r" for language code,
+// "ini"/"console" for configuration and shell samples that are NOT Spid3r
+// source. Only Spid3r-marked (or unmarked, for older samples) snippets are
+// evaluated; the structural check below still applies to every block.
+const regex = /<div class="w3-code-body"([^>]*)>([\s\S]*?)<\/div>/g;
 let match;
 let count = 0;
 let errors = [];
 
 while ((match = regex.exec(html)) !== null) {
   count++;
-  let raw = match[1]
+  const attrs = match[1];
+  const langMatch = attrs.match(/data-lang="([^"]*)"/);
+  const lang = langMatch ? langMatch[1] : 'spid3r';
+  let raw = match[2]
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
@@ -42,6 +49,12 @@ while ((match = regex.exec(html)) !== null) {
       vm: { ok: false },
       tree: { ok: false }
     });
+    continue;
+  }
+
+  if (lang !== 'spid3r') {
+    // INI / shell / other non-language samples: structure checked above,
+    // not evaluated as Spid3r code.
     continue;
   }
 
