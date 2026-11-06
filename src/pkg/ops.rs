@@ -138,6 +138,18 @@ pub fn verify(root: &Path) -> Result<VerifyReport, String> {
         let dir = vendor.join(&entry.name);
         let Some(expected) = entry.sha256.as_deref() else {
             // A git/path dependency records no hash; nothing to re-check.
+            // A REGISTRY dependency without one is a lock from before the
+            // mandatory-checksum rule (or a hand-edited lock): report it
+            // rather than silently trusting unverified code.
+            if entry.source.starts_with("registry+") {
+                report.issues.push(VerifyIssue {
+                    name: entry.name.clone(),
+                    kind: "unverified",
+                    detail: "a registry dependency must record a sha256 in \
+                             spider.lock — run `spid3r install` to re-vendor it"
+                        .to_string(),
+                });
+            }
             continue;
         };
         report.checked += 1;

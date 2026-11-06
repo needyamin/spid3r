@@ -128,6 +128,19 @@ impl Project {
             &format!("registry/{}/{}/src/lib.matrix", name, version),
             body,
         );
+        // A registry package MUST ship sha256.txt (the installer hard-fails
+        // without it). Match what `spid3r publish --to-dir` writes: the hash
+        // of the src/ tree, one line.
+        let pkg_dir = self
+            .base
+            .join("registry")
+            .join(name)
+            .join(version);
+        let hash = spid3r_lang::pkg::tree_hash(&pkg_dir).expect("tree hash");
+        self.write_sibling(
+            &format!("registry/{}/{}/sha256.txt", name, version),
+            &format!("{}\n", hash),
+        );
     }
 
     fn registry_dir(&self) -> String {
@@ -1306,6 +1319,111 @@ fn registry_errors_are_clear() {
     let (code, _, err) = p2.run_env(&["install"], &[("SPID3R_REGISTRY", &reg)]);
     assert_ne!(code, 0, "install must fail when no version matches");
     assert!(err.contains("no version"), "error: {}", err);
+}
+
+/// A registry package WITHOUT sha256.txt must be refused at install time:
+/// a missing checksum is exactly what a tampered package looks like (S-3).
+#[test]
+fn install_refuses_a_registry_package_without_a_checksum() {
+    let p = Project::new("regnochecksum");
+    p.add_registry_pkg("mathlib", "1.0.0", DEP_BODY);
+    std::fs::remove_file(
+        p.base
+            .join("registry")
+            .join("mathlib")
+            .join("1.0.0")
+            .join("sha256.txt"),
+    )
+    .expect("remove sha256.txt");
+    p.add_app_registry(&[("mathlib", "^1.0")], "fn main() {\n    return 0;\n}\n");
+    let reg = p.registry_dir();
+    let (code, _, err) = p.run_env(&["install"], &[("SPID3R_REGISTRY", &reg)]);
+    assert_ne!(code, 0, "install must fail without sha256.txt");
+    assert!(
+        err.contains("sha256.txt"),
+        "the error must name the missing checksum: {err}"
+    );
+    assert!(
+        !p.exists("vendor/mathlib/lib.matrix"),
+        "nothing may be vendored from an unverified package"
+    );
+}
+
+/// An EMPTY sha256.txt is the same refusal.
+#[test]
+fn install_refuses_a_registry_package_with_an_empty_checksum() {
+    let p = Project::new("regemptychecksum");
+    p.add_registry_pkg("mathlib", "1.0.0", DEP_BODY);
+    std::fs::write(
+        p.base
+            .join("registry")
+            .join("mathlib")
+            .join("1.0.0")
+            .join("sha256.txt"),
+        "\n",
+    )
+    .expect("write empty sha256.txt");
+    p.add_app_registry(&[("mathlib", "^1.0")], "fn main() {\n    return 0;\n}\n");
+    let reg = p.registry_dir();
+    let (code, _, err) = p.run_env(&["install"], &[("SPID3R_REGISTRY", &reg)]);
+    assert_ne!(code, 0, "install must fail on an empty sha256.txt");
+    assert!(err.contains("empty"), "error: {err}");
+}
+
+/// A TAMPERED package (contents do not match sha256.txt) must be refused, and
+/// the refused tree must not be left importable under vendor/.
+#[test]
+fn install_refuses_a_registry_package_with_a_tampered_checksum() {
+    let p = Project::new("regtampered");
+    p.add_registry_pkg("mathlib", "1.0.0", DEP_BODY);
+    // The publisher's checksum says one thing; the tree in the registry says
+    // something else (a malicious substitution).
+    std::fs::write(
+        p.base
+            .join("registry")
+            .join("mathlib")
+            .join("1.0.0")
+            .join("sha256.txt"),
+        format!("{}\n", "0".repeat(64)),
+    )
+    .expect("write wrong sha256.txt");
+    p.add_app_registry(&[("mathlib", "^1.0")], "fn main() {\n    return 0;\n}\n");
+    let reg = p.registry_dir();
+    let (code, _, err) = p.run_env(&["install"], &[("SPID3R_REGISTRY", &reg)]);
+    assert_ne!(code, 0, "install must fail on a checksum mismatch");
+    assert!(
+        err.contains("checksum mismatch"),
+        "the error must say the checksum mismatched: {err}"
+    );
+    assert!(
+        !p.exists("vendor/mathlib/lib.matrix"),
+        "nothing may be left vendored from a tampered package"
+    );
+}
+
+/// A registry dependency whose lock entry lost its sha256 (a lock from before
+/// the mandatory-checksum rule, or a hand-edited one) must fail `verify`.
+#[test]
+fn verify_flags_a_registry_entry_without_a_checksum() {
+    let p = Project::new("reglocknosha");
+    p.add_registry_pkg("mathlib", "1.0.0", DEP_BODY);
+    p.add_app_registry(&[("mathlib", "^1.0")], "fn main() {\n    return 0;\n}\n");
+    let reg = p.registry_dir();
+    assert_eq!(p.run_env(&["install"], &[("SPID3R_REGISTRY", &reg)]).0, 0);
+    // Strip the recorded hash, keeping the registry source line.
+    let lock = p.read("spider.lock");
+    let stripped: String = lock
+        .lines()
+        .filter(|l| !l.starts_with("sha256 = "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    p.write("spider.lock", &format!("{}\n", stripped));
+    let (code, _, err) = p.run(&["verify"]);
+    assert_ne!(code, 0, "verify must fail on an unverified registry entry");
+    assert!(
+        err.contains("unverified") || err.contains("sha256"),
+        "the report must flag the missing verification: {err}"
+    );
 }
 
 #[test]

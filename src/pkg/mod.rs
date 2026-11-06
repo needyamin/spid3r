@@ -901,25 +901,70 @@ fn vendor_dep(root: &Path, name: &str, dep_dir: &Path) -> Result<(usize, String)
     Ok((files.len(), hash))
 }
 
-/// Vendor a dependency and, for a registry package that ships a `sha256.txt`
-/// (the expected content hash), verify the vendored tree against it.
+/// Vendor a dependency and verify it. For a **registry** dependency,
+/// `sha256.txt` is MANDATORY: an absent, unreadable or empty checksum is a
+/// hard failure, because a missing checksum is exactly what a tampered or
+/// spoofed package looks like. The tree is verified at its source (before
+/// anything is copied) and the vendored copy is re-checked afterwards as
+/// defense in depth; only then does the hash reach `spider.lock`, so
+/// `spid3r verify` can re-check it against the record the publisher wrote.
 fn vendor_dep_checked(
     root: &Path,
     name: &str,
     dep_dir: &Path,
     source: &DepSource,
 ) -> Result<(usize, String), String> {
+    // Read and validate the declared checksum BEFORE vendoring.
+    let expected: Option<String> = if matches!(source, DepSource::Registry { .. }) {
+        let path = dep_dir.join("sha256.txt");
+        let text = std::fs::read_to_string(&path).map_err(|e| {
+            format!(
+                "registry dependency '{}': no readable sha256.txt at {} ({}) — \
+                 refusing to install unverified code; publish with \
+                 `spid3r publish --to-dir` to generate one",
+                name,
+                path.display(),
+                e
+            )
+        })?;
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err(format!(
+                "registry dependency '{}': sha256.txt is empty — refusing to \
+                 install unverified code",
+                name
+            ));
+        }
+        Some(trimmed.to_string())
+    } else {
+        None
+    };
+
+    // Verify the SOURCE tree where it lies, before anything is copied.
+    if let Some(expected) = &expected {
+        let actual = tree_hash(dep_dir)?;
+        if actual != *expected {
+            return Err(format!(
+                "registry dependency '{}': checksum mismatch before install \
+                 (sha256.txt declares {}, source tree hashes to {})",
+                name, expected, actual
+            ));
+        }
+    }
+
     let (files, hash) = vendor_dep(root, name, dep_dir)?;
-    if matches!(source, DepSource::Registry { .. }) {
-        if let Ok(expected) = std::fs::read_to_string(dep_dir.join("sha256.txt")) {
-            let expected = expected.trim();
-            if !expected.is_empty() && expected != hash {
-                return Err(format!(
-                    "registry dependency '{}': checksum mismatch (package declares {}, \
-                     vendored tree hashes to {})",
-                    name, expected, hash
-                ));
-            }
+
+    // Defense in depth: the vendored copy must hash to the same value the
+    // source tree did. A discrepancy means the copy itself is untrustworthy —
+    // remove it so nothing unverified stays importable under vendor/.
+    if let Some(expected) = &expected {
+        if hash != *expected {
+            let _ = std::fs::remove_dir_all(root.join("vendor").join(name));
+            return Err(format!(
+                "registry dependency '{}': checksum mismatch after vendoring \
+                 (sha256.txt declares {}, vendored tree hashes to {})",
+                name, expected, hash
+            ));
         }
     }
     Ok((files, hash))
