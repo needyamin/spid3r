@@ -131,11 +131,7 @@ impl Project {
         // A registry package MUST ship sha256.txt (the installer hard-fails
         // without it). Match what `spid3r publish --to-dir` writes: the hash
         // of the src/ tree, one line.
-        let pkg_dir = self
-            .base
-            .join("registry")
-            .join(name)
-            .join(version);
+        let pkg_dir = self.base.join("registry").join(name).join(version);
         let hash = spid3r_lang::pkg::tree_hash(&pkg_dir).expect("tree hash");
         self.write_sibling(
             &format!("registry/{}/{}/sha256.txt", name, version),

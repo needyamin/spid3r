@@ -86,7 +86,8 @@ fn a_matrix_plugin_function_is_blocked_under_deny_all() {
         .run("matrix_deny", &probe_src("matrix_probe_read"))
         .expect("the script itself must run");
     assert!(
-        out.output.contains("DENIED:capability denied: 'matrix_probe_read'"),
+        out.output
+            .contains("DENIED:capability denied: 'matrix_probe_read'"),
         "the plugin call must be refused with a denied error: {:?}",
         out.output
     );
@@ -105,10 +106,7 @@ fn a_matrix_plugin_function_is_blocked_under_deny_all() {
 fn an_undeclared_plugin_function_still_runs_without_a_deny() {
     let _g = gate();
     plugin::reset_denied();
-    let root = std::env::temp_dir().join(format!(
-        "spid3r_deny_matrix_ok_{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("spid3r_deny_matrix_ok_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let dir = root.join("deny-matrix-ok");
     std::fs::create_dir_all(&dir).unwrap();
@@ -156,8 +154,11 @@ fn a_wasm_plugin_permission_declaration_is_enforced_under_deny() {
     let root = scratch("wasm_denied");
     let dir = root.join("deny-wasm-probe");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(wasm_sample_dir().join("plugin.wasm"), dir.join("plugin.wasm"))
-        .expect("copy module");
+    std::fs::copy(
+        wasm_sample_dir().join("plugin.wasm"),
+        dir.join("plugin.wasm"),
+    )
+    .expect("copy module");
     std::fs::write(
         dir.join("plugin.toml"),
         "[plugin]\nname = \"deny-wasm-probe\"\nversion = \"0.1.0\"\nabi = \"spid3r-plugin-abi-1\"\nkind = \"wasm\"\nentry = \"plugin.wasm\"\ncapabilities = [\"network\"]\n\n[[function]]\nname = \"hello_greet\"\narity = 1\npermission = \"network\"\n",
@@ -171,7 +172,8 @@ fn a_wasm_plugin_permission_declaration_is_enforced_under_deny() {
         .run("wasm_deny", &probe_src("hello_greet"))
         .expect("the script itself must run");
     assert!(
-        out.output.contains("DENIED:capability denied: 'hello_greet'"),
+        out.output
+            .contains("DENIED:capability denied: 'hello_greet'"),
         "the wasm function's declared permission must be enforced: {:?}",
         out.output
     );
@@ -205,7 +207,8 @@ fn a_host_plugin_registered_after_deny_is_blocked() {
         .run("late_host", &probe_src("late_probe_read"))
         .expect("the script itself must run");
     assert!(
-        out.output.contains("DENIED:capability denied: 'late_probe_read'"),
+        out.output
+            .contains("DENIED:capability denied: 'late_probe_read'"),
         "a plugin registered after deny() must be blocked: {:?}",
         out.output
     );
@@ -248,9 +251,7 @@ impl plugin::PluginHost for OrderProbe {
             name: self.fname,
             arity: 1,
             permission: Some(Capability::FileSystem),
-            func: |_ctx: &NativeCtx, _args: Vec<Value>| {
-                Ok(Value::Str("HOST_EXECUTED".into()))
-            },
+            func: |_ctx: &NativeCtx, _args: Vec<Value>| Ok(Value::Str("HOST_EXECUTED".into())),
         }]
     }
 }

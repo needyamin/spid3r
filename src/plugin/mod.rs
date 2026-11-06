@@ -190,7 +190,10 @@ pub fn capability_denied(permission: Option<Capability>) -> bool {
 /// Clear every revocation. **Test-only**: the deny set is process-global, and
 /// only a test that has just verified one deny policy should reset it.
 pub fn reset_denied() {
-    denied_set().lock().unwrap_or_else(|e| e.into_inner()).clear();
+    denied_set()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 }
 
 /// Wrap a plugin closure with the call-time capability check. The declared
