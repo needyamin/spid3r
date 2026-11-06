@@ -1011,3 +1011,41 @@ fn lowering_removes_the_surface_nodes_and_is_idempotent() {
         "lower() is not idempotent"
     );
 }
+
+/// Full-output variant of `run_engine`: returns (exit, stdout, full stderr).
+/// Trace comparisons need every stderr line, not just the first.
+fn run_engine_full(engine: &str, name: &str, src: &str) -> (i32, String, String) {
+    let dir = std::env::temp_dir().join("spid3r_matrix_treem");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join(format!("{}.matrix", name));
+    std::fs::write(&path, src).expect("write case");
+    let o = Command::new(bin())
+        .args(["run", "--engine", engine, path.to_str().unwrap()])
+        .output()
+        .expect("spawn spid3r");
+    let _ = std::fs::remove_file(&path);
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stdout).to_string(),
+        String::from_utf8_lossy(&o.stderr).to_string(),
+    )
+}
+
+/// Deep self-recursion must produce an identical stack-overflow diagnostic on
+/// both engines — same message, same span, same exit code, and (the part that
+/// used to diverge) the same stack trace: the tree interpreter now collapses
+/// consecutive frames naming the same function at the same file:line, exactly
+/// like the VM's `capture_trace`.
+#[test]
+fn stack_overflow_traces_match_on_tree_and_vm() {
+    let src = "fn r(n) {\n    if n <= 0 { return 0; }\n    return r(n - 1) + 1;\n}\nfn main() {\n    println(r(5000));\n    return 0;\n}\n";
+    let tree = run_engine_full("tree", "stack_overflow_trace", src);
+    let vm = run_engine_full("vm", "stack_overflow_trace", src);
+    assert_eq!(tree.0, vm.0, "exit codes differ");
+    assert_eq!(tree.1, vm.1, "stdout differs");
+    assert_eq!(tree.2, vm.2, "stderr (incl. stack trace) differs");
+    assert!(tree.2.contains("stack overflow: call depth limit reached"));
+    // Both engines must have collapsed the recursion to one frame + main.
+    assert_eq!(tree.2.matches("at r (").count(), 1, "tree trace not collapsed");
+    assert_eq!(vm.2.matches("at r (").count(), 1, "vm trace not collapsed");
+}

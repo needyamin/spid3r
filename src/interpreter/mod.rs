@@ -1719,22 +1719,34 @@ impl Interp {
     /// Build an error trace from the current call stack, most recent frame
     /// first: the innermost function is shown at the error position, and every
     /// outer frame at the call site where it invoked the frame below it.
+    /// Consecutive frames that name the same function at the same file:line
+    /// are collapsed (same rule as the VM's `capture_trace`), so a deep
+    /// self-recursion prints one frame per recursion site instead of one per
+    /// level — the two engines then produce identical traces for identical
+    /// programs.
     fn trace_frames(&self, err_span: &Span) -> Vec<crate::diagnostics::TraceFrame> {
         let stack = self.call_stack.lock().unwrap();
         let mut out: Vec<crate::diagnostics::TraceFrame> = Vec::new();
+        let mut push = |out: &mut Vec<crate::diagnostics::TraceFrame>,
+                        func: Option<String>,
+                        span: Span| {
+            if let Some(last) = out.last() {
+                let same = last.func == func
+                    && last.span.line == span.line
+                    && last.span.file == span.file;
+                if same {
+                    return;
+                }
+            }
+            out.push(crate::diagnostics::TraceFrame { func, span });
+        };
         if let Some((callee, _)) = stack.last() {
-            out.push(crate::diagnostics::TraceFrame {
-                func: callee.to_name(),
-                span: err_span.clone(),
-            });
+            push(&mut out, callee.to_name(), err_span.clone());
         }
         for k in (0..stack.len()).rev() {
             // The frame below sits at the call site of the frame above.
             if let Some((_, call_site)) = stack.get(k + 1) {
-                out.push(crate::diagnostics::TraceFrame {
-                    func: stack[k].0.to_name(),
-                    span: call_site.clone(),
-                });
+                push(&mut out, stack[k].0.to_name(), call_site.clone());
             }
         }
         out
