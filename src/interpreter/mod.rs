@@ -1728,12 +1728,11 @@ impl Interp {
         let stack = self.call_stack.lock().unwrap();
         let mut out: Vec<crate::diagnostics::TraceFrame> = Vec::new();
         let push = |out: &mut Vec<crate::diagnostics::TraceFrame>,
-                        func: Option<String>,
-                        span: Span| {
+                    func: Option<String>,
+                    span: Span| {
             if let Some(last) = out.last() {
-                let same = last.func == func
-                    && last.span.line == span.line
-                    && last.span.file == span.file;
+                let same =
+                    last.func == func && last.span.line == span.line && last.span.file == span.file;
                 if same {
                     return;
                 }
