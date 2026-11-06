@@ -344,7 +344,7 @@ impl Interp {
                 Phase::Usage,
                 format!(
                     "extern fn '{name}' needs a native executable: the tree interpreter cannot call C. \
-                     Build with `spidr build`."
+                     Build with `spid3r build`."
                 ),
             ));
         }
