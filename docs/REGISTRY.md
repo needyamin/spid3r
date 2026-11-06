@@ -33,7 +33,7 @@ $SPID3R_REGISTRY/
     1.0.0/
       spider.toml          # [package] name/version/entry
       src/lib.matrix
-      sha256.txt           # optional: expected hash of this package's src/ tree
+      sha256.txt           # required: expected hash of this package's src/ tree
     1.2.0/
       spider.toml
       src/lib.matrix
@@ -48,9 +48,12 @@ $SPID3R_REGISTRY/
   highest version satisfying the constraint is chosen.
 - A package directory is exactly a normal Spid3r package: a `spider.toml` plus a
   `src/` tree (the same thing `spid3r pack` produces).
-- **`sha256.txt`** (optional) is an integrity guard: if present, `install`
-  compares it against the SHA-256 of the vendored `src/` tree and fails on
-  mismatch. `spid3r pack` prints the hash you can paste here.
+- **`sha256.txt`** (required for registry packages since 2026-11-06) is the
+  integrity guard: `install` compares it against the SHA-256 of the vendored
+  `src/` tree and **refuses to install** when the file is missing, unreadable,
+  empty, or does not match. `spid3r pack`/`publish` always write it; a
+  hand-built registry entry without one is rejected rather than vendored
+  unverified. `spid3r pack` prints the hash you can paste here.
 
   The hash covers **every file** under `src/` (not just `*.matrix`) and is taken
   over the **raw bytes**: for each file in sorted order,
@@ -105,7 +108,7 @@ sha256: 308a5889…
 [dependencies]
 mathlib = { version = "^0.1.0" }
 
-$ SPID3R_REGISTRY=../registry spidr install
+$ SPID3R_REGISTRY=../registry spid3r install
 $ spid3r verify
 ok: 1 vendored package(s) match spider.lock
 ```
@@ -115,9 +118,11 @@ ok: 1 vendored package(s) match spider.lock
 
 ## Integrity
 
-`install` verifies a registry package's `sha256.txt` when the package ships one,
-and `spid3r verify` re-hashes every vendored tree against the `sha256` in
-`spider.lock` afterwards. Editing one vendored file therefore fails the build
+`install` requires and verifies a registry package's `sha256.txt` (missing,
+empty or mismatched checksums are a hard install error), and `spid3r verify`
+re-hashes every vendored tree against the `sha256` in
+`spider.lock` afterwards — a lock entry with no recorded hash also fails
+`verify`. Editing one vendored file therefore fails the build
 gate instead of being silently compiled:
 
 ```console

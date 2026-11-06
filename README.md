@@ -23,7 +23,7 @@ Hello, Spid3r!
 Source goes through **one** front end — lexer, parser, semantic checker, lowering — and stops at a checked AST. Everything after that is a backend, and no backend may reinterpret the language.
 
 - **The tree walker is the oracle.** When engines disagree, the plain AST interpreter defines what is correct.
-- **The VM compiles to 59 opcodes** with a peephole optimizer. `--no-opt` exists so the optimizer can be tested against itself.
+- **The VM compiles to 60 opcodes** with a peephole optimizer. `--no-opt` exists so the optimizer can be tested against itself.
 - **Native is real machine code** via LLVM — not a bundled interpreter wearing an `.exe`.
 - **WebAssembly is the same VM**, compiled to wasm32.
 
@@ -39,13 +39,18 @@ Values are reference counted, so ordinary garbage dies the moment it is dropped.
 
 ![Five deployment targets](docs/diagrams/targets.svg)
 
+The prebuilt release binaries are the **core toolchain only** (interpreter, VM, WASM) — no runtime dependencies, no dev tools required. Two backends have platform caveats when built from source:
+
+- **GUI** needs the OS webview: WebView2 (preinstalled on Windows 10/11; the installer bundles its bootstrapper), or WebKit2GTK + GTK3 on Linux (install `libwebkit2gtk-4.1-dev` at build time and the `webkit2gtk` runtime package to run).
+- **Native AOT** needs LLVM 18.1+ **at build time only**. Built executables are standalone — on Windows the toolchain delay-loads the bundled `LLVM-C.dll`; on Linux/macOS a source build with the `native` feature needs `libLLVM-18` present at runtime.
+
 ## Ecosystem
 
 ![Seven routes by which third-party code reaches a Spid3r program](docs/diagrams/ecosystem.svg)
 
 Third-party code reaches a program through seven routes, and only one of them can be sandboxed.
 
-**Packages** ship today. A package is a `spider.toml` plus a `src/` tree; `spid3r add` declares and vendors it, `spid3r tree` shows what that resolved to, and `spid3r verify` re-hashes every vendored file against `spider.lock` so a hand-edited dependency fails instead of compiling. `spid3r publish --to-dir` writes a static registry entry with a checksum. No network, no build scripts — installing a package never executes its code.
+**Packages** ship today. A package is a `spider.toml` plus a `src/` tree; `spid3r add` declares and vendors it, `spid3r tree` shows what that resolved to, and `spid3r verify` re-hashes every vendored file against `spider.lock` so a hand-edited dependency fails instead of compiling. `spid3r publish --to-dir` writes a static registry entry with a checksum, and `spid3r install` **requires** that checksum for registry packages — a registry entry without one is refused rather than vendored unverified. No network build scripts — installing a package never executes its code.
 
 **Host plugins work.** A plugin declares itself in a `plugin.toml` (exact-match ABI string, one block per function with its arity and permission), implements one trait, and is registered by its host at startup. Registration merges its functions into the native table all three engines already read, so a plugin function needs no per-engine code. There is no dynamic loading: a plugin is compiled into its host, because a native function is a Rust pointer over `Value` and `Value` has no stable C representation.
 
@@ -86,11 +91,11 @@ $ spid3r verify                           # is the vendored tree the one the loc
 
 | Aspect | Detail |
 |---|---|
-| **Implementation** | 87,389 lines of Rust · zero dependencies in the core (`--no-default-features`) |
+| **Implementation** | 88,054 lines of Rust · zero dependencies in the core (`--no-default-features`) |
 | **Engines** | tree · bytecode VM · LLVM AOT · WebAssembly |
-| **Bytecode** | 59 opcodes · serialized `.matrixc` format |
+| **Bytecode** | 60 opcodes · serialized `.matrixc` format |
 | **Standard library** | 29 modules, compiled into the binary |
-| **Tests** | 1,190 tests · three-engine differential |
+| **Tests** | 1,210 tests · three-engine differential |
 | **Binary** | one ~13 MB file · static CRT · runs with no installed runtime |
 
 ## The language

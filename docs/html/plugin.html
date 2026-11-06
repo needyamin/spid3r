@@ -720,7 +720,7 @@
                 <td>a WASM guest has no imports, so it cannot reach any of them</td>
               </tr>
               <tr>
-                <td>Targeting <code>spidr build</code> output</td>
+                <td>Targeting <code>spid3r build</code> output</td>
                 <td>neither</td>
                 <td>a standalone executable cannot link a plugin — see <a href="#limits">Limits</a></td>
               </tr>
@@ -783,7 +783,7 @@
         <div class="code">
           <div class="bar"><span>shell</span><span class="lang">bash</span></div>
           <pre><code><span class="k">export</span> SPID3R_PLUGINS=./plugins     <span class="c"># the directory containing greetings/</span>
-spidr run app.matrix
+spid3r run app.matrix
 <span class="c"># Hello, Ada!</span>
 <span class="c"># 55</span>
 </code></pre>
@@ -978,14 +978,14 @@ spidr run app.matrix
         <div class="code">
           <div class="bar"><span>shell</span><span class="lang">bash</span></div>
           <pre><code><span class="c"># the version string this build implements</span>
-spidr plugin abi
+spid3r plugin abi
 <span class="c"># spid3r-plugin-abi-1</span>
 
 <span class="c"># what the search path would load — names, kinds, function counts</span>
-spidr plugin list
+spid3r plugin list
 
 <span class="c"># does this directory conform? the loader's own validation, without registering</span>
-spidr plugin check examples/plugins/hello-wasm
+spid3r plugin check examples/plugins/hello-wasm
 <span class="c"># ok: … conforms to spid3r-plugin-abi-1</span>
 <span class="c">#   kind wasm · 2 function(s) · capabilities []</span>
 <span class="c">#   2 export(s) resolved · 65745 byte(s) of module</span>
@@ -1590,7 +1590,7 @@ value := u8 tag, payload
 <span class="k">export</span> SPID3R_PLUGINS=./plugins:/opt/spidr/plugins
 
 <span class="c"># then any program can call the plugin's functions</span>
-spidr run app.matrix
+spid3r run app.matrix
 </code></pre>
         </div>
 
@@ -1706,13 +1706,13 @@ spidr run app.matrix
               <tr>
                 <td>A native executable cannot link a plugin</td>
                 <td>
-                  <code>spidr build</code> on a program that calls a plugin function is a <strong>compile-time
+                  <code>spid3r build</code> on a program that calls a plugin function is a <strong>compile-time
                     error</strong> with a note explaining why — not a binary that throws at run time.
                 </td>
               </tr>
               <tr>
                 <td>The <code>spidr</code> binary ships with no host plugins</td>
-                <td><code>spidr run</code> can use WASM plugins only. A host plugin needs a binary that registers it.</td>
+                <td><code>spid3r run</code> can use WASM plugins only. A host plugin needs a binary that registers it.</td>
               </tr>
               <tr>
                 <td>A WASM guest cannot import anything</td>
@@ -1733,7 +1733,7 @@ spidr run app.matrix
               </tr>
               <tr>
                 <td>FFI is <strong>AOT-only</strong></td>
-                <td><code>extern fn</code> resolves at link time, so <code>spidr run</code> rejects it with
+                <td><code>extern fn</code> resolves at link time, so <code>spid3r run</code> rejects it with
                   <code>error[usage]</code>. Only int, float, bool and string cross the boundary</td>
               </tr>
             </tbody>
@@ -1825,7 +1825,7 @@ spidr run app.matrix
             </thead>
             <tbody>
               <tr>
-                <td><code>unknown name 'hello_greet'</code> under <code>spidr run</code></td>
+                <td><code>unknown name 'hello_greet'</code> under <code>spid3r run</code></td>
                 <td>The plugin was not discovered. Check that <code>SPID3R_PLUGINS</code> points at the directory
                   <em>containing</em> the plugin directory, not at the plugin itself.</td>
               </tr>
@@ -1867,7 +1867,7 @@ spidr run app.matrix
               </tr>
               <tr>
                 <td>Build fails with a plugin note</td>
-                <td>Expected: a standalone executable cannot link a plugin. Use <code>spidr run</code>, or ship a host
+                <td>Expected: a standalone executable cannot link a plugin. Use <code>spid3r run</code>, or ship a host
                   binary.</td>
               </tr>
             </tbody>
@@ -1892,7 +1892,7 @@ spidr run app.matrix
           <li>For WASM: the guest terminates — the fuel budget is a backstop, not a design.</li>
           <li>For host: <code>start()</code> can fail without taking the host down, and <code>stop()</code> is safe to
             call twice.</li>
-          <li>You have decided what happens under <code>spidr build</code> (it will refuse — say so in your README).</li>
+          <li>You have decided what happens under <code>spid3r build</code> (it will refuse — say so in your README).</li>
         </ul>
 
         <div class="callout ok">

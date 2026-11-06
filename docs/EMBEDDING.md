@@ -41,7 +41,7 @@ assert_eq!(out.output, "HI 1.0\n");
 | `.register(name, f)` | Host function callable from Spid3r. `f: Fn(&[Value]) -> Result<Value, String>`; `Err` becomes a catchable runtime error. State: capture `Arc<...>` clones (see below). Overrides same-named stdlib natives and prior registrations |
 | `.set_global(name, value)` | Global binding visible to the script. Dynamic (`Any`): callable/readable, unchecked. Shadowable by script `let` (overwrites the host binding) |
 | `.add_module_dir(dir)` | Extra import search root, appended after the defaults |
-| `.deny(capability)` | Replace the built-in natives of a `Capability` (`FileSystem`, `Process`, `Network`, `Environment`) with stubs that raise a catchable `capability denied` error. A policy filter, not a sandbox — see `docs/SECURITY.md` |
+| `.deny(capability)` | Replace the built-in natives of a `Capability` (`FileSystem`, `Process`, `Network`, `Environment`) with stubs that raise a catchable `capability denied` error. Also blocks plugin functions (host, matrix and WASM) whose declared `permission` matches the capability — enforced at call time, so registration order relative to `deny()` does not matter. A policy filter, not a sandbox — see `docs/SECURITY.md` |
 | `.deny_all()` | Shorthand for all four capabilities |
 | `.budget(steps)` | Cap the work one run may do. After roughly `steps` units (statements in the tree engine) the run fails with the **fatal** error `execution budget exhausted`, which the script's `try`/`catch` cannot intercept. Per run, shared with spawned tasks; `None` (default) is unlimited. See `docs/SECURITY.md` |
 | `.set_script_args(vec)` | `args()` for the script. **Process-global** (shared with the CLI); set once per process |

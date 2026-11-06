@@ -10,7 +10,7 @@
 //! its host**, exactly like a Cargo build script's build-dependency.
 //!
 //! That is a real limitation, stated plainly: the `spidr` binary itself
-//! registers no plugins, so `spidr run` cannot call a plugin function. A host
+//! registers no plugins, so `spid3r run` cannot call a plugin function. A host
 //! that embeds `spid3r_lang` calls [`register`] at startup and its scripts can.
 //!
 //! # Trust

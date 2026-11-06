@@ -142,13 +142,18 @@ A function's `permission` is matched by `Engine::deny`:
 let engine = Engine::new().deny(Capability::Environment);
 ```
 
-The script then gets a **catchable** `capability denied: 'hello_env' is not
-available to this script`, and everything else keeps working. `deny` matches
-plugin functions by their declared permission, because `Capability::natives()`
+The script then gets a **catchable** `capability denied: 'hello_env'` error,
+and everything else keeps working. `deny` matches plugin functions by their
+declared permission, because `Capability::natives()`
 is a fixed list of builtins and cannot contain a plugin's name.
 
+Enforcement happens **at call time** and covers all three plugin kinds (host,
+matrix and WASM), so it does not matter whether the plugin was registered
+before or after `deny()` was configured — a function that is denied refuses to
+run either way (tested in `tests/plugin_deny.rs`).
+
 This is the same mechanism as for builtins, with the same caveat: it is a policy
-filter over names, not a sandbox.
+filter over names and declared permissions, not a sandbox.
 
 ## Spid3r plugins
 
@@ -174,7 +179,7 @@ public fn greet(name) {
 ```
 
 ```console
-$ SPID3R_PLUGINS=./plugins spidr run app.matrix
+$ SPID3R_PLUGINS=./plugins spid3r run app.matrix
 Hello, Ada!
 ```
 

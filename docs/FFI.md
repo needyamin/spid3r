@@ -3,7 +3,7 @@
 Calling C from a Spidr program. **AOT only** — the tree interpreter and the
 bytecode VM reject `extern fn` outright, because they link nothing.
 
-```spidr
+```spid3r
 extern fn c_add(a: int, b: int) -> int;
 extern fn c_hello(name: string) -> string;
 
@@ -24,7 +24,7 @@ Hello, Ada!
 
 ## The declaration
 
-```spidr
+```spid3r
 extern fn <c_symbol>(<name>: <type>, …) -> <type>;
 ```
 

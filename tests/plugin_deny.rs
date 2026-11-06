@@ -29,6 +29,7 @@ fn scratch(tag: &str) -> PathBuf {
 }
 
 /// The sample WASM plugin shipped in the repo.
+#[cfg(feature = "plugins-wasm")]
 fn wasm_sample_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/plugins/hello-wasm")
 }
@@ -78,7 +79,7 @@ fn a_matrix_plugin_function_is_blocked_under_deny_all() {
     let _g = gate();
     plugin::reset_denied();
     let dir = make_matrix_plugin("matrix_denied", "deny-matrix-probe", "matrix_probe_read");
-    let errs = plugin::load_all_in(&[dir.clone()]);
+    let errs = plugin::load_all_in(std::slice::from_ref(&dir));
     assert!(errs.is_empty(), "plugin must load: {errs:?}");
 
     let engine = Engine::new().deny_all();
@@ -120,7 +121,7 @@ fn an_undeclared_plugin_function_still_runs_without_a_deny() {
         "public fn matrix_probe_pure(p) {\n    return \"pure:\" + p;\n}\n",
     )
     .unwrap();
-    let errs = plugin::load_all_in(&[root.clone()]);
+    let errs = plugin::load_all_in(std::slice::from_ref(&root));
     assert!(errs.is_empty(), "plugin must load: {errs:?}");
 
     // A pure (permission-free) plugin function is not revocable by capability
@@ -267,7 +268,7 @@ fn a_guarded_closure_refuses_once_the_capability_is_denied() {
     plugin::reset_denied();
 
     let dir = make_matrix_plugin("guard_unit", "guard-matrix-probe", "guard_probe_read");
-    let errs = plugin::load_all_in(&[dir.clone()]);
+    let errs = plugin::load_all_in(std::slice::from_ref(&dir));
     assert!(errs.is_empty(), "plugin must load: {errs:?}");
     let closure = plugin::registered_closures()
         .into_iter()

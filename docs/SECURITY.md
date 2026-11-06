@@ -40,6 +40,14 @@ A denied native still exists as a name — calling it raises a **catchable**
 `capability denied: '<name>' is not available to this script`, so a script can
 degrade gracefully instead of crashing.
 
+Since 2026-11-06 the gate also covers **plugin functions**: a function
+registered by a host, matrix or WASM plugin is matched by its declared
+`permission` in `plugin.toml` and enforced **at call time**, so it is blocked
+whether the plugin was registered before or after `deny()` was configured.
+A plugin function that declares no permission (a pure function) still runs
+under `deny_all` — capability denial cannot revoke an authority that was never
+declared.
+
 ### What `deny` is not
 
 It is a policy filter over the built-in natives, **not a sandbox**:

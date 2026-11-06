@@ -1962,7 +1962,7 @@
               </tr>
               <tr>
                 <td><code>spid3r plugin abi|list|check</code></td>
-                <td><code>spidr plugin check examples/plugins/hello-wasm</code></td>
+                <td><code>spid3r plugin check examples/plugins/hello-wasm</code></td>
                 <td>Inspect the plugin contract: <code>abi</code> prints the version string this build
                   implements, <code>list</code> shows what the plugin search path would load, and
                   <code>check &lt;dir&gt;</code> validates one directory against ABI v1 using the loader's own
@@ -2005,7 +2005,7 @@
         <p>
           Every backend resolves <code>import "name"</code> through <strong>one</strong> implementation, so the tree
           interpreter, the bytecode VM and the AOT compiler cannot disagree about which file an import names. The
-          search order is fixed, and <code>spidr modules</code> prints which root won:
+          search order is fixed, and <code>spid3r modules</code> prints which root won:
         </p>
         <div class="table-wrap">
           <table>
@@ -2110,7 +2110,7 @@
               <tr>
                 <td>T2</td>
                 <td>Vendored packages</td>
-                <td>Checksummed against <code>spider.lock</code>; <code>spidr verify</code> re-checks</td>
+                <td>Checksummed against <code>spider.lock</code>; <code>spid3r verify</code> re-checks</td>
                 <td>shipped</td>
               </tr>
               <tr>
@@ -2128,7 +2128,7 @@
               <tr>
                 <td>T5</td>
                 <td>FFI (<code>extern fn</code>)</td>
-                <td>Trusted code, AOT-only; <code>spidr run</code> rejects it at compile time</td>
+                <td>Trusted code, AOT-only; <code>spid3r run</code> rejects it at compile time</td>
                 <td>shipped</td>
               </tr>
             </tbody>
@@ -2146,10 +2146,10 @@
         <h4 id="packages" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
           Packages</h4>
         <p>
-          A package is a directory with a <code>spider.toml</code> and a <code>src/</code> tree. <code>spidr add</code>
-          declares it and vendors it in one step, <code>spidr tree</code> shows what that resolved to,
-          <code>spidr verify</code> proves the vendored bytes are the ones the lock file describes, and
-          <code>spidr publish --to-dir</code> writes a static registry entry with a checksum. None of it touches the
+          A package is a directory with a <code>spider.toml</code> and a <code>src/</code> tree. <code>spid3r add</code>
+          declares it and vendors it in one step, <code>spid3r tree</code> shows what that resolved to,
+          <code>spid3r verify</code> proves the vendored bytes are the ones the lock file describes, and
+          <code>spid3r publish --to-dir</code> writes a static registry entry with a checksum. None of it touches the
           network, and none of it runs the package's code.
         </p>
         <div
@@ -2218,7 +2218,7 @@
           A WASM plugin is the opposite of a host plugin: it exists only as a file. The toolchain reads
           <code>plugin.toml</code> and <code>plugin.wasm</code> from the plugin search path and interprets the module,
           so
-          <code>spidr run</code> can call it without the binary being rebuilt.
+          <code>spid3r run</code> can call it without the binary being rebuilt.
         </p>
         <div
           style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
@@ -2247,7 +2247,7 @@
           what makes running an untrusted plugin safe.
         </p>
         <p>
-          <code>spidr build</code> and <code>spidr dist</code> deliberately do <strong>not</strong> load plugins: a
+          <code>spid3r build</code> and <code>spid3r dist</code> deliberately do <strong>not</strong> load plugins: a
           standalone native executable cannot link one. A program that calls a plugin function is rejected at compile
           time, with a note explaining why — not compiled into a binary that throws at run time.
         </p>
@@ -2274,16 +2274,16 @@
               </tr>
               <tr>
                 <td>FFI (<code>extern fn</code>)</td>
-                <td>works — AOT only; <code>spidr run</code> rejects it at compile time</td>
+                <td>works — AOT only; <code>spid3r run</code> rejects it at compile time</td>
               </tr>
               <tr>
-                <td><code>spidr plugin abi|list|check</code></td>
+                <td><code>spid3r plugin abi|list|check</code></td>
                 <td>works — <code>abi</code> prints the version, <code>list</code> reports the search path,
                   <code>check</code> validates a directory against ABI v1
                 </td>
               </tr>
               <tr>
-                <td><code>spidr plugin enable/disable</code></td>
+                <td><code>spid3r plugin enable/disable</code></td>
                 <td>not implemented — a plugin is discovered per run, so there is no persistent enable list</td>
               </tr>
               <tr>
@@ -5065,7 +5065,7 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           closure at run time is a refcount bump rather than a copy of the function's code.
         </p>
         <p>
-          The instruction set is <strong>59 opcodes</strong>, from <code>Constant</code> and
+          The instruction set is <strong>60 opcodes</strong>, from <code>Constant</code> and
           <code>GetLocal</code> up through the object-model and concurrency additions
           (<code>SuperCtor</code>, <code>SuperMethod</code>, <code>CaptureSync</code>,
           <code>FieldGetSoft</code>). Opcodes are byte-encoded, and <code>OpCode::from_u8</code> rejects any
@@ -5141,7 +5141,8 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
         <figure class="diagram">
           <img src="../diagrams/security.svg"
             alt="A script reaches the operating system only through built-in natives, which the embedding host can filter with Engine::deny. On the command line no such gate exists, so a script has the same authority as a shell.">
-          <figcaption>The gate exists only when a host installs it, and it filters names rather than permissions — for
+          <figcaption>The gate exists only when a host installs it; it replaces builtin natives and blocks plugin
+            functions whose declared <code>permission</code> matches a denied capability (enforced at call time) — for
             real isolation, run untrusted code as a separate user or in a container.</figcaption>
         </figure>
 
