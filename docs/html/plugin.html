@@ -1764,7 +1764,7 @@ spid3r run app.matrix
               <tr><td><code>plugin::list</code></td><td><code>() -&gt; Vec&lt;PluginInfo&gt;</code> — what is registered, and its state</td></tr>
               <tr><td><code>PluginHost</code></td><td><code>manifest()</code>, <code>functions()</code>, <code>start()</code>, <code>stop()</code></td></tr>
               <tr><td><code>PluginFnDef</code></td><td><code>name</code>, <code>arity</code>, <code>permission</code>, <code>func</code></td></tr>
-              <tr><td><code>Engine::deny</code></td><td><code>(Capability) -&gt; Engine</code> — stubs every native declaring it</td></tr>
+              <tr><td><code>Engine::deny</code></td><td><code>(Capability) -&gt; Engine</code> — stubs every native declaring it; plugin functions with a matching <code>permission</code> are blocked at call time, regardless of registration order</td></tr>
             </tbody>
           </table>
         </div>
