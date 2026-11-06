@@ -270,6 +270,12 @@ impl Engine {
     /// assert_eq!(out.output, "denied\n");
     /// ```
     pub fn deny(mut self, capability: Capability) -> Self {
+        // Record the revocation process-wide (S-1/S-2): plugin closures check
+        // it at call time and the engines overwrite denied host-plugin
+        // functions when they install their globals, so a plugin registered
+        // *after* this deny call is blocked too — the name stubs below only
+        // cover what was registered before it.
+        crate::plugin::deny_capability(capability);
         for &name in capability.natives() {
             self = self.register(name, move |_args| {
                 Err(format!(

@@ -356,6 +356,23 @@ impl Vm {
                 .unwrap()
                 .insert(name, Value::NativeClosure(Arc::new(data)));
         }
+        // Same call-time capability story as the tree engine: overwrite denied
+        // host-plugin `fn` pointers with a stub that always errors (S-2).
+        for name in crate::plugin::denied_host_functions() {
+            let label = name.clone();
+            let data = crate::value::NativeClosureData {
+                name: name.clone(),
+                func: Arc::new(move |_ctx: &NativeCtx, _args: Vec<Value>| {
+                    Err(format!(
+                        "capability denied: '{label}' is not available to this script"
+                    ))
+                }),
+            };
+            self.globals
+                .lock()
+                .unwrap()
+                .insert(name, Value::NativeClosure(Arc::new(data)));
+        }
         let object = Arc::new(VmClass {
             name: "Object".to_string(),
             parent: None,

@@ -224,6 +224,22 @@ pub fn install(globals: &Env, sched: Arc<Scheduler>) {
         };
         environment::define(globals, &name, Value::NativeClosure(Arc::new(data)));
     }
+    // Host-plugin `fn` pointers cannot carry the call-time capability guard
+    // (they cannot capture state), so a plugin registered AFTER `Engine::deny`
+    // would slip past the build-time stubs. Overwrite every denied host-plugin
+    // function with a stub that always errors (S-2).
+    for name in crate::plugin::denied_host_functions() {
+        let label = name.clone();
+        let data = crate::value::NativeClosureData {
+            name: name.clone(),
+            func: Arc::new(move |_ctx: &NativeCtx, _args: Vec<Value>| {
+                Err(format!(
+                    "capability denied: '{label}' is not available to this script"
+                ))
+            }),
+        };
+        environment::define(globals, &name, Value::NativeClosure(Arc::new(data)));
+    }
     let _ = sched;
 }
 

@@ -136,6 +136,100 @@ fn lock() -> std::sync::MutexGuard<'static, Vec<Entry>> {
     registry().lock().unwrap_or_else(|e| e.into_inner())
 }
 
+// ---------------------------------------------------------------------------
+// Call-time capability enforcement
+// ---------------------------------------------------------------------------
+//
+// `Engine::deny` is a *build-time* stub: it replaces natives with error
+// closures when the engine is configured. That has two holes, both found by
+// the 2026 security audit (S-1/S-2):
+//
+// 1. WASM and matrix plugins register their functions as **closures**, which
+//    `Engine::deny` never stubbed (it only walked host-plugin `fn` pointers) —
+//    so `deny_all()` left them fully callable.
+// 2. A plugin registered *after* `deny()` was never stubbed at all, because
+//    the stub list is snapshotted when the builder is configured.
+//
+// The fix is authority at the point of use: a host revokes a capability into
+// the set below, every plugin closure checks it when it is *invoked*, and the
+// engines overwrite denied host-plugin `fn` pointers (which cannot capture the
+// check) with denied stubs when they install their globals. Registration order
+// relative to `deny()` therefore no longer matters.
+
+/// Capabilities a host has revoked via `Engine::deny`.
+static DENIED: std::sync::OnceLock<Mutex<std::collections::HashSet<&'static str>>> =
+    std::sync::OnceLock::new();
+
+fn denied_set() -> &'static Mutex<std::collections::HashSet<&'static str>> {
+    DENIED.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Revoke a capability for the rest of the process: every plugin function
+/// declared with this permission — host, WASM or matrix — will fail with a
+/// `capability denied` error when called, whenever it was registered.
+/// Called by [`crate::embed::Engine::deny`].
+pub fn deny_capability(cap: Capability) {
+    denied_set()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(capability_name(cap));
+}
+
+/// Is a function with this declared permission currently callable?
+/// `None` means pure computation, which no capability denial can revoke.
+pub fn capability_denied(permission: Option<Capability>) -> bool {
+    let Some(cap) = permission else {
+        return false;
+    };
+    denied_set()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&capability_name(cap))
+}
+
+/// Clear every revocation. **Test-only**: the deny set is process-global, and
+/// only a test that has just verified one deny policy should reset it.
+pub fn reset_denied() {
+    denied_set().lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Wrap a plugin closure with the call-time capability check. The declared
+/// permission travels with the wrapper, so a closure handed out before
+/// `deny()` and invoked after it still refuses.
+fn guard_closure(
+    name: &str,
+    permission: Option<Capability>,
+    inner: Arc<NativeClosureFn>,
+) -> Arc<NativeClosureFn> {
+    let name = name.to_string();
+    Arc::new(move |ctx, args| {
+        if capability_denied(permission) {
+            return Err(format!(
+                "capability denied: '{name}' is not available to this script"
+            ));
+        }
+        inner(ctx, args)
+    })
+}
+
+/// Names of a **started host plugin's** `fn`-pointer functions whose declared
+/// permission is currently denied. A `fn` pointer cannot capture the check, so
+/// the engines call this when they install their globals and overwrite each
+/// listed name with a denied stub — closing the registration-order hole for
+/// host plugins (closures carry their own guard from [`guard_closure`]).
+pub fn denied_host_functions() -> Vec<String> {
+    let reg = lock();
+    reg.iter()
+        .filter(|e| e.state == PluginState::Started)
+        .flat_map(|e| {
+            e.functions
+                .iter()
+                .filter(|f| capability_denied(f.permission))
+                .map(|f| f.name.to_string())
+        })
+        .collect()
+}
+
 /// Register a plugin. Called by a host at startup, before it creates an engine.
 ///
 /// Rejected before any plugin code runs:
@@ -377,11 +471,27 @@ pub fn register_wasm(dir: &Path) -> Result<(), String> {
     }
 
     let mut reg = lock();
+    // Call-time capability guard: each closure carries its manifest-declared
+    // permission and refuses to run once that capability is denied (S-1).
+    let permissions: std::collections::HashMap<&str, Option<Capability>> = manifest
+        .functions
+        .iter()
+        .map(|d| (d.name.as_str(), d.permission))
+        .collect();
+    let guarded = loaded
+        .closures
+        .into_iter()
+        .map(|(name, func)| {
+            let perm = permissions.get(name.as_str()).copied().flatten();
+            let guarded = guard_closure(&name, perm, func);
+            (name, guarded)
+        })
+        .collect();
     reg.push(Entry {
         host: None,
         manifest,
         functions: Vec::new(),
-        closures: loaded.closures,
+        closures: guarded,
         // Instantiation already succeeded, which is what "started" means here.
         state: PluginState::Started,
     });
@@ -431,11 +541,28 @@ pub fn register_matrix(dir: &Path) -> Result<(), String> {
     }
 
     let mut reg = lock();
+    // Call-time capability guard, same as the WASM path: a matrix plugin runs
+    // with script authority, so its manifest-declared permission is the only
+    // thing `Engine::deny` can hold it to (S-1).
+    let permissions: std::collections::HashMap<&str, Option<Capability>> = manifest
+        .functions
+        .iter()
+        .map(|d| (d.name.as_str(), d.permission))
+        .collect();
+    let guarded = loaded
+        .closures
+        .into_iter()
+        .map(|(name, func)| {
+            let perm = permissions.get(name.as_str()).copied().flatten();
+            let guarded = guard_closure(&name, perm, func);
+            (name, guarded)
+        })
+        .collect();
     reg.push(Entry {
         host: None,
         manifest,
         functions: Vec::new(),
-        closures: loaded.closures,
+        closures: guarded,
         // The file parsed, checked and ran: that is this kind's "start".
         state: PluginState::Started,
     });
