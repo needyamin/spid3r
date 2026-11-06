@@ -758,11 +758,29 @@ pub fn same_slot(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Int(x), Value::Int(y)) => x == y,
         (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Int(x), Value::Float(y)) => (*x as f64) == *y,
-        (Value::Float(x), Value::Int(y)) => *x == (*y as f64),
+        (Value::Int(x), Value::Float(y)) => int_float_eq(*x, *y),
+        (Value::Float(x), Value::Int(y)) => int_float_eq(*y, *x),
         (Value::Str(x), Value::Str(y)) => x == y,
         _ => false,
     }
+}
+
+/// Exact mixed Int/Float equality: a distinct mathematical value never compares
+/// equal. The naive cast (`x as f64 == y`) loses precision for integers above
+/// 2^53, making `9007199254740993 == 9007199254740992.0` true; this helper
+/// compares exactly. NaN and non-integral floats are never equal to any int;
+/// `inf`/`-inf` fail the range check (`fract()` of an infinity is NaN); floats
+/// outside the i64 range (including ±2^63) are never equal to any int.
+fn int_float_eq(x: i64, y: f64) -> bool {
+    if y.is_nan() || y.fract() != 0.0 {
+        return false;
+    }
+    // Exact i64 range: [-2^63, 2^63). Both bounds are exactly representable
+    // in f64, so the comparison itself loses nothing.
+    if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&y) {
+        return false;
+    }
+    x == (y as i64)
 }
 
 fn values_equal_inner(
@@ -787,8 +805,8 @@ fn values_equal_inner(
         (Bool(x), Bool(y)) => x == y,
         (Int(x), Int(y)) => x == y,
         (Float(x), Float(y)) => x == y,
-        (Int(x), Float(y)) => (*x as f64) == *y,
-        (Float(x), Int(y)) => *x == (*y as f64),
+        (Int(x), Float(y)) => int_float_eq(*x, *y),
+        (Float(x), Int(y)) => int_float_eq(*y, *x),
         (Str(x), Str(y)) => x == y,
         (Option(x), Option(y)) => match (x, y) {
             (Some(x), Some(y)) => values_equal_inner(x, y, seen),

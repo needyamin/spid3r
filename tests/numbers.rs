@@ -273,3 +273,37 @@ fn main() {
 fn rich_interpolation_on_both_engines() {
     both(INTERP);
 }
+
+// ------------------------------------------------- exact Int/Float equality
+// Mixed Int/Float `==` is exact: a distinct mathematical value never compares
+// equal. The pre-fix cast semantics (`x as f64 == y`) made two different
+// numbers equal once the integer side exceeded 2^53.
+
+const INT_FLOAT_EQUALITY: &str = r#"
+fn main() {
+    // Precision loss must not equate distinct values.
+    assert(9007199254740993 != 9007199254740992.0);
+    assert(not (9007199254740993 == 9007199254740992.0));
+    // Integral floats still equal their integers.
+    assert(3.0 == 3);
+    assert(3 == 3.0);
+    assert(-0.0 == 0);
+    assert(0.0 == 0);
+    // Non-integral floats are never equal to any int.
+    assert(not (1 == 0.5));
+    assert(not (2 == 2.5));
+    // NaN is never equal to any int.
+    assert(not (1 == nan()));
+    // Floats outside the i64 range are never equal to any int.
+    assert(not (9223372036854775807 == 9223372036854775808.0));
+    assert(not (-9223372036854775808 == 18446744073709551616.0));
+    // Infinity is not equal to any int.
+    assert(not (1 == inf()));
+    return 0;
+}
+"#;
+
+#[test]
+fn mixed_int_float_equality_is_exact_on_both_engines() {
+    both(INT_FLOAT_EQUALITY);
+}
