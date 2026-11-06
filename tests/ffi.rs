@@ -122,7 +122,7 @@ fn the_script_engines_reject_extern_fn() {
             "[{engine}] the message must name the declaration: {err}"
         );
         assert!(
-            err.contains("spidr build"),
+            err.contains("spid3r build"),
             "[{engine}] the message must say what to do instead: {err}"
         );
     }
