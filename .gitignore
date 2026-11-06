@@ -84,3 +84,7 @@ desktop.ini
 /_dustbin/
 /audit/
 /deliverables/
+
+# --- SQLite runtime sidecars (churn every time a demo/test opens a committed db) ---
+*.db-shm
+*.db-wal
