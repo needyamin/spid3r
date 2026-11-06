@@ -58,6 +58,12 @@ tao = { version = "0.34", optional = true }
 
 [profile.release]
 opt-level = 3
+# Panic on integer overflow in release builds instead of silently wrapping
+# (audit S-5). The runtime computes indices, sizes and hashes from
+# script-controlled i64 values; the per-call-site checked/saturating guards
+# cover the known hot spots, and this makes any future unguarded arithmetic
+# loud rather than a silent wrap. Matches debug semantics exactly.
+overflow-checks = true
 
 [profile.dev]
 # Incremental compilation corrupts its cache on OneDrive-synced trees
