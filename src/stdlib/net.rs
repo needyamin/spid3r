@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -56,6 +56,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("ws_connect", n_ws_connect),
         ("ws_accept", n_ws_accept),
         ("ws_send", n_ws_send),
+        ("ws_send_bytes", n_ws_send_bytes),
         ("ws_recv", n_ws_recv),
         ("ws_close", n_ws_close),
         ("udp_bind", n_udp_bind),
@@ -139,16 +140,40 @@ impl Write for ConnStream {
 /// to non-blocking, reads what is available, and flips it back. `pending`
 /// holds bytes the probe read ahead, so polling never loses data - the next
 /// `tcp_read` hands them over first.
+///
+/// `writer` is an independent write half (a `try_clone` of the TcpStream)
+/// for plain sockets. WebSocket frame writes go through it so `ws_send`
+/// and `ws_close` never block behind a task parked in `ws_recv` (the read
+/// holds `stream`'s mutex for the whole blocking read). ALL ws frame
+/// writers share this one mutex, so frames still never interleave. `None`
+/// for TLS, where the stream cannot be cloned — there, writes stay
+/// serialized with reads (documented limitation).
 struct Conn {
     stream: Mutex<ConnStream>,
+    writer: Option<Mutex<ConnStream>>,
     pending: Mutex<Vec<u8>>,
+    /// WebSocket role, set once at upgrade time: `true` for connections
+    /// upgraded by `ws_accept` (server side), `false` for `ws_connect`
+    /// (client side). RFC 6455 §5.1: clients MUST mask outgoing frames,
+    /// servers MUST NOT — and a compliant client closes the connection if
+    /// it sees a masked server frame.
+    ws_server_side: AtomicBool,
 }
 
 impl Conn {
     fn new(stream: TcpStream) -> Conn {
+        // try_clone duplicates the descriptor/socket: reads and writes on
+        // the two halves are independent OS operations. If the clone fails
+        // (fd exhaustion), fall back to the shared stream lock.
+        let writer = stream
+            .try_clone()
+            .ok()
+            .map(|clone| Mutex::new(ConnStream::Plain(clone)));
         Conn {
             stream: Mutex::new(ConnStream::Plain(stream)),
+            writer,
             pending: Mutex::new(Vec::new()),
+            ws_server_side: AtomicBool::new(false),
         }
     }
 
@@ -156,8 +181,21 @@ impl Conn {
     fn new_tls(stream: native_tls::TlsStream<TcpStream>) -> Conn {
         Conn {
             stream: Mutex::new(ConnStream::Tls(Box::new(stream))),
+            writer: None,
             pending: Mutex::new(Vec::new()),
+            ws_server_side: AtomicBool::new(false),
         }
+    }
+}
+
+/// Lock the connection's write half: the cloned writer for plain sockets,
+/// the shared stream for TLS (where no clone exists). Every WebSocket
+/// frame write goes through this so concurrent writers serialize on one
+/// mutex while the reader's lock stays free.
+fn write_half(conn: &Conn) -> std::sync::MutexGuard<'_, ConnStream> {
+    match &conn.writer {
+        Some(w) => w.lock().unwrap(),
+        None => conn.stream.lock().unwrap(),
     }
 }
 
@@ -1127,6 +1165,12 @@ fn sha1(data: &[u8]) -> [u8; 20] {
     out
 }
 
+/// Client→server frames are masked; server→client frames are not
+/// (RFC 6455 §5.1).
+fn ws_masks_frames(conn: &Conn) -> bool {
+    !conn.ws_server_side.load(Ordering::Relaxed)
+}
+
 /// The RFC 6455 accept value for a client key.
 fn ws_accept_key(key: &str) -> String {
     let mut material = String::from(key);
@@ -1346,6 +1390,9 @@ fn n_ws_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             .and_then(|_| s.flush())
             .map_err(|e| io_msg(WHO, &e))?;
     }
+    // From here on this connection is a server-side WebSocket: its frames
+    // go out UNMASKED (RFC 6455 §5.1).
+    conn.ws_server_side.store(true, Ordering::Relaxed);
     ok(Value::Int(register(Sock::Ws(conn))))
 }
 
@@ -1392,24 +1439,31 @@ fn read_ws_frame(conn: &Conn) -> Result<(bool, u8, Vec<u8>), String> {
 }
 
 /// Build a client frame: masked, FIN set.
-fn build_ws_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+/// Build one WebSocket frame. `masked` MUST be true only for client→server
+/// frames (RFC 6455 §5.1: the server never masks; a compliant client closes
+/// the connection when it sees a masked server frame).
+fn build_ws_frame(opcode: u8, payload: &[u8], masked: bool) -> Vec<u8> {
+    let mut out = vec![0x80 | opcode];
+    let len = payload.len();
+    if len < 126 {
+        out.push(if masked { 0x80 | len as u8 } else { len as u8 });
+    } else if len <= u16::MAX as usize {
+        out.push(if masked { 0x80 | 126 } else { 126 });
+        out.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        out.push(if masked { 0x80 | 127 } else { 127 });
+        out.extend_from_slice(&(len as u64).to_be_bytes());
+    }
+    if !masked {
+        out.extend_from_slice(payload);
+        return out;
+    }
     let mask = [
         (crate::stdlib::next_random() & 0xff) as u8,
         (crate::stdlib::next_random() & 0xff) as u8,
         (crate::stdlib::next_random() & 0xff) as u8,
         (crate::stdlib::next_random() & 0xff) as u8,
     ];
-    let mut out = vec![0x80 | opcode];
-    let len = payload.len();
-    if len < 126 {
-        out.push(0x80 | len as u8);
-    } else if len <= u16::MAX as usize {
-        out.push(0x80 | 126);
-        out.extend_from_slice(&(len as u16).to_be_bytes());
-    } else {
-        out.push(0x80 | 127);
-        out.extend_from_slice(&(len as u64).to_be_bytes());
-    }
     out.extend_from_slice(&mask);
     for (i, b) in payload.iter().enumerate() {
         out.push(b ^ mask[i % 4]);
@@ -1424,8 +1478,36 @@ fn n_ws_send(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let id = want_int(&args[0], WHO)?;
     let text = want_str(&args[1], WHO)?;
     let conn = ws_conn(id, WHO)?;
-    let frame = build_ws_frame(1, text.as_bytes());
-    let mut s = conn.stream.lock().unwrap();
+    let frame = build_ws_frame(1, text.as_bytes(), ws_masks_frames(&conn));
+    let mut s = write_half(&conn);
+    match s.write_all(&frame).and_then(|_| s.flush()) {
+        Ok(()) => ok(Value::Int(frame.len() as i64)),
+        Err(e) => err(io_msg(WHO, &e)),
+    }
+}
+
+/// `ws_send_bytes(handle, data)` -> `ok(bytes_written)`. Sends one BINARY
+/// frame (opcode 0x2). `data` is a bytes value or a string (sent as its
+/// UTF-8 bytes). Mirrors ws_send for non-text payloads (images, protobuf,
+/// msgpack, ...).
+fn n_ws_send_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "ws_send_bytes";
+    arity(WHO, &args, 2)?;
+    let id = want_int(&args[0], WHO)?;
+    let data = match &args[1] {
+        Value::Bytes(b) => b.lock().unwrap().clone(),
+        Value::Str(s) => s.as_bytes().to_vec(),
+        other => {
+            return Err(format!(
+                "{} expects bytes or a string, found {}",
+                WHO,
+                type_name(other)
+            ))
+        }
+    };
+    let conn = ws_conn(id, WHO)?;
+    let frame = build_ws_frame(2, &data, ws_masks_frames(&conn));
+    let mut s = write_half(&conn);
     match s.write_all(&frame).and_then(|_| s.flush()) {
         Ok(()) => ok(Value::Int(frame.len() as i64)),
         Err(e) => err(io_msg(WHO, &e)),
@@ -1460,16 +1542,16 @@ fn n_ws_recv(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             }
             9 => {
                 // ping: answer with a pong and keep reading
-                let pong = build_ws_frame(10, &payload);
-                let mut s = conn.stream.lock().unwrap();
+                let pong = build_ws_frame(10, &payload, ws_masks_frames(&conn));
+                let mut s = write_half(&conn);
                 let _ = s.write_all(&pong).and_then(|_| s.flush());
                 continue;
             }
             10 => continue,
             8 => {
                 // close: acknowledge and report end-of-stream
-                let ack = build_ws_frame(8, &[]);
-                let mut s = conn.stream.lock().unwrap();
+                let ack = build_ws_frame(8, &[], ws_masks_frames(&conn));
+                let mut s = write_half(&conn);
                 let _ = s.write_all(&ack).and_then(|_| s.flush());
                 return ok(Value::Null);
             }
@@ -1493,8 +1575,11 @@ fn n_ws_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let id = want_int(&args[0], WHO)?;
     let conn = ws_conn(id, WHO)?;
     {
-        let mut s = conn.stream.lock().unwrap();
-        let _ = s.write_all(&build_ws_frame(8, &[]));
+        // Write the close frame and shut down through the write half: this
+        // must not block behind a task parked in ws_recv on the same
+        // connection (shutdown on the cloned fd hits the same socket).
+        let mut s = write_half(&conn);
+        let _ = s.write_all(&build_ws_frame(8, &[], ws_masks_frames(&conn)));
         let _ = s.flush();
         let _ = s.shutdown(Shutdown::Both);
     }

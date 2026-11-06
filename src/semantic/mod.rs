@@ -502,6 +502,7 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "ws_connect",
     "ws_accept",
     "ws_send",
+    "ws_send_bytes",
     "ws_recv",
     "ws_close",
     "udp_bind",

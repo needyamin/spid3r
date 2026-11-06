@@ -241,7 +241,8 @@ Built directly on `std::net` with zero third-party dependencies. Sockets are rep
 | `udp_set_broadcast(handle, on)` | Enable/disable broadcast sends. |
 | `ws_connect(url)` | WebSocket client (RFC 6455): `ws://` handshake with accept-key verification; returns `ok(handle)`. (`wss://` needs the `tls` feature build — not available in the zero-dependency default.) |
 | `ws_accept(conn_id)` | Server side: upgrade an accepted TCP connection; returns `ok(handle)`. |
-| `ws_send(handle, text)` | Send one masked text frame; `ok(bytes_written)`. |
+| `ws_send(handle, text)` | Send one text frame; `ok(bytes_written)`. Client→server frames are masked, server→client frames are unmasked (RFC 6455 §5.1). |
+| `ws_send_bytes(handle, data)` | Send one BINARY frame (opcode 0x2); `data` is a bytes value or a string. Same masking rules as `ws_send`. |
 | `ws_recv(handle)` | `ok(text)` (binary frames arrive as bytes), `ok(null)` at close; pings are auto-answered, fragments reassembled. |
 | `ws_close(handle)` | Send a close frame and shut the socket. |
 | `udp_close(handle)` | Close the socket; `true` if it was open. |
