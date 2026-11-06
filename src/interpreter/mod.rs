@@ -1727,7 +1727,7 @@ impl Interp {
     fn trace_frames(&self, err_span: &Span) -> Vec<crate::diagnostics::TraceFrame> {
         let stack = self.call_stack.lock().unwrap();
         let mut out: Vec<crate::diagnostics::TraceFrame> = Vec::new();
-        let mut push = |out: &mut Vec<crate::diagnostics::TraceFrame>,
+        let push = |out: &mut Vec<crate::diagnostics::TraceFrame>,
                         func: Option<String>,
                         span: Span| {
             if let Some(last) = out.last() {
