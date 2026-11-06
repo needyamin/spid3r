@@ -100,6 +100,6 @@ supported version.
 - Current format version: **2** (2026-10-22 — v2 added trailing constant
   parameter defaults to function prototypes; the reader accepts v1 and v2,
   the writer emits v2). Magic: `SPID3R` (6 bytes).
-- All changes so far (opcodes 55–58, embedded modules, validator hardening)
+- All changes so far (opcodes 55–59, embedded modules, validator hardening)
   were class-1 additive; the promise above holds retroactively for every
   shipped artifact.

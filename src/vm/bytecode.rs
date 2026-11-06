@@ -212,6 +212,14 @@ pub enum OpCode {
     /// `null` instead of failing; instance/other failures match `FieldGet`.
     /// Additive opcode (docs/BYTECODE_STABILITY.md): no format-version bump.
     FieldGetSoft = 58,
+    /// Rotate the top `n` stack values (operand: depth `u8`) so the value `n`
+    /// positions down becomes the new top: `a b c d` with n=4 → `b c d a`.
+    /// Emitted by assignment lowering so the RHS is *evaluated* before the
+    /// target's object/index expressions (matching the tree interpreter) while
+    /// `IndexSet`/`FieldSet` still receive `[.. target, value]` in their usual
+    /// order. n < 2 or n deeper than the stack fails cleanly at run time.
+    /// Additive opcode (docs/BYTECODE_STABILITY.md): no format-version bump.
+    Rotate = 59,
 }
 
 impl OpCode {
@@ -256,6 +264,7 @@ impl OpCode {
             OpCode::FieldGet => "field_get",
             OpCode::FieldSet => "field_set",
             OpCode::FieldGetSoft => "field_get_soft",
+            OpCode::Rotate => "rotate",
             OpCode::Construct => "construct",
             OpCode::Return => "return",
             OpCode::Try => "try",
@@ -347,6 +356,7 @@ impl OpCode {
             56 => Some(OpCode::SuperCtor),
             57 => Some(OpCode::SuperMethod),
             58 => Some(OpCode::FieldGetSoft),
+            59 => Some(OpCode::Rotate),
             _ => None,
         }
     }
@@ -609,6 +619,11 @@ fn disassemble_into(chunk: &Chunk, name: &str, out: &mut String, depth: usize) {
                 let (s, no) = read_u8(&chunk.code, o);
                 o = no;
                 out.push_str(&format!("{:?} slot {}", op, s));
+            }
+            OpCode::Rotate => {
+                let (n, no) = read_u8(&chunk.code, o);
+                o = no;
+                out.push_str(&format!("{:?} depth {}", op, n));
             }
             OpCode::GetGlobal
             | OpCode::SetGlobal
@@ -1625,6 +1640,7 @@ pub(crate) fn operand_len(op: OpCode) -> usize {
         OpCode::ImportAs => 4,
         OpCode::CaptureSync => 2,
         OpCode::Uncapture => 1,
+        OpCode::Rotate => 1,
         OpCode::Jump | OpCode::JumpIfFalse | OpCode::JumpIfTrue | OpCode::Loop => 2,
         OpCode::Try => 6,
         _ => 0,
@@ -1653,8 +1669,9 @@ mod tests {
     #[test]
     fn from_u8_rejects_garbage_without_ub() {
         // Any byte outside the assigned range must decode to None (no
-        // transmute / UB). 58 is `FieldGetSoft` (F-4, additive opcode).
-        for b in 59u16..=255 {
+        // transmute / UB). 58 is `FieldGetSoft` (F-4, additive opcode); 59 is
+        // `Rotate` (assignment RHS-first lowering, additive opcode).
+        for b in 60u16..=255 {
             assert!(OpCode::from_u8(b as u8).is_none(), "byte {} decoded", b);
         }
         // A handful of real opcodes round-trip.
@@ -1670,6 +1687,7 @@ mod tests {
         assert_eq!(OpCode::from_u8(56), Some(OpCode::SuperCtor));
         assert_eq!(OpCode::from_u8(57), Some(OpCode::SuperMethod));
         assert_eq!(OpCode::from_u8(58), Some(OpCode::FieldGetSoft));
+        assert_eq!(OpCode::from_u8(59), Some(OpCode::Rotate));
     }
 
     #[test]

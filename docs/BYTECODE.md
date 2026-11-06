@@ -110,6 +110,14 @@ the (flat, transitive) embedded table, so nested imports resolve too.
   2026-10-25) — like `FieldGet` except a null receiver and a missing map key
   push `null`. Additive per docs/BYTECODE_STABILITY.md: no format-version
   bump, older readers reject the byte cleanly.
+- Assignment lowering compiles to `Rotate` (opcode 59: depth `u8`,
+  2026-11) — moves the value `depth` positions down to the top of the stack
+  (`a b c d` with depth 4 → `b c d a`). The tree interpreter (the oracle)
+  evaluates an assignment's RHS before the target's object/index expressions,
+  so the compiler emits the RHS first and uses `Rotate` to restore
+  `IndexSet`/`FieldSet`'s `[target, value]` order afterwards. Additive per
+  docs/BYTECODE_STABILITY.md: no format-version bump, older readers reject
+  the byte cleanly.
 
 ### Bytecode validation (safety net)
 

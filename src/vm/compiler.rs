@@ -507,7 +507,7 @@ fn compile_stmt(compilers: &mut Vec<Compiler>, ci: usize, stmt: &Stmt) -> Result
                     Phase::Usage,
                     format!(
                         "extern fn '{}' needs a native executable: the bytecode VM cannot call C. \
-                         Build with `spidr build`.",
+                         Build with `spid3r build`.",
                         proto.name.as_deref().unwrap_or("<anonymous>")
                     ),
                 ));
@@ -1377,6 +1377,13 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
     Ok(())
 }
 
+/// The tree interpreter (the oracle) evaluates the RHS before the target's
+/// object/index expressions, and the native backend does the same — so for
+/// `m[f()] = g()` the observable order is `g()`'s side effects, then `f()`'s.
+/// The bytecode must agree: the RHS is compiled first, the target expressions
+/// are compiled above it, and the new `Rotate` opcode moves the RHS back to
+/// the top (or, for compound assignment, above the old value) so the store
+/// opcodes keep their existing stack discipline.
 fn compile_assign(
     compilers: &mut Vec<Compiler>,
     ci: usize,
@@ -1384,8 +1391,11 @@ fn compile_assign(
     op: AssignOp,
     value: &Expr,
 ) -> Result<(), Diagnostic> {
+    let value_span = value.span().clone();
     match target {
         Expr::Ident(name, _) => {
+            // A bare name has no side effects, so get-then-value (below) is
+            // observationally identical to the interpreter's value-then-get.
             if op != AssignOp::Assign {
                 emit_get(compilers, ci, name);
                 compile_expr(compilers, ci, value)?;
@@ -1396,32 +1406,46 @@ fn compile_assign(
             emit_set(compilers, ci, name);
         }
         Expr::Index { object, index, .. } => {
+            compile_expr(compilers, ci, value)?;
             compile_expr(compilers, ci, object)?;
             compile_expr(compilers, ci, index)?;
             if op != AssignOp::Assign {
-                // Duplicate `obj idx` before IndexGet consumes them, so
-                // IndexSet still has the target below the new value.
+                // Stack: [rhs obj idx]. Duplicate `obj idx` before IndexGet
+                // consumes them, so IndexSet still has the target below the
+                // old value.
                 compilers[ci].chunk.emit(OpCode::Dup2);
                 compilers[ci].chunk.emit(OpCode::IndexGet);
-                compile_expr(compilers, ci, value)?;
+                // [rhs obj idx old] -> [obj idx old rhs]: the operator pops
+                // rhs first (old op rhs), then IndexSet stores the result.
+                compilers[ci].chunk.emit_u8(OpCode::Rotate, 4);
+                compilers[ci].chunk.set_span(value_span.clone());
                 emit_binop(compilers, ci, op);
             } else {
-                compile_expr(compilers, ci, value)?;
+                // [rhs obj idx] -> [obj idx rhs]: IndexSet's expected order.
+                compilers[ci].chunk.emit_u8(OpCode::Rotate, 3);
+                compilers[ci].chunk.set_span(value_span.clone());
             }
             compilers[ci].chunk.emit(OpCode::IndexSet);
         }
         Expr::Field { object, name, .. } => {
+            compile_expr(compilers, ci, value)?;
             compile_expr(compilers, ci, object)?;
             if op != AssignOp::Assign {
-                // Duplicate the object before FieldGet consumes it, so
-                // FieldSet still has the target below the new value.
+                // Stack: [rhs obj]. Duplicate the object before FieldGet
+                // consumes it, so FieldSet still has the target below the old
+                // value.
                 compilers[ci].chunk.emit(OpCode::Dup);
                 let idx = compilers[ci].chunk.emit_str_const(name);
                 compilers[ci].chunk.emit_u16(OpCode::FieldGet, idx);
-                compile_expr(compilers, ci, value)?;
+                // [rhs obj old] -> [obj old rhs]: the operator pops rhs first
+                // (old op rhs), then FieldSet stores the result.
+                compilers[ci].chunk.emit_u8(OpCode::Rotate, 3);
+                compilers[ci].chunk.set_span(value_span.clone());
                 emit_binop(compilers, ci, op);
             } else {
-                compile_expr(compilers, ci, value)?;
+                // [rhs obj] -> [obj rhs]: FieldSet's expected order.
+                compilers[ci].chunk.emit_u8(OpCode::Rotate, 2);
+                compilers[ci].chunk.set_span(value_span.clone());
             }
             let idx = compilers[ci].chunk.emit_str_const(name);
             compilers[ci].chunk.emit_u16(OpCode::FieldSet, idx);

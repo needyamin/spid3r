@@ -2230,6 +2230,23 @@ impl Vm {
                     self.frames[nf].slots.push(a);
                     self.frames[nf].slots.push(b);
                 }
+                OpCode::Rotate => {
+                    // `a b c d` with depth 4 -> `b c d a`: the value `depth`
+                    // positions down moves to the top, the values above it
+                    // shift down one. Assignment lowering uses this to keep
+                    // `IndexSet`/`FieldSet`'s `[.. target, value]` order while
+                    // evaluating the RHS before the target expressions.
+                    self.flush_pending_str();
+                    let depth = self.code_u8(nf, ip + 1) as usize;
+                    self.frames[nf].ip = ip + 2;
+                    if depth < 2 || self.frames[nf].slots.len() < depth {
+                        self.fail("rotate depth out of range");
+                        continue;
+                    }
+                    let f = &mut self.frames[nf];
+                    let moved = f.slots.remove(f.slots.len() - depth);
+                    f.slots.push(moved);
+                }
                 OpCode::CaptureSync => {
                     self.flush_pending_str();
                     let slot = self.code_u8(nf, ip + 1) as usize;
