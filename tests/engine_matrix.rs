@@ -221,6 +221,29 @@ const CASES: &[Case] = &[
         err: Some("error[semantic]: type mismatch in 'xs': expected list<int>, got list<string>"),
         aot: false,
     },
+    // I-2: an uncaught RUNTIME error prints the bare message on every engine —
+    // `error[runtime]: division by zero` — not the user-throw shape. The AOT
+    // trampolines used to raise through the user-throw entry point, which
+    // cleared the runtime-error flag, so the binary printed
+    // `uncaught throw (thrown: division by zero)`.
+    Case {
+        name: "uncaught_runtime_error",
+        src: "fn main() {\n    let x = 1 / 0;\n    println(x);\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        err: Some("error[runtime]: division by zero"),
+        aot: true,
+    },
+    // I-2 parity control: an uncaught USER throw keeps the
+    // `uncaught throw (thrown: <value>)` shape on all three engines.
+    Case {
+        name: "uncaught_user_throw",
+        src: "fn main() {\n    throw \"boom\";\n    return 0;\n}\n",
+        out: "",
+        code: 1,
+        err: Some("error[runtime]: uncaught throw (thrown: boom)"),
+        aot: true,
+    },
     // -------------------------------------------------------------- enums (3)
     Case {
         name: "enum_match",
@@ -1046,6 +1069,54 @@ fn stack_overflow_traces_match_on_tree_and_vm() {
     assert_eq!(tree.2, vm.2, "stderr (incl. stack trace) differs");
     assert!(tree.2.contains("stack overflow: call depth limit reached"));
     // Both engines must have collapsed the recursion to one frame + main.
-    assert_eq!(tree.2.matches("at r (").count(), 1, "tree trace not collapsed");
+    assert_eq!(
+        tree.2.matches("at r (").count(),
+        1,
+        "tree trace not collapsed"
+    );
     assert_eq!(vm.2.matches("at r (").count(), 1, "vm trace not collapsed");
+}
+
+/// Assignment evaluation order: the tree interpreter (the oracle) evaluates
+/// the RHS before the target's object/index expressions, and the VM must agree
+/// when either side has observable side effects. Covers index and field
+/// targets, plain and compound assignment, and call targets on both sides.
+#[test]
+fn assignment_evaluation_order_matches_on_tree_and_vm() {
+    let src = concat!(
+        "class C { let f; fn init(self) { self.f = 0; } }\n",
+        "let g = null;\n",
+        "fn get_c() { println(\"target\"); return g; }\n",
+        "fn log(s) { println(s); return s; }\n",
+        "fn key() { println(\"key\"); return \"a\"; }\n",
+        "fn main() {\n",
+        "  g = C();\n",
+        // Field target, plain and compound: RHS first, then the receiver call.
+        "  get_c().f = log(\"rhs\");\n",
+        "  get_c().f += log(\"rhs2\");\n",
+        // Index target (string key), plain and compound.
+        "  let m = {\"a\": 1};\n",
+        "  m[key()] = log(\"rv\");\n",
+        "  m[key()] += log(\"rv2\");\n",
+        "  println(m[\"a\"]);\n",
+        "  println(g.f);\n",
+        "  return 0;\n",
+        "}\n"
+    );
+    let expected = "rhs\ntarget\nrhs2\ntarget\nrv\nkey\nrv2\nkey\nrvrv2\nrhsrhs2";
+    for engine in ["tree", "vm"] {
+        let got = run_engine(engine, "assign_order", src);
+        assert_eq!(
+            (got.0, got.1.trim_end()),
+            (0, expected),
+            "[{} / assign_order] evaluation order diverged",
+            engine
+        );
+        assert!(
+            got.2.is_empty(),
+            "[{} / assign_order] stderr {:?}",
+            engine,
+            got.2
+        );
+    }
 }

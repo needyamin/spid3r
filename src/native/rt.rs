@@ -98,6 +98,14 @@ fn leak(v: Value) -> *mut Value {
 thread_local! {
     /// The value of the most recent, not-yet-taken Spid3r `throw`.
     static THROWN: RefCell<Option<*mut Value>> = const { RefCell::new(None) };
+    /// True when the pending throw came from [`rt_throw`] — a runtime *error*
+    /// ("division by zero", an out-of-bounds index, …) rather than a user
+    /// `throw`. The tree/VM top-level handlers render these differently
+    /// (`error[runtime]: <message>` for errors vs `error[runtime]: uncaught
+    /// throw (thrown: <value>)` for user throws), so the uncaught path needs
+    /// the distinction. Cleared whenever the pending throw is replaced by a
+    /// user throw or consumed by a handler.
+    static RUNTIME_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Raise a thrown value (inline `throw` / rethrow): record it in `THROWN`. The
@@ -105,6 +113,7 @@ thread_local! {
 /// control to the enclosing handler.
 #[no_mangle]
 pub extern "C" fn spid3r_throw(v: *mut Value) {
+    RUNTIME_ERROR.with(|f| f.set(false));
     THROWN.with(|t| *t.borrow_mut() = Some(v));
 }
 
@@ -116,7 +125,10 @@ pub extern "C" fn spid3r_throw(v: *mut Value) {
 pub extern "C" fn spid3r_cancel_check() -> u8 {
     if crate::sched::current_task_cancelled() {
         let v = leak(Value::Str("task cancelled".into()));
-        spid3r_throw(v);
+        // A cancellation is a runtime error, not a user throw: raise it
+        // through the flag-setting path so an uncaught cancellation prints
+        // `error[runtime]: task cancelled` (I-2).
+        rt_throw_ptr(v);
         1
     } else {
         0
@@ -134,6 +146,7 @@ pub extern "C" fn spid3r_threw() -> u8 {
 /// pending. A `try` handler calls this to obtain the exception it caught.
 #[no_mangle]
 pub extern "C" fn spid3r_take_thrown() -> *mut Value {
+    RUNTIME_ERROR.with(|f| f.set(false));
     THROWN
         .with(|t| t.borrow_mut().take())
         .unwrap_or(std::ptr::null_mut())
@@ -145,17 +158,32 @@ fn peek_thrown() -> Option<*mut Value> {
 }
 
 /// Report an uncaught throw: print the pending exception and exit with the
-/// "user-program error" status (1), matching the tree/VM top-level message. The
-/// interpreter additionally prints a per-instruction call-stack trace, which an
-/// AOT binary cannot reproduce (a documented native diagnostic gap).
+/// "user-program error" status (1), matching the tree/VM top-level message.
+///
+/// Message shape parity with the tree/VM engines:
+/// - a runtime *error* (`rt_throw`: "division by zero", an out-of-bounds
+///   index, …) prints `error[runtime]: <message>`;
+/// - a user `throw` prints `error[runtime]: uncaught throw (thrown: <value>)`.
+///
+/// What an AOT binary still cannot reproduce is the `--> <file>:<line>:<col>`
+/// span line (and the per-frame call trace) the interpreter prints beneath it:
+/// the throw sites are runtime trampolines that do not carry span data, and
+/// threading a span through every generated call site is a codegen redesign,
+/// deliberately out of scope here (documented native diagnostic gap — the
+/// exit code and the first stderr line match the other engines).
 #[no_mangle]
 pub extern "C" fn spid3r_uncaught() -> ! {
     let _ = std::io::stdout().flush();
+    let is_runtime_error = RUNTIME_ERROR.with(|f| f.get());
     let shown = match peek_thrown() {
         Some(p) if !p.is_null() => crate::value::display_value(deref(p)),
         _ => "unknown".to_string(),
     };
-    eprintln!("error[runtime]: uncaught throw (thrown: {})", shown);
+    if is_runtime_error {
+        eprintln!("error[runtime]: {}", shown);
+    } else {
+        eprintln!("error[runtime]: uncaught throw (thrown: {})", shown);
+    }
     std::process::exit(1);
 }
 
@@ -164,13 +192,28 @@ pub extern "C" fn spid3r_uncaught() -> ! {
 /// discard the placeholder. Turns operation errors such as "division by zero"
 /// into catchable exceptions (matching the tree/VM, which throw string values).
 fn rt_throw(msg: &str) -> *mut Value {
+    RUNTIME_ERROR.with(|f| f.set(true));
     THROWN.with(|t| *t.borrow_mut() = Some(leak(Value::Str(msg.into()))));
+    leak(Value::Null)
+}
+
+/// The `*mut Value` twin of [`rt_throw`], for sites that build the message
+/// value themselves (the `i64_*` operation trampolines, the FFI bridges).
+/// Sets the runtime-error flag so an *uncaught* error reports the bare
+/// message — `error[runtime]: division by zero`, like the tree/VM — instead
+/// of the user-throw shape `uncaught throw (thrown: division by zero)`.
+/// (I-2: the trampolines used to raise through [`spid3r_throw`], the
+/// user-throw entry point, which cleared the flag.)
+fn rt_throw_ptr(v: *mut Value) -> *mut Value {
+    RUNTIME_ERROR.with(|f| f.set(true));
+    THROWN.with(|t| *t.borrow_mut() = Some(v));
     leak(Value::Null)
 }
 
 /// Raise a thrown user value (not just its display string) as the pending
 /// exception, so an enclosing `try` rebinds the original value (audit A-9).
 fn rt_throw_value(v: Value) -> *mut Value {
+    RUNTIME_ERROR.with(|f| f.set(false));
     THROWN.with(|t| *t.borrow_mut() = Some(leak(v)));
     leak(Value::Null)
 }
@@ -292,7 +335,7 @@ pub extern "C" fn spid3r_i64_add(a: i64, b: i64) -> i64 {
             let msg = leak(Value::Str(
                 format!("integer overflow: {} + {}", a, b).into(),
             ));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             0
         }
     }
@@ -306,7 +349,7 @@ pub extern "C" fn spid3r_i64_sub(a: i64, b: i64) -> i64 {
             let msg = leak(Value::Str(
                 format!("integer overflow: {} - {}", a, b).into(),
             ));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             0
         }
     }
@@ -320,7 +363,7 @@ pub extern "C" fn spid3r_i64_mul(a: i64, b: i64) -> i64 {
             let msg = leak(Value::Str(
                 format!("integer overflow: {} * {}", a, b).into(),
             ));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             0
         }
     }
@@ -330,7 +373,7 @@ pub extern "C" fn spid3r_i64_mul(a: i64, b: i64) -> i64 {
 pub extern "C" fn spid3r_i64_div(a: i64, b: i64) -> i64 {
     if b == 0 {
         let msg = leak(Value::Str("division by zero".into()));
-        spid3r_throw(msg);
+        rt_throw_ptr(msg);
         return 0;
     }
     match a.checked_div(b) {
@@ -339,7 +382,7 @@ pub extern "C" fn spid3r_i64_div(a: i64, b: i64) -> i64 {
             let msg = leak(Value::Str(
                 format!("integer overflow: {} / {}", a, b).into(),
             ));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             0
         }
     }
@@ -349,7 +392,7 @@ pub extern "C" fn spid3r_i64_div(a: i64, b: i64) -> i64 {
 pub extern "C" fn spid3r_i64_mod(a: i64, b: i64) -> i64 {
     if b == 0 {
         let msg = leak(Value::Str("modulo by zero".into()));
-        spid3r_throw(msg);
+        rt_throw_ptr(msg);
         return 0;
     }
     a.wrapping_rem(b)
@@ -361,7 +404,7 @@ pub extern "C" fn spid3r_i64_neg(a: i64) -> i64 {
         Some(v) => v,
         None => {
             let msg = leak(Value::Str(format!("integer overflow: -{}", a).into()));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             0
         }
     }
@@ -373,7 +416,7 @@ pub extern "C" fn spid3r_to_i64(v: *const Value) -> i64 {
         Value::Int(n) => *n,
         _ => {
             let msg = leak(Value::Str("expected integer".into()));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             0
         }
     }
@@ -394,7 +437,7 @@ pub extern "C" fn spid3r_to_f64(v: *const Value) -> f64 {
         Value::Int(n) => *n as f64,
         _ => {
             let msg = leak(Value::Str("expected number".into()));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             0.0
         }
     }
@@ -414,7 +457,7 @@ pub extern "C" fn spid3r_cstr(v: *const Value) -> *mut c_char {
         Value::Null => "",
         _ => {
             let msg = leak(Value::Str("expected string".into()));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             return std::ptr::null_mut();
         }
     };
@@ -424,7 +467,7 @@ pub extern "C" fn spid3r_cstr(v: *const Value) -> *mut c_char {
         // silently truncating the string at the boundary.
         Err(_) => {
             let msg = leak(Value::Str("string contains a NUL byte".into()));
-            spid3r_throw(msg);
+            rt_throw_ptr(msg);
             std::ptr::null_mut()
         }
     }
