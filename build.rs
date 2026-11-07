@@ -603,6 +603,26 @@ fn windows_resources() {
     // spid3r bin was ever given the resource.
     let bins = vec![("spid3r", "Spid3r Language Toolchain", "spid3r.exe")];
 
+    // Derive the version from the crate so a Cargo.toml bump cannot leave the
+    // Windows Properties dialog (and the .rc resource) claiming an old version.
+    // FILEVERSION/PRODUCTVERSION are numeric commas; the string values keep
+    // the dotted form. A pre-release suffix (e.g. "1.1.0-beta.1") is stripped
+    // for the numeric quad, which only accepts integers.
+    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into());
+    let numeric_version = pkg_version
+        .split(['-', '+'])
+        .next()
+        .unwrap_or("0.0.0")
+        .to_string();
+    let quad_version = {
+        let mut parts: Vec<String> = numeric_version.split('.').map(String::from).collect();
+        while parts.len() < 4 {
+            parts.push("0".into());
+        }
+        parts.truncate(4);
+        parts.join(",")
+    };
+
     for (bin, description, original) in bins {
         let rc_path = out_dir.join(format!("{bin}.rc"));
         let res_path = out_dir.join(format!("{bin}.res"));
@@ -613,8 +633,8 @@ fn windows_resources() {
         }
         rc_content.push_str(&format!(
             r#"1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION {quad_version}
+PRODUCTVERSION {quad_version}
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -626,11 +646,11 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription", "{description}"
-            VALUE "FileVersion", "1.0.0.0"
+            VALUE "FileVersion", "{numeric_version}.0"
             VALUE "InternalName", "{bin}"
             VALUE "OriginalFilename", "{original}"
             VALUE "ProductName", "Spid3r"
-            VALUE "ProductVersion", "1.0.0"
+            VALUE "ProductVersion", "{numeric_version}"
         END
     END
     BLOCK "VarFileInfo"

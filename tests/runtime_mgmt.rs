@@ -39,7 +39,11 @@ fn run_cli(args: &[&str]) -> (i32, String, String) {
 fn info_json_has_version_and_sections() {
     let (code, stdout, stderr) = run_cli(&["info", "--json"]);
     assert_eq!(code, 0, "stderr: {}", stderr);
-    assert!(stdout.contains("1.0.0"), "no version in {}", stdout);
+    assert!(
+        stdout.contains(env!("CARGO_PKG_VERSION")),
+        "no version in {}",
+        stdout
+    );
     assert!(stdout.contains("Spid3r version"), "missing version row");
 }
 
@@ -116,7 +120,12 @@ fn spid3rinfo_and_config_natives() {
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
         assert!(out.status.success(), "engine {} stderr {}", engine, stderr);
-        assert!(stdout.contains("1.0.0"), "{}: {}", engine, stdout);
+        assert!(
+            stdout.contains(env!("CARGO_PKG_VERSION")),
+            "{}: {}",
+            engine,
+            stdout
+        );
         assert!(stdout.contains("string"), "{}: {}", engine, stdout);
         assert!(stdout.contains("set"), "{}: {}", engine, stdout);
         assert!(stdout.contains("test"), "{}: {}", engine, stdout);

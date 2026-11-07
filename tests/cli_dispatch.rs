@@ -106,7 +106,7 @@ fn an_external_tool_is_dispatched_and_its_exit_code_propagates() {
     let (code, out, err) = run(&["echo", "version"], &dir);
     assert_eq!(code, 0, "success not propagated (stderr: {err})");
     assert!(
-        out.contains("1.0.0"),
+        out.contains(env!("CARGO_PKG_VERSION")),
         "the tool did not run with its argument: {out:?}"
     );
 
@@ -160,7 +160,7 @@ fn option_like_tokens_are_never_dispatched() {
         "expected the unknown-command error: {err}"
     );
     assert!(
-        !out.contains("1.0.0"),
+        !out.contains(env!("CARGO_PKG_VERSION")),
         "the decoy ran: an option-like token was dispatched"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -192,7 +192,7 @@ fn names_with_path_separators_are_rejected() {
     let (code, out, _) = run(&["a/b", "version"], &dir);
     assert_eq!(code, 2, "a separator name was dispatched (stdout: {out:?})");
     assert!(
-        !out.contains("1.0.0"),
+        !out.contains(env!("CARGO_PKG_VERSION")),
         "the decoy ran: separator not rejected"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -221,7 +221,10 @@ fn built_in_commands_are_not_shadowed_by_external_tools() {
     std::fs::copy(bin(), &shim).expect("copy shim");
     let (code, out, _) = run(&["version"], &dir);
     assert_eq!(code, 0, "the built-in must not be shadowed");
-    assert!(out.contains("1.0.0"), "version output: {out}");
+    assert!(
+        out.contains(env!("CARGO_PKG_VERSION")),
+        "version output: {out}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
