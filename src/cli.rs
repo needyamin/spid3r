@@ -574,6 +574,9 @@ spid3r control - Runtime control surface for this machine
 USAGE:
     spid3r control [status]              Dashboard: version, spid3r.ini, agent,
                                          devices, audit log
+    spid3r control safety                Capability switches (filesystem /
+                                         process / network / environment access,
+                                         remote management, plugins)
     spid3r control ini [--init] [--force]
                                          Show the spid3r.ini search order, or
                                          write the commented default file

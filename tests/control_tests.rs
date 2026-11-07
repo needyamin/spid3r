@@ -203,3 +203,103 @@ fn help_is_registered_in_the_top_level_cli() {
     assert!(stdout.contains("spid3r control"), "{stdout}");
     assert!(stdout.contains("agent start"), "{stdout}");
 }
+
+#[test]
+fn safety_lists_capability_switches_with_states() {
+    let sb = sandbox("safety");
+    let out = sb.command(&["control", "safety"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Default state: the two agent-related surfaces plus plugin loading are
+    // restricted/off; the four deny_* capability gates are OPEN by default.
+    assert!(stdout.contains("capabilities open: 6 of 8"), "{stdout}");
+    assert!(stdout.contains("Remote management access"), "{stdout}");
+    assert!(stdout.contains("security.allow_remote"), "{stdout}");
+    assert!(stdout.contains("OPEN"), "{stdout}");
+    assert!(stdout.contains("SAFE"), "{stdout}");
+}
+
+#[test]
+fn config_set_bootstraps_the_ini_into_the_config_dir() {
+    let sb = sandbox("config-bootstrap");
+    // No ini exists yet. Saving must create one in the CONFIG dir — never
+    // silently target the exe directory (config::save's old fallback).
+    let out = sb
+        .command(&["control", "config", "set", "agent.enabled", "true"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ini = ini_in(&sb);
+    assert!(
+        ini.is_file(),
+        "ini was not bootstrapped into the config dir"
+    );
+    let text = std::fs::read_to_string(&ini).unwrap();
+    assert!(text.contains("enabled = true"), "{text}");
+
+    // The value survives a reload (a fresh process re-reads the file).
+    let out2 = sb
+        .command(&["control", "config", "get", "agent.enabled"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out2.stdout);
+    assert!(stdout.contains("agent.enabled = true"), "{stdout}");
+}
+
+#[test]
+fn config_set_rejects_schema_violations_and_keeps_the_old_value() {
+    let sb = sandbox("config-invalid");
+    // Bootstrap a good ini first.
+    let _ = sb
+        .command(&["control", "config", "set", "agent.port", "9600"])
+        .output()
+        .unwrap();
+    // agent.port is an Int; "not-a-number" must be rejected.
+    let out = sb
+        .command(&["control", "config", "set", "agent.port", "not-a-number"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    // The on-disk value is untouched.
+    let text = std::fs::read_to_string(ini_in(&sb)).unwrap();
+    assert!(text.contains("port = 9600"), "{text}");
+}
+
+#[test]
+fn config_reset_restores_the_schema_default() {
+    let sb = sandbox("config-reset");
+    let _ = sb
+        .command(&["control", "config", "set", "agent.port", "9999"])
+        .output()
+        .unwrap();
+    let out = sb
+        .command(&["control", "config", "reset", "agent.port"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(ini_in(&sb)).unwrap();
+    assert!(text.contains("port = 9527"), "{text}");
+}
+
+#[test]
+fn config_list_groups_known_keys() {
+    let sb = sandbox("config-list");
+    let out = sb.command(&["control", "config", "list"]).output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("security.allow_remote"), "{stdout}");
+    assert!(stdout.contains("agent.enabled"), "{stdout}");
+    assert!(stdout.contains("spid3r.engine"), "{stdout}");
+}

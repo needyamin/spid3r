@@ -23,11 +23,13 @@ use std::time::Duration;
 pub fn dispatch(op: &str, params: &str) -> Result<String, String> {
     match op {
         "status" => op_status(params),
+        "safety_overview" => op_safety_overview(),
         "ini_info" => op_ini_info(),
         "ini_init" => op_ini_init(params),
         "config_list" => op_config_list(),
         "config_get" => op_config_get(params),
         "config_set" => op_config_set(params),
+        "config_reset" => op_config_reset(params),
         "config_validate" => op_config_validate(),
         "agent_status" => op_agent_status(),
         "agent_start" => op_agent_start(),
@@ -37,6 +39,128 @@ pub fn dispatch(op: &str, params: &str) -> Result<String, String> {
         "audit_tail" => op_audit_tail(params),
         other => Err(format!("unknown control op '{}'", other)),
     }
+}
+
+// ----------------------------------------------------------- safety keys --
+//
+// The switches that decide what a Spid3r PROGRAM may do on this machine.
+// `danger_when_open` marks keys whose default state exposes a capability:
+// for the `security.deny_*` family "open" means the deny flag is false
+// (programs MAY touch the capability); for opt-in surfaces (allow_remote,
+// agent.enabled, modules.allow_*) "open" means the flag is true.
+
+struct SafetyKey {
+    dotted: &'static str,
+    /// True when the dangerous state is the value `true`.
+    danger_when_open: bool,
+    label: &'static str,
+    /// One-line consequence of leaving the capability open.
+    consequence: &'static str,
+}
+
+static SAFETY_KEYS: &[SafetyKey] = &[
+    SafetyKey {
+        dotted: "security.allow_remote",
+        danger_when_open: true,
+        label: "Remote management access",
+        consequence: "paired devices can run operations on this machine over the network",
+    },
+    SafetyKey {
+        dotted: "agent.enabled",
+        danger_when_open: true,
+        label: "Management agent",
+        consequence: "a local agent listens on agent.bind:port and answers paired clients",
+    },
+    SafetyKey {
+        dotted: "modules.allow_host",
+        danger_when_open: true,
+        label: "Host plugins",
+        consequence: "programs may load native host plugins from disk",
+    },
+    SafetyKey {
+        dotted: "modules.allow_wasm",
+        danger_when_open: true,
+        label: "WASM plugins",
+        consequence: "programs may load sandboxed .wasm plugins from disk",
+    },
+    SafetyKey {
+        dotted: "security.deny_filesystem",
+        danger_when_open: false,
+        label: "Filesystem access",
+        consequence: "programs can read and write files as this user",
+    },
+    SafetyKey {
+        dotted: "security.deny_process",
+        danger_when_open: false,
+        label: "Process spawning",
+        consequence: "programs can launch other executables",
+    },
+    SafetyKey {
+        dotted: "security.deny_network",
+        danger_when_open: false,
+        label: "Network access",
+        consequence: "programs can open network connections",
+    },
+    SafetyKey {
+        dotted: "security.deny_environment",
+        danger_when_open: false,
+        label: "Environment variables",
+        consequence: "programs can read the machine's environment variables",
+    },
+];
+
+/// True when the key is currently in its DANGEROUS state (capability open).
+fn safety_is_open(key: &SafetyKey) -> bool {
+    let value = config::get(key.dotted).unwrap_or_default();
+    let truthy = crate::config::schema::parse_bool(&value);
+    if key.danger_when_open {
+        truthy
+    } else {
+        // deny_*: the capability is open when the deny flag is FALSE.
+        !truthy
+    }
+}
+
+/// One row per safety key, `|`-separated like the other list ops:
+/// `dotted|open|label|consequence|value`
+fn safety_rows() -> Vec<String> {
+    SAFETY_KEYS
+        .iter()
+        .map(|k| {
+            // Defensive redaction: these are boolean switches today, but if a
+            // sensitive key ever joins the list it must not leak via this row.
+            let value = crate::runtime_info::redact_value(
+                k.dotted,
+                &config::get(k.dotted).unwrap_or_default(),
+            );
+            format!(
+                "{}|{}|{}|{}|{}",
+                k.dotted,
+                if safety_is_open(k) {
+                    "open"
+                } else {
+                    "restricted"
+                },
+                k.label.replace('|', "/"),
+                k.consequence.replace('|', "/"),
+                value,
+            )
+        })
+        .collect()
+}
+
+fn op_safety_overview() -> Result<String, String> {
+    let rows = safety_rows();
+    let open = rows
+        .iter()
+        .filter(|r| r.split('|').nth(1) == Some("open"))
+        .count();
+    Ok(format!(
+        "{{\"open\":\"{}\",\"total\":\"{}\",\"items\":{}}}",
+        open,
+        rows.len(),
+        jstr(&rows.join("\n")),
+    ))
 }
 
 // ------------------------------------------------------------ json helpers --
@@ -342,12 +466,20 @@ fn op_config_list() -> Result<String, String> {
             .map(str::to_string)
             .unwrap_or_else(|| k.default.to_string());
         let redacted = crate::runtime_info::redact_value(&dotted, &value);
+        // Row: key|kind|value|default|description|enum-options
+        // Enum options drive the panel's dropdown; empty for other kinds.
+        let options = match k.kind {
+            crate::config::schema::ConfigValue::Enum(opts) => opts.join(","),
+            _ => String::new(),
+        };
         rows.push(format!(
-            "{}|{:?}|{}|{}",
+            "{}|{:?}|{}|{}|{}|{}",
             dotted,
             k.kind,
             redacted.replace('|', "/").replace('\n', " "),
             k.default.replace('|', "/").replace('\n', " "),
+            k.description.replace('|', "/").replace('\n', " "),
+            options,
         ));
     }
     Ok(format!(
@@ -371,6 +503,27 @@ fn op_config_get(params: &str) -> Result<String, String> {
     }
 }
 
+/// Make sure a writable `spid3r.ini` exists BEFORE the first save.
+///
+/// `config::save` falls back to the FIRST candidate path — the executable's
+/// directory — when no ini was loaded. On an installed machine that directory
+/// is `C:\Program Files\Spid3r\`, which a per-user process cannot write (and
+/// should not: the install directory is not user configuration). So the
+/// control surface bootstraps the default ini into the platform config dir
+/// (`%APPDATA%\Spid3r` / XDG config) instead, and reloads so subsequent saves
+/// target that file.
+fn ensure_writable_ini() -> Result<PathBuf, String> {
+    if let Some(active) = config::candidate_paths().into_iter().find(|p| p.is_file()) {
+        return Ok(active);
+    }
+    let target = config::config_dir()
+        .ok_or("no config directory available for spid3r.ini")?
+        .join("spid3r.ini");
+    let created = config::write_default_ini(Some(&target))?;
+    config::reload();
+    Ok(created)
+}
+
 fn op_config_set(params: &str) -> Result<String, String> {
     let Some(key) = field(params, "key") else {
         return Err("config_set needs \"key\"".into());
@@ -378,9 +531,28 @@ fn op_config_set(params: &str) -> Result<String, String> {
     let Some(value) = field(params, "value") else {
         return Err("config_set needs \"value\"".into());
     };
-    if crate::config::schema::known_key(&key).is_none() {
-        return Err(format!("unknown config key '{}'", key));
-    }
+    let spec = crate::config::schema::known_key(&key)
+        .ok_or_else(|| format!("unknown config key '{}'", key))?;
+    // Coerce against the schema BEFORE touching the live snapshot, so the
+    // error names the key's own rules instead of a generic validate failure.
+    spec.coerce(&value)?;
+    // Normalize the stored value so the panel's `=== "true"` checks and the
+    // INI stay canonical: "on"/"yes" become "true", "007" becomes "7".
+    let value = match spec.kind {
+        crate::config::schema::ConfigValue::Bool => {
+            crate::config::schema::parse_bool(&value).to_string()
+        }
+        crate::config::schema::ConfigValue::Int => value
+            .trim()
+            .parse::<i64>()
+            .map(|n| n.to_string())
+            .unwrap_or(value),
+        _ => value,
+    };
+    // A machine with no spid3r.ini yet must not silently target the install
+    // directory (config::save's fallback): bootstrap the default ini into the
+    // per-user config dir first.
+    let bootstrapped = ensure_writable_ini()?;
     config::set_live(&key, &value)?;
     let cfg = config::snapshot();
     let errors = config::validate(&cfg);
@@ -403,9 +575,44 @@ fn op_config_set(params: &str) -> Result<String, String> {
         ),
     );
     Ok(format!(
-        "{{\"message\":{},\"path\":{}}}",
+        "{{\"message\":{},\"path\":{},\"bootstrapped\":{}}}",
         jstr(&format!("{} set; saved to {}", key, path.display())),
         jstr(&path.display().to_string()),
+        jstr(&bootstrapped.display().to_string()),
+    ))
+}
+
+fn op_config_reset(params: &str) -> Result<String, String> {
+    let Some(key) = field(params, "key") else {
+        return Err("config_reset needs \"key\"".into());
+    };
+    let spec = crate::config::schema::known_key(&key)
+        .ok_or_else(|| format!("unknown config key '{}'", key))?;
+    let default = spec.default.to_string();
+    let _ = ensure_writable_ini()?;
+    config::set_live(&key, &default)?;
+    let errors = config::validate(&config::snapshot());
+    if !errors.is_empty() {
+        config::reload();
+        return Err(errors.join("; "));
+    }
+    let path = config::save(&config::snapshot())?;
+    store::audit(
+        "control",
+        "admin",
+        "config.reset",
+        true,
+        "local",
+        &format!("{}=<default>", key),
+    );
+    Ok(format!(
+        "{{\"message\":{}}}",
+        jstr(&format!(
+            "{} reset to default ({}) — saved to {}",
+            key,
+            crate::runtime_info::redact_value(&key, &default),
+            path.display()
+        )),
     ))
 }
 
