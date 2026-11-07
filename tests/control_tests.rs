@@ -303,3 +303,43 @@ fn config_list_groups_known_keys() {
     assert!(stdout.contains("agent.enabled"), "{stdout}");
     assert!(stdout.contains("spid3r.engine"), "{stdout}");
 }
+
+/// Regression: the --op passthrough once read the params from the wrong argv
+/// index, feeding the literal string "--params" to every op — which broke
+/// every params-carrying call (config_set/get, audit_tail) while the
+/// parameterless display ops kept working. The panel's safety toggles went
+/// through this path, so the bug silently disabled them.
+#[test]
+fn op_passthrough_parses_params_after_the_flag() {
+    let sb = sandbox("op-passthrough");
+    let out = sb
+        .command(&[
+            "control",
+            "--op",
+            "config_set",
+            "--params",
+            r#"{"key":"agent.enabled","value":"true"}"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = std::fs::read_to_string(ini_in(&sb)).unwrap();
+    assert!(text.contains("enabled = true"), "{text}");
+
+    let out2 = sb
+        .command(&[
+            "control",
+            "--op",
+            "config_get",
+            "--params",
+            r#"{"key":"agent.enabled"}"#,
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out2.stdout);
+    assert!(stdout.contains(r#""value":"true""#), "{stdout}");
+}

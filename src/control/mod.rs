@@ -24,6 +24,32 @@ pub mod panel;
 
 /// `spid3r control [status|safety|ini|config|agent|devices|audit]`
 pub fn cmd_control(args: &[String]) -> i32 {
+    // Raw op passthrough: `spid3r control --op NAME --params '{...}'`. Same
+    // operations the panel's IPC surface uses — this is what the UI test
+    // harness drives, so the browser page and the CLI are provably exercising
+    // identical code. Not documented in --help: it is a test/dev hook.
+    if args.first().map(String::as_str) == Some("--op") {
+        let op = args.get(1).cloned().unwrap_or_default();
+        // `--params` is a flag; the JSON is the argument AFTER it. Position
+        // lookup (not a fixed index) so flag order does not matter — getting
+        // this wrong silently fed "--params" itself as the params object.
+        let params = args
+            .iter()
+            .position(|a| a == "--params")
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+            .unwrap_or_else(|| "{}".to_string());
+        return match ops::dispatch(&op, &params) {
+            Ok(json) => {
+                println!("{}", json);
+                0
+            }
+            Err(e) => {
+                eprintln!("error[control]: {}", e);
+                1
+            }
+        };
+    }
     let sub = args.first().map(String::as_str).unwrap_or("status");
     match sub {
         "status" | "dashboard" => print_status(),
