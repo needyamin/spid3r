@@ -17,6 +17,14 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 name = "spid3r"
 path = "src/main.rs"
 
+# The desktop control panel. Requires the gui stack (wry/tao), so core-only
+# builds — the Linux/macOS release tarballs, CI --no-default-features — skip
+# it entirely; those platforms manage the runtime with `spid3r control`.
+[[bin]]
+name = "spid3r-control"
+path = "src/control_main.rs"
+required-features = ["gui"]
+
 
 
 [features]

@@ -107,6 +107,8 @@ COMMANDS:
     config [get KEY | set KEY VALUE | list | path | validate | reload | init]
                                            Read and write spid3r.ini
     agent start|pair|status|ops             Local management agent
+    control [status|ini|agent|devices|audit]
+                                            Runtime control surface (this machine)
     admin --host NAME <op> [flags]          Remote administration client
     version                                Print version information
     help                                   Print this help
@@ -334,6 +336,8 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "config" => cmd_config(&rest),
         #[cfg(not(target_arch = "wasm32"))]
         "agent" => Ok(crate::agent::cmd_agent(&rest)),
+        #[cfg(not(target_arch = "wasm32"))]
+        "control" => Ok(crate::control::cmd_control(&rest)),
         #[cfg(not(target_arch = "wasm32"))]
         "admin" => Ok(crate::agent::cmd_admin(&rest)),
         "version" | "--version" | "-V" => {
@@ -563,6 +567,30 @@ OPTIONS:
 ARGS:
     Arguments after the program file (and after --payload) are passed to the
     program's args(); flags are not.
+"),
+        "control" => Some("\
+spid3r control - Runtime control surface for this machine
+
+USAGE:
+    spid3r control [status]              Dashboard: version, spid3r.ini, agent,
+                                         devices, audit log
+    spid3r control ini [--init] [--force]
+                                         Show the spid3r.ini search order, or
+                                         write the commented default file
+    spid3r control agent start|stop|status
+                                         Detached agent lifecycle (start spawns
+                                         a background process and records its
+                                         PID; stop only ever signals a PID the
+                                         tool started and verified as spid3r)
+    spid3r control devices [list] | revoke <id>
+                                         Paired-device management
+    spid3r control audit [N]             Tail the audit log (default 20 lines)
+
+NOTES:
+    The desktop panel (spid3r-control.exe, Windows installer) drives the same
+    operations and writes the same audit log. Managing OTHER hosts is the job
+    of `spid3r agent pair` + `spid3r admin`, not this command.
+    -h, --help             Print help information
 "),
         "bundle" => Some("\
 spid3r bundle - Package into a distribution (add --self-contained to embed the runtime)

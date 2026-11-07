@@ -51,6 +51,9 @@ Unicode true
 !ifndef CALCULATOR_EXE
 !define CALCULATOR_EXE "..\..\target\release\calculator.exe"
 !endif
+; The desktop control panel (spid3r-control.exe). Passed by build.rs when the
+; gui payload built it; absent in core-only installers.
+;!ifdef CONTROL_EXE — defined on the makensis command line
 
 !define APPNAME        "Spid3r"
 !define PUBLISHER      "ANSNEW TECH."
@@ -125,6 +128,9 @@ Section "Spid3r compiler & runtime (required)" SecCore
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "${SPID3R_EXE}"
+!ifdef CONTROL_EXE
+  File "${CONTROL_EXE}"
+!endif
 !if ${WITH_NATIVE} == 1
   File "${LLVM_DLL}"
   File "${LLVM_LIB}"
@@ -149,6 +155,11 @@ Section "Spid3r compiler & runtime (required)" SecCore
   RMDir /r "$INSTDIR\stdlib"
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
+  ; Write the default spid3r.ini into %APPDATA%\Spid3r so the machine starts
+  ; with a visible, editable configuration file (Runtime Configuration).
+  ; Idempotent: `control ini --init` refuses to overwrite an existing ini.
+  nsExec::ExecToLog '"$INSTDIR\spid3r.exe" control ini --init'
+
   ; --- add to the current user's PATH (deduplicated) ---
   ReadRegStr $R0 HKCU "Environment" "Path"
   ${WordAdd} "$R0" ";" "E+$INSTDIR" $R1
@@ -162,6 +173,9 @@ Section "Spid3r compiler & runtime (required)" SecCore
   ; --- Start Menu shortcuts ---
   CreateDirectory "$SMPROGRAMS\Spid3r"
   CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Command Shell.lnk" "$SYSDIR\cmd.exe" '/K "spid3r version & echo Welcome to Spid3r! Type spid3r --help for commands."' "$INSTDIR\spid3r.ico" 0
+!ifdef CONTROL_EXE
+  CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Control Panel.lnk" "$INSTDIR\spid3r-control.exe" "" "$INSTDIR\spid3r.ico" 0
+!endif
 !if ${WITH_GUI} == 1
 !if /FileExists "${CALCULATOR_EXE}"
   CreateShortCut "$SMPROGRAMS\Spid3r\Spid3r Calculator.lnk" "$INSTDIR\calculator.exe" "" "$INSTDIR\spid3r.ico" 0
@@ -331,7 +345,7 @@ SectionEnd
 !if ${WITH_NATIVE} == 1
 LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui / build (native executables via LLVM), standalone calculator app, and PATH registration."
 !else if ${WITH_GUI} == 1
-LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui, standalone calculator app, and PATH registration."
+LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl / gui, the Spid3r Control Panel, standalone calculator app, and PATH registration."
 !else
 LangString DESC_SecCore  ${LANG_ENGLISH} "The spid3r toolchain: run / compile / exec / check / test / fmt / debug / repl, plus automatic PATH registration."
 !endif
@@ -376,6 +390,7 @@ Section "Uninstall"
 
   ; --- files ---
   Delete "$INSTDIR\spid3r.exe"
+  Delete "$INSTDIR\spid3r-control.exe"
   Delete "$INSTDIR\calculator.exe"
   Delete "$INSTDIR\LLVM-C.dll"
   Delete "$INSTDIR\LLVM-C.lib"

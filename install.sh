@@ -171,6 +171,12 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
     # compiled in by build.rs, so there is nothing to fetch or copy.
     remove_legacy_stdlib
 
+    # Pack the default spid3r.ini so the machine starts with a visible,
+    # editable configuration file (idempotent: refuses to overwrite one that
+    # already exists).
+    "${INSTALL_DIR}/spid3r" control ini --init >/dev/null 2>&1 \
+        || warn "could not write the default spid3r.ini (run: spid3r control ini --init)"
+
     say "Done. spid3r is installed into ${INSTALL_DIR}."
     exit 0
 fi
@@ -279,6 +285,10 @@ if [ -x "${INSTALL_DIR}/spid3r" ]; then
     say ""
     say "Spid3r installed successfully:"
     "${INSTALL_DIR}/spid3r" --version || true
+    # Default runtime configuration: a commented spid3r.ini the user can edit
+    # (idempotent — an existing ini is never overwritten).
+    "${INSTALL_DIR}/spid3r" control ini --init >/dev/null 2>&1 \
+        || warn "could not write the default spid3r.ini (run: spid3r control ini --init)"
 else
     die "installation finished but the binary is not executable at ${INSTALL_DIR}/spid3r"
 fi
@@ -291,6 +301,7 @@ else
 fi
 say "    spid3r --help"
 say "    spid3r run hello.matrix"
+say "    spid3r control status    # runtime dashboard (config, agent, devices)"
 
 # On GitHub Actions the PATH edits above only reach NEW shells; the current
 # job step (and often the whole job, if it uses a pre-set PATH) still cannot

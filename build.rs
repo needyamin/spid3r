@@ -254,6 +254,10 @@ fn windows_installer() {
     build
         .current_dir(&root)
         .args(["build", "--release", "--bin", "spid3r"]);
+    // The control panel rides along whenever the gui stack is available.
+    if gui {
+        build.arg("--bin").arg("spid3r-control");
+    }
     build
         .args(["--lib", "--no-default-features"])
         .arg("--target")
@@ -322,6 +326,17 @@ fn windows_installer() {
         .arg(format!("/DWITH_GUI={}", if gui { 1 } else { 0 }))
         .arg(format!("/DWITH_NATIVE={}", if native { 1 } else { 0 }))
         .arg(format!("/DSPID3R_EXE={}", exe.display()));
+    if gui {
+        // The control panel rides in the same nested release dir as
+        // spid3r.exe; pass it only when the nested build produced it.
+        let control = exe
+            .parent()
+            .map(|d| d.join("spid3r-control.exe"))
+            .filter(|c| c.is_file());
+        if let Some(control) = control {
+            nsis.arg(format!("/DCONTROL_EXE={}", control.display()));
+        }
+    }
     if gui && calc_exe.is_file() {
         nsis.arg(format!("/DCALCULATOR_EXE={}", calc_exe.display()));
     }
@@ -601,7 +616,14 @@ fn windows_resources() {
     // that claims OriginalFilename "spid3r.exe" — visible in the Properties
     // dialog — and, before this, left it with no icon at all because only the
     // spid3r bin was ever given the resource.
-    let bins = vec![("spid3r", "Spid3r Language Toolchain", "spid3r.exe")];
+    let bins = vec![
+        ("spid3r", "Spid3r Language Toolchain", "spid3r.exe"),
+        (
+            "spid3r-control",
+            "Spid3r Control Panel",
+            "spid3r-control.exe",
+        ),
+    ];
 
     // Derive the version from the crate so a Cargo.toml bump cannot leave the
     // Windows Properties dialog (and the .rc resource) claiming an old version.
