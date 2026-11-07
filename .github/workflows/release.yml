@@ -126,15 +126,15 @@ jobs:
 
   # Windows NSIS installer: build.rs packages Spid3r-Setup-<version>.exe on any
   # Windows *release* build (see `windows_installer` in build.rs — nested release
-  # build + makensis, APPVERSION from Cargo.toml). This job only needs to (a)
-  # put NSIS on PATH and (b) NOT inherit the workflow-wide SPID3R_NO_INSTALLER=1
-  # skip. Features are core+gui: the native backend would additionally require
-  # LLVM 18.1 on the runner, and the installer's finish-page text adapts to
-  # WITH_NATIVE=0 automatically.
+  # build + makensis, APPVERSION from Cargo.toml). This job installs LLVM 18
+  # first so the NATIVE AOT backend ships too — matching the 1.0.0 installer
+  # (LLVM-C.dll + LLVM-C.lib + spid3r_lang.lib in the payload, ~30 MB); without
+  # it `spid3r build` cannot produce standalone executables. SPID3R_NO_INSTALLER
+  # is overridden to "0" so build.rs actually packages.
   windows-installer:
     name: Build Windows NSIS installer
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -149,28 +149,36 @@ jobs:
         with:
           key: windows-installer
 
-      # Not preinstalled on the runner image. choco installs into
-      # C:\Program Files (x86)\NSIS — the first path build.rs probes.
-      - name: Install NSIS
-        timeout-minutes: 10
-        run: choco install nsis -y --no-progress
+      # NSIS (packaging) + LLVM 18.1.9 (the exact major.minor the `native`
+      # backend's inkwell binding targets — "llvm18-1"). Choco installs into
+      # C:\Program Files\LLVM, which build.rs probes by default; pin the
+      # version or choco serves the latest major and the binding fails.
+      - name: Install NSIS and LLVM 18.1.9
+        timeout-minutes: 15
+        run: |
+          choco install nsis -y --no-progress
+          choco install llvm --version=18.1.9 -y --no-progress --allow-downgrade
+          Test-Path "C:\Program Files\LLVM\bin\LLVM-C.dll"
+          Test-Path "C:\Program Files\LLVM\lib\LLVM-C.lib"
 
-      - name: Build release with NSIS installer
-        timeout-minutes: 45
+      - name: Build release with NSIS installer (core + gui + native)
+        timeout-minutes: 55
         env:
           # Overrides the workflow-wide skip for this job only ("0" = falsy in
           # build.rs's env parsing).
           SPID3R_NO_INSTALLER: "0"
-        run: cargo build --release --locked --no-default-features --features gui
+        run: cargo build --release --locked --no-default-features --features gui,native
 
-      - name: Verify and stage the installer
+      - name: Verify the installer and its native payload
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path . -Filter "Spid3r-Setup-*.exe" | Select-Object -First 1
           if (-not $exe) { Write-Error "::error::no Spid3r-Setup-*.exe was produced (build.rs skips silently on a missing NSIS — check earlier steps)"; exit 1 }
-          if ($exe.Length -lt 5MB) { Write-Error "::error::installer suspiciously small ($($exe.Length) bytes)"; exit 1 }
+          # A native-capable installer must carry the LLVM payload: it cannot
+          # be smaller than ~15 MB compressed. 2-3 MB means build.rs skipped
+          # the native files (missing LLVM) and the toolchain lost `spid3r build`.
+          if ($exe.Length -lt 15MB) { Write-Error "::error::installer is $($exe.Length) bytes — the native/LLVM payload is missing"; exit 1 }
           Write-Host "Installer: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB)"
-          "INSTALLER_NAME=$($exe.Name)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
@@ -226,7 +234,7 @@ jobs:
           clobber: false
           fail_on_unmatched_files: true
           body: |
-            Prebuilt spid3r binaries (core toolchain: VM + interpreter, stdlib compiled in) and the Windows NSIS installer (core + gui).
+            Prebuilt spid3r binaries (core toolchain: VM + interpreter, stdlib compiled in) and the Windows NSIS installer (core + gui + **native AOT backend** with bundled LLVM — `spid3r build` works out of the box).
 
             Install on Linux/macOS:
             ```
@@ -235,4 +243,4 @@ jobs:
 
             Windows: run `Spid3r-Setup-<version>.exe`. Or download `spid3r-<target>.tar.gz` for your platform, untar, and put `spid3r` on your PATH. SHA-256 sums: `sha256sums.txt`.
 
-            Builds are core-only (no LLVM/WebKit system dependencies). The native AOT backend requires building from source — see `docs/BUILDING.md`.
+            Linux/macOS tarballs are core-only (no LLVM/WebKit system dependencies). The GUI (`spid3r gui`) and the native AOT backend require building from source — see `docs/BUILDING.md`.
