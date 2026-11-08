@@ -71,9 +71,16 @@ See `docs/AGENT.md` for the full management-agent manual.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPID3R_REGISTRY` | — | Root directory of a local package registry. Without it, a `registry` dependency fails with a clear message. |
-| `SPID3R_ALLOW_INSECURE_GIT` | off | Permit `http://` / `git://` git dependencies. Off because they carry no transport integrity; `https://` needs no flag. |
-| `SPID3R_ALLOW_LOCAL_GIT_DEPS` | off | Permit bare paths and `file://` URLs as git dependencies. |
+| `SPID3R_REGISTRY` | — | Env alias of `packages.registry` (canonical INI key): root directory of a local package registry. Without either spelling, a `registry` dependency fails with a clear message. |
+| `SPID3R_ALLOW_INSECURE_GIT` | off | Env alias of `packages.allow_insecure_git`: permit `http://` / `git://` git dependencies. Off because they carry no transport integrity; `https://` needs no flag. |
+| `SPID3R_ALLOW_LOCAL_GIT_DEPS` | off | Env alias of `packages.allow_local_git`: permit bare paths and `file://` URLs as git dependencies. |
+
+The INI keys are canonical: the package manager reads them from the resolved
+`spid3r.ini`, and these variables override them per layer exactly like every
+other `SPID3R_*` alias (the generic `SPID3R_PACKAGES_REGISTRY`,
+`SPID3R_PACKAGES_ALLOW_INSECURE_GIT`, `SPID3R_PACKAGES_ALLOW_LOCAL_GIT`
+spellings also work; a generic spelling wins over the short alias when both
+are set).
 
 ## Notes
 

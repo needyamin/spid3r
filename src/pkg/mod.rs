@@ -1024,10 +1024,13 @@ fn resolve_source(
     }
 }
 
-/// The registry base directory: `$SPID3R_REGISTRY`, or a named sub-registry
-/// `$SPID3R_REGISTRY/<name>`. `None` when the env var is unset.
+/// The registry base directory: `packages.registry` (canonical home of the
+/// legacy `SPID3R_REGISTRY` env alias), or a named sub-registry
+/// `<registry>/<name>`. `None` when the key is unset or empty.
 fn registry_root(registry: Option<&str>) -> Option<PathBuf> {
-    let base = std::env::var_os("SPID3R_REGISTRY").map(PathBuf::from)?;
+    let base = crate::config::get("packages.registry")
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)?;
     Some(match registry {
         Some(name) => base.join(name),
         None => base,
@@ -1097,8 +1100,10 @@ fn resolve_registry(name: &str, version: &str, registry: Option<&str>) -> Result
 /// * scp-like `user@host:path` — the usual git-over-ssh form
 ///
 /// Opt-in escapes, for local development only:
-/// * `SPID3R_ALLOW_LOCAL_GIT_DEPS=1` — bare paths and `file://` URLs
-/// * `SPID3R_ALLOW_INSECURE_GIT=1` — `http://` and `git://` (no integrity)
+/// * `packages.allow_local_git` (alias `SPID3R_ALLOW_LOCAL_GIT_DEPS=1`) —
+///   bare paths and `file://` URLs
+/// * `packages.allow_insecure_git` (alias `SPID3R_ALLOW_INSECURE_GIT=1`) —
+///   `http://` and `git://` (no integrity)
 ///
 /// `ext::` is rejected **unconditionally**, including under those variables:
 /// no legitimate package URL runs a shell command, and the opt-in would have to
@@ -1146,14 +1151,14 @@ pub fn validate_git_url(name: &str, url: &str) -> Result<(), String> {
         return Ok(());
     }
     if lower.starts_with("http://") || lower.starts_with("git://") {
-        return if env_flag("SPID3R_ALLOW_INSECURE_GIT") {
+        return if crate::config::bool_of("packages.allow_insecure_git") {
             Ok(())
         } else {
             reject("plaintext transport has no integrity protection")
         };
     }
     if lower.starts_with("file://") {
-        return if env_flag("SPID3R_ALLOW_LOCAL_GIT_DEPS") {
+        return if crate::config::bool_of("packages.allow_local_git") {
             Ok(())
         } else {
             reject("file:// reads the local filesystem")
@@ -1181,22 +1186,11 @@ pub fn validate_git_url(name: &str, url: &str) -> Result<(), String> {
         return Ok(());
     }
     // Anything left is a bare local path (absolute, relative, or drive letter).
-    if env_flag("SPID3R_ALLOW_LOCAL_GIT_DEPS") {
+    if crate::config::bool_of("packages.allow_local_git") {
         Ok(())
     } else {
         reject("local path")
     }
-}
-
-/// Is the named opt-in environment variable set to an affirmative value?
-fn env_flag(key: &str) -> bool {
-    matches!(
-        std::env::var(key)
-            .map(|v| v.trim().to_ascii_lowercase())
-            .ok()
-            .as_deref(),
-        Some("1") | Some("true") | Some("yes") | Some("on")
-    )
 }
 
 /// The commit a previous install recorded for `name`, when the manifest still

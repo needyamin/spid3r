@@ -727,7 +727,7 @@ fn n_tcp_write_bytes(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String
 /// A partial file is left behind on a read error, which is deliberate: the
 /// caller gets `err` and can delete it, rather than silently receiving a
 /// truncated file that looks complete.
-fn n_tcp_recv_to_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+pub(crate) fn n_tcp_recv_to_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_recv_to_file", &args, 2)?;
     let id = want_int(&args[0], "tcp_recv_to_file")?;
     let path = want_str(&args[1], "tcp_recv_to_file")?;
@@ -775,7 +775,7 @@ fn n_tcp_recv_to_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Strin
 /// a UTF-8 round trip. The handle is left open on purpose - the caller decides
 /// when to half-close it (`tcp_close` sends FIN, which is what an FTP data
 /// connection needs so the server stops reading).
-fn n_tcp_send_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+pub(crate) fn n_tcp_send_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_send_file", &args, 2)?;
     let id = want_int(&args[0], "tcp_send_file")?;
     let path = want_str(&args[1], "tcp_send_file")?;

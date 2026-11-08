@@ -429,6 +429,12 @@ fn build_from_doc(
     // Existing documented names (SPID3R_MAX_WORKERS, ...) also apply.
     apply_process_env(&mut values, &mut notes, &mut display_explicit);
 
+    // List keys whose entries are checked against runtime state (currently
+    // security.disable_natives): trim, de-duplicate, and note-and-ignore
+    // entries that name nothing real. Runs after every layer so the final
+    // value — not one layer's contribution — is normalized.
+    schema::normalize_lists(&mut values, &mut notes);
+
     // Alias resolution: `errors.display` is the canonical spelling of
     // `debug.log_stdout` (both gate the stderr mirror of log lines). An
     // explicit `errors.display` in ANY layer wins; otherwise the alias
@@ -464,6 +470,13 @@ fn apply_process_env(
         ("SPID3R_ENV", "spid3r.env"),
         ("SPID3R_PLUGINS", "modules.plugins"),
         ("SPID3R_PATH", "modules.path"),
+        // Package-manager aliases: the historical spellings predate the
+        // [packages] section; SPID3R_PACKAGES_REGISTRY (the generic
+        // SPID3R_<SECTION>_<KEY> form) wins when both are set, because the
+        // generic layer runs after this one.
+        ("SPID3R_REGISTRY", "packages.registry"),
+        ("SPID3R_ALLOW_INSECURE_GIT", "packages.allow_insecure_git"),
+        ("SPID3R_ALLOW_LOCAL_GIT_DEPS", "packages.allow_local_git"),
     ];
     for (env, key) in legacy {
         if let Ok(v) = std::env::var(env) {
@@ -523,6 +536,11 @@ pub fn snapshot() -> Config {
 /// Read one key.
 pub fn get(dotted: &str) -> Option<String> {
     snapshot().get(dotted).map(String::from)
+}
+
+/// Read one key as a boolean (`schema::parse_bool`; missing/empty = false).
+pub fn bool_of(dotted: &str) -> bool {
+    snapshot().bool_of(dotted)
 }
 
 /// Update a key in the live snapshot (memory only; `save` persists).
@@ -588,6 +606,24 @@ pub fn validate(cfg: &Config) -> Vec<String> {
                 }
             }
             None => problems.push(format!("unknown key '{}'", k)),
+        }
+    }
+    // A security.basedir entry that does not exist matches nothing, so every
+    // path is denied (fail-safe by design — see fs_policy). Surfacing that
+    // here turns a silent operator typo into a note instead of a support
+    // ticket; the deny-everything behavior itself is correct.
+    if let Some(basedir) = cfg.get("security.basedir") {
+        for entry in basedir.split([',', ';']) {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if !Path::new(entry).exists() {
+                problems.push(format!(
+                    "security.basedir: entry '{}' does not exist — all paths will be denied",
+                    entry
+                ));
+            }
         }
     }
     problems

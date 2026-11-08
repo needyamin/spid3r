@@ -63,8 +63,23 @@ enabled = false
 bind = 127.0.0.1         ; 0.0.0.0 to accept other hosts
 port = 9527
 
+[modules]
+disable =                ; module names that fail to import (';' or ',' separated)
+assert_active = true     ; false makes assert()/assert_eq() no-ops returning true
+
 [security]
 allow_remote = false
+basedir =                ; open_basedir analog: paths scripts may touch
+disable_natives =        ; natives replaced by a catchable denial
+                         ; WARNING: basedir alone is NOT a jail — Process
+                         ; natives (spawn_process/exec_capture) reach any
+                         ; path the OS user can. Pair them, e.g.:
+                         ; disable_natives = spawn_process, exec_capture, run_payload, run_payload_strict
+
+[packages]
+registry =               ; canonical registry directory (alias: SPID3R_REGISTRY)
+allow_insecure_git = false
+allow_local_git = false
 
 [env.production]
 agent.enabled = true
@@ -102,6 +117,31 @@ its options map (`timeout_ms`, `max_body_bytes`, `max_headers`,
 `idle_timeout_ms` — see `docs/STANDARD_LIBRARY.md` §29); an explicit option
 beats the INI default. All four are re-read per accepted connection, so
 `config reload` applies to connections accepted afterwards.
+
+Script-surface policy keys: `security.basedir` is an open_basedir analog —
+when non-empty, every native that takes a script-controlled path (read,
+write, delete, rename, copy, list, stat, `chdir`, the npy/CSV file natives,
+`db_open`, `tcp_recv_to_file`, `tcp_send_file`) may only touch paths inside
+the listed directories (`;` or `,` separated); see `docs/SECURITY.md` for
+the guarantees and limits. **basedir alone is not a jail**: with the default
+Process capability, `spawn_process`/`exec_capture` still reach any path the
+OS user can through the child process — pair basedir with
+`disable_natives = spawn_process, exec_capture, run_payload,
+run_payload_strict` (or run under `--sandbox`) for meaningful confinement.
+`security.disable_natives` replaces the named
+natives with a catchable `disabled by configuration` denial (unknown names
+are noted and ignored). `modules.disable` makes importing the named modules
+fail with `module disabled by configuration: '…'` — the name comparison
+follows the platform's file-name case rules (case-insensitive on Windows
+like NTFS, case-sensitive on POSIX). These three are read once per process
+(a script cannot widen them with `config_set` mid-run) and are frozen for
+remote `config.set`. `modules.assert_active = false` turns
+`assert()`/`assert_eq()` into no-ops returning `true` (the zend.assertions
+analog). `packages.registry` is the canonical home of the
+`SPID3R_REGISTRY` env alias; `packages.allow_insecure_git` and
+`packages.allow_local_git` are the canonical homes of
+`SPID3R_ALLOW_INSECURE_GIT` and `SPID3R_ALLOW_LOCAL_GIT_DEPS` — the env
+spellings keep working as generic aliases.
 
 Diagnostics: `errors.level` (`error|warn|info`, default `info`) gates the
 script-visible diagnostics channel — diagnostics below the level are not
@@ -156,6 +196,14 @@ Keys containing or ending in `password`, `passwd`, `pwd`, `passphrase`,
 (`signing_key`, `access_key`, …) are replaced with
 `[redacted sha256:<12 hex>]`. Remote callers never receive unredacted output.
 
+Two phase-3 policy keys get the stricter treatment on the remote side:
+`security.basedir` maps the host's directory layout and
+`security.disable_natives` reveals exactly which natives a script may reach
+— reconnaissance either way — so the agent's remote `info` and `config.get`
+redact them as well. They are not credentials: the local CLI, local
+`spid3r info` and scripts (which are the *subject* of the policy and can
+probe both lists by observation) keep reading them raw.
+
 ## 3. Management agent
 
 `spid3r agent start` listens on `[agent] bind:port` and speaks
@@ -204,17 +252,31 @@ restarts it".
 ### Remote `config.set` restrictions
 
 `config.set` only accepts known, validated keys — and a fixed set of
-security-relevant keys **cannot be changed remotely at all**:
+security-relevant keys **cannot be changed remotely at all**. The set is
+**derived from the schema** (`frozen` on each key in
+`src/config/schema.rs`), not a hand-written list, so a new key cannot
+silently forget the classification; a pin test holds the exact set:
 
-* `security.*` (e.g. `allow_remote`) and `logging.*` (audit trail, log
-  target/switch)
+* every `security.*` key (deny switches, `allow_remote`, `basedir`,
+  `disable_natives`)
+* every `logging.*` key (audit trail, log target/switch, rotation)
 * `agent.role_viewer` / `role_operator` / `role_admin` (an operator must
   not be able to grant itself more operations)
-* `agent.enabled`, `agent.bind`, `agent.port`, `agent.max_connections`
-  (a remote change would take effect on the next restart)
+* `agent.enabled`, `agent.bind`, `agent.port`, `agent.max_connections`,
+  `agent.request_timeout_ms`, `agent.max_body` (a remote change would take
+  effect on the next restart)
+* `modules.disable` and the two git-transport opt-ins
+  `packages.allow_insecure_git` / `packages.allow_local_git`
 
 Change these by editing `spid3r.ini` on the host (or via the local CLI).
-Benign keys — e.g. `agent.name` — stay remotely settable.
+Benign keys — e.g. `agent.name`, `packages.registry`,
+`modules.assert_active` — stay remotely settable. `packages.registry` is a
+deliberate trade-off, not an oversight: a compromised remote channel could
+redirect the install source, and a **first** install from a redirected
+registry trusts its `sha256.txt`; `spider.lock` protects re-installs only.
+Operators who treat that as unacceptable should keep the key out of remote
+reach by editing the ini and restricting the `config.set` operation in
+`agent.role_operator`.
 
 ### Roles
 

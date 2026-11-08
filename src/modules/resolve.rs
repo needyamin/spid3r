@@ -135,6 +135,18 @@ pub fn resolve_module(
 ) -> Result<ResolvedModule, Diagnostic> {
     check_import_path(spec)?;
 
+    // `modules.disable`: a config-disabled module fails to resolve at all,
+    // on every backend that consults this one resolver (the semantic
+    // checker, the tree interpreter, the bytecode compiler, the VM's
+    // run-time fallback, the AOT flattener). The name is compared as
+    // written by the import, with the platform's file-name case rules
+    // (case-insensitive on Windows like NTFS, case-sensitive on POSIX —
+    // see `fs_policy::module_disabled`), so every engine reports the same
+    // diagnostic for the same import.
+    if let Some(reason) = crate::stdlib::fs_policy::module_disabled(spec) {
+        return Err(Diagnostic::new(Phase::Semantic, reason));
+    }
+
     let mut roots: Vec<(PathBuf, ModuleOrigin)> = Vec::with_capacity(extra_dirs.len() + 8);
     let base = PathBuf::from(importer);
     if let Some(dir) = base.parent() {

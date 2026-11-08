@@ -57,14 +57,42 @@ const SENSITIVE_SUBSTR: &[&str] = &[
 /// "monkey" is an acceptable false positive.
 pub fn is_sensitive_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    if SENSITIVE_SUBSTR.iter().any(|s| k.contains(s)) {
-        return true;
-    }
-    k.ends_with("key")
+    SENSITIVE_SUBSTR.iter().any(|s| k.contains(s))
+        || k.ends_with("key")
         || k.ends_with("_key")
         || k.ends_with("-key")
         || k.ends_with("secret")
         || k.ends_with("token")
+}
+
+/// The phase-3 policy keys: `security.basedir` maps the host's directory
+/// layout for a remote peer, and `security.disable_natives` names exactly
+/// which natives are denied — reconnaissance either way. They are NOT
+/// credentials: the script that is the subject of the policy can probe both
+/// lists by observation anyway, so local and script surfaces show them raw;
+/// every agent (remote) surface redacts them via [`redact_value_remote`].
+pub fn is_policy_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "security.basedir" | "security.disable_natives"
+    )
+}
+
+/// Remote-side redaction: credentials plus the policy keys (F-003). Used by
+/// EVERY agent remote branch that ships configuration to a paired device —
+/// the keyed `config.get` path, the dump-all `config.get` path (no `key`
+/// field), `info` and `dump_diagnostics`. The dump-all branch originally
+/// called the local [`redact_value`] and leaked the policy keys raw to a
+/// paired peer (QA-caught); both branches now share this remote redactor,
+/// and local/script surfaces keep [`redact_value`].
+pub fn redact_value_remote(key: &str, value: &str) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    if !is_sensitive_key(key) && !is_policy_key(key) {
+        return value.to_string();
+    }
+    hash_redact(value)
 }
 
 /// Replace a sensitive value with a stable prefix + hash, so an operator can
@@ -76,12 +104,29 @@ pub fn redact_value(key: &str, value: &str) -> String {
     if !is_sensitive_key(key) {
         return value.to_string();
     }
+    hash_redact(value)
+}
+
+/// The hash form shared by both redaction levels.
+fn hash_redact(value: &str) -> String {
     let h = crate::pkg::sha256_hex(value.as_bytes());
     format!("[redacted sha256:{}]", &h[..12])
 }
 
-/// Collect every section. `redact` applies to environment and agent state.
+/// Collect every section. `redact` applies to environment and agent state;
+/// `remote` additionally redacts the policy keys (`security.basedir`,
+/// `security.disable_natives`) — set by the agent's remote ops only, so
+/// local dumps keep them readable.
 pub fn collect(redact: bool) -> Vec<Section> {
+    collect_with(redact, false)
+}
+
+/// The agent's variant: same sections, policy keys redacted.
+pub fn collect_remote(redact: bool) -> Vec<Section> {
+    collect_with(redact, true)
+}
+
+fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
     let mut out = Vec::new();
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
@@ -210,7 +255,9 @@ pub fn collect(redact: bool) -> Vec<Section> {
     let cfg = config::snapshot();
     let mut s = Section::new("Configuration");
     for (k, v) in &cfg.values {
-        let shown = if redact {
+        let shown = if redact && remote {
+            redact_value_remote(k, v)
+        } else if redact {
             redact_value(k, v)
         } else {
             v.clone()
@@ -234,7 +281,13 @@ pub fn collect(redact: bool) -> Vec<Section> {
             if v.len() > 512 {
                 continue;
             }
-            let shown = if redact { redact_value(&k, &v) } else { v };
+            let shown = if redact && remote {
+                redact_value_remote(&k, &v)
+            } else if redact {
+                redact_value(&k, &v)
+            } else {
+                v
+            };
             s.push(&k, shown);
         }
         out.push(s);
@@ -788,11 +841,58 @@ pub fn print_for_cli(json: bool, html: bool, no_redact: bool) {
 
 /// Used by the agent `/api/v1/info` endpoint.
 pub fn info_map(redact: bool) -> Value {
-    sections_to_value(&collect(redact))
+    info_map_remote(redact)
+}
+
+/// The agent's variant: policy keys (`security.basedir`,
+/// `security.disable_natives`) are redacted for remote callers (F-003).
+pub fn info_map_remote(redact: bool) -> Value {
+    sections_to_value(&collect_remote(redact))
 }
 
 /// Keep `make_list` in the API surface for future list-shaped sections.
 #[allow(dead_code)]
 fn unused_make_list(items: Vec<Value>) -> Value {
     make_list(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The phase-3 policy keys reveal host directory layout (basedir) and
+    /// the deny list itself, so every agent (remote) surface redacts them
+    /// (F-003) — while local/script surfaces keep them readable, because a
+    /// script is the subject of the policy and can probe both lists by
+    /// observation anyway.
+    #[test]
+    fn policy_keys_are_redacted_remotely_and_visible_locally() {
+        for key in ["security.basedir", "security.disable_natives"] {
+            assert!(is_policy_key(key), "{} is a policy key", key);
+            // Not credentials: the local matcher does not fire.
+            assert!(!is_sensitive_key(key), "{} is not a credential key", key);
+            assert_eq!(redact_value(key, "C:/data;C:/tmp"), "C:/data;C:/tmp");
+            // Remote surfaces get the stable hash form.
+            assert!(
+                redact_value_remote(key, "C:/data;C:/tmp").starts_with("[redacted sha256:"),
+                "{} must come back hashed remotely, got: {}",
+                key,
+                redact_value_remote(key, "C:/data;C:/tmp")
+            );
+        }
+        // Case-insensitive key matching, matching the lowercase comparison
+        // the matcher uses.
+        assert!(is_policy_key("SECURITY.BASEDIR"));
+
+        // Credentials keep working through both levels.
+        assert!(is_sensitive_key("agent.shared"));
+        assert!(redact_value_remote("agent.shared", "abc").starts_with("[redacted sha256:"));
+
+        // Benign keys stay readable everywhere (regression guard against
+        // over-redaction sneaking past the substring list).
+        for key in ["packages.registry", "modules.assert_active"] {
+            assert!(!is_policy_key(key) && !is_sensitive_key(key));
+            assert_eq!(redact_value_remote(key, "D:/reg"), "D:/reg");
+        }
+    }
 }

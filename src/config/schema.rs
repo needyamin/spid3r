@@ -53,6 +53,12 @@ pub struct KeySpec {
     pub max: Option<i64>,
     /// How `spid3r config reload` treats this key.
     pub reload: ReloadSafety,
+    /// Whether the management agent's remote `config.set` may change this
+    /// key. Frozen keys widen or hide capability (deny lists, bind address,
+    /// audit toggle), so a remote peer must edit `spid3r.ini` on the host
+    /// instead. Derived from the schema, not a hand-written list, so a new
+    /// key cannot silently forget the classification.
+    pub frozen: bool,
 }
 
 impl KeySpec {
@@ -120,6 +126,7 @@ macro_rules! key {
             min: $min,
             max: $max,
             reload: ReloadSafety::Live,
+            frozen: false,
         }
     };
 }
@@ -138,6 +145,42 @@ macro_rules! key_startup {
             min: $min,
             max: $max,
             reload: ReloadSafety::StartupOnly,
+            frozen: false,
+        }
+    };
+}
+
+/// A key the management agent's remote `config.set` may not change: it
+/// widens or hides capability, so only the host's `spid3r.ini` may set it.
+macro_rules! key_frozen {
+    ($section:literal, $name:literal, $kind:expr, $default:literal, $min:expr, $max:expr, $desc:literal) => {
+        KeySpec {
+            section: $section,
+            name: $name,
+            kind: $kind,
+            default: $default,
+            description: $desc,
+            min: $min,
+            max: $max,
+            reload: ReloadSafety::Live,
+            frozen: true,
+        }
+    };
+}
+
+/// Like [`key_frozen!`], for keys that only take effect at process start.
+macro_rules! key_frozen_startup {
+    ($section:literal, $name:literal, $kind:expr, $default:literal, $min:expr, $max:expr, $desc:literal) => {
+        KeySpec {
+            section: $section,
+            name: $name,
+            kind: $kind,
+            default: $default,
+            description: $desc,
+            min: $min,
+            max: $max,
+            reload: ReloadSafety::StartupOnly,
+            frozen: true,
         }
     };
 }
@@ -367,7 +410,7 @@ pub static KEYS: &[KeySpec] = &[
         "Dedicated error-log path; empty = the shared diagnostic log only."
     ),
     // [logging]
-    key!(
+    key_frozen!(
         "logging",
         "enabled",
         ConfigValue::Bool,
@@ -376,7 +419,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Write the append-only diagnostic log."
     ),
-    key!(
+    key_frozen!(
         "logging",
         "file",
         ConfigValue::Str,
@@ -385,7 +428,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Log path override (empty = platform default)."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "logging",
         "rotate_mb",
         ConfigValue::Int,
@@ -394,7 +437,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(1024),
         "Rotate the log once it passes this size."
     ),
-    key!(
+    key_frozen!(
         "logging",
         "audit",
         ConfigValue::Bool,
@@ -440,8 +483,26 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Allow host-registered plugins (compiled into the embedding host)."
     ),
+    key_frozen_startup!(
+        "modules",
+        "disable",
+        ConfigValue::List,
+        "",
+        None,
+        None,
+        "Module names that fail to import with a catchable 'module disabled by configuration' error (';' or ',' separated)."
+    ),
+    key!(
+        "modules",
+        "assert_active",
+        ConfigValue::Bool,
+        "true",
+        None,
+        None,
+        "When false, assert()/assert_eq() become no-ops returning true (zend.assertions analog)."
+    ),
     // [security]
-    key_startup!(
+    key_frozen_startup!(
         "security",
         "deny_filesystem",
         ConfigValue::Bool,
@@ -450,7 +511,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Deny filesystem natives to scripts (embed-style policy)."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "security",
         "deny_process",
         ConfigValue::Bool,
@@ -459,7 +520,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Deny process natives to scripts."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "security",
         "deny_network",
         ConfigValue::Bool,
@@ -468,7 +529,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Deny network natives to scripts."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "security",
         "deny_environment",
         ConfigValue::Bool,
@@ -477,7 +538,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Deny environment natives to scripts."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "security",
         "allow_remote",
         ConfigValue::Bool,
@@ -486,8 +547,54 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Serve the management agent when true; the agent also serves when [agent] enabled is true (either switch starts it, bound to agent.bind)."
     ),
+    key_frozen_startup!(
+        "security",
+        "basedir",
+        ConfigValue::List,
+        "",
+        None,
+        None,
+        "open_basedir analog: when non-empty, scripts may only touch paths inside these directories (';' or ',' separated); empty = no restriction."
+    ),
+    key_frozen_startup!(
+        "security",
+        "disable_natives",
+        ConfigValue::List,
+        "",
+        None,
+        None,
+        "Named natives replaced by a catchable 'disabled by configuration' denial (';' or ',' separated); unknown names are noted and ignored."
+    ),
+    // [packages]
+    key!(
+        "packages",
+        "registry",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Canonical package registry directory (alias of SPID3R_REGISTRY)."
+    ),
+    key_frozen!(
+        "packages",
+        "allow_insecure_git",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Allow http:// and git:// dependencies (alias of SPID3R_ALLOW_INSECURE_GIT)."
+    ),
+    key_frozen!(
+        "packages",
+        "allow_local_git",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Allow bare-path and file:// git dependencies (alias of SPID3R_ALLOW_LOCAL_GIT_DEPS)."
+    ),
     // [agent]
-    key_startup!(
+    key_frozen_startup!(
         "agent",
         "enabled",
         ConfigValue::Bool,
@@ -496,7 +603,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Start the management agent when `spid3r agent start` runs."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "agent",
         "bind",
         ConfigValue::Str,
@@ -505,7 +612,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Listen address. 127.0.0.1 is local-only; 0.0.0.0 is required for other hosts."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "agent",
         "port",
         ConfigValue::Int,
@@ -514,7 +621,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(65535),
         "TCP port of the encrypted management API."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "agent",
         "max_connections",
         ConfigValue::Int,
@@ -523,7 +630,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(256),
         "Concurrent management connections."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "agent",
         "request_timeout_ms",
         ConfigValue::Int,
@@ -532,7 +639,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(300_000),
         "Per-request deadline."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "agent",
         "max_body",
         ConfigValue::Int,
@@ -560,7 +667,7 @@ pub static KEYS: &[KeySpec] = &[
         "Friendly name advertised to administrators (empty = hostname)."
     ),
     // Roles are stored as name=ops pairs; the schema keeps the three built-ins.
-    key!(
+    key_frozen!(
         "agent",
         "role_viewer",
         ConfigValue::Str,
@@ -569,7 +676,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Operations granted to the viewer role."
     ),
-    key!(
+    key_frozen!(
         "agent",
         "role_operator",
         ConfigValue::Str,
@@ -578,7 +685,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Operations granted to the operator role."
     ),
-    key!(
+    key_frozen!(
         "agent",
         "role_admin",
         ConfigValue::Str,
@@ -631,6 +738,13 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("modules.plugins", ConfigValue::Str, ""),
         ("modules.allow_wasm", ConfigValue::Bool, "true"),
         ("modules.allow_host", ConfigValue::Bool, "true"),
+        ("modules.disable", ConfigValue::Str, ""),
+        ("modules.assert_active", ConfigValue::Bool, "true"),
+        ("security.basedir", ConfigValue::Str, ""),
+        ("security.disable_natives", ConfigValue::Str, ""),
+        ("packages.registry", ConfigValue::Str, ""),
+        ("packages.allow_insecure_git", ConfigValue::Bool, "false"),
+        ("packages.allow_local_git", ConfigValue::Bool, "false"),
         ("security.deny_filesystem", ConfigValue::Bool, "false"),
         ("security.deny_process", ConfigValue::Bool, "false"),
         ("security.deny_network", ConfigValue::Bool, "false"),
@@ -676,6 +790,46 @@ pub fn validate_extra(dotted: &str, raw: &str) -> Result<(), String> {
         "runtime.timezone" => crate::stdlib::tz::check_timezone_setting(raw),
         _ => Ok(()),
     }
+}
+
+/// Post-load normalization for list keys whose entries are checked against
+/// runtime state.
+///
+/// `validate_extra` can only accept or reject a whole value, but a typo in
+/// one entry of `security.disable_natives` must not discard the other names
+/// (that would silently re-enable a native the operator meant to deny). So
+/// the final value is normalized here, after every layer has been applied:
+/// entries are split, trimmed, de-duplicated, and unknown native names are
+/// dropped with a note instead of poisoning the whole list.
+pub fn normalize_lists(
+    values: &mut std::collections::BTreeMap<String, String>,
+    notes: &mut Vec<String>,
+) {
+    let raw = match values.get("security.disable_natives") {
+        Some(v) if !v.trim().is_empty() => v.clone(),
+        _ => return,
+    };
+    let known: std::collections::HashSet<&str> = crate::stdlib::builtin_defs()
+        .iter()
+        .map(|(n, _)| *n)
+        .collect();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut kept: Vec<String> = Vec::new();
+    for entry in raw.split([',', ';']) {
+        let name = entry.trim();
+        if name.is_empty() || !seen.insert(name.to_string()) {
+            continue;
+        }
+        if known.contains(name) {
+            kept.push(name.to_string());
+        } else {
+            notes.push(format!(
+                "security.disable_natives: unknown native '{}' (ignored)",
+                name
+            ));
+        }
+    }
+    values.insert("security.disable_natives".to_string(), kept.join(","));
 }
 
 /// Commented default `spid3r.ini`.
@@ -730,6 +884,8 @@ path =
 plugins =
 allow_wasm = true
 allow_host = true
+# disable =                  ; module names that fail to import (';' or ',' separated)
+assert_active = true         ; false makes assert()/assert_eq() no-ops returning true
 
 [security]
 deny_filesystem = false
@@ -737,6 +893,15 @@ deny_process = false
 deny_network = false
 deny_environment = false
 allow_remote = false
+# basedir =                  ; open_basedir analog: scripts may only touch paths
+                             ; inside these directories (';' or ',' separated)
+# disable_natives =          ; natives replaced by a catchable
+                             ; 'disabled by configuration' denial
+
+[packages]
+# registry =                 ; canonical registry directory (alias: SPID3R_REGISTRY)
+allow_insecure_git = false   ; allow http:// and git:// dependencies
+allow_local_git = false      ; allow bare-path and file:// git dependencies
 
 [agent]
 enabled = false
@@ -933,6 +1098,9 @@ mod tests {
             "agent.port",
             "agent.enabled",
             "agent.max_connections",
+            "security.basedir",
+            "security.disable_natives",
+            "modules.disable",
         ] {
             let k = known_key(dotted).unwrap();
             assert_eq!(
@@ -942,5 +1110,126 @@ mod tests {
                 dotted
             );
         }
+    }
+
+    #[test]
+    fn coerce_phase3_keys() {
+        let basedir = known_key("security.basedir").unwrap();
+        assert!(basedir.coerce("C:\\data;C:\\tmp").is_ok());
+        assert!(basedir.coerce("").is_ok());
+
+        let disable = known_key("security.disable_natives").unwrap();
+        assert!(disable.coerce("read_file,write_file").is_ok());
+        assert!(disable.coerce("").is_ok());
+
+        let moddisable = known_key("modules.disable").unwrap();
+        assert!(moddisable.coerce("json").is_ok());
+
+        let assert_active = known_key("modules.assert_active").unwrap();
+        assert!(assert_active.coerce("false").is_ok());
+        assert!(assert_active.coerce("banana").is_err());
+
+        let registry = known_key("packages.registry").unwrap();
+        assert!(registry.coerce("D:\\registry").is_ok());
+
+        for dotted in [
+            "packages.allow_insecure_git",
+            "packages.allow_local_git",
+            "modules.assert_active",
+        ] {
+            let k = known_key(dotted).unwrap();
+            assert!(k.coerce("true").is_ok(), "{dotted}");
+            assert!(k.coerce("yes").is_ok(), "{dotted}");
+            assert!(k.coerce("maybe").is_err(), "{dotted}");
+        }
+    }
+
+    /// The agent's remote `config.set` refusal is derived from `frozen` in
+    /// this schema. The set is pinned exactly: it must cover everything the
+    /// previous hand-written check covered (every `[security]` key, every
+    /// `[logging]` key, the agent role lists, and the agent
+    /// enabled/bind/port/max_connections switches) plus the phase-3 keys
+    /// (`security.basedir`, `security.disable_natives`, `modules.disable`,
+    /// `packages.allow_insecure_git`, `packages.allow_local_git`,
+    /// `agent.request_timeout_ms`, `agent.max_body`). A new key added
+    /// without a deliberate frozen decision will fail this test and force
+    /// the classification to be made explicitly.
+    #[test]
+    fn frozen_set_is_pinned() {
+        let mut frozen: Vec<String> = KEYS
+            .iter()
+            .filter(|k| k.frozen)
+            .map(|k| k.dotted())
+            .collect();
+        frozen.sort();
+        let mut expected: Vec<&str> = [
+            // Everything the hand-written agent check blocked: all
+            // [security] and [logging] keys, the role lists, and the
+            // agent enable/bind/port/max_connections switches.
+            "security.deny_filesystem",
+            "security.deny_process",
+            "security.deny_network",
+            "security.deny_environment",
+            "security.allow_remote",
+            "security.basedir",
+            "security.disable_natives",
+            "logging.enabled",
+            "logging.file",
+            "logging.rotate_mb",
+            "logging.audit",
+            "agent.enabled",
+            "agent.bind",
+            "agent.port",
+            "agent.max_connections",
+            "agent.request_timeout_ms",
+            "agent.max_body",
+            "agent.role_viewer",
+            "agent.role_operator",
+            "agent.role_admin",
+            // New in phase 3.
+            "modules.disable",
+            "packages.allow_insecure_git",
+            "packages.allow_local_git",
+        ]
+        .to_vec();
+        expected.sort();
+        assert_eq!(
+            frozen, expected,
+            "the frozen set drifted from the pinned list"
+        );
+
+        // Deliberately NOT frozen: benign remote management targets.
+        for dotted in [
+            "agent.name",
+            "agent.pairing_ttl_sec",
+            "packages.registry",
+            "modules.assert_active",
+        ] {
+            let k = known_key(dotted).unwrap();
+            assert!(!k.frozen, "{} must stay remotely settable", dotted);
+        }
+    }
+
+    #[test]
+    fn normalize_lists_dedupes_and_notes_unknown_natives() {
+        let mut values = std::collections::BTreeMap::new();
+        let mut notes: Vec<String> = Vec::new();
+        values.insert(
+            "security.disable_natives".to_string(),
+            "read_file; read_file , write_file, bogus_native ;".to_string(),
+        );
+        normalize_lists(&mut values, &mut notes);
+        assert_eq!(
+            values.get("security.disable_natives").unwrap(),
+            "read_file,write_file"
+        );
+        assert_eq!(notes.len(), 1, "{}", notes.join("; "));
+        assert!(notes[0].contains("bogus_native"), "{}", notes[0]);
+
+        // Empty or unset lists are left untouched.
+        let mut values = std::collections::BTreeMap::new();
+        let mut notes: Vec<String> = Vec::new();
+        normalize_lists(&mut values, &mut notes);
+        assert!(notes.is_empty());
     }
 }

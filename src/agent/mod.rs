@@ -537,6 +537,27 @@ fn reply(
 
 // ----------------------------------------------------------------- operations
 
+/// The `values` map returned by the remote dump-all `config.get` branch
+/// (no `key` field). Factored out of `dispatch` so the redaction contract
+/// is testable without a live socket: a remote dump applies
+/// `redact_value_remote` — credentials AND the policy keys — exactly like
+/// the keyed branch. This branch originally called the local
+/// `redact_value` and shipped `security.basedir` /
+/// `security.disable_natives` raw to a paired peer (QA-caught: only the
+/// keyed path had been pinned).
+fn config_values_map_remote(values: &std::collections::BTreeMap<String, String>) -> Value {
+    use crate::value::collections::MapData;
+    use crate::value::new_ref;
+    let mut rows = Vec::new();
+    for (k, v) in values {
+        rows.push((
+            MapKey::Str(k.clone().into()),
+            Value::Str(crate::runtime_info::redact_value_remote(k, v).into()),
+        ));
+    }
+    Value::Map(new_ref(MapData::from_entries(rows)))
+}
+
 fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
     match op {
         "ping" => ok_json(vec![
@@ -550,11 +571,13 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
         "status" => status_json(),
         "info" => {
             let no_redact = json_bool_field(req, "no_redact").unwrap_or(false);
-            // Remote callers never get unredacted output.
+            // Remote callers never get unredacted output, and the policy
+            // keys (security.basedir, security.disable_natives) redact too
+            // (F-003): they map the host layout and name the denials.
             Value::Map({
                 use crate::value::collections::MapData;
                 use crate::value::new_ref;
-                let inner = crate::runtime_info::info_map(true);
+                let inner = crate::runtime_info::info_map_remote(true);
                 let _ = no_redact;
                 new_ref(MapData::from_entries(vec![
                     (MapKey::Str("ok".into()), Value::Bool(true)),
@@ -571,26 +594,24 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
                         (MapKey::Str("key".into()), Value::Str(k.as_str().into())),
                         (
                             MapKey::Str("value".into()),
-                            Value::Str(crate::runtime_info::redact_value(&k, v).into()),
+                            Value::Str(
+                                // Remote surface: credentials AND the policy
+                                // keys (basedir, disable_natives) are
+                                // redacted (F-003). The local CLI and script
+                                // `config_get` keep showing policy values —
+                                // the script that is the subject of the
+                                // policy can probe both lists by calling the
+                                // natives anyway.
+                                crate::runtime_info::redact_value_remote(&k, v).into(),
+                            ),
                         ),
                     ]),
                     None => err_json(&format!("unknown key '{}'", k)),
                 },
-                None => {
-                    use crate::value::collections::MapData;
-                    use crate::value::new_ref;
-                    let mut rows = Vec::new();
-                    for (k, v) in &cfg.values {
-                        rows.push((
-                            MapKey::Str(k.clone().into()),
-                            Value::Str(crate::runtime_info::redact_value(k, v).into()),
-                        ));
-                    }
-                    ok_json(vec![(
-                        MapKey::Str("values".into()),
-                        Value::Map(new_ref(MapData::from_entries(rows))),
-                    )])
-                }
+                None => ok_json(vec![(
+                    MapKey::Str("values".into()),
+                    config_values_map_remote(&cfg.values),
+                )]),
             }
         }
         "config.set" => {
@@ -601,24 +622,14 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
                 return err_json("missing value");
             };
             // Remote config.set must not be able to grant itself more power
-            // or cover its tracks. Role lists (operator -> admin escalation),
-            // the bind/enable switches (network self-exposure on the next
-            // restart), and the audit toggle (trail suppression) are all
-            // plain config keys, so they are blocked here. Benign agent keys
-            // (e.g. agent.name) stay settable; everything else uses the
-            // local CLI.
-            const REMOTE_SET_BLOCKED_PREFIXES: &[&str] = &["security.", "logging.", "agent.role_"];
-            const REMOTE_SET_BLOCKED_KEYS: &[&str] = &[
-                "agent.enabled",
-                "agent.bind",
-                "agent.port",
-                "agent.max_connections",
-            ];
-            let blocked = REMOTE_SET_BLOCKED_PREFIXES
-                .iter()
-                .any(|p| key.starts_with(p))
-                || REMOTE_SET_BLOCKED_KEYS.iter().any(|k| *k == key);
-            if blocked {
+            // or cover its tracks. Which keys are blocked is derived from
+            // the schema (`frozen` on each KeySpec — see
+            // schema::frozen_set_is_pinned), not a hand-written list, so a
+            // new capability-widening key cannot silently forget the
+            // classification. Benign keys (e.g. agent.name,
+            // packages.registry, modules.assert_active) stay settable;
+            // everything else uses the local CLI.
+            if crate::config::schema::known_key(&key).is_some_and(|spec| spec.frozen) {
                 return err_json(&format!(
                     "key '{}' may not be changed remotely (edit spid3r.ini on the host)",
                     key
@@ -842,7 +853,7 @@ fn run_op(name: &str) -> Value {
         "dump_diagnostics" => {
             let dir = config::state_dir();
             let path = dir.join(format!("diagnostics-{}.txt", now()));
-            let text = crate::runtime_info::render_text(&crate::runtime_info::collect(true));
+            let text = crate::runtime_info::render_text(&crate::runtime_info::collect_remote(true));
             match std::fs::write(&path, text) {
                 Ok(()) => ok_json(vec![(
                     MapKey::Str("path".into()),
@@ -1384,6 +1395,13 @@ mod tests {
             "security.allow_remote",
             "agent.enabled",
             "agent.max_connections",
+            // Phase-3 capability-widening keys: the deny lists and the git
+            // transport opt-ins are frozen with the rest of [security].
+            "security.basedir",
+            "security.disable_natives",
+            "modules.disable",
+            "packages.allow_insecure_git",
+            "packages.allow_local_git",
         ] {
             let body = format!(r#"{{"op":"config.set","key":"{}","value":"0.0.0.0"}}"#, key);
             let resp = dispatch("config.set", &req_json(&body), &device);
@@ -1397,5 +1415,112 @@ mod tests {
         // Benign keys still work is NOT exercised here: dispatch would
         // persist to the developer's real spid3r.ini. The deny-list is
         // prefix-based; agent.name passes the gate by construction.
+    }
+
+    fn json_map_field(v: &Value, key: &str) -> Option<Value> {
+        let Value::Map(m) = v else { return None };
+        let m = m.lock().unwrap();
+        let i = m.find(&MapKey::Str(key.into()))?;
+        Some(m.entries[i].1.clone())
+    }
+
+    #[test]
+    fn remote_config_get_dump_all_redacts_policy_keys() {
+        let device = store::Device {
+            id: "0".repeat(32),
+            name: "t".into(),
+            role: "operator".into(),
+            shared: String::new(),
+            created: 0,
+            last_seen: 0,
+        };
+        // Inject non-empty policy values into the live snapshot so the
+        // redaction is observable: defaults are empty strings, and
+        // redact_value_remote passes empty values through by design. The
+        // keyed branch was pinned by the runtime_info unit tests; this test
+        // pins the DUMP-ALL branch, which a QA pass caught leaking the raw
+        // basedir to a paired remote peer.
+        config::set_live("security.basedir", "C:/host/secret/dir").expect("set basedir");
+        config::set_live("security.disable_natives", "read_file").expect("set disable_natives");
+
+        let resp = dispatch("config.get", &req_json(r#"{"op":"config.get"}"#), &device);
+        let values = json_map_field(&resp, "values").expect("values map");
+        let basedir = json_str_field(&values, "security.basedir").expect("basedir entry");
+        assert!(
+            basedir.starts_with("[redacted sha256:"),
+            "dump-all must redact security.basedir, got {basedir:?}"
+        );
+        let disabled =
+            json_str_field(&values, "security.disable_natives").expect("disable_natives entry");
+        assert!(
+            disabled.starts_with("[redacted sha256:"),
+            "dump-all must redact security.disable_natives, got {disabled:?}"
+        );
+        let registry = json_str_field(&values, "packages.registry").expect("registry entry");
+        assert!(
+            !registry.starts_with("[redacted"),
+            "benign key stays raw on the dump-all branch, got {registry:?}"
+        );
+
+        // Restore: the injected policy values must not leak into other tests.
+        config::set_live("security.basedir", "").expect("reset basedir");
+        config::set_live("security.disable_natives", "").expect("reset disable_natives");
+    }
+
+    /// Socket-free pin of the same contract, through the factored helper:
+    /// the dump-all map redacts credentials and the policy keys while benign
+    /// keys stay raw. Unlike the dispatch test above, this one does not
+    /// mutate the process-global config — `fs_policy` bakes its basedir from
+    /// the snapshot on first native install, so injecting values here could
+    /// leak into other suites' guards.
+    #[test]
+    fn config_values_map_remote_redacts_policy_keys() {
+        let mut values = std::collections::BTreeMap::new();
+        values.insert(
+            "security.basedir".to_string(),
+            "C:/Users/me/data".to_string(),
+        );
+        values.insert(
+            "security.disable_natives".to_string(),
+            "read_file,write_file".to_string(),
+        );
+        values.insert("agent.name".to_string(), "web-1".to_string());
+        values.insert("agent.shared".to_string(), "s3cr3t".to_string());
+
+        let dumped = config_values_map_remote(&values);
+        let Value::Map(m) = &dumped else {
+            panic!(
+                "dump-all must return a map, got {:?}",
+                crate::value::type_name(&dumped)
+            );
+        };
+        let m = m.lock().unwrap();
+        let get = |k: &str| -> String {
+            match m.find(&MapKey::Str(k.into())) {
+                Some(i) => match &m.entries[i].1 {
+                    Value::Str(s) => s.to_string(),
+                    other => panic!("entry '{}' is not a string: {:?}", k, other),
+                },
+                None => panic!("entry '{}' missing from the dump", k),
+            }
+        };
+
+        // The policy keys: hashed, never the raw host path or deny list.
+        for key in ["security.basedir", "security.disable_natives"] {
+            assert!(
+                get(key).starts_with("[redacted sha256:"),
+                "dump-all must redact {}: {}",
+                key,
+                get(key)
+            );
+        }
+        // Credentials redact through both levels.
+        assert!(
+            get("agent.shared").starts_with("[redacted sha256:"),
+            "{}",
+            get("agent.shared")
+        );
+        // Benign keys stay raw in the dump.
+        assert_eq!(get("agent.name"), "web-1");
     }
 }

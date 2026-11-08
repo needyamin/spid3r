@@ -594,7 +594,7 @@ pub fn database_method(
 
 // ------------------------------------------------------------- db_open
 
-fn n_db_open(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+pub(crate) fn n_db_open(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     #[cfg(target_arch = "wasm32")]
     {
         let _ = args;

@@ -64,6 +64,122 @@ It is a policy filter over the built-in natives, **not a sandbox**:
 If you need a real sandbox, run the script in a separate process with OS-level
 isolation (containers, seccomp, job objects) and keep the host interface narrow.
 
+## Configuration policy: `security.basedir`, `security.disable_natives`, `modules.disable`
+
+`spid3r.ini` can narrow a run without the embed API. All three keys are
+read **once per process** (a script cannot widen them with `config_set`
+mid-run) and are frozen for the management agent's remote `config.set`.
+The two that describe the host (`security.basedir`,
+`security.disable_natives`) are also redacted on every agent **remote**
+surface (`info`, `config.get`) — they map the host's directory layout and
+the script's reach, which a paired device has no business enumerating;
+local surfaces and scripts keep them readable.
+
+### `security.basedir` — per-path filesystem scope
+
+When `security.basedir` is non-empty, every native that takes a
+script-controlled path may only touch paths inside the listed directories
+(`;` or `,` separated). An empty list (the default) is no restriction.
+Covered natives: `read_file`, `write_file`, `write_file_atomic`,
+`file_exists`, `file_delete`/`remove_file`, `rename`, `copy_file`,
+`list_dir`, `is_dir`, `is_file`, `file_size`, `file_mtime`, `chdir`,
+`dir_create`, `dir_remove`, `read_bytes`, `write_bytes`, `save_npy`,
+`load_npy`, `read_csv`, `write_csv`, `db_open`, `tcp_recv_to_file`,
+`tcp_send_file` — the full set is pinned by an exhaustiveness test against
+the `Capability::FileSystem` list (`src/stdlib/fs_policy.rs`). Denials are
+**catchable**: `path outside basedir: <path>`, raised before the file system
+is touched.
+
+How a path is judged (the guard in `src/stdlib/fs_policy.rs`):
+
+1. Relative script paths resolve against the process cwd; relative basedir
+   entries are resolved against the cwd when the policy is baked.
+2. The path is canonicalized. For a target that does not exist yet (a
+   write), the nearest existing ancestor is canonicalized and the missing
+   components are re-appended — the comparison never depends on the file
+   being there.
+3. The match against a basedir entry is **component-wise**, not a raw string
+   prefix: `C:\foo\bar` does not match `C:\foo\barbaz.txt`.
+4. Comparison is case-insensitive on Windows.
+5. Symlinks and junctions are resolved before comparing: a link inside the
+   basedir that points outside is outside.
+6. A path that cannot be resolved at all is **rejected** (deny by default);
+   likewise a basedir entry that does not exist on disk matches nothing —
+   entries are baked from existing directories only (the ancestor fallback
+   applies to script targets, never to entries) — so a typo in the only
+   entry denies everything rather than silently re-scoping the allowlist to
+   a directory the script could create. `spid3r config validate` notes such
+   entries.
+
+**basedir alone is NOT a jail.** It confines only the guarded path-taking
+natives listed above. A default run still has **Process capability**, and
+`spawn_process` / `exec_capture` hand an arbitrary command to the OS — the
+child inherits the process's full file access and can read or write
+anything the OS user can, regardless of `basedir` (empirically reproduced
+in the 2026-11 audit: `exec_capture` shelling out to `powershell` reads a
+file outside the basedir). For a meaningful confinement, deny the process
+natives alongside `basedir`:
+
+```ini
+[security]
+basedir = C:\data\spid3r
+disable_natives = spawn_process, exec_capture, run_payload, run_payload_strict
+```
+
+or run under `spid3r run --sandbox`, which denies filesystem, process,
+network and environment natives outright. Guarding the *program path* of
+`spawn_process`/`exec_capture` the same way as the other path-taking
+natives is on the backlog; until then, treat basedir-only runs as
+filesystem-scoped, not confined.
+
+**Honest limits.** This is approximate path resolution, not a kernel
+enforcement point:
+
+- **TOCTOU is inherent.** The check runs before the native opens the path;
+  a file swapped in (or a link replaced) between the check and the open — by
+  another process **or by one of the script's own spawned tasks** (`spawn`
+  runs on OS threads, so the racer needs no second process) — is not
+  covered. An empirical 200 000-iteration toggle race produced 0 escapes:
+  the check-and-open window is microseconds, the toggling period is
+  milliseconds, and no observed run landed inside it. That is an
+  observation, not a guarantee — only OS-level isolation closes the window.
+  (Backlog: resolve-then-open the canonical path inside the guarded native
+  to shrink the window; not implemented.)
+- The check sees the path the script passed, canonicalized. A hard link
+  that already points outside the basedir is indistinguishable from any
+  other file at its location.
+- The policy is per process. A native that takes a *non-path* handle (a TCP
+  connection opened before the policy, a plugin function registered by the
+  host) has whatever authority the host gave it — `basedir` is a filter
+  over the built-in natives, exactly like `Engine::deny`.
+- It is not a privilege boundary: the process can still touch anything the
+  OS user can, through its own host code.
+
+### `security.disable_natives` — per-native denial
+
+Each named native is replaced by the same stub machinery the sandbox uses
+and raises the catchable `disabled by configuration` error. The key can only
+**narrow** capability: there is no enable counterpart, unknown names are
+noted and ignored, and it composes with `--sandbox` — when both deny a
+native, the call is denied either way, and a native disabled by
+configuration stays disabled.
+
+### `modules.disable` — no import of a disabled module
+
+Importing a listed module fails on every engine with
+`module disabled by configuration: '<name>'` — the gate lives in the one
+shared resolver the checker, the tree interpreter, the bytecode compiler,
+the VM's run-time fallback and the AOT flattener all call, so the module
+cannot load at all (a step stricter than catchable: the import never runs).
+The name comparison follows the platform's file-name case rules: on
+**Windows it is case-insensitive** (NTFS treats `import "MATHX"` and
+`import "mathx"` as the same file, so a case-sensitive deny list would be a
+one-keystroke bypass); on **POSIX it is case-sensitive**. Both spellings of
+a module (with and without the `.matrix` suffix the resolver treats as
+equivalent) are matched. Note that this does not remove the natives a
+script could call directly — pair it with `disable_natives` when the module
+wraps a native.
+
 ## Concurrency rules
 
 Spid3r has real threads: `spawn` runs tasks on an OS thread pool, and the HTTP
@@ -223,8 +339,10 @@ or run those builds in a container with a fixed toolchain.
 
 These are known and not yet fixed. They are listed so nobody assumes otherwise:
 
-- **No capability model below `Engine::deny`.** There is no per-path filesystem
-  scope, no per-host network allowlist, no memory ceiling.
+- **No capability model below `Engine::deny`.** There is no per-host network
+  allowlist and no memory ceiling. Per-path filesystem scope now exists via
+  `security.basedir` (see above) — but it is approximate path resolution
+  with an inherent TOCTOU window, not kernel enforcement.
 - **The native (LLVM) backend is less exercised than the tree and VM engines.**
   Treat it as beta for hostile input.
 - **The GUI/webview backend** (`spid3r gui`) exposes whatever the webview

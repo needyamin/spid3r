@@ -501,12 +501,12 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 /// `spidr search <query> --local`: match package names in the local registry
-/// (`SPID3R_REGISTRY`) and in `vendor/`.
+/// (`packages.registry`, alias of `SPID3R_REGISTRY`) and in `vendor/`.
 pub fn search_local(root: &Path, query: &str) -> Result<Vec<(String, String)>, String> {
     let needle = query.to_lowercase();
     let mut found: BTreeMap<String, String> = BTreeMap::new();
 
-    if let Ok(reg) = std::env::var("SPID3R_REGISTRY") {
+    if let Some(reg) = crate::config::get("packages.registry").filter(|v| !v.trim().is_empty()) {
         let reg = PathBuf::from(reg);
         if let Ok(rd) = std::fs::read_dir(&reg) {
             for entry in rd.filter_map(|e| e.ok()) {

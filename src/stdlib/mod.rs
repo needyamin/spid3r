@@ -10,6 +10,7 @@ pub mod datetime;
 pub mod db;
 pub mod digest;
 pub mod entropy;
+pub mod fs_policy;
 pub mod kdf;
 pub mod media;
 pub mod multipart;
@@ -210,6 +211,30 @@ pub fn builtin_defs() -> Vec<NativeDef> {
 pub fn native_defs() -> Vec<NativeDef> {
     let mut defs = builtin_defs();
     defs.extend(crate::plugin::registered());
+    // Phase-3 security policy, baked once per process from the resolved
+    // config: `security.basedir` wraps every path-taking native with the
+    // allowlist guard, and `security.disable_natives` replaces named natives
+    // with the configuration stub. Both run here — the single funnel the
+    // tree interpreter, the bytecode VM and every imported module install
+    // from — so a module cannot re-arm anything its importer restricted
+    // (the same property the sandbox arming below relies on). Baked, not
+    // re-read per call, so a script's own config_set cannot widen its
+    // permissions mid-run.
+    let pol = fs_policy::policy();
+    if fs_policy::basedir_active(pol) {
+        for (name, func) in &mut defs {
+            if let Some(guarded) = fs_policy::guarded(name) {
+                *func = guarded;
+            }
+        }
+    }
+    if !pol.disabled_natives.is_empty() {
+        for (name, func) in &mut defs {
+            if pol.disabled_natives.iter().any(|d| d == name) {
+                *func = fs_policy::disabled_stub_fn();
+            }
+        }
+    }
     // `spid3r run --sandbox`: swap every capability native for a stub. The
     // gate lives here — the single funnel the tree interpreter, the bytecode
     // VM and every imported module install from — so a module cannot re-arm
@@ -393,10 +418,17 @@ fn n_deref(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 /// `assert(cond, message?)` — throw when `cond` is falsy. The backbone of
 /// project tests (`spid3r test` runs every `tests/*.matrix` and requires
 /// exit 0).
+///
+/// With `modules.assert_active = false` the check is skipped and the call
+/// becomes a no-op returning `true` (the zend.assertions analog): shipped
+/// code keeps its `assert` calls without paying for them at run time.
 fn n_assert(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     match args.len() {
         1 | 2 => {}
         n => return Err(format!("assert expects 1 or 2 arguments, got {}", n)),
+    }
+    if !fs_policy::assert_active() {
+        return Ok(Value::Bool(true));
     }
     if truthy(&args[0]) {
         return Ok(Value::Null);
@@ -409,10 +441,14 @@ fn n_assert(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 /// `assert_eq(actual, expected, message?)` — throw when the values differ.
 /// The message shows both sides, so a failing test explains itself.
+/// Honors `modules.assert_active` like [`n_assert`].
 fn n_assert_eq(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     match args.len() {
         2 | 3 => {}
         n => return Err(format!("assert_eq expects 2 or 3 arguments, got {}", n)),
+    }
+    if !fs_policy::assert_active() {
+        return Ok(Value::Bool(true));
     }
     if values_equal(&args[0], &args[1]) {
         return Ok(Value::Null);

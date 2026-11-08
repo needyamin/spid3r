@@ -4741,9 +4741,9 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           <img src="../diagrams/runtime-management.svg"
             alt="The host runs spid3r agent start on [agent] bind:port; an operator's machine pairs once with a one-time 48-hex code and then speaks spid3r-agent/1 over TCP with ChaCha20 plus HMAC-SHA256. Every request is role-checked (viewer, operator, admin) against an ops allow-list and dispatched to a predefined operation; calls land in audit.log and config is saved atomically. Below, the spid3r.ini precedence chain and the remote config.set deny-list.">
           <figcaption>Runtime configuration &amp; remote management. The wire never reaches a shell: an unknown
-            operation is refused, every call is role-checked and audited, and <code>security.*</code>,
-            <code>logging.*</code>, <code>agent.role_*</code> and the <code>agent.enabled/bind/port</code> keys are
-            read-only over the wire.</figcaption>
+            operation is refused, every call is role-checked and audited, and the schema-derived frozen set —
+            every <code>security.*</code> and <code>logging.*</code> key, <code>agent.role_*</code>, the agent
+            listener switches and the capability deny lists — is read-only over the wire.</figcaption>
         </figure>
 
         <h3 class="section-h3" id="ini">The <code>spid3r.ini</code> File</h3>
@@ -4805,6 +4805,21 @@ port = 9527
 
 [security]
 allow_remote = false
+basedir =                ; open_basedir analog: paths scripts may touch
+disable_natives =        ; natives replaced by a catchable denial
+                         ; WARNING: basedir alone is NOT a jail - Process
+                         ; natives (spawn_process/exec_capture) reach any
+                         ; path the OS user can. Pair them, e.g.:
+                         ; disable_natives = spawn_process, exec_capture, run_payload, run_payload_strict
+
+[modules]
+disable =                ; module names that fail to import
+assert_active = true     ; false makes assert()/assert_eq() no-ops
+
+[packages]
+registry =               ; canonical registry directory (alias: SPID3R_REGISTRY)
+allow_insecure_git = false
+allow_local_git = false
 
 [env.production]
 agent.enabled = true
@@ -4943,6 +4958,59 @@ agent.bind = 0.0.0.0
                 <td><code>false</code></td>
                 <td>Serves the management agent when true; the agent also serves when <code>[agent] enabled</code>
                   is true (either switch starts it, bound to <code>agent.bind</code>).</td>
+              </tr>
+              <tr>
+                <td><code>[security]</code></td>
+                <td><code>basedir</code></td>
+                <td><em>empty</em></td>
+                <td>open_basedir analog: when non-empty, every native that takes a script-controlled path may only
+                  touch paths inside these directories (<code>;</code> or <code>,</code> separated). Symlinks and
+                  junctions are resolved before comparing, the match is component-wise (never a raw string prefix),
+                  and unresolvable paths are rejected. Denials are catchable
+                  (<code>path outside basedir: …</code>); see <code>docs/SECURITY.md</code> for the honest limits.
+                  <strong>basedir alone is not a jail</strong>: Process natives
+                  (<code>spawn_process</code>/<code>exec_capture</code>) reach any path the OS user can — pair with
+                  <code>disable_natives = spawn_process, exec_capture, run_payload, run_payload_strict</code> or run
+                  under <code>--sandbox</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[security]</code></td>
+                <td><code>disable_natives</code></td>
+                <td><em>empty</em></td>
+                <td>Named natives replaced by the catchable <code>disabled by configuration</code> denial. Can only
+                  narrow capability; composes with <code>--sandbox</code>; unknown names are noted and ignored.</td>
+              </tr>
+              <tr>
+                <td><code>[modules]</code></td>
+                <td><code>disable</code></td>
+                <td><em>empty</em></td>
+                <td>Module names that fail to import with
+                  <code>module disabled by configuration: '…'</code>, on every engine (the gate lives in the shared
+                  resolver). The name comparison follows the platform's file-name case rules: case-insensitive on
+                  Windows (like NTFS), case-sensitive on POSIX.</td>
+              </tr>
+              <tr>
+                <td><code>[modules]</code></td>
+                <td><code>assert_active</code></td>
+                <td><code>true</code></td>
+                <td>When false, <code>assert()</code>/<code>assert_eq()</code> become no-ops returning
+                  <code>true</code> (the zend.assertions analog).</td>
+              </tr>
+              <tr>
+                <td><code>[packages]</code></td>
+                <td><code>registry</code></td>
+                <td><em>empty</em></td>
+                <td>Canonical home of the <code>SPID3R_REGISTRY</code> env alias: root directory of a local package
+                  registry.</td>
+              </tr>
+              <tr>
+                <td><code>[packages]</code></td>
+                <td><code>allow_insecure_git</code> / <code>allow_local_git</code></td>
+                <td><code>false</code> / <code>false</code></td>
+                <td>Canonical homes of <code>SPID3R_ALLOW_INSECURE_GIT</code> /
+                  <code>SPID3R_ALLOW_LOCAL_GIT_DEPS</code>: permit <code>http://</code>/<code>git://</code> and
+                  bare-path/<code>file://</code> git dependencies respectively. Frozen for remote
+                  <code>config.set</code>.</td>
               </tr>
               <tr>
                 <td><code>[agent]</code></td>
@@ -5127,11 +5195,14 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           Role lists are configurable via <code>agent.role_viewer</code> / <code>role_operator</code> /
           <code>role_admin</code> (<code>*</code> = all). Every accepted or rejected operation is one JSON line in
           <code>&lt;state&gt;/audit.log</code>. Disable with <code>[logging] audit = false</code> — locally only:
-          the remote <code>config.set</code> op refuses a fixed set of security-relevant keys
-          (<code>security.*</code>, <code>logging.*</code>, <code>agent.role_*</code>,
-          <code>agent.enabled/bind/port/max_connections</code>), so a paired operator cannot grant itself more
-          operations, silence the audit trail, or re-bind the listener. Benign keys (e.g. <code>agent.name</code>)
-          stay remotely settable; change the rest by editing <code>spid3r.ini</code> on the host.
+          the remote <code>config.set</code> op refuses a schema-derived set of security-relevant keys — every
+          <code>security.*</code> and <code>logging.*</code> key, <code>agent.role_*</code>, the agent
+          <code>enabled/bind/port/max_connections/request_timeout_ms/max_body</code> switches, and the phase-3
+          capability keys (<code>modules.disable</code>, <code>packages.allow_insecure_git</code>,
+          <code>packages.allow_local_git</code>) — so a paired operator cannot grant itself more operations, silence
+          the audit trail, re-bind the listener, or widen the script deny lists. Benign keys (e.g.
+          <code>agent.name</code>, <code>packages.registry</code>, <code>modules.assert_active</code>) stay remotely
+          settable; change the rest by editing <code>spid3r.ini</code> on the host.
         </p>
         <p>
           State files: <code>devices.json</code> (paired devices), <code>clients.json</code> (admin-client known
@@ -5145,6 +5216,13 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           write. Remote <code>info</code> and <code>config.get</code> are always redacted. Devices and config state
           are saved atomically (temp file + rename). Pair on a network you trust:
           the code is high-entropy and short-lived, but it is not a PAKE.
+        </p>
+        <p>
+          One more pairing rule for operators: <code>security.basedir</code> confines only the guarded path-taking
+          natives. A script with Process capability reaches arbitrary paths through
+          <code>spawn_process</code>/<code>exec_capture</code> no matter what <code>basedir</code> says — deny those
+          natives (<code>disable_natives = spawn_process, exec_capture, run_payload, run_payload_strict</code>) or
+          run under <code>--sandbox</code> for a meaningful jail.
         </p>
         <p>
           Full operator manual: <code>docs/AGENT.md</code>.
