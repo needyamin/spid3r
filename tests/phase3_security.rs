@@ -589,10 +589,13 @@ fn modules_disable_leaves_other_modules_alone() {
     );
 }
 
-/// A case-variant import must not bypass the deny list on Windows: NTFS is
-/// case-insensitive, so `import "MATHX"` resolves the same file as "mathx",
-/// and the deny list must follow the file system's case rules. On POSIX the
-/// comparison stays case-sensitive, so the same script imports fine there.
+/// A case-variant import must never load a disabled module, on any platform.
+/// On Windows NTFS is case-insensitive, so `import "MATHX"` resolves the same
+/// file as "mathx" and the deny gate matches case-insensitively (fires before
+/// resolution, even when no module file exists). On POSIX the gate compares
+/// exactly, so the gate does not fire — but the case-sensitive file system
+/// cannot resolve "MATHX" either, so the case-variant import still fails at
+/// resolution. Either way there is no bypass.
 #[test]
 fn modules_disable_case_variant_follows_platform_case_rules() {
     let dir = scratch_dir("md_case");
@@ -606,13 +609,13 @@ fn modules_disable_case_variant_follows_platform_case_rules() {
     for engine in ["tree", "vm"] {
         let (code, out, err) =
             run_with_engine(engine, &[("SPID3R_INI", ini.as_str())], &["run", &script]);
+        assert_ne!(
+            code, 0,
+            "[{engine}] the case-variant import must fail on every platform"
+        );
+        assert!(!out.contains("BAD"), "[{engine}] {}", out);
+        let text = format!("{}{}", out, err);
         if cfg!(windows) {
-            assert_ne!(
-                code, 0,
-                "[{engine}] the case-variant import must be denied on Windows"
-            );
-            assert!(!out.contains("BAD"), "[{engine}] {}", out);
-            let text = format!("{}{}", out, err);
             assert!(
                 text.contains("module disabled by configuration: 'MATHX'"),
                 "[{engine}] {}{}",
@@ -621,9 +624,13 @@ fn modules_disable_case_variant_follows_platform_case_rules() {
             );
             messages.push(text);
         } else {
-            assert_eq!(
-                code, 0,
-                "[{engine}] on POSIX the comparison stays case-sensitive"
+            // POSIX: the gate is exact, so the failure must come from
+            // resolution ("module not found"), not from the deny list.
+            assert!(
+                !text.contains("module disabled by configuration"),
+                "[{engine}] on POSIX the gate is exact; the failure must come from resolution: {}{}",
+                out,
+                err
             );
         }
     }
