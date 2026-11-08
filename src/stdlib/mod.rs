@@ -3590,7 +3590,11 @@ fn n_unix_ms(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_datetime_parts(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let sec = want_int(&one("datetime_parts", &args)?, "datetime_parts")?;
-    let (year, month, day, hour, minute, second, weekday) = datetime::datetime_parts(sec);
+    // The configured default timezone (`runtime.timezone`) shifts the parts;
+    // UTC (the default) keeps the exact pre-configuration behavior.
+    let (offset, _abbr) = tz::default_zone(sec).unwrap_or((0, "UTC".to_string()));
+    let (year, month, day, hour, minute, second, weekday) =
+        datetime::datetime_parts(sec.saturating_add(offset as i64));
     let entries = vec![
         (MapKey::Str("year".into()), Value::Int(year)),
         (MapKey::Str("month".into()), Value::Int(month as i64)),
@@ -3619,6 +3623,14 @@ fn n_datetime_from_parts(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
     let min = want_int(&args[4], "datetime_from_parts")?;
     let s = want_int(&args[5], "datetime_from_parts")?;
     let ts = datetime::datetime_from_parts(y, m, d, h, min, s)?;
+    // The civil parts are interpreted in the configured default timezone
+    // (UTC keeps the plain conversion). The offset is read at the naive-UTC
+    // instant: exact for fixed offsets and UTC, an approximation for
+    // DST-zone instants inside the gap/overlap.
+    let ts = match tz::default_zone(ts) {
+        Some((offset, _)) => ts.saturating_sub(offset as i64),
+        None => ts,
+    };
     Ok(Value::Int(ts))
 }
 
@@ -3631,7 +3643,12 @@ fn n_format_datetime(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String
     }
     let sec = want_int(&args[0], "format_datetime")?;
     let fmt = want_str(&args[1], "format_datetime")?;
-    Ok(Value::Str(datetime::format_datetime(sec, &fmt).into()))
+    // The configured default timezone localizes the output; `%z`/`%Z` name
+    // the zone in effect (UTC keeps `+0000`/`UTC`).
+    let (offset, abbr) = tz::default_zone(sec).unwrap_or((0, "UTC".to_string()));
+    Ok(Value::Str(
+        datetime::format_parts(sec.saturating_add(offset as i64), offset, &abbr, &fmt).into(),
+    ))
 }
 
 fn n_is_ok(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {

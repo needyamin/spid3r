@@ -32,6 +32,12 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_STATE_DIR` | `%LOCALAPPDATA%\Spid3r\state` / `$XDG_STATE_HOME/spid3r` | Paired devices, admin-client book, audit log. |
 | `SPID3R_ENV` | `default` (or `[spid3r] env`) | Selects `[env.<name>]` overrides in the INI. |
 | `SPID3R_<SECTION>_<KEY>` | — | Per-key override (`SPID3R_AGENT_PORT`, `SPID3R_AGENT_BIND`, …). |
+| `SPID3R_RUNTIME_WALL_CLOCK_LIMIT_MS` | `0` | Alias of `runtime.wall_clock_limit_ms`: fatal wall-clock deadline for `spid3r run`, in ms; `0` = unlimited. |
+| `SPID3R_RUNTIME_MEMORY_LIMIT_MB` | `0` | Alias of `runtime.memory_limit_mb`: catchable soft cap on script-value heap, in MiB; `0` = unlimited. |
+| `SPID3R_RUNTIME_TIMEZONE` | `UTC` | Alias of `runtime.timezone`: default zone for the datetime natives (`UTC`, `+06:00`, or an IANA name). |
+| `SPID3R_ERRORS_LEVEL` | `info` | Alias of `errors.level`: minimum surfaced diagnostic level (`error`/`warn`/`info`). |
+| `SPID3R_ERRORS_DISPLAY` | `false` | Alias of `errors.display`: mirror diagnostic log lines to stderr. |
+| `SPID3R_ERRORS_LOG_FILE` | — | Alias of `errors.log_file`: dedicated error-log path (empty = shared log only). |
 
 See `docs/AGENT.md` for the full management-agent manual.
 

@@ -42,9 +42,15 @@ engine = vm
 max_workers = 256
 gc = true
 
-[memory]
-max_steps = 0            ; 0 = unlimited
-max_call_depth = 1000
+[runtime]
+wall_clock_limit_ms = 0    ; fatal execution deadline in ms; 0 = unlimited
+memory_limit_mb = 0        ; soft cap on script-value heap (catchable); 0 = unlimited
+timezone = UTC             ; UTC, a fixed offset like +06:00, or an IANA name
+
+[errors]
+level = info               ; error|warn|info — minimum surfaced diagnostic level
+display = false            ; mirror diagnostic log lines to stderr
+log_file =                 ; dedicated error-log path; empty = shared log only
 
 [agent]
 enabled = false
@@ -58,6 +64,35 @@ allow_remote = false
 agent.enabled = true
 agent.bind = 0.0.0.0
 ```
+
+Run-time limits: `runtime.wall_clock_limit_ms` arms a wall-clock deadline for
+`spid3r run` — expiry is a **fatal**, uncatchable `wall-clock limit exceeded
+(N ms)` error on the tree and VM engines, checked at statement boundaries,
+at the VM's instruction poll, and around blocking native calls (so the
+residual granularity is one blocking operation). The native AOT backend is
+not wired to it (same treatment as `--max-call-depth`). Deadline and cap are
+Arc-shared with spawned tasks and module interpreters, and `config reload`
+applies new values live to a running process. `runtime.memory_limit_mb` is a
+**catchable** soft cap on the total heap used by script values (`out of
+memory: script exceeded memory_limit_mb (N)` — PHP-style, a program may
+catch it, drop the offending container, and continue). Accounting covers
+every tracked heap cell (containers, instances, closures, classes), counting
+strings by byte length and containers by element count; free-standing values
+in untracked environments (plain `let` scalars and strings that never live
+inside a tracked container) are not counted, and the estimate refreshes at
+most every 25 ms, so the cap is approximate by design. `runtime.timezone`
+sets the default zone for the datetime natives: `UTC` (the default), a fixed
+offset like `+06:00`, or an IANA name from `tz_names()` — anything else is
+rejected at load time with a note and UTC stays in effect.
+
+Diagnostics: `errors.level` (`error|warn|info`, default `info`) gates the
+script-visible diagnostics channel — diagnostics below the level are not
+surfaced. `errors.display` mirrors diagnostic log lines to stderr; it is the
+canonical spelling of the documented `debug.log_stdout` alias (both work; an
+explicit `errors.display` in any layer wins, otherwise the alias applies).
+`errors.log_file` routes error-level diagnostics to a dedicated file when
+set; empty (the default) keeps the current behavior of the shared diagnostic
+log only.
 
 Scripts read and write the live values with `config_get(key)`,
 `config_set(key, value)` and `config_reload()`. Sensitive-looking values are

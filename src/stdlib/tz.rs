@@ -243,6 +243,77 @@ fn localize(zone: &Zone, t: i64) -> (i64, i32, &str, bool) {
     )
 }
 
+// ------------------------------------------------- runtime.timezone setting
+
+/// Parse a fixed-offset setting: `+06:00`, `-05:30`, `+0630`. Returns the
+/// offset in seconds, or `None` when the text is not a well-formed offset
+/// (or the offset is out of range).
+pub fn fixed_offset_secs(s: &str) -> Option<i32> {
+    let rest = s.strip_prefix(['+', '-'])?;
+    let negative = s.starts_with('-');
+    let (h, m) = match rest.split_once(':') {
+        Some((h, m)) => (h, m),
+        None => (rest.get(0..2)?, rest.get(2..4)?),
+    };
+    if h.len() != 2
+        || m.len() != 2
+        || !h.bytes().all(|b| b.is_ascii_digit())
+        || !m.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let (h, m): (i32, i32) = (h.parse().ok()?, m.parse().ok()?);
+    if h > 23 || m > 59 {
+        return None;
+    }
+    let off = h * 3600 + m * 60;
+    Some(if negative { -off } else { off })
+}
+
+/// Validate a `runtime.timezone` value at config-load time. Accepts exactly
+/// what the tz machinery supports: `UTC` (the default), a fixed offset like
+/// `+06:00`, or an IANA zone/link name from `tz_names()`. An empty value is
+/// treated as `UTC`.
+pub fn check_timezone_setting(s: &str) -> Result<(), String> {
+    if is_known_timezone_setting(s) {
+        Ok(())
+    } else {
+        Err(format!(
+            "unknown timezone '{s}' (expected UTC, a fixed offset like +06:00, or an IANA name from tz_names())"
+        ))
+    }
+}
+
+/// `true` when `s` is an accepted `runtime.timezone` value.
+pub fn is_known_timezone_setting(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.eq_ignore_ascii_case("UTC") {
+        return true;
+    }
+    if fixed_offset_secs(s).is_some() {
+        return true;
+    }
+    find(s).is_some()
+}
+
+/// The configured default timezone (`runtime.timezone`) at instant `t`:
+/// `(offset_secs, abbr)`, or `None` when the setting is UTC/unset (so the
+/// datetime natives keep their exact current behavior).
+pub fn default_zone(t: i64) -> Option<(i32, String)> {
+    let name = crate::config::get("runtime.timezone").unwrap_or_else(|| "UTC".to_string());
+    let name = name.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("UTC") {
+        return None;
+    }
+    if let Some(off) = fixed_offset_secs(name) {
+        // Fixed offsets keep their text as the %Z abbreviation.
+        return Some((off, name.to_string()));
+    }
+    let zone = find(name)?;
+    let lt = zone.local_type(t);
+    Some((lt.offset, lt.abbr.clone()))
+}
+
 /// Civil parts -> UTC instant, resolving DST.
 ///
 /// A local time can be ambiguous (the hour that repeats when DST ends) or
@@ -434,4 +505,46 @@ fn n_tz_format(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 fn n_tz_version(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tz_version", &args, 0)?;
     Ok(str_val(db().version.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_timezone_setting, default_zone, fixed_offset_secs};
+
+    #[test]
+    fn fixed_offsets_parse_and_range_check() {
+        assert_eq!(fixed_offset_secs("+06:00"), Some(21600));
+        assert_eq!(fixed_offset_secs("-05:30"), Some(-19800));
+        assert_eq!(fixed_offset_secs("+0630"), Some(23400));
+        assert_eq!(fixed_offset_secs("06:00"), None, "sign is required");
+        assert_eq!(fixed_offset_secs("+25:00"), None);
+        assert_eq!(fixed_offset_secs("+06:60"), None);
+        assert_eq!(fixed_offset_secs("+060"), None);
+        assert_eq!(fixed_offset_secs("+ab:cd"), None);
+    }
+
+    #[test]
+    fn timezone_setting_validation() {
+        for good in [
+            "UTC",
+            "utc",
+            "",
+            "  ",
+            "+06:00",
+            "-05:30",
+            "Europe/Berlin",
+            "Asia/Kolkata",
+        ] {
+            assert!(check_timezone_setting(good).is_ok(), "{good:?}");
+        }
+        for bad in ["Mars/Olympus", "Bogus/Zone", "+25:00", "06:00"] {
+            assert!(check_timezone_setting(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn default_zone_is_none_for_utc() {
+        // The compiled default is UTC: no zone adjustment anywhere.
+        assert!(default_zone(0).is_none());
+    }
 }

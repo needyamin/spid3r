@@ -308,9 +308,9 @@ Monotonic and epoch time conversion with high-precision civil calendar math.
 | `unix_time()` | Current Unix epoch timestamp in whole seconds (`int`). |
 | `now_ms()` | Monotonic millisecond clock (`int`) — for measuring elapsed time. |
 | `unix_ms()` | Current Unix epoch timestamp in milliseconds (`int`). |
-| `datetime_parts(epoch_sec)` | Decompose Unix timestamp into map (`year`, `month`, `day`, `hour`, `minute`, `second`, `weekday`). Supports negative and leap-year timestamps. |
-| `datetime_from_parts(y, m, d, h, min, s)` | Convert civil date-time components into epoch seconds (`int`). |
-| `format_datetime(epoch_sec, fmt_str)` | Strftime-style formatting, always in UTC. Specifiers: `%Y` `%m` `%d` `%e` `%H` `%I` `%M` `%S` `%p` `%a` `%A` `%b` `%B` `%j` `%w` `%u` `%z` (always `+0000`) `%Z` (always `UTC`) `%F` `%T` `%%`. |
+| `datetime_parts(epoch_sec)` | Decompose Unix timestamp into map (`year`, `month`, `day`, `hour`, `minute`, `second`, `weekday`). Supports negative and leap-year timestamps. Parts are localized by `runtime.timezone` (`spid3r.ini`); UTC by default. |
+| `datetime_from_parts(y, m, d, h, min, s)` | Convert civil date-time components into epoch seconds (`int`). Civil parts are interpreted in `runtime.timezone` (`spid3r.ini`); UTC by default. |
+| `format_datetime(epoch_sec, fmt_str)` | Strftime-style formatting in the default zone `runtime.timezone` (`spid3r.ini`); UTC by default. Specifiers: `%Y` `%m` `%d` `%e` `%H` `%I` `%M` `%S` `%p` `%a` `%A` `%b` `%B` `%j` `%w` `%u` `%z` (`+0600` for `Asia/Dhaka`, `+0000` in UTC) `%Z` (the zone abbreviation, e.g. `+06:00` for a fixed offset, `CET` for `Europe/Berlin`, `UTC` in UTC) `%F` `%T` `%%`. Pass an explicit zone to `tz_format()` to override per call. |
 
 ## Time Zones (IANA tzdata 2026e)
 

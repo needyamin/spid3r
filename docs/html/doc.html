@@ -4782,9 +4782,15 @@ engine = vm
 max_workers = 256
 gc = true
 
-[memory]
-max_steps = 0            ; 0 = unlimited
-max_call_depth = 1000
+[runtime]
+wall_clock_limit_ms = 0    ; fatal execution deadline in ms; 0 = unlimited
+memory_limit_mb = 0        ; soft cap on script-value heap (catchable); 0 = unlimited
+timezone = UTC             ; UTC, a fixed offset like +06:00, or an IANA name
+
+[errors]
+level = info               ; error|warn|info — minimum surfaced diagnostic level
+display = false            ; mirror diagnostic log lines to stderr
+log_file =                 ; dedicated error-log path; empty = shared log only
 
 [agent]
 enabled = false
@@ -4841,6 +4847,54 @@ agent.bind = 0.0.0.0
                 <td><code>max_call_depth</code></td>
                 <td><code>1000</code></td>
                 <td>Interpreter call-depth limit.</td>
+              </tr>
+              <tr>
+                <td><code>[runtime]</code></td>
+                <td><code>wall_clock_limit_ms</code></td>
+                <td><code>0</code></td>
+                <td>Fatal wall-clock deadline for <code>spid3r run</code>; expiry raises the uncatchable
+                  <code>wall-clock limit exceeded (N ms)</code> on the tree and VM engines (checked at statement
+                  boundaries, the VM poll, and around blocking native calls). <code>0</code> = unlimited. Not wired
+                  to the native AOT backend. Applied live by <code>config reload</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[runtime]</code></td>
+                <td><code>memory_limit_mb</code></td>
+                <td><code>0</code></td>
+                <td>Catchable soft cap (<code>out of memory: script exceeded memory_limit_mb (N)</code>) on the
+                  total heap used by script values: strings by byte length, containers by element count;
+                  approximate (refreshes at most every 25&nbsp;ms, and values in untracked environments are not
+                  counted). <code>0</code> = unlimited. Applied live by <code>config reload</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[runtime]</code></td>
+                <td><code>timezone</code></td>
+                <td><code>UTC</code></td>
+                <td>Default zone for the datetime natives: <code>UTC</code>, a fixed offset like
+                  <code>+06:00</code>, or an IANA name from <code>tz_names()</code>. Unknown values are rejected at
+                  load time with a note.</td>
+              </tr>
+              <tr>
+                <td><code>[errors]</code></td>
+                <td><code>level</code></td>
+                <td><code>info</code></td>
+                <td>Minimum level for script-visible diagnostics (<code>error</code>/<code>warn</code>/<code>info</code>);
+                  diagnostics below the level are not surfaced.</td>
+              </tr>
+              <tr>
+                <td><code>[errors]</code></td>
+                <td><code>display</code></td>
+                <td><code>false</code></td>
+                <td>Mirror diagnostic log lines to stderr. Canonical spelling of the documented
+                  <code>debug.log_stdout</code> alias (an explicit <code>errors.display</code> in any layer wins,
+                  otherwise the alias applies).</td>
+              </tr>
+              <tr>
+                <td><code>[errors]</code></td>
+                <td><code>log_file</code></td>
+                <td><em>empty</em></td>
+                <td>Dedicated error-log path for error-level diagnostics (they also keep flowing to the shared
+                  log); empty = shared log only.</td>
               </tr>
               <tr>
                 <td><code>[modules]</code></td>

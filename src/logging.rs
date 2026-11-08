@@ -95,6 +95,87 @@ pub fn path() -> Option<PathBuf> {
     }
 }
 
+// --------------------------------------------------- [errors] diagnostics
+
+/// Diagnostic severities for the `[errors]` keys, ranked so a surfaced
+/// diagnostic must be at or above the configured `errors.level`
+/// (`error` < `warn` < `info`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Error,
+    Warn,
+    Info,
+}
+
+impl Level {
+    fn rank(self) -> u8 {
+        match self {
+            Level::Error => 0,
+            Level::Warn => 1,
+            Level::Info => 2,
+        }
+    }
+}
+
+/// The configured `errors.level` (default `info`). Read per emission, so a
+/// reload applies without a restart.
+fn configured_level() -> Level {
+    match crate::config::get("errors.level").as_deref() {
+        Some("error") => Level::Error,
+        Some("warn") => Level::Warn,
+        _ => Level::Info,
+    }
+}
+
+/// `true` when a diagnostic of severity `severity` is surfaced on the
+/// script-visible stderr channel (the mirror, and warning printing during a
+/// run). Diagnostics below `errors.level` are suppressed.
+pub fn level_allows(severity: Level) -> bool {
+    severity.rank() <= configured_level().rank()
+}
+
+/// Whether diagnostic log lines are mirrored to stderr (`errors.display`,
+/// alias-resolved with `debug.log_stdout` in the config loader).
+fn display_enabled() -> bool {
+    crate::config::get("errors.display")
+        .as_deref()
+        .map(crate::config::schema::parse_bool)
+        .unwrap_or(false)
+}
+
+/// The dedicated error-log path (`errors.log_file`), when set. Empty (the
+/// default) keeps the current behavior: error-level entries land only in the
+/// shared diagnostic log.
+fn error_path() -> Option<PathBuf> {
+    crate::config::get("errors.log_file")
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+/// Append a line to `file`, creating parent directories. Best effort.
+fn append_to(file: &std::path::Path, line: &str) {
+    if let Some(parent) = file.parent() {
+        if !parent.is_dir() && std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(file)
+    {
+        let _ = f.write_all(line.as_bytes());
+        let _ = f.flush();
+    }
+}
+
+/// Record one line at error severity. Error-level diagnostics additionally
+/// go to the dedicated error log when `errors.log_file` is set (they always
+/// keep flowing to the shared diagnostic log).
+pub fn record_error(scope: &str, message: &str) {
+    record_at(scope, message, Level::Error);
+}
+
 /// `YYYY-MM-DDTHH:MM:SSZ` for the current UTC time.
 fn timestamp() -> String {
     let secs = crate::stdlib::datetime::unix_time();
@@ -113,7 +194,16 @@ fn timestamp() -> String {
 }
 
 /// Record one line. `scope` names the component (`build`, `run_payload`, …).
+///
+/// Operational records are `warn`-severity on the `[errors]` channel.
 pub fn record(scope: &str, message: &str) {
+    record_at(scope, message, Level::Warn);
+}
+
+/// The single log sink: shared diagnostic log (as before), then the
+/// `[errors]` behaviors — the dedicated error log for error-level entries,
+/// and the stderr mirror gated by `errors.display` and `errors.level`.
+fn record_at(scope: &str, message: &str, severity: Level) {
     if !enabled() {
         return;
     }
@@ -152,6 +242,18 @@ pub fn record(scope: &str, message: &str) {
     {
         let _ = f.write_all(line.as_bytes());
         let _ = f.flush();
+    }
+    // Dedicated error log: only error-severity entries, and only when the
+    // operator pointed one at us.
+    if severity == Level::Error {
+        if let Some(err_file) = error_path() {
+            append_to(&err_file, &line);
+        }
+    }
+    // Stderr mirror: gated by errors.display (canonical) and errors.level
+    // (diagnostics below the level are not surfaced).
+    if display_enabled() && level_allows(severity) {
+        eprint!("{}", line);
     }
 }
 
@@ -263,4 +365,10 @@ mod tests {
         assert!(!file.exists(), "SPID3R_LOG=0 must disable logging");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    // The [errors] behaviors (errors.level gating, errors.log_file routing,
+    // the errors.display mirror and its debug.log_stdout alias) read the
+    // config snapshot, which this process loads once at startup — they are
+    // covered end-to-end in tests/phase1_limits.rs, where each case gets a
+    // fresh process with its own environment.
 }

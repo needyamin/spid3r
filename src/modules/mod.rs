@@ -320,6 +320,8 @@ pub fn load(
         interp.globals.clone(),
         interp.budget_handle(),
         interp.max_call_depth(),
+        interp.wall_clock_handle(),
+        interp.mem_limit_handle(),
     );
     let mut result: Result<Vec<(String, Value)>, Diagnostic> = Ok(Vec::new());
     // A panic while the module body runs releases the module's mutexes (see

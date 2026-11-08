@@ -195,6 +195,13 @@ pub struct Vm {
     /// `--max-steps` as an alias): charged in batches at the instruction
     /// poll. `None` costs one `Option` check per poll, not per instruction.
     budget: Option<crate::budget::Budget>,
+    /// Wall-clock deadline (`runtime.wall_clock_limit_ms`); `None` = no
+    /// deadline. Shared with spawned task VMs and module VMs so the whole
+    /// run draws one deadline; expiry is fatal.
+    wall_clock: Option<crate::budget::WallClock>,
+    /// Heap cap (`runtime.memory_limit_mb`); `None` = unlimited. Exceeding
+    /// it is a catchable runtime error.
+    mem_limit: Option<crate::budget::MemLimit>,
     /// Configured call-depth limit (`spid3r run --max-call-depth`); the
     /// engine default until the flag tightens it.
     max_depth: usize,
@@ -289,6 +296,8 @@ impl Vm {
             invoke_cache: HashMap::new(),
             slot_pool: Vec::with_capacity(16),
             budget: None,
+            wall_clock: None,
+            mem_limit: None,
             max_depth: MAX_CALL_DEPTH,
             pending_str: None,
         };
@@ -300,6 +309,35 @@ impl Vm {
     /// `None` (the default) means unlimited.
     pub fn set_budget(&mut self, budget: Option<crate::budget::Budget>) {
         self.budget = budget;
+    }
+
+    /// Install the wall-clock deadline (`runtime.wall_clock_limit_ms`).
+    /// `None` (the default) means unlimited; expiry is fatal.
+    pub fn set_wall_clock(&mut self, wall_clock: Option<crate::budget::WallClock>) {
+        self.wall_clock = wall_clock;
+    }
+
+    /// Install the heap cap (`runtime.memory_limit_mb`). `None` (the default)
+    /// means unlimited; exceeding it is catchable.
+    pub fn set_mem_limit(&mut self, mem_limit: Option<crate::budget::MemLimit>) {
+        self.mem_limit = mem_limit;
+    }
+
+    /// Enforce the wall-clock deadline and the heap cap. The wall clock is
+    /// fatal (like budget exhaustion); the memory cap is catchable. Returns
+    /// `true` when a limit fired and `self.error` now holds it.
+    fn limits_fired(&mut self) -> bool {
+        let wall_hit = self.wall_clock.as_ref().is_some_and(|wc| wc.exceeded());
+        if wall_hit {
+            let msg = self.wall_clock.as_ref().unwrap().message();
+            self.fail_fatal(msg);
+            return true;
+        }
+        if let Some(msg) = self.mem_limit.as_ref().and_then(|ml| ml.check()) {
+            self.fail(msg);
+            return true;
+        }
+        false
     }
 
     /// Tighten the call-depth limit (`spid3r run --max-call-depth`). Must be
@@ -341,6 +379,8 @@ impl Vm {
             invoke_cache: HashMap::new(),
             slot_pool: Vec::with_capacity(8),
             budget: None,
+            wall_clock: None,
+            mem_limit: None,
             max_depth: MAX_CALL_DEPTH,
             pending_str: None,
         }
@@ -731,6 +771,11 @@ impl Vm {
                         self.fail_fatal("execution budget exhausted");
                         continue;
                     }
+                }
+                // Wall-clock deadline (fatal) and heap cap (catchable), on
+                // the same poll cadence as the budget.
+                if self.error.is_none() && self.limits_fired() {
+                    continue;
                 }
                 if crate::sched::current_task_cancelled() {
                     self.fail("task cancelled");
@@ -1249,9 +1294,12 @@ impl Vm {
                         Ok(vclass) => self.frames[nf].slots.push(Value::VClass(vclass)),
                         Err(e) => {
                             // If the module's initialization exhausted the
-                            // shared budget, the import failure must be fatal:
+                            // shared budget (or the shared wall-clock
+                            // deadline), the import failure must be fatal:
                             // `try { import ... } catch { }` may not swallow it.
-                            if self.budget.as_ref().is_some_and(|b| b.exhausted()) {
+                            if self.budget.as_ref().is_some_and(|b| b.exhausted())
+                                || self.wall_clock.as_ref().is_some_and(|wc| wc.exceeded())
+                            {
                                 self.error = Some(VmError { fatal: true, ..e });
                             } else {
                                 self.error = Some(e);
@@ -2398,6 +2446,8 @@ impl Vm {
                     let global_consts = self.global_consts.clone();
                     let consts = self.consts.clone();
                     let budget = self.budget.clone();
+                    let wall_clock = self.wall_clock.clone();
+                    let mem_limit = self.mem_limit.clone();
                     let max_depth = self.max_depth;
                     let handle = self.sched.spawn_job(Box::new(move || {
                         let mut vm = Vm::with_shared(
@@ -2412,6 +2462,8 @@ impl Vm {
                         );
                         // The task draws from the same allowance as its spawner.
                         vm.budget = budget;
+                        vm.wall_clock = wall_clock;
+                        vm.mem_limit = mem_limit;
                         vm.max_depth = max_depth;
                         // Carry the thrown value across the task boundary so
                         // `join`/`await` rethrow is structural: `catch` on the
@@ -2461,9 +2513,12 @@ impl Vm {
                         }
                         Err(e) => {
                             // If the module's initialization exhausted the
-                            // shared budget, the import failure must be fatal:
+                            // shared budget (or the shared wall-clock
+                            // deadline), the import failure must be fatal:
                             // `try { import ... } catch { }` may not swallow it.
-                            if self.budget.as_ref().is_some_and(|b| b.exhausted()) {
+                            if self.budget.as_ref().is_some_and(|b| b.exhausted())
+                                || self.wall_clock.as_ref().is_some_and(|wc| wc.exceeded())
+                            {
                                 self.error = Some(VmError { fatal: true, ..e });
                             } else {
                                 self.error = Some(e);
@@ -2539,9 +2594,12 @@ impl Vm {
                         }
                         Err(e) => {
                             // If the module's initialization exhausted the
-                            // shared budget, the import failure must be fatal:
+                            // shared budget (or the shared wall-clock
+                            // deadline), the import failure must be fatal:
                             // `try { import ... } catch { }` may not swallow it.
-                            if self.budget.as_ref().is_some_and(|b| b.exhausted()) {
+                            if self.budget.as_ref().is_some_and(|b| b.exhausted())
+                                || self.wall_clock.as_ref().is_some_and(|wc| wc.exceeded())
+                            {
                                 self.error = Some(VmError { fatal: true, ..e });
                             } else {
                                 self.error = Some(e);
@@ -3150,8 +3208,11 @@ impl Vm {
                     file,
                     module_dirs,
                 );
-                // Module initialization draws from the importer's budget.
+                // Module initialization draws from the importer's budget and
+                // shares its deadline/heap cap.
                 mvm.budget = self.budget.clone();
+                mvm.wall_clock = self.wall_clock.clone();
+                mvm.mem_limit = self.mem_limit.clone();
                 mvm.max_depth = self.max_depth;
                 // Seed the builtins into the module's own globals (see the
                 // source path's note).
@@ -3232,10 +3293,14 @@ impl Vm {
         // module cannot even call `len` (they used to arrive via the shared
         // importer map).
         mvm.install_stdlib();
-        // Module initialization draws from the importer's budget.
+        // Module initialization draws from the importer's budget, and shares
+        // its deadline/heap cap.
         mvm.budget = self.budget.clone();
+        mvm.wall_clock = self.wall_clock.clone();
+        mvm.mem_limit = self.mem_limit.clone();
         mvm.max_depth = self.max_depth;
         let budget_exhausted = self.budget.as_ref().is_some_and(|b| b.exhausted());
+        let wall_exceeded = self.wall_clock.as_ref().is_some_and(|wc| wc.exceeded());
         let exports = mvm.run_module(&program).map_err(|d| VmError {
             fatal: false,
             thrown: d.thrown,
@@ -3244,9 +3309,10 @@ impl Vm {
             trace: Vec::new(),
         });
         let exports = match exports {
-            // A module whose initialization exhausted the shared budget must
-            // surface as fatal, not as a catchable import error.
-            Err(e) if budget_exhausted => Err(VmError { fatal: true, ..e }),
+            // A module whose initialization exhausted the shared budget (or
+            // the shared wall-clock deadline) must surface as fatal, not as
+            // a catchable import error.
+            Err(e) if budget_exhausted || wall_exceeded => Err(VmError { fatal: true, ..e }),
             other => other,
         };
         match &exports {
@@ -3491,8 +3557,18 @@ impl Vm {
     /// operation, mirroring the native backend's `cancel_guard`. A real error
     /// from the operation wins: cancellation is sticky, so the next operation
     /// re-raises it.
+    ///
+    /// The same guard enforces the wall-clock deadline (fatal) and the heap
+    /// cap (catchable) after every call — a blocking native can consume a
+    /// whole budget's worth of wall time between polls.
     fn cancel_guard_vm(&mut self) {
-        if self.error.is_none() && crate::sched::current_task_cancelled() {
+        if self.error.is_some() {
+            return;
+        }
+        if self.limits_fired() {
+            return;
+        }
+        if crate::sched::current_task_cancelled() {
             self.fail("task cancelled");
         }
     }

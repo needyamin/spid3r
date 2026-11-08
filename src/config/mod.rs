@@ -310,6 +310,7 @@ impl Config {
     pub fn set(&mut self, dotted: &str, value: &str) -> Result<(), String> {
         let spec = known_key(dotted).ok_or_else(|| format!("unknown key '{}'", dotted))?;
         spec.coerce(value)?;
+        schema::validate_extra(dotted, value)?;
         self.values.insert(dotted.to_string(), value.to_string());
         Ok(())
     }
@@ -358,6 +359,10 @@ fn build_from_doc(
         .iter()
         .map(|(k, _, v)| (k.to_string(), v.to_string()))
         .collect();
+    // Whether an *accepted* `errors.display` was seen in any layer (the
+    // alias resolution below must not mistake an invalid or default value
+    // for an explicit choice).
+    let mut display_explicit = false;
 
     // File values (excluding [env.*] which apply later).
     for (k, v) in doc.flatten() {
@@ -369,6 +374,13 @@ fn build_from_doc(
                 if let Err(e) = spec.coerce(&v) {
                     notes.push(format!("{}: {} (using default)", k, e));
                     continue;
+                }
+                if let Err(e) = schema::validate_extra(&k, &v) {
+                    notes.push(format!("{}: {} (using default)", k, e));
+                    continue;
+                }
+                if k == "errors.display" {
+                    display_explicit = true;
                 }
                 values.insert(k, v);
             }
@@ -394,6 +406,16 @@ fn build_from_doc(
                         ));
                         continue;
                     }
+                    if let Err(e) = schema::validate_extra(rest, &v) {
+                        notes.push(format!(
+                            "[env.{}] {}: {} (using default)",
+                            env_name, rest, e
+                        ));
+                        continue;
+                    }
+                    if rest == "errors.display" {
+                        display_explicit = true;
+                    }
                     values.insert(rest.to_string(), v);
                 }
                 None => {
@@ -405,7 +427,20 @@ fn build_from_doc(
 
     // Process environment: SPID3R_AGENT_BIND / SPID3R_AGENT_BIND.
     // Existing documented names (SPID3R_MAX_WORKERS, ...) also apply.
-    apply_process_env(&mut values, &mut notes);
+    apply_process_env(&mut values, &mut notes, &mut display_explicit);
+
+    // Alias resolution: `errors.display` is the canonical spelling of
+    // `debug.log_stdout` (both gate the stderr mirror of log lines). An
+    // explicit `errors.display` in ANY layer wins; otherwise the alias
+    // applies. Resolved here, in the loader, so use sites never see two
+    // spellings.
+    if !display_explicit {
+        let alias = values
+            .get("debug.log_stdout")
+            .cloned()
+            .unwrap_or_else(|| "false".to_string());
+        values.insert("errors.display".to_string(), alias);
+    }
 
     Config {
         values,
@@ -414,7 +449,11 @@ fn build_from_doc(
         mtime,
     }
 }
-fn apply_process_env(values: &mut BTreeMap<String, String>, notes: &mut Vec<String>) {
+fn apply_process_env(
+    values: &mut BTreeMap<String, String>,
+    notes: &mut Vec<String>,
+    display_explicit: &mut bool,
+) {
     // Documented legacy names first.
     let legacy = [
         ("SPID3R_MAX_WORKERS", "spid3r.max_workers"),
@@ -454,6 +493,13 @@ fn apply_process_env(values: &mut BTreeMap<String, String>, notes: &mut Vec<Stri
                     notes.push(format!("{}: {}", env_name, e));
                     continue;
                 }
+                if let Err(e) = schema::validate_extra(&spec.dotted(), &v) {
+                    notes.push(format!("{}: {}", env_name, e));
+                    continue;
+                }
+                if spec.dotted() == "errors.display" {
+                    *display_explicit = true;
+                }
                 values.insert(spec.dotted().to_string(), v);
             }
         }
@@ -486,10 +532,17 @@ pub fn set_live(dotted: &str, value: &str) -> Result<(), String> {
 }
 
 /// Re-read the INI file and swap it in. Returns the new snapshot.
+///
+/// Live keys are pushed into their consumers here: the wall-clock deadline
+/// and the memory cap of the active run (if any) are refreshed from the new
+/// snapshot, so a reload takes effect without a restart.
 pub fn reload() -> Config {
     let mut g = global().write().unwrap_or_else(|e| e.into_inner());
     *g = load();
-    g.clone()
+    let cfg = g.clone();
+    drop(g);
+    crate::budget::refresh_runtime_limits(&cfg);
+    cfg
 }
 
 /// Write the current values (known keys only) back to the primary INI path.
@@ -615,5 +668,31 @@ mod tests {
         assert!(cfg.bool_of("agent.enabled"));
         assert_eq!(cfg.int_of("agent.port"), Some(9527));
         assert_eq!(cfg.int_of("agent.nope"), None);
+    }
+
+    #[test]
+    fn errors_display_resolves_the_log_stdout_alias() {
+        // No explicit errors.display: the debug.log_stdout alias applies.
+        let (doc, _) = parse_ini("[debug]\nlog_stdout = true\n");
+        let cfg = build_from_doc(doc, None, None, Vec::new(), "default");
+        assert_eq!(cfg.get("errors.display"), Some("true"));
+
+        // An explicit errors.display in any layer wins over the alias.
+        let (doc, _) = parse_ini("[debug]\nlog_stdout = true\n[errors]\ndisplay = false\n");
+        let cfg = build_from_doc(doc, None, None, Vec::new(), "default");
+        assert_eq!(cfg.get("errors.display"), Some("false"));
+
+        // The alias also flows through an [env.<name>] overlay.
+        let (doc, _) = parse_ini("[env.prod]\nerrors.display = true\n");
+        let cfg = build_from_doc(doc, None, None, Vec::new(), "prod");
+        assert_eq!(cfg.get("errors.display"), Some("true"));
+    }
+
+    #[test]
+    fn unknown_timezone_is_rejected_with_a_note() {
+        let (doc, _) = parse_ini("[runtime]\ntimezone = Mars/Olympus\n");
+        let cfg = build_from_doc(doc, None, None, Vec::new(), "default");
+        assert_eq!(cfg.get("runtime.timezone"), Some("UTC"));
+        assert!(cfg.notes.iter().any(|n| n.contains("runtime.timezone")));
     }
 }

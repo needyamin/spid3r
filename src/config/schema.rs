@@ -24,6 +24,22 @@ impl ConfigValue {
     }
 }
 
+/// Whether a key survives `spid3r config reload` without a restart.
+///
+/// `Live` keys are re-read at their point of use (or pushed into shared
+/// handles by the reload path), so a reload applies them to the running
+/// process. `StartupOnly` keys are read once — at engine start, agent bind,
+/// module-dir setup — or are not yet consumed by the reload path at all;
+/// classifying them honestly beats pretending a reload did something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReloadSafety {
+    /// Applied live by `spid3r config reload`.
+    #[default]
+    Live,
+    /// Takes effect on the next process start, not on reload.
+    StartupOnly,
+}
+
 /// One known configuration key.
 #[derive(Debug, Clone, Copy)]
 pub struct KeySpec {
@@ -35,6 +51,8 @@ pub struct KeySpec {
     /// Inclusive integer range when `kind` is `Int`.
     pub min: Option<i64>,
     pub max: Option<i64>,
+    /// How `spid3r config reload` treats this key.
+    pub reload: ReloadSafety,
 }
 
 impl KeySpec {
@@ -101,6 +119,25 @@ macro_rules! key {
             description: $desc,
             min: $min,
             max: $max,
+            reload: ReloadSafety::Live,
+        }
+    };
+}
+
+/// A key that only takes effect at process start (or that the reload path
+/// does not yet apply): the honest classification for engine/agent-binding
+/// knobs a running process cannot re-read.
+macro_rules! key_startup {
+    ($section:literal, $name:literal, $kind:expr, $default:literal, $min:expr, $max:expr, $desc:literal) => {
+        KeySpec {
+            section: $section,
+            name: $name,
+            kind: $kind,
+            default: $default,
+            description: $desc,
+            min: $min,
+            max: $max,
+            reload: ReloadSafety::StartupOnly,
         }
     };
 }
@@ -108,7 +145,7 @@ macro_rules! key {
 /// Every known key. Order is documentation order (the default INI).
 pub static KEYS: &[KeySpec] = &[
     // [spid3r]
-    key!(
+    key_startup!(
         "spid3r",
         "env",
         ConfigValue::Str,
@@ -117,7 +154,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Configuration environment name; selects [env.<name>] overrides."
     ),
-    key!(
+    key_startup!(
         "spid3r",
         "engine",
         ConfigValue::Enum(&["tree", "vm"]),
@@ -126,7 +163,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Default engine for `spid3r run` when --engine is omitted."
     ),
-    key!(
+    key_startup!(
         "spid3r",
         "max_workers",
         ConfigValue::Int,
@@ -135,7 +172,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(4096),
         "Ceiling for the grow-on-demand task pool."
     ),
-    key!(
+    key_startup!(
         "spid3r",
         "queue_cap",
         ConfigValue::Int,
@@ -144,7 +181,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(1_048_576),
         "Bound on the shared ready queue."
     ),
-    key!(
+    key_startup!(
         "spid3r",
         "deadlock_abort",
         ConfigValue::Bool,
@@ -153,7 +190,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Abort when no task can ever wake a wait."
     ),
-    key!(
+    key_startup!(
         "spid3r",
         "task_drain_ms",
         ConfigValue::Int,
@@ -162,7 +199,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(60_000),
         "How long exit waits for still-running tasks."
     ),
-    key!(
+    key_startup!(
         "spid3r",
         "gc",
         ConfigValue::Bool,
@@ -171,8 +208,36 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Automatic cycle collection at statement boundaries."
     ),
-    // [memory]
+    // [runtime]
     key!(
+        "runtime",
+        "wall_clock_limit_ms",
+        ConfigValue::Int,
+        "0",
+        Some(0),
+        None,
+        "Fatal wall-clock deadline for program execution in ms; 0 = unlimited."
+    ),
+    key!(
+        "runtime",
+        "memory_limit_mb",
+        ConfigValue::Int,
+        "0",
+        Some(0),
+        Some(1_048_576),
+        "Soft cap on total script-value heap in MiB (catchable); 0 = unlimited."
+    ),
+    key!(
+        "runtime",
+        "timezone",
+        ConfigValue::Str,
+        "UTC",
+        None,
+        None,
+        "Default timezone for datetime natives: UTC, a fixed offset like +06:00, or an IANA name (tz_names())."
+    ),
+    // [memory]
+    key_startup!(
         "memory",
         "max_steps",
         ConfigValue::Int,
@@ -181,7 +246,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(i64::MAX),
         "Execution budget in engine steps; 0 disables the limit."
     ),
-    key!(
+    key_startup!(
         "memory",
         "max_call_depth",
         ConfigValue::Int,
@@ -190,7 +255,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(100_000),
         "Interpreter call-depth limit."
     ),
-    key!(
+    key_startup!(
         "memory",
         "gc_threshold",
         ConfigValue::Int,
@@ -199,7 +264,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(1_000_000_000),
         "Live-cell threshold that triggers an extra collection; 0 uses the default."
     ),
-    key!(
+    key_startup!(
         "memory",
         "allocation_cap_mb",
         ConfigValue::Int,
@@ -209,7 +274,7 @@ pub static KEYS: &[KeySpec] = &[
         "Soft cap on a single allocation, in MiB; 0 disables."
     ),
     // [debug]
-    key!(
+    key_startup!(
         "debug",
         "enabled",
         ConfigValue::Bool,
@@ -218,7 +283,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Master debug switch (verbose diagnostics, extra checks)."
     ),
-    key!(
+    key_startup!(
         "debug",
         "log_level",
         ConfigValue::Enum(&["error", "warn", "info", "debug", "trace"]),
@@ -234,7 +299,35 @@ pub static KEYS: &[KeySpec] = &[
         "false",
         None,
         None,
-        "Mirror diagnostic log lines to stderr."
+        "Mirror diagnostic log lines to stderr (alias of errors.display)."
+    ),
+    // [errors]
+    key!(
+        "errors",
+        "level",
+        ConfigValue::Enum(&["error", "warn", "info"]),
+        "info",
+        None,
+        None,
+        "Minimum level for script-visible diagnostics (error|warn|info)."
+    ),
+    key!(
+        "errors",
+        "display",
+        ConfigValue::Bool,
+        "false",
+        None,
+        None,
+        "Mirror diagnostic log lines to stderr; canonical spelling of debug.log_stdout."
+    ),
+    key!(
+        "errors",
+        "log_file",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Dedicated error-log path; empty = the shared diagnostic log only."
     ),
     // [logging]
     key!(
@@ -255,7 +348,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Log path override (empty = platform default)."
     ),
-    key!(
+    key_startup!(
         "logging",
         "rotate_mb",
         ConfigValue::Int,
@@ -274,7 +367,7 @@ pub static KEYS: &[KeySpec] = &[
         "Append remote-management actions to the audit log."
     ),
     // [modules]
-    key!(
+    key_startup!(
         "modules",
         "path",
         ConfigValue::Str,
@@ -283,7 +376,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Extra module search directories, semicolon-separated."
     ),
-    key!(
+    key_startup!(
         "modules",
         "plugins",
         ConfigValue::Str,
@@ -292,7 +385,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Plugin search path (defaults to SPID3R_PLUGINS)."
     ),
-    key!(
+    key_startup!(
         "modules",
         "allow_wasm",
         ConfigValue::Bool,
@@ -301,7 +394,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Allow loading sandboxed .wasm plugins."
     ),
-    key!(
+    key_startup!(
         "modules",
         "allow_host",
         ConfigValue::Bool,
@@ -311,7 +404,7 @@ pub static KEYS: &[KeySpec] = &[
         "Allow host-registered plugins (compiled into the embedding host)."
     ),
     // [security]
-    key!(
+    key_startup!(
         "security",
         "deny_filesystem",
         ConfigValue::Bool,
@@ -320,7 +413,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Deny filesystem natives to scripts (embed-style policy)."
     ),
-    key!(
+    key_startup!(
         "security",
         "deny_process",
         ConfigValue::Bool,
@@ -329,7 +422,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Deny process natives to scripts."
     ),
-    key!(
+    key_startup!(
         "security",
         "deny_network",
         ConfigValue::Bool,
@@ -338,7 +431,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Deny network natives to scripts."
     ),
-    key!(
+    key_startup!(
         "security",
         "deny_environment",
         ConfigValue::Bool,
@@ -347,7 +440,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Deny environment natives to scripts."
     ),
-    key!(
+    key_startup!(
         "security",
         "allow_remote",
         ConfigValue::Bool,
@@ -357,7 +450,7 @@ pub static KEYS: &[KeySpec] = &[
         "Serve the management agent when true; the agent also serves when [agent] enabled is true (either switch starts it, bound to agent.bind)."
     ),
     // [agent]
-    key!(
+    key_startup!(
         "agent",
         "enabled",
         ConfigValue::Bool,
@@ -366,7 +459,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Start the management agent when `spid3r agent start` runs."
     ),
-    key!(
+    key_startup!(
         "agent",
         "bind",
         ConfigValue::Str,
@@ -375,7 +468,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Listen address. 127.0.0.1 is local-only; 0.0.0.0 is required for other hosts."
     ),
-    key!(
+    key_startup!(
         "agent",
         "port",
         ConfigValue::Int,
@@ -384,7 +477,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(65535),
         "TCP port of the encrypted management API."
     ),
-    key!(
+    key_startup!(
         "agent",
         "max_connections",
         ConfigValue::Int,
@@ -393,7 +486,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(256),
         "Concurrent management connections."
     ),
-    key!(
+    key_startup!(
         "agent",
         "request_timeout_ms",
         ConfigValue::Int,
@@ -402,7 +495,7 @@ pub static KEYS: &[KeySpec] = &[
         Some(300_000),
         "Per-request deadline."
     ),
-    key!(
+    key_startup!(
         "agent",
         "max_body",
         ConfigValue::Int,
@@ -472,6 +565,9 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("spid3r.deadlock_abort", ConfigValue::Bool, "true"),
         ("spid3r.task_drain_ms", ConfigValue::Int, "2000"),
         ("spid3r.gc", ConfigValue::Bool, "true"),
+        ("runtime.wall_clock_limit_ms", ConfigValue::Int, "0"),
+        ("runtime.memory_limit_mb", ConfigValue::Int, "0"),
+        ("runtime.timezone", ConfigValue::Str, "UTC"),
         ("memory.max_steps", ConfigValue::Int, "0"),
         ("memory.max_call_depth", ConfigValue::Int, "1000"),
         ("memory.gc_threshold", ConfigValue::Int, "0"),
@@ -483,6 +579,9 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
             "info",
         ),
         ("debug.log_stdout", ConfigValue::Bool, "false"),
+        ("errors.level", ConfigValue::Enum(&["error", "warn", "info"]), "info"),
+        ("errors.display", ConfigValue::Bool, "false"),
+        ("errors.log_file", ConfigValue::Str, ""),
         ("logging.enabled", ConfigValue::Bool, "true"),
         ("logging.file", ConfigValue::Str, ""),
         ("logging.rotate_mb", ConfigValue::Int, "1"),
@@ -524,6 +623,20 @@ pub fn known_key(dotted: &str) -> Option<&'static KeySpec> {
     KEYS.iter().find(|k| k.section == sec && k.name == name)
 }
 
+/// Validation beyond the type/range check in [`KeySpec::coerce`], applied by
+/// every config layer. Kept per-key here so the loader never needs to know
+/// which keys carry extra rules.
+pub fn validate_extra(dotted: &str, raw: &str) -> Result<(), String> {
+    match dotted {
+        // A mistyped timezone would otherwise only fail at the first datetime
+        // call, far from the config line that caused it. Accepts exactly what
+        // the tz machinery supports (see `stdlib::tz`): UTC, fixed offsets
+        // like `+06:00`, and IANA names from `tz_names()`.
+        "runtime.timezone" => crate::stdlib::tz::check_timezone_setting(raw),
+        _ => Ok(()),
+    }
+}
+
 /// Commented default `spid3r.ini`.
 pub const DEFAULT_INI_TEXT: &str = r#"# spid3r.ini — Spid3r runtime configuration
 # Precedence: process env (SPID3R_<SECTION>_<KEY>) > [env.<name>] > this file > defaults.
@@ -538,6 +651,11 @@ deadlock_abort = true
 task_drain_ms = 2000
 gc = true
 
+[runtime]
+wall_clock_limit_ms = 0    ; fatal execution deadline in ms; 0 = unlimited
+memory_limit_mb = 0        ; soft cap on script-value heap (catchable); 0 = unlimited
+timezone = UTC             ; UTC, a fixed offset like +06:00, or an IANA name
+
 [memory]
 max_steps = 0              ; 0 = unlimited
 max_call_depth = 1000
@@ -547,7 +665,12 @@ allocation_cap_mb = 0
 [debug]
 enabled = false
 log_level = info           ; error|warn|info|debug|trace
-log_stdout = false
+log_stdout = false         ; alias of errors.display
+
+[errors]
+level = info               ; error|warn|info — minimum surfaced diagnostic level
+display = false            ; mirror diagnostic log lines to stderr
+log_file =                 ; dedicated error-log path; empty = shared log only
 
 [logging]
 enabled = true
@@ -635,6 +758,108 @@ mod tests {
             assert!(
                 DEFAULTS.iter().any(|(d, _, _)| *d == dotted),
                 "missing default for {}",
+                dotted
+            );
+        }
+    }
+
+    #[test]
+    fn coerce_phase1_keys() {
+        let wall = known_key("runtime.wall_clock_limit_ms").unwrap();
+        assert!(wall.coerce("0").is_ok());
+        assert!(wall.coerce("500").is_ok());
+        assert!(wall.coerce("-1").is_err());
+        assert!(wall.coerce("banana").is_err());
+
+        let mem = known_key("runtime.memory_limit_mb").unwrap();
+        assert!(mem.coerce("0").is_ok());
+        assert!(mem.coerce("64").is_ok());
+        assert!(mem.coerce("-1").is_err());
+        assert!(mem.coerce("1048577").is_err());
+
+        let level = known_key("errors.level").unwrap();
+        assert!(level.coerce("error").is_ok());
+        assert!(level.coerce("warn").is_ok());
+        assert!(level.coerce("info").is_ok());
+        assert!(level.coerce("trace").is_err());
+
+        let display = known_key("errors.display").unwrap();
+        assert!(display.coerce("true").is_ok());
+        assert!(display.coerce("banana").is_err());
+
+        let tz = known_key("runtime.timezone").unwrap();
+        assert!(tz.coerce("UTC").is_ok()); // Str: plain coerce passes
+        assert!(tz.coerce("Mars/Olympus").is_ok()); // extra rules live in validate_extra
+    }
+
+    #[test]
+    fn validate_extra_rejects_unknown_timezones() {
+        for good in [
+            "UTC",
+            "utc",
+            "+06:00",
+            "-05:30",
+            "+0630",
+            "Europe/Berlin",
+            "",
+        ] {
+            assert!(
+                validate_extra("runtime.timezone", good).is_ok(),
+                "{good:?} should be accepted"
+            );
+        }
+        for bad in ["Mars/Olympus", "+25:00", "06:00", "+06:0", "Bogus/Zone"] {
+            assert!(
+                validate_extra("runtime.timezone", bad).is_err(),
+                "{bad:?} should be rejected"
+            );
+        }
+        // Any other key has no extra rules.
+        assert!(validate_extra("agent.bind", "whatever").is_ok());
+    }
+
+    #[test]
+    fn reload_classification_is_consistent() {
+        // The documented classification: these keys are known to be re-read
+        // at their point of use, so a reload applies them.
+        for dotted in [
+            "runtime.wall_clock_limit_ms",
+            "runtime.memory_limit_mb",
+            "runtime.timezone",
+            "errors.level",
+            "errors.display",
+            "errors.log_file",
+            "debug.log_stdout",
+            "logging.enabled",
+            "logging.file",
+            "logging.audit",
+        ] {
+            let k = known_key(dotted).unwrap();
+            assert_eq!(
+                k.reload,
+                ReloadSafety::Live,
+                "{} is documented Live",
+                dotted
+            );
+        }
+        // These are read once at startup (or not applied by the reload path
+        // at all): claiming Live for them would pretend a reload did work.
+        for dotted in [
+            "spid3r.engine",
+            "spid3r.max_workers",
+            "spid3r.queue_cap",
+            "memory.max_steps",
+            "memory.max_call_depth",
+            "agent.bind",
+            "agent.port",
+            "agent.enabled",
+            "agent.max_connections",
+        ] {
+            let k = known_key(dotted).unwrap();
+            assert_eq!(
+                k.reload,
+                ReloadSafety::StartupOnly,
+                "{} is documented StartupOnly",
                 dotted
             );
         }

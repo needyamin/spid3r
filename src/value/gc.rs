@@ -29,7 +29,7 @@
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::value::collections::{
@@ -604,7 +604,121 @@ pub fn collect() -> usize {
     // so collections double in interval on a growing heap (O(log N) of them
     // for a linear build) while churny garbage keeps the 1024 baseline.
     NEXT_GC.store(n.saturating_sub(freed).max(1024), Ordering::Relaxed);
+    drop(reg);
+    // The collection pass just walked every cell: refresh the heap estimate
+    // for `runtime.memory_limit_mb` at no extra walk cost.
+    rescan_memory();
     freed
+}
+
+// ------------------------------------------------------- heap accounting
+
+/// Cached estimate of the total heap used by tracked script values, in
+/// bytes. Every tracked cell contributes its own overhead plus the inline
+/// sizes of its direct children; a child that is itself a tracked cell
+/// contributes only a slot (its contents are counted once, at its own
+/// entry). Free-standing values in untracked environments (plain `let`
+/// scalars and strings that never live inside a tracked container) are not
+/// visible to the registry and are therefore not counted — see docs/GC.md.
+static MEM_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Monotonic ms (sched::now_ms origin) of the last full rescan.
+static LAST_MEM_SCAN_MS: AtomicI64 = AtomicI64::new(i64::MIN);
+
+/// Minimum ms between full heap rescans: the engines' limit checks run at
+/// every statement boundary and every post-native-call guard, and each check
+/// must stay O(1) amortized. The cap is soft, so a rescan interval's worth of
+/// overshoot is acceptable (and the interval keeps a push-loop's O(N) rescan
+/// from turning into O(N²) total work).
+const MEM_RESCAN_INTERVAL_MS: i64 = 25;
+
+/// Approximate inline byte size of a value's *own* storage, not counting
+/// separately-tracked cells it references. Strings count their byte length;
+/// scalars are inline; every tracked cell contributes a slot only.
+fn child_bytes(v: &Value) -> usize {
+    match v {
+        Value::Str(s) => s.len() + 24,
+        Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::Null => 0,
+        Value::Option(Some(b)) | Value::Result(Ok(b) | Err(b)) => 8 + child_bytes(b),
+        // Tracked cells: slot cost only; contents counted at their own entry.
+        _ => 8,
+    }
+}
+
+/// One full pass over the registry: prune dead handles, sum the approximate
+/// size of every live cell, cache the result. O(live cells).
+fn rescan_memory() {
+    let now = crate::sched::now_ms();
+    let mut total = 0usize;
+    {
+        let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+        let mut seen = HashSet::new();
+        reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
+        for e in reg.iter() {
+            let Some(arc) = e.weak.upgrade() else {
+                continue;
+            };
+            // A Cell because the two trace callbacks are simultaneous
+            // `&mut dyn FnMut` borrows.
+            let bytes = std::cell::Cell::new(64usize); // cell overhead (Arc + Mutex + header)
+            (e.trace)(
+                &arc,
+                &mut |v: &Value| bytes.set(bytes.get() + child_bytes(v)),
+                &mut |_: usize| bytes.set(bytes.get() + 8),
+            );
+            total += bytes.get();
+        }
+    }
+    MEM_BYTES.store(total, Ordering::Relaxed);
+    LAST_MEM_SCAN_MS.store(now, Ordering::Relaxed);
+}
+
+/// Total heap used by tracked script values, in bytes (approximate).
+/// Recomputed at most once per [`MEM_RESCAN_INTERVAL_MS`], and only while
+/// this thread is the only one executing Spid3r code (the same gate the
+/// cycle collector uses); otherwise the cached value is returned.
+pub fn memory_usage_bytes() -> usize {
+    let now = crate::sched::now_ms();
+    let last = LAST_MEM_SCAN_MS.load(Ordering::Relaxed);
+    if now.saturating_sub(last) >= MEM_RESCAN_INTERVAL_MS && crate::sched::gc_quiescent() {
+        rescan_memory();
+    }
+    MEM_BYTES.load(Ordering::Relaxed)
+}
+
+/// Monotonic ms when an OOM diagnostic was last raised.
+static LAST_OOM_MS: AtomicI64 = AtomicI64::new(i64::MIN);
+
+/// After an OOM diagnostic is raised, the cap check stays silent for this
+/// long so a program that *caught* the error can run its recovery statements
+/// (typically dropping the offending container). Enforcement resumes on the
+/// next fresh rescan: if the heap really is still over the cap, the next
+/// allocation-heavy operation re-raises — the error stays catchable and the
+/// loop bounded, exactly like PHP's catchable memory limit.
+const OOM_GRACE_MS: i64 = 250;
+
+/// The catchable OOM diagnostic when the heap estimate exceeds `cap_mb`
+/// (MiB), else `None`. The message is part of the engines' contract:
+/// `out of memory: script exceeded memory_limit_mb (N)`.
+pub fn check_memory_cap(cap_mb: i64) -> Option<String> {
+    if cap_mb <= 0 {
+        return None;
+    }
+    let now = crate::sched::now_ms();
+    if now.saturating_sub(LAST_OOM_MS.load(Ordering::Relaxed)) < OOM_GRACE_MS {
+        // Grace window after a raised OOM: let the catch handler run.
+        return None;
+    }
+    let used = memory_usage_bytes();
+    if used > cap_mb as usize * 1024 * 1024 {
+        LAST_OOM_MS.store(now, Ordering::Relaxed);
+        Some(format!(
+            "out of memory: script exceeded memory_limit_mb ({})",
+            cap_mb
+        ))
+    } else {
+        None
+    }
 }
 
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);

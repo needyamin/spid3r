@@ -130,6 +130,13 @@ pub struct Interp {
     /// costs one `Option` check per charge site. Spawned tasks inherit a
     /// clone, so the whole run shares one allowance.
     budget: Option<crate::budget::Budget>,
+    /// Wall-clock deadline (`runtime.wall_clock_limit_ms`); `None` = no
+    /// deadline. Cloned into tasks and module interpreters so the whole run
+    /// draws one deadline; expiry is fatal.
+    wall_clock: Option<crate::budget::WallClock>,
+    /// Heap cap (`runtime.memory_limit_mb`); `None` = unlimited. Shared like
+    /// the budget; exceeding it is a catchable runtime error.
+    mem_limit: Option<crate::budget::MemLimit>,
 }
 
 /// Lets builtin collections call Spid3r functions back (higher-order methods
@@ -182,6 +189,8 @@ impl Interp {
             depth: AtomicUsize::new(0),
             max_call_depth: MAX_CALL_DEPTH,
             budget: None,
+            wall_clock: None,
+            mem_limit: None,
         };
         crate::stdlib::install(&interp.globals, interp.sched.clone());
         interp.install_builtin_classes();
@@ -200,6 +209,7 @@ impl Interp {
 
     /// A module-side interpreter: its own globals, module mode, sharing the
     /// scheduler and the module cache with the importer.
+    #[allow(clippy::too_many_arguments)] // the shared handles a child interpreter needs
     pub fn module_interp(
         file: Arc<str>,
         module_dirs: Vec<PathBuf>,
@@ -208,6 +218,8 @@ impl Interp {
         _importer_globals: Env,
         budget: Option<crate::budget::Budget>,
         max_call_depth: usize,
+        wall_clock: Option<crate::budget::WallClock>,
+        mem_limit: Option<crate::budget::MemLimit>,
     ) -> Self {
         let interp = Interp {
             globals: environment::new_global(),
@@ -223,6 +235,8 @@ impl Interp {
             depth: AtomicUsize::new(0),
             max_call_depth,
             budget,
+            wall_clock,
+            mem_limit,
         };
         crate::stdlib::install(&interp.globals, interp.sched.clone());
         interp.install_builtin_classes();
@@ -251,6 +265,8 @@ impl Interp {
             depth: AtomicUsize::new(0),
             max_call_depth: MAX_CALL_DEPTH,
             budget: None,
+            wall_clock: None,
+            mem_limit: None,
         }
     }
 
@@ -460,6 +476,38 @@ impl Interp {
         self.budget = budget;
     }
 
+    /// Install the wall-clock deadline (`runtime.wall_clock_limit_ms`).
+    /// `None` (the default) means unlimited; expiry is fatal.
+    pub fn set_wall_clock(&mut self, wall_clock: Option<crate::budget::WallClock>) {
+        self.wall_clock = wall_clock;
+    }
+
+    /// Install the heap cap (`runtime.memory_limit_mb`). `None` (the default)
+    /// means unlimited; exceeding it is catchable.
+    pub fn set_mem_limit(&mut self, mem_limit: Option<crate::budget::MemLimit>) {
+        self.mem_limit = mem_limit;
+    }
+
+    /// Enforce the wall-clock deadline and the heap cap at a statement
+    /// boundary or a post-native-call guard. The wall clock is fatal (like
+    /// budget exhaustion); the memory cap is a catchable runtime error. The
+    /// memory check itself is O(1) amortized: the heap estimate is cached in
+    /// the collector and refreshed at most once per rescan interval.
+    #[inline]
+    fn check_limits(&self, span: &Span) -> Option<Flow> {
+        if let Some(wc) = &self.wall_clock {
+            if wc.exceeded() {
+                return Some(self.fatal(span, wc.message()));
+            }
+        }
+        if let Some(ml) = &self.mem_limit {
+            if let Some(msg) = ml.check() {
+                return Some(self.rt(span, msg));
+            }
+        }
+        None
+    }
+
     /// Tighten the call-depth limit (`spid3r run --max-call-depth`). Must be
     /// at least 1; the engine default is [`MAX_CALL_DEPTH`].
     pub fn set_max_call_depth(&mut self, limit: usize) {
@@ -486,6 +534,16 @@ impl Interp {
     /// spawned tasks and module initialization draw one allowance.
     pub(crate) fn budget_handle(&self) -> Option<crate::budget::Budget> {
         self.budget.clone()
+    }
+
+    /// Share the wall-clock deadline (clone) with a child interpreter.
+    pub(crate) fn wall_clock_handle(&self) -> Option<crate::budget::WallClock> {
+        self.wall_clock.clone()
+    }
+
+    /// Share the heap cap (clone) with a child interpreter.
+    pub(crate) fn mem_limit_handle(&self) -> Option<crate::budget::MemLimit> {
+        self.mem_limit.clone()
     }
 
     /// The configured call-depth limit, for a child interpreter (modules).
@@ -531,6 +589,11 @@ impl Interp {
         for s in stmts {
             // Execution budget: one unit per statement.
             if let Some(flow) = self.charge_budget(s.span()) {
+                return flow;
+            }
+            // Wall-clock deadline / heap cap, checked at every statement
+            // boundary (same cadence as the budget).
+            if let Some(flow) = self.check_limits(s.span()) {
                 return flow;
             }
             // Cycle collection at a statement boundary (no-op unless SPID3R_GC).
@@ -620,10 +683,16 @@ impl Interp {
                 Err(d) => {
                     // A module whose initialization exhausted the shared
                     // budget must surface as fatal, not as a catchable
-                    // import error.
+                    // import error. The same holds for the shared wall-clock
+                    // deadline.
                     if let Some(b) = &self.budget {
                         if b.exhausted() {
                             return self.fatal(s.span(), "execution budget exhausted");
+                        }
+                    }
+                    if let Some(wc) = &self.wall_clock {
+                        if wc.exceeded() {
+                            return self.fatal(s.span(), wc.message());
                         }
                     }
                     Flow::Error(d)
@@ -743,6 +812,12 @@ impl Interp {
                     if let Some(flow) = self.charge_budget(cond.span()) {
                         return flow;
                     }
+                    // A `while(true)` body that only blocks (e.g. `sleep_ms`)
+                    // returns between boundaries: the deadline and the heap
+                    // cap must be checked here too.
+                    if let Some(flow) = self.check_limits(cond.span()) {
+                        return flow;
+                    }
                     let c = match self.eval(cond, env) {
                         Ok(v) => v,
                         Err(f) => return f,
@@ -791,6 +866,9 @@ impl Interp {
                     if let Some(flow) = self.charge_budget(iter.span()) {
                         return flow;
                     }
+                    if let Some(flow) = self.check_limits(iter.span()) {
+                        return flow;
+                    }
                     let ienv = environment::child(env);
                     environment::define(&ienv, var, item);
                     let mark = self.guard_mark();
@@ -833,6 +911,10 @@ impl Interp {
                     };
                     if !crate::value::truthy(&c) {
                         return Flow::Value(Value::Null);
+                    }
+                    // Same iteration-level enforcement as `while`/`for-in`.
+                    if let Some(flow) = self.check_limits(cond.span()) {
+                        return flow;
                     }
                     let mark = self.guard_mark();
                     let body_flow = if needs_env {
@@ -904,12 +986,16 @@ impl Interp {
                 let file = self.file.clone();
                 let module_dirs = self.module_dirs.clone();
                 let budget = self.budget.clone();
+                let wall_clock = self.wall_clock.clone();
+                let mem_limit = self.mem_limit.clone();
                 let max_depth = self.max_call_depth;
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let mut interp = Interp::shared(globals, sched, modules, file, module_dirs);
                     // The task draws from the same allowance as its spawner.
                     interp.set_budget(budget);
+                    interp.set_wall_clock(wall_clock);
+                    interp.set_mem_limit(mem_limit);
                     interp.max_call_depth = max_depth;
                     // A panic in the task releases the task's mutexes (see
                     // `GuardSweep`).
@@ -1323,12 +1409,16 @@ impl Interp {
                 let file = self.file.clone();
                 let module_dirs = self.module_dirs.clone();
                 let budget = self.budget.clone();
+                let wall_clock = self.wall_clock.clone();
+                let mem_limit = self.mem_limit.clone();
                 let max_depth = self.max_call_depth;
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let mut interp = Interp::shared(globals, sched, modules, file, module_dirs);
                     // The task draws from the same allowance as its spawner.
                     interp.set_budget(budget);
+                    interp.set_wall_clock(wall_clock);
+                    interp.set_mem_limit(mem_limit);
                     interp.max_call_depth = max_depth;
                     // A panic in the task releases the task's mutexes (see
                     // `GuardSweep`).
@@ -1716,13 +1806,24 @@ impl Interp {
                 let ctx = crate::value::NativeCtx {
                     sched: self.sched.clone(),
                 };
-                (n.func)(&ctx, args).map_err(|msg| self.rt(span, msg))
+                let v = (n.func)(&ctx, args).map_err(|msg| self.rt(span, msg))?;
+                // A native may block (sleep, sockets, files) for a long time:
+                // enforce the wall-clock deadline and the heap cap as soon as
+                // it returns, mirroring the VM's post-call guard.
+                if let Some(flow) = self.check_limits(span) {
+                    return Err(flow);
+                }
+                Ok(v)
             }
             Value::NativeClosure(n) => {
                 let ctx = crate::value::NativeCtx {
                     sched: self.sched.clone(),
                 };
-                (n.func)(&ctx, args).map_err(|msg| self.rt(span, msg))
+                let v = (n.func)(&ctx, args).map_err(|msg| self.rt(span, msg))?;
+                if let Some(flow) = self.check_limits(span) {
+                    return Err(flow);
+                }
+                Ok(v)
             }
             Value::Class(cd) => self.new_instance(&cd, args, span),
             other => Err(self.rt(

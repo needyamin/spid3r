@@ -418,7 +418,7 @@ fn outcome_code(outcome: Result<i32, Diagnostic>, json: bool, cmd: &str) -> i32 
             // logging those too would fill the user's log with ordinary
             // `check` failures.
             if cmd == "gui" {
-                crate::logging::record(
+                crate::logging::record_error(
                     "cli",
                     &format!("{}: {}", d.phase.as_str(), one_line(&d.message)),
                 );
@@ -827,7 +827,11 @@ fn front_end(path: &str) -> Result<(crate::ast::Program, Arc<str>), Diagnostic> 
     let warnings = semantic::check_file_with_warnings(&program, true, path)?;
     for w in &warnings {
         if w.message.contains("explicit call to 'main'") {
-            eprintln!("{}", w.render());
+            // `errors.level` gates script-visible warnings: `error` suppresses
+            // them entirely; `warn`/`info` surface them (default `info`).
+            if crate::logging::level_allows(crate::logging::Level::Warn) {
+                eprintln!("{}", w.render());
+            }
         }
     }
     Ok((program, file))
@@ -840,10 +844,17 @@ fn front_end(path: &str) -> Result<(crate::ast::Program, Arc<str>), Diagnostic> 
 /// charges the same allowance in instruction-poll batches.
 /// `--max-call-depth` tightens the interpreter's recursion limit and applies
 /// to the tree and VM engines (not the AOT backend).
+/// `limits` carries the ini-driven run-time limits (`runtime.
+/// wall_clock_limit_ms` / `runtime.memory_limit_mb`); the native AOT backend
+/// is not wired to them, matching `--max-call-depth`.
 fn run_tree(
     path: &str,
     budget: Option<u64>,
     max_call_depth: Option<usize>,
+    limits: &(
+        Option<crate::budget::WallClock>,
+        Option<crate::budget::MemLimit>,
+    ),
 ) -> Result<i32, Diagnostic> {
     let (program, file) = front_end(path)?;
     let dirs = modules::default_module_dirs();
@@ -852,6 +863,8 @@ fn run_tree(
     if let Some(n) = max_call_depth {
         interp.set_max_call_depth(n);
     }
+    interp.set_wall_clock(limits.0.clone());
+    interp.set_mem_limit(limits.1.clone());
     interp.run_program(&program)
 }
 
@@ -1204,6 +1217,19 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             crate::plugin::deny_capability(cap);
         }
     }
+    // Run-time limits from spid3r.ini / SPID3R_* env (`runtime.
+    // wall_clock_limit_ms`, `runtime.memory_limit_mb`): resolved once at run
+    // start into Arc-shared handles, so tasks and module interpreters draw
+    // the same deadline/cap. Invalid config values fall back to the defaults
+    // (unlimited) with a note from the loader.
+    let cfg = crate::config::snapshot();
+    // "Invalid values are ignored with a note": surface the loader's notes
+    // once per run through the shared diagnostic log — never stderr, never
+    // fatal (`spid3r config validate` shows the same list on demand).
+    for note in &cfg.notes {
+        crate::logging::record("config", note);
+    }
+    let run_limits = crate::budget::run_limits(&cfg);
     match engine {
         "tree" => {
             if prof {
@@ -1216,7 +1242,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                     "--coverage is a VM-engine feature; rerun with --engine vm",
                 ));
             }
-            run_tree(&file, budget, max_call_depth)
+            run_tree(&file, budget, max_call_depth, &run_limits)
         }
         "vm" => {
             let (program, file_name) = front_end(&file)?;
@@ -1229,6 +1255,8 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                 if let Some(n) = max_call_depth {
                     vm.set_max_call_depth(n);
                 }
+                vm.set_wall_clock(run_limits.0.clone());
+                vm.set_mem_limit(run_limits.1.clone());
                 if prof {
                     vm.enable_profiling();
                 }
@@ -1248,6 +1276,8 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                 if let Some(n) = max_call_depth {
                     vm.set_max_call_depth(n);
                 }
+                vm.set_wall_clock(run_limits.0.clone());
+                vm.set_mem_limit(run_limits.1.clone());
                 if prof {
                     vm.enable_profiling();
                 }
