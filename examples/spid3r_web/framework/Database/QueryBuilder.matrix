@@ -1,3 +1,0 @@
-// framework/Database/QueryBuilder.matrix
-// Spid3rWeb QueryBuilder (Provided by DB module)
-import "DB";

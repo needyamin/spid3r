@@ -8,7 +8,6 @@ A curated collection of runnable sample programs, native GUI applications, multi
 
 | Directory | Description | Readme / Guide |
 | :--- | :--- | :--- |
-| [spid3r_web/](spid3r_web/) | **Spid3rWeb Blog Platform**: full-stack web framework demo — MVC controllers, Active Record ORM on SQLite, SpiderBD templates, auth, `magic` CLI. | [spid3r_web/README.md](spid3r_web/README.md) |
 | [demo_apps/](demo_apps/) | **Flagship Demo Applications**: e-commerce platform (SQLite + HTTP), native calculator, in-browser web calculator. | [demo_apps/ecommerce/README.md](demo_apps/ecommerce/README.md) |
 | [gui/](gui/) | **Native GUI Applications**: Data Studio analytics app on the tao + wry event bridge. | [gui/README.md](gui/README.md) |
 | [plugins/](plugins/) | **Plugin Samples**: host plugin (compiled in), WASM plugin (sandboxed), matrix plugin. | [plugins/hello-wasm/README.md](plugins/hello-wasm/README.md) |
