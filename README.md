@@ -50,7 +50,11 @@ The prebuilt release binaries are the **core toolchain only** (interpreter, VM, 
 
 Third-party code reaches a program through seven routes, and only one of them can be sandboxed.
 
+![Packages: declare, vendor, verify, publish, install — checksummed end to end](docs/diagrams/packages.svg)
+
 **Packages** ship today. A package is a `spider.toml` plus a `src/` tree; `spid3r add` declares and vendors it, `spid3r tree` shows what that resolved to, and `spid3r verify` re-hashes every vendored file against `spider.lock` so a hand-edited dependency fails instead of compiling. `spid3r publish --to-dir` writes a static registry entry with a checksum, and `spid3r install` **requires** that checksum for registry packages — a registry entry without one is refused rather than vendored unverified. No network build scripts — installing a package never executes its code.
+
+![Host plugins: declare, implement, register — merged into the native table](docs/diagrams/host-plugins.svg)
 
 **Host plugins work.** A plugin declares itself in a `plugin.toml` (exact-match ABI string, one block per function with its arity and permission), implements one trait, and is registered by its host at startup. Registration merges its functions into the native table all three engines already read, so a plugin function needs no per-engine code. There is no dynamic loading: a plugin is compiled into its host, because a native function is a Rust pointer over `Value` and `Value` has no stable C representation.
 

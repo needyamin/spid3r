@@ -2166,6 +2166,12 @@
           <code>spid3r publish --to-dir</code> writes a static registry entry with a checksum. None of it touches the
           network, and none of it runs the package's code.
         </p>
+        <figure class="diagram">
+          <img src="../diagrams/packages.svg"
+            alt="Package flow: spider.toml plus src tree, spid3r add vendors and pins it in spider.lock, spid3r verify re-hashes every file against the lock so hand edits fail, publish --to-dir writes a static registry entry with a checksum, spid3r install requires the checksum — no checksum, no install. Installing never executes package code.">
+          <figcaption>Checksummed end to end: declare, vendor, verify, publish, install. A hand-edited dependency fails
+            instead of compiling, and an unchecksummed registry entry is refused rather than vendored unverified.</figcaption>
+        </figure>
         <div
           style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
           <div style="color: var(--fg-muted); margin-bottom: 4px;"># Which file does `import "semver"` actually name?
@@ -2193,6 +2199,12 @@
           <code>stdlib::native_defs()</code> — the one list the tree interpreter, the bytecode VM and the AOT backend
           all install from. A plugin function needs <strong>no per-engine code</strong>.
         </p>
+        <figure class="diagram">
+          <img src="../diagrams/host-plugins.svg"
+            alt="Host plugin flow: plugin.toml declares the ABI string and one block per function with arity and permission, the plugin implements one Rust trait over Value, the host registers it at startup with plugin::register, and the functions merge into the native table all three engines read — no per-engine code. Warning strip: trusted code, same address space, compiled into its host, no dynamic loading.">
+          <figcaption>Declare, implement, register. The plugin's functions land in the one native table every engine
+            installs from — and because it is compiled into its host, it is trusted code by definition.</figcaption>
+        </figure>
         <div
           style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
           <div style="color: var(--fg-muted); margin-bottom: 4px;"># plugin.toml — the manifest is the contract</div>
