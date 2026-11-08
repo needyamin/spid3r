@@ -1214,7 +1214,19 @@ pub(crate) fn runtime_cache_root() -> std::path::PathBuf {
         Some(base) => base
             .join(if cfg!(windows) { "Spid3r" } else { "spid3r" })
             .join("runtime"),
-        None => std::env::temp_dir().join("spid3r-runtime"),
+        // std::env::temp_dir() panics on wasm32-unknown-unknown: there is no
+        // OS temp directory. `spid3rinfo()` reports this path and the
+        // developer-guide snippets call it from the playground, so keep the
+        // read harmless with a relative placeholder. A browser has no runtime
+        // cache to populate, and no env vars means no real path is available
+        // there anyway (same approach as `logging::path()`).
+        None => {
+            if cfg!(target_arch = "wasm32") {
+                std::path::PathBuf::from("spid3r-runtime")
+            } else {
+                std::env::temp_dir().join("spid3r-runtime")
+            }
+        }
     }
 }
 

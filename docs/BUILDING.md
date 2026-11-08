@@ -556,3 +556,14 @@ merely **one commit old but still behaviourally correct**: it runs fine, so both
 checks pass, and the playground silently serves an older compiler. That is why
 the rebuild is a manual step in this list rather than something CI can catch —
 when in doubt, rebuild and re-run the two scripts above.
+
+### wasm platform constraints
+
+`wasm32-unknown-unknown` has no OS process and no filesystem:
+`std::env::temp_dir()`, `std::process::id()` and `std::env::vars()` abort the
+module. Anything reachable from the playground — notably `spid3rinfo()`, which
+reports config, state, cache and log paths — must guard those calls with
+`cfg!(target_arch = "wasm32")` and return a harmless placeholder. See
+`logging::path()` and `stdlib::runtime_cache_root()` for the established
+pattern. `tools/verify_dev_snippets.js` runs the developer-guide samples
+against the wasm build and is the regression gate for these paths.
