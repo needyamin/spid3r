@@ -16,8 +16,8 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_TASK_DRAIN_MS` | `2000` | How long program exit waits for still-running tasks before warning and exiting anyway. `0` disables the wait. |
 | `SPID3R_GC` | on | Automatic cycle collection at statement boundaries. `0` disables it; `gc_collect()` still works. |
 | `SPID3R_NET_TIMEOUT_MS` | `30000` | Env alias of `net.timeout_ms` (canonical INI key): deadline for HTTP framing (slowloris guard); `0` disables it. Raw `tcp_*` connections keep whatever timeout the program sets. |
-| `SPID3R_SQLITE_PATH` | — | Directory searched for `sqlite3.dll` / `libsqlite3.so` before the default lookup. |
-| `SPID3R_CACHE_DIR` | `%LOCALAPPDATA%\Spid3r` (Windows), `$XDG_CACHE_HOME/spid3r` (else) | Root for the extracted-runtime cache (`runtime/`). The log has its own path (`SPID3R_LOG_FILE`). |
+| `SPID3R_SQLITE_PATH` | — | Env alias of `paths.sqlite_path` (canonical INI key): full path of the SQLite shared library tried before the default lookup. The library is loaded once per process, so a config reload cannot move it. |
+| `SPID3R_CACHE_DIR` | `%LOCALAPPDATA%\Spid3r` (Windows), `$XDG_CACHE_HOME/spid3r` (else) | Env alias of `paths.cache_dir` (canonical INI key): root for the extracted-runtime cache (`runtime/`). The log has its own path (`SPID3R_LOG_FILE`). |
 | `SPID3R_EXE` | — | Runtime a packaged app launches **when it carries no embedded copy** (checked before the per-user install and `PATH`). An embedded runtime always wins. |
 | `SPID3R_LOG` | on | `0` disables the diagnostic log entirely. |
 | `SPID3R_LOG_FILE` | `%LOCALAPPDATA%\Spid3r\logs\spid3r.log` | Log path override. |
@@ -29,7 +29,7 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 |---|---|---|
 | `SPID3R_INI` | — | Explicit path to `spid3r.ini`. First hit in the search order. |
 | `SPID3R_CONFIG_DIR` | platform config dir | Directory that may hold `spid3r.ini`. |
-| `SPID3R_STATE_DIR` | `%LOCALAPPDATA%\Spid3r\state` / `$XDG_STATE_HOME/spid3r` | Paired devices, admin-client book, audit log. |
+| `SPID3R_STATE_DIR` | `%LOCALAPPDATA%\Spid3r\state` / `$XDG_STATE_HOME/spid3r` | Env alias of `paths.state_dir` (canonical INI key): paired devices, admin-client book, audit log. |
 | `SPID3R_ENV` | `default` (or `[spid3r] env`) | Selects `[env.<name>]` overrides in the INI. |
 | `SPID3R_<SECTION>_<KEY>` | — | Per-key override (`SPID3R_AGENT_PORT`, `SPID3R_AGENT_BIND`, …). |
 | `SPID3R_RUNTIME_WALL_CLOCK_LIMIT_MS` | `0` | Alias of `runtime.wall_clock_limit_ms`: fatal wall-clock deadline for `spid3r run`, in ms; `0` = unlimited. |
@@ -41,6 +41,9 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_NET_MAX_BODY` | `8388608` | Alias of `net.max_body`: largest accepted HTTP request body, in bytes (413 above it). |
 | `SPID3R_NET_MAX_HEADERS` | `64` | Alias of `net.max_headers`: most request headers accepted per request (431 above it). |
 | `SPID3R_NET_KEEPALIVE_MS` | `5000` | Alias of `net.keepalive_ms`: idle window between keep-alive requests; `0` closes after each response. |
+| `SPID3R_PATHS_CACHE_DIR` | — | Generic spelling of `paths.cache_dir`. Beats the INI; the short `SPID3R_CACHE_DIR` alias wins when both are set. |
+| `SPID3R_PATHS_STATE_DIR` | — | Generic spelling of `paths.state_dir`. Beats the INI; the short `SPID3R_STATE_DIR` alias wins when both are set. |
+| `SPID3R_PATHS_SQLITE_PATH` | — | Generic spelling of `paths.sqlite_path`. Beats the INI; the short `SPID3R_SQLITE_PATH` alias wins when both are set. |
 
 See `docs/AGENT.md` for the full management-agent manual.
 
@@ -88,3 +91,7 @@ are set).
   `SPID3R_ALLOW_LOCAL_GIT_DEPS`, `SPID3R_DEADLOCK_ABORT=0`,
   `SPID3R_FETCH_WEBVIEW2`) are opt-in for a reason; see `docs/SECURITY.md`.
 - Nothing here is required for a normal `spid3r run` / `compile` / `build`.
+- The path keys (`paths.cache_dir`, `paths.state_dir`, `paths.sqlite_path`,
+  `cache.bytecode_dir`) are frozen: the management agent's remote `config.set`
+  cannot relocate the host's write targets — edit `spid3r.ini` on the host
+  instead.

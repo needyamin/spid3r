@@ -270,8 +270,10 @@ launches at once cannot read or execute a half-written copy, and a cached file i
 re-verified against its content hash before it is run (a same-size impostor is
 replaced, not executed). Runtimes from earlier builds are pruned to the current
 one plus the two most recent, so rebuilding does not accumulate a full copy per
-build in the user profile. Set `SPID3R_CACHE_DIR` to move the cache (used by the
-tests, and by locked-down machines where `%LOCALAPPDATA%` is unavailable).
+build in the user profile. Set `paths.cache_dir` in `spid3r.ini` (or its env
+aliases `SPID3R_CACHE_DIR` / `SPID3R_PATHS_CACHE_DIR`; env beats the INI) to
+move the cache (used by the tests, and by locked-down machines where
+`%LOCALAPPDATA%` is unavailable).
 
 The target machine still needs the **WebView2 runtime** — present by default on
 Windows 11, and on most Windows 10 machines through Edge. That is the only

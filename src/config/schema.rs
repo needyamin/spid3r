@@ -593,6 +593,48 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Allow bare-path and file:// git dependencies (alias of SPID3R_ALLOW_LOCAL_GIT_DEPS)."
     ),
+    // [paths]
+    // All three are frozen: a remote peer that could relocate the host's
+    // write targets could point the runtime cache, the agent state home or
+    // the SQLite library at attacker-chosen locations (data poisoning or a
+    // planted library). Only the host's spid3r.ini may set them.
+    key_frozen!(
+        "paths",
+        "cache_dir",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Cache home for the extracted bundle runtime (alias of SPID3R_CACHE_DIR); empty = platform default."
+    ),
+    key_frozen!(
+        "paths",
+        "state_dir",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Per-user mutable state home: agent store, audit log, pid file (alias of SPID3R_STATE_DIR); empty = platform default."
+    ),
+    key_frozen_startup!(
+        "paths",
+        "sqlite_path",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Full path of the SQLite shared library tried first (alias of SPID3R_SQLITE_PATH); empty = default search. Read once per process."
+    ),
+    // [cache]
+    key_frozen!(
+        "cache",
+        "bytecode_dir",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Bytecode cache for `spid3r run`: .matrixc containers keyed by the source's SHA-256; empty = disabled."
+    ),
     // [agent]
     key_frozen_startup!(
         "agent",
@@ -745,6 +787,10 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("packages.registry", ConfigValue::Str, ""),
         ("packages.allow_insecure_git", ConfigValue::Bool, "false"),
         ("packages.allow_local_git", ConfigValue::Bool, "false"),
+        ("paths.cache_dir", ConfigValue::Str, ""),
+        ("paths.state_dir", ConfigValue::Str, ""),
+        ("paths.sqlite_path", ConfigValue::Str, ""),
+        ("cache.bytecode_dir", ConfigValue::Str, ""),
         ("security.deny_filesystem", ConfigValue::Bool, "false"),
         ("security.deny_process", ConfigValue::Bool, "false"),
         ("security.deny_network", ConfigValue::Bool, "false"),
@@ -902,6 +948,18 @@ allow_remote = false
 # registry =                 ; canonical registry directory (alias: SPID3R_REGISTRY)
 allow_insecure_git = false   ; allow http:// and git:// dependencies
 allow_local_git = false      ; allow bare-path and file:// git dependencies
+
+[paths]
+# cache_dir =                ; cache home for the extracted bundle runtime
+                             ; (alias: SPID3R_CACHE_DIR); empty = platform default
+# state_dir =                ; per-user state home: agent store, audit log, pid
+                             ; file (alias: SPID3R_STATE_DIR); empty = default
+# sqlite_path =              ; full path of the SQLite shared library tried first
+                             ; (alias: SPID3R_SQLITE_PATH); empty = default search
+
+[cache]
+# bytecode_dir =             ; bytecode cache for `spid3r run`: .matrixc containers
+                             ; keyed by the source's SHA-256; empty = disabled
 
 [agent]
 enabled = false
@@ -1190,6 +1248,13 @@ mod tests {
             "modules.disable",
             "packages.allow_insecure_git",
             "packages.allow_local_git",
+            // New in phase 4: the host's write targets and the SQLite
+            // library location. A remote peer that could relocate them
+            // could poison data or plant a library.
+            "paths.cache_dir",
+            "paths.state_dir",
+            "paths.sqlite_path",
+            "cache.bytecode_dir",
         ]
         .to_vec();
         expected.sort();
@@ -1208,6 +1273,46 @@ mod tests {
             let k = known_key(dotted).unwrap();
             assert!(!k.frozen, "{} must stay remotely settable", dotted);
         }
+    }
+
+    #[test]
+    fn coerce_phase4_path_keys() {
+        for dotted in [
+            "paths.cache_dir",
+            "paths.state_dir",
+            "paths.sqlite_path",
+            "cache.bytecode_dir",
+        ] {
+            let k = known_key(dotted).unwrap_or_else(|| panic!("missing key {}", dotted));
+            // Str keys: empty = platform default, any path text is accepted
+            // (directories are created on demand; there is no existence
+            // requirement to validate cheaply).
+            assert!(k.coerce("").is_ok(), "{dotted}");
+            assert!(k.coerce("C:\\data\\cache").is_ok(), "{dotted}");
+            assert!(k.coerce("/var/cache/spid3r").is_ok(), "{dotted}");
+            // All four relocate host write targets: frozen to remote set.
+            assert!(k.frozen, "{dotted} must be frozen");
+        }
+        // Reload classification mirrors how each consumer reads the key:
+        // state_dir()/runtime_cache_root()/the bytecode cache consult the
+        // snapshot at every call (Live); the SQLite library is loaded once
+        // into a process-lifetime handle (StartupOnly).
+        assert_eq!(
+            known_key("paths.cache_dir").unwrap().reload,
+            ReloadSafety::Live
+        );
+        assert_eq!(
+            known_key("paths.state_dir").unwrap().reload,
+            ReloadSafety::Live
+        );
+        assert_eq!(
+            known_key("cache.bytecode_dir").unwrap().reload,
+            ReloadSafety::Live
+        );
+        assert_eq!(
+            known_key("paths.sqlite_path").unwrap().reload,
+            ReloadSafety::StartupOnly
+        );
     }
 
     #[test]

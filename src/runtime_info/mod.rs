@@ -71,11 +71,19 @@ pub fn is_sensitive_key(key: &str) -> bool {
 /// credentials: the script that is the subject of the policy can probe both
 /// lists by observation anyway, so local and script surfaces show them raw;
 /// every agent (remote) surface redacts them via [`redact_value_remote`].
+///
+/// Phase 4 adds the path keys: `paths.cache_dir`, `paths.state_dir`,
+/// `paths.sqlite_path` and `cache.bytecode_dir` map the host's write
+/// targets and library locations, so a remote peer learning them gains a
+/// map of where data lands (and, for the SQLite library, what could be
+/// planted). Same policy treatment: redacted remotely, raw locally.
 pub fn is_policy_key(key: &str) -> bool {
-    matches!(
-        key.to_ascii_lowercase().as_str(),
-        "security.basedir" | "security.disable_natives"
-    )
+    let k = key.to_ascii_lowercase();
+    matches!(k.as_str(), "security.basedir" | "security.disable_natives")
+        || k == "paths.cache_dir"
+        || k == "paths.state_dir"
+        || k == "paths.sqlite_path"
+        || k == "cache.bytecode_dir"
 }
 
 /// Remote-side redaction: credentials plus the policy keys (F-003). Used by
@@ -207,6 +215,17 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
             .unwrap_or_else(|| "?".into()),
     );
     s.push("State directory", config::state_dir().display().to_string());
+    s.push(
+        "Runtime cache",
+        crate::stdlib::runtime_cache_root().display().to_string(),
+    );
+    s.push(
+        "SQLite library",
+        match config::get("paths.sqlite_path") {
+            Some(v) if !v.trim().is_empty() => v,
+            _ => "(default search)".to_string(),
+        },
+    );
     s.push(
         "Log file",
         crate::logging::path()

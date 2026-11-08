@@ -100,6 +100,33 @@ canonicalized path. The result is a `.matrixc` that runs under `exec` with **no
 from this embedded table and runs it in a child VM that shares the globals and
 the (flat, transitive) embedded table, so nested imports resolve too.
 
+### The bytecode cache (`cache.bytecode_dir`)
+
+`spid3r run --engine vm` can cache compiled containers: set
+`cache.bytecode_dir` in `spid3r.ini` and every run of `foo.matrix` first
+looks for `<dir>/<sha256-of-source>.matrixc`. The key is the SHA-256 of the
+source bytes, so a stale entry is impossible by construction — different
+source, different key, recompiled.
+
+* **Miss**: the program compiles normally and the v3 container is written
+  back (best effort; a failed write just means the next run recompiles).
+* **Hit**: the container is loaded through the same `deserialize_vmfunc`
+  path as `spid3r exec` — the v3 checksum is verified and `validate_chunk`
+  runs before anything executes — and the bytecode runs **instead of**
+  compiling. A hit is byte-identical to compiling (same compiler output for
+  the same source); the differential contract is covered by
+  `tests/phase4_paths.rs` (cached run == fresh run == `exec` of the stored
+  container).
+* **Corrupt entry**: the checksum fails, the entry is ignored, the program
+  compiles fresh, and the write-back replaces the corrupt bytes. A cache can
+  never make a run fail or change its output.
+
+`--no-opt` bypasses the cache (it produces different compiler output for the
+same source), and the tree engine never touches it (it has no bytecode).
+Empty key = disabled. The key is frozen for the agent's remote `config.set`:
+a remote peer that could relocate the cache could feed the host pre-built
+bytecode.
+
 ## The virtual machine
 
 `src/vm/mod.rs` is a register-free **stack machine** in the clox tradition.

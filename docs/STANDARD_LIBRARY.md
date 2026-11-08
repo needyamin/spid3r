@@ -869,9 +869,11 @@ stream to hook, and the flag says so instead of reporting a number for a differe
 `db_open(path)` opens (or creates) a SQLite database by loading the real
 SQLite C library at runtime — **zero crate dependencies**. The loader looks
 for `sqlite3.dll` / `libsqlite3.so` / `libsqlite3.dylib` in this order: the
-`SPID3R_SQLITE_PATH` environment variable, the running executable's
-directory, then the OS default search paths. A failed load is a catchable
-error that names every location tried.
+`paths.sqlite_path` ini key (or its `SPID3R_SQLITE_PATH` env alias, which
+beats the INI), the running executable's directory, then the OS default
+search paths. A failed load is a catchable error that names every location
+tried. The library is loaded once per process, so a config reload cannot
+move it.
 
 Connections default to WAL journaling and `foreign_keys=ON`. All statements
 are parameterized (`?` placeholders — injection-safe). Column types map

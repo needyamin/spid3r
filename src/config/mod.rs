@@ -248,10 +248,21 @@ pub fn config_dir() -> Option<PathBuf> {
 }
 
 /// Mutable state directory (agent devices, tokens, audit log).
+///
+/// Resolution order: the legacy `SPID3R_STATE_DIR` variable (process env
+/// beats the INI, and hosts or tests that set it after the snapshot was
+/// taken still take effect), then `paths.state_dir` (the INI layer and the
+/// generic `SPID3R_PATHS_STATE_DIR` spelling resolve through it), then the
+/// platform default.
 pub fn state_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("SPID3R_STATE_DIR") {
         if !p.is_empty() {
             return PathBuf::from(p);
+        }
+    }
+    if let Some(v) = snapshot().get("paths.state_dir") {
+        if !v.is_empty() {
+            return PathBuf::from(v);
         }
     }
     if cfg!(windows) {
@@ -477,6 +488,15 @@ fn apply_process_env(
         ("SPID3R_REGISTRY", "packages.registry"),
         ("SPID3R_ALLOW_INSECURE_GIT", "packages.allow_insecure_git"),
         ("SPID3R_ALLOW_LOCAL_GIT_DEPS", "packages.allow_local_git"),
+        // Path aliases: the historical spellings predate the [paths]
+        // section; the generic SPID3R_PATHS_* spellings win when both are
+        // set, because the generic layer runs after this one. The
+        // consumers also check the legacy variable directly (see
+        // `state_dir`, `runtime_cache_root`, db `candidate_paths`) so an
+        // override set after the snapshot was taken still takes effect.
+        ("SPID3R_CACHE_DIR", "paths.cache_dir"),
+        ("SPID3R_STATE_DIR", "paths.state_dir"),
+        ("SPID3R_SQLITE_PATH", "paths.sqlite_path"),
     ];
     for (env, key) in legacy {
         if let Ok(v) = std::env::var(env) {
@@ -623,6 +643,18 @@ pub fn validate(cfg: &Config) -> Vec<String> {
                     "security.basedir: entry '{}' does not exist — all paths will be denied",
                     entry
                 ));
+            }
+        }
+    }
+    // A [paths] entry that points at an existing *file* can never work: the
+    // consumers join subdirectories (or reject a non-library) under it.
+    // Surfacing that here turns a silent operator typo into a note instead
+    // of a support ticket. A path that does not exist yet is fine — the
+    // directories are created on demand.
+    for key in ["paths.cache_dir", "paths.state_dir"] {
+        if let Some(v) = cfg.get(key) {
+            if !v.is_empty() && Path::new(v).is_file() {
+                problems.push(format!("{}: '{}' is a file, not a directory", key, v));
             }
         }
     }

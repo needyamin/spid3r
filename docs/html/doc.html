@@ -4821,6 +4821,14 @@ registry =               ; canonical registry directory (alias: SPID3R_REGISTRY)
 allow_insecure_git = false
 allow_local_git = false
 
+[paths]
+cache_dir =              ; extracted-runtime cache home (alias: SPID3R_CACHE_DIR)
+state_dir =              ; agent store, audit log, pid file (alias: SPID3R_STATE_DIR)
+sqlite_path =            ; SQLite library tried first (alias: SPID3R_SQLITE_PATH)
+
+[cache]
+bytecode_dir =           ; bytecode cache for `spid3r run`; empty = disabled
+
 [env.production]
 agent.enabled = true
 agent.bind = 0.0.0.0
@@ -5013,6 +5021,40 @@ agent.bind = 0.0.0.0
                   <code>config.set</code>.</td>
               </tr>
               <tr>
+                <td><code>[paths]</code></td>
+                <td><code>cache_dir</code></td>
+                <td><em>empty</em></td>
+                <td>Canonical home of <code>SPID3R_CACHE_DIR</code> (generic spelling
+                  <code>SPID3R_PATHS_CACHE_DIR</code>): cache root for the extracted bundle runtime
+                  (<code>runtime/</code>). Empty = platform default. Frozen for remote
+                  <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[paths]</code></td>
+                <td><code>state_dir</code></td>
+                <td><em>empty</em></td>
+                <td>Canonical home of <code>SPID3R_STATE_DIR</code> (generic spelling
+                  <code>SPID3R_PATHS_STATE_DIR</code>): paired devices, admin-client book, audit log, pid file.
+                  Empty = platform default. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[paths]</code></td>
+                <td><code>sqlite_path</code></td>
+                <td><em>empty</em></td>
+                <td>Canonical home of <code>SPID3R_SQLITE_PATH</code> (generic spelling
+                  <code>SPID3R_PATHS_SQLITE_PATH</code>): full path of the SQLite shared library tried before the
+                  default lookup. Read once per process. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[cache]</code></td>
+                <td><code>bytecode_dir</code></td>
+                <td><em>empty</em></td>
+                <td>Bytecode cache for <code>spid3r run</code>: the compiled <code>.matrixc</code> container is
+                  keyed by the source's SHA-256, verified by its v3 checksum on load, and recompiled fresh when
+                  corrupt — a hit is byte-identical to compiling. Empty = disabled. Frozen for remote
+                  <code>config.set</code>.</td>
+              </tr>
+              <tr>
                 <td><code>[agent]</code></td>
                 <td><code>enabled</code> / <code>bind</code> / <code>port</code></td>
                 <td><code>false</code> / <code>127.0.0.1</code> / <code>9527</code></td>
@@ -5197,18 +5239,21 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           <code>&lt;state&gt;/audit.log</code>. Disable with <code>[logging] audit = false</code> — locally only:
           the remote <code>config.set</code> op refuses a schema-derived set of security-relevant keys — every
           <code>security.*</code> and <code>logging.*</code> key, <code>agent.role_*</code>, the agent
-          <code>enabled/bind/port/max_connections/request_timeout_ms/max_body</code> switches, and the phase-3
+          <code>enabled/bind/port/max_connections/request_timeout_ms/max_body</code> switches, the phase-3
           capability keys (<code>modules.disable</code>, <code>packages.allow_insecure_git</code>,
-          <code>packages.allow_local_git</code>) — so a paired operator cannot grant itself more operations, silence
-          the audit trail, re-bind the listener, or widen the script deny lists. Benign keys (e.g.
+          <code>packages.allow_local_git</code>), and the phase-4 path keys (<code>paths.cache_dir</code>,
+          <code>paths.state_dir</code>, <code>paths.sqlite_path</code>, <code>cache.bytecode_dir</code>) — so a
+          paired operator cannot grant itself more operations, silence the audit trail, re-bind the listener, widen
+          the script deny lists, or relocate the host's write targets. Benign keys (e.g.
           <code>agent.name</code>, <code>packages.registry</code>, <code>modules.assert_active</code>) stay remotely
           settable; change the rest by editing <code>spid3r.ini</code> on the host.
         </p>
         <p>
           State files: <code>devices.json</code> (paired devices), <code>clients.json</code> (admin-client known
           hosts), <code>audit.log</code>. <code>&lt;state&gt;</code> is
-          <code>%LOCALAPPDATA%\Spid3r\state</code>, <code>$XDG_STATE_HOME/spid3r</code>, or
-          <code>SPID3R_STATE_DIR</code>. Those files are <code>0600</code> on Unix.
+          <code>%LOCALAPPDATA%\Spid3r\state</code>, <code>$XDG_STATE_HOME/spid3r</code>, the
+          <code>paths.state_dir</code> ini key, or <code>SPID3R_STATE_DIR</code> (env alias; process env beats the
+          INI). Those files are <code>0600</code> on Unix.
         </p>
         <p>
           Security notes: scripts still run with process authority (see the trust model). The agent is a management

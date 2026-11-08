@@ -1183,12 +1183,20 @@ fn runtime_file_name() -> &'static str {
 
 /// Root of the per-user runtime cache (`.../runtime`).
 ///
-/// `SPID3R_CACHE_DIR` overrides the location, which is what the tests use and
-/// what a locked-down machine (no `LOCALAPPDATA`) can set; the fallback is the
-/// system temp directory rather than an error, because a runnable app that
-/// leaves a cache behind beats an app that refuses to start.
-fn runtime_cache_root() -> std::path::PathBuf {
+/// Resolution order: the legacy `SPID3R_CACHE_DIR` variable (process env
+/// beats the INI, and hosts or tests that set it after the snapshot was
+/// taken still take effect), then `paths.cache_dir` (the INI layer and the
+/// generic `SPID3R_PATHS_CACHE_DIR` spelling resolve through it), then the
+/// platform default. The fallback is the system temp directory rather than
+/// an error, because a runnable app that leaves a cache behind beats an app
+/// that refuses to start.
+pub(crate) fn runtime_cache_root() -> std::path::PathBuf {
     if let Some(dir) = std::env::var_os("SPID3R_CACHE_DIR") {
+        if !dir.is_empty() {
+            return std::path::PathBuf::from(dir).join("runtime");
+        }
+    }
+    if let Some(dir) = crate::config::get("paths.cache_dir") {
         if !dir.is_empty() {
             return std::path::PathBuf::from(dir).join("runtime");
         }

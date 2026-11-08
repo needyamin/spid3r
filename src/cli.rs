@@ -1245,9 +1245,9 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             run_tree(&file, budget, max_call_depth, &run_limits)
         }
         "vm" => {
-            let (program, file_name) = front_end(&file)?;
             let dirs = modules::default_module_dirs();
             let (result, report, cov) = if no_opt {
+                let (program, file_name) = front_end(&file)?;
                 let (script, _public) =
                     crate::vm::compile_program_unoptimized(&program, &file, &dirs)?;
                 let mut vm = Vm::new(file_name, dirs);
@@ -1271,6 +1271,24 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                     .unwrap_or_default();
                 (r, report, cov)
             } else {
+                // Bytecode cache (`cache.bytecode_dir`, phase 4): key the
+                // compiled container by the SHA-256 of the source bytes. A
+                // hit skips the front end and the optimizer; the v3
+                // checksum inside the container is verified on load and
+                // `run_compiled` validates the chunk, so a corrupt entry
+                // can only fall back to a fresh compile. The key is the
+                // source hash, so a stale entry is impossible by
+                // construction. `--no-opt` bypasses the cache (different
+                // compiler output for the same source).
+                let (file_name, script) = match bytecode_cache_lookup(&file) {
+                    Some(hit) => hit,
+                    None => {
+                        let (program, file_name) = front_end(&file)?;
+                        let (script, _public) = crate::vm::compile_program(&program, &file, &dirs)?;
+                        bytecode_cache_store(&file, &script);
+                        (file_name, script)
+                    }
+                };
                 let mut vm = Vm::new(file_name, dirs);
                 vm.set_budget(budget.map(crate::budget::Budget::new));
                 if let Some(n) = max_call_depth {
@@ -1284,7 +1302,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                 if coverage {
                     vm.enable_coverage();
                 }
-                let r = vm.run_program(&program);
+                let r = vm.run_compiled(Arc::new(script));
                 let report = vm.profiling_report();
                 let cov = vm
                     .coverage()
@@ -1310,6 +1328,51 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
         }
         _ => unreachable!(),
     }
+}
+
+/// Cache directory for compiled bytecode (`cache.bytecode_dir` in
+/// spid3r.ini); None when unset or empty. Frozen to remote `config.set`:
+/// a peer that could relocate it could feed the host pre-built bytecode.
+fn bytecode_cache_dir() -> Option<PathBuf> {
+    let dir = crate::config::get("cache.bytecode_dir")?;
+    if dir.trim().is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(dir))
+}
+
+/// Look up the compiled container for `file`, keyed by the SHA-256 of the
+/// source bytes (the OPcache analog: the key makes a stale entry impossible
+/// by construction — different source, different hash, recompiled). A
+/// corrupt container fails `deserialize_vmfunc`'s v3 checksum and is
+/// treated as a miss; the caller compiles fresh and writes the entry back.
+fn bytecode_cache_lookup(file: &str) -> Option<(Arc<str>, crate::value::VmFunc)> {
+    let dir = bytecode_cache_dir()?;
+    let src = std::fs::read(file).ok()?;
+    let key = crate::pkg::sha256_hex(&src);
+    let bytes = std::fs::read(dir.join(format!("{}.matrixc", key))).ok()?;
+    let script = deserialize_vmfunc(&bytes).ok()?;
+    Some((Arc::from(file), script))
+}
+
+/// Store the compiled container for `file`, keyed by the source hash
+/// (write-back mode). Best effort: any failure simply means the next run
+/// recompiles, which is the correct behavior for a cache.
+fn bytecode_cache_store(file: &str, script: &crate::value::VmFunc) {
+    let Some(dir) = bytecode_cache_dir() else {
+        return;
+    };
+    let Ok(src) = std::fs::read(file) else {
+        return;
+    };
+    let key = crate::pkg::sha256_hex(&src);
+    let path = dir.join(format!("{}.matrixc", key));
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let _ = std::fs::write(&path, serialize_vmfunc(script));
 }
 
 fn cmd_check(args: &[String]) -> Result<i32, Diagnostic> {

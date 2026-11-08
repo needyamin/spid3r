@@ -81,6 +81,14 @@ registry =               ; canonical registry directory (alias: SPID3R_REGISTRY)
 allow_insecure_git = false
 allow_local_git = false
 
+[paths]
+cache_dir =              ; cache home for the extracted bundle runtime (alias: SPID3R_CACHE_DIR)
+state_dir =              ; agent store, audit log, pid file (alias: SPID3R_STATE_DIR)
+sqlite_path =            ; SQLite shared library tried first (alias: SPID3R_SQLITE_PATH)
+
+[cache]
+bytecode_dir =           ; bytecode cache for `spid3r run`; empty = disabled
+
 [env.production]
 agent.enabled = true
 agent.bind = 0.0.0.0
@@ -268,6 +276,10 @@ silently forget the classification; a pin test holds the exact set:
   effect on the next restart)
 * `modules.disable` and the two git-transport opt-ins
   `packages.allow_insecure_git` / `packages.allow_local_git`
+* the path keys `paths.cache_dir`, `paths.state_dir`, `paths.sqlite_path`
+  and `cache.bytecode_dir` — a remote change could relocate the host's
+  write targets (data poisoning) or point the SQLite loader at a planted
+  library
 
 Change these by editing `spid3r.ini` on the host (or via the local CLI).
 Benign keys — e.g. `agent.name`, `packages.registry`,
@@ -340,8 +352,9 @@ The audit log rotates at 1 MiB: the current file is renamed to
 | `<state>/clients.json` | admin-client known hosts |
 | `<state>/audit.log` | append-only audit |
 
-`<state>` is `%LOCALAPPDATA%\Spid3r\state`, `$XDG_STATE_HOME/spid3r`, or
-`SPID3R_STATE_DIR`. `devices.json` and `clients.json` are `0600` on Unix.
+`<state>` is `%LOCALAPPDATA%\Spid3r\state`, `$XDG_STATE_HOME/spid3r`, the
+`paths.state_dir` ini key, or `SPID3R_STATE_DIR` (env alias; process env
+beats the INI). `devices.json` and `clients.json` are `0600` on Unix.
 
 ## 4. Security notes
 

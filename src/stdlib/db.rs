@@ -12,7 +12,8 @@
 //! db.close()
 //! ```
 //!
-//! Search order for the shared library: `SPID3R_SQLITE_PATH`, then the
+//! Search order for the shared library: `SPID3R_SQLITE_PATH` (or the
+//! `paths.sqlite_path` ini key), then the
 //! running executable's directory, then the OS default search paths. A failed
 //! load produces a catchable error that names every location tried.
 //!
@@ -174,10 +175,21 @@ mod loader {
 }
 
 /// Candidate locations for the SQLite shared library, in order.
+///
+/// The legacy `SPID3R_SQLITE_PATH` variable is checked first (process env
+/// beats the INI), then `paths.sqlite_path` (the INI layer and the generic
+/// `SPID3R_PATHS_SQLITE_PATH` spelling resolve through it). Note the
+/// library is loaded once per process into a shared handle, so a config
+/// reload cannot move it — `paths.sqlite_path` is StartupOnly.
 #[cfg(not(target_arch = "wasm32"))]
 fn candidate_paths() -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     if let Ok(p) = std::env::var("SPID3R_SQLITE_PATH") {
+        if !p.trim().is_empty() {
+            out.push(std::path::PathBuf::from(p));
+        }
+    }
+    if let Some(p) = crate::config::get("paths.sqlite_path") {
         if !p.trim().is_empty() {
             out.push(std::path::PathBuf::from(p));
         }
@@ -237,7 +249,8 @@ fn load_sqlite() -> Result<&'static SqliteApi, String> {
                 return Err(format!(
                     "cannot load the SQLite library (sqlite3). Tried: {}. \
                      Put sqlite3.dll/libsqlite3.so next to the spid3r executable, \
-                     or set SPID3R_SQLITE_PATH to its full path.",
+                     or set paths.sqlite_path in spid3r.ini (or the \
+                     SPID3R_SQLITE_PATH environment variable) to its full path.",
                     if tried.is_empty() {
                         "no candidates".to_string()
                     } else {
