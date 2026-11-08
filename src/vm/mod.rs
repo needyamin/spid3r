@@ -191,10 +191,13 @@ pub struct Vm {
     invoke_cache: HashMap<(usize, usize), InvokeCache>,
     /// Recycled `CallFrame::slots` buffers to avoid malloc/free on every call.
     slot_pool: Vec<Vec<Value>>,
-    /// Execution budget (`Engine::budget` / `spid3r run --budget`): charged in
-    /// batches at the instruction poll. `None` costs one `Option` check per
-    /// poll, not per instruction.
+    /// Execution budget (`Engine::budget` / `spid3r run --budget`, spelled
+    /// `--max-steps` as an alias): charged in batches at the instruction
+    /// poll. `None` costs one `Option` check per poll, not per instruction.
     budget: Option<crate::budget::Budget>,
+    /// Configured call-depth limit (`spid3r run --max-call-depth`); the
+    /// engine default until the flag tightens it.
+    max_depth: usize,
     /// Lazily-flushed growable string buffer for consecutive `s = s + rhs`
     /// local appends: `(frame_index, slot_index, owned_buffer)`.
     pending_str: Option<(usize, usize, String)>,
@@ -286,6 +289,7 @@ impl Vm {
             invoke_cache: HashMap::new(),
             slot_pool: Vec::with_capacity(16),
             budget: None,
+            max_depth: MAX_CALL_DEPTH,
             pending_str: None,
         };
         vm.install_stdlib();
@@ -296,6 +300,12 @@ impl Vm {
     /// `None` (the default) means unlimited.
     pub fn set_budget(&mut self, budget: Option<crate::budget::Budget>) {
         self.budget = budget;
+    }
+
+    /// Tighten the call-depth limit (`spid3r run --max-call-depth`). Must be
+    /// at least 1; the engine default is [`MAX_CALL_DEPTH`].
+    pub fn set_max_call_depth(&mut self, limit: usize) {
+        self.max_depth = limit.max(1);
     }
 
     /// A VM that shares globals/imported-const names/scheduler/module cache
@@ -331,6 +341,7 @@ impl Vm {
             invoke_cache: HashMap::new(),
             slot_pool: Vec::with_capacity(8),
             budget: None,
+            max_depth: MAX_CALL_DEPTH,
             pending_str: None,
         }
     }
@@ -2387,6 +2398,7 @@ impl Vm {
                     let global_consts = self.global_consts.clone();
                     let consts = self.consts.clone();
                     let budget = self.budget.clone();
+                    let max_depth = self.max_depth;
                     let handle = self.sched.spawn_job(Box::new(move || {
                         let mut vm = Vm::with_shared(
                             globals,
@@ -2400,6 +2412,7 @@ impl Vm {
                         );
                         // The task draws from the same allowance as its spawner.
                         vm.budget = budget;
+                        vm.max_depth = max_depth;
                         // Carry the thrown value across the task boundary so
                         // `join`/`await` rethrow is structural: `catch` on the
                         // joining side rebinds the original value (audit A-9).
@@ -2696,11 +2709,19 @@ impl Vm {
                 args.push(v.clone());
             }
         }
-        if self.depth >= MAX_CALL_DEPTH {
+        if self.depth >= self.max_depth {
+            let message = if self.max_depth == MAX_CALL_DEPTH {
+                "stack overflow: call depth limit reached".to_string()
+            } else {
+                format!(
+                    "stack overflow: call depth limit reached (limit {})",
+                    self.max_depth
+                )
+            };
             return Err(VmError {
                 fatal: false,
                 thrown: None,
-                message: "stack overflow: call depth limit reached".into(),
+                message,
                 span: self.cur_span(),
                 trace: Vec::new(),
             });
@@ -3131,6 +3152,7 @@ impl Vm {
                 );
                 // Module initialization draws from the importer's budget.
                 mvm.budget = self.budget.clone();
+                mvm.max_depth = self.max_depth;
                 // Seed the builtins into the module's own globals (see the
                 // source path's note).
                 mvm.install_stdlib();
@@ -3212,6 +3234,7 @@ impl Vm {
         mvm.install_stdlib();
         // Module initialization draws from the importer's budget.
         mvm.budget = self.budget.clone();
+        mvm.max_depth = self.max_depth;
         let budget_exhausted = self.budget.as_ref().is_some_and(|b| b.exhausted());
         let exports = mvm.run_module(&program).map_err(|d| VmError {
             fatal: false,

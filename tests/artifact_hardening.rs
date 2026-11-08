@@ -65,7 +65,9 @@ fn run(args: &[&str]) -> (Option<i32>, String, String) {
 // --------------------------------------------------------------------- A-8
 
 /// Appending bytes after the last structure must be rejected: a file whose
-/// declared structures do not consume the buffer is malformed.
+/// declared structures do not consume the buffer is malformed. Since the v3
+/// checksummed container this is a container-length mismatch rather than a
+/// trailing-structures error, but the invariant is the same.
 #[test]
 fn bytecode_with_trailing_bytes_is_rejected() {
     let mut bytes = serialize_vmfunc(&func_with(simple_chunk()));
@@ -78,8 +80,8 @@ fn bytecode_with_trailing_bytes_is_rejected() {
         Err(e) => e,
     };
     assert!(
-        err.message.contains("trailing"),
-        "error should mention trailing bytes: {}",
+        err.message.contains("trailing") || err.message.contains("container length mismatch"),
+        "error should reject the appended bytes: {}",
         err.message
     );
 }
@@ -224,8 +226,8 @@ fn exec_rejects_a_corrupted_matrixc_without_crashing() {
         let (code, _out, err) = run(&["exec", path.to_str().unwrap()]);
         assert_eq!(
             code,
-            Some(1),
-            "{}: expected a clean user error (exit 1), got {:?} ({})",
+            Some(4),
+            "{}: invalid bytecode exits 4, got {:?} ({})",
             name,
             code,
             err
@@ -243,6 +245,99 @@ fn exec_rejects_a_corrupted_matrixc_without_crashing() {
             err
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The v3 checksummed container must catch a single flipped byte anywhere in
+/// the payload (the QA finding: flipping `Call argc 1` into `Call argc 241`
+/// used to execute silently) and in the checksum itself, while the unmodified
+/// artifact still runs and the legacy plain payload (the container's inner
+/// stream) is still accepted with structural validation.
+#[test]
+fn checksummed_bytecode_rejects_a_flipped_byte() {
+    let dir = std::env::temp_dir().join(format!("spid3r_checksum_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let src = dir.join("hello.matrix");
+    std::fs::write(
+        &src,
+        "fn main() {\n    println(\"hi\");\n    return 0;\n}\n",
+    )
+    .expect("write");
+    let good = dir.join("hello.matrixc");
+    let (code, out, err) = run(&[
+        "compile",
+        src.to_str().unwrap(),
+        "-o",
+        good.to_str().unwrap(),
+    ]);
+    assert_eq!(code, Some(0), "compile failed: {}{}", out, err);
+    let bytes = std::fs::read(&good).expect("read bytecode");
+
+    // The unmodified artifact runs.
+    let (code, out, err) = run(&["exec", good.to_str().unwrap()]);
+    assert_eq!(code, Some(0), "clean artifact must run: {}{}", out, err);
+    assert!(out.contains("hi"), "exec output: {}", out);
+
+    // Layout: MAGIC(6) | version u16 | payload_len u64 | payload | sha256(32).
+    let n = u64::from_le_bytes(bytes[8..16].try_into().unwrap()) as usize;
+    assert!(n > 16, "payload unexpectedly small: {}", n);
+    let payload_end = 16 + n;
+
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        // A byte in the middle of the payload (an opcode or operand).
+        ("payload_mid", {
+            let mut b = bytes.clone();
+            let mid = 16 + n / 2;
+            b[mid] ^= 0xFF;
+            b
+        }),
+        // The first payload byte (inside the inner magic — corruption either way).
+        ("payload_first", {
+            let mut b = bytes.clone();
+            b[16] ^= 0x01;
+            b
+        }),
+        // A byte inside the checksum: tampering detected, not ignored.
+        ("checksum_byte", {
+            let mut b = bytes.clone();
+            let last = b.len() - 1;
+            b[last] ^= 0x01;
+            b
+        }),
+    ];
+    for (name, data) in cases {
+        let path = dir.join(format!("flip_{}.matrixc", name));
+        std::fs::write(&path, &data).expect("write");
+        let (code, _out, err) = run(&["exec", path.to_str().unwrap()]);
+        assert_eq!(
+            code,
+            Some(4),
+            "{}: a flipped byte must exit 4, got {:?} ({})",
+            name,
+            code,
+            err
+        );
+        assert!(
+            err.contains("bytecode integrity check failed"),
+            "{}: expected the integrity diagnostic: {}",
+            name,
+            err
+        );
+    }
+
+    // A legacy plain payload (the container's inner stream) is still accepted:
+    // structural validation only, exactly as before the checksum existed.
+    let legacy = &bytes[16..payload_end];
+    let legacy_path = dir.join("legacy.matrixc");
+    std::fs::write(&legacy_path, legacy).expect("write legacy");
+    let (code, _out, err) = run(&["exec", legacy_path.to_str().unwrap()]);
+    assert_eq!(
+        code,
+        Some(0),
+        "legacy plain bytecode must still run: {}",
+        err
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

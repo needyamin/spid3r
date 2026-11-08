@@ -138,7 +138,7 @@ impl Capability {
                 "read_csv",
                 "write_csv",
             ],
-            Capability::Process => &["spawn_process", "run_payload", "exec_capture"],
+            Capability::Process => &["spawn_process", "run_payload", "run_payload_strict", "exec_capture"],
             Capability::Network => &[
                 "tcp_listen",
                 "tcp_accept",

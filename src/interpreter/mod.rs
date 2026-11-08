@@ -123,6 +123,9 @@ pub struct Interp {
     /// Active call frames for error traces: (callee, call site).
     call_stack: Mutex<Vec<(TraceCallee, Span)>>,
     depth: AtomicUsize,
+    /// Call-depth limit (`spid3r run --max-call-depth`); the engine default
+    /// until the flag tightens it.
+    max_call_depth: usize,
     /// Execution budget (`Engine::budget` / `spid3r run --budget`). `None`
     /// costs one `Option` check per charge site. Spawned tasks inherit a
     /// clone, so the whole run shares one allowance.
@@ -177,6 +180,7 @@ impl Interp {
             public_names: Mutex::new(HashSet::new()),
             call_stack: Mutex::new(Vec::new()),
             depth: AtomicUsize::new(0),
+            max_call_depth: MAX_CALL_DEPTH,
             budget: None,
         };
         crate::stdlib::install(&interp.globals, interp.sched.clone());
@@ -203,6 +207,7 @@ impl Interp {
         modules: Arc<Mutex<crate::modules::ModuleCache>>,
         _importer_globals: Env,
         budget: Option<crate::budget::Budget>,
+        max_call_depth: usize,
     ) -> Self {
         let interp = Interp {
             globals: environment::new_global(),
@@ -216,6 +221,7 @@ impl Interp {
             public_names: Mutex::new(HashSet::new()),
             call_stack: Mutex::new(Vec::new()),
             depth: AtomicUsize::new(0),
+            max_call_depth,
             budget,
         };
         crate::stdlib::install(&interp.globals, interp.sched.clone());
@@ -243,6 +249,7 @@ impl Interp {
             public_names: Mutex::new(HashSet::new()),
             call_stack: Mutex::new(Vec::new()),
             depth: AtomicUsize::new(0),
+            max_call_depth: MAX_CALL_DEPTH,
             budget: None,
         }
     }
@@ -453,10 +460,37 @@ impl Interp {
         self.budget = budget;
     }
 
+    /// Tighten the call-depth limit (`spid3r run --max-call-depth`). Must be
+    /// at least 1; the engine default is [`MAX_CALL_DEPTH`].
+    pub fn set_max_call_depth(&mut self, limit: usize) {
+        self.max_call_depth = limit.max(1);
+    }
+
+    /// The stack-overflow diagnostic, naming the limit when the flag set a
+    /// non-default one, so `--max-call-depth` failures are self-describing.
+    fn depth_error(&self, span: &Span) -> Flow {
+        if self.max_call_depth == MAX_CALL_DEPTH {
+            self.rt(span, "stack overflow: call depth limit reached")
+        } else {
+            self.rt(
+                span,
+                format!(
+                    "stack overflow: call depth limit reached (limit {})",
+                    self.max_call_depth
+                ),
+            )
+        }
+    }
+
     /// Share this interpreter's budget (clone) with a child interpreter —
     /// spawned tasks and module initialization draw one allowance.
     pub(crate) fn budget_handle(&self) -> Option<crate::budget::Budget> {
         self.budget.clone()
+    }
+
+    /// The configured call-depth limit, for a child interpreter (modules).
+    pub(crate) fn max_call_depth(&self) -> usize {
+        self.max_call_depth
     }
 
     // ------------------------------------------------------------ statements
@@ -870,11 +904,13 @@ impl Interp {
                 let file = self.file.clone();
                 let module_dirs = self.module_dirs.clone();
                 let budget = self.budget.clone();
+                let max_depth = self.max_call_depth;
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let mut interp = Interp::shared(globals, sched, modules, file, module_dirs);
                     // The task draws from the same allowance as its spawner.
                     interp.set_budget(budget);
+                    interp.max_call_depth = max_depth;
                     // A panic in the task releases the task's mutexes (see
                     // `GuardSweep`).
                     let _guard_sweep = GuardSweep {
@@ -1287,11 +1323,13 @@ impl Interp {
                 let file = self.file.clone();
                 let module_dirs = self.module_dirs.clone();
                 let budget = self.budget.clone();
+                let max_depth = self.max_call_depth;
                 let span2 = span.clone();
                 let handle = self.sched.spawn_job(Box::new(move || {
                     let mut interp = Interp::shared(globals, sched, modules, file, module_dirs);
                     // The task draws from the same allowance as its spawner.
                     interp.set_budget(budget);
+                    interp.max_call_depth = max_depth;
                     // A panic in the task releases the task's mutexes (see
                     // `GuardSweep`).
                     let _guard_sweep = GuardSweep {
@@ -1701,9 +1739,9 @@ impl Interp {
         span: &Span,
     ) -> Result<Value, Flow> {
         let depth = self.depth.fetch_add(1, Ordering::Relaxed);
-        if depth >= MAX_CALL_DEPTH {
+        if depth >= self.max_call_depth {
             self.depth.fetch_sub(1, Ordering::Relaxed);
-            return Err(self.rt(span, "stack overflow: call depth limit reached"));
+            return Err(self.depth_error(span));
         }
         // Track the frame for error traces: (callee, call site).
         self.call_stack
@@ -1892,9 +1930,9 @@ impl Interp {
                 ));
             }
             let depth = self.depth.fetch_add(1, Ordering::Relaxed);
-            if depth >= MAX_CALL_DEPTH {
+            if depth >= self.max_call_depth {
                 self.depth.fetch_sub(1, Ordering::Relaxed);
-                return Err(self.rt(span, "stack overflow: call depth limit reached"));
+                return Err(self.depth_error(span));
             }
             self.call_stack
                 .lock()
@@ -2049,9 +2087,9 @@ impl Interp {
             ));
         }
         let depth = self.depth.fetch_add(1, Ordering::Relaxed);
-        if depth >= MAX_CALL_DEPTH {
+        if depth >= self.max_call_depth {
             self.depth.fetch_sub(1, Ordering::Relaxed);
-            return Err(self.rt(span, "stack overflow: call depth limit reached"));
+            return Err(self.depth_error(span));
         }
         self.call_stack
             .lock()
@@ -2114,9 +2152,9 @@ impl Interp {
             ));
         }
         let depth = self.depth.fetch_add(1, Ordering::Relaxed);
-        if depth >= MAX_CALL_DEPTH {
+        if depth >= self.max_call_depth {
             self.depth.fetch_sub(1, Ordering::Relaxed);
-            return Err(self.rt(span, "stack overflow: call depth limit reached"));
+            return Err(self.depth_error(span));
         }
         self.call_stack
             .lock()

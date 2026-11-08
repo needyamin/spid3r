@@ -87,6 +87,10 @@ $ spid3r modules src/main.matrix --tree   # which file does each import name?
 $ spid3r verify                           # is the vendored tree the one the lock describes?
 ```
 
+![Trust boundary: no gate by default, opt-in capability gate via --sandbox or Engine::deny](docs/diagrams/security.svg)
+
+By default a program runs with the full authority of the user who started it. `spid3r run --sandbox` and `spid3r exec --sandbox` opt into a capability gate — filesystem, network, process and environment access are refused with catchable `sandboxed: ... denied` errors, enforced through the single native funnel every engine installs from, so an imported module cannot re-arm what was denied. When embedding in Rust, `Engine::deny` applies the same policy. It is a policy filter over built-in natives, not an OS-level sandbox.
+
 ## What's inside
 
 | Aspect | Detail |
@@ -152,8 +156,20 @@ cargo install --path . --no-default-features
 | `spid3r modules` · `publish` · `search` | module origins, registry entries |
 | `spid3r magic <cmd>` | run project-root `magic` framework CLI from any subdirectory |
 | `spid3r compile` · `gui` · `exec` · `bench` | bytecode file, windowed app, script runner, benchmarks |
+| `spid3r disasm app.matrixc` | human-readable bytecode disassembly (exit 4 on a corrupt file) |
 | `spid3r plugin` · `pack` · `unpack` | plugin inspection, tar+sha256 archive, extract |
 | `spid3r info` · `config` · `agent` · `admin` | build info, settings, management agent |
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | program error (compile failure or runtime failure) |
+| 2 | usage error (unknown command or bad arguments) |
+| 4 | invalid bytecode (corrupt or malformed `.matrixc`) |
+
+`spid3r run --budget` (alias `--max-steps`) caps the work untrusted code may do; `--max-call-depth` caps recursion and applies to the tree and VM engines — the native AOT backend enforces neither. `spid3r run --sandbox` and `spid3r exec --sandbox` deny file-system, network, process and environment access to the program (catchable `sandboxed: ... denied` errors). `.matrixc` files written by `spid3r compile` carry a SHA-256 integrity checksum, verified on load: a corrupt or modified file exits 4 with `bytecode integrity check failed`. That checksum is an integrity check (bit rot, corruption, lazy tampering), **not** an authenticity control — anyone can recompute it; signing distributed bytecode (e.g. with the in-tree Ed25519 implementation) is a noted future direction. AOT-produced executables report runtime failures with their own process conventions and are not bound by this table.
 
 ## Documentation
 

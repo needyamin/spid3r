@@ -11,10 +11,33 @@ everything it needs to run. The layout, produced by `serialize_vmfunc` and read
 back by `deserialize_vmfunc`:
 
 ```
-SPID3R        — 6-byte magic number (b"SPID3R")
-version: u16  — little-endian format version (currently 2)
-VmFunc        — the script function (see below)
+SPID3R            — 6-byte magic number (b"SPID3R")
+version: u16      — little-endian format version
 ```
+
+`spid3r compile` writes the **v3 checksummed container**:
+
+```
+SPID3R            — 6-byte magic number
+version: u16      — 3 (checksummed container)
+payload_len: u64  — little-endian byte length of the payload
+payload           — a complete plain v2 stream (magic + version 2 + VmFunc)
+sha256: [32;]     — SHA-256 of the payload, little-endian bytes in order
+```
+
+On load, a v3 container verifies the SHA-256 **before** any structure is
+decoded; a mismatch is the clean error `bytecode integrity check failed` (exit
+code 4). Legacy plain files (versions 1 and 2) keep the old path — structural
+validation only — so previously shipped artifacts stay loadable.
+
+**This is an integrity check, not an authenticity control.** It detects bit
+rot, corruption and lazy tampering (QA flipped a single opcode byte and the
+pre-checksum reader executed the result silently); it does not prove who wrote
+the file, because anyone can recompute the checksum over modified bytes. If
+distributed bytecode ever needs authenticity, the control is a signature over
+the payload — the in-tree Ed25519 implementation (`src/pkg/ed25519.rs`,
+zero dependencies) is the candidate. Not implemented; noted as a future
+direction.
 
 The magic + version are checked first; a file missing them (or with an
 unsupported version, or truncated) is rejected with a clean `Diagnostic` rather

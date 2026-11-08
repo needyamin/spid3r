@@ -408,6 +408,10 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "random_float",
     "random_normal",
     "sha256",
+    "sha512",
+    "ed25519_keypair",
+    "ed25519_sign",
+    "ed25519_verify",
     "hmac_sha256",
     "pbkdf2_sha256",
     "secure_compare",
@@ -604,10 +608,10 @@ fn builtin_return_type(name: &str) -> Option<Ty> {
             Ty::Float
         }
         "is_nan" | "is_inf" | "is_ok" | "is_err" => Ty::Bool,
-        "secure_compare" => Ty::Bool,
+        "secure_compare" | "ed25519_verify" => Ty::Bool,
         "string" => Ty::Str,
         "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" => Ty::Int,
-        "sha256" | "hmac_sha256" | "pbkdf2_sha256" => Ty::Str,
+        "sha256" | "sha512" | "hmac_sha256" | "pbkdf2_sha256" | "ed25519_sign" => Ty::Str,
         "crc32" | "adler32" => Ty::Int,
         "scrypt" => Ty::Str,
         "argon2" => Ty::Str,

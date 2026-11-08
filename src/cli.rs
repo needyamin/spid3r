@@ -1,6 +1,7 @@
 //! Command line front end for the `spid3r` binary.
 //!
-//! Exit codes: 0 success, 1 user-program error, 2 usage error.
+//! Exit codes: 0 success, 1 program error (compile or runtime), 2 usage
+//! error, 4 invalid bytecode.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +19,8 @@ use crate::{LANGUAGE_VERSION, VERSION};
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_USER_ERROR: i32 = 1;
 pub const EXIT_USAGE: i32 = 2;
+/// A `.matrixc` file that could not be loaded (corrupt or malformed).
+pub const EXIT_BYTECODE: i32 = 4;
 
 const HELP: &str = "\
 spid3r - the Spid3r language toolchain
@@ -27,11 +30,16 @@ USAGE:
 
 COMMANDS:
     run [--engine tree|vm] [--prof] [--coverage] [--no-opt] [--budget N]
-        <file.matrix>                      Compile and run; --prof (vm) prints
+        [--max-steps N] [--max-call-depth N] [--sandbox] <file.matrix>
+                                           Compile and run; --prof (vm) prints
                                            per-opcode execution counts;
                                            --coverage records line coverage;
                                            --no-opt disables bytecode optimizations;
-                                           --budget caps the work for untrusted code
+                                           --budget caps the work for untrusted
+                                           code (--max-steps is its alias);
+                                           --max-call-depth caps recursion;
+                                           --sandbox denies file-system, network,
+                                           process and environment access
     magic [command] [args...]              Execute Spid3r project magic commands
     check <file.matrix> [--json]           Lex, parse, semantic-check; no run.
       [--deny-warnings] [--allow LINT]     Lints: unused-variable, unused-parameter,
@@ -56,7 +64,12 @@ COMMANDS:
                                            Package into a distribution (add
                                            --self-contained to embed the runtime,
                                            desktop target only)
-    exec <file.matrixc>                    Run bytecode on the virtual machine
+    exec <file.matrixc> [--sandbox]        Run bytecode on the virtual machine
+                                           (--sandbox denies file-system,
+                                           network, process and environment
+                                           access)
+    disasm <file.matrixc>                  Print the human-readable bytecode
+                                           disassembly
     repl                                   Interactive read-eval-print loop
     debug <file.matrix> [--break L[,L…]] [--commands FILE]
                                            Line-based debugger on the VM:
@@ -123,7 +136,8 @@ EXTERNAL COMMANDS:
                                            dispatched (never .bat/.cmd).
 
 EXIT CODES:
-    0 success, 1 user-program error, 2 usage error
+    0 success, 1 program error (compile or runtime), 2 usage error,
+    4 invalid bytecode
 ";
 
 pub fn version_text() -> String {
@@ -356,6 +370,7 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "gui" => cmd_gui(&rest),
         "bundle" => cmd_bundle(&rest),
         "exec" => cmd_exec(&rest),
+        "disasm" => cmd_disasm(&rest),
         "repl" => {
             crate::repl::run();
             Ok(EXIT_OK)
@@ -419,6 +434,13 @@ fn outcome_code(outcome: Result<i32, Diagnostic>, json: bool, cmd: &str) -> i32 
             if d.phase == Phase::Usage {
                 EXIT_USAGE
             } else {
+                // Compile and runtime failures share exit 1 on purpose (the
+                // long-standing contract; renumbering would break every
+                // script and CI that keys on it). `Phase::Vm` also stays
+                // here: source-compile errors ("too many locals", ...) share
+                // the phase with bytecode validation, and only the `.matrixc`
+                // load sites (exec, disasm) can distinguish those — they exit
+                // 4 themselves.
                 EXIT_USER_ERROR
             }
         }
@@ -473,7 +495,15 @@ OPTIONS:
     --coverage-out <file>  Write coverage report to file
     --budget <n>           Stop after roughly N steps with the fatal error
                            'execution budget exhausted' (for untrusted code;
-                           not enforced by the AOT backend)
+                           not enforced by the AOT backend). --max-steps is
+                           an alias for this flag: same behavior, either
+                           spelling accepted, not both
+    --max-call-depth <n>   Cap the call stack depth (default 1000); exceeding
+                           it is a clean stack-overflow runtime error. Applies
+                           to the tree and VM engines (not the AOT backend)
+    --sandbox              Deny file-system, network, process and environment
+                           access from the program: the covered builtins fail
+                           with the catchable error 'sandboxed: ... denied'
     -h, --help             Print help information
 "),
         "check" => Some("\
@@ -614,10 +644,24 @@ OPTIONS:
 spid3r exec - Run bytecode on the virtual machine
 
 USAGE:
-    spid3r exec <file.matrixc>
+    spid3r exec [--sandbox] <file.matrixc>
+
+OPTIONS:
+    --sandbox              Deny file-system, network, process and environment
+                           access from the program: the covered builtins fail
+                           with the catchable error 'sandboxed: ... denied'
+    -h, --help             Print help information
+"),
+        "disasm" => Some("\
+spid3r disasm - Print the human-readable bytecode disassembly
+
+USAGE:
+    spid3r disasm <file.matrixc>
 
 OPTIONS:
     -h, --help             Print help information
+
+A corrupt or malformed .matrixc file exits with code 4.
 "),
         "repl" => Some("\
 spid3r repl - Interactive read-eval-print loop
@@ -790,11 +834,24 @@ fn front_end(path: &str) -> Result<(crate::ast::Program, Arc<str>), Diagnostic> 
 }
 
 /// Load and run a program on the reference runner (tree-walk).
-fn run_tree(path: &str, budget: Option<u64>) -> Result<i32, Diagnostic> {
+///
+/// `--budget` (spelled `--max-steps` as an alias) maps onto the statement
+/// budget: one unit per statement and per loop iteration. The VM engine
+/// charges the same allowance in instruction-poll batches.
+/// `--max-call-depth` tightens the interpreter's recursion limit and applies
+/// to the tree and VM engines (not the AOT backend).
+fn run_tree(
+    path: &str,
+    budget: Option<u64>,
+    max_call_depth: Option<usize>,
+) -> Result<i32, Diagnostic> {
     let (program, file) = front_end(path)?;
     let dirs = modules::default_module_dirs();
     let mut interp = Interp::new(file, dirs);
     interp.set_budget(budget.map(crate::budget::Budget::new));
+    if let Some(n) = max_call_depth {
+        interp.set_max_call_depth(n);
+    }
     interp.run_program(&program)
 }
 
@@ -905,6 +962,15 @@ fn cmd_magic(rest: &[String]) -> Result<i32, Diagnostic> {
                     run_args.push(val.clone());
                 }
             }
+            "--max-steps" | "--max-call-depth" => {
+                run_args.push(arg.clone());
+                if let Some(val) = rest_iter.next() {
+                    run_args.push(val.clone());
+                }
+            }
+            "--sandbox" => {
+                run_args.push(arg.clone());
+            }
             a if a.starts_with("--engine=") => {
                 let val = a.strip_prefix("--engine=").unwrap();
                 run_args.push("--engine".to_string());
@@ -913,6 +979,16 @@ fn cmd_magic(rest: &[String]) -> Result<i32, Diagnostic> {
             a if a.starts_with("--budget=") => {
                 let val = a.strip_prefix("--budget=").unwrap();
                 run_args.push("--budget".to_string());
+                run_args.push(val.to_string());
+            }
+            a if a.starts_with("--max-steps=") => {
+                let val = a.strip_prefix("--max-steps=").unwrap();
+                run_args.push("--max-steps".to_string());
+                run_args.push(val.to_string());
+            }
+            a if a.starts_with("--max-call-depth=") => {
+                let val = a.strip_prefix("--max-call-depth=").unwrap();
+                run_args.push("--max-call-depth".to_string());
                 run_args.push(val.to_string());
             }
             a if a.starts_with("--coverage-out=") => {
@@ -948,6 +1024,9 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     let mut coverage = false;
     let mut coverage_out: Option<String> = None;
     let mut budget: Option<u64> = None;
+    let mut max_steps: Option<u64> = None;
+    let mut max_call_depth: Option<usize> = None;
+    let mut sandbox = false;
     let mut script_args: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -962,6 +1041,65 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             "--no-opt" => no_opt = true,
             "--prof" => prof = true,
             "--coverage" => coverage = true,
+            "--sandbox" => sandbox = true,
+            "--max-steps" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => match v.parse::<u64>() {
+                        Ok(n) => max_steps = Some(n),
+                        Err(_) => {
+                            return Err(usage(&format!(
+                                "--max-steps expects a non-negative step count, got '{}'",
+                                v
+                            )))
+                        }
+                    },
+                    None => return Err(usage("--max-steps needs a step count")),
+                }
+            }
+            a if a.starts_with("--max-steps=") => {
+                let v = a.strip_prefix("--max-steps=").unwrap();
+                match v.parse::<u64>() {
+                    Ok(n) => max_steps = Some(n),
+                    Err(_) => {
+                        return Err(usage(&format!(
+                            "--max-steps expects a non-negative step count, got '{}'",
+                            v
+                        )))
+                    }
+                }
+            }
+            "--max-call-depth" => {
+                i += 1;
+                match args.get(i) {
+                    Some(v) => match v.parse::<usize>() {
+                        Ok(n) if n >= 1 => max_call_depth = Some(n),
+                        Ok(_) => {
+                            return Err(usage("--max-call-depth must be at least 1"))
+                        }
+                        Err(_) => {
+                            return Err(usage(&format!(
+                                "--max-call-depth expects a depth, got '{}'",
+                                v
+                            )))
+                        }
+                    },
+                    None => return Err(usage("--max-call-depth needs a depth")),
+                }
+            }
+            a if a.starts_with("--max-call-depth=") => {
+                let v = a.strip_prefix("--max-call-depth=").unwrap();
+                match v.parse::<usize>() {
+                    Ok(n) if n >= 1 => max_call_depth = Some(n),
+                    Ok(_) => return Err(usage("--max-call-depth must be at least 1")),
+                    Err(_) => {
+                        return Err(usage(&format!(
+                            "--max-call-depth expects a depth, got '{}'",
+                            v
+                        )))
+                    }
+                }
+            }
             "--budget" => {
                 i += 1;
                 match args.get(i) {
@@ -1044,6 +1182,30 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     reject_gui_program(&file)?;
     // `args()` must see the program's arguments, not the interpreter's argv.
     crate::stdlib::set_script_args(script_args);
+    // `--max-steps` is a documented alias of `--budget`: one feature, two
+    // spellings (the VM poll-batch budget on both engines). Passing both is
+    // ambiguous, so it is a usage error.
+    if budget.is_some() && max_steps.is_some() {
+        return Err(usage("specify only one of --budget and --max-steps"));
+    }
+    let budget = budget.or(max_steps);
+    // Arm the sandbox before any engine installs its globals: both engines
+    // build their natives from stdlib::native_defs(), so arming here covers
+    // the main engine, every imported module and every spawned task. The
+    // capability record also blocks plugin functions declared with a denied
+    // permission at call time.
+    if sandbox {
+        crate::stdlib::arm_sandbox();
+        use crate::embed::Capability;
+        for cap in [
+            Capability::FileSystem,
+            Capability::Network,
+            Capability::Process,
+            Capability::Environment,
+        ] {
+            crate::plugin::deny_capability(cap);
+        }
+    }
     match engine {
         "tree" => {
             if prof {
@@ -1056,7 +1218,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                     "--coverage is a VM-engine feature; rerun with --engine vm",
                 ));
             }
-            run_tree(&file, budget)
+            run_tree(&file, budget, max_call_depth)
         }
         "vm" => {
             let (program, file_name) = front_end(&file)?;
@@ -1066,6 +1228,9 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                     crate::vm::compile_program_unoptimized(&program, &file, &dirs)?;
                 let mut vm = Vm::new(file_name, dirs);
                 vm.set_budget(budget.map(crate::budget::Budget::new));
+                if let Some(n) = max_call_depth {
+                    vm.set_max_call_depth(n);
+                }
                 if prof {
                     vm.enable_profiling();
                 }
@@ -1082,6 +1247,9 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             } else {
                 let mut vm = Vm::new(file_name, dirs);
                 vm.set_budget(budget.map(crate::budget::Budget::new));
+                if let Some(n) = max_call_depth {
+                    vm.set_max_call_depth(n);
+                }
                 if prof {
                     vm.enable_profiling();
                 }
@@ -1431,15 +1599,74 @@ fn compile_file(file: &str, out: Option<&str>, opts: CompileOptions) -> Result<i
     Ok(EXIT_OK)
 }
 
+/// `spid3r exec <file.matrixc>` — run bytecode on the VM.
+///
+/// `--sandbox` applies here as well as on `run`: exec is the
+/// untrusted-bytecode distribution path, so the same stdlib sandbox arms
+/// before the VM installs its globals (one shared gate for both commands).
 fn cmd_exec(args: &[String]) -> Result<i32, Diagnostic> {
-    let file = single_file(args, "exec")?;
+    let mut sandbox = false;
+    let mut file: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--sandbox" => sandbox = true,
+            "--help" | "-h" => {
+                println!("{}", subcommand_help("exec").unwrap_or(HELP));
+                return Ok(EXIT_OK);
+            }
+            other => {
+                if file.is_some() {
+                    return Err(usage("exec takes exactly one file"));
+                }
+                file = Some(other.to_string());
+            }
+        }
+        i += 1;
+    }
+    let file = file.ok_or_else(|| usage("exec needs a file: spid3r exec <file.matrixc>"))?;
     let bytes =
         std::fs::read(&file).map_err(|e| usage(&format!("cannot read '{}': {}", file, e)))?;
-    let script = deserialize_vmfunc(&bytes)?;
+    let script = match deserialize_vmfunc(&bytes) {
+        Ok(s) => s,
+        Err(d) => {
+            eprintln!("{}", d.render());
+            return Ok(EXIT_BYTECODE);
+        }
+    };
+    if sandbox {
+        crate::stdlib::arm_sandbox();
+        use crate::embed::Capability;
+        for cap in [
+            Capability::FileSystem,
+            Capability::Network,
+            Capability::Process,
+            Capability::Environment,
+        ] {
+            crate::plugin::deny_capability(cap);
+        }
+    }
     let file_arc: Arc<str> = Arc::from(file.as_str());
     let dirs = modules::default_module_dirs();
     let mut vm = Vm::new(file_arc, dirs);
     vm.run_compiled(Arc::new(script))
+}
+
+/// `spid3r disasm <file.matrixc>` — print the human-readable disassembly.
+/// Nothing is executed; a corrupt or malformed bytecode file exits 4.
+fn cmd_disasm(args: &[String]) -> Result<i32, Diagnostic> {
+    let file = single_file(args, "disasm")?;
+    let bytes =
+        std::fs::read(&file).map_err(|e| usage(&format!("cannot read '{}': {}", file, e)))?;
+    let script = match deserialize_vmfunc(&bytes) {
+        Ok(s) => s,
+        Err(d) => {
+            eprintln!("{}", d.render());
+            return Ok(EXIT_BYTECODE);
+        }
+    };
+    println!("{}", disassemble(&script.chunk, &file));
+    Ok(EXIT_OK)
 }
 
 /// Default `.matrixc` output path: replace a trailing `.matrix` with

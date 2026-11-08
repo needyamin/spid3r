@@ -121,6 +121,17 @@ rather than an infinity or a panic.
 | Function | Description |
 |---|---|
 | `sha256(s)` | SHA-256 (FIPS 180-4) of the UTF-8 bytes of `s`, lowercase hex — the same implementation the package layer uses to verify dependencies. |
+| `sha512(s)` | SHA-512 (FIPS 180-4) of the UTF-8 bytes of `s`, lowercase hex. `s` may be a string or `bytes`. Also the hash Ed25519 is built on. |
+| `ed25519_keypair(seed)` | RFC 8032 Ed25519 keypair from a 32-byte hex seed; with no argument the seed comes from the OS entropy source. Returns `{ "public": hex64, "secret": hex128 }` (`secret = seed \|\| public`). |
+| `ed25519_sign(secret_hex, msg)` | RFC 8032 Ed25519 signature of `msg` (string or `bytes`) under a 64-byte hex secret key; returns 128 lowercase hex chars. |
+| `ed25519_verify(public_hex, msg, sig_hex)` | `true` when a 128-hex-char signature verifies under a 64-hex-char public key. Malformed input is `false`, never an error. |
+
+Ed25519 caveat: the implementation is **not constant-time** (scalar
+multiplication is branch-uniform, but field arithmetic is not hardened); fine
+for verifying third-party data, but do not use it for secret-key operations in
+hostile environments. Verification is strict: it rejects non-canonical `S`
+values (`S >= L`, closing the `S + L` malleability class) and small-order
+public keys (order 1/2/4/8), which is stricter than RFC 8032.
 | `hmac_sha256(key, msg)` | RFC 2104 HMAC-SHA256 of `msg` under `key`, lowercase hex, over the standard 64-byte block. |
 | `pbkdf2_sha256(password, salt, iterations)` | PBKDF2-HMAC-SHA256 (RFC 8018), 32-byte key as lowercase hex. `salt` is a string or bytes; `iterations` clamped to 1..=10_000_000. The primitive for password storage: store `(salt, iterations, hash)`. |
 | `bcrypt_hash(password, cost=10)` | OpenBSD bcrypt password hash string (`$2b$...`). Cost clamped to 4..=16. |

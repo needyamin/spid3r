@@ -819,6 +819,19 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<Vec<String>, String> {
 mod sha256;
 pub use sha256::{hex_decode, hex_encode, sha256_bytes, sha256_hex};
 
+// ------------------------------------------------------------------ sha512
+//
+// Companion hash for the `sha512` builtin and the Ed25519 implementation
+// below (RFC 8032 hashes everything with SHA-512).
+
+mod sha512;
+pub use sha512::{sha512_bytes, sha512_hex};
+
+// ------------------------------------------------------------------ ed25519
+
+mod ed25519;
+pub use ed25519::{keypair_from_seed, sign as ed25519_sign, verify as ed25519_verify};
+
 /// Inspect/edit half of the package manager: `verify`, `tree`, `add`,
 /// `remove`, `publish --to-dir`, `search --local`.
 pub mod ops;

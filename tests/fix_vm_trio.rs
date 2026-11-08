@@ -203,8 +203,10 @@ fn hand_mutated_bytecode_never_panics_the_host() {
         let (code, out, err) =
             run_with_deadline(&["exec", path.to_str().unwrap()], Duration::from_secs(15))
                 .unwrap_or_else(|e| panic!("[{}] {}", name, e));
+        // 0 = the mutation landed harmlessly, 1/3 = a clean runtime
+        // diagnostic, 4 = the loader rejected the malformed file.
         assert!(
-            code == 0 || code == 1,
+            code == 0 || code == 1 || code == 3 || code == 4,
             "[{}] host panic/abort: exit {} stderr: {}",
             name,
             code,

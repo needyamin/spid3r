@@ -84,6 +84,15 @@ pub struct VmClassProto {
 pub const FORMAT_MAGIC: &[u8; 6] = b"SPID3R";
 /// On-disk bytecode format version. Bump when the layout changes incompatibly.
 pub const FORMAT_VERSION: u16 = 2;
+/// The checksummed container format (what `spid3r compile` writes): the same
+/// magic, version 3, then a length-prefixed payload (a complete plain v1/v2
+/// stream) followed by the SHA-256 of that payload. An integrity check, NOT an
+/// authenticity control: it detects bit rot, corruption and lazy tampering,
+/// but anyone can recompute the checksum, so a malicious distributor can ship
+/// a modified file with a valid one. Signing the bytecode (Ed25519 over the
+/// payload, `crate::pkg::ed25519`) is the future direction if distributed
+/// bytecode ever needs authenticity.
+pub const FORMAT_VERSION_CHECKSUM: u16 = 3;
 // Format versions this reader accepts: v1 predates parameter defaults (a v1
 // prototype has min_arity == arity and no defaults); v2 adds them. See
 // docs/BYTECODE_STABILITY.md — the reader keeps accepting every version it
@@ -897,10 +906,20 @@ fn put_class_proto(b: &mut Vec<u8>, c: &VmClassProto) {
 /// recursion is unbounded. `tests/artifact_hardening.rs` exercises 200 levels,
 /// which is the deepest realistic case.
 pub fn serialize_vmfunc(func: &VmFunc) -> Vec<u8> {
-    let mut b = Vec::new();
+    // The payload is a complete plain stream (magic + version + structures),
+    // so older readers can still load it if a distributor strips the
+    // container — and the integrity layer needs no knowledge of the layout
+    // it protects.
+    let mut inner = Vec::new();
+    inner.extend_from_slice(FORMAT_MAGIC);
+    inner.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    put_vmfunc(&mut inner, func);
+    let mut b = Vec::with_capacity(inner.len() + 16 + 32);
     b.extend_from_slice(FORMAT_MAGIC);
-    b.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
-    put_vmfunc(&mut b, func);
+    b.extend_from_slice(&FORMAT_VERSION_CHECKSUM.to_le_bytes());
+    b.extend_from_slice(&(inner.len() as u64).to_le_bytes());
+    b.extend_from_slice(&inner);
+    b.extend_from_slice(&crate::pkg::sha256_bytes(&inner));
     b
 }
 
@@ -1279,6 +1298,15 @@ pub fn deserialize_vmfunc(b: &[u8]) -> SpidResult<VmFunc> {
             "invalid file format: not a Spid3r bytecode file (missing magic number)",
         ));
     }
+    let header_version = u16::from_le_bytes([b[6], b[7]]);
+    // The checksummed container (`spid3r compile` writes this since v3):
+    // verify the SHA-256 over the payload BEFORE any structure is decoded, so
+    // a flipped opcode byte (QA flipped `Call argc 1` into `Call argc 241`
+    // and the old reader ran it silently) is rejected up front. Legacy plain
+    // files (versions 1..=2) keep the old path: structural validation only.
+    if header_version == FORMAT_VERSION_CHECKSUM {
+        return deserialize_checksummed(b);
+    }
     let mut r = Reader::new(b);
     r.p = 6;
     let version = r.u16()?;
@@ -1288,8 +1316,8 @@ pub fn deserialize_vmfunc(b: &[u8]) -> SpidResult<VmFunc> {
         return Err(err(
             Phase::Vm,
             format!(
-                "unsupported bytecode version {} (this reader supports 1..={})",
-                version, FORMAT_VERSION
+                "unsupported bytecode version {} (this reader supports plain 1..={} and the {} checksummed container)",
+                version, FORMAT_VERSION, FORMAT_VERSION_CHECKSUM
             ),
         ));
     }
@@ -1308,6 +1336,52 @@ pub fn deserialize_vmfunc(b: &[u8]) -> SpidResult<VmFunc> {
         ));
     }
     Ok(func)
+}
+
+/// The v3 checksummed container: `MAGIC | u16 3 | u64 payload_len | payload |
+/// sha256(payload)`. The payload is a complete plain stream, so it is handed
+/// back to [`deserialize_vmfunc`] for full structural validation after the
+/// checksum passes. An integrity check, not an authenticity control (see the
+/// `FORMAT_VERSION_CHECKSUM` docs).
+fn deserialize_checksummed(b: &[u8]) -> SpidResult<VmFunc> {
+    const CHECKSUM_LEN: usize = 32;
+    if b.len() < 16 + CHECKSUM_LEN {
+        return Err(err(
+            Phase::Vm,
+            "invalid file format: unexpected end of file",
+        ));
+    }
+    let n = u64::from_le_bytes(b[8..16].try_into().unwrap()) as usize;
+    // checked_add: a crafted length near usize::MAX must not wrap past the
+    // bounds check and panic the host.
+    let payload_end = match n.checked_add(16).and_then(|e| e.checked_add(CHECKSUM_LEN)) {
+        Some(end) => end,
+        None => {
+            return Err(err(
+                Phase::Vm,
+                "invalid file format: container length overflows the file",
+            ))
+        }
+    };
+    if payload_end != b.len() {
+        return Err(err(
+            Phase::Vm,
+            format!(
+                "invalid file format: container length mismatch (declared payload {} byte(s), file is {} byte(s))",
+                n,
+                b.len()
+            ),
+        ));
+    }
+    let payload = &b[16..16 + n];
+    let checksum = &b[16 + n..];
+    if crate::pkg::sha256_bytes(payload).as_slice() != checksum {
+        return Err(err(
+            Phase::Vm,
+            "bytecode integrity check failed: checksum mismatch (the file is corrupt or was modified)",
+        ));
+    }
+    deserialize_vmfunc(payload)
 }
 
 // ----------------------------------------------------------------- validate

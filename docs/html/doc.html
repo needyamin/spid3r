@@ -1792,7 +1792,11 @@
                 <td><code>spid3r run --engine vm main.matrix</code></td>
                 <td>Compile and execute program. Flags: <code>--engine tree|vm</code>, <code>--prof</code> (prints
                   per-opcode execution profiling counts), <code>--budget N</code> (stop after roughly N steps with the
-                  fatal error <code>execution budget exhausted</code> — for untrusted code).</td>
+                  fatal error <code>execution budget exhausted</code> — for untrusted code), <code>--max-steps N</code>
+                  (documented alias of <code>--budget</code>; specify only one of the two), <code>--max-call-depth N</code>
+                  (cap the call stack depth — VM and tree engines, default 1000, propagated to tasks and modules),
+                  <code>--sandbox</code> (deny filesystem, network, process and environment access; denied calls raise
+                  a catchable <code>sandboxed: … access denied</code> error).</td>
               </tr>
               <tr>
                 <td><code>spid3r check &lt;file.matrix&gt;</code></td>
@@ -1804,7 +1808,14 @@
                 <td><code>spid3r compile &lt;file.matrix&gt;</code></td>
                 <td><code>spid3r compile app.matrix -o app.matrixc</code></td>
                 <td>Compile source file into standalone binary bytecode (<code>.matrixc</code>). Use <code>--dump</code>
-                  to inspect disassembled bytecode opcodes.</td>
+                  to inspect disassembled bytecode opcodes. Output is written in the version-3 container format with a
+                  SHA-256 integrity checksum over the payload.</td>
+              </tr>
+              <tr>
+                <td><code>spid3r disasm &lt;file.matrixc&gt;</code></td>
+                <td><code>spid3r disasm app.matrixc</code></td>
+                <td>Load a compiled bytecode file and print human-readable disassembly. Exits 4 if the file is corrupt
+                  or fails its integrity checksum.</td>
               </tr>
               <tr>
                 <td><code>spid3r build &lt;file.matrix&gt;</code></td>
@@ -1819,7 +1830,10 @@
               <tr>
                 <td><code>spid3r exec &lt;file.matrixc&gt;</code></td>
                 <td><code>spid3r exec app.matrixc</code></td>
-                <td>Directly execute a pre-compiled bytecode file on the virtual machine with instant startup.</td>
+                <td>Directly execute a pre-compiled bytecode file on the virtual machine with instant startup. Flags:
+                  <code>--sandbox</code> (same capability denials as <code>run --sandbox</code> — this is the
+                  untrusted-bytecode distribution path). A corrupt or checksum-invalid <code>.matrixc</code> exits with
+                  code 4.</td>
               </tr>
               <tr>
                 <td><code>spid3r fmt &lt;files...&gt;</code></td>
@@ -4311,6 +4325,35 @@ println(" Sum via reduce: " + string(sum_all));      // 21
                 <td>Password key derivation returning 32-byte key as hex.</td>
               </tr>
               <tr>
+                <td><code>sha512</code></td>
+                <td><code>sha512(str_or_bytes)</code></td>
+                <td>FIPS 180-4</td>
+                <td>Returns 128-character lowercase hexadecimal SHA-512 digest. Accepts the same string-or-bytes input
+                  convention as <code>sha256</code>.</td>
+              </tr>
+              <tr>
+                <td><code>ed25519_keypair</code></td>
+                <td><code>ed25519_keypair(seed)</code></td>
+                <td>RFC 8032</td>
+                <td>Derive a keypair from a 32-byte hex seed (or call with no arguments for OS entropy). Returns a map
+                  with <code>public</code> (64 hex chars) and <code>secret</code> (128 hex chars = seed‖public).</td>
+              </tr>
+              <tr>
+                <td><code>ed25519_sign</code></td>
+                <td><code>ed25519_sign(secret_hex, message)</code></td>
+                <td>RFC 8032</td>
+                <td>Sign a message; returns the 64-byte signature as 128 lowercase hex characters.</td>
+              </tr>
+              <tr>
+                <td><code>ed25519_verify</code></td>
+                <td><code>ed25519_verify(public_hex, message, sig_hex)</code></td>
+                <td>RFC 8032</td>
+                <td>Verify a signature; returns <code>true</code>/<code>false</code>, never an error — malformed input
+                  verifies as <code>false</code>. Strict verification: rejects non-canonical <code>S</code>, small-order
+                  public keys and off-curve points. Not constant-time; fine for verifying third-party data, avoid
+                  secret-key operations in hostile environments.</td>
+              </tr>
+              <tr>
                 <td><code>bcrypt_hash</code></td>
                 <td><code>bcrypt_hash(pw, cost=10)</code></td>
                 <td>OpenBSD</td>
@@ -5445,7 +5488,7 @@ println("SHA-256 of sum: " + sha256(string(sum)));
           '(?<type>\\b(?:int|float|string|bool|list|vec|tuple|map|set|bag|stack|queue|deque|heap|priority_queue|binary_tree|bst|trie|graph|matrix|vector|ring_buffer|linked_list|hash_table|option|result|ref|weak|any|void)\\b)',
           '(?<kw>\\b(?:fn|let|const|if|elif|else|while|for|in|return|break|continue|throw|try|catch|finally|spawn|async|await|class|extends|implements|public|private|new|import|as|self|super|match|enum|interface|abstract|yield|and|or|not)\\b)',
           '(?<lit>\\b(?:true|false|null|some|none|ok|err)\\b)',
-          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|spid3rinfo|config_get|config_set|config_reload)\\b)',
+          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|sha512|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|ed25519_keypair|ed25519_sign|ed25519_verify|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|spid3rinfo|config_get|config_set|config_reload)\\b)',
           '(?<op>==|!=|<=|>=|=>|->|\\+\\+|--|\\+=|-=|\\*=|\\/=|%=|&&|\\|\\||\\?\\.|\\?\\?|[+\\-*\\/%!=<>~&|^?:])'
         ].join('|'),
         'g'

@@ -124,6 +124,10 @@ pub fn builtin_defs() -> Vec<NativeDef> {
         ("random_float", n_random_float),
         ("random_normal", n_random_normal),
         ("sha256", n_sha256),
+        ("sha512", n_sha512),
+        ("ed25519_keypair", n_ed25519_keypair),
+        ("ed25519_sign", n_ed25519_sign),
+        ("ed25519_verify", n_ed25519_verify),
         ("hmac_sha256", n_hmac_sha256),
         ("pbkdf2_sha256", n_pbkdf2_sha256),
         ("secure_compare", n_secure_compare),
@@ -206,6 +210,17 @@ pub fn builtin_defs() -> Vec<NativeDef> {
 pub fn native_defs() -> Vec<NativeDef> {
     let mut defs = builtin_defs();
     defs.extend(crate::plugin::registered());
+    // `spid3r run --sandbox`: swap every capability native for a stub. The
+    // gate lives here — the single funnel the tree interpreter, the bytecode
+    // VM and every imported module install from — so a module cannot re-arm
+    // the functions its importer had sandboxed away.
+    if sandbox_armed() {
+        for (name, func) in &mut defs {
+            if let Some(stub) = sandbox_stub(name) {
+                *func = stub;
+            }
+        }
+    }
     defs
 }
 
@@ -2031,6 +2046,121 @@ fn n_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(Value::Str(
         crate::pkg::hex_encode(&sha256_bytes(&data)).into(),
     ))
+}
+
+/// `sha512(s)` — FIPS 180-4 SHA-512 of the UTF-8 bytes of `s`, lowercase
+/// hex. Same argument handling as `sha256` (string or `bytes`); this is also
+/// the hash every Ed25519 operation is built on.
+fn n_sha512(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let data = want_b64_input(&one("sha512", &args)?, "sha512")?;
+    Ok(Value::Str(
+        crate::pkg::sha512_hex(&data).into(),
+    ))
+}
+
+/// Decode a fixed-length hex field for the ed25519 builtins.
+fn want_hex_n(text: &str, n: usize, who: &str) -> Result<Vec<u8>, String> {
+    let bytes =
+        crate::pkg::hex_decode(text).ok_or_else(|| format!("{}: malformed hex", who))?;
+    if bytes.len() != n {
+        return Err(format!(
+            "{}: expected {} bytes ({} hex chars), got {} byte(s)",
+            who,
+            n,
+            n * 2,
+            bytes.len()
+        ));
+    }
+    Ok(bytes)
+}
+
+/// `ed25519_keypair(seed)` — RFC 8032 Ed25519 keypair. `seed` is a 32-byte
+/// hex string; without arguments the seed comes from the OS entropy source.
+/// Returns `{ "public": hex64, "secret": hex128 }` where the secret key is
+/// `seed || public` as the RFC defines it.
+fn n_ed25519_keypair(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    let seed: [u8; 32] = if args.is_empty() {
+        let mut buf = [0u8; 32];
+        crate::stdlib::entropy::fill_random(&mut buf)?;
+        buf
+    } else {
+        let text = want_str(&one("ed25519_keypair", &args)?, "ed25519_keypair")?;
+        let bytes = want_hex_n(&text, 32, "ed25519_keypair: seed")?;
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&bytes);
+        seed
+    };
+    let (pk, sk) = crate::pkg::keypair_from_seed(&seed);
+    let entries = vec![
+        (
+            MapKey::Str("public".into()),
+            Value::Str(crate::pkg::hex_encode(&pk).into()),
+        ),
+        (
+            MapKey::Str("secret".into()),
+            Value::Str(crate::pkg::hex_encode(&sk).into()),
+        ),
+    ];
+    Ok(Value::Map(crate::value::new_ref(
+        crate::value::collections::seq::MapData::from_entries(entries),
+    )))
+}
+
+/// `ed25519_sign(secret_hex, msg)` — RFC 8032 signature of the UTF-8 bytes
+/// (or `bytes`) of `msg` under a 64-byte hex secret key; lowercase hex
+/// result.
+fn n_ed25519_sign(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 2 {
+        return Err(format!(
+            "ed25519_sign expects 2 arguments, got {}",
+            args.len()
+        ));
+    }
+    let secret_hex = want_str(&args[0], "ed25519_sign")?;
+    let secret = want_hex_n(&secret_hex, 64, "ed25519_sign: secret")?;
+    let msg = want_b64_input(&args[1], "ed25519_sign")?;
+    let mut sk = [0u8; 64];
+    sk.copy_from_slice(&secret);
+    let sig = crate::pkg::ed25519_sign(&sk, &msg)?;
+    Ok(Value::Str(crate::pkg::hex_encode(&sig).into()))
+}
+
+/// `ed25519_verify(public_hex, msg, sig_hex)` — `true` when the 64-byte hex
+/// signature verifies under a 32-byte hex public key. Malformed input is
+/// never an error, just `false`.
+fn n_ed25519_verify(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    if args.len() != 3 {
+        return Err(format!(
+            "ed25519_verify expects 3 arguments, got {}",
+            args.len()
+        ));
+    }
+    let pk_hex = match want_str(&args[0], "ed25519_verify") {
+        Ok(s) => s,
+        Err(_) => return Ok(Value::Bool(false)),
+    };
+    let msg = match want_b64_input(&args[1], "ed25519_verify") {
+        Ok(m) => m,
+        Err(_) => return Ok(Value::Bool(false)),
+    };
+    let sig_hex = match want_str(&args[2], "ed25519_verify") {
+        Ok(s) => s,
+        Err(_) => return Ok(Value::Bool(false)),
+    };
+    let (pk, sig) = match (
+        want_hex_n(&pk_hex, 32, "ed25519_verify: public"),
+        want_hex_n(&sig_hex, 64, "ed25519_verify: sig"),
+    ) {
+        (Ok(pk), Ok(sig)) => (pk, sig),
+        _ => return Ok(Value::Bool(false)),
+    };
+    let mut pk_arr = [0u8; 32];
+    pk_arr.copy_from_slice(&pk);
+    let mut sig_arr = [0u8; 64];
+    sig_arr.copy_from_slice(&sig);
+    Ok(Value::Bool(crate::pkg::ed25519_verify(
+        &pk_arr, &msg, &sig_arr,
+    )))
 }
 
 /// `hmac_sha256(key, msg)` — RFC 2104 HMAC-SHA256 of the UTF-8 bytes of
@@ -3873,4 +4003,73 @@ fn n_config_reload(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String>
             .unwrap_or_default()
             .into(),
     ))
+}
+
+// ------------------------------------------------------------------- sandbox
+
+/// `spid3r run --sandbox`: when armed, every native that touches the
+/// file system, the network or child processes is installed as a stub that
+/// fails with a catchable `sandboxed: ... denied` error. Armed once by the
+/// CLI before any engine installs its globals; every engine inherits it
+/// because they all build their natives from [`native_defs`].
+static SANDBOX_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Arm the sandbox for the rest of the process (`spid3r run --sandbox`).
+pub fn arm_sandbox() {
+    SANDBOX_ARMED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether the sandbox is armed.
+pub fn sandbox_armed() -> bool {
+    SANDBOX_ARMED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn sandbox_fs_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err("sandboxed: filesystem access denied".to_string())
+}
+
+fn sandbox_net_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err("sandboxed: network access denied".to_string())
+}
+
+fn sandbox_process_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err("sandboxed: process access denied".to_string())
+}
+
+fn sandbox_env_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err("sandboxed: environment access denied".to_string())
+}
+
+/// The stub that answers for a sandboxed native, or `None` when the name is
+/// pure computation and stays callable. The deny groups reuse the embedding
+/// API's capability lists, plus the database natives (TCP connections and a
+/// local-database file handle) which are network/filesystem access too.
+fn sandbox_stub(name: &str) -> Option<fn(&NativeCtx, Vec<Value>) -> Result<Value, String>> {
+    use crate::embed::Capability;
+    const DB_NET: &[&str] = &[
+        "mysql_connect",
+        "mysql_query",
+        "mysql_exec",
+        "mysql_close",
+        "pg_connect",
+        "pg_query",
+        "pg_exec",
+        "pg_close",
+        "redis_connect",
+        "redis_command",
+        "redis_close",
+    ];
+    if Capability::FileSystem.natives().contains(&name) || name == "db_open" {
+        return Some(sandbox_fs_stub);
+    }
+    if Capability::Network.natives().contains(&name) || DB_NET.contains(&name) {
+        return Some(sandbox_net_stub);
+    }
+    if Capability::Process.natives().contains(&name) {
+        return Some(sandbox_process_stub);
+    }
+    if Capability::Environment.natives().contains(&name) {
+        return Some(sandbox_env_stub);
+    }
+    None
 }
