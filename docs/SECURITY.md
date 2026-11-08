@@ -171,10 +171,13 @@ Importing a listed module fails on every engine with
 shared resolver the checker, the tree interpreter, the bytecode compiler,
 the VM's run-time fallback and the AOT flattener all call, so the module
 cannot load at all (a step stricter than catchable: the import never runs).
-The name comparison follows the platform's file-name case rules: on
-**Windows it is case-insensitive** (NTFS treats `import "MATHX"` and
-`import "mathx"` as the same file, so a case-sensitive deny list would be a
-one-keystroke bypass); on **POSIX it is case-sensitive**. Both spellings of
+The name comparison follows the platform's default file-name case rules: on
+**Windows and macOS it is case-insensitive** (NTFS and the APFS default both
+treat `import "MATHX"` and `import "mathx"` as the same file, so a
+case-sensitive deny list would be a one-keystroke bypass — on macOS the
+case-variant import genuinely resolves the stdlib module); on **Linux it is
+case-sensitive** (ext4 cannot resolve the case variant either, so the import
+fails at resolution). Both spellings of
 a module (with and without the `.matrix` suffix the resolver treats as
 equivalent) are matched. Note that this does not remove the natives a
 script could call directly — pair it with `disable_natives` when the module

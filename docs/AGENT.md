@@ -132,8 +132,9 @@ run_payload_strict` (or run under `--sandbox`) for meaningful confinement.
 natives with a catchable `disabled by configuration` denial (unknown names
 are noted and ignored). `modules.disable` makes importing the named modules
 fail with `module disabled by configuration: '…'` — the name comparison
-follows the platform's file-name case rules (case-insensitive on Windows
-like NTFS, case-sensitive on POSIX). These three are read once per process
+follows the platform's default file-name case rules (case-insensitive on
+Windows and macOS like NTFS and the APFS default, case-sensitive on Linux).
+These three are read once per process
 (a script cannot widen them with `config_set` mid-run) and are frozen for
 remote `config.set`. `modules.assert_active = false` turns
 `assert()`/`assert_eq()` into no-ops returning `true` (the zend.assertions

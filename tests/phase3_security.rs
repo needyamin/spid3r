@@ -590,14 +590,17 @@ fn modules_disable_leaves_other_modules_alone() {
 }
 
 /// A case-variant import must never load a disabled module, on any platform.
-/// On Windows NTFS is case-insensitive, so `import "MATHX"` resolves the same
-/// file as "mathx" and the deny gate matches case-insensitively (fires before
-/// resolution, even when no module file exists). On POSIX the gate compares
-/// exactly, so the gate does not fire — but the case-sensitive file system
-/// cannot resolve "MATHX" either, so the case-variant import still fails at
-/// resolution. Either way there is no bypass.
+/// The gate follows the platform's default file-name case rules: on Windows
+/// (NTFS) and macOS (APFS default) file systems resolve case-insensitively,
+/// so `import "MATHX"` resolves the same module file as "mathx" and the deny
+/// gate must fold case the same way (it fires before resolution, even when
+/// no module file exists). On Linux (ext4, case-sensitive) the gate compares
+/// exactly, so the gate does not fire — but the file system cannot resolve
+/// "MATHX" either, so the case-variant import still fails at resolution.
+/// Either way there is no bypass.
 #[test]
 fn modules_disable_case_variant_follows_platform_case_rules() {
+    let ci_fs = cfg!(windows) || cfg!(target_os = "macos");
     let dir = scratch_dir("md_case");
     let ini = write_in(&dir, "spid3r.ini", "[modules]\ndisable = mathx\n");
     let script = write_in(
@@ -615,7 +618,7 @@ fn modules_disable_case_variant_follows_platform_case_rules() {
         );
         assert!(!out.contains("BAD"), "[{engine}] {}", out);
         let text = format!("{}{}", out, err);
-        if cfg!(windows) {
+        if ci_fs {
             assert!(
                 text.contains("module disabled by configuration: 'MATHX'"),
                 "[{engine}] {}{}",
@@ -624,17 +627,17 @@ fn modules_disable_case_variant_follows_platform_case_rules() {
             );
             messages.push(text);
         } else {
-            // POSIX: the gate is exact, so the failure must come from
-            // resolution ("module not found"), not from the deny list.
+            // Case-sensitive FS (Linux): the gate is exact, so the failure
+            // must come from resolution ("module not found"), not the gate.
             assert!(
                 !text.contains("module disabled by configuration"),
-                "[{engine}] on POSIX the gate is exact; the failure must come from resolution: {}{}",
+                "[{engine}] the failure must come from resolution here: {}{}",
                 out,
                 err
             );
         }
     }
-    if cfg!(windows) {
+    if ci_fs {
         assert_eq!(
             messages[0], messages[1],
             "both engines must report the identical diagnostic"

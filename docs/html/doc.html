@@ -4986,8 +4986,8 @@ agent.bind = 0.0.0.0
                 <td><em>empty</em></td>
                 <td>Module names that fail to import with
                   <code>module disabled by configuration: '…'</code>, on every engine (the gate lives in the shared
-                  resolver). The name comparison follows the platform's file-name case rules: case-insensitive on
-                  Windows (like NTFS), case-sensitive on POSIX.</td>
+                  resolver). The name comparison follows the platform's default file-name case rules: case-insensitive on
+                  Windows and macOS (like NTFS and the APFS default), case-sensitive on Linux.</td>
               </tr>
               <tr>
                 <td><code>[modules]</code></td>

@@ -173,7 +173,7 @@ fn component_eq(a: &Component, b: &Component) -> bool {
     match (a, b) {
         (Component::Prefix(pa), Component::Prefix(pb)) => prefix_eq(pa, pb),
         _ => {
-            if cfg!(windows) {
+            if fs_is_case_insensitive() {
                 a.as_os_str().to_string_lossy().to_lowercase()
                     == b.as_os_str().to_string_lossy().to_lowercase()
             } else {
@@ -271,7 +271,7 @@ fn strip_matrix_suffix(s: &str) -> &str {
     if let Some(body) = s.strip_suffix(".matrix") {
         return body;
     }
-    if cfg!(windows) && s.len() >= 7 && s.is_char_boundary(s.len() - 7) {
+    if fs_is_case_insensitive() && s.len() >= 7 && s.is_char_boundary(s.len() - 7) {
         let (body, ext) = s.split_at(s.len() - 7);
         if ext.eq_ignore_ascii_case(".matrix") {
             return body;
@@ -280,9 +280,18 @@ fn strip_matrix_suffix(s: &str) -> &str {
     s
 }
 
+/// Whether the platform's default file system resolves file names
+/// case-insensitively. Windows (NTFS) always; macOS (APFS default) also —
+/// a case-sensitive APFS volume is possible but rare, and a security gate
+/// must follow the default posture (over-deny beats bypass). Linux ext4
+/// defaults to case-sensitive.
+fn fs_is_case_insensitive() -> bool {
+    cfg!(windows) || cfg!(target_os = "macos")
+}
+
 /// One module-name comparison, with the platform's file-name case rules.
 fn name_matches(a: &str, b: &str) -> bool {
-    if cfg!(windows) {
+    if fs_is_case_insensitive() {
         a.eq_ignore_ascii_case(b)
     } else {
         a == b
@@ -616,10 +625,10 @@ mod tests {
         assert!(module_disabled_in(&pol, "json.matrix").is_some());
         assert!(module_disabled_in(&pol, "jsonx").is_none());
         assert!(module_disabled_in(&pol, "mathx").is_none());
-        if cfg!(windows) {
+        if fs_is_case_insensitive() {
             assert!(
                 module_disabled_in(&pol, "JSON").is_some(),
-                "on Windows a case variant must be denied (NTFS is case-insensitive)"
+                "on a case-insensitive-FS platform (Windows/macOS) a case variant must be denied"
             );
             assert!(
                 module_disabled_in(&pol, "Json.Matrix").is_some(),
@@ -628,7 +637,7 @@ mod tests {
         } else {
             assert!(
                 module_disabled_in(&pol, "JSON").is_none(),
-                "on POSIX the comparison stays case-sensitive"
+                "on a case-sensitive-FS platform (Linux) the comparison stays exact"
             );
         }
     }
