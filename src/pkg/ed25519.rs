@@ -25,13 +25,7 @@ struct Fe([u64; 5]);
 const MASK51: u64 = (1 << 51) - 1;
 
 /// p in canonical 51-bit limbs (limb 0 is the low limb).
-const P_LIMBS: [u64; 5] = [
-    (1 << 51) - 19,
-    MASK51,
-    MASK51,
-    MASK51,
-    MASK51,
-];
+const P_LIMBS: [u64; 5] = [(1 << 51) - 19, MASK51, MASK51, MASK51, MASK51];
 
 impl Fe {
     const ZERO: Fe = Fe([0, 0, 0, 0, 0]);
@@ -99,7 +93,7 @@ impl Fe {
     }
 
     /// Canonical little-endian encoding (32 bytes).
-    fn to_bytes(&self) -> [u8; 32] {
+    fn to_bytes(self) -> [u8; 32] {
         let l = self.canonical().0;
         let w0 = l[0] | ((l[1] & 0x1fff) << 51);
         let w1 = (l[1] >> 13) | ((l[2] & 0x3ffffff) << 38);
@@ -255,14 +249,14 @@ fn exponent_bytes(shift: u32, minus: u64) -> [u8; 32] {
     let mut b = [0u8; 32];
     b[(shift / 8) as usize] = 1u8 << (shift % 8);
     let mut borrow = 0i64;
-    for i in 0..32 {
+    for (i, byte) in b.iter_mut().enumerate() {
         let sub = if i < 8 { (minus >> (8 * i)) & 0xff } else { 0 } as i64;
-        let cur = b[i] as i64 - sub - borrow;
+        let cur = *byte as i64 - sub - borrow;
         if cur < 0 {
-            b[i] = (cur + 256) as u8;
+            *byte = (cur + 256) as u8;
             borrow = 1;
         } else {
-            b[i] = cur as u8;
+            *byte = cur as u8;
             borrow = 0;
         }
     }
@@ -391,9 +385,8 @@ fn scalarmult(p: &Point, s: &[u8; 32]) -> Point {
 /// Decoded with our own decompression code, so a bad constant there would
 /// fail every test vector rather than silently corrupting signatures.
 const BASE_COMPRESSED: [u8; 32] = [
-    0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
-    0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
-    0x66, 0x66,
+    0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+    0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
 ];
 
 fn base_point() -> Point {
@@ -453,9 +446,8 @@ fn unpack(w: &[u8; 32]) -> Option<Point> {
 /// The group order L = 2^252 + 27742317777372353535851937790883648493,
 /// little-endian.
 const L_LE: [u8; 32] = [
-    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
-    0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x10,
+    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
 ];
 
 fn le_to_limbs(b: &[u8]) -> [u64; 4] {
@@ -622,6 +614,7 @@ pub fn sign(secret: &[u8; 64], msg: &[u8]) -> Result<[u8; 64], String> {
 ///   closing the (S, S+L) malleability class;
 /// - any (R, S) with [S]B - [H(R||A||M)]A != R, so a modified R, a modified
 ///   S within range, or a modified message cannot verify.
+///
 /// R is never decompressed: it is only compared against the packed result,
 /// so a non-canonical R encoding cannot smuggle a second valid point.
 pub fn verify(public: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> bool {
@@ -675,8 +668,8 @@ mod tests {
     #[test]
     fn field_roundtrips_bytes() {
         let mut b = [0u8; 32];
-        for i in 0..32 {
-            b[i] = (i * 37 + 11) as u8;
+        for (i, byte) in b.iter_mut().enumerate() {
+            *byte = (i * 37 + 11) as u8;
         }
         assert_eq!(Fe::from_bytes(&b).to_bytes()[..31], b[..31]);
         // Top bit is ignored by from_bytes (it is the sign bit of a point).
@@ -746,7 +739,10 @@ mod tests {
         let mut one = [0u8; 32];
         one[0] = 1;
         one[31] |= 0x80;
-        assert!(unpack(&one).is_none(), "x = 0 with sign bit 1 must be rejected");
+        assert!(
+            unpack(&one).is_none(),
+            "x = 0 with sign bit 1 must be rejected"
+        );
     }
 
     /// RFC 8032 section 7.1 TEST 1: SHA(abc)-broken-key... standard vector.

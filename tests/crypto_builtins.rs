@@ -112,7 +112,11 @@ fn ed25519_verify_rejects_tampered_and_malformed() {
     );
     let out = engine.run("t", &src).expect("run");
     assert_eq!(out.exit_code, 0);
-    assert!(out.output.contains("falsefalsefalsefalsefalsefalse"), "{}", out.output);
+    assert!(
+        out.output.contains("falsefalsefalsefalsefalsefalse"),
+        "{}",
+        out.output
+    );
     assert!(out.output.contains("true"), "{}", out.output);
 }
 

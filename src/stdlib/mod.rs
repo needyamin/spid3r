@@ -2053,15 +2053,12 @@ fn n_sha256(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 /// the hash every Ed25519 operation is built on.
 fn n_sha512(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let data = want_b64_input(&one("sha512", &args)?, "sha512")?;
-    Ok(Value::Str(
-        crate::pkg::sha512_hex(&data).into(),
-    ))
+    Ok(Value::Str(crate::pkg::sha512_hex(&data).into()))
 }
 
 /// Decode a fixed-length hex field for the ed25519 builtins.
 fn want_hex_n(text: &str, n: usize, who: &str) -> Result<Vec<u8>, String> {
-    let bytes =
-        crate::pkg::hex_decode(text).ok_or_else(|| format!("{}: malformed hex", who))?;
+    let bytes = crate::pkg::hex_decode(text).ok_or_else(|| format!("{}: malformed hex", who))?;
     if bytes.len() != n {
         return Err(format!(
             "{}: expected {} bytes ({} hex chars), got {} byte(s)",
@@ -4044,7 +4041,7 @@ fn sandbox_env_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String
 /// pure computation and stays callable. The deny groups reuse the embedding
 /// API's capability lists, plus the database natives (TCP connections and a
 /// local-database file handle) which are network/filesystem access too.
-fn sandbox_stub(name: &str) -> Option<fn(&NativeCtx, Vec<Value>) -> Result<Value, String>> {
+fn sandbox_stub(name: &str) -> Option<crate::vm::NativeImpl> {
     use crate::embed::Capability;
     const DB_NET: &[&str] = &[
         "mysql_connect",

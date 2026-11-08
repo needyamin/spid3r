@@ -11,7 +11,10 @@ fn bin() -> &'static str {
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(bin()).args(args).output().expect("spawn spid3r");
+    let out = Command::new(bin())
+        .args(args)
+        .output()
+        .expect("spawn spid3r");
     let o = (out.status.code().unwrap_or(-1), out);
     let (code, out) = o;
     (
@@ -511,7 +514,11 @@ fn exit_code_contract() {
     let dir = scratch_dir("contract");
 
     // 0 — success.
-    let p = write_in(&dir, "contract_ok.matrix", "fn main() {\n    return 0;\n}\n");
+    let p = write_in(
+        &dir,
+        "contract_ok.matrix",
+        "fn main() {\n    return 0;\n}\n",
+    );
     let (code, _, _) = run(&["run", p.to_str().unwrap()]);
     assert_eq!(code, 0);
 
@@ -524,7 +531,11 @@ fn exit_code_contract() {
     let (code, _, _) = run(&["run", p.to_str().unwrap()]);
     assert_eq!(code, 1);
 
-    let p = write_in(&dir, "contract_throw.matrix", "fn main() {\n    throw \"boom\";\n}\n");
+    let p = write_in(
+        &dir,
+        "contract_throw.matrix",
+        "fn main() {\n    throw \"boom\";\n}\n",
+    );
     let (code, _, _) = run(&["run", p.to_str().unwrap()]);
     assert_eq!(code, 1);
 

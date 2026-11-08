@@ -1074,9 +1074,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                 match args.get(i) {
                     Some(v) => match v.parse::<usize>() {
                         Ok(n) if n >= 1 => max_call_depth = Some(n),
-                        Ok(_) => {
-                            return Err(usage("--max-call-depth must be at least 1"))
-                        }
+                        Ok(_) => return Err(usage("--max-call-depth must be at least 1")),
                         Err(_) => {
                             return Err(usage(&format!(
                                 "--max-call-depth expects a depth, got '{}'",
