@@ -802,8 +802,21 @@ server with keep-alive, body limits and graceful shutdown, built on the
 | `shutdown()` / `close()` | Stop accepting and drain, or close the listener. |
 
 `serve_listener` options: `keep_alive`, `idle_timeout_ms`, `timeout_ms`,
-`max_requests_per_conn`, `max_body_bytes`, `drain_ms`, `access_log`,
-`on_error`.
+`max_requests_per_conn`, `max_body_bytes`, `max_headers`, `drain_ms`,
+`access_log`, `on_error`.
+
+The limit options default to the `spid3r.ini` `[net]` keys, re-read per
+accepted connection (so `config reload` applies to connections accepted
+afterwards): `timeout_ms` <- `net.timeout_ms` (30000; the framing deadline,
+`0` disables), `max_body_bytes` <- `net.max_body` (8 MiB; a declared
+Content-Length above it is rejected with `413 Payload Too Large` —
+`{"error":"payload too large","limit":N}`), `max_headers` <-
+`net.max_headers` (64; more request headers are rejected with
+`431 Request Header Fields Too Large` —
+`{"error":"request header fields too large","limit":N}`), and
+`idle_timeout_ms` <- `net.keepalive_ms` (5000; the idle window between
+keep-alive requests, `0` closes after each response with
+`Connection: close`). An explicit option entry beats the INI default.
 
 ## Native Database Drivers (Zero-Dependency)
 

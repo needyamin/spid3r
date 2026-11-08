@@ -236,6 +236,43 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Default timezone for datetime natives: UTC, a fixed offset like +06:00, or an IANA name (tz_names())."
     ),
+    // [net]
+    key!(
+        "net",
+        "timeout_ms",
+        ConfigValue::Int,
+        "30000",
+        Some(0),
+        None,
+        "HTTP framing deadline in ms (slowloris guard); 0 disables it."
+    ),
+    key!(
+        "net",
+        "max_body",
+        ConfigValue::Int,
+        "8388608",
+        Some(1024),
+        Some(67_108_864),
+        "Largest accepted HTTP request body, in bytes (413 above it)."
+    ),
+    key!(
+        "net",
+        "max_headers",
+        ConfigValue::Int,
+        "64",
+        Some(8),
+        Some(512),
+        "Most request headers accepted per HTTP request (431 above it)."
+    ),
+    key!(
+        "net",
+        "keepalive_ms",
+        ConfigValue::Int,
+        "5000",
+        Some(0),
+        None,
+        "Idle window between keep-alive requests; 0 closes after each response."
+    ),
     // [memory]
     key_startup!(
         "memory",
@@ -568,6 +605,10 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("runtime.wall_clock_limit_ms", ConfigValue::Int, "0"),
         ("runtime.memory_limit_mb", ConfigValue::Int, "0"),
         ("runtime.timezone", ConfigValue::Str, "UTC"),
+        ("net.timeout_ms", ConfigValue::Int, "30000"),
+        ("net.max_body", ConfigValue::Int, "8388608"),
+        ("net.max_headers", ConfigValue::Int, "64"),
+        ("net.keepalive_ms", ConfigValue::Int, "5000"),
         ("memory.max_steps", ConfigValue::Int, "0"),
         ("memory.max_call_depth", ConfigValue::Int, "1000"),
         ("memory.gc_threshold", ConfigValue::Int, "0"),
@@ -655,6 +696,12 @@ gc = true
 wall_clock_limit_ms = 0    ; fatal execution deadline in ms; 0 = unlimited
 memory_limit_mb = 0        ; soft cap on script-value heap (catchable); 0 = unlimited
 timezone = UTC             ; UTC, a fixed offset like +06:00, or an IANA name
+
+[net]
+timeout_ms = 30000         ; HTTP framing deadline in ms (slowloris guard); 0 disables
+max_body = 8388608         ; largest accepted request body in bytes (413 above it)
+max_headers = 64           ; most request headers accepted (431 above it)
+keepalive_ms = 5000        ; idle window between keep-alive requests; 0 = close after each
 
 [memory]
 max_steps = 0              ; 0 = unlimited
@@ -819,6 +866,34 @@ mod tests {
     }
 
     #[test]
+    fn coerce_phase2_net_keys() {
+        let timeout = known_key("net.timeout_ms").unwrap();
+        assert!(timeout.coerce("30000").is_ok());
+        assert!(timeout.coerce("0").is_ok());
+        assert!(timeout.coerce("-1").is_err());
+        assert!(timeout.coerce("banana").is_err());
+
+        let body = known_key("net.max_body").unwrap();
+        assert!(body.coerce("8388608").is_ok());
+        assert!(body.coerce("1024").is_ok());
+        assert!(body.coerce("67108864").is_ok());
+        assert!(body.coerce("1023").is_err());
+        assert!(body.coerce("67108865").is_err());
+
+        let headers = known_key("net.max_headers").unwrap();
+        assert!(headers.coerce("64").is_ok());
+        assert!(headers.coerce("8").is_ok());
+        assert!(headers.coerce("512").is_ok());
+        assert!(headers.coerce("7").is_err());
+        assert!(headers.coerce("513").is_err());
+
+        let keepalive = known_key("net.keepalive_ms").unwrap();
+        assert!(keepalive.coerce("5000").is_ok());
+        assert!(keepalive.coerce("0").is_ok());
+        assert!(keepalive.coerce("-1").is_err());
+    }
+
+    #[test]
     fn reload_classification_is_consistent() {
         // The documented classification: these keys are known to be re-read
         // at their point of use, so a reload applies them.
@@ -826,6 +901,10 @@ mod tests {
             "runtime.wall_clock_limit_ms",
             "runtime.memory_limit_mb",
             "runtime.timezone",
+            "net.timeout_ms",
+            "net.max_body",
+            "net.max_headers",
+            "net.keepalive_ms",
             "errors.level",
             "errors.display",
             "errors.log_file",

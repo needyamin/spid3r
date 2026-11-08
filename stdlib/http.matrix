@@ -149,7 +149,8 @@ public class HttpServer {
     private let listener;
     public let logging;
     /// Serve tuning: keep_alive, idle_timeout_ms, timeout_ms,
-    /// max_requests_per_conn, max_body_bytes, drain_ms, access_log, on_error.
+    /// max_requests_per_conn, max_body_bytes, max_headers, drain_ms,
+    /// access_log, on_error.
     public let opts;
 
     fn new () {
@@ -250,10 +251,12 @@ public class HttpServer {
     /// Accept connections on a bound server. `max_connections < 0` serves
     /// forever; otherwise returns after that many connections are accepted.
     ///
-    /// Tuning lives in `server.opts` (a map, read at serve time):
-    ///   keep_alive (true), idle_timeout_ms (5000), timeout_ms (30000),
-    ///   max_requests_per_conn (100), max_body_bytes (8 MiB), drain_ms (5000),
-    ///   access_log (true), on_error (null -> 500 JSON)
+    /// Tuning lives in `server.opts` (a map, read per connection):
+    ///   keep_alive (true), idle_timeout_ms (net.keepalive_ms, 5000),
+    ///   timeout_ms (net.timeout_ms, 30000), max_requests_per_conn (100),
+    ///   max_body_bytes (net.max_body, 8 MiB), max_headers (net.max_headers, 64),
+    ///   drain_ms (5000), access_log (true), on_error (null -> 500 JSON).
+    /// An explicit opts entry beats the spid3r.ini [net] default.
     public fn serve(self, max_connections) {
         if self.listener < 0 {
             throw "HttpServer.serve: call bind() or listen() first";
@@ -365,19 +368,17 @@ fn inflight_count(counter) {
 ///     connections before returning;
 ///   * **error isolation** - a throwing dispatcher answers 500 and keeps the
 ///     connection sane instead of dropping it mid-response;
-///   * **limits** - a body larger than `max_body_bytes` is rejected with 413
-///     before the handler runs.
+///   * **limits** - a body larger than `max_body_bytes` is rejected with 413,
+///     and more than `max_headers` request headers with 431, before the
+///     handler runs.
+///
+/// Per-connection limits (keep-alive, timeouts, body and header caps) are
+/// resolved inside `handle_connection` from `opts`, falling back to the
+/// `spid3r.ini` [net] keys, so they are re-read for every accepted connection.
 ///
 /// Returns the number of accepted connections.
 public fn serve_listener(listener, dispatch, opts, max_connections) {
-    let keep_alive = opt(opts, "keep_alive", true);
-    let idle = int(opt(opts, "idle_timeout_ms", 5000));
-    let io_timeout = int(opt(opts, "timeout_ms", 30000));
-    let max_reqs = int(opt(opts, "max_requests_per_conn", 100));
-    let max_body = int(opt(opts, "max_body_bytes", 8 * 1024 * 1024));
     let drain_ms = int(opt(opts, "drain_ms", 5000));
-    let access_log = opt(opts, "access_log", true);
-    let on_error = opt(opts, "on_error", null);
     // A process-global signal flag stops *every* server in the process, which
     // is right for a standalone app and wrong for an embedded one (or a test
     // suite running several servers). opt out with watch_signals: false.
@@ -412,17 +413,7 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
         accepted += 1;
         bump(counter, 1);
         spawn fn() {
-            handle_connection(
-                conn,
-                dispatch,
-                keep_alive,
-                idle,
-                io_timeout,
-                max_reqs,
-                max_body,
-                access_log,
-                on_error
-            );
+            handle_connection(conn, dispatch, opts);
             bump(counter, -1);
             return 0;
         };
@@ -474,18 +465,38 @@ fn log_safe(s) {
     return out;
 }
 
-/// Serve one connection: up to `max_reqs` requests, then close.
-fn handle_connection(
-    conn,
-    dispatch,
-    keep_alive,
-    idle,
-    io_timeout,
-    max_reqs,
-    max_body,
-    access_log,
-    on_error
-) {
+/// A resolved integer from the live spid3r.ini (via the `config_get` native),
+/// or `dflt` when the key is missing or not an integer.
+fn cfg_int(key, dflt) {
+    let v = config_get(key);
+    if v == null {
+        return dflt;
+    }
+    let n = int(v);
+    if n == null {
+        return dflt;
+    }
+    return n;
+}
+
+/// Serve one connection: up to `max_requests_per_conn` requests, then close.
+///
+/// Limits resolve per connection: an explicit `opts` entry wins, otherwise the
+/// matching spid3r.ini [net] key is re-read (so `spid3r config reload` applies
+/// to connections accepted afterwards):
+///   timeout_ms           <- net.timeout_ms   (framing deadline; 0 disables)
+///   idle_timeout_ms      <- net.keepalive_ms (idle window between requests)
+///   max_body_bytes       <- net.max_body     (413 above it)
+///   max_headers          <- net.max_headers  (431 above it)
+fn handle_connection(conn, dispatch, opts) {
+    let keep_alive = opt(opts, "keep_alive", true);
+    let idle = int(opt(opts, "idle_timeout_ms", cfg_int("net.keepalive_ms", 5000)));
+    let io_timeout = int(opt(opts, "timeout_ms", cfg_int("net.timeout_ms", 30000)));
+    let max_reqs = int(opt(opts, "max_requests_per_conn", 100));
+    let max_body = int(opt(opts, "max_body_bytes", cfg_int("net.max_body", 8 * 1024 * 1024)));
+    let max_headers = int(opt(opts, "max_headers", cfg_int("net.max_headers", 64)));
+    let access_log = opt(opts, "access_log", true);
+    let on_error = opt(opts, "on_error", null);
     tcp_set_timeout(conn, io_timeout);
     let served = 0;
     while served < max_reqs {
@@ -500,6 +511,19 @@ fn handle_connection(
             break;
         }
         let req = read.unwrap();
+        let nheaders = len(req["headers"].keys());
+        if nheaders > max_headers {
+            http_write_response(
+                conn,
+                431,
+                map("content-type", "application/json; charset=utf-8"),
+                json_write(
+                    map("error", "request header fields too large", "limit", max_headers)
+                ),
+                false
+            );
+            break;
+        }
         let declared = header_of(req, "content-length");
         if declared != null and int(declared) != null and int(declared) > max_body {
             http_write_response(
@@ -556,7 +580,8 @@ fn handle_connection(
             status = 200;
             body = string(res);
         }
-        let more = keep_alive and wants_keep_alive(req) and served + 1 < max_reqs;
+        // keep_alive / idle = 0: close after each response (Connection: close).
+        let more = keep_alive and idle > 0 and wants_keep_alive(req) and served + 1 < max_reqs;
         let head = string(opt(req, "method", "GET")) == "HEAD";
         if head {
             body = "";

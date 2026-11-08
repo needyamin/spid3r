@@ -47,6 +47,12 @@ wall_clock_limit_ms = 0    ; fatal execution deadline in ms; 0 = unlimited
 memory_limit_mb = 0        ; soft cap on script-value heap (catchable); 0 = unlimited
 timezone = UTC             ; UTC, a fixed offset like +06:00, or an IANA name
 
+[net]
+timeout_ms = 30000         ; HTTP framing deadline in ms (slowloris guard); 0 disables
+max_body = 8388608         ; largest accepted request body in bytes (413 above it)
+max_headers = 64           ; most request headers accepted (431 above it)
+keepalive_ms = 5000        ; idle window between keep-alive requests; 0 = close after each
+
 [errors]
 level = info               ; error|warn|info — minimum surfaced diagnostic level
 display = false            ; mirror diagnostic log lines to stderr
@@ -84,6 +90,18 @@ most every 25 ms, so the cap is approximate by design. `runtime.timezone`
 sets the default zone for the datetime natives: `UTC` (the default), a fixed
 offset like `+06:00`, or an IANA name from `tz_names()` — anything else is
 rejected at load time with a note and UTC stays in effect.
+
+HTTP serving limits (`net.*`): `net.timeout_ms` is the framing deadline a
+connection gets when it enters HTTP parsing (the slowloris guard; `0`
+disables it) — `SPID3R_NET_TIMEOUT_MS` is its env alias. `net.max_body` caps
+the request body (a larger body is rejected with `413` before the handler
+runs), `net.max_headers` caps the request header count (rejected with `431`),
+and `net.keepalive_ms` is the idle window between keep-alive requests (`0`
+closes after each response). A server may override all four per listen via
+its options map (`timeout_ms`, `max_body_bytes`, `max_headers`,
+`idle_timeout_ms` — see `docs/STANDARD_LIBRARY.md` §29); an explicit option
+beats the INI default. All four are re-read per accepted connection, so
+`config reload` applies to connections accepted afterwards.
 
 Diagnostics: `errors.level` (`error|warn|info`, default `info`) gates the
 script-visible diagnostics channel — diagnostics below the level are not

@@ -15,7 +15,7 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_DEADLOCK_ABORT` | on | When no task can ever wake a wait, abort with a diagnostic (Go's "all goroutines are asleep"). `0` downgrades it to a warning for hosts that supervise their own waits. |
 | `SPID3R_TASK_DRAIN_MS` | `2000` | How long program exit waits for still-running tasks before warning and exiting anyway. `0` disables the wait. |
 | `SPID3R_GC` | on | Automatic cycle collection at statement boundaries. `0` disables it; `gc_collect()` still works. |
-| `SPID3R_NET_TIMEOUT_MS` | `30000` | Deadline for HTTP framing (slowloris guard); `0` disables it. Raw `tcp_*` connections keep whatever timeout the program sets. |
+| `SPID3R_NET_TIMEOUT_MS` | `30000` | Env alias of `net.timeout_ms` (canonical INI key): deadline for HTTP framing (slowloris guard); `0` disables it. Raw `tcp_*` connections keep whatever timeout the program sets. |
 | `SPID3R_SQLITE_PATH` | — | Directory searched for `sqlite3.dll` / `libsqlite3.so` before the default lookup. |
 | `SPID3R_CACHE_DIR` | `%LOCALAPPDATA%\Spid3r` (Windows), `$XDG_CACHE_HOME/spid3r` (else) | Root for the extracted-runtime cache (`runtime/`). The log has its own path (`SPID3R_LOG_FILE`). |
 | `SPID3R_EXE` | — | Runtime a packaged app launches **when it carries no embedded copy** (checked before the per-user install and `PATH`). An embedded runtime always wins. |
@@ -38,6 +38,9 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_ERRORS_LEVEL` | `info` | Alias of `errors.level`: minimum surfaced diagnostic level (`error`/`warn`/`info`). |
 | `SPID3R_ERRORS_DISPLAY` | `false` | Alias of `errors.display`: mirror diagnostic log lines to stderr. |
 | `SPID3R_ERRORS_LOG_FILE` | — | Alias of `errors.log_file`: dedicated error-log path (empty = shared log only). |
+| `SPID3R_NET_MAX_BODY` | `8388608` | Alias of `net.max_body`: largest accepted HTTP request body, in bytes (413 above it). |
+| `SPID3R_NET_MAX_HEADERS` | `64` | Alias of `net.max_headers`: most request headers accepted per request (431 above it). |
+| `SPID3R_NET_KEEPALIVE_MS` | `5000` | Alias of `net.keepalive_ms`: idle window between keep-alive requests; `0` closes after each response. |
 
 See `docs/AGENT.md` for the full management-agent manual.
 

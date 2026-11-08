@@ -4787,6 +4787,12 @@ wall_clock_limit_ms = 0    ; fatal execution deadline in ms; 0 = unlimited
 memory_limit_mb = 0        ; soft cap on script-value heap (catchable); 0 = unlimited
 timezone = UTC             ; UTC, a fixed offset like +06:00, or an IANA name
 
+[net]
+timeout_ms = 30000         ; HTTP framing deadline in ms (slowloris guard); 0 disables
+max_body = 8388608         ; largest accepted request body in bytes (413 above it)
+max_headers = 64           ; most request headers accepted (431 above it)
+keepalive_ms = 5000        ; idle window between keep-alive requests; 0 = close after each
+
 [errors]
 level = info               ; error|warn|info — minimum surfaced diagnostic level
 display = false            ; mirror diagnostic log lines to stderr
@@ -4873,6 +4879,35 @@ agent.bind = 0.0.0.0
                 <td>Default zone for the datetime natives: <code>UTC</code>, a fixed offset like
                   <code>+06:00</code>, or an IANA name from <code>tz_names()</code>. Unknown values are rejected at
                   load time with a note.</td>
+              </tr>
+              <tr>
+                <td><code>[net]</code></td>
+                <td><code>timeout_ms</code></td>
+                <td><code>30000</code></td>
+                <td>Deadline for HTTP framing in ms (the slowloris guard); <code>0</code> disables it.
+                  <code>SPID3R_NET_TIMEOUT_MS</code> is its env alias. Applied live: re-read per accepted
+                  connection, so <code>config reload</code> applies to connections accepted afterwards.</td>
+              </tr>
+              <tr>
+                <td><code>[net]</code></td>
+                <td><code>max_body</code></td>
+                <td><code>8388608</code></td>
+                <td>Largest accepted HTTP request body, in bytes. A declared Content-Length above it is rejected
+                  with <code>413 Payload Too Large</code> before the handler runs.</td>
+              </tr>
+              <tr>
+                <td><code>[net]</code></td>
+                <td><code>max_headers</code></td>
+                <td><code>64</code></td>
+                <td>Most request headers accepted per request; more are rejected with
+                  <code>431 Request Header Fields Too Large</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[net]</code></td>
+                <td><code>keepalive_ms</code></td>
+                <td><code>5000</code></td>
+                <td>Idle window between keep-alive requests on a connection; <code>0</code> closes after each
+                  response (<code>Connection: close</code> semantics).</td>
               </tr>
               <tr>
                 <td><code>[errors]</code></td>

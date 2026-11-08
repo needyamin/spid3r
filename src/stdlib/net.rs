@@ -27,8 +27,11 @@ use crate::value::{display_value, new_ref, type_name, NativeCtx, Value};
 
 /// Largest accepted request/response head (request line + headers).
 const MAX_HEAD_BYTES: usize = 64 * 1024;
-/// Largest accepted message body.
-const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// Largest accepted message body unless `net.max_body` raises it (up to the
+/// schema ceiling); see [`max_body_bytes`].
+const DEFAULT_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// Absolute body ceiling: the schema max of `net.max_body`.
+const MAX_BODY_CEILING: usize = 67_108_864;
 /// Largest single `tcp_read`.
 const MAX_READ_BYTES: i64 = 16 * 1024 * 1024;
 /// Connect timeout for `tcp_connect` / `http_fetch`.
@@ -412,7 +415,7 @@ fn io_msg(who: &str, e: &std::io::Error) -> String {
     match e.kind() {
         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
             format!(
-                "{}: timed out (SPID3R_NET_TIMEOUT_MS sets the limit, \
+                "{}: timed out (net.timeout_ms / SPID3R_NET_TIMEOUT_MS sets the limit, \
                  tcp_set_timeout overrides it per connection)",
                 who
             )
@@ -421,17 +424,19 @@ fn io_msg(who: &str, e: &std::io::Error) -> String {
     }
 }
 
-/// Default read/write timeout for HTTP framing: `SPID3R_NET_TIMEOUT_MS`
-/// (default 30 000; `0` disables).
+/// Default read/write timeout for HTTP framing: `net.timeout_ms`
+/// (`spid3r.ini`; default 30 000; `0` disables). `SPID3R_NET_TIMEOUT_MS`
+/// keeps working through the config loader's generic per-key env override,
+/// so the environment variable and the INI key are one value, not two.
 ///
 /// Audit A-16: `read_head` had no deadline, so a client that dribbles one byte
 /// per minute (slowloris) held a server worker forever. Raw `tcp_*` connections
 /// keep whatever timeout the program sets; the default is applied when a
 /// connection enters HTTP framing, which is the unbounded wait a hostile peer
-/// controls.
+/// controls. Read through the live config on every call so a connection
+/// accepted after `spid3r config reload` picks up the new deadline.
 fn default_io_timeout() -> Option<Duration> {
-    let ms = std::env::var("SPID3R_NET_TIMEOUT_MS")
-        .ok()
+    let ms = crate::config::get("net.timeout_ms")
         .and_then(|v| v.trim().parse::<u64>().ok())
         .unwrap_or(30_000);
     if ms == 0 {
@@ -439,6 +444,26 @@ fn default_io_timeout() -> Option<Duration> {
     } else {
         Some(Duration::from_millis(ms))
     }
+}
+
+/// Largest accepted message body for the framing natives (absolute ceiling).
+///
+/// `net.max_body` (`spid3r.ini`) is the operator-facing limit the HTTP server
+/// enforces with a 413 (stdlib/http.matrix, after the body is framed). This
+/// Rust-side cap exists so the framing natives stay safe even without that
+/// policy layer. It follows the configured value *upward* — so the ini can
+/// raise it to the 64 MiB schema ceiling — but never below the 8 MiB
+/// compile-time default: a below-default limit is a policy choice for the 413
+/// layer, not a reason to turn framing into a hard error, and following it
+/// down would turn the server's 413 diagnostic into a bare 400. Read through
+/// the live config so a reload applies to requests framed after it.
+fn max_body_bytes() -> usize {
+    let configured = crate::config::get("net.max_body")
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(DEFAULT_BODY_BYTES as i64);
+    configured
+        .clamp(DEFAULT_BODY_BYTES as i64, MAX_BODY_CEILING as i64)
+        .max(0) as usize
 }
 
 /// Give `stream` the default timeout unless the program already set one.
@@ -1417,7 +1442,10 @@ fn read_ws_frame(conn: &Conn) -> Result<(bool, u8, Vec<u8>), String> {
         }
         n => n,
     };
-    if len > MAX_BODY_BYTES as u64 {
+    // WebSocket frames keep the fixed compile-time ceiling: `net.max_body` is
+    // documented as the HTTP *request* body limit, and a WS peer should not
+    // grow it by editing the server's INI.
+    if len > DEFAULT_BODY_BYTES as u64 {
         return Err("websocket: frame exceeds the 8 MiB limit".to_string());
     }
     let mask = if masked {
@@ -1855,10 +1883,11 @@ fn read_exact_body<S: Read>(
     len: usize,
     who: &str,
 ) -> Result<Vec<u8>, String> {
-    if len > MAX_BODY_BYTES {
+    let cap = max_body_bytes();
+    if len > cap {
         return Err(format!(
             "{}: body of {} bytes exceeds the {} byte limit",
-            who, len, MAX_BODY_BYTES
+            who, len, cap
         ));
     }
     let mut chunk = [0u8; 8192];
@@ -1879,13 +1908,11 @@ fn read_exact_body<S: Read>(
 }
 
 fn read_to_eof<S: Read>(mut stream: S, mut body: Vec<u8>, who: &str) -> Result<Vec<u8>, String> {
+    let cap = max_body_bytes();
     let mut chunk = [0u8; 8192];
     loop {
-        if body.len() > MAX_BODY_BYTES {
-            return Err(format!(
-                "{}: body exceeds the {} byte limit",
-                who, MAX_BODY_BYTES
-            ));
+        if body.len() > cap {
+            return Err(format!("{}: body exceeds the {} byte limit", who, cap));
         }
         let n = stream.read(&mut chunk).map_err(|e| io_msg(who, &e))?;
         if n == 0 {
@@ -1897,6 +1924,7 @@ fn read_to_eof<S: Read>(mut stream: S, mut body: Vec<u8>, who: &str) -> Result<V
 
 /// Decode a `Transfer-Encoding: chunked` body.
 fn read_chunked<S: Read>(stream: S, leftover: Vec<u8>, who: &str) -> Result<Vec<u8>, String> {
+    let cap = max_body_bytes();
     let mut reader = ChunkReader {
         stream,
         buf: leftover,
@@ -1917,12 +1945,9 @@ fn read_chunked<S: Read>(stream: S, leftover: Vec<u8>, who: &str) -> Result<Vec<
         // checked_add: a hostile chunk size near usize::MAX would otherwise
         // wrap the sum past the cap and stream unbounded memory.
         match body.len().checked_add(size) {
-            Some(total) if total <= MAX_BODY_BYTES => {}
+            Some(total) if total <= cap => {}
             _ => {
-                return Err(format!(
-                    "{}: body exceeds the {} byte limit",
-                    who, MAX_BODY_BYTES
-                ))
+                return Err(format!("{}: body exceeds the {} byte limit", who, cap));
             }
         }
         body.extend_from_slice(&reader.take(size)?);
@@ -2151,6 +2176,7 @@ fn reason_phrase(status: i64) -> &'static str {
         415 => "Unsupported Media Type",
         422 => "Unprocessable Content",
         429 => "Too Many Requests",
+        431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         501 => "Not Implemented",
         502 => "Bad Gateway",

@@ -638,7 +638,7 @@ public class WebApp {
     public let nexts;
     /// Serve tuning, passed through to http.serve_listener: keep_alive,
     /// idle_timeout_ms, timeout_ms, max_requests_per_conn, max_body_bytes,
-    /// drain_ms, access_log, on_error.
+    /// max_headers, drain_ms, access_log, on_error.
     public let opts;
     private let listener;
 
