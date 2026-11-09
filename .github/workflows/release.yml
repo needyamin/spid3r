@@ -161,13 +161,13 @@ jobs:
           Test-Path "C:\Program Files\LLVM\bin\LLVM-C.dll"
           Test-Path "C:\Program Files\LLVM\lib\LLVM-C.lib"
 
-      - name: Build release with NSIS installer (core + gui + native)
+      - name: Build release with NSIS installer (core + gui + native + plugins-wasm + tls)
         timeout-minutes: 55
         env:
           # Overrides the workflow-wide skip for this job only ("0" = falsy in
           # build.rs's env parsing).
           SPID3R_NO_INSTALLER: "0"
-        run: cargo build --release --locked --no-default-features --features gui,native
+        run: cargo build --release --locked --no-default-features --features gui,native,plugins-wasm,tls
 
       - name: Verify the installer and its native payload
         shell: pwsh

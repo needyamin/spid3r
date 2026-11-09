@@ -3,3 +3,5 @@
 # nightly for everything under fuzz/ and the pinned stable elsewhere.
 [toolchain]
 channel = "nightly"
+components = ["rust-src"]
+

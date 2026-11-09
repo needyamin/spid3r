@@ -2,8 +2,11 @@
 //!
 //! A tao/wry window over the same op layer the CLI uses ([`super::ops`]).
 //! Deliberately NOT the `spid3r gui` program machinery: the panel is a fixed
-//! native surface, so it never runs `.matrix` source, never touches the
-//! plugin loader, and its IPC surface is a closed set of ops.
+//! native surface and never runs `.matrix` source in-process or loads plugins
+//! itself. Language actions (run/check/build/…) go through
+//! [`super::lang`], which launches the real `spid3r` binary as a child
+//! process, so a faulty program cannot crash the panel. Its IPC surface is a
+//! closed set of ops.
 //!
 //! Protocol: the page calls `window.spid3r.emit(json)` where json is
 //! `{op, id, params}`; the Rust side dispatches through
@@ -25,6 +28,7 @@ use super::ops;
 /// Wakes the event loop when the page posts an op.
 pub enum Msg {
     Op(String),
+    Reply(String),
 }
 
 const INIT_SCRIPT: &str = r#"window.spid3r = {
@@ -118,6 +122,8 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
         padding:12px; font:12px/1.5 Consolas,monospace; overflow:auto;
         max-height:360px; white-space:pre-wrap; }
   .hidden { display:none; }
+  textarea { width:100%; min-height:260px; border:1px solid var(--line); border-radius:8px;
+        padding:10px; font:12.5px/1.5 Consolas,monospace; resize:vertical; tab-size:4; }
   #toast { position:fixed; bottom:16px; right:16px; background:var(--ink); color:#fff;
         padding:10px 16px; border-radius:8px; font-size:13px; opacity:0;
         transition:opacity .25s; pointer-events:none; max-width:460px;
@@ -137,6 +143,7 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
 <nav>
   <div class="brand">Spid3r<small>Control Panel</small></div>
   <button data-tab="overview" class="on">Overview</button>
+  <button data-tab="language">Language</button>
   <button data-tab="safety">Safety</button>
   <button data-tab="config">Configuration</button>
   <button data-tab="agent">Agent</button>
@@ -150,6 +157,62 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
     <h1>Overview</h1>
     <p class="sub">Runtime status for this machine.</p>
     <div class="card" id="overview-cards"></div>
+  </section>
+  <section id="tab-language" class="hidden">
+    <h1>Language</h1>
+    <p class="sub">Drive the Spid3r toolchain: every action runs the real
+       <code>spid3r</code> binary (same flags, exit codes and sandbox as the CLI).
+       Interactive tools (repl, debug, lsp) stay in a terminal.</p>
+    <div class="card" id="lang-info"></div>
+    <div class="card">
+      <div class="item">
+        <div class="info"><b>Project folder</b>
+          <div class="desc">Working directory for commands; leave empty for the panel's own.</div></div>
+        <div class="ctl"><input type="text" id="lang-cwd" placeholder="C:\path\to\project" style="width:340px">
+          <button class="ghost" onclick="langScan()">Scan files</button></div>
+      </div>
+      <div class="item">
+        <div class="info"><b>Source file</b>
+          <div class="desc">.matrix / .matrixc path (or pick a scanned one).</div></div>
+        <div class="ctl"><select id="lang-pick" style="max-width:260px"><option value="">— scanned files —</option></select>
+          <input type="text" id="lang-file" placeholder="src\main.matrix" style="width:260px"></div>
+      </div>
+      <div class="item">
+        <div class="info"><b>Command</b>
+          <div class="desc">Extra flags go in the box; put program arguments after <code> -- </code>.</div></div>
+        <div class="ctl"><select id="lang-cmd"></select>
+          <input type="text" id="lang-args" placeholder="--sandbox --budget 1000000" style="width:260px">
+          <button class="act" onclick="langRun()">Run command</button></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px">
+        <button class="ghost" onclick="langQuick('run','--sandbox')">Run (sandboxed)</button>
+        <button class="ghost" onclick="langQuick('run','')">Run</button>
+        <button class="ghost" onclick="langQuick('check','')">Check</button>
+        <button class="ghost" onclick="langQuick('fmt','')">Format</button>
+        <button class="ghost" onclick="langQuick('compile','')">Compile</button>
+        <button class="ghost" onclick="langQuick('build','--release')">Build exe</button>
+        <button class="ghost" onclick="langQuick('test','',true)">Test</button>
+        <button class="ghost" onclick="langQuick('modules','--tree')">Modules</button>
+        <button class="ghost" onclick="langQuick('plugin','list',true)">Plugins</button>
+        <button class="ghost" onclick="langQuick('init','',true)">Init project</button>
+        <button class="ghost" onclick="langQuick('install','',true)">Install deps</button>
+        <button class="ghost" onclick="langQuick('info','',true)">Runtime info</button>
+        <button class="ghost" onclick="langTerm('repl',true)">Open REPL</button>
+        <button class="ghost" onclick="langTerm('debug')">Debug…</button>
+        <button class="ghost" onclick="langTerm('gui')">Run as GUI</button>
+      </div>
+    </div>
+    <div class="sec-title">Output <span id="lang-status" class="mod-chip" style="display:none"></span></div>
+    <pre id="lang-out">(nothing run yet)</pre>
+    <div class="sec-title">Editor</div>
+    <div class="card">
+      <textarea id="lang-src" spellcheck="false" placeholder="Open the file named above to edit it here…"></textarea>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="ghost" onclick="langOpen()">Open</button>
+        <button class="act" onclick="langSave()">Save</button>
+        <button class="ghost" onclick="langSaveRun()">Save &amp; check</button>
+      </div>
+    </div>
   </section>
   <section id="tab-safety" class="hidden">
     <h1>Safety switches</h1>
@@ -440,6 +503,92 @@ async function loadDevices() {
   }
 }
 
+// ------------------------------------------------------------- language --
+let _langReady = false;
+function langParams(cmd, args) {
+  return { cmd, args, file: document.getElementById('lang-file').value.trim(),
+           cwd: document.getElementById('lang-cwd').value.trim() };
+}
+async function loadLanguage() {
+  try {
+    const s = await call('lang_info');
+    document.getElementById('lang-info').innerHTML =
+      '<div class="row"><span class="k">Toolchain</span><span class="v">' + esc(s.exe) + ' — ' +
+      (s.found === 'true' ? '<span class="ok">' + esc(s.version.split('\n')[0]) + '</span>'
+                          : '<span class="bad">not found — install spid3r.exe beside the panel</span>') +
+      '</span></div>';
+    if (!_langReady) {
+      const sel = document.getElementById('lang-cmd');
+      sel.innerHTML = s.commands.split(',').map(c => '<option>' + esc(c) + '</option>').join('');
+      if (!document.getElementById('lang-cwd').value) document.getElementById('lang-cwd').value = s.cwd;
+      _langReady = true;
+    }
+  } catch (e) { handleErr(e); }
+}
+async function langScan() {
+  try {
+    const r = await call('lang_files', { dir: document.getElementById('lang-cwd').value.trim() });
+    const sel = document.getElementById('lang-pick');
+    sel.innerHTML = '<option value="">— ' + (r.files ? r.files.split('\n').length : 0) + ' files —</option>' +
+      (r.files ? r.files.split('\n').map(f => '<option value="' + esc(f) + '">' + esc(f) + '</option>').join('') : '');
+  } catch (e) { handleErr(e); }
+}
+async function langExec(cmd, args, noFile) {
+  const out = document.getElementById('lang-out');
+  const st = document.getElementById('lang-status');
+  const p = langParams(cmd, args);
+  if (noFile) p.file = '';
+  out.textContent = '$ spid3r ' + cmd + ' ' + args + ' …';
+  st.style.display = 'none';
+  try {
+    const r = await call('lang_exec', p);
+    out.textContent = '$ ' + r.command + '\n\n' + r.stdout + (r.stderr ? '\n[stderr]\n' + r.stderr : '');
+    st.style.display = 'inline-block';
+    st.textContent = 'exit ' + r.code + ' · ' + r.ms + ' ms';
+    st.style.color = r.code === '0' ? 'var(--accent)' : 'var(--bad)';
+    return r;
+  } catch (e) { out.textContent = String(e); handleErr(e); }
+}
+function langRun() {
+  const cmd = document.getElementById('lang-cmd').value;
+  const noFile = ['test','plugin','init','install','info','version','pack','dist','bench','magic'].includes(cmd);
+  return langExec(cmd, document.getElementById('lang-args').value.trim(), noFile && !document.getElementById('lang-file').value.trim());
+}
+function langQuick(cmd, args, noFile) {
+  const needsFile = !noFile && !document.getElementById('lang-file').value.trim();
+  if (needsFile) { toast('Pick or type a source file first.', true); return; }
+  if (cmd === 'run' && !args.includes('--sandbox') &&
+      !confirm('Run this program WITHOUT the sandbox? It may use files, network and processes per your Safety settings.')) return;
+  return langExec(cmd, args, noFile);
+}
+async function langTerm(cmd, noFile) {
+  const p = langParams(cmd, '');
+  if (noFile) p.file = '';
+  else if (!p.file) { toast('Pick or type a source file first.', true); return; }
+  try { const r = await call('lang_terminal', p); toast(r.message); } catch (e) { handleErr(e); }
+}
+async function langOpen() {
+  const f = document.getElementById('lang-file').value.trim();
+  if (!f) { toast('Type a file path first.', true); return; }
+  try { const r = await call('lang_read', { path: f }); document.getElementById('lang-src').value = r.text; toast('opened ' + r.path); }
+  catch (e) { handleErr(e); }
+}
+async function langSave() {
+  const f = document.getElementById('lang-file').value.trim();
+  if (!f) { toast('Type a file path first.', true); return false; }
+  try { const r = await call('lang_write', { path: f, text: document.getElementById('lang-src').value }); toast(r.message); return true; }
+  catch (e) { handleErr(e); return false; }
+}
+async function langSaveRun() { if (await langSave()) langExec('check', ''); }
+document.getElementById('lang-pick').addEventListener('change', (ev) => {
+  if (ev.target.value) { document.getElementById('lang-file').value = ev.target.value; langOpen(); }
+});
+document.getElementById('lang-src').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Tab') { ev.preventDefault(); const t = ev.target, s = t.selectionStart;
+    t.value = t.value.slice(0, s) + '    ' + t.value.slice(t.selectionEnd); t.selectionStart = t.selectionEnd = s + 4; }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') { ev.preventDefault(); langSave(); }
+});
+
 // ---------------------------------------------------------------- audit --
 async function loadAudit() {
   const s = await call('audit_tail', { n: 100 });
@@ -464,6 +613,7 @@ document.querySelectorAll('nav button').forEach(b => b.addEventListener('click',
   const tab = b.dataset.tab;
   document.getElementById('tab-' + tab).classList.remove('hidden');
   if (tab === 'overview') refreshOverview();
+  if (tab === 'language') loadLanguage();
   if (tab === 'safety') loadSafety();
   if (tab === 'config') loadConfig();
   if (tab === 'agent') showAgent();
@@ -556,11 +706,21 @@ pub fn run() -> Result<(), String> {
                     Err(_) => return,
                 };
                 let (id, op, params) = obj;
-                let reply = match ops::dispatch(&op, &params) {
-                    Ok(data) => format!("{{\"ok\":true,\"data\":{}}}", data),
-                    Err(e) => format!("{{\"ok\":false,\"error\":{}}}", ops::jstr(&e)),
-                };
-                let js = format!("window.__spid3rReply({}, {});", id, reply);
+                // Dispatch off the UI thread: toolchain actions can run for
+                // seconds and must not freeze the window.
+                let p = proxy.clone();
+                std::thread::spawn(move || {
+                    let reply = match ops::dispatch(&op, &params) {
+                        Ok(data) => format!("{{\"ok\":true,\"data\":{}}}", data),
+                        Err(e) => format!("{{\"ok\":false,\"error\":{}}}", ops::jstr(&e)),
+                    };
+                    let _ = p.send_event(Msg::Reply(format!(
+                        "window.__spid3rReply({}, {});",
+                        id, reply
+                    )));
+                });
+            }
+            tao::event::Event::UserEvent(Msg::Reply(js)) => {
                 if let Err(e) = webview.evaluate_script(&js) {
                     eprintln!("warning[control-panel]: reply failed: {e}");
                 }

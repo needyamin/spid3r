@@ -15,6 +15,7 @@
 //! control action does. Everything here is local-machine scope: managing
 //! OTHER hosts stays with `spid3r agent pair` / `spid3r admin` by design.
 
+pub mod lang;
 pub mod ops;
 
 // The desktop panel shares this module so it can reach `ops` via `super`.

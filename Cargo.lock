@@ -2116,7 +2116,7 @@ dependencies = [
 
 [[package]]
 name = "spid3r"
-version = "1.0.1"
+version = "1.0.0"
 dependencies = [
  "inkwell",
  "native-tls",

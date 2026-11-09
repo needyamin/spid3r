@@ -1,4 +1,4 @@
-# Spid3r GUI layer
+﻿# Spid3r GUI layer
 
 `spid3r gui` runs a Spid3r program inside a desktop window with an embedded
 webview — the program is the "app", the page is the UI. It lives behind the
@@ -98,7 +98,7 @@ headlessly — and it doubles as a debugging aid.
 $ spid3r gui app.matrix --dry-run
 js: document.getElementById('count').textContent = "clicks: 1";
 js: document.getElementById('count').textContent = "clicks: 2";
-js: document.getElementById('spid3r-root').innerHTML = "<button id=\"go\" onclick=\"window.spid3r.emit('click','go')\">click me</button> <span id=\"count\"></span>";
+js: document.getElementById('spid3r-root').innerHTML = "<button id="go" onclick="window.spid3r.emit('click','go')">click me</button> <span id="count"></span>";
 js: document.getElementById('count').textContent = "clicks: 2";
 ```
 
@@ -350,3 +350,10 @@ checked with `--engine vm` before shipping.
 - The window itself is not covered by automated tests — only the bridge
   (unit tests in `src/gui/bridge.rs`) and the end-to-end replay
   (`--dry-run`) are.
+
+## Control panel (spid3r-control)
+
+`spid3r-control.exe` is the desktop panel over the same op layer as `spid3r control`. Tabs: Overview, **Language**, Safety, Configuration, Agent, Devices, Audit log.
+
+The **Language** tab drives the whole toolchain (run, check, compile, build, test, fmt, disasm, exec, modules, init, install, pack, dist, bench, plugin, info, bundle) by launching the real `spid3r` binary found beside the panel (or on PATH) as a child process, with a 120 s limit and 256 KiB output cap per stream. It also has a project file scanner and a small source editor (.matrix/.toml/.html/.md/.txt/.json). Interactive tools (repl, debug, lsp) remain terminal-only. The same ops are reachable from the CLI via `spid3r control --op lang_exec --params '{"cmd":"check","file":"a.matrix"}'`.
+

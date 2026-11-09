@@ -223,12 +223,20 @@ fn windows_installer() {
     let triple = env::var("TARGET").unwrap_or_default();
     let gui = env::var_os("CARGO_FEATURE_GUI").is_some();
     let native = env::var_os("CARGO_FEATURE_NATIVE").is_some();
+    let plugins_wasm = env::var_os("CARGO_FEATURE_PLUGINS_WASM").is_some();
+    let tls = env::var_os("CARGO_FEATURE_TLS").is_some();
     let mut features = Vec::new();
     if gui {
         features.push("gui");
     }
     if native {
         features.push("native");
+    }
+    if plugins_wasm {
+        features.push("plugins-wasm");
+    }
+    if tls {
+        features.push("tls");
     }
     // `spid3r build` needs LLVM-C.dll to start, plus LLVM-C.lib and the
     // runtime staticlib to link programs; all three ship next to spid3r.exe.

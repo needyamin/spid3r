@@ -37,6 +37,12 @@ pub fn dispatch(op: &str, params: &str) -> Result<String, String> {
         "devices_list" => op_devices_list(),
         "devices_revoke" => op_devices_revoke(params),
         "audit_tail" => op_audit_tail(params),
+        "lang_info" => super::lang::op_lang_info(),
+        "lang_exec" => super::lang::op_lang_exec(params),
+        "lang_terminal" => super::lang::op_lang_terminal(params),
+        "lang_files" => super::lang::op_lang_files(params),
+        "lang_read" => super::lang::op_lang_read(params),
+        "lang_write" => super::lang::op_lang_write(params),
         other => Err(format!("unknown control op '{}'", other)),
     }
 }
@@ -342,7 +348,9 @@ fn kill_pid(pid: u32) -> Result<(), String> {
 /// launch must not flash a terminal); on Unix the child is orphaned on
 /// purpose — the parent exits and init reaps it.
 fn spawn_agent_detached() -> Result<u32, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
+    // NOT current_exe(): inside spid3r-control.exe that is the panel itself,
+    // and `agent start` would open a second panel instead of an agent.
+    let exe = super::lang::toolchain_exe();
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["agent", "start"])
         .stdin(std::process::Stdio::null())
