@@ -99,6 +99,10 @@ By default a program runs with the full authority of the user who started it. `s
 
 `spid3r.ini` carries the runtime configuration — precedence layers, the encrypted `spid3r-agent/1` wire protocol, role-checked predefined operations, the audit log, and atomic config saves. See [Runtime management](docs/AGENT.md) for the full contract.
 
+![Automated CI, multi-platform release, and libfuzzer workflows](docs/diagrams/workflows.svg)
+
+Every commit and tag is gated through GitHub Actions workflows: a 3-platform differential CI matrix (core, webview GUI, WebAssembly runtime, and LLVM 18 native AOT), automated multi-architecture releases (Linux glibc/ARM64, macOS Apple Silicon/Intel, and the full Windows NSIS installer), and nightly continuous libfuzzer regression testing.
+
 ## What's inside
 
 | Aspect | Detail |
