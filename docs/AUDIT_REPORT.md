@@ -696,8 +696,7 @@ Windows before it was fixed, and each fix has a test in
 ## Pre-launch review — single-file `.exe` pipeline (2026-10-30)
 
 An independent three-leg review (code review, security audit, QA) of the change
-set above, run against the real release build. Full report:
-`deliverables/gstack/pre-launch-check-spid3r-single-file-2026-10-30.md`.
+set above, run against the real release build.
 
 Blocking items found and fixed:
 

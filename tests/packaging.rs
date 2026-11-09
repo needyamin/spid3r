@@ -59,7 +59,7 @@ fn build(dir: &Path, extra: &[&str]) -> (bool, String) {
 const PLAIN: &str = "fn main() {\n    return 0;\n}\n";
 
 /// A launcher-shaped program: GUI natives exist only inside functions, which is
-/// how the desktop apps in `examples/gui` are written.
+/// how the launcher-shaped desktop apps are written.
 #[cfg(feature = "gui")]
 const LAUNCHER: &str = "\
 fn gui_linked() {

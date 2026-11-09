@@ -133,7 +133,7 @@ fn gui_rejects_unknown_options_and_missing_files() {
     let err = gui(&["gui", &dummy, "--nope"]).expect_err("must fail");
     assert!(err.contains("unknown option '--nope'"), "got: {}", err);
 
-    let err = gui(&["gui", "examples/gui/does_not_exist.matrix"]).expect_err("must fail");
+    let err = gui(&["gui", "examples/does_not_exist.matrix"]).expect_err("must fail");
     assert!(err.contains("is not a file"), "got: {}", err);
 
     let err = gui(&["gui"]).expect_err("must fail");

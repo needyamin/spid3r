@@ -95,6 +95,10 @@ $ spid3r verify                           # is the vendored tree the one the loc
 
 By default a program runs with the full authority of the user who started it. `spid3r run --sandbox` and `spid3r exec --sandbox` opt into a capability gate — filesystem, network, process and environment access are refused with catchable `sandboxed: ... denied` errors, enforced through the single native funnel every engine installs from, so an imported module cannot re-arm what was denied. When embedding in Rust, `Engine::deny` applies the same policy. It is a policy filter over built-in natives, not an OS-level sandbox.
 
+![Runtime configuration and remote management: the spid3r.ini precedence layers, the encrypted spid3r-agent/1 wire protocol, role-checked predefined operations, the audit log, and atomic config saves](docs/diagrams/runtime-management.svg)
+
+`spid3r.ini` carries the runtime configuration — precedence layers, the encrypted `spid3r-agent/1` wire protocol, role-checked predefined operations, the audit log, and atomic config saves. See [Runtime management](docs/AGENT.md) for the full contract.
+
 ## What's inside
 
 | Aspect | Detail |

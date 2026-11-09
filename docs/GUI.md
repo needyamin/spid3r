@@ -7,7 +7,7 @@ webview — the program is the "app", the page is the UI. It lives behind the
 [BUILDING.md](BUILDING.md).
 
 ```
-cargo run -- gui examples/gui/counter.matrix
+cargo run -- gui app.matrix
 ```
 
 ## The model
@@ -95,16 +95,16 @@ is printed as `js: …` instead of evaluated. This is what
 headlessly — and it doubles as a debugging aid.
 
 ```
-$ spid3r gui examples/gui/counter.matrix --dry-run
+$ spid3r gui app.matrix --dry-run
 js: document.getElementById('count').textContent = "clicks: 1";
 js: document.getElementById('count').textContent = "clicks: 2";
 js: document.getElementById('spid3r-root').innerHTML = "<button id=\"go\" onclick=\"window.spid3r.emit('click','go')\">click me</button> <span id=\"count\"></span>";
 js: document.getElementById('count').textContent = "clicks: 2";
 ```
 
-## Where GUI examples live
+## Where GUI programs live
 
-`examples/gui/`. GUI programs are deliberately **outside** `examples/`:
+GUI programs are kept **outside** the flat `examples/` set on purpose:
 `spid3r test` and the differential suite run every flat `examples/*.matrix`
 on all three engines (tree, VM, `exec`), and a GUI program cannot run without
 a window.
