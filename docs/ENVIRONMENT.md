@@ -9,28 +9,29 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPID3R_PATH` | — | Extra module search directories, `;`-separated. Searched after the importing file's directory and before `./stdlib`. |
-| `SPID3R_MAX_WORKERS` | `256` | Ceiling for the grow-on-demand task pool. At the ceiling a stall is reported on stderr instead of hanging. |
-| `SPID3R_QUEUE_CAP` | `65536` | Bound on the shared ready queue. A producer that fills it parks until a worker drains one job. |
+| `SPID3R_PATH` | — | Env alias of `modules.path` (canonical INI key): extra module search directories, `;`-separated. Searched after the importing file's directory and before `./stdlib`. |
+| `SPID3R_PLUGINS` | — | Env alias of `modules.plugins` (canonical INI key): plugin search path. |
+| `SPID3R_MAX_WORKERS` | `256` | Env alias of `spid3r.max_workers` (canonical INI key): ceiling for the grow-on-demand task pool. At the ceiling a stall is reported on stderr instead of hanging. |
+| `SPID3R_QUEUE_CAP` | `65536` | Env alias of `spid3r.queue_cap` (canonical INI key): bound on the shared ready queue. A producer that fills it parks until a worker drains one job. |
 | `SPID3R_DEADLOCK_ABORT` | on | When no task can ever wake a wait, abort with a diagnostic (Go's "all goroutines are asleep"). `0` downgrades it to a warning for hosts that supervise their own waits. |
 | `SPID3R_TASK_DRAIN_MS` | `2000` | How long program exit waits for still-running tasks before warning and exiting anyway. `0` disables the wait. |
-| `SPID3R_GC` | on | Automatic cycle collection at statement boundaries. `0` disables it; `gc_collect()` still works. |
+| `SPID3R_GC` | on | Env alias of `spid3r.gc` (canonical INI key): automatic cycle collection at statement boundaries. `0` disables it; `gc_collect()` still works. |
 | `SPID3R_NET_TIMEOUT_MS` | `30000` | Env alias of `net.timeout_ms` (canonical INI key): deadline for HTTP framing (slowloris guard); `0` disables it. Raw `tcp_*` connections keep whatever timeout the program sets. |
 | `SPID3R_SQLITE_PATH` | — | Env alias of `paths.sqlite_path` (canonical INI key): full path of the SQLite shared library tried before the default lookup. The library is loaded once per process, so a config reload cannot move it. |
 | `SPID3R_CACHE_DIR` | `%LOCALAPPDATA%\Spid3r` (Windows), `$XDG_CACHE_HOME/spid3r` (else) | Env alias of `paths.cache_dir` (canonical INI key): root for the extracted-runtime cache (`runtime/`). The log has its own path (`SPID3R_LOG_FILE`). |
 | `SPID3R_EXE` | — | Runtime a packaged app launches **when it carries no embedded copy** (checked before the per-user install and `PATH`). An embedded runtime always wins. |
-| `SPID3R_LOG` | on | `0` disables the diagnostic log entirely. |
-| `SPID3R_LOG_FILE` | `%LOCALAPPDATA%\Spid3r\logs\spid3r.log` | Log path override. |
+| `SPID3R_LOG` | on | Env alias of `logging.enabled` (canonical INI key): `0` disables the diagnostic log entirely. |
+| `SPID3R_LOG_FILE` | `%LOCALAPPDATA%\Spid3r\logs\spid3r.log` | Env alias of `logging.file` (canonical INI key): log path override. |
 | `SPID3R_RUN_PAYLOAD_DEBUG` | off | The launcher prints the runtime it chose and the payload path to stderr. |
 
 ## Configuration, state, and the management agent
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SPID3R_INI` | — | Explicit path to `spid3r.ini`. First hit in the search order. |
+| `SPID3R_INI` | — | **Authoritative** explicit path to `spid3r.ini`: the only ini candidate when set and non-empty (no fallback). See the dedicated section below. |
 | `SPID3R_CONFIG_DIR` | platform config dir | Directory that may hold `spid3r.ini`. |
 | `SPID3R_STATE_DIR` | `%LOCALAPPDATA%\Spid3r\state` / `$XDG_STATE_HOME/spid3r` | Env alias of `paths.state_dir` (canonical INI key): paired devices, admin-client book, audit log. |
-| `SPID3R_ENV` | `default` (or `[spid3r] env`) | Selects `[env.<name>]` overrides in the INI. |
+| `SPID3R_ENV` | `default` (or `[spid3r] env`) | Env alias of `spid3r.env`: selects `[env.<name>]` overrides in the INI. Naming an overlay with no matching `[env.<name>]` section is a **silent no-op** — no warning is emitted and the plain values stay in effect. |
 | `SPID3R_<SECTION>_<KEY>` | — | Per-key override (`SPID3R_AGENT_PORT`, `SPID3R_AGENT_BIND`, …). |
 | `SPID3R_RUNTIME_WALL_CLOCK_LIMIT_MS` | `0` | Alias of `runtime.wall_clock_limit_ms`: fatal wall-clock deadline for `spid3r run`, in ms; `0` = unlimited. |
 | `SPID3R_RUNTIME_MEMORY_LIMIT_MB` | `0` | Alias of `runtime.memory_limit_mb`: catchable soft cap on script-value heap, in MiB; `0` = unlimited. |
@@ -46,6 +47,35 @@ empty value counts as on for the build flags, off for `SPID3R_GC`).
 | `SPID3R_PATHS_SQLITE_PATH` | — | Generic spelling of `paths.sqlite_path`. Beats the INI; the short `SPID3R_SQLITE_PATH` alias wins when both are set. |
 
 See `docs/AGENT.md` for the full management-agent manual.
+
+### `SPID3R_INI` is authoritative
+
+`SPID3R_INI` is not merely the first candidate in a search order. When it is
+set and **non-empty** it is the **only** ini candidate — there is no fallback:
+
+* If the pinned file is missing or unreadable, the loader uses **compiled
+  defaults only**. It never falls through to the executable-directory,
+  platform-config, `SPID3R_CONFIG_DIR`, or working-directory `spid3r.ini`.
+* The loader keeps a typed pin failure separate from value-validation notes;
+  local `config validate`, `control status` and `spid3rinfo()` report it.
+* This is **fail-closed** for program execution: `run`, `check`, `compile`,
+  `exec`, `test`, `bench`, `debug`, `gui`, `repl` and `magic` refuse to start
+  and exit 1 while the pin is broken.
+* Diagnostic commands remain usable: `--version`, `help`, `info`,
+  `config path` and `config validate`. `config validate` reports the broken
+  pin as a problem (exit 1), and an unknown flag exits 2 (usage). Remote
+  `config.set` refuses to persist while the pin is broken; a local
+  `control config set` or `spid3r config init` is how an operator repairs it.
+  Restart any long-lived process that initialized policy while the pin was
+  broken; its fail-closed policy is intentionally sticky for that process.
+
+An empty `SPID3R_INI` is treated as unset, so the normal search order applies.
+When it is unset (or empty), the machine/cwd ini candidates are tried as
+before. Local validation diagnostics keep policy values (`security.basedir`,
+`paths.*`, `cache.bytecode_dir`) **raw** so an operator can see which entry is
+wrong; only credential-like values are hashed there. Remote surfaces
+(`info`, `config.get`, `dump_diagnostics` over the agent) never see those
+values, the configuration-notes row, or the pin status at all.
 
 ## Building and the native backend
 

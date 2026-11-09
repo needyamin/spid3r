@@ -51,6 +51,9 @@ pub struct Policy {
     pub(crate) disabled_natives: Vec<String>,
     /// Module names (as written by the import) that fail to resolve.
     disabled_modules: Vec<String>,
+    /// Sticky indicator: if this process baked policy while an explicit pin
+    /// was broken, a later reload cannot safely widen the cached policy.
+    pub(crate) pin_failed_at_initialization: bool,
 }
 
 static POLICY: OnceLock<Policy> = OnceLock::new();
@@ -58,6 +61,25 @@ static POLICY: OnceLock<Policy> = OnceLock::new();
 /// The baked policy, initialized on first use from the resolved config.
 pub fn policy() -> &'static Policy {
     POLICY.get_or_init(Policy::from_config)
+}
+
+/// Refuse program execution while an explicit config pin is broken. If the
+/// process already baked a policy under a broken pin, require a restart even
+/// after config reload: the OnceLock policy cannot be safely refreshed.
+pub fn execution_refusal() -> Option<String> {
+    let cfg = crate::config::snapshot();
+    if crate::config::pin_failed(&cfg) {
+        return Some(crate::config::pin_problems(&cfg).join("; "));
+    }
+    if POLICY
+        .get()
+        .is_some_and(|policy| policy.pin_failed_at_initialization)
+    {
+        return Some(
+            "runtime policy was initialized while SPID3R_INI was broken; restart Spid3r after repairing the pin".into(),
+        );
+    }
+    None
 }
 
 impl Policy {
@@ -69,10 +91,12 @@ impl Policy {
             .collect();
         let disabled_natives = split_list(cfg.get("security.disable_natives").unwrap_or(""));
         let disabled_modules = split_list(cfg.get("modules.disable").unwrap_or(""));
+        let pin_failed_at_initialization = crate::config::pin_failed(&cfg);
         Policy {
             basedir,
             disabled_natives,
             disabled_modules,
+            pin_failed_at_initialization,
         }
     }
 }
@@ -228,6 +252,10 @@ pub fn check_path(path: &str) -> Result<(), String> {
 /// The denial raised for a native disabled via `security.disable_natives`.
 fn disabled_native_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
     Err("disabled by configuration".to_string())
+}
+
+pub(crate) fn pin_failure_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err("runtime policy initialized while SPID3R_INI was broken; restart Spid3r".to_string())
 }
 
 /// The stub function installed for a config-disabled native.
@@ -409,6 +437,7 @@ mod tests {
             basedir: entries.iter().map(|e| resolve_entry_strict(e)).collect(),
             disabled_natives: Vec::new(),
             disabled_modules: Vec::new(),
+            pin_failed_at_initialization: false,
         };
         match resolve_for_compare(target) {
             Some(resolved) => pol
@@ -620,6 +649,7 @@ mod tests {
             basedir: Vec::new(),
             disabled_natives: Vec::new(),
             disabled_modules: vec!["json".to_string()],
+            pin_failed_at_initialization: false,
         };
         assert!(module_disabled_in(&pol, "json").is_some());
         assert!(module_disabled_in(&pol, "json.matrix").is_some());

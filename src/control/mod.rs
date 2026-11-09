@@ -285,27 +285,41 @@ fn cmd_config(args: &[String]) -> i32 {
         other => return usage_err(&format!("unknown config subcommand '{}'", other)),
     };
     match result {
-        Ok(json) => {
-            match sub {
-                "get" => println!(
+        Ok(json) => match sub {
+            "get" => {
+                println!(
                     "{} = {}",
                     ops::field(&json, "key").unwrap_or_default(),
                     ops::field(&json, "value").unwrap_or_default()
-                ),
-                "list" => {
-                    if let Some(keys) = ops::field(&json, "keys") {
-                        for row in keys.lines() {
-                            let parts: Vec<&str> = row.splitn(6, '|').collect();
-                            if parts.len() == 6 {
-                                println!("{:<28} {:<6} {}", parts[0], parts[1], parts[2]);
-                            }
+                );
+                0
+            }
+            "list" => {
+                if let Some(keys) = ops::field(&json, "keys") {
+                    for row in keys.lines() {
+                        let parts: Vec<&str> = row.splitn(6, '|').collect();
+                        if parts.len() == 6 {
+                            println!("{:<28} {:<6} {}", parts[0], parts[1], parts[2]);
                         }
                     }
                 }
-                _ => println!("{}", ops::field(&json, "message").unwrap_or_default()),
+                0
             }
-            0
-        }
+            "validate" => {
+                let errors = ops::field(&json, "errors").unwrap_or_default();
+                if ops::field(&json, "valid").as_deref() == Some("false") {
+                    eprintln!("{}", errors);
+                    1
+                } else {
+                    println!("configuration valid");
+                    0
+                }
+            }
+            _ => {
+                println!("{}", ops::field(&json, "message").unwrap_or_default());
+                0
+            }
+        },
         Err(e) => {
             eprintln!("error[control]: {}", e);
             1

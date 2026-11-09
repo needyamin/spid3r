@@ -225,7 +225,7 @@ public keys (order 1/2/4/8), which is stricter than RFC 8032.
 
 | Function | Description |
 |---|---|
-| `spid3rinfo()` | Map of runtime information (version, OS, config, modules, memory). Modes: `spid3rinfo("html")`, `spid3rinfo("json")`, `spid3rinfo("text")`, `spid3rinfo("map", no_redact)`. Sensitive values are redacted by default. See `docs/AGENT.md`. |
+| `spid3rinfo()` | Map of runtime information (version, OS, config, modules, memory). Modes: `spid3rinfo("html")`, `spid3rinfo("json")`, `spid3rinfo("text")`, `spid3rinfo("map", no_redact)`. Sensitive values are redacted by default. Local renders include configuration notes and pin-failure details; remote `info` and `dump_diagnostics` omit the configuration-notes row. See `docs/AGENT.md`. |
 | `config_get(key)` | Live `spid3r.ini` value as a string, or `null`. Sensitive-looking keys are redacted (a stable hash). The policy lists are visible to the script that is their subject: `config_get("security.basedir")`, `config_get("security.disable_natives")` and `config_get("modules.disable")` return the configured lists — only the agent's remote surfaces redact the first two. |
 | `config_set(key, value)` | Set a known key in the live configuration (validated). Note: `security.basedir`, `security.disable_natives` and `modules.disable` are enforced from a per-process snapshot, so changing them (or `config_reload()`) does not widen or re-narrow the running policy — the next process start applies the new values. |
 | `config_reload()` | Re-read `spid3r.ini`; returns the path that was loaded (or empty). |

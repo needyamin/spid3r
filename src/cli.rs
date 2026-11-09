@@ -161,6 +161,38 @@ pub fn run(args: Vec<String>) -> i32 {
         }
     };
     let mut rest: Vec<String> = it.collect();
+    // An explicit but broken SPID3R_INI must never silently run code under
+    // compiled defaults. Keep diagnostics and repair commands available.
+    if matches!(
+        cmd.as_str(),
+        "run"
+            | "magic"
+            | "check"
+            | "compile"
+            | "exec"
+            | "test"
+            | "bench"
+            | "debug"
+            | "gui"
+            | "repl"
+            | "build"
+            | "bundle"
+            | "disasm"
+            | "verify"
+            | "tree"
+            | "dist"
+            | "pack"
+            | "unpack"
+            | "install"
+            | "publish"
+            | "add"
+            | "remove"
+    ) {
+        if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
+            eprintln!("error[config]: {}", message);
+            return EXIT_USER_ERROR;
+        }
+    }
     // Plugins are discovered from disk once per process, before any engine
     // installs its natives. Only for commands that can run or check a program:
     // `spidr version` must not read a plugin directory.
@@ -714,6 +746,19 @@ USAGE:
 
 OPTIONS:
     -h, --help             Print help information
+"),
+        "config" => Some("\
+spid3r config - Read and write runtime configuration
+
+USAGE:
+    spid3r config [get KEY | set KEY VALUE | list | path | validate | reload | init]
+    spid3r config init [PATH] [--force]
+
+NOTES:
+    config validate reports value errors and a broken SPID3R_INI pin (exit 1).
+    Unknown options are usage errors (exit 2).
+    config init refuses to overwrite an existing file unless --force is given.
+    config init --help prints this help; it does not write a file.
 "),
         "init" => Some("\
 spid3r init - Initialize a new Spid3r project
@@ -2502,6 +2547,13 @@ fn cmd_config(args: &[String]) -> Result<i32, Diagnostic> {
             }
             let key = &rest[0];
             let value = &rest[1];
+            let before = crate::config::snapshot();
+            if crate::config::pin_failed(&before) {
+                eprintln!(
+                    "warning: repairing broken SPID3R_INI pin ({})",
+                    crate::config::pin_problems(&before).join("; ")
+                );
+            }
             crate::config::set_live(key, value).map_err(|e| usage(&e))?;
             let cfg = crate::config::snapshot();
             let path = crate::config::save(&cfg).map_err(|e| usage(&e))?;
@@ -2541,14 +2593,18 @@ fn cmd_config(args: &[String]) -> Result<i32, Diagnostic> {
             Ok(EXIT_OK)
         }
         "validate" => {
+            if !rest.is_empty() {
+                return Err(usage("config validate"));
+            }
             let cfg = crate::config::snapshot();
-            let problems = crate::config::validate(&cfg);
+            let mut problems = crate::config::validate(&cfg);
+            problems.extend(crate::config::pin_problems(&cfg));
             if problems.is_empty() {
                 println!("ok");
                 Ok(EXIT_OK)
             } else {
                 for p in problems {
-                    eprintln!("{}", p);
+                    eprintln!("{}", crate::runtime_info::redact_diagnostic(&p));
                 }
                 Ok(EXIT_USER_ERROR)
             }
@@ -2564,14 +2620,43 @@ fn cmd_config(args: &[String]) -> Result<i32, Diagnostic> {
             Ok(EXIT_OK)
         }
         "init" => {
-            let path = rest.first().map(PathBuf::from);
+            let mut force = false;
+            let mut path = None;
+            for arg in rest {
+                if arg == "--force" {
+                    force = true;
+                } else if arg.starts_with('-') || path.is_some() {
+                    return Err(usage("config init [PATH] [--force]"));
+                } else {
+                    path = Some(PathBuf::from(arg));
+                }
+            }
+            let target = path.or_else(crate::config::active_path);
+            if let Some(existing) = target.as_ref().filter(|p| p.exists()) {
+                if !force {
+                    return Err(usage(&format!(
+                        "{} already exists (use --force to overwrite)",
+                        existing.display()
+                    )));
+                }
+            }
+            let cfg = crate::config::snapshot();
+            if crate::config::pin_failed(&cfg) {
+                eprintln!(
+                    "warning: repairing broken SPID3R_INI pin ({})",
+                    crate::config::pin_problems(&cfg).join("; ")
+                );
+            }
             let written =
-                crate::config::write_default_ini(path.as_deref()).map_err(|e| usage(&e))?;
+                crate::config::write_default_ini(target.as_deref()).map_err(|e| usage(&e))?;
             println!("wrote {}", written.display());
             Ok(EXIT_OK)
         }
         "--help" | "-h" | "help" => {
-            println!("USAGE: spid3r config [get KEY | set KEY VALUE | list | path | validate | reload | init]");
+            print!(
+                "{}",
+                subcommand_help("config").unwrap_or("USAGE: spid3r config")
+            );
             Ok(EXIT_OK)
         }
         other => Err(usage(&format!("config: unknown subcommand '{}'", other))),

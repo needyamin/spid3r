@@ -163,6 +163,11 @@ cargo install --path . --no-default-features
 | `spid3r disasm app.matrixc` | human-readable bytecode disassembly (exit 4 on a corrupt file) |
 | `spid3r plugin` · `pack` · `unpack` | plugin inspection, tar+sha256 archive, extract |
 | `spid3r info` · `config` · `agent` · `admin` | build info, settings, management agent |
+| `spid3r config validate` | validate `spid3r.ini`; reports value problems and an explicitly broken `SPID3R_INI` pin (exit 1); unknown flags are usage errors (exit 2) |
+| `spid3r config init [PATH] [--force]` | write a commented default ini; refuses to overwrite an existing file without `--force` (`--help` prints usage instead of writing a file) |
+| `spid3r control config validate` | agent-side validation; exits 1 and prints errors to stderr when the config is invalid |
+
+**Configuration.** One `spid3r.ini` is the control plane. `SPID3R_INI` is **authoritative**: when it is set and non-empty it is the only ini candidate. If that path is missing or unreadable the loader uses compiled defaults only (it never falls through to the machine or working-directory ini), records a typed pin failure that `config validate`, `control status` and local `info` surface, and every program-executing command (`run`, `check`, `compile`, `exec`, `test`, `bench`, `debug`, `gui`, `repl`, `magic`) refuses to start with exit 1. `--version`, `help`, `info`, `config path` and `config validate` remain usable to diagnose the pin, and remote `config.set` refuses to persist while it is broken — the local `control config set` / `spid3r config init` paths are how an operator repairs it. If a long-lived process already initialized its runtime policy while the pin was broken, restart that process after repair; it keeps a fail-closed policy until restart. Local `spid3rinfo()` reports the configuration notes and broken-pin status; remote introspection omits those host-specific diagnostics.
 
 ### Exit codes
 
@@ -174,6 +179,8 @@ cargo install --path . --no-default-features
 | 4 | invalid bytecode (corrupt or malformed `.matrixc`) |
 
 `spid3r run --budget` (alias `--max-steps`) caps the work untrusted code may do; `--max-call-depth` caps recursion and applies to the tree and VM engines — the native AOT backend enforces neither. `spid3r run --sandbox` and `spid3r exec --sandbox` deny file-system, network, process and environment access to the program (catchable `sandboxed: ... denied` errors). `.matrixc` files written by `spid3r compile` carry a SHA-256 integrity checksum, verified on load: a corrupt or modified file exits 4 with `bytecode integrity check failed`. That checksum is an integrity check (bit rot, corruption, lazy tampering), **not** an authenticity control — anyone can recompute it; signing distributed bytecode (e.g. with the in-tree Ed25519 implementation) is a noted future direction. AOT-produced executables report runtime failures with their own process conventions and are not bound by this table.
+
+`spid3r config validate` prints problems and exits 1 when any are found, 0 when clean; this includes an explicitly broken `SPID3R_INI` pin. Unknown flags are usage errors (exit 2). `spid3r control config validate` exits 1 and writes its errors to stderr when the config is invalid. A broken `SPID3R_INI` pin blocks program execution with exit 1 (see Configuration above). These are the same 0/1/2/4 codes — no renumbering.
 
 ## Documentation
 

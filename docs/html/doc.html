@@ -1903,6 +1903,28 @@
                   <code>set KEY VALUE</code>, <code>list</code>, <code>path</code>, <code>validate</code>,
                   <code>reload</code>, <code>init</code>.</td>
               </tr>
+              <tr>
+                <td><code>spid3r config validate</code></td>
+                <td><code>spid3r config validate</code></td>
+                <td>Print validation problems (exit 1 when any, 0 when clean); a broken <code>SPID3R_INI</code>
+                  pin is reported as one of those problems. Local diagnostics keep policy values such as
+                  <code>security.basedir</code> and <code>paths.*</code> raw so operators can see which entry is
+                  wrong; credential-like values are hashed. An unknown flag (e.g. <code>--bogus</code>) is a usage
+                  error (exit 2).</td>
+              </tr>
+              <tr>
+                <td><code>spid3r config init [PATH] [--force]</code></td>
+                <td><code>spid3r config init ./spid3r.ini --force</code></td>
+                <td>Write a commented default ini. <code>--help</code> prints the config usage instead of writing a
+                  file named <code>--help</code>; without <code>--force</code> it refuses to overwrite an existing
+                  ini (exit 2). <code>config save</code> refuses to persist while the ini pin is broken.</td>
+              </tr>
+              <tr>
+                <td><code>spid3r control config validate</code></td>
+                <td><code>spid3r control config validate</code></td>
+                <td>Agent-side validation; exits 1 and prints errors to stderr when the config is
+                  <code>valid:false</code> (it no longer prints a blank line and exits 0).</td>
+              </tr>
               <tr id="cli-agent">
                 <td><code>spid3r agent</code></td>
                 <td><code>spid3r agent start</code></td>
@@ -4748,15 +4770,32 @@ println(" Sum via reduce: " + string(sum_all));      // 21
 
         <h3 class="section-h3" id="ini">The <code>spid3r.ini</code> File</h3>
         <p>
-          A single INI file configures the runtime. Search order (first hit wins):
+          A single INI file configures the runtime. The discovered candidates are tried in this order (first hit
+          wins) — except for the authoritative <code>SPID3R_INI</code> pin described below:
         </p>
         <ol>
-          <li><code>$SPID3R_INI</code></li>
+          <li><code>$SPID3R_INI</code> — when set and non-empty, the <strong>only</strong> ini candidate</li>
           <li><code>spid3r.ini</code> next to the <code>spid3r</code> executable</li>
           <li>platform config dir (<code>%APPDATA%\Spid3r</code>, <code>$XDG_CONFIG_HOME/spid3r</code>,
             <code>~/.config/spid3r</code>)</li>
           <li><code>./spid3r.ini</code></li>
         </ol>
+        <p>
+          <code>SPID3R_INI</code> is <strong>authoritative</strong>: when it is set and non-empty it is the only
+          ini candidate. If that path is missing or unreadable the loader uses compiled defaults only (it never
+          falls through to the machine or working-directory ini), records a typed pin failure for local diagnostics,
+          and program-executing commands (<code>run</code>, <code>check</code>, <code>compile</code>,
+          <code>exec</code>, <code>test</code>, <code>bench</code>, <code>debug</code>, <code>gui</code>,
+          <code>repl</code>, <code>magic</code>) refuse to start with exit 1. <code>--version</code>,
+          <code>help</code>, <code>info</code>, <code>config path</code> and <code>config validate</code> remain
+          usable to diagnose the pin, and remote <code>config.set</code> refuses to persist while it is broken —
+          the local <code>control config set</code> / <code>spid3r config init</code> paths are how an operator
+          repairs it. Restart a long-lived process that initialized its policy while the pin was broken; its
+          fail-closed policy remains sticky until restart. <code>spid3r config validate</code> reports a broken pin as a problem (exit 1) and treats an
+          unknown flag as a usage error (exit 2); local diagnostics keep policy values raw so the bad entry is
+          visible. <code>spid3r control config validate</code> exits
+          1 with errors on stderr when <code>valid:false</code>.
+        </p>
         <p>
           Precedence, highest first: process environment → <code>[env.&lt;name&gt;]</code> (selected by
           <code>SPID3R_ENV</code> or <code>[spid3r] env</code>) → the INI file → compiled defaults. Every layer is
@@ -4848,6 +4887,13 @@ agent.bind = 0.0.0.0
             <tbody>
               <tr>
                 <td><code>[spid3r]</code></td>
+                <td><code>env</code></td>
+                <td><code>default</code></td>
+                <td>Configuration environment name; selects <code>[env.&lt;name&gt;]</code> overrides (also set
+                  by <code>SPID3R_ENV</code>).</td>
+              </tr>
+              <tr>
+                <td><code>[spid3r]</code></td>
                 <td><code>engine</code></td>
                 <td><code>vm</code></td>
                 <td>Default engine for <code>spid3r run</code> when <code>--engine</code> is omitted
@@ -4858,6 +4904,24 @@ agent.bind = 0.0.0.0
                 <td><code>max_workers</code></td>
                 <td><code>256</code></td>
                 <td>Ceiling for the grow-on-demand task pool.</td>
+              </tr>
+              <tr>
+                <td><code>[spid3r]</code></td>
+                <td><code>queue_cap</code></td>
+                <td><code>65536</code></td>
+                <td>Bound on the shared ready queue.</td>
+              </tr>
+              <tr>
+                <td><code>[spid3r]</code></td>
+                <td><code>deadlock_abort</code></td>
+                <td><code>true</code></td>
+                <td>Abort when no task can ever wake a wait.</td>
+              </tr>
+              <tr>
+                <td><code>[spid3r]</code></td>
+                <td><code>task_drain_ms</code></td>
+                <td><code>2000</code></td>
+                <td>How long exit waits for still-running tasks.</td>
               </tr>
               <tr>
                 <td><code>[spid3r]</code></td>
@@ -4876,6 +4940,18 @@ agent.bind = 0.0.0.0
                 <td><code>max_call_depth</code></td>
                 <td><code>1000</code></td>
                 <td>Interpreter call-depth limit.</td>
+              </tr>
+              <tr>
+                <td><code>[memory]</code></td>
+                <td><code>gc_threshold</code></td>
+                <td><code>0</code></td>
+                <td>Live-cell threshold that triggers an extra collection; <code>0</code> uses the default.</td>
+              </tr>
+              <tr>
+                <td><code>[memory]</code></td>
+                <td><code>allocation_cap_mb</code></td>
+                <td><code>0</code></td>
+                <td>Soft cap on a single allocation, in MiB; <code>0</code> disables.</td>
               </tr>
               <tr>
                 <td><code>[runtime]</code></td>
@@ -4933,6 +5009,51 @@ agent.bind = 0.0.0.0
                   response (<code>Connection: close</code> semantics).</td>
               </tr>
               <tr>
+                <td><code>[debug]</code></td>
+                <td><code>enabled</code></td>
+                <td><code>false</code></td>
+                <td>Master debug switch (verbose diagnostics, extra checks).</td>
+              </tr>
+              <tr>
+                <td><code>[debug]</code></td>
+                <td><code>log_level</code></td>
+                <td><code>info</code></td>
+                <td>Minimum level written to the diagnostic log
+                  (<code>error</code>|<code>warn</code>|<code>info</code>|<code>debug</code>|<code>trace</code>).</td>
+              </tr>
+              <tr>
+                <td><code>[debug]</code></td>
+                <td><code>log_stdout</code></td>
+                <td><code>false</code></td>
+                <td>Mirror diagnostic log lines to stderr (alias of <code>errors.display</code>).</td>
+              </tr>
+              <tr>
+                <td><code>[logging]</code></td>
+                <td><code>enabled</code></td>
+                <td><code>true</code></td>
+                <td>Write the append-only diagnostic log. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[logging]</code></td>
+                <td><code>file</code></td>
+                <td><em>empty</em></td>
+                <td>Log path override (empty = platform default; <code>SPID3R_LOG_FILE</code> env alias). Frozen
+                  for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[logging]</code></td>
+                <td><code>rotate_mb</code></td>
+                <td><code>1</code></td>
+                <td>Rotate the log once it passes this size (1–1024 MiB). Frozen for remote
+                  <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[logging]</code></td>
+                <td><code>audit</code></td>
+                <td><code>true</code></td>
+                <td>Append remote-management actions to the audit log. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
                 <td><code>[errors]</code></td>
                 <td><code>level</code></td>
                 <td><code>info</code></td>
@@ -4956,9 +5077,52 @@ agent.bind = 0.0.0.0
               </tr>
               <tr>
                 <td><code>[modules]</code></td>
+                <td><code>path</code></td>
+                <td><em>empty</em></td>
+                <td>Extra module search directories, semicolon-separated (alias of <code>SPID3R_PATH</code>).</td>
+              </tr>
+              <tr>
+                <td><code>[modules]</code></td>
+                <td><code>plugins</code></td>
+                <td><em>empty</em></td>
+                <td>Plugin search path (defaults to <code>SPID3R_PLUGINS</code>).</td>
+              </tr>
+              <tr>
+                <td><code>[modules]</code></td>
+                <td><code>allow_host</code></td>
+                <td><code>true</code></td>
+                <td>Allow host-registered plugins (compiled into the embedding host).</td>
+              </tr>
+              <tr>
+                <td><code>[modules]</code></td>
                 <td><code>allow_wasm</code></td>
                 <td><code>true</code></td>
                 <td>Allow loading sandboxed <code>.wasm</code> plugins.</td>
+              </tr>
+              <tr>
+                <td><code>[security]</code></td>
+                <td><code>deny_filesystem</code></td>
+                <td><code>false</code></td>
+                <td>Deny filesystem natives to scripts (embed-style policy). Frozen for remote
+                  <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[security]</code></td>
+                <td><code>deny_process</code></td>
+                <td><code>false</code></td>
+                <td>Deny process natives to scripts. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[security]</code></td>
+                <td><code>deny_network</code></td>
+                <td><code>false</code></td>
+                <td>Deny network natives to scripts. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[security]</code></td>
+                <td><code>deny_environment</code></td>
+                <td><code>false</code></td>
+                <td>Deny environment natives to scripts. Frozen for remote <code>config.set</code>.</td>
               </tr>
               <tr>
                 <td><code>[security]</code></td>
@@ -5013,12 +5177,17 @@ agent.bind = 0.0.0.0
               </tr>
               <tr>
                 <td><code>[packages]</code></td>
-                <td><code>allow_insecure_git</code> / <code>allow_local_git</code></td>
-                <td><code>false</code> / <code>false</code></td>
-                <td>Canonical homes of <code>SPID3R_ALLOW_INSECURE_GIT</code> /
-                  <code>SPID3R_ALLOW_LOCAL_GIT_DEPS</code>: permit <code>http://</code>/<code>git://</code> and
-                  bare-path/<code>file://</code> git dependencies respectively. Frozen for remote
-                  <code>config.set</code>.</td>
+                <td><code>allow_insecure_git</code></td>
+                <td><code>false</code></td>
+                <td>Canonical home of <code>SPID3R_ALLOW_INSECURE_GIT</code>: permit <code>http://</code> and
+                  <code>git://</code> git dependencies. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[packages]</code></td>
+                <td><code>allow_local_git</code></td>
+                <td><code>false</code></td>
+                <td>Canonical home of <code>SPID3R_ALLOW_LOCAL_GIT_DEPS</code>: permit bare-path and
+                  <code>file://</code> git dependencies. Frozen for remote <code>config.set</code>.</td>
               </tr>
               <tr>
                 <td><code>[paths]</code></td>
@@ -5056,9 +5225,75 @@ agent.bind = 0.0.0.0
               </tr>
               <tr>
                 <td><code>[agent]</code></td>
-                <td><code>enabled</code> / <code>bind</code> / <code>port</code></td>
-                <td><code>false</code> / <code>127.0.0.1</code> / <code>9527</code></td>
-                <td>Agent listener. Bind <code>127.0.0.1</code> unless you actually need other hosts.</td>
+                <td><code>enabled</code></td>
+                <td><code>false</code></td>
+                <td>Start the management agent when <code>spid3r agent start</code> runs. Frozen for remote
+                  <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>bind</code></td>
+                <td><code>127.0.0.1</code></td>
+                <td>Listen address. <code>127.0.0.1</code> is local-only; <code>0.0.0.0</code> is required for
+                  other hosts. Bind the local address unless you actually need other hosts. Frozen for remote
+                  <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>port</code></td>
+                <td><code>9527</code></td>
+                <td>TCP port of the encrypted management API (1–65535). Frozen for remote
+                  <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>max_connections</code></td>
+                <td><code>16</code></td>
+                <td>Concurrent management connections (1–256). Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>request_timeout_ms</code></td>
+                <td><code>10000</code></td>
+                <td>Per-request deadline in ms (1000–300000). Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>max_body</code></td>
+                <td><code>262144</code></td>
+                <td>Largest accepted (decrypted) request body, in bytes (1024–8388608). Frozen for remote
+                  <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>pairing_ttl_sec</code></td>
+                <td><code>300</code></td>
+                <td>How long a one-time pairing code remains valid (30–3600 s). Remotely settable.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>name</code></td>
+                <td><em>empty</em></td>
+                <td>Friendly name advertised to administrators (empty = hostname). Remotely settable.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>role_viewer</code></td>
+                <td><code>status,ping,info,config.get,logs.tail,modules.list,devices.list</code></td>
+                <td>Operations granted to the viewer role. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>role_operator</code></td>
+                <td><code>status,ping,info,config.get,config.set,logs.tail,modules.list,devices.list,ops.run,config.reload</code></td>
+                <td>Operations granted to the operator role. Frozen for remote <code>config.set</code>.</td>
+              </tr>
+              <tr>
+                <td><code>[agent]</code></td>
+                <td><code>role_admin</code></td>
+                <td><code>*</code></td>
+                <td>Operations granted to the admin role (<code>*</code> = all). Frozen for remote
+                  <code>config.set</code>.</td>
               </tr>
             </tbody>
           </table>
@@ -5119,6 +5354,14 @@ agent.bind = 0.0.0.0
           <code>authorization</code>, <code>cookie</code>, <code>api_key</code>, <code>apikey</code>,
           <code>private</code>, or any <code>…_key</code>/<code>…-key</code> name are replaced with
           <code>[redacted sha256:&lt;12 hex&gt;]</code>. Remote callers never receive unredacted output.
+        </p>
+
+        <p>
+          Local <code>spid3rinfo()</code> includes the configuration notes and any broken-pin details for
+          operators. Remote <code>info</code> and <code>dump_diagnostics</code> omit the configuration-notes row,
+          and remote <code>info</code> redacts its Installation path rows. Local validation diagnostics keep
+          policy values such as <code>security.basedir</code> and <code>paths.*</code> raw so an operator can see
+          which entry is wrong; credential-like values are hashed.
         </p>
 
         <div class="w3-card-example" id="ex-spid3rinfo">

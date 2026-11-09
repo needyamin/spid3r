@@ -228,7 +228,8 @@ async function refreshOverview() {
     ? (s.ini_valid === 'true'
         ? '<span class="ok">valid</span>'
         : '<span class="bad">INVALID</span><br><code>' + esc(s.ini_errors) + '</code>')
-    : '<span class="warn">no spid3r.ini yet</span> <button class="ghost" onclick="initIni()">write default</button>';
+    : '<span class="warn">no spid3r.ini yet</span> <button class="ghost" onclick="initIni()">write default</button>' +
+      (s.ini_errors ? '<br><span class="bad">' + esc(s.ini_errors) + '</span>' : '');
   const agent = s.agent_listening === 'true'
     ? '<span class="ok">listening</span> on ' + esc(s.agent_addr)
     : '<span class="bad">not listening</span> on ' + esc(s.agent_addr);

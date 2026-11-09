@@ -221,6 +221,11 @@ pub fn native_defs() -> Vec<NativeDef> {
     // re-read per call, so a script's own config_set cannot widen its
     // permissions mid-run.
     let pol = fs_policy::policy();
+    if pol.pin_failed_at_initialization {
+        for (_, func) in &mut defs {
+            *func = fs_policy::pin_failure_stub;
+        }
+    }
     if fs_policy::basedir_active(pol) {
         for (name, func) in &mut defs {
             if let Some(guarded) = fs_policy::guarded(name) {

@@ -224,6 +224,28 @@ pub fn candidate_paths() -> Vec<PathBuf> {
     out
 }
 
+/// The path selected for reading or writing configuration. An explicit pin is
+/// always authoritative; otherwise select the first existing candidate, then
+/// the first default candidate for a fresh install. `candidate_paths()` stays
+/// the full diagnostic search list.
+pub fn pinned_path() -> Option<PathBuf> {
+    std::env::var_os("SPID3R_INI")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+}
+
+pub fn active_path() -> Option<PathBuf> {
+    if let Some(pin) = pinned_path() {
+        return Some(pin);
+    }
+    let candidates = candidate_paths();
+    candidates
+        .iter()
+        .find(|p| p.is_file())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
+}
+
 /// Platform configuration directory (`%APPDATA%\Spid3r`, XDG config, `~/.spid3r`).
 pub fn config_dir() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("SPID3R_CONFIG_DIR") {
@@ -283,17 +305,31 @@ pub fn state_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("spid3r-state"))
 }
 
+/// Status of an explicit `SPID3R_INI` pin. Kept outside `notes` so pin
+/// diagnostics do not interfere with configuration writes and validation of
+/// ordinary values.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum PinStatus {
+    #[default]
+    Unpinned,
+    Loaded,
+    Missing(PathBuf),
+    Unreadable(PathBuf),
+}
+
 /// Resolved configuration: typed values plus the raw document they came from.
 #[derive(Debug, Clone)]
 pub struct Config {
     /// Flattened `section.key -> value` after the full override chain.
     pub values: BTreeMap<String, String>,
-    /// The INI file that was loaded, if any.
+    /// The INI file that was successfully loaded, if any.
     pub path: Option<PathBuf>,
     /// Parse/validation notes (unknown keys, type errors that fell back).
     pub notes: Vec<String>,
     /// mtime of the file at load (informational; nothing polls it).
     pub mtime: Option<SystemTime>,
+    /// Failure state for an explicit `SPID3R_INI` pin, never folded into notes.
+    pub pin_status: PinStatus,
 }
 
 impl Config {
@@ -329,22 +365,43 @@ impl Config {
 
 /// Load configuration: defaults, then file, then environment section, then env.
 pub fn load() -> Config {
-    let path = candidate_paths().into_iter().find(|p| p.is_file());
+    let explicit_pin = std::env::var_os("SPID3R_INI")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from);
+    let selected = match &explicit_pin {
+        Some(pin) => Some(pin.clone()),
+        None => candidate_paths().into_iter().find(|p| p.is_file()),
+    };
     let mut notes: Vec<String> = Vec::new();
-    let (doc, mtime) = match &path {
+    let mut loaded_path = None;
+    let mut pin_status = PinStatus::Unpinned;
+    let (doc, mtime) = match selected.as_ref() {
         Some(p) => match std::fs::read_to_string(p) {
             Ok(text) => {
                 let (d, probs) = parse_ini(&text);
                 notes = probs;
+                loaded_path = Some(p.clone());
+                if explicit_pin.is_some() {
+                    pin_status = PinStatus::Loaded;
+                }
                 (d, std::fs::metadata(p).and_then(|m| m.modified()).ok())
             }
             Err(e) => {
-                notes.push(format!("cannot read {}: {}", p.display(), e));
+                if explicit_pin.is_some() {
+                    pin_status = PinStatus::Unreadable(p.clone());
+                } else {
+                    notes.push(format!("cannot read {}: {}", p.display(), e));
+                }
                 (IniDoc::default(), None)
             }
         },
         None => (IniDoc::default(), None),
     };
+    if let Some(pin) = explicit_pin {
+        if !matches!(&pin_status, PinStatus::Loaded) && !pin.exists() {
+            pin_status = PinStatus::Missing(pin);
+        }
+    }
 
     let env_name = std::env::var("SPID3R_ENV")
         .ok()
@@ -352,7 +409,9 @@ pub fn load() -> Config {
         .or_else(|| doc.get("spid3r", "env").map(String::from))
         .unwrap_or_else(|| "default".to_string());
 
-    build_from_doc(doc, path, mtime, notes, &env_name)
+    let mut cfg = build_from_doc(doc, loaded_path, mtime, notes, &env_name);
+    cfg.pin_status = pin_status;
+    cfg
 }
 
 /// Merge the parsed INI document over the compiled defaults, then the
@@ -464,6 +523,7 @@ fn build_from_doc(
         path,
         notes,
         mtime,
+        pin_status: PinStatus::Unpinned,
     }
 }
 fn apply_process_env(
@@ -585,15 +645,11 @@ pub fn reload() -> Config {
 
 /// Write the current values (known keys only) back to the primary INI path.
 pub fn save(cfg: &Config) -> Result<PathBuf, String> {
-    let path = cfg
-        .path
-        .clone()
-        .or_else(|| candidate_paths().into_iter().next())
-        .unwrap_or_else(|| {
-            config_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("spid3r.ini")
-        });
+    let path = cfg.path.clone().or_else(active_path).unwrap_or_else(|| {
+        config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("spid3r.ini")
+    });
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
@@ -661,11 +717,47 @@ pub fn validate(cfg: &Config) -> Vec<String> {
     problems
 }
 
+/// Pin diagnostics are separate from value validation: control-plane writes
+/// intentionally use `validate()` to reject bad values without preventing an
+/// operator from repairing a broken explicit pin.
+pub fn pin_problems(cfg: &Config) -> Vec<String> {
+    match &cfg.pin_status {
+        PinStatus::Unpinned | PinStatus::Loaded => Vec::new(),
+        PinStatus::Missing(path) => vec![format!(
+            "SPID3R_INI: pinned file '{}' does not exist; compiled defaults are active",
+            path.display()
+        )],
+        PinStatus::Unreadable(path) => vec![format!(
+            "SPID3R_INI: pinned file '{}' could not be read; compiled defaults are active",
+            path.display()
+        )],
+    }
+}
+
+pub fn pin_failed(cfg: &Config) -> bool {
+    matches!(
+        cfg.pin_status,
+        PinStatus::Missing(_) | PinStatus::Unreadable(_)
+    )
+}
+
+pub fn execution_refusal() -> Option<String> {
+    let cfg = snapshot();
+    pin_failed(&cfg).then(|| pin_problems(&cfg).join("; "))
+}
+
+pub fn pin_target(cfg: &Config) -> Option<&Path> {
+    match &cfg.pin_status {
+        PinStatus::Missing(path) | PinStatus::Unreadable(path) => Some(path.as_path()),
+        PinStatus::Unpinned | PinStatus::Loaded => None,
+    }
+}
+
 /// Write a commented default `spid3r.ini` next to the first candidate path.
 pub fn write_default_ini(path: Option<&Path>) -> Result<PathBuf, String> {
     let path = path
         .map(Path::to_path_buf)
-        .or_else(|| candidate_paths().into_iter().next())
+        .or_else(active_path)
         .unwrap_or_else(|| config_dir().unwrap_or_default().join("spid3r.ini"));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -730,6 +822,7 @@ mod tests {
             path: None,
             notes: Vec::new(),
             mtime: None,
+            pin_status: PinStatus::Unpinned,
         };
         cfg.values.insert("agent.enabled".into(), "true".into());
         cfg.values.insert("agent.port".into(), "9527".into());

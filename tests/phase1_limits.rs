@@ -13,6 +13,7 @@
 //! Exit codes: 0 success, 1 program error, 2 usage error.
 
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_spid3r")
@@ -33,14 +34,35 @@ fn write_in(dir: &std::path::Path, name: &str, src: &str) -> String {
     p.to_str().unwrap().to_string()
 }
 
-/// Run `spid3r` with `env` set for the child process.
+/// Run `spid3r` with `env` set for the child process. Pin a real, minimal
+/// config file unless the caller supplies its own SPID3R_INI, so user-level
+/// machine configuration can never affect these tests.
 fn run_with(env: &[(&str, &str)], args: &[&str]) -> (i32, String, String) {
+    static NEXT_PIN: AtomicUsize = AtomicUsize::new(0);
+    let owns_pin = !env.iter().any(|(key, _)| *key == "SPID3R_INI");
+    let pin_dir = if owns_pin {
+        let tag = format!("run_{}", NEXT_PIN.fetch_add(1, Ordering::Relaxed));
+        Some(scratch_dir(&tag))
+    } else {
+        None
+    };
+    if let Some(dir) = &pin_dir {
+        std::fs::write(dir.join("spid3r.ini"), "; isolated test configuration\n")
+            .expect("write isolated ini");
+    }
+
     let mut cmd = Command::new(bin());
     cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v);
     }
+    if let Some(dir) = &pin_dir {
+        cmd.env("SPID3R_INI", dir.join("spid3r.ini"));
+    }
     let out = cmd.output().expect("spawn spid3r");
+    if let Some(dir) = &pin_dir {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).to_string(),

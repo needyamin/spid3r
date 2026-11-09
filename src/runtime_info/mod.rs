@@ -115,6 +115,23 @@ pub fn redact_value(key: &str, value: &str) -> String {
     hash_redact(value)
 }
 
+/// Redact credential-like values embedded in a validation diagnostic while
+/// keeping local policy paths visible for operator troubleshooting.
+pub fn redact_diagnostic(line: &str) -> String {
+    let Some((prefix, _)) = line.split_once(':') else {
+        return line.to_string();
+    };
+    let key = prefix
+        .rsplit_once(']')
+        .map(|(_, tail)| tail.trim())
+        .unwrap_or(prefix.trim());
+    if is_sensitive_key(key) {
+        format!("{}: [redacted diagnostic]", prefix)
+    } else {
+        line.to_string()
+    }
+}
+
 /// The hash form shared by both redaction levels.
 fn hash_redact(value: &str) -> String {
     let h = crate::pkg::sha256_hex(value.as_bytes());
@@ -193,52 +210,73 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
     );
     out.push(s);
 
+    let cfg = config::snapshot();
+    let local_path = |value: String| {
+        if remote {
+            "[redacted]".to_string()
+        } else {
+            value
+        }
+    };
     let mut s = Section::new("Installation");
-    s.push("Executable", exe);
+    s.push("Executable", local_path(exe));
     s.push(
         "Working directory",
-        std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "?".into()),
+        local_path(
+            std::env::current_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "?".into()),
+        ),
     );
     s.push(
         "Config file",
-        config::snapshot()
-            .path
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(none; defaults)".into()),
+        local_path(
+            cfg.path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(none; defaults)".into()),
+        ),
     );
     s.push(
         "Config directory",
-        config::config_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "?".into()),
+        local_path(
+            config::config_dir()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "?".into()),
+        ),
     );
-    s.push("State directory", config::state_dir().display().to_string());
+    s.push(
+        "State directory",
+        local_path(config::state_dir().display().to_string()),
+    );
     s.push(
         "Runtime cache",
-        crate::stdlib::runtime_cache_root().display().to_string(),
+        local_path(crate::stdlib::runtime_cache_root().display().to_string()),
     );
     s.push(
         "SQLite library",
-        match config::get("paths.sqlite_path") {
+        local_path(match config::get("paths.sqlite_path") {
             Some(v) if !v.trim().is_empty() => v,
             _ => "(default search)".to_string(),
-        },
+        }),
     );
     s.push(
         "Log file",
-        crate::logging::path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "?".into()),
+        local_path(
+            crate::logging::path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "?".into()),
+        ),
     );
     s.push(
         "INI search",
-        config::candidate_paths()
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join("; "),
+        local_path(
+            config::candidate_paths()
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join("; "),
+        ),
     );
     out.push(s);
 
@@ -271,7 +309,6 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
     }
     out.push(s);
 
-    let cfg = config::snapshot();
     let mut s = Section::new("Configuration");
     for (k, v) in &cfg.values {
         let shown = if redact && remote {
@@ -283,8 +320,19 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
         };
         s.push(k.as_str(), shown);
     }
-    if !cfg.notes.is_empty() {
-        s.push("notes", cfg.notes.join(" | "));
+    if !remote {
+        let mut notes = cfg.notes.clone();
+        notes.extend(config::pin_problems(&cfg));
+        if !notes.is_empty() {
+            s.push(
+                "notes",
+                notes
+                    .iter()
+                    .map(|note| redact_diagnostic(note))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            );
+        }
     }
     out.push(s);
 
@@ -912,6 +960,36 @@ mod tests {
         for key in ["packages.registry", "modules.assert_active"] {
             assert!(!is_policy_key(key) && !is_sensitive_key(key));
             assert_eq!(redact_value_remote(key, "D:/reg"), "D:/reg");
+        }
+    }
+
+    #[test]
+    fn diagnostic_redaction_keeps_local_policy_paths_visible() {
+        assert_eq!(
+            redact_diagnostic("security.basedir: entry '/secret/path' does not exist"),
+            "security.basedir: entry '/secret/path' does not exist"
+        );
+        assert_eq!(
+            redact_diagnostic("agent.shared: expected a boolean, found \"secret-token\""),
+            "agent.shared: [redacted diagnostic]"
+        );
+    }
+
+    #[test]
+    fn remote_info_omits_notes_and_redacts_installation_paths() {
+        let sections = collect_remote(true);
+        let configuration = sections
+            .iter()
+            .find(|section| section.name == "Configuration")
+            .expect("configuration section");
+        assert!(configuration.rows.iter().all(|(key, _)| key != "notes"));
+
+        let installation = sections
+            .iter()
+            .find(|section| section.name == "Installation")
+            .expect("installation section");
+        for (key, value) in &installation.rows {
+            assert_eq!(value, "[redacted]", "unexpected remote path row: {key}");
         }
     }
 }

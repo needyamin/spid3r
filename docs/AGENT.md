@@ -213,6 +213,15 @@ redact them as well. They are not credentials: the local CLI, local
 `spid3r info` and scripts (which are the *subject* of the policy and can
 probe both lists by observation) keep reading them raw.
 
+Local `spid3rinfo()` and `control status` include configuration notes and
+broken-pin details for operators. Remote `info` and `dump_diagnostics` omit
+the configuration-notes row entirely; remote `info` also redacts its
+Installation path rows (exe, ini, log, state, INI search). Local validation
+diagnostics keep policy values such as `security.basedir` and `paths.*`
+**raw by design** so an operator can see exactly which entry is wrong;
+credential-like values are hashed. These policy values and host-specific
+notes are not exposed through remote introspection.
+
 ## 3. Management agent
 
 `spid3r agent start` listens on `[agent] bind:port` and speaks
@@ -291,6 +300,13 @@ Operators who treat that as unacceptable should keep the key out of remote
 reach by editing the ini and restricting the `config.set` operation in
 `agent.role_operator`.
 
+The frozen set above is derived from the schema (`frozen` on each `KeySpec`
+in `src/config/schema.rs`); that flag is the **single enforcement point**
+for remote `config.set` — there is no second hand-written deny list. The
+configuration-notes row is local-only and never appears in remote `info` or
+`dump_diagnostics`; local validation diagnostics keep policy values raw as
+described in section 2.
+
 ### Roles
 
 | Role | May call |
@@ -364,7 +380,10 @@ beats the INI). `devices.json` and `clients.json` are `0600` on Unix.
   only accepts known, validated keys — and the security-relevant ones are
   not settable remotely at all (see "Remote `config.set` restrictions").
   `config.set` cannot disable the audit trail or re-bind the listener.
-* Remote `info` and `config.get` are always redacted.
+* Remote `info` and `config.get` are redacted. Remote `info` and
+  `dump_diagnostics` omit the configuration-notes row, and remote `info`
+  redacts its Installation path rows. Local validation diagnostics keep
+  policy values raw so operators can identify the entry that needs repair.
 * A stolen `devices.json` is game over for that host: rotate by revoking
   the device and re-pairing. Keep the file off backups you do not encrypt.
 * Pairing should happen on a network you trust. The code is high-entropy

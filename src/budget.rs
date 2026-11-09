@@ -269,6 +269,7 @@ mod tests {
             path: None,
             notes: Vec::new(),
             mtime: None,
+            pin_status: crate::config::PinStatus::Unpinned,
         }
     }
 

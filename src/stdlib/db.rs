@@ -184,16 +184,11 @@ mod loader {
 #[cfg(not(target_arch = "wasm32"))]
 fn candidate_paths() -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
-    if let Ok(p) = std::env::var("SPID3R_SQLITE_PATH") {
-        if !p.trim().is_empty() {
-            out.push(std::path::PathBuf::from(p));
-        }
-    }
-    if let Some(p) = crate::config::get("paths.sqlite_path") {
-        if !p.trim().is_empty() {
-            out.push(std::path::PathBuf::from(p));
-        }
-    }
+    let legacy = std::env::var("SPID3R_SQLITE_PATH")
+        .ok()
+        .filter(|p| !p.trim().is_empty());
+    let configured = crate::config::get("paths.sqlite_path");
+    add_override_candidates(&mut out, legacy.as_deref(), configured.as_deref());
     if let Ok(exe) = std::env::current_exe() {
         let mut cur = exe.parent();
         while let Some(dir) = cur {
@@ -221,6 +216,22 @@ fn candidate_paths() -> Vec<std::path::PathBuf> {
         out.push(std::path::PathBuf::from(name));
     }
     out
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn add_override_candidates(
+    out: &mut Vec<std::path::PathBuf>,
+    legacy: Option<&str>,
+    configured: Option<&str>,
+) {
+    if let Some(path) = legacy.filter(|p| !p.trim().is_empty()) {
+        out.push(std::path::PathBuf::from(path));
+    }
+    if let Some(path) = configured.filter(|p| !p.trim().is_empty()) {
+        if Some(path) != legacy {
+            out.push(std::path::PathBuf::from(path));
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -682,6 +693,28 @@ pub fn native_defs() -> Vec<crate::stdlib::NativeDef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identical_legacy_and_configured_sqlite_paths_are_not_duplicated() {
+        let mut paths = Vec::new();
+        add_override_candidates(
+            &mut paths,
+            Some("C:/sqlite/sqlite3.dll"),
+            Some("C:/sqlite/sqlite3.dll"),
+        );
+        assert_eq!(
+            paths,
+            vec![std::path::PathBuf::from("C:/sqlite/sqlite3.dll")]
+        );
+
+        let mut different = Vec::new();
+        add_override_candidates(
+            &mut different,
+            Some("C:/legacy/sqlite3.dll"),
+            Some("C:/ini/sqlite3.dll"),
+        );
+        assert_eq!(different.len(), 2);
+    }
 
     /// The loader resolves symbols and a connection opens/closes cleanly.
     /// Skips (with a notice) when no SQLite library is installed — CI runners

@@ -635,12 +635,20 @@ fn dispatch(op: &str, req: &Value, _device: &store::Device) -> Value {
                     key
                 ));
             }
+            let before = config::snapshot();
+            if config::pin_failed(&before) {
+                return err_json(
+                    "SPID3R_INI pin is broken; remote config.set is disabled until the host repairs it",
+                );
+            }
             match config::set_live(&key, &value) {
                 Ok(()) => {
                     // Persist through the file when we can.
                     let cfg = config::snapshot();
-                    let _ = config::save(&cfg);
-                    ok_json(vec![(MapKey::Str("key".into()), Value::Str(key.into()))])
+                    match config::save(&cfg) {
+                        Ok(_) => ok_json(vec![(MapKey::Str("key".into()), Value::Str(key.into()))]),
+                        Err(e) => err_json(&e),
+                    }
                 }
                 Err(e) => err_json(&e),
             }

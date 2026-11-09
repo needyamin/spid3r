@@ -442,6 +442,9 @@ impl Vm {
     /// Run a program file: top-level statements, then `main`. Returns the
     /// process exit code.
     pub fn run_program(&mut self, program: &Program) -> Result<i32, Diagnostic> {
+        if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
+            return Err(Diagnostic::new(Phase::Runtime, message));
+        }
         let (script, _public) = compile_program(program, self.file.as_ref(), &self.module_dirs)?;
         self.run_compiled(Arc::new(script))
     }
@@ -449,6 +452,9 @@ impl Vm {
     /// Run a script function that has already been compiled (e.g. loaded from a
     /// `.matrixc` file by `exec`). Mirrors the tail of `run_program`.
     pub fn run_compiled(&mut self, script: Arc<VmFunc>) -> Result<i32, Diagnostic> {
+        if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
+            return Err(Diagnostic::new(Phase::Runtime, message));
+        }
         // Count this thread as executing Spid3r code: the GC gate allows a
         // collection only when the caller is the only active thread (audit A-4).
         let _active = crate::sched::enter_active();

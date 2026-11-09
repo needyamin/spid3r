@@ -291,6 +291,9 @@ impl Interp {
     /// recursion is stopped by MAX_CALL_DEPTH with a clean diagnostic instead
     /// of a Rust stack overflow.
     pub fn run_program(&self, program: &Program) -> Result<i32, Diagnostic> {
+        if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
+            return Err(Diagnostic::new(Phase::Runtime, message));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let result = std::thread::scope(|s| {
@@ -321,6 +324,9 @@ impl Interp {
     /// Run program inline on the current thread without spawning a new OS thread.
     /// Used by WebAssembly and embedded/in-memory callers.
     pub fn run_program_inline(&self, program: &Program) -> Result<i32, Diagnostic> {
+        if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
+            return Err(Diagnostic::new(Phase::Runtime, message));
+        }
         let result = self.run_program_inner(program);
         // Same join-on-exit contract as `run_program` (audit A-3), so an
         // embedding host does not lose output written by spawned tasks.
@@ -337,6 +343,9 @@ impl Interp {
     /// point — so a loader needs this instead. A Spid3r-source plugin is exactly
     /// that case: its `public fn`s must be bound without inventing a `main`.
     pub fn run_module(&self, program: &Program) -> Result<(), Diagnostic> {
+        if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
+            return Err(Diagnostic::new(Phase::Runtime, message));
+        }
         let _guard_sweep = GuardSweep {
             interp: self,
             mark: self.guard_mark(),

@@ -1023,12 +1023,44 @@ mod tests {
 
     #[test]
     fn defaults_cover_every_key() {
+        assert_eq!(DEFAULTS.len(), KEYS.len(), "DEFAULTS/KEYS count drift");
         for k in KEYS {
             let dotted = k.dotted();
             assert!(
                 DEFAULTS.iter().any(|(d, _, _)| *d == dotted),
                 "missing default for {}",
                 dotted
+            );
+        }
+        for (dotted, _, _) in DEFAULTS {
+            assert!(known_key(dotted).is_some(), "orphan default for {dotted}");
+        }
+    }
+
+    #[test]
+    fn every_schema_default_coerces_and_default_ini_mentions_every_key() {
+        assert_eq!(
+            KEYS.len(),
+            59,
+            "update the phase-5 schema key baseline deliberately"
+        );
+        for key in KEYS {
+            let dotted = key.dotted();
+            assert!(
+                key.coerce(key.default).is_ok(),
+                "invalid default for {dotted}"
+            );
+            let assignment = format!("{} =", key.name);
+            assert!(
+                DEFAULT_INI_TEXT.lines().any(|line| {
+                    let line = line
+                        .trim_start()
+                        .strip_prefix('#')
+                        .unwrap_or(line)
+                        .trim_start();
+                    line.starts_with(&assignment)
+                }),
+                "DEFAULT_INI_TEXT omits {dotted}"
             );
         }
     }

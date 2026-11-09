@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 470" width="880" height="470" role="img">
-<title>Spid3r runtime configuration and remote management</title>
-<desc>The spid3r.ini configuration file and the encrypted management agent. An admin client pairs once with a one-time 48-hex code, then speaks the spid3r-agent/1 protocol over TCP with ChaCha20 plus HMAC-SHA256 encryption. Every request is checked against the caller's role — viewer, operator or admin — and dispatched to a predefined operation; there is no unrestricted shell. Every call is written to the audit log and configuration is saved atomically.</desc>
+<title>Spid3r runtime configuration and remote management (authoritative SPID3R_INI, 27 schema-frozen keys)</title>
+<desc>The spid3r.ini configuration file and the encrypted management agent. SPID3R_INI is authoritative: when set and non-empty it is the only ini candidate, with no fallback to the machine or working-directory file; a broken pin fails closed, refusing program execution with exit 1 while --version, help, info, config path and config validate still work. Configuration validation reports a broken pin with exit 1; unknown config flags are usage errors (exit 2). Local spid3rinfo() includes configuration notes and pin-failure details; remote info and dump_diagnostics omit the configuration-notes row and redact Installation paths. Local validation keeps policy paths visible so operators can diagnose misconfiguration. An admin client pairs once with a one-time 48-hex code, then speaks the spid3r-agent/1 protocol over TCP with ChaCha20 plus HMAC-SHA256 encryption. Every request is checked against the caller's role — viewer, operator or admin — and dispatched to a predefined operation; there is no unrestricted shell. Remote config.set is refused for the 27 schema-frozen keys derived from KeySpec.frozen: all seven security.* keys, all four logging.* keys, agent.role_viewer/role_operator/role_admin, the six agent listener switches (enabled, bind, port, max_connections, request_timeout_ms, max_body), modules.disable, packages.allow_insecure_git, packages.allow_local_git, paths.cache_dir, paths.state_dir, paths.sqlite_path and cache.bytecode_dir. Every call is written to the audit log and configuration is saved atomically.</desc>
 <defs>
 <marker id="ra" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
 <path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -66,10 +66,10 @@
 
 <!-- config precedence strip -->
 <rect x="60" y="316" width="780" height="94" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<text x="80" y="334" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="500" fill="#0F172A">spid3r.ini — precedence, highest wins</text>
+<text x="80" y="334" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="500" fill="#0F172A">spid3r.ini — precedence, highest wins · SPID3R_INI is authoritative (no fallback)</text>
 <text x="80" y="355" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">process env SPID3R_* → [env.&lt;name&gt;] (SPID3R_ENV) → spid3r.ini → compiled defaults · an invalid value is ignored</text>
 <text x="80" y="374" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">live reload: SIGHUP · spid3r config reload · agent reload_config · restart_runtime: ack → exit → child retries the bind</text>
-<text x="80" y="393" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#B45309">config.set can never touch security.*, logging.*, agent.role_* or agent.enabled/bind/port — edit spid3r.ini on the host</text>
+<text x="80" y="393" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#B45309">config.set cannot touch the 27 schema-frozen keys (security.*, logging.*, agent.role_*, paths.*, cache.*, …) — edit the ini</text>
 
 <!-- config feeds the role gate -->
 <path d="M250 314 L250 288" fill="none" stroke="#B45309" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#rr)"/>

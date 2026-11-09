@@ -397,9 +397,8 @@ fn relocation_puts_artifacts_under_the_ini_roots() {
 #[test]
 fn local_config_set_accepts_path_keys() {
     let dir = scratch_dir("frozen_local");
-    // The ini must EXIST before `config set`: with only a nonexistent
-    // SPID3R_INI, the loader falls through to the next candidate (the
-    // machine's config dir) and `save` would rewrite that real file.
+    // Pin to a real isolated ini so this test exercises the file layer,
+    // independent of any machine-level config candidates.
     let target = write_in(&dir, "spid3r.ini", "");
     let state = dir.join("state");
     let (code, out, err) = run_with(

@@ -361,9 +361,20 @@ fn spawn_agent_detached() -> Result<u32, String> {
 // -------------------------------------------------------------------- ops --
 
 fn op_status(_params: &str) -> Result<String, String> {
-    let ini_active = config::candidate_paths().into_iter().find(|p| p.is_file());
     let cfg = config::load();
-    let errors = config::validate(&cfg);
+    let ini_active = cfg.path.clone();
+    let mut errors = config::validate(&cfg);
+    errors.extend(config::pin_problems(&cfg));
+    let errors = errors
+        .iter()
+        .map(|error| crate::runtime_info::redact_diagnostic(error))
+        .collect::<Vec<_>>();
+    let ini_display = ini_active
+        .as_deref()
+        .or_else(|| config::pin_target(&cfg))
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let ini_exists = ini_active.as_ref().is_some_and(|p| p.is_file());
     let addr = agent_addr();
     let listening = probe(&addr);
     let pid_info = read_pid_file();
@@ -383,17 +394,8 @@ fn op_status(_params: &str) -> Result<String, String> {
          \"audit_path\":{},\"audit_lines\":\"{}\",\"state_dir\":{}}}",
         jstr(crate::VERSION),
         jstr(crate::LANGUAGE_VERSION),
-        jstr(
-            &ini_active
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_default()
-        ),
-        jstr(if ini_active.is_some() {
-            "true"
-        } else {
-            "false"
-        }),
+        jstr(&ini_display),
+        jstr(if ini_exists { "true" } else { "false" }),
         jstr(if errors.is_empty() { "true" } else { "false" }),
         jstr(&errors.join("\n")),
         jstr(&addr),
@@ -428,7 +430,15 @@ fn op_ini_info() -> Result<String, String> {
 
 fn op_ini_init(params: &str) -> Result<String, String> {
     let force = field(params, "force").as_deref() == Some("true");
-    if let Some(existing) = config::candidate_paths().into_iter().find(|p| p.is_file()) {
+    let current = config::snapshot();
+    if config::pin_failed(&current) {
+        eprintln!(
+            "warning: repairing broken SPID3R_INI pin ({})",
+            config::pin_problems(&current).join("; ")
+        );
+    }
+    let target = config::active_path();
+    if let Some(existing) = target.as_ref().filter(|p| p.is_file()) {
         if !force {
             return Ok(format!(
                 "{{\"written\":\"false\",\"path\":{},\"message\":{}}}",
@@ -440,7 +450,7 @@ fn op_ini_init(params: &str) -> Result<String, String> {
             ));
         }
     }
-    let path = config::write_default_ini(None)?;
+    let path = config::write_default_ini(target.as_deref())?;
     store::audit(
         "control",
         "admin",
@@ -513,6 +523,21 @@ fn op_config_get(params: &str) -> Result<String, String> {
 /// (`%APPDATA%\Spid3r` / XDG config) instead, and reloads so subsequent saves
 /// target that file.
 fn ensure_writable_ini() -> Result<PathBuf, String> {
+    if let Some(pin) = config::pinned_path() {
+        let current = config::snapshot();
+        if config::pin_failed(&current) {
+            eprintln!(
+                "warning: repairing broken SPID3R_INI pin ({})",
+                config::pin_problems(&current).join("; ")
+            );
+        }
+        if pin.is_file() {
+            return Ok(pin);
+        }
+        let created = config::write_default_ini(Some(&pin))?;
+        config::reload();
+        return Ok(created);
+    }
     if let Some(active) = config::candidate_paths().into_iter().find(|p| p.is_file()) {
         return Ok(active);
     }
@@ -559,7 +584,11 @@ fn op_config_set(params: &str) -> Result<String, String> {
     if !errors.is_empty() {
         // The live snapshot is now invalid: discard it by re-reading the file.
         config::reload();
-        return Err(errors.join("; "));
+        return Err(errors
+            .iter()
+            .map(|error| crate::runtime_info::redact_diagnostic(error))
+            .collect::<Vec<_>>()
+            .join("; "));
     }
     let path = config::save(&config::snapshot())?;
     store::audit(
@@ -594,7 +623,11 @@ fn op_config_reset(params: &str) -> Result<String, String> {
     let errors = config::validate(&config::snapshot());
     if !errors.is_empty() {
         config::reload();
-        return Err(errors.join("; "));
+        return Err(errors
+            .iter()
+            .map(|error| crate::runtime_info::redact_diagnostic(error))
+            .collect::<Vec<_>>()
+            .join("; "));
     }
     let path = config::save(&config::snapshot())?;
     store::audit(
@@ -617,7 +650,13 @@ fn op_config_reset(params: &str) -> Result<String, String> {
 }
 
 fn op_config_validate() -> Result<String, String> {
-    let errors = config::validate(&config::snapshot());
+    let cfg = config::snapshot();
+    let mut errors = config::validate(&cfg);
+    errors.extend(config::pin_problems(&cfg));
+    let errors = errors
+        .iter()
+        .map(|error| crate::runtime_info::redact_diagnostic(error))
+        .collect::<Vec<_>>();
     Ok(format!(
         "{{\"valid\":\"{}\",\"errors\":{}}}",
         if errors.is_empty() { "true" } else { "false" },
@@ -807,7 +846,14 @@ pub fn render_status_text(json: &str) -> String {
                 format!(" (INVALID: {})", get("ini_errors"))
             }
         } else {
-            " (no spid3r.ini yet — run: spid3r control ini --init)".to_string()
+            format!(
+                " (no spid3r.ini yet — run: spid3r control ini --init){}",
+                if get("ini_errors").is_empty() {
+                    String::new()
+                } else {
+                    format!(" (INVALID: {})", get("ini_errors"))
+                }
+            )
         },
         get("agent_addr"),
         if get("agent_listening") == "true" {
