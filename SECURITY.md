@@ -15,9 +15,11 @@ The only rule that matters: **if you did not write the script, treat it like a n
 
 ## Report a vulnerability
 
-**Do not open a public issue.** Use GitHub's private reporting:
+**Do not open a public issue.** Please report security issues responsibly through GitHub's private vulnerability reporting:
 
 → **https://github.com/needyamin/spid3r/security/advisories/new**
+
+Alternatively, you can email security reports directly to: **needyamin@gmail.com** (subject: `[SECURITY] Spid3r vulnerability report`).
 
 Include:
 
