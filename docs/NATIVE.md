@@ -64,11 +64,31 @@ hello.matrix ── lex / parse / semantic ──▶ AST
 
 What compiles to machine code: functions (including nested functions and
 closures), branches, all three loop forms, calls. What goes through
-trampolines: arithmetic and comparison, truthiness/equality, string
-conversion and display, calls, global variable access, list/map/set
-construction and indexing, `for-in` iteration, class construction, method
-dispatch, field access, upvalue cells, and the `print`/`println`/`eprintln`
-builtins.
+trampolines: comparison, truthiness/equality, string conversion and display,
+calls, global variable access, list/map/set construction and indexing,
+`for-in` iteration, class construction, method dispatch, field access, upvalue
+cells, and the `print`/`println`/`eprintln` builtins. Integer arithmetic
+between two unboxed i64 operands (Phase 3) is emitted **inline** — an LLVM
+overflow-checking intrinsic whose overflow edge calls the same trampoline, so
+the error messages and exit codes are unchanged; every boxed or mixed-type
+operation still routes through `spid3r_binop`.
+
+**Hybrid int compares** (Phase 3): when a compare's operands are int-shaped
+but one side is a boxed local (typically a parameter, e.g. `while d * d <= n`
+with boxed `n`), the compare compiles to an inline register comparison over
+runtime-checked leaves: each boxed leaf is checked with the pure
+`spid3r_is_int` and extracted with `spid3r_int_of`; any leaf that is not an
+`Int` at run time falls back to the fully generic emission, so float
+promotion, operator overloads and error messages stay byte-identical to the
+tree and VM engines. Parameters are never unboxed at entry (a dynamic call
+can pass a non-int to an annotated parameter — the checker only rejects
+statically-resolvable call sites), so the check stays at the use site and
+untyped values keep their exact use-site errors. The mechanism ships with a
+bound-sensitive regression case (`hybrid_loop_bounds` in
+`tests/engine_matrix.rs`): its first implementation read the leaf SLOT
+ADDRESS instead of the boxed pointer, which made loop bounds read adjacent
+stack garbage non-deterministically; the missing load is fixed and the case
+pins the corrected behavior.
 
 ## Compiled function ABI
 
@@ -100,6 +120,7 @@ define ptr @spid3r_fn.N(ptr %env, i64 %argc, ptr %argv) -> ptr
 | --- | --- |
 | Values | `spid3r_value_int` / `_float` / `_bool` / `_null` / `_str` |
 | Operators | `spid3r_binop`, `spid3r_unop`, `spid3r_truthy`, `spid3r_eq`, `spid3r_display` (+ `spid3r_cstr_free`) |
+| Int fast path (Phase 3) | `spid3r_is_int`, `spid3r_int_of` — pure slot readers used by inline integer lowering; overflow/div-zero slow paths re-enter `spid3r_i64_*` |
 | Calls | `spid3r_call` (compiled fns, stdlib natives, class construction), `spid3r_make_fn`, `spid3r_construct` |
 | Globals | `spid3r_global_get` / `_set` / `_def` / `_exists` |
 | Collections | `spid3r_construct`, `spid3r_index_get` / `_set`, `spid3r_len`, `spid3r_forin_start` / `_next` / `_end` |

@@ -854,6 +854,25 @@ impl Vm {
             match op {
                 OpCode::Constant => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
+                    // Phase 1 fused superinstruction C. Excluded whenever an
+                    // observer must see the individual opcodes (--prof
+                    // counts, --coverage line hits, debug stepping), when a
+                    // captured upvalue could change GetLocal's behavior, or
+                    // when a pending string builder needs its generic flush.
+                    // `continue` returns to the loop head so the 2048-dispatch
+                    // budget / wall / heap / cancel / GC cadence is unchanged.
+                    if self.debug.is_none()
+                        && self.prof.is_none()
+                        && self.coverage.is_none()
+                        && self.pending_str.is_none()
+                        && self.frames[nf].captured.is_empty()
+                    {
+                        if let Some((s, next)) = self.try_fused_prefix_string(nf, ip, idx) {
+                            self.frames[nf].slots.push(Value::Str(s));
+                            self.frames[nf].ip = next;
+                            continue;
+                        }
+                    }
                     let v = self.const_at(nf, idx);
                     self.frames[nf].ip = ip + 3;
                     self.frames[nf].slots.push(v);
@@ -924,6 +943,155 @@ impl Vm {
                                                     self.frames[nf].slots[dst] = Value::Int(v);
                                                     self.frames[nf].ip = ip + 8;
                                                     continue;
+                                                }
+                                            }
+                                        }
+                                    // Phase 1 fused superinstructions.
+                                    //
+                                    // These are RUNTIME pattern peeks over the
+                                    // EXISTING opcode bytes only: no new OpCode,
+                                    // no Chunk field, no .matrixc / bytecode
+                                    // format change, no optimiser edit. Both
+                                    // sequences have a NET-ZERO stack effect,
+                                    // so the fused path must not push or pop
+                                    // anything - it only reads local slots and
+                                    // sets `ip`, then `continue`s to the loop
+                                    // head (preserving the 2048-dispatch
+                                    // budget / wall / heap / cancel / GC poll
+                                    // cadence exactly like :881-1019).
+                                    //
+                                    // Instrumentation is deliberately excluded:
+                                    // --prof counts, --coverage line hits and
+                                    // debug stepping must still observe every
+                                    // original opcode. `pending_str` is
+                                    // excluded so its generic flush is never
+                                    // skipped. Every arithmetic result uses
+                                    // checked_* and FALLS THROUGH to generic
+                                    // dispatch on None, so overflow / modulo-
+                                    // by-zero / i64::MIN % -1 produce the exact
+                                    // pre-existing error or result. Non-Int
+                                    // operands also fall through, preserving
+                                    // float comparison, overloaded operators
+                                    // and values_equal's cross-type rules.
+                                    //
+                                    // A: GetLocal a; GetLocal b; Mul;
+                                    //    GetLocal c; LessEq; JumpIfFalse off
+                                    //    (e.g. `while d * d <= n`). 11 bytes.
+                                    } else if op2 == OpCode::Mul as u8
+                                        && self.prof.is_none()
+                                        && self.coverage.is_none()
+                                        && self.pending_str.is_none()
+                                        && code.get(ip + 5) == Some(&(OpCode::GetLocal as u8))
+                                        && code.get(ip + 7) == Some(&(OpCode::LessEq as u8))
+                                        && matches!(
+                                            code.get(ip + 8),
+                                            Some(&b)
+                                                if b == OpCode::JumpIfFalse as u8
+                                                    || b == OpCode::JumpIfTrue as u8
+                                        )
+                                    {
+                                        // Phase 2: the optimizer rotates
+                                        // `while` back-edges, so this fused
+                                        // condition can also be followed by
+                                        // `JumpIfTrue` (loop back to the body)
+                                        // instead of `JumpIfFalse` (exit).
+                                        // Handle both polarities here so
+                                        // rotation never disables fusion A.
+                                        // Still a generic runtime pattern
+                                        // peek, disabled under prof /
+                                        // coverage / debug like the rest.
+                                        let inverted = code.get(ip + 8)
+                                            == Some(&(OpCode::JumpIfTrue as u8));
+                                        if let (Some(&sc), Some(&lo), Some(&hi)) = (
+                                            code.get(ip + 6),
+                                            code.get(ip + 9),
+                                            code.get(ip + 10),
+                                        ) {
+                                            let slot_c = sc as usize;
+                                            if let (
+                                                Some(&Value::Int(a)),
+                                                Some(&Value::Int(b)),
+                                                Some(&Value::Int(c)),
+                                            ) = (
+                                                self.frames[nf].slots.get(slot),
+                                                self.frames[nf].slots.get(slot_b),
+                                                self.frames[nf].slots.get(slot_c),
+                                            ) {
+                                                // Mirrors generic Mul (:1392).
+                                                // None => fall through so
+                                                // vm_eval_binary raises the
+                                                // identical overflow error.
+                                                if let Some(prod) = a.checked_mul(b) {
+                                                    let off = i16::from_le_bytes([lo, hi]);
+                                                    // JumpIfFalse jumps when
+                                                    // the condition is FALSE;
+                                                    // JumpIfTrue when TRUE.
+                                                    let take_branch = (prod <= c) == inverted;
+                                                    let next = if !take_branch {
+                                                        Some(ip + 11)
+                                                    } else {
+                                                        let t = (ip + 11) as i64 + off as i64;
+                                                        (t >= 0 && (t as usize) < code.len())
+                                                            .then_some(t as usize)
+                                                    };
+                                                    // An out-of-range target
+                                                    // must fall through so
+                                                    // generic dispatch emits
+                                                    // "invalid jump target",
+                                                    // not an ip error.
+                                                    if let Some(next) = next {
+                                                        self.frames[nf].ip = next;
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    // B: GetLocal a; GetLocal b; Mod;
+                                    //    Constant k; Equal; JumpIfFalse off
+                                    //    (e.g. `if n % d == 0`). 12 bytes.
+                                    } else if op2 == OpCode::Mod as u8
+                                        && self.prof.is_none()
+                                        && self.coverage.is_none()
+                                        && self.pending_str.is_none()
+                                        && code.get(ip + 5) == Some(&(OpCode::Constant as u8))
+                                        && code.get(ip + 8) == Some(&(OpCode::Equal as u8))
+                                        && code.get(ip + 9) == Some(&(OpCode::JumpIfFalse as u8))
+                                    {
+                                        if let (Some(&c0), Some(&c1), Some(&lo), Some(&hi)) = (
+                                            code.get(ip + 6),
+                                            code.get(ip + 7),
+                                            code.get(ip + 10),
+                                            code.get(ip + 11),
+                                        ) {
+                                            let cidx = u16::from_le_bytes([c0, c1]) as usize;
+                                            if let (
+                                                Some(&Value::Int(a)),
+                                                Some(&Value::Int(b)),
+                                                Some(&Value::Int(k)),
+                                            ) = (
+                                                self.frames[nf].slots.get(slot),
+                                                self.frames[nf].slots.get(slot_b),
+                                                self.frames[nf].func.chunk.constants.get(cidx),
+                                            ) {
+                                                // checked_rem (NOT a new
+                                                // wrapping_* call site): None
+                                                // on b == 0 or MIN % -1 falls
+                                                // through to generic Mod, which
+                                                // yields the exact error or the
+                                                // exact wrapping_rem result.
+                                                if let Some(rem) = a.checked_rem(b) {
+                                                    let off = i16::from_le_bytes([lo, hi]);
+                                                    let next = if rem == k {
+                                                        Some(ip + 12)
+                                                    } else {
+                                                        let t = (ip + 12) as i64 + off as i64;
+                                                        (t >= 0 && (t as usize) < code.len())
+                                                            .then_some(t as usize)
+                                                    };
+                                                    if let Some(next) = next {
+                                                        self.frames[nf].ip = next;
+                                                        continue;
+                                                    }
                                                 }
                                             }
                                         }
@@ -1584,17 +1752,34 @@ impl Vm {
                     let slen = self.frames[nf].slots.len();
                     if argc == 1 && slen >= 2 {
                         if let Value::Native(n) = &self.frames[nf].slots[slen - 2] {
-                            if n.name == "string" {
+                            // Phase 2 security fix: gate the inline on the
+                            // INSTALLED function pointer, never on `n.name`.
+                            // `native_defs()` is the single policy funnel and
+                            // may have replaced this native with a
+                            // `security.disable_natives` / pin-failure stub,
+                            // or a host plugin may have registered a different
+                            // function under the same name. A name-only check
+                            // made tree-walk deny the call while the VM ran
+                            // the builtin anyway (differential + policy
+                            // bypass). Both accessors are plain `fn` items,
+                            // so this is a pointer comparison with no lookup,
+                            // no cache and no policy state.
+                            if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl()) {
                                 let arg = self.frames[nf].slots.pop().unwrap();
                                 self.frames[nf].slots.pop();
                                 let s: Arc<str> = match arg {
-                                    Value::Int(i) => i.to_string().into(),
+                                    // Same authority as the `string` builtin:
+                                    // `src/stdlib/mod.rs::int_to_string_value`
+                                    // serves the cached 0..=1023 spellings so
+                                    // this inlined path does not bypass Phase
+                                    // 1's allocation reduction.
+                                    Value::Int(i) => crate::stdlib::int_to_string_value(i),
                                     Value::Str(s) => s,
                                     other => crate::value::display_value(&other).into(),
                                 };
                                 self.frames[nf].slots.push(Value::Str(s));
                                 continue;
-                            } else if n.name == "len" {
+                            } else if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_len_impl()) {
                                 let arg = self.frames[nf].slots.pop().unwrap();
                                 self.frames[nf].slots.pop();
                                 match collections::len_of(&arg) {
@@ -2680,6 +2865,114 @@ impl Vm {
             v.clear();
             self.slot_pool.push(v);
         }
+    }
+
+    /// Phase 1 fused superinstruction C (runtime pattern peek, exactly like
+    /// the two GetLocal patterns at the top of the dispatch loop):
+    ///
+    ///   Constant p; GetGlobal g; GetLocal s; Constant k; Mod; Call 1; Add
+    ///   Constant p; GetGlobal g; GetLocal s; Call 1; Add
+    ///
+    /// i.e. `prefix + string(local % k)` / `prefix + string(local)` - the
+    /// hot key-construction expression in map-heavy scripts such as
+    /// `benchmarks/compare/map.matrix`. The whole sequence has a NET +1 stack
+    /// effect, so the fused path pushes exactly one `Value::Str` and sets
+    /// `ip` past the sequence; no other state is touched.
+    ///
+    /// No new OpCode, no Chunk field, no .matrixc / bytecode format change and
+    /// no optimiser edit: both optimised and `--no-opt` bytecode expose the
+    /// same bytes, so this is an engine speedup, not a semantic difference.
+    /// Instrumentation, debug stepping, captured (upvalue) locals and a
+    /// pending string builder are excluded by the caller.
+    ///
+    /// Every guard that could change the result returns `None` so generic
+    /// dispatch runs the original opcodes:
+    ///   - `checked_rem` is `None` for b == 0 and i64::MIN % -1, preserving
+    ///     the exact generic error / wrapping_rem result;
+    ///   - the global is resolved on EVERY hit, so a script that rebinds
+    ///     `string` falls through instead of being inlined stale;
+    ///   - `int_to_string_value` is the same shared authority used by the
+    ///     `string` builtin and the inlined `Call string` fast path.
+    #[inline]
+    fn try_fused_prefix_string(
+        &self,
+        nf: usize,
+        ip: usize,
+        prefix_idx: usize,
+    ) -> Option<(Arc<str>, usize)> {
+        let frame = &self.frames[nf];
+        let chunk = &frame.func.chunk;
+        let code = &chunk.code;
+        let prefix = match chunk.constants.get(prefix_idx) {
+            Some(Value::Str(s)) => s.clone(),
+            _ => return None,
+        };
+        if code.get(ip + 3) != Some(&(OpCode::GetGlobal as u8))
+            || code.get(ip + 6) != Some(&(OpCode::GetLocal as u8))
+        {
+            return None;
+        }
+        let gidx = u16::from_le_bytes([*code.get(ip + 4)?, *code.get(ip + 5)?]) as usize;
+        let slot = *code.get(ip + 7)? as usize;
+
+        let (value, next) = if code.get(ip + 8) == Some(&(OpCode::Constant as u8))
+            && code.get(ip + 11) == Some(&(OpCode::Mod as u8))
+            && code.get(ip + 12) == Some(&(OpCode::Call as u8))
+            && code.get(ip + 13) == Some(&1)
+            && code.get(ip + 14) == Some(&(OpCode::Add as u8))
+        {
+            let kidx =
+                u16::from_le_bytes([*code.get(ip + 9)?, *code.get(ip + 10)?]) as usize;
+            let a = match frame.slots.get(slot) {
+                Some(Value::Int(a)) => *a,
+                _ => return None,
+            };
+            let b = match chunk.constants.get(kidx) {
+                Some(Value::Int(b)) => *b,
+                _ => return None,
+            };
+            (a.checked_rem(b)?, ip + 15)
+        } else if code.get(ip + 8) == Some(&(OpCode::Call as u8))
+            && code.get(ip + 9) == Some(&1)
+            && code.get(ip + 10) == Some(&(OpCode::Add as u8))
+        {
+            let a = match frame.slots.get(slot) {
+                Some(Value::Int(a)) => *a,
+                _ => return None,
+            };
+            (a, ip + 11)
+        } else {
+            return None;
+        };
+
+        // Mirror the generic `Call` inlined fast path: the global must hold
+        // the CANONICAL `string` implementation, compared by installed
+        // function pointer (Phase 2 security fix). A name-only check let a
+        // `security.disable_natives` / pin-failure stub be bypassed by the
+        // fused prefix pattern even after the `Call` inline was fixed.
+        // Resolve from the live globals map on EVERY hit so rebinding /
+        // shadowing is never cached across iterations.
+        let name = match chunk.constants.get(gidx) {
+            Some(Value::Str(s)) => s,
+            _ => return None,
+        };
+        let is_string_native = {
+            let globals = frame.globals.lock().ok()?;
+            matches!(
+                globals.get(name.as_ref()),
+                Some(Value::Native(n))
+                    if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
+            )
+        };
+        if !is_string_native {
+            return None;
+        }
+
+        let suffix = crate::stdlib::int_to_string_value(value);
+        let mut out = String::with_capacity(prefix.len() + suffix.len());
+        out.push_str(&prefix);
+        out.push_str(&suffix);
+        Some((Arc::<str>::from(out), next))
     }
 
     #[inline]

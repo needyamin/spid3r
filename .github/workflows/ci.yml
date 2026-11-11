@@ -306,3 +306,60 @@ jobs:
       - name: Tree-vs-native differential over all examples
         timeout-minutes: 30
         run: bash tools/native_diff.sh examples/*.matrix
+
+  # ---------------------------------------------------------------- Phase 0
+  # plan.html section 8: measurement, instrumentation, baseline lock.
+  # Pure tooling - no src/, Cargo.toml, wasm or language-doc surface change.
+  # The blocking steps enforce the integrity anchor (SHA-256 of all vendored
+  # HLC sources), the golden-value conformance rows, the three-engine
+  # differential and the sensitivity self-test.
+  #
+  # GitHub-hosted runners are SHARED and cannot be pinned, so the measurement
+  # step is ADVISORY ONLY: it is the ONLY step allowed to fail, and it writes
+  # benchmarks/results.phase0.ci-advisory.json - never the frozen
+  # benchmarks/results.phase0.json snapshot (local pinned-host twice-run).
+  # Literal argv everywhere; no shell interpolation, no new permissions,
+  # no secrets, no pull_request_target.
+  phase0:
+    name: Phase 0 Measurement Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: phase0
+
+      - name: Build zero-dependency core (release)
+        run: cargo build --release --no-default-features
+
+      # The 3 additive Phase 0 golden-value Case rows in tests/engine_matrix.rs
+      # assert the pinned RESULT values on tree + vm. This is their blocking
+      # gate; `spid3r test` scans examples/ and does NOT run engine_matrix.
+      - name: Golden-value conformance (engine matrix)
+        run: cargo test --no-default-features --test engine_matrix
+
+      - name: Three-engine differential (spid3r test)
+        run: cargo run --bin spid3r --no-default-features -- test
+
+      - name: Verify vendored source digests, roles and provenance (fail-closed)
+        run: python3 tools/phase0_manifest.py --verify
+
+      - name: Verify Phase 0 checksum fixtures and inline golden-value rows
+        run: python3 tools/phase0_fixtures.py --verify
+
+      - name: Phase 0 sensitivity self-test (BLOCKING)
+        run: python3 tools/phase0_selftest.py
+
+      # ADVISORY ONLY - shared runner, never frozen. Distinct output filename.
+      - name: Advisory Phase 0 measurement (shared runner, never frozen)
+        continue-on-error: true
+        run: python3 tools/bench_report.py --mode compute --measure --advisory --quick

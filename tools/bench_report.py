@@ -235,12 +235,34 @@ def cpu_name():
 
 
 def main():
+    # Phase 0: `--mode compute` is a JSON-ONLY measurement entry point. It
+    # delegates to tools/phase0_bench.py and NEVER renders docs/html/benchmark.html
+    # and NEVER touches benchmarks/report-data.json. All other flags are passed
+    # through unchanged, so `--mode compute --measure` runs the external
+    # compute protocol; the default `report` mode is completely unaffected.
+    argv = sys.argv[1:]
+    if "--mode" in argv:
+        i = argv.index("--mode")
+        if i + 1 < len(argv) and argv[i + 1] == "compute":
+            rest = argv[:i] + argv[i + 2:]
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            import phase0_bench
+
+            sys.exit(phase0_bench.main(rest))
+        if i + 1 >= len(argv):
+            sys.exit("--mode needs a value: report | compute")
+        if argv[i + 1] != "report":
+            sys.exit(f"unknown --mode value: {argv[i + 1]} (expected report | compute)")
+        argv = argv[:i] + argv[i + 2:]
+
     ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["report", "compute"], default="report",
+                    help="report = legacy wall-clock page (default); compute = Phase 0 external protocol")
     ap.add_argument("--measure", action="store_true")
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--runs", type=int, default=5, help="spid3r runs (best of N)")
     ap.add_argument("--other-runs", type=int, default=3, help="php/python runs (best of N)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     do_measure = args.measure or not args.render
     do_render = args.render or not args.measure

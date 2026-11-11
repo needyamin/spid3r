@@ -1,0 +1,32 @@
+fn build_rows(n: int) {
+    let rows = list();
+    let i = 0;
+    while i < n {
+        rows.push(map("id", i, "sku", "SKU-" + string(i), "qty", (i % 7) + 1, "price", (i * 37) % 1000));
+        i += 1;
+    }
+    return rows;
+}
+fn main() {
+    let rows = build_rows(200);
+    let t0 = now_ms();
+    let total = 0;
+    let last_len = 0;
+    let r = 0;
+    while r < 600 {
+        let s = json_write(rows);
+        let back = json_parse(s);
+        last_len = s.len();
+        let i = 0;
+        while i < back.len() {
+            let row = back[i];
+            total = total + row["price"] * row["qty"] + row["id"];
+            i += 1;
+        }
+        r += 1;
+    }
+    let us = (now_ms() - t0) * 1000;
+    println("RESULT " + string(total) + " " + string(last_len));
+    println("TIME_US " + string(us));
+    return 0;
+}

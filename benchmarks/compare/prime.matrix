@@ -1,0 +1,20 @@
+fn is_prime(n: int) -> bool {
+    if n < 2 { return false; }
+    let d = 2;
+    while d * d <= n { if n % d == 0 { return false; } d += 1; }
+    return true;
+}
+fn main() {
+    let t0 = now_ms();
+    let i = 2;
+    let count = 0;
+    let checksum = 0;
+    while i < 50000 {
+        if is_prime(i) { count += 1; checksum += i; }
+        i += 1;
+    }
+    let us = (now_ms() - t0) * 1000;
+    println("RESULT " + string(count) + " " + string(checksum));
+    println("TIME_US " + string(us));
+    return 0;
+}

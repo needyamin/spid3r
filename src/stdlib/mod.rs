@@ -27,7 +27,8 @@ pub mod unicode;
 mod unicode_tables;
 
 use std::cell::Cell;
-use std::sync::Arc;
+use std::fmt::Write as _;
+use std::sync::{Arc, OnceLock};
 
 use crate::environment::{self, Env};
 use crate::pkg::{sha256_bytes, sha256_hex};
@@ -42,6 +43,21 @@ pub type NativeDef = (
     &'static str,
     fn(&NativeCtx, Vec<Value>) -> Result<Value, String>,
 );
+
+/// Canonical `string` implementation. The VM inlines this native in its
+/// `Call` dispatch, and must compare the *installed function pointer* rather
+/// than the name: `native_defs()` may have replaced it with a configuration
+/// stub (`security.disable_natives`, pin failure) or a host-registered
+/// function of the same name. Comparing the pointer keeps the fast path on
+/// the single policy funnel instead of bypassing it (Phase 2 security fix).
+pub(crate) fn inline_string_impl() -> crate::vm::NativeImpl {
+    n_string
+}
+
+/// Canonical `len` implementation; see [`inline_string_impl`].
+pub(crate) fn inline_len_impl() -> crate::vm::NativeImpl {
+    n_len
+}
 
 /// The builtin natives only — no plugin functions.
 ///
@@ -2702,8 +2718,47 @@ fn n_float(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
 }
 
+/// Immutable decimal spellings of the small non-negative integers 0..=1023.
+///
+/// `string()` is called once per iteration in the string-keyed-map workload
+/// (`"k" + string(r % 64)`), where `display_value` would otherwise allocate a
+/// fresh `String` and a fresh `Arc<str>` on every call. This table is a
+/// **value cache, not an authority cache**: it holds no function pointers, no
+/// `sandbox_armed()` state, no capability/policy data and no per-engine state,
+/// so it is identical under `run --sandbox`, `exec --sandbox`, tree, VM and
+/// AOT. It is never mutated after initialisation and exposes no script-visible
+/// iteration order. `ref_id` deliberately excludes `Value::Str`, so sharing an
+/// `Arc<str>` cannot perturb `display_value`'s cycle detection.
+///
+/// Only in-range `Value::Int` values take the fast path. Every other input —
+/// negative integers, large integers, floats, strings, containers — falls
+/// through to the identical `i.to_string()` / `display_value` spelling, so
+/// error text, display formatting and Float formatting are byte-identical.
+const SMALL_INT_STRINGS_LEN: usize = 1024;
+static SMALL_INT_STRINGS: OnceLock<[Arc<str>; SMALL_INT_STRINGS_LEN]> = OnceLock::new();
+
+/// Decimal spelling of an `i64`, allocation-free for 0..=1023.
+///
+/// This is the SINGLE authority shared by the `string` builtin and the VM's
+/// inlined `Call string` fast path (`src/vm/mod.rs`), which otherwise bypasses
+/// `n_string` and would silently miss the cache. No engine gets a different
+/// spelling, and no function pointer / sandbox / capability state is cached.
+pub(crate) fn int_to_string_value(i: i64) -> Arc<str> {
+    if let Ok(idx) = usize::try_from(i) {
+        if idx < SMALL_INT_STRINGS_LEN {
+            let table = SMALL_INT_STRINGS
+                .get_or_init(|| std::array::from_fn(|n| Arc::from(n.to_string())));
+            return table[idx].clone();
+        }
+    }
+    Arc::from(i.to_string())
+}
+
 fn n_string(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let v = one("string", &args)?;
+    if let Value::Int(i) = &v {
+        return Ok(Value::Str(int_to_string_value(*i)));
+    }
     Ok(Value::Str(crate::value::display_value(&v).into()))
 }
 
@@ -2899,10 +2954,39 @@ fn n_random_int(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 // -------------------------------------------------------------------- JSON
 
+/// Pure allocation hint for the JSON writer's output buffer, derived from the
+/// top-level container only. It cannot change the emitted bytes, the error
+/// text, the error phase, trailing-character validation or the depth guard.
+/// Unlike a thread-local "last length" hint this keeps ZERO process-global
+/// mutable state, so the writer stays identical under --sandbox, across
+/// engines and across spawned tasks. The cap prevents a script-controlled
+/// huge container from forcing an oversized eager allocation.
+#[inline]
+fn json_write_capacity(v: &Value) -> usize {
+    let n = match v {
+        Value::List(d) | Value::VecDyn(d) => d.lock().unwrap().items.len(),
+        Value::Map(d) => d.lock().unwrap().entries.len(),
+        _ => 0,
+    };
+    n.saturating_mul(64).min(1 << 20)
+}
+
+/// Build the parser's char buffer with an exact upper-bound capacity.
+/// `Chars::size_hint()` advertises a lower bound of 0, so `collect()` grows
+/// the Vec repeatedly for a large document. `s.len()` (byte length) is an
+/// upper bound on the number of `char`s, so this allocates exactly once and
+/// never reallocates — a pure buffer pre-sizing with no semantic effect.
+#[inline]
+fn json_char_buf(s: &str) -> Vec<char> {
+    let mut chars = Vec::with_capacity(s.len());
+    chars.extend(s.chars());
+    chars
+}
+
 fn n_json_parse(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let s = want_str(&one("json_parse", &args)?, "json_parse")?;
     let mut parser = JsonParser {
-        chars: s.chars().collect(),
+        chars: json_char_buf(&s),
         pos: 0,
         depth: 0,
     };
@@ -2916,14 +3000,14 @@ fn n_json_parse(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 
 fn n_json_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let v = one("json_write", &args)?;
-    let mut out = String::new();
+    let mut out = String::with_capacity(json_write_capacity(&v));
     write_json(&v, &mut out, 0)?;
     Ok(Value::Str(out.into()))
 }
 
 /// Host-code JSON writer over the same `write_json` the builtin uses.
 pub fn json_write_text(v: &Value) -> Result<String, String> {
-    let mut out = String::new();
+    let mut out = String::with_capacity(json_write_capacity(v));
     write_json(v, &mut out, 0)?;
     Ok(out)
 }
@@ -2934,7 +3018,7 @@ pub fn json_write_text(v: &Value) -> Result<String, String> {
 /// two.
 pub fn json_parse_text(s: &str) -> Result<Value, String> {
     let mut parser = JsonParser {
-        chars: s.chars().collect(),
+        chars: json_char_buf(s),
         pos: 0,
         depth: 0,
     };
@@ -3012,6 +3096,39 @@ impl JsonParser {
         }
         Ok(v)
     }
+    /// Allocation-free decimal parse for the pure-integer token shape the
+    /// scanner produces (optional leading `-`, then ASCII digits). Mirrors
+    /// `str::parse::<i64>()` exactly, including `i64::MIN` and the overflow
+    /// fallback: `None` means the caller builds the token text and takes the
+    /// pre-existing f64 path, so no error text or rounding changes.
+    fn integer_token(chars: &[char]) -> Option<i64> {
+        let neg = chars.first() == Some(&'-');
+        let digits = if neg { &chars[1..] } else { chars };
+        if digits.is_empty() {
+            return None;
+        }
+        let mut mag: u64 = 0;
+        for &c in digits {
+            if !c.is_ascii_digit() {
+                return None;
+            }
+            mag = mag.checked_mul(10)?.checked_add((c as u8 - b'0') as u64)?;
+        }
+        if neg {
+            if mag == 1u64 << 63 {
+                Some(i64::MIN)
+            } else if mag <= i64::MAX as u64 {
+                Some(-(mag as i64))
+            } else {
+                None
+            }
+        } else if mag <= i64::MAX as u64 {
+            Some(mag as i64)
+        } else {
+            None
+        }
+    }
+
     fn parse_number(&mut self) -> Result<Value, String> {
         let start = self.pos;
         if self.peek() == Some('-') {
@@ -3041,6 +3158,14 @@ impl JsonParser {
                 break;
             }
         }
+        // Fast path: a pure integer token needs no temporary String at all.
+        // Falls through on overflow so the exact pre-existing f64 fallback
+        // (and its "bad number" error text) is preserved byte-for-byte.
+        if !is_float && !has_exp {
+            if let Some(i) = Self::integer_token(&self.chars[start..self.pos]) {
+                return Ok(Value::Int(i));
+            }
+        }
         let text: String = self.chars[start..self.pos].iter().collect();
         if is_float || has_exp {
             text.parse::<f64>()
@@ -3049,11 +3174,11 @@ impl JsonParser {
                 .map(Value::Float)
                 .ok_or_else(|| "json_parse: bad number".to_string())
         } else {
+            // Integer literals beyond i64 (e.g. `1e30` written as digits, or
+            // values this library itself wrote as floats) fall back to f64 so
+            // `json_parse(json_write(v))` round-trips.
             match text.parse::<i64>() {
                 Ok(i) => Ok(Value::Int(i)),
-                // Integer literals beyond i64 (e.g. `1e30` written as digits,
-                // or values this library itself wrote as floats) fall back to
-                // f64 so `json_parse(json_write(v))` round-trips.
                 Err(_) => text
                     .parse::<f64>()
                     .ok()
@@ -3231,12 +3356,31 @@ fn write_json_str(s: &str, out: &mut String) {
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
             c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+                let _ = write!(out, "\\u{:04x}", c as u32);
             }
             c => out.push(c),
         }
     }
     out.push('"');
+}
+
+/// Write a map key without allocating an intermediate `MapKey::display()`
+/// String. `display()` is `i.to_string()` / `b.to_string()` / `"null"` / the
+/// raw string, and `write_json_str` only escapes `"`, `\` and control chars —
+/// none of which can occur in a numeric / bool / null spelling, so the quoted
+/// spellings below are byte-identical to the old path. String keys keep the
+/// exact same escaping routine.
+fn write_json_key(k: &MapKey, out: &mut String) {
+    match k {
+        MapKey::Str(s) => write_json_str(s, out),
+        MapKey::Null => out.push_str("\"null\""),
+        MapKey::Bool(b) => out.push_str(if *b { "\"true\"" } else { "\"false\"" }),
+        MapKey::Int(i) => {
+            out.push('"');
+            let _ = write!(out, "{}", i);
+            out.push('"');
+        }
+    }
 }
 
 fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
@@ -3249,13 +3393,18 @@ fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Int(i) => out.push_str(&i.to_string()),
+        Value::Int(i) => {
+            // `write!` into the output buffer emits exactly `i.to_string()`
+            // without allocating a temporary String per scalar.
+            let _ = write!(out, "{}", i);
+        }
         Value::Float(f) => {
             // `{:?}` is the shortest round-tripping form and keeps a decimal
             // point for integral values (2.0 stays a float on reparse). Rust's
-            // Display emitted `NaN`/`inf`, which are not JSON.
+            // Display emitted `NaN`/`inf`, which are not JSON. Same formatter,
+            // written straight into the output buffer.
             if f.is_finite() {
-                out.push_str(&format!("{:?}", f));
+                let _ = write!(out, "{:?}", f);
             } else {
                 return Err(format!(
                     "json_write: float {} cannot be written as JSON (non-finite)",
@@ -3285,7 +3434,7 @@ fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
                 if i > 0 {
                     out.push(',');
                 }
-                write_json_str(&k.display(), out);
+                write_json_key(k, out);
                 out.push(':');
                 write_json(val, out, depth + 1)?;
             }

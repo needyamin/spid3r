@@ -422,6 +422,41 @@ pub extern "C" fn spid3r_to_i64(v: *const Value) -> i64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// AOT inline fast paths (Phase 3)
+//
+// `spid3r_binop` already keeps its (Int, Int) arm in Rust, but every call
+// still crosses the generated-code ABI, and its result is a fresh heap box.
+// For loop-heavy scripts that dominates: Phase 1 diagnosed prime's native
+// inner loop as a chain of opaque extern calls plus an allocation per
+// binop. These two helpers let the AOT compiler emit inline arithmetic on
+// unboxed i64 operands, checking boxness itself and falling back to the
+// generic trampoline when a value turns out not to be an `Int` — so mixed
+// dynamic typing (float promotion, operator overloads) and the exact error
+// messages stay on the generic path, byte-for-byte.
+//
+// Both are PURE: `deref` only reads the box, never mutates, locks or throws.
+// The generated IR may therefore hoist the check out of a loop for any
+// operand whose slot is loop-invariant (e.g. a parameter that the function
+// never reassigns).
+// ---------------------------------------------------------------------------
+
+/// 1 when the value is an `Int`, 0 otherwise. Never throws.
+#[no_mangle]
+pub extern "C" fn spid3r_is_int(v: *const Value) -> i8 {
+    matches!(deref(v), Value::Int(_)) as i8
+}
+
+/// Raw i64 payload of an `Int` value. Call only after `spid3r_is_int`
+/// returned 1; any other value yields 0 rather than reading garbage.
+#[no_mangle]
+pub extern "C" fn spid3r_int_of(v: *const Value) -> i64 {
+    match deref(v) {
+        Value::Int(n) => *n,
+        _ => 0,
+    }
+}
+
 // ---------------------------------------------------------------- FFI bridge
 //
 // `extern fn` marshals only these four shapes across the C boundary. Each pair

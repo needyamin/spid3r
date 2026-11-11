@@ -519,6 +519,11 @@ pub struct Ir<'ctx> {
     externs: HashMap<String, FunctionValue<'ctx>>,
     tmp: usize,
     fn_counter: usize,
+    /// Phase 3: set while a hybrid compare's SLOW arm recompiles the original
+    /// expression, so the re-dispatch cannot match the hybrid path again (the
+    /// slow arm must emit the fully generic lowering — re-entering the hybrid
+    /// path would recurse forever).
+    hybrid_off: bool,
 }
 
 /// Signature of compiled Spid3r functions.
@@ -544,6 +549,7 @@ impl<'ctx> Ir<'ctx> {
             caps: Vec::new(),
             boxed: None,
             int_locals: None,
+            hybrid_off: false,
             is_entry: false,
             strings: HashMap::new(),
             tramps: HashMap::new(),
@@ -1722,20 +1728,353 @@ impl<'ctx> Ir<'ctx> {
         None
     }
 
-    fn emit_i64_binop(
+    /// Declare an LLVM overflow-checking arithmetic intrinsic
+    /// (`llvm.sadd.with.overflow.i64` and friends). Declared by hand so no
+    /// inkwell `Intrinsic` lookup API is needed; LLVM links the definition
+    /// automatically because the name is reserved.
+    fn overflow_intrinsic(&mut self, name: &str) -> inkwell::values::FunctionValue<'ctx> {
+        if let Some(f) = self.tramps.get(name) {
+            return *f;
+        }
+        let pair = self
+            .ctx
+            .struct_type(&[self.i64_ty().into(), self.ctx.bool_type().into()], false);
+        let ft = pair.fn_type(&[self.i64_ty().into(), self.i64_ty().into()], false);
+        let f = self.module.add_function(name, ft, None);
+        self.tramps.insert(name.to_string(), f);
+        f
+    }
+
+    // ------------------------------------------------------------------
+    // Phase 3: hybrid int expressions
+    //
+    // `is_int_expr` only accepts leaves backed by an UNBOXED `LocalInt` slot,
+    // and `analyze_int_locals` deliberately excludes function parameters, so
+    // a hot loop like `while d * d <= n` (with boxed `n`) previously compiled
+    // its whole condition through `spid3r_binop` — an extern call plus a heap
+    // box per operation. A hybrid expression has the same shape but allows
+    // plain boxed `Local` slots as leaves: at run time each leaf is checked
+    // with `spid3r_is_int` and extracted with `spid3r_int_of` (both pure), so
+    // the arithmetic runs inline on registers. Any leaf that is not an `Int`
+    // at run time falls back to the fully generic path, which recompiles the
+    // ORIGINAL expression — float promotion, operator overloads and error
+    // messages therefore stay byte-identical to the tree and VM engines.
+    // Parameters are never unboxed at entry (a dynamic call can pass a
+    // non-int to an annotated parameter — the semantic checker only rejects
+    // statically-resolvable call sites), so the check stays at the use site.
+    // ------------------------------------------------------------------
+
+    /// Like [`Self::is_int_expr`], but a plain boxed `Local` slot also
+    /// qualifies as an int leaf. Captured (`Cell`/`Upvalue`) bindings are
+    /// excluded: their extraction is a runtime call, not a slot read.
+    fn is_hybrid_int_expr(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Int(..) => true,
+            Expr::Ident(name, _) => matches!(
+                self.lookup(name),
+                Some(VarLoc::Local(_)) | Some(VarLoc::LocalInt(_))
+            ),
+            Expr::Unary {
+                op: UnOp::Neg,
+                expr,
+                ..
+            } => self.is_hybrid_int_expr(expr),
+            Expr::Binary { op, l, r, .. } => {
+                matches!(
+                    op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
+                ) && self.is_hybrid_int_expr(l)
+                    && self.is_hybrid_int_expr(r)
+            }
+            _ => false,
+        }
+    }
+
+    /// The boxed leaves (in first-use order, deduplicated) of a hybrid int
+    /// expression. Empty when every leaf is already unboxed.
+    fn collect_hybrid_leaves<'a>(&self, e: &'a Expr, out: &mut Vec<&'a str>) {
+        match e {
+            Expr::Int(..) => {}
+            Expr::Ident(name, _) => {
+                if matches!(self.lookup(name), Some(VarLoc::Local(_)))
+                    && !out.contains(&name.as_str())
+                {
+                    out.push(name.as_str());
+                }
+            }
+            Expr::Unary { expr, .. } => self.collect_hybrid_leaves(expr, out),
+            Expr::Binary { l, r, .. } => {
+                self.collect_hybrid_leaves(l, out);
+                self.collect_hybrid_leaves(r, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn is_hybrid_int_compare<'a>(&self, e: &'a Expr) -> Option<(BinOp, &'a Expr, &'a Expr)> {
+        if self.hybrid_off {
+            // A hybrid slow arm is recompiling this expression generically.
+            return None;
+        }
+        if let Expr::Binary {
+            op: op @ (BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::Eq | BinOp::Ne),
+            l,
+            r,
+            ..
+        } = e
+        {
+            if self.is_hybrid_int_expr(l) && self.is_hybrid_int_expr(r) {
+                return Some((*op, l.as_ref(), r.as_ref()));
+            }
+        }
+        None
+    }
+
+    /// Compile one hybrid operand to an i64 register. Boxed leaves were
+    /// extracted by the caller into `vals` after the runtime type check.
+    fn hybrid_i64(
+        &mut self,
+        e: &Expr,
+        vals: &mut HashMap<&str, inkwell::values::IntValue<'ctx>>,
+    ) -> IrResult<inkwell::values::IntValue<'ctx>> {
+        match e {
+            Expr::Int(v, _) => Ok(self.i64c(*v)),
+            Expr::Ident(name, _) => match self.lookup(name) {
+                Some(VarLoc::LocalInt(slot)) => {
+                    let lname = self.tmp_name("iv");
+                    Ok(self
+                        .builder
+                        .build_load(self.i64_ty(), slot, &lname)
+                        .unwrap()
+                        .into_int_value())
+                }
+                Some(VarLoc::Local(_)) => vals
+                    .get(name.as_str())
+                    .copied()
+                    .ok_or_else(|| self.err("internal: hybrid leaf was not extracted")),
+                _ => Err(self.err("internal: non-local ident in hybrid arm")),
+            },
+            Expr::Unary {
+                op: UnOp::Neg,
+                expr,
+                ..
+            } => {
+                let a = self.hybrid_i64(expr, vals)?;
+                self.emit_i64_neg(a)
+            }
+            Expr::Binary { op, l, r, .. } => {
+                let a = self.hybrid_i64(l, vals)?;
+                let b = self.hybrid_i64(r, vals)?;
+                self.emit_i64_binop(a, b, *op)
+            }
+            _ => Err(self.err("internal: non-int expr in hybrid arm")),
+        }
+    }
+
+    /// Emit the shared prologue of a hybrid compare: a check chain over the
+    /// boxed leaves. On success control enters `fast_bb`; any non-`Int` leaf
+    /// branches to `slow_bb`. Returns the extracted i64 leaves.
+    fn emit_hybrid_leaf_checks(
+        &mut self,
+        leaves: &[&str],
+        fast_bb: BasicBlock<'ctx>,
+        slow_bb: BasicBlock<'ctx>,
+    ) -> IrResult<Vec<inkwell::values::IntValue<'ctx>>> {
+        let mut slots = Vec::with_capacity(leaves.len());
+        for name in leaves {
+            match self.lookup(name) {
+                Some(VarLoc::Local(slot)) => slots.push(slot),
+                _ => return Err(self.err("internal: hybrid leaf is not a plain local")),
+            }
+        }
+        let mut vals = Vec::with_capacity(slots.len());
+        for (i, slot) in slots.iter().enumerate() {
+            // THE BOX POINTER, not the slot address: `slot` is an `alloca ptr`
+            // holding a `*mut Value`; the helpers expect the VALUE itself.
+            // Passing the slot address made `deref()` reinterpret the slot's
+            // own bytes (a heap pointer + adjacent stack garbage) as a `Value`
+            // — an ASLR-dependent is-Int verdict feeding an out-of-bounds
+            // payload read, i.e. the non-deterministic loop-bound corruption
+            // fixed in this session. Every other boxed-local read site loads
+            // the pointer first; so does this one.
+            let box_name = self.tmp_name("box");
+            let box_ptr = self
+                .builder
+                .build_load(self.ptr_ty(), *slot, &box_name)
+                .unwrap();
+            let f = self.tramp(
+                "spid3r_is_int",
+                &[self.ptr_ty().into()],
+                Some(self.i8_ty().into()),
+            );
+            let r = self.emit_call(f, &[box_ptr.into()], "isint");
+            let ok_i8 = call_int(r);
+            // Pure extraction, emitted BEFORE the branch: `spid3r_int_of`
+            // never throws (it yields 0 for non-Int, a value the slow arm
+            // supersedes), so nothing here can cross a terminator.
+            let g = self.tramp(
+                "spid3r_int_of",
+                &[self.ptr_ty().into()],
+                Some(self.i64_ty().into()),
+            );
+            let rv = self.emit_call(g, &[box_ptr.into()], "intof");
+            vals.push(call_int(rv));
+            let ok_name = self.tmp_name("isint.ok");
+            let ok = self
+                .builder
+                .build_int_compare(IntPredicate::EQ, ok_i8, self.i8c(1), &ok_name)
+                .unwrap();
+            let on_ok = if i + 1 == slots.len() {
+                fast_bb
+            } else {
+                self.new_block("hyb.chk")
+            };
+            self.builder
+                .build_conditional_branch(ok, on_ok, slow_bb)
+                .unwrap();
+            if i + 1 < slots.len() {
+                self.builder.position_at_end(on_ok);
+            }
+        }
+        if slots.is_empty() {
+            self.br_to(fast_bb);
+        }
+        Ok(vals)
+    }
+
+    /// CONDITION version: both arms end in a direct branch to `then_bb` /
+    /// `else_bb`, so no value crosses the merge. The slow arm recompiles the
+    /// ORIGINAL compare expression through [`Self::compile_expr`] — the same
+    /// emission the generic path makes — so its semantics are exact.
+    fn emit_hybrid_int_compare_cond(
+        &mut self,
+        op: BinOp,
+        l: &Expr,
+        r: &Expr,
+        whole: &Expr,
+        then_bb: BasicBlock<'ctx>,
+        else_bb: BasicBlock<'ctx>,
+    ) -> IrResult<()> {
+        let predicate = match op {
+            BinOp::Lt => IntPredicate::SLT,
+            BinOp::Le => IntPredicate::SLE,
+            BinOp::Gt => IntPredicate::SGT,
+            BinOp::Ge => IntPredicate::SGE,
+            BinOp::Eq => IntPredicate::EQ,
+            BinOp::Ne => IntPredicate::NE,
+            _ => return Err(self.err("internal: hybrid compare on non-compare op")),
+        };
+        let mut leaf_names: Vec<&str> = Vec::new();
+        self.collect_hybrid_leaves(l, &mut leaf_names);
+        self.collect_hybrid_leaves(r, &mut leaf_names);
+        let fast_bb = self.new_block("hyb.fast");
+        let slow_bb = self.new_block("hyb.slow");
+        let vals = self.emit_hybrid_leaf_checks(&leaf_names, fast_bb, slow_bb)?;
+        // Fast arm: pure register compare over the extracted leaves.
+        self.builder.position_at_end(fast_bb);
+        let mut by_name: HashMap<&str, inkwell::values::IntValue<'ctx>> = HashMap::new();
+        for (name, v) in leaf_names.iter().zip(vals.iter()) {
+            by_name.insert(*name, *v);
+        }
+        let lhs = self.hybrid_i64(l, &mut by_name)?;
+        let rhs = self.hybrid_i64(r, &mut by_name)?;
+        let cmp_name = self.tmp_name("hyb.cmp");
+        let c = self
+            .builder
+            .build_int_compare(predicate, lhs, rhs, &cmp_name)
+            .unwrap();
+        self.builder
+            .build_conditional_branch(c, then_bb, else_bb)
+            .unwrap();
+        // Slow arm: the generic path, verbatim. `hybrid_off` stops the
+        // re-dispatch from matching this same compare again.
+        self.builder.position_at_end(slow_bb);
+        let saved = self.hybrid_off;
+        self.hybrid_off = true;
+        let slow_result = self.compile_expr(whole);
+        self.hybrid_off = saved;
+        let v = slow_result?;
+        let c = self.cond_i1(v);
+        self.builder
+            .build_conditional_branch(c, then_bb, else_bb)
+            .unwrap();
+        Ok(())
+    }
+
+    /// VALUE version: both arms produce a boxed value (the fast arm uses the
+    /// shared `true`/`false` singletons, so still no allocation) merged by a
+    /// phi. The slow arm recompiles the original expression generically.
+    fn emit_hybrid_int_compare_value(
+        &mut self,
+        op: BinOp,
+        l: &Expr,
+        r: &Expr,
+        whole: &Expr,
+    ) -> IrResult<PointerValue<'ctx>> {
+        let predicate = match op {
+            BinOp::Lt => IntPredicate::SLT,
+            BinOp::Le => IntPredicate::SLE,
+            BinOp::Gt => IntPredicate::SGT,
+            BinOp::Ge => IntPredicate::SGE,
+            BinOp::Eq => IntPredicate::EQ,
+            BinOp::Ne => IntPredicate::NE,
+            _ => return Err(self.err("internal: hybrid compare on non-compare op")),
+        };
+        let mut leaf_names: Vec<&str> = Vec::new();
+        self.collect_hybrid_leaves(l, &mut leaf_names);
+        self.collect_hybrid_leaves(r, &mut leaf_names);
+        let fast_bb = self.new_block("hyb.fast");
+        let slow_bb = self.new_block("hyb.slow");
+        let merge_bb = self.new_block("hyb.merge");
+        let vals = self.emit_hybrid_leaf_checks(&leaf_names, fast_bb, slow_bb)?;
+        self.builder.position_at_end(fast_bb);
+        let mut by_name: HashMap<&str, inkwell::values::IntValue<'ctx>> = HashMap::new();
+        for (name, v) in leaf_names.iter().zip(vals.iter()) {
+            by_name.insert(*name, *v);
+        }
+        let lhs = self.hybrid_i64(l, &mut by_name)?;
+        let rhs = self.hybrid_i64(r, &mut by_name)?;
+        let cmp_name = self.tmp_name("hyb.cmp");
+        let c = self
+            .builder
+            .build_int_compare(predicate, lhs, rhs, &cmp_name)
+            .unwrap();
+        let fast_v = self.v_bool_from_i1(c);
+        // `hybrid_i64` may have routed through an inline-binop merge block,
+        // so capture wherever the builder actually sits (same for the slow
+        // edge below).
+        let fast_def_bb = self.cur_block();
+        self.br_to(merge_bb);
+        self.builder.position_at_end(slow_bb);
+        let saved = self.hybrid_off;
+        self.hybrid_off = true;
+        let slow_result = self.compile_expr(whole);
+        self.hybrid_off = saved;
+        let slow_v = slow_result?;
+        // `compile_expr` ends with a pending-throw guard that may have
+        // continued into a fresh block — the phi's predecessor is wherever
+        // the builder actually sits now, not `slow_bb`.
+        let slow_def_bb = self.cur_block();
+        self.br_to(merge_bb);
+        self.builder.position_at_end(merge_bb);
+        let merged = self.builder.build_phi(self.ptr_ty(), "hyb.phi").unwrap();
+        merged.add_incoming(&[
+            (&fast_v, fast_def_bb.unwrap()),
+            (&slow_v, slow_def_bb.unwrap()),
+        ]);
+        Ok(merged.as_basic_value().into_pointer_value())
+    }
+
+    /// The pre-Phase-3 binop path: one opaque `extern "C"` call plus the
+    /// pending-throw guard. Kept verbatim as the SLOW path of the inline
+    /// lowering below, so every error message, the pending-throw routing and
+    /// the exit code stay byte-identical when the fast path is not taken.
+    fn emit_i64_binop_slow(
         &mut self,
         lhs: inkwell::values::IntValue<'ctx>,
         rhs: inkwell::values::IntValue<'ctx>,
-        op: BinOp,
+        tramp_name: &str,
     ) -> IrResult<inkwell::values::IntValue<'ctx>> {
-        let tramp_name = match op {
-            BinOp::Add => "spid3r_i64_add",
-            BinOp::Sub => "spid3r_i64_sub",
-            BinOp::Mul => "spid3r_i64_mul",
-            BinOp::Div => "spid3r_i64_div",
-            BinOp::Mod => "spid3r_i64_mod",
-            _ => unreachable!(),
-        };
         let f = self.tramp(
             tramp_name,
             &[self.i64_ty().into(), self.i64_ty().into()],
@@ -1744,6 +2083,231 @@ impl<'ctx> Ir<'ctx> {
         let r = self.emit_call(f, &[lhs.into(), rhs.into()], "i64op");
         self.throw_guard();
         Ok(call_int(r))
+    }
+
+    /// Inline i64 negation with the exact `spid3r_i64_neg` semantics: only
+    /// `i64::MIN` overflows, and the trampoline raises that error.
+    fn emit_i64_neg(&mut self, a: inkwell::values::IntValue<'ctx>) -> IrResult<inkwell::values::IntValue<'ctx>> {
+        let is_min = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, a, self.i64c(i64::MIN), "negchk")
+            .unwrap();
+        let fast_bb = self.new_block("neg.fast");
+        let slow_bb = self.new_block("neg.slow");
+        let cont_bb = self.new_block("neg.cont");
+        self.builder
+            .build_conditional_branch(is_min, slow_bb, fast_bb)
+            .unwrap();
+        self.builder.position_at_end(fast_bb);
+        let zero = self.i64c(0);
+        let fast = self.builder.build_int_sub(zero, a, "neg.res").unwrap();
+        self.br_to(cont_bb);
+        self.builder.position_at_end(slow_bb);
+        let f = self.tramp(
+            "spid3r_i64_neg",
+            &[self.i64_ty().into()],
+            Some(self.i64_ty().into()),
+        );
+        let r = self.emit_call(f, &[a.into()], "i64neg");
+        self.throw_guard();
+        let slow = call_int(r);
+        let slow_def_bb = self.cur_block();
+        self.br_to(cont_bb);
+        self.builder.position_at_end(cont_bb);
+        let merged = self.builder.build_phi(self.i64_ty(), "neg.phi").unwrap();
+        merged.add_incoming(&[
+            (&fast, fast_bb),
+            (&slow, slow_def_bb.unwrap()),
+        ]);
+        Ok(merged.as_basic_value().into_int_value())
+    }
+
+    /// Lower an i64 binary operation. Phase 3 replaces the old opaque
+    /// `extern "C"` trampoline with inline register arithmetic:
+    ///
+    /// - Add/Sub/Mul use LLVM's overflow intrinsics; the overflow edge calls
+    ///   the SAME runtime trampoline as before, so `integer overflow: a + b`
+    ///   (with the real operands), the pending-throw routing and the exit
+    ///   code are unchanged. The fast edge is pure register code — no ABI
+    ///   crossing, no heap box, no pending-throw check.
+    /// - Div guards division by zero and `i64::MIN / -1` (both raise through
+    ///   the trampoline) and lowers everything else to `sdiv`.
+    /// - Mod guards division by zero (trampoline, exact
+    ///   `modulo by zero` message) and divisor `-1` (Rust's `wrapping_rem`
+    ///   yields 0, where LLVM `srem` would be undefined) and lowers the rest
+    ///   to `srem`.
+    ///
+    /// Phase 1 diagnosed the trampoline-per-binop shape as the main reason
+    /// `native --release` was *slower* than the VM; this is the P3 repair.
+    fn emit_i64_binop(
+        &mut self,
+        lhs: inkwell::values::IntValue<'ctx>,
+        rhs: inkwell::values::IntValue<'ctx>,
+        op: BinOp,
+    ) -> IrResult<inkwell::values::IntValue<'ctx>> {
+        match op {
+            BinOp::Add | BinOp::Sub | BinOp::Mul => {
+                let (intrinsic, tramp_name) = match op {
+                    BinOp::Add => ("llvm.sadd.with.overflow.i64", "spid3r_i64_add"),
+                    BinOp::Sub => ("llvm.ssub.with.overflow.i64", "spid3r_i64_sub"),
+                    BinOp::Mul => ("llvm.smul.with.overflow.i64", "spid3r_i64_mul"),
+                    _ => unreachable!(),
+                };
+                let ovf_f = self.overflow_intrinsic(intrinsic);
+                let call_name = self.tmp_name("ovf");
+                let call = self
+                    .builder
+                    .build_call(ovf_f, &[lhs.into(), rhs.into()], &call_name)
+                    .unwrap();
+                let pair = match call.try_as_basic_value() {
+                    inkwell::values::ValueKind::Basic(b) => b.into_struct_value(),
+                    _ => panic!("spid3r: overflow intrinsic did not return a struct"),
+                };
+                let fast = self
+                    .builder
+                    .build_extract_value(pair, 0, "ovf.res")
+                    .unwrap()
+                    .into_int_value();
+                let overflowed = self
+                    .builder
+                    .build_extract_value(pair, 1, "ovf.bit")
+                    .unwrap()
+                    .into_int_value();
+                let entry_bb = self.cur_block();
+                let slow_bb = self.new_block("i64op.slow");
+                let cont_bb = self.new_block("i64op.cont");
+                self.builder
+                    .build_conditional_branch(overflowed, slow_bb, cont_bb)
+                    .unwrap();
+                self.builder.position_at_end(slow_bb);
+                let slow = self.emit_i64_binop_slow(lhs, rhs, tramp_name)?;
+                let slow_def_bb = self.cur_block();
+                self.br_to(cont_bb);
+                self.builder.position_at_end(cont_bb);
+                let merged = self.builder.build_phi(self.i64_ty(), "i64op.phi").unwrap();
+                merged.add_incoming(&[
+                    (&fast, entry_bb.unwrap()),
+                    (&slow, slow_def_bb.unwrap()),
+                ]);
+                Ok(merged.as_basic_value().into_int_value())
+            }
+            BinOp::Div => {
+                // `b == 0` raises `division by zero`; `i64::MIN / -1` is the
+                // only `checked_div` overflow. Both go through the trampoline
+                // for the exact message; the fast edge is a plain `sdiv` in
+                // its own block so the undefined `MIN / -1` machine op is
+                // never reached on the slow edge.
+                let is_zero = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, rhs, self.i64c(0), "divz")
+                    .unwrap();
+                let lhs_is_min = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, lhs, self.i64c(i64::MIN), "divmin")
+                    .unwrap();
+                let rhs_is_m1 = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, rhs, self.i64c(-1), "divm1")
+                    .unwrap();
+                let both_min_m1 = self
+                    .builder
+                    .build_and(lhs_is_min, rhs_is_m1, "divovf")
+                    .unwrap();
+                let bad = self
+                    .builder
+                    .build_or(is_zero, both_min_m1, "divslow")
+                    .unwrap();
+                let fast_bb = self.new_block("div.fast");
+                let slow_bb = self.new_block("div.slow");
+                let cont_bb = self.new_block("div.cont");
+                self.builder
+                    .build_conditional_branch(bad, slow_bb, fast_bb)
+                    .unwrap();
+                self.builder.position_at_end(fast_bb);
+                let div_name = self.tmp_name("div");
+                let fast = self
+                    .builder
+                    .build_int_signed_div(lhs, rhs, &div_name)
+                    .unwrap();
+                self.br_to(cont_bb);
+                self.builder.position_at_end(slow_bb);
+                let slow = self.emit_i64_binop_slow(lhs, rhs, "spid3r_i64_div")?;
+                let slow_def_bb = self.cur_block();
+                self.br_to(cont_bb);
+                self.builder.position_at_end(cont_bb);
+                let merged = self.builder.build_phi(self.i64_ty(), "div.phi").unwrap();
+                merged.add_incoming(&[
+                    (&fast, fast_bb),
+                    (&slow, slow_def_bb.unwrap()),
+                ]);
+                Ok(merged.as_basic_value().into_int_value())
+            }
+            BinOp::Mod => {
+                // `b == 0` raises `modulo by zero`. Rust's `wrapping_rem`
+                // yields 0 for `MIN % -1` where LLVM `srem` would be
+                // undefined, so divisor `-1` is short-circuited to 0 — the
+                // same value the runtime trampoline returns (load-bearing
+                // three-engine parity, see plan.html §9).
+                //
+                // Every edge lands in a FRESH merge block: the slow edge must
+                // never fall into `mod.chk` again (that would both re-run the
+                // `-1` check and, when no handler is armed to route the
+                // pending throw, reach `srem` with a zero divisor — UB).
+                let is_zero = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, rhs, self.i64c(0), "modz")
+                    .unwrap();
+                let slow_bb = self.new_block("mod.slow");
+                let check_bb = self.new_block("mod.chk");
+                let zero_bb = self.new_block("mod.zero");
+                let srem_bb = self.new_block("mod.srem");
+                let merge_bb = self.new_block("mod.merge");
+                self.builder
+                    .build_conditional_branch(is_zero, slow_bb, check_bb)
+                    .unwrap();
+                self.builder.position_at_end(slow_bb);
+                let slow = self.emit_i64_binop_slow(lhs, rhs, "spid3r_i64_mod")?;
+                let slow_def_bb = self.cur_block();
+                self.br_to(merge_bb);
+                self.builder.position_at_end(check_bb);
+                let is_m1 = self
+                    .builder
+                    .build_int_compare(IntPredicate::EQ, rhs, self.i64c(-1), "modm1")
+                    .unwrap();
+                self.builder
+                    .build_conditional_branch(is_m1, zero_bb, srem_bb)
+                    .unwrap();
+                self.builder.position_at_end(zero_bb);
+                let zero = self.i64c(0);
+                self.br_to(merge_bb);
+                self.builder.position_at_end(srem_bb);
+                let rem_name = self.tmp_name("mod");
+                let rem = self
+                    .builder
+                    .build_int_signed_rem(lhs, rhs, &rem_name)
+                    .unwrap();
+                self.br_to(merge_bb);
+                self.builder.position_at_end(merge_bb);
+                let merged = self.builder.build_phi(self.i64_ty(), "mod.phi").unwrap();
+                merged.add_incoming(&[
+                    (&slow, slow_def_bb.unwrap()),
+                    (&zero, zero_bb),
+                    (&rem, srem_bb),
+                ]);
+                Ok(merged.as_basic_value().into_int_value())
+            }
+            _ => {
+                let tramp_name = match op {
+                    BinOp::Add => "spid3r_i64_add",
+                    BinOp::Sub => "spid3r_i64_sub",
+                    BinOp::Mul => "spid3r_i64_mul",
+                    BinOp::Div => "spid3r_i64_div",
+                    BinOp::Mod => "spid3r_i64_mod",
+                    _ => unreachable!(),
+                };
+                self.emit_i64_binop_slow(lhs, rhs, tramp_name)
+            }
+        }
     }
 
     fn compile_expr_i64(&mut self, e: &Expr) -> IrResult<inkwell::values::IntValue<'ctx>> {
@@ -1767,14 +2331,9 @@ impl<'ctx> Ir<'ctx> {
                 ..
             } => {
                 let inner = self.compile_expr_i64(expr)?;
-                let f = self.tramp(
-                    "spid3r_i64_neg",
-                    &[self.i64_ty().into()],
-                    Some(self.i64_ty().into()),
-                );
-                let r = self.emit_call(f, &[inner.into()], "i64neg");
-                self.throw_guard();
-                Ok(call_int(r))
+                // Phase 3: inline negation; only `i64::MIN` takes the
+                // trampoline, so the hot path stays in registers.
+                self.emit_i64_neg(inner)
             }
             Expr::Binary { op, l, r, .. } => {
                 let a = self.compile_expr_i64(l)?;
@@ -2513,6 +3072,25 @@ impl<'ctx> Ir<'ctx> {
                 .unwrap();
             return Ok(());
         }
+        // Phase 3: the condition mixes unboxed int operands with boxed ones
+        // (e.g. `while d * d <= n` where `d` is an unboxed local but `n` is a
+        // boxed parameter). The hybrid fast path checks each boxed leaf with
+        // the pure `spid3r_is_int` runtime helper and compares registers; a
+        // non-Int leaf falls back to the generic emission below, so float
+        // promotion / overloads / errors are unchanged.
+        // Phase 3: the condition mixes unboxed int operands with boxed ones
+        // (e.g. `while d * d <= n` where `d` is an unboxed local but `n` is a
+        // boxed parameter). The hybrid fast path checks each boxed leaf with
+        // the pure `spid3r_is_int` runtime helper and compares registers; a
+        // non-Int leaf falls back to the generic emission below, so float
+        // promotion / overloads / errors are unchanged. (The mechanism was
+        // briefly disabled while a loop-bound corruption was investigated;
+        // the root cause was a missing boxed-pointer load in
+        // `emit_hybrid_leaf_checks`, fixed and covered by
+        // `hybrid_int_loop_bounds_survive_aot` in engine_matrix.)
+        if let Some((cmp_op, left, right)) = self.is_hybrid_int_compare(cond) {
+            return self.emit_hybrid_int_compare_cond(cmp_op, left, right, cond, then_bb, else_bb);
+        }
         let v = self.compile_expr(cond)?;
         let c = self.cond_i1(v);
         self.builder
@@ -2694,6 +3272,14 @@ impl<'ctx> Ir<'ctx> {
                         .build_int_compare(predicate, lhs, rhs, "cmp")
                         .unwrap();
                     return Ok(self.v_bool_from_i1(c));
+                }
+                // Phase 3: hybrid int compare over boxed leaves — see
+                // `is_hybrid_int_expr`. Unreachable for the fully-unboxed
+                // case (handled above). Re-enabled after the missing
+                // boxed-pointer load in `emit_hybrid_leaf_checks` was fixed
+                // (covered by `hybrid_int_loop_bounds_survive_aot`).
+                if let Some((cmp_op, left, right)) = self.is_hybrid_int_compare(e) {
+                    return self.emit_hybrid_int_compare_value(cmp_op, left, right, e);
                 }
                 if self.is_int_expr(e) {
                     let iv = self.compile_expr_i64(e)?;

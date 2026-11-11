@@ -43,11 +43,13 @@ pub struct OptStats {
     pub chunks: usize,
     pub folded: usize,
     pub removed: usize,
+    /// Phase 2: number of `while` loop back-edges rotated (per-pass counter).
+    pub rotations: usize,
 }
 
 impl OptStats {
     pub fn changed(&self) -> bool {
-        self.folded > 0 || self.removed > 0
+        self.folded > 0 || self.removed > 0 || self.rotations > 0
     }
 }
 
@@ -431,7 +433,13 @@ fn optimize_body(chunk: &mut Chunk, stats: &mut OptStats) {
         }
     }
 
-    if folded == 0 && removed == 0 {
+    // Phase 2: loop back-edge rotation. This lives ONLY in the optimizer, so
+    // `compile_program_unoptimized` (--no-opt) never sees it. It is a genuine
+    // compile-time transform: the default path executes one fewer dispatch
+    // per loop iteration. No new OpCode, no Chunk field, no .matrixc change.
+    let rotations = rotate_loops(&mut ins, chunk, has_try);
+
+    if folded == 0 && removed == 0 && rotations == 0 {
         return;
     }
 
@@ -538,6 +546,168 @@ fn optimize_body(chunk: &mut Chunk, stats: &mut OptStats) {
     chunk.inst_spans = inst_spans;
     stats.folded += folded;
     stats.removed += removed;
+    stats.rotations += rotations;
+}
+
+/// Opcodes that may be DUPLICATED into a rotated loop's bottom condition.
+///
+/// Deliberately a whitelist: no jumps (short-circuit conditions are not
+/// duplicated), no calls / stores / imports / spawns / try-handler opcodes,
+/// and no stack shuffling (`Dup`, `Dup2`, `Rotate`). The condition is
+/// re-evaluated at the bottom instead of the top, so every evaluation still
+/// happens exactly once and in the same order. Restricting the duplicated
+/// block to pure reads and arithmetic keeps its stack effect identical.
+fn is_rotatable_cond_op(op: OpCode) -> bool {
+    matches!(
+        op,
+        OpCode::Constant
+            | OpCode::Null
+            | OpCode::True
+            | OpCode::False
+            | OpCode::None
+            | OpCode::GetLocal
+            | OpCode::GetUpvalue
+            | OpCode::GetGlobal
+            | OpCode::Len
+            | OpCode::Not
+            | OpCode::Neg
+            | OpCode::Truthy
+            | OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Mod
+            | OpCode::Equal
+            | OpCode::NotEqual
+            | OpCode::Less
+            | OpCode::LessEq
+            | OpCode::Greater
+            | OpCode::GreaterEq
+            | OpCode::IndexGet
+            | OpCode::FieldGet
+    )
+}
+
+/// Rotate one canonical `while` back-edge, if a safe candidate exists.
+///
+/// ```text
+/// before:  S: <cond>; JumpIfFalse end; <body>; Jump S; end:
+/// after:   S: <cond>; JumpIfFalse end; <body>; <cond>; JumpIfTrue body_start; end:
+/// ```
+///
+/// The top check still runs on entry and on `continue` (which targets S);
+/// `break` still targets `end`. Steady-state iterations jump straight back to
+/// the body from the bottom conditional, so ONE unconditional `Jump` dispatch
+/// is removed per iteration. The condition is duplicated, never reordered:
+/// evaluation count, order and stack effect are unchanged.
+///
+/// Guardrails: chunk must contain no `Try`; the condition block must be a
+/// whitelisted pure sequence with no internal jumps; there must be at least
+/// one body instruction; no jump from outside the loop may land inside the
+/// loop body or on the back-edge itself; and the new back-edge offset must
+/// fit an `i16`. Anything uncertain falls through untouched.
+fn rotate_one_loop(ins: &mut Vec<Ins>, synthetic_base: usize) -> bool {
+    let index_of: HashMap<usize, usize> =
+        ins.iter().enumerate().map(|(k, i)| (i.old, k)).collect();
+    // (source index, absolute target in ORIGINAL byte offsets).
+    let mut jumps: Vec<(usize, usize)> = Vec::new();
+    for (i, x) in ins.iter().enumerate() {
+        if let Some(t) = x.jump_target() {
+            jumps.push((i, t));
+        }
+        for t in x.try_targets() {
+            jumps.push((i, t));
+        }
+    }
+
+    for j in 0..ins.len() {
+        if ins[j].op != OpCode::Jump {
+            continue;
+        }
+        let Some(s_old) = ins[j].jump_target() else {
+            continue;
+        };
+        if s_old >= ins[j].old {
+            continue; // a real BACK edge only
+        }
+        let end = ins[j].old + 3;
+        let Some(&s_idx) = index_of.get(&s_old) else {
+            continue;
+        };
+        if s_idx >= j {
+            continue;
+        }
+        // The loop exit is the conditional jump right after the condition;
+        // its target must be the instruction following the back-edge.
+        let Some(k) = (s_idx + 1..j)
+            .find(|&k| ins[k].op == OpCode::JumpIfFalse && ins[k].jump_target() == Some(end))
+        else {
+            continue;
+        };
+        if k + 1 >= j {
+            continue; // at least one real body instruction
+        }
+        if !ins[s_idx..k].iter().all(|x| is_rotatable_cond_op(x.op)) {
+            continue;
+        }
+        let body_start = ins[k + 1].old;
+        let mut ok = true;
+        for &(src, t) in &jumps {
+            // A jump from outside may not land inside the loop, and nothing
+            // may target the back-edge itself (it becomes a conditional that
+            // pops a value).
+            if ((src < s_idx || src > j) && t > s_old && t < end) || t == ins[j].old {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        // Encode recomputes the real delta through `remap`; the operand here
+        // only has to make `Ins::jump_target()` return `body_start`.
+        let delta = body_start as i64 - (ins[j].old as i64 + 3);
+        let Ok(off) = i16::try_from(delta) else {
+            continue;
+        };
+        let j_old = ins[j].old;
+        let span = ins[k].span.clone();
+        let mut replacement: Vec<Ins> = Vec::with_capacity(k - s_idx + 1);
+        for (n, c) in ins[s_idx..k].iter().enumerate() {
+            let mut c = c.clone();
+            // Synthetic old offsets never collide with a real instruction
+            // boundary, so `remap` and its forward-fill stay unambiguous.
+            c.old = synthetic_base + n;
+            replacement.push(c);
+        }
+        replacement.push(Ins {
+            op: OpCode::JumpIfTrue,
+            ops: off.to_le_bytes().to_vec(),
+            span,
+            old: j_old,
+        });
+        ins.splice(j..j + 1, replacement);
+        return true;
+    }
+    false
+}
+
+/// Rotate every eligible loop in one chunk. Each successful rotation removes
+/// one back-edge `Jump`, so the scan is bounded by the instruction count.
+fn rotate_loops(ins: &mut Vec<Ins>, chunk: &Chunk, has_try: bool) -> usize {
+    if has_try {
+        return 0; // try/finally regions are entered non-locally
+    }
+    let base = chunk.code.len().saturating_add(1_000_000);
+    let cap = ins.len() + 1;
+    let mut rotations = 0usize;
+    for n in 0..cap {
+        if !rotate_one_loop(ins, base + n * 65_536) {
+            break;
+        }
+        rotations += 1;
+    }
+    rotations
 }
 
 /// Value of a `Constant` instruction (from the pool or the pending new ones).
@@ -751,6 +921,160 @@ mod tests {
         );
         let mut vm = super::super::Vm::new(Arc::from("t.matrix"), Vec::new());
         vm.run_compiled(Arc::new(f)).expect("run");
+    }
+
+    /// Debug-formatted outcome of a run, so tests can compare success values
+    /// AND error variants without importing the Diagnostic type.
+    fn outcome(f: VmFunc) -> String {
+        let mut vm = super::super::Vm::new(Arc::from("t.matrix"), Vec::new());
+        format!("{:?}", vm.run_compiled(Arc::new(f)))
+    }
+
+    /// Decoded opcodes across the script chunk AND every nested function /
+    /// embedded module chunk (loops live in `main`, not in the script chunk).
+    fn all_ops(chunk: &Chunk) -> Vec<OpCode> {
+        let mut out: Vec<OpCode> = decode(chunk)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| i.op)
+            .collect();
+        for f in &chunk.functions {
+            out.extend(all_ops(&f.chunk));
+        }
+        for m in &chunk.modules {
+            out.extend(all_ops(&m.func.chunk));
+        }
+        out
+    }
+
+    // ---- Phase 2: loop back-edge rotation -------------------------------
+
+    #[test]
+    fn rotation_fires_only_on_the_optimized_path() {
+        let src = concat!(
+            "fn main() {\n",
+            "    let i = 0;\n",
+            "    let s = 0;\n",
+            "    while i < 20 {\n",
+            "        s = s + i;\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    return s;\n",
+            "}\n",
+        );
+        let plain = compile(src);
+        let mut opt = compile(src);
+        let stats = optimize_script(&mut opt);
+        assert!(stats.rotations >= 1, "rotation must fire: {:?}", stats);
+        assert!(stats.changed());
+        let plain_ops = all_ops(&plain.chunk);
+        let opt_ops = all_ops(&opt.chunk);
+        assert!(
+            plain_ops.contains(&OpCode::Jump),
+            "--no-opt must keep its unconditional back-edge"
+        );
+        assert!(
+            opt_ops.contains(&OpCode::JumpIfTrue),
+            "optimized bytecode must have a rotated conditional back-edge"
+        );
+        assert!(
+            !opt_ops.contains(&OpCode::Jump),
+            "rotation must remove the back-edge Jump"
+        );
+        assert_eq!(outcome(opt), outcome(plain));
+    }
+
+    #[test]
+    fn rotation_preserves_break_and_continue() {
+        let src = concat!(
+            "fn main() {\n",
+            "    let i = 0;\n",
+            "    let s = 0;\n",
+            "    while i < 20 {\n",
+            "        i = i + 1;\n",
+            "        if i == 3 { continue; }\n",
+            "        if i == 11 { break; }\n",
+            "        s = s + i;\n",
+            "    }\n",
+            "    return s;\n",
+            "}\n",
+        );
+        let plain = compile(src);
+        let mut opt = compile(src);
+        let stats = optimize_script(&mut opt);
+        assert!(stats.rotations >= 1, "rotation must fire: {:?}", stats);
+        assert_eq!(outcome(opt), outcome(plain));
+    }
+
+    #[test]
+    fn rotation_preserves_nested_loops() {
+        let src = concat!(
+            "fn main() {\n",
+            "    let i = 0;\n",
+            "    let s = 0;\n",
+            "    while i < 6 {\n",
+            "        let j = 0;\n",
+            "        while j < 6 {\n",
+            "            s = s + i * j;\n",
+            "            j = j + 1;\n",
+            "        }\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    return s;\n",
+            "}\n",
+        );
+        let plain = compile(src);
+        let mut opt = compile(src);
+        let stats = optimize_script(&mut opt);
+        assert!(stats.rotations >= 2, "both loops should rotate: {:?}", stats);
+        assert_eq!(outcome(opt), outcome(plain));
+    }
+
+    #[test]
+    fn chunks_with_try_are_not_rotated() {
+        let src = concat!(
+            "fn main() {\n",
+            "    let i = 0;\n",
+            "    let s = 0;\n",
+            "    while i < 5 {\n",
+            "        try {\n",
+            "            s = s + i;\n",
+            "        } catch (e) {\n",
+            "            s = s + 100;\n",
+            "        }\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    return s;\n",
+            "}\n",
+        );
+        let plain = compile(src);
+        let mut opt = compile(src);
+        let stats = optimize_script(&mut opt);
+        assert_eq!(stats.rotations, 0, "try regions must be left alone");
+        assert_eq!(outcome(opt), outcome(plain));
+    }
+
+    #[test]
+    fn short_circuit_conditions_are_not_rotated() {
+        let src = concat!(
+            "fn main() {\n",
+            "    let i = 0;\n",
+            "    let s = 0;\n",
+            "    while i < 10 and s < 17 {\n",
+            "        s = s + i;\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    return s;\n",
+            "}\n",
+        );
+        let plain = compile(src);
+        let mut opt = compile(src);
+        let stats = optimize_script(&mut opt);
+        assert_eq!(
+            stats.rotations, 0,
+            "conditions with internal jumps must be left alone"
+        );
+        assert_eq!(outcome(opt), outcome(plain));
     }
 
     #[test]

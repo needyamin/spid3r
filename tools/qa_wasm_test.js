@@ -2,6 +2,7 @@
  * Comprehensive QA Test Suite for Spid3r WebAssembly Engine & JS SDK
  */
 const fs = require('fs');
+const path = require('path');
 const assert = require('assert');
 const Spid3r = require('../web/spid3r.js');
 
@@ -11,10 +12,14 @@ async function runQATests() {
     const wasmBytes = fs.readFileSync('./web/spid3r.wasm');
     const sp = await Spid3r.init(wasmBytes);
 
-    // 1. Version test
+    // 1. Version test. The wasm module derives VERSION from env!("CARGO_PKG_VERSION"),
+    //    so assert against the crate version instead of a hardcoded literal — this
+    //    gate must not break on the next release bump (see 2026-11-07 fallout).
+    const cargoToml = fs.readFileSync(path.join(__dirname, '..', 'Cargo.toml'), 'utf8');
+    const pkgVersion = /^version\s*=\s*"([^"]+)"/m.exec(cargoToml)[1];
     const ver = sp.version();
     console.log("✓ Version Query:", ver);
-    assert.ok(ver.version === "1.0.0" || ver.version === "0.1.0");
+    assert.strictEqual(ver.version, pkgVersion);
     assert.strictEqual(ver.language_version, "1.0");
 
     // 2. Syntax & Semantic Checker tests

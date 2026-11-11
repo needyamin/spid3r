@@ -94,3 +94,14 @@ desktop.ini
 # --- SQLite runtime sidecars (churn every time a demo/test opens a committed db) ---
 *.db-shm
 *.db-wal
+
+# --- Python tool bytecode (Phase 0 harness + bench_report) -------------------
+# `python -m py_compile` and normal imports create tools/__pycache__; it is
+# regenerable scratch and must never be committed.
+__pycache__/
+*.py[cod]
+
+# Phase 0 CI advisory measurement. Shared CI runners cannot be pinned, so this
+# file is ADVISORY ONLY and must never be committed. The frozen, pinned-host
+# snapshot is benchmarks/results.phase0.json (which IS committed).
+/benchmarks/results.phase0.ci-advisory.json

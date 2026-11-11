@@ -1,0 +1,283 @@
+{
+  "schema": "spid3r.phase0.workloads/1",
+  "provenance": {
+    "report": "Heavy-Load Checker 1.0.0, run-20261110-235227, section 11 (language-runtime compute comparison)",
+    "source_dir_original": "C:/Users/needyamin/OneDrive/Desktop/Heavy-Load-Checker/runs/run-20261110-235227/sources",
+    "copied_utc": "2026-11-11",
+    "copied_verbatim": true,
+    "file_count": 13,
+    "file_count_note": "13 HLC reference files = 3 .matrix + 3 .php + 3 .py + 3 .js + 1 .rs (prime.rs). The 14th file, phase0_calibration.matrix, is NOT an HLC artifact; it is a Phase 0 harness fixture with role:calibration and is listed separately.",
+    "license": "confirmed-by-owner",
+    "spdx": null,
+    "license_status": "CONFIRMED",
+    "owner_attestation": "These artifacts were produced by a Heavy-Load Checker run present in the repository owner's local environment (OneDrive Desktop) and are machine-generated benchmark fixtures, not third-party library code. No LICENSE, COPYING, NOTICE or SPDX header accompanies the external run. They are vendored as inert data: they are not under src/, are not part of any Cargo target, are not compiled into the crate or the wasm module, and are never linked into any binary. The repository license GPL-3.0-or-later applies to the repository. This is an OWNER ATTESTATION recorded for provenance, NOT independent authorship verification; it is recorded because A3 requires provenance/license status to be explicit. ON 2026-11-11 THE REPOSITORY OWNER REVIEWED AND CONFIRMED the GPL/provenance status of these fixtures for vendoring under the repository's GPL-3.0-or-later licence, clearing the commit gate recorded in README.md.",
+    "fallback_if_disclaimed": "Delete the 13 vendored files and keep ONLY this manifest's external path + SHA-256 references; the harness then reads them from the recorded external run directory.",
+    "note": "Byte-exact copies. Do NOT edit constants, loop bodies or checksum lines. The .matrix sources self-time with now_ms() and emit TIME_US in 1000-microsecond steps; that legacy field is recorded but NEVER used for Phase 0 deltas."
+  },
+  "timing_option": "A - harness-side external monotonic timing (time.perf_counter_ns); no language change, no stdlib surface, no sandbox decision, no new builtin, no docs/wasm churn",
+  "now_ms_impl": {
+    "location": "src/sched/mod.rs:1311-1326",
+    "native": "start.elapsed().as_millis() as i64 - truncating millisecond resolution",
+    "wasm32": "AtomicI64 call counter, no Instant",
+    "source_expression": "TIME_US = (now_ms() - t0) * 1000",
+    "quantized_us": 1000,
+    "authoritative": false
+  },
+  "checksum_first": {
+    "required_stdout_line": "RESULT <...>",
+    "required_second_line": "TIME_US <integer>",
+    "on_mismatch": "reject the entire run; never publish a partial median",
+    "calibration_exclusion": "role:calibration is excluded by an EXPLICIT literal allowlist only. There is NO general 'skip a missing RESULT line' branch."
+  },
+  "checksum_semantics": {
+    "prime": "RESULT 5133 121013308 - count of primes below 50000 and their sum",
+    "json": "RESULT 249868800 9163 - accumulated total and length of the last serialized row text",
+    "map": "RESULT 44432313 100000 - accumulated lookup values followed by the STRING LITERAL \" 100000\" (with a leading space) at benchmarks/compare/map.matrix:21: println(\"RESULT \" + string(acc) + \" 100000\");. It is NOT string(100000) and NOT a computed lookup count. Verified directly against the vendored source.",
+    "python_json": "ABSENT - there is no json reference implementation in the HLC sources for Python; do not describe it as 'skipped' or 'traceback'. Geomeans vs Python therefore cover prime and map only."
+  },
+  "workloads": {
+    "prime": {
+      "id": "hlc_prime",
+      "description": "50,000 trial divisions with one is_prime() call per iteration",
+      "constants": {
+        "limit": 50000
+      },
+      "expected_result": "RESULT 5133 121013308",
+      "spid3r_source": "prime.matrix",
+      "references": [
+        "prime.php",
+        "prime.py",
+        "prime.js",
+        "prime.rs"
+      ],
+      "iterations": 49998,
+      "inline_case_transformation": "verbatim minus exactly 3 lines (line numbers 8, 16, 18): let t0 = now_ms(); / let us = (now_ms() - t0) * 1000; / println(\"TIME_US \" + string(us));. constants, loops and the RESULT expression unchanged."
+    },
+    "json": {
+      "id": "hlc_json",
+      "description": "200 rows x 600 json_write/json_parse round-trips",
+      "constants": {
+        "rows": 200,
+        "round_trips": 600
+      },
+      "expected_result": "RESULT 249868800 9163",
+      "spid3r_source": "json.matrix",
+      "references": [
+        "json.php",
+        "json.py",
+        "json.js"
+      ],
+      "iterations": 600,
+      "inline_case_transformation": "verbatim minus exactly 3 lines (line numbers 12, 28, 30).",
+      "correction": "The plan's 'byte-identical 9,163-character JSON across all variants' claim is NOT verified and is NOT asserted here. 9163 is the length of the LAST serialized row text, not a cross-variant identifier."
+    },
+    "map": {
+      "id": "hlc_map",
+      "description": "64 string keys x 100,000 map lookups with per-iteration key construction",
+      "constants": {
+        "keys": 64,
+        "lookups": 100000
+      },
+      "expected_result": "RESULT 44432313 100000",
+      "spid3r_source": "map.matrix",
+      "references": [
+        "map.php",
+        "map.py",
+        "map.js"
+      ],
+      "iterations": 100000,
+      "inline_case_transformation": "verbatim minus exactly 3 lines (line numbers 12, 20, 22)."
+    }
+  },
+  "sources": [
+    {
+      "path": "json.js",
+      "sha256": "f1b0a398d9272c9a4ad57869d19eae98d645f9469ecd374e938d22f54de110ba",
+      "role": "reference"
+    },
+    {
+      "path": "json.matrix",
+      "sha256": "09013969c831f0c3cb0351656f195a31e78c90c23cfc75e2d02220dcaf699176",
+      "role": "workload"
+    },
+    {
+      "path": "json.php",
+      "sha256": "6fddd786f8818896c06eaba4c01fd969c605bffa716a88e3eea44af14b3346de",
+      "role": "reference"
+    },
+    {
+      "path": "json.py",
+      "sha256": "95689f6e7d00b517eb365df79091bdec1b49c2582c417d9a2a75a722f43d2cc2",
+      "role": "reference"
+    },
+    {
+      "path": "map.js",
+      "sha256": "06c3e5f1a07ba9db07b32e2f01a38db5a8ed0578cacccc7b18daa8f8dca97c5d",
+      "role": "reference"
+    },
+    {
+      "path": "map.matrix",
+      "sha256": "cf1c96af4d151ada545f1a3e2c28a0fa2dd65e344f2999ba3a496bca3c0b756b",
+      "role": "workload"
+    },
+    {
+      "path": "map.php",
+      "sha256": "196f5745ee3469bb288ed7e8111e0b08befac6bed6f5bbb48ee793e985d4d38b",
+      "role": "reference"
+    },
+    {
+      "path": "map.py",
+      "sha256": "554e4ad56db13115217eb69e62b4e5c931040ef52a492af59bee78e9046ad2f7",
+      "role": "reference"
+    },
+    {
+      "path": "prime.js",
+      "sha256": "ec19b81d9a6f42a6cd49ba9bc8b95d8bede6bac51552de30bf8f92ea5a0b7b56",
+      "role": "reference"
+    },
+    {
+      "path": "prime.matrix",
+      "sha256": "614987f0865f4130b53a40c39812c469b0bbf251b1e021322a8f7c0e69fd526f",
+      "role": "workload"
+    },
+    {
+      "path": "prime.php",
+      "sha256": "d595afc8bbed572093f36c891563dafdc08f40fc535a2069f81e9dfa2a3e5fd3",
+      "role": "reference"
+    },
+    {
+      "path": "prime.py",
+      "sha256": "6af89a11cb693c238b4a47431c4724e24cd284b5fcaea97164066479d8f74796",
+      "role": "reference"
+    },
+    {
+      "path": "prime.rs",
+      "sha256": "19d14f6bfe1c4c0806d7ed538989973743daf738de52703b963bfdfa5ed603de",
+      "role": "reference"
+    },
+    {
+      "path": "phase0_calibration.matrix",
+      "sha256": "f437fbb7bcdb51b2c0b4d643a511dcde877af7595f740a7046f8684417d7a596",
+      "role": "calibration"
+    }
+  ],
+  "calibration": {
+    "path": "phase0_calibration.matrix",
+    "role": "calibration",
+    "registrations": "none - never in BENCH_ITERS, BENCH_FLOORS, any benchmark run, any geomean, ratio, delta or floor",
+    "stdout": "empty",
+    "runtime_location": "the harness copies this committed definition to a temp directory OUTSIDE the repo before execution",
+    "classification": "explicit literal allowlist keyed by role:calibration; never a general skip-missing-RESULT branch"
+  },
+  "fixture_sets": {
+    "verbatim": [
+      "prime.matrix",
+      "json.matrix",
+      "map.matrix"
+    ],
+    "derived_matrix_files": 0,
+    "clones": 0,
+    "examples_churn": 0,
+    "inline_golden_value_cases": 3,
+    "note": "The 3 deterministic RESULT-only sources live INLINE as raw Rust string literals inside tests/engine_matrix.rs const CASES. They are conformance fixtures ONLY, never timed."
+  },
+  "variants": [
+    {
+      "name": "vm",
+      "argv": [
+        "run",
+        "--engine",
+        "vm"
+      ],
+      "variant_kind": "engine",
+      "status": "measured"
+    },
+    {
+      "name": "no-opt",
+      "argv": [
+        "run",
+        "--engine",
+        "vm",
+        "--no-opt"
+      ],
+      "variant_kind": "optimizer_ab",
+      "status": "measured"
+    },
+    {
+      "name": "tree",
+      "argv": [
+        "run",
+        "--engine",
+        "tree"
+      ],
+      "variant_kind": "engine",
+      "status": "measured"
+    },
+    {
+      "name": "exec",
+      "argv": [
+        "exec",
+        "<compiled .matrixc>"
+      ],
+      "variant_kind": "bytecode_v3",
+      "status": "measured"
+    },
+    {
+      "name": "native",
+      "argv": [
+        "build",
+        "--release"
+      ],
+      "variant_kind": "aot",
+      "status": "not_measured",
+      "reason": "The locally available binary has no native backend ('the native backend is not enabled in this build'). AOT requires LLVM 18.1+ and a runtime compilation step that is not compute. Frozen from the external report instead; no AOT claim is made."
+    }
+  ],
+  "asserted_result_pins": {
+    "engines_run_by_phase0_fixtures": [
+      "tree",
+      "vm",
+      "exec"
+    ],
+    "engines_run_by_engine_matrix_cases": [
+      "tree",
+      "vm"
+    ],
+    "aot": "NOT asserted (aot:false on all 3 Case rows; native backend unavailable locally)"
+  },
+  "deviations": [
+    {
+      "id": "D1",
+      "plan_ref": "plan.html section 5 baseline protocol / A1",
+      "text": "The >=10x workload-scaling suggestion is WITHDRAWN. External microsecond timing already gives compute >> 1 ms (117/221/33 ms), and scaling would change the pinned constants and therefore the checksum-verified RESULT lines, which section 2 non-goal #7 forbids. Constants stay pinned."
+    },
+    {
+      "id": "D2",
+      "plan_ref": "A2 / section 6 #14",
+      "text": "BENCH_ITERS / BENCH_FLOORS rows are NOT added in Phase 0. Literal A2 is a No-Go: benchmarks/map.matrix and benchmarks/json.matrix already exist as two of the 8 gated workloads, so the stems collide; adding new floors would make `bench --gate --compare --runs 5` gate 11 workloads on shared CI runners with no pinned-host calibration. src/cli.rs is untouched (zero diff) and the 8 gated workloads are exactly preserved. Floors are re-baselined in Phase 4 with a pinned host and recorded rationale. The new harness reports iters/sec itself, so rate reporting is preserved."
+    },
+    {
+      "id": "D3",
+      "plan_ref": "A2 / section 10",
+      "text": "tools/gate.sh and tools/difftest.sh are NOT wired into the 3-OS CI matrix. gate.sh builds native+gui (LLVM 18 + webkit, absent on ubuntu/macos runners) and difftest.sh hardcodes target/debug/spid3r.exe with no cross-platform binary detection; both would turn CI red. Both are run locally TWICE in the DoD gate sequence. A new additive ubuntu-only `phase0` CI job runs the blocking manifest/fixture verifiers and self-test instead."
+    },
+    {
+      "id": "D4",
+      "plan_ref": "section 6 #2",
+      "text": "The 3 HLC fixtures join the differential set via ADDITIVE golden-value Case rows in tests/engine_matrix.rs (exact expected stdout, exit code, stderr) and a NEW read-only verifier, with NO edits to any existing gate and NO stdout normalization inside an existing gate. No scoped contract deviation is required."
+    }
+  ],
+  "ci": {
+    "job": "phase0 (ubuntu-latest only)",
+    "job_level_continue_on_error": false,
+    "blocking": [
+      "python3 tools/phase0_manifest.py --verify",
+      "python3 tools/phase0_fixtures.py --verify",
+      "python3 tools/phase0_selftest.py",
+      "cargo run --bin spid3r --no-default-features -- test"
+    ],
+    "advisory_step_continue_on_error": true,
+    "advisory_output": "benchmarks/results.phase0.ci-advisory.json",
+    "frozen_snapshot": "benchmarks/results.phase0.json (local pinned-host twice-run only; CI NEVER overwrites it)"
+  }
+}

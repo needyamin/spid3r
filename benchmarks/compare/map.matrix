@@ -1,0 +1,24 @@
+fn build_table(n: int) {
+    let t = map();
+    let i = 0;
+    while i < n {
+        t["k" + string(i)] = (i * 37 + 11) % 997;
+        i += 1;
+    }
+    return t;
+}
+fn main() {
+    let t = build_table(64);
+    let t0 = now_ms();
+    let acc = 0;
+    let r = 0;
+    while r < 100000 {
+        let key = "k" + string(r % 64);
+        acc = acc + t[key];
+        r += 1;
+    }
+    let us = (now_ms() - t0) * 1000;
+    println("RESULT " + string(acc) + " 100000");
+    println("TIME_US " + string(us));
+    return 0;
+}

@@ -1,6 +1,6 @@
 [package]
 name = "spid3r"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 # MSRV: the toolchain is pinned in rust-toolchain.toml and ci.yml.
 rust-version = "1.98"

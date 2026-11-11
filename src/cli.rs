@@ -1386,15 +1386,38 @@ fn bytecode_cache_dir() -> Option<PathBuf> {
     Some(PathBuf::from(dir))
 }
 
+/// Bumped whenever compiler / optimizer output changes for UNCHANGED source.
+///
+/// The key used to be the SHA-256 of the source alone. That guarantees a
+/// stale entry cannot survive a source edit, but it does NOT survive a
+/// compiler upgrade: an old `.matrixc` has a valid v3 checksum, loads fine,
+/// and simply contains pre-upgrade bytecode. That is semantically safe but
+/// means new optimizations never take effect, and an optimized-vs-`--no-opt`
+/// A/B run would silently measure stale code. Mixing a fixed epoch into the
+/// hash invalidates every entry in one step; the old files are just orphans.
+/// Bump this whenever a pass in `src/vm/opt.rs` (or the compiler itself)
+/// changes what it emits for unchanged source.
+const BYTECODE_CACHE_EPOCH: &[u8] = b"spid3r-bytecode-cache-v2";
+
+/// Cache key: SHA-256 of the source bytes plus the compiler epoch. Still 64
+/// lowercase hex characters, so the on-disk shape and `tests/phase4_paths.rs`
+/// invariants are unchanged.
+fn bytecode_cache_key(src: &[u8]) -> String {
+    let mut keyed = Vec::with_capacity(src.len() + BYTECODE_CACHE_EPOCH.len());
+    keyed.extend_from_slice(src);
+    keyed.extend_from_slice(BYTECODE_CACHE_EPOCH);
+    crate::pkg::sha256_hex(&keyed)
+}
+
 /// Look up the compiled container for `file`, keyed by the SHA-256 of the
-/// source bytes (the OPcache analog: the key makes a stale entry impossible
-/// by construction — different source, different hash, recompiled). A
-/// corrupt container fails `deserialize_vmfunc`'s v3 checksum and is
-/// treated as a miss; the caller compiles fresh and writes the entry back.
+/// source bytes plus the compiler epoch (the OPcache analog: changing either
+/// the source or the compiler invalidates the entry). A corrupt container
+/// fails `deserialize_vmfunc`'s v3 checksum and is treated as a miss; the
+/// caller compiles fresh and writes the entry back.
 fn bytecode_cache_lookup(file: &str) -> Option<(Arc<str>, crate::value::VmFunc)> {
     let dir = bytecode_cache_dir()?;
     let src = std::fs::read(file).ok()?;
-    let key = crate::pkg::sha256_hex(&src);
+    let key = bytecode_cache_key(&src);
     let bytes = std::fs::read(dir.join(format!("{}.matrixc", key))).ok()?;
     let script = deserialize_vmfunc(&bytes).ok()?;
     Some((Arc::from(file), script))
@@ -1410,7 +1433,7 @@ fn bytecode_cache_store(file: &str, script: &crate::value::VmFunc) {
     let Ok(src) = std::fs::read(file) else {
         return;
     };
-    let key = crate::pkg::sha256_hex(&src);
+    let key = bytecode_cache_key(&src);
     let path = dir.join(format!("{}.matrixc", key));
     if let Some(parent) = path.parent() {
         if std::fs::create_dir_all(parent).is_err() {
@@ -3139,6 +3162,14 @@ fn bench_iters(stem: &str) -> Option<u64> {
 /// CATASTROPHIC regressions (a 3x+ slowdown) on shared CI runners, not small
 /// drift; docs/ROADMAP.md's table is the record for real tuning. A benchmark file
 /// added to BENCH_ITERS without a floor simply is not gated.
+///
+/// Phase 4 re-baseline review (2026-11-11, after the P0-P3 performance
+/// program): all 8 floors re-checked against best-of-5 release rates
+/// (arith 20.1M / strings 0.99M / list 5.4M / map 1.5M / methods 2.1M /
+/// closures 1.9M / json 107K / tasks 128K iters/sec) — every floor passes
+/// with a 3.3x-21x margin. Floors are minimums, so the performance program's
+/// gains do not invalidate them; all 8 are KEPT unchanged. A future raise
+/// should follow docs/ROADMAP.md's tuning table, never this guard.
 const BENCH_FLOORS: &[(&str, u64)] = &[
     ("arith", 6_000_000),
     ("strings", 140_000),

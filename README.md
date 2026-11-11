@@ -23,7 +23,7 @@ Hello, Spid3r!
 Source goes through **one** front end — lexer, parser, semantic checker, lowering — and stops at a checked AST. Everything after that is a backend, and no backend may reinterpret the language.
 
 - **The tree walker is the oracle.** When engines disagree, the plain AST interpreter defines what is correct.
-- **The VM compiles to 60 opcodes** with a peephole optimizer. `--no-opt` exists so the optimizer can be tested against itself.
+- **The VM compiles to 60 opcodes** with a peephole optimizer. `--no-opt` exists so the optimizer can be tested against itself. The optimizer also rotates `while` loop back-edges so steady-state iterations skip one unconditional jump; that transform runs only on the default path, changes no opcode and no `.matrixc` format, and is covered by `OptStats.rotations`. The dispatch loop separately fuses a few hot opcode patterns at run time; those fusions read the existing bytes, so they apply to `--no-opt` bytecode too, and are disabled whenever `--prof`, `--coverage`, the debugger or captured locals need every original instruction.
 - **Native is real machine code** via LLVM — not a bundled interpreter wearing an `.exe`.
 - **WebAssembly is the same VM**, compiled to wasm32.
 

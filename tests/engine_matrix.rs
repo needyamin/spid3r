@@ -137,6 +137,23 @@ const CASES: &[Case] = &[
         err: None,
         aot: true,
     },
+    // Phase 3: the hybrid int compare (inline compare over runtime-checked
+    // boxed leaves) originally passed the SLOT ADDRESS instead of the boxed
+    // pointer to `spid3r_is_int`/`spid3r_int_of`, so the helpers read the
+    // slot's own bytes as a `Value` — an ASLR-dependent is-Int verdict plus
+    // adjacent-stack-garbage payload. Loops whose bounds came from boxed
+    // `len()` results then ran a garbage number of iterations ~10% of runs
+    // (failure indices were the bound values themselves). This case is
+    // deliberately bound-sensitive: any over- or under-run changes the
+    // cell/count lines or raises the out-of-bounds error.
+    Case {
+        name: "hybrid_loop_bounds",
+        src: "fn fill(x) {\n    let r = x.len();\n    if r == 0 { return matrix(0, 0); }\n    let c = x[0].len();\n    let m = matrix(r, c);\n    for let i = 0; i < r; i = i + 1 {\n        for let j = 0; j < c; j = j + 1 {\n            m.set(i, j, float(x[i][j]));\n        }\n    }\n    return m;\n}\nfn main() {\n    let x = [[0.5, 1.2], [1.5, 0.3], [2.2, 2.8], [3.1, 1.9], [0.8, 2.1], [2.9, 0.5]];\n    let m = fill(x);\n    println(\"rows=\" + string(m.rows()) + \" cols=\" + string(m.cols()));\n    println(\"cell=\" + string(m.get(5, 1)));\n    let n = x.len();\n    let count = 0;\n    for let i = 0; i < n; i = i + 1 {\n        count += 1;\n    }\n    println(\"count=\" + string(count));\n    return 0;\n}\n",
+        out: "rows=6 cols=2\ncell=0.5\ncount=6",
+        code: 0,
+        err: None,
+        aot: true,
+    },
     // ---------------------------------------------------------------- literals
     Case {
         name: "literals",
@@ -792,6 +809,360 @@ const CASES: &[Case] = &[
         err: Some("error[runtime]: division by zero"),
         aot: false,
     },
+    // ------------------------------------------------- Phase 0 HLC golden values
+    // Inline RESULT-only sources for the three Heavy-Load Checker compute
+    // workloads vendored byte-verbatim in benchmarks/compare/{prime,json,map}.matrix.
+    // Each is that verbatim source with EXACTLY THREE timing lines removed:
+    //   let t0 = now_ms();
+    //   let us = (now_ms() - t0) * 1000;
+    //   println("TIME_US " + string(us));
+    // Constants, loop bodies and the RESULT expression are byte-identical;
+    // `python tools/phase0_fixtures.py --verify` proves the delta mechanically
+    // against manifest.json's SHA-256 digests, and asserts the absolute pins on
+    // tree / vm / exec for the verbatim sources.
+    //
+    // These are CONFORMANCE fixtures ONLY - they are NEVER timed. The verbatim
+    // sources are the only ones the Phase 0 harness runs, because they emit a
+    // non-deterministic TIME_US line that cmd_test's byte-exact stdout contract
+    // cannot accept. `aot: false` because the local binary has no native
+    // backend, so an AOT claim could not be verified here.
+    // Pinned checks: 5133 121013308 / 249868800 9163 / 44432313 100000.
+    Case {
+        name: "phase0_hlc_prime",
+        src: r#"fn is_prime(n: int) -> bool {
+    if n < 2 { return false; }
+    let d = 2;
+    while d * d <= n { if n % d == 0 { return false; } d += 1; }
+    return true;
+}
+fn main() {
+    let i = 2;
+    let count = 0;
+    let checksum = 0;
+    while i < 50000 {
+        if is_prime(i) { count += 1; checksum += i; }
+        i += 1;
+    }
+    println("RESULT " + string(count) + " " + string(checksum));
+    return 0;
+}
+"#,
+        out: "RESULT 5133 121013308",
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
+        name: "phase0_hlc_json",
+        src: r#"fn build_rows(n: int) {
+    let rows = list();
+    let i = 0;
+    while i < n {
+        rows.push(map("id", i, "sku", "SKU-" + string(i), "qty", (i % 7) + 1, "price", (i * 37) % 1000));
+        i += 1;
+    }
+    return rows;
+}
+fn main() {
+    let rows = build_rows(200);
+    let total = 0;
+    let last_len = 0;
+    let r = 0;
+    while r < 600 {
+        let s = json_write(rows);
+        let back = json_parse(s);
+        last_len = s.len();
+        let i = 0;
+        while i < back.len() {
+            let row = back[i];
+            total = total + row["price"] * row["qty"] + row["id"];
+            i += 1;
+        }
+        r += 1;
+    }
+    println("RESULT " + string(total) + " " + string(last_len));
+    return 0;
+}
+"#,
+        out: "RESULT 249868800 9163",
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
+        name: "phase0_hlc_map",
+        src: r#"fn build_table(n: int) {
+    let t = map();
+    let i = 0;
+    while i < n {
+        t["k" + string(i)] = (i * 37 + 11) % 997;
+        i += 1;
+    }
+    return t;
+}
+fn main() {
+    let t = build_table(64);
+    let acc = 0;
+    let r = 0;
+    while r < 100000 {
+        let key = "k" + string(r % 64);
+        acc = acc + t[key];
+        r += 1;
+    }
+    println("RESULT " + string(acc) + " 100000");
+    return 0;
+}
+"#,
+        out: "RESULT 44432313 100000",
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    // ------------------------------------------------------------------
+    // Phase 1 conformance controls.
+    //
+    // `src/vm/mod.rs` peeks at two opcode sequences at RUNTIME and fuses them
+    // (GetLocal;GetLocal;Mul;GetLocal;LessEq;JumpIfFalse and
+    //  GetLocal;GetLocal;Mod;Constant;Equal;JumpIfFalse). Those fast paths are
+    // only legal because they FALL THROUGH to generic dispatch whenever a
+    // checked operation fails, an operand is not an Int, or a jump target is
+    // out of range. `src/stdlib/mod.rs` also gained a shared small-int string
+    // cache and allocation-reduced JSON writer/parser. These cases pin the
+    // tree oracle's answers at exactly the boundaries a naive fast path would
+    // get wrong, so a future "optimisation" that starts swallowing overflow,
+    // modulo-by-zero, float comparisons or cross-type equality fails here on
+    // BOTH engines rather than silently changing script behaviour.
+    // ------------------------------------------------------------------
+    Case {
+        name: "phase1_fused_mul_overflow_falls_through",
+        src: r#"fn f(d: int, n: int) {
+    while d * d <= n { println("IN"); return; }
+    println("OK");
+}
+fn main() { f(3037000500, 10); return 0; }
+"#,
+        out: "",
+        code: 1,
+        // checked_mul returns None, so generic Mul must still raise the
+        // pre-existing vm_eval_binary overflow diagnostic — not a fused
+        // wrapped product, and not a silent false comparison.
+        err: Some("error[runtime]: integer overflow: 3037000500 * 3037000500"),
+        aot: false,
+    },
+    Case {
+        name: "phase1_fused_mod_zero_falls_through",
+        src: r#"fn f(n: int, d: int) {
+    if n % d == 0 { println("ZERO"); } else { println("NO"); }
+}
+fn main() { f(10, 0); return 0; }
+"#,
+        out: "",
+        code: 1,
+        // checked_rem returns None on a zero divisor; the generic Mod handler
+        // owns the error text and the span.
+        err: Some("error[runtime]: modulo by zero"),
+        aot: false,
+    },
+    Case {
+        name: "phase1_fused_less_eq_float_falls_through",
+        src: r#"fn main() {
+    let d = 1.5;
+    let n = 3.0;
+    let hits = 0;
+    while d * d <= n { hits = hits + 1; d = d + 1.0; }
+    println(string(hits));
+    return 0;
+}
+"#,
+        // Float operands must bypass the Int-only fused path entirely.
+        out: "1",
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
+        name: "phase1_fused_mod_paths_and_fallthroughs",
+        src: r#"fn mod_true(n: int, d: int) {
+    if n % d == 0 { println("DIV"); } else { println("NOT"); }
+}
+fn mod_str_const(n: int, d: int) {
+    if n % d == "0" { println("STRMATCH"); } else { println("NOSTR"); }
+}
+fn mul_float_rhs(n: float) {
+    let d = 2;
+    let hits = 0;
+    while d * d <= n { hits += 1; d += 1; }
+    println(string(hits));
+    return 0;
+}
+fn minmod() {
+    let a = -9223372036854775807 - 1;
+    let b = -1;
+    println(string(a % b));
+    return 0;
+}
+fn main() {
+    mod_true(10, 5);
+    mod_true(10, 3);
+    mod_str_const(10, 5);
+    mul_float_rhs(10.0);
+    minmod();
+    return 0;
+}
+"#,
+        // Covers the fused true/false branches, a non-Int constant (so
+        // values_equal's cross-type rules still apply), a Float RHS in the
+        // Mul pattern, and i64::MIN % -1 where checked_rem returns None and
+        // the generic wrapping_rem result (0) must survive.
+        out: "DIV\nNOT\nNOSTR\n2\n0",
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
+        name: "phase1_json_writer_parser_boundaries",
+        src: r#"fn main() {
+    let m = map(null, 1, true, 2, 3, "x", "q\"u", 4);
+    println(json_write(m));
+    println(string(0));
+    println(string(1023));
+    println(string(1024));
+    println(string(-1));
+    println(string(9223372036854775807));
+    println(json_parse("9223372036854775807"));
+    println(json_parse("9223372036854775808"));
+    println(json_parse("-9223372036854775808"));
+    println(json_parse("-0"));
+    println(json_parse("0012"));
+    println(json_parse("1e3"));
+    return 0;
+}
+"#,
+        // write_json_key must emit identical key spellings for null/bool/int
+        // and identical escaping for string keys. int_to_string_value must be
+        // byte-identical across the cached 0..=1023 range and outside it.
+        // integer_token must hand i64 overflow, i64::MIN and exponent shapes
+        // back to the original text/f64 fallback unchanged.
+        out: concat!(
+            "{\"null\":1,\"true\":2,\"3\":\"x\",\"q\\\"u\":4}\n",
+            "0\n1023\n1024\n-1\n9223372036854775807\n",
+            "9223372036854775807\n9223372036854776000\n",
+            "-9223372036854775808\n0\n12\n1000.0",
+        ),
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
+        name: "phase1_fused_prefix_string_paths",
+        // Both shapes of fused superinstruction C:
+        //   Constant p; GetGlobal g; GetLocal s; Constant k; Mod; Call 1; Add
+        //   Constant p; GetGlobal g; GetLocal s; Call 1; Add
+        src: r#"fn keys(r: int) {
+    let a = "k" + string(r % 64);
+    let b = "v" + string(r);
+    println(a);
+    println(b);
+}
+fn big() {
+    let n = 1234567890123;
+    println("n" + string(n));
+}
+fn floats(x: float) {
+    println("f" + string(x));
+}
+fn minmod() {
+    let a = -9223372036854775807 - 1;
+    println("m" + string(a % -1));
+}
+fn main() {
+    keys(0);
+    keys(63);
+    keys(64);
+    keys(-1);
+    big();
+    floats(1.5);
+    minmod();
+    return 0;
+}
+"#,
+        // Covers cached (0..=1023) and uncached small-int spellings, negative
+        // remainders, an int outside the cache, a Float local (must fall
+        // through to the generic `string` native), and i64::MIN % -1 where
+        // checked_rem is None so the generic wrapping_rem result survives.
+        out: concat!(
+            "k0\nv0\n",
+            "k63\nv63\n",
+            "k0\nv64\n",
+            "k-1\nv-1\n",
+            "n1234567890123\n",
+            "f1.5\n",
+            "m0",
+        ),
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
+        name: "phase1_fused_prefix_string_rebind",
+        // The global is resolved on EVERY hit: a user-defined `string` must
+        // win, not a stale inlined builtin.
+        src: r#"fn string(x) { return "OVERRIDE"; }
+fn main() {
+    let r = 7;
+    println("k" + string(r % 64));
+    println("v" + string(r));
+    return 0;
+}
+"#,
+        out: "kOVERRIDE\nvOVERRIDE",
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
+        name: "phase1_fused_prefix_string_mod_zero",
+        // checked_rem returns None for a zero divisor, so the fused path must
+        // fall through and raise the identical generic runtime error.
+        src: r#"fn main() {
+    let r = 10;
+    println("k" + string(r % 0));
+    return 0;
+}
+"#,
+        out: "",
+        code: 1,
+        err: Some("error[runtime]: modulo by zero"),
+        aot: false,
+    },
+    Case {
+        name: "phase1_fused_prefix_string_loop_key",
+        // The exact `benchmarks/compare/map.matrix` hot expression, in a
+        // 1000-iteration loop, so both the fused key construction and the
+        // subsequent map lookup are exercised on tree and VM.
+        src: r#"fn main() {
+    let t = map();
+    let i = 0;
+    while i < 64 {
+        t["k" + string(i)] = i * 3;
+        i += 1;
+    }
+    let acc = 0;
+    let r = 0;
+    while r < 1000 {
+        let key = "k" + string(r % 64);
+        acc = acc + t[key];
+        r += 1;
+    }
+    println("RESULT " + string(acc));
+    return 0;
+}
+"#,
+        out: "RESULT 93060",
+        code: 0,
+        err: None,
+        aot: false,
+    },
 ];
 
 #[test]
@@ -1119,4 +1490,209 @@ fn assignment_evaluation_order_matches_on_tree_and_vm() {
             got.2
         );
     }
+}
+
+/// Phase 1: the VM's fused superinstructions are runtime pattern peeks, so
+/// they MUST be disabled under `--prof` and `--coverage`. Otherwise the
+/// profiler would under-count `mul` / `mod` / `less_eq` / `equal` /
+/// `jump_if_false` and coverage would silently miss the lines those opcodes
+/// belong to. This test pins both the semantic output AND the observation of
+/// every original opcode, and also checks `--no-opt` (where the same runtime
+/// patterns are reachable) still agrees with the default VM.
+#[test]
+fn phase1_fused_paths_preserve_instrumentation() {
+    let src = concat!(
+        "fn is_prime(n: int) {\n",
+        "    let d = 2;\n",
+        "    while d * d <= n {\n",
+        "        if n % d == 0 { return false; }\n",
+        "        d += 1;\n",
+        "    }\n",
+        "    return true;\n",
+        "}\n",
+        "fn main() {\n",
+        "    let i = 2;\n",
+        "    let c = 0;\n",
+        "    while i < 200 {\n",
+        "        if is_prime(i) { c += 1; }\n",
+        "        i += 1;\n",
+        "    }\n",
+        "    println(\"COUNT \" + string(c));\n",
+        "    return 0;\n",
+        "}\n",
+    );
+    let dir = std::env::temp_dir().join("spid3r_matrix_phase1_flags");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("fused_prof.matrix");
+    std::fs::write(&path, src).expect("write case");
+
+    let run = |engine: &str, extra: &[&str]| {
+        let o = Command::new(bin())
+            .arg("run")
+            .arg("--engine")
+            .arg(engine)
+            .args(extra)
+            .arg(path.to_str().unwrap())
+            .output()
+            .expect("spawn spid3r");
+        (
+            o.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&o.stdout).to_string(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+
+    let expected = "COUNT 46";
+    for (label, engine, extra) in [
+        ("tree", "tree", &[][..]),
+        ("vm", "vm", &[][..]),
+        ("vm --no-opt", "vm", &["--no-opt"][..]),
+        ("vm --prof", "vm", &["--prof"][..]),
+        ("vm --coverage", "vm", &["--coverage"][..]),
+        ("vm --prof --no-opt", "vm", &["--prof", "--no-opt"][..]),
+    ] {
+        let (code, out, err) = run(engine, extra);
+        assert_eq!(code, 0, "[{}] exit {} stderr {}", label, code, err);
+        assert_eq!(out.trim_end(), expected, "[{}] stdout", label);
+    }
+
+    // Under --prof the original opcodes must still be observed: a fused path
+    // that ran anyway would erase these lines from the profile.
+    let (_, _, prof) = run("vm", &["--prof"]);
+    assert!(prof.contains("==== vm profile ===="), "no profile: {}", prof);
+    assert!(prof.contains("instructions:"), "no instruction count: {}", prof);
+    for opcode in ["mul", "mod", "less_eq", "equal", "jump_if_false"] {
+        assert!(
+            prof.lines().any(|l| l.trim_end().ends_with(opcode)),
+            "--prof lost the {:?} opcode: {}",
+            opcode,
+            prof
+        );
+    }
+
+    // Under --coverage the fused patterns must not skip line hits.
+    let (_, _, cov) = run("vm", &["--coverage"]);
+    assert!(cov.contains("(total)"), "no coverage report: {}", cov);
+    assert!(cov.contains("100.0%"), "fused path lost coverage: {}", cov);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Phase 1 fused superinstruction C skips seven opcodes per hit
+/// (`constant`, `get_global`, `get_local`, `constant`, `mod`, `call`, `add`).
+/// It MUST therefore be disabled under `--prof` and `--coverage`, or the
+/// profiler would under-count and coverage would silently lose line hits.
+/// Runtime pattern peeks are reachable in both optimised and `--no-opt`
+/// bytecode, so both are checked here too.
+#[test]
+fn phase1_fused_prefix_string_preserves_instrumentation() {
+    let src = concat!(
+        "fn main() {\n",
+        "    let t = map();\n",
+        "    let i = 0;\n",
+        "    while i < 64 {\n",
+        "        t[\"k\" + string(i)] = i * 3;\n",
+        "        i += 1;\n",
+        "    }\n",
+        "    let acc = 0;\n",
+        "    let r = 0;\n",
+        "    while r < 1000 {\n",
+        "        let key = \"k\" + string(r % 64);\n",
+        "        acc = acc + t[key];\n",
+        "        r += 1;\n",
+        "    }\n",
+        "    println(\"RESULT \" + string(acc));\n",
+        "    return 0;\n",
+        "}\n",
+    );
+    let dir = std::env::temp_dir().join("spid3r_matrix_phase1_fusedc");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let path = dir.join("fusedc_prof.matrix");
+    std::fs::write(&path, src).expect("write case");
+
+    let run = |engine: &str, extra: &[&str]| {
+        let o = Command::new(bin())
+            .arg("run")
+            .arg("--engine")
+            .arg(engine)
+            .args(extra)
+            .arg(path.to_str().unwrap())
+            .output()
+            .expect("spawn spid3r");
+        (
+            o.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&o.stdout).to_string(),
+            String::from_utf8_lossy(&o.stderr).to_string(),
+        )
+    };
+
+    let expected = "RESULT 93060";
+    for (label, engine, extra) in [
+        ("tree", "tree", &[][..]),
+        ("vm", "vm", &[][..]),
+        ("vm --no-opt", "vm", &["--no-opt"][..]),
+        ("vm --prof", "vm", &["--prof"][..]),
+        ("vm --coverage", "vm", &["--coverage"][..]),
+        ("vm --prof --no-opt", "vm", &["--prof", "--no-opt"][..]),
+    ] {
+        let (code, out, err) = run(engine, extra);
+        assert_eq!(code, 0, "[{}] exit {} stderr {}", label, code, err);
+        assert_eq!(out.trim_end(), expected, "[{}] stdout", label);
+    }
+
+    let instructions = |prof: &str| -> i64 {
+        prof.lines()
+            .find_map(|l| l.trim().strip_prefix("instructions: "))
+            .and_then(|n| n.trim().parse::<i64>().ok())
+            .unwrap_or(-1)
+    };
+    let (_, _, prof) = run("vm", &["--prof"]);
+    assert!(prof.contains("==== vm profile ===="), "no profile: {}", prof);
+    // Phase 1: with every original opcode observed the run was 18050
+    // instructions; a RUNTIME fused path running under --prof would collapse
+    // this to ~11000, which this assertion is here to catch.
+    //
+    // Phase 2: the optimizer now ROTATES the two `while` back-edges on the
+    // default path (see src/vm/opt.rs::rotate_loops). Each rotation removes
+    // exactly one unconditional `Jump` dispatch per loop iteration, so the
+    // optimized --prof total is 18050 - (64 + 1000) = 16986. This is a real
+    // COMPILE-TIME reduction in executed work, not a hidden opcode: the
+    // profile below still shows the condition opcodes (`less` 1066 times)
+    // and the two top-of-loop `jump_if_false` checks, plus 1064 bottom
+    // `jump_if_true` checks. --prof --no-opt must remain 18050 because
+    // rotation lives only in compile_program().
+    assert_eq!(instructions(&prof), 16986, "--prof lost opcodes: {}", prof);
+    let (_, _, prof_no_opt) = run("vm", &["--prof", "--no-opt"]);
+    assert_eq!(
+        instructions(&prof_no_opt),
+        18050,
+        "--prof --no-opt lost opcodes: {}",
+        prof_no_opt
+    );
+    assert_eq!(
+        instructions(&prof_no_opt) - instructions(&prof),
+        1064,
+        "rotation must remove exactly one Jump per loop iteration"
+    );
+    for opcode in [
+        "constant",
+        "get_global",
+        "get_local",
+        "call",
+        "add",
+        "index_get",
+    ] {
+        assert!(
+            prof.lines().any(|l| l.trim_end().ends_with(opcode)),
+            "--prof lost the {:?} opcode: {}",
+            opcode,
+            prof
+        );
+    }
+
+    let (_, _, cov) = run("vm", &["--coverage"]);
+    assert!(cov.contains("(total)"), "no coverage report: {}", cov);
+    assert!(cov.contains("100.0%"), "fused path lost coverage: {}", cov);
+
+    let _ = std::fs::remove_file(&path);
 }

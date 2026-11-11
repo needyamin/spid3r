@@ -1,0 +1,11 @@
+// Phase 0 STARTUP CALIBRATION ONLY - role: calibration.
+// NOT a workload. NOT registered in BENCH_ITERS / BENCH_FLOORS.
+// NEVER published, never used in any geomean, ratio, delta or floor.
+// Prints nothing and performs no work: its externally measured wall time is
+// the per-run startup baseline subtracted from each workload's wall_ms.
+// The harness excludes this file from the checksum-first RESULT/TIME_US gate
+// by an EXPLICIT literal allowlist (role: calibration), never by a general
+// "skip a missing RESULT line" branch.
+fn main() {
+    return 0;
+}

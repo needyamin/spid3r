@@ -1,0 +1,469 @@
+{
+  "schema": "spid3r.phase0.compare/1",
+  "baseline": "benchmarks/baseline-69b513a.json",
+  "current_runs": [
+    "C:/Users/needyamin/OneDrive/Desktop/spid3r/benchmarks/results.phase3-run2.json"
+  ],
+  "baseline_frozen": false,
+  "baseline_status": "ADVISORY_ONLY",
+  "regression_rule": ">1.05x previous median AND >3x pooled MAD, confirmed on 2 consecutive runs",
+  "pooled_mad_method": "sqrt((mad_prev^2 + mad_cur^2)/2)",
+  "checks": [
+    {
+      "workload": "json",
+      "variant": "exec",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 222.2531,
+          "current": 190.721,
+          "ratio": 0.858125,
+          "delta_ms": -31.5321,
+          "pooled_mad": 3.273,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "json",
+      "variant": "exec",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 240.5552,
+          "current": 208.5614,
+          "ratio": 0.867,
+          "delta_ms": -31.9938,
+          "pooled_mad": 3.273,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "json",
+      "variant": "native",
+      "status": "NO_BASELINE",
+      "note": "not in baseline medians"
+    },
+    {
+      "workload": "json",
+      "variant": "no-opt",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 226.0979,
+          "current": 189.333,
+          "ratio": 0.837394,
+          "delta_ms": -36.7649,
+          "pooled_mad": 2.5406,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "json",
+      "variant": "no-opt",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 241.4443,
+          "current": 206.6644,
+          "ratio": 0.855951,
+          "delta_ms": -34.7799,
+          "pooled_mad": 2.5406,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "json",
+      "variant": "tree",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 302.4561,
+          "current": 260.0102,
+          "ratio": 0.859663,
+          "delta_ms": -42.4459,
+          "pooled_mad": 3.6167,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "json",
+      "variant": "tree",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 317.9048,
+          "current": 276.9229,
+          "ratio": 0.871088,
+          "delta_ms": -40.9819,
+          "pooled_mad": 3.6167,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "json",
+      "variant": "vm",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 225.5598,
+          "current": 192.2461,
+          "ratio": 0.852307,
+          "delta_ms": -33.3137,
+          "pooled_mad": 1.4048,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "json",
+      "variant": "vm",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 240.9879,
+          "current": 209.4387,
+          "ratio": 0.869084,
+          "delta_ms": -31.5492,
+          "pooled_mad": 1.4048,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "map",
+      "variant": "exec",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 33.7807,
+          "current": 22.1822,
+          "ratio": 0.656653,
+          "delta_ms": -11.5985,
+          "pooled_mad": 0.2766,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "map",
+      "variant": "exec",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 49.4507,
+          "current": 37.9446,
+          "ratio": 0.767322,
+          "delta_ms": -11.5061,
+          "pooled_mad": 0.2766,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "map",
+      "variant": "native",
+      "status": "NO_BASELINE",
+      "note": "not in baseline medians"
+    },
+    {
+      "workload": "map",
+      "variant": "no-opt",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 34.1446,
+          "current": 22.2064,
+          "ratio": 0.650363,
+          "delta_ms": -11.9382,
+          "pooled_mad": 0.3575,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "map",
+      "variant": "no-opt",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 49.7113,
+          "current": 38.2569,
+          "ratio": 0.769582,
+          "delta_ms": -11.4544,
+          "pooled_mad": 0.3575,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "map",
+      "variant": "tree",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 79.8973,
+          "current": 74.5025,
+          "ratio": 0.932478,
+          "delta_ms": -5.3948,
+          "pooled_mad": 0.6817,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "map",
+      "variant": "tree",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 97.195,
+          "current": 92.8405,
+          "ratio": 0.955198,
+          "delta_ms": -4.3545,
+          "pooled_mad": 0.6817,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "map",
+      "variant": "vm",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 32.2634,
+          "current": 22.1491,
+          "ratio": 0.686509,
+          "delta_ms": -10.1143,
+          "pooled_mad": 0.4707,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "map",
+      "variant": "vm",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 49.6819,
+          "current": 37.9104,
+          "ratio": 0.763063,
+          "delta_ms": -11.7715,
+          "pooled_mad": 0.4707,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "prime",
+      "variant": "exec",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 116.9425,
+          "current": 30.7579,
+          "ratio": 0.263017,
+          "delta_ms": -86.1846,
+          "pooled_mad": 0.411,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "prime",
+      "variant": "exec",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 132.5734,
+          "current": 45.5669,
+          "ratio": 0.343711,
+          "delta_ms": -87.0065,
+          "pooled_mad": 0.411,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "prime",
+      "variant": "native",
+      "status": "NO_BASELINE",
+      "note": "not in baseline medians"
+    },
+    {
+      "workload": "prime",
+      "variant": "no-opt",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 114.3514,
+          "current": 33.1678,
+          "ratio": 0.290052,
+          "delta_ms": -81.1836,
+          "pooled_mad": 0.4672,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "prime",
+      "variant": "no-opt",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 132.359,
+          "current": 47.9985,
+          "ratio": 0.362639,
+          "delta_ms": -84.3605,
+          "pooled_mad": 0.4672,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "prime",
+      "variant": "tree",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 244.8837,
+          "current": 249.6076,
+          "ratio": 1.01929,
+          "delta_ms": 4.7239,
+          "pooled_mad": 0.9574,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "prime",
+      "variant": "tree",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 263.4103,
+          "current": 264.3589,
+          "ratio": 1.003601,
+          "delta_ms": 0.9486,
+          "pooled_mad": 0.9574,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "prime",
+      "variant": "vm",
+      "metric": "compute_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 116.8742,
+          "current": 30.6236,
+          "ratio": 0.262022,
+          "delta_ms": -86.2506,
+          "pooled_mad": 0.5295,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    },
+    {
+      "workload": "prime",
+      "variant": "vm",
+      "metric": "wall_ms",
+      "runs": [
+        {
+          "run": 0,
+          "previous": 132.4391,
+          "current": 45.178,
+          "ratio": 0.341123,
+          "delta_ms": -87.2611,
+          "pooled_mad": 0.5295,
+          "flagged": false
+        }
+      ],
+      "confirmed": false,
+      "status": "OK"
+    }
+  ],
+  "metadata": {
+    "baseline_not_frozen": "Baseline is ADVISORY_ONLY (unpinned host); comparison is informational, never a gate."
+  },
+  "confirmed_regressions": [],
+  "verdict": "ADVISORY",
+  "pass": true
+}

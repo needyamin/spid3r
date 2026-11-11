@@ -104,9 +104,15 @@ the (flat, transitive) embedded table, so nested imports resolve too.
 
 `spid3r run --engine vm` can cache compiled containers: set
 `cache.bytecode_dir` in `spid3r.ini` and every run of `foo.matrix` first
-looks for `<dir>/<sha256-of-source>.matrixc`. The key is the SHA-256 of the
-source bytes, so a stale entry is impossible by construction — different
-source, different key, recompiled.
+looks for `<dir>/<key>.matrixc`, where `key` is the 64-character hex
+SHA-256 of **the source bytes plus a compiler epoch** (a fixed byte string
+in `src/cli.rs`). Different source, different key, recompiled — and a
+compiler / optimizer change for unchanged source also invalidates the
+entry when the epoch is bumped. The epoch matters because an old container
+still has a valid v3 checksum and would otherwise keep serving pre-upgrade
+bytecode (semantically safe, but new optimizations would never take effect,
+and an optimized-vs-`--no-opt` comparison would silently measure stale
+code).
 
 * **Miss**: the program compiles normally and the v3 container is written
   back (best effort; a failed write just means the next run recompiles).
@@ -168,6 +174,60 @@ bytecode.
   `IndexSet`/`FieldSet`'s `[target, value]` order afterwards. Additive per
   docs/BYTECODE_STABILITY.md: no format-version bump, older readers reject
   the byte cleanly.
+
+- **Runtime fused superinstructions** (Phase 1): the dispatch loop peeks at a
+  few short opcode patterns — `GetLocal;GetLocal;Mul;GetLocal;LessEq;JumpIfFalse`,
+  `GetLocal;GetLocal;Mod;Constant;Equal;JumpIfFalse`, and the
+  `"prefix" + string(n % k)` key-building shape — and executes them in one step.
+  These are **not new opcodes**: there is no `OpCode` variant, no `Chunk` field,
+  no optimizer edit and no `.matrixc` format change, so v1/v2/v3 containers are
+  untouched and the fusions apply equally to optimized and `--no-opt` bytecode.
+  A fusion is taken only when `--prof`, `--coverage`, the debugger,
+  `pending_str` and captured locals are all absent, so instrumentation still
+  observes every original opcode and line hit. Integer fast paths use
+  `checked_mul` / `checked_rem` and fall through to the generic handlers on
+  overflow or modulo by zero; a global such as `string` is resolved from the
+  live globals map on every hit, so a user-defined binding is never fused.
+  Phase 2 also accepts `JumpIfTrue` after the `LessEq` pattern, because the
+  optimizer can rotate that loop condition to the bottom of the loop; both
+  branch polarities take the same fused path.
+
+- **Compile-time loop back-edge rotation** (Phase 2): `optimize_script()`
+  rewrites a canonical `while` loop from
+
+  ```text
+  S: <cond>; JumpIfFalse end; <body>; Jump S; end:
+  ```
+
+  into
+
+  ```text
+  S: <cond>; JumpIfFalse end; <body>; <cond (duplicated)>; JumpIfTrue body_start; end:
+  ```
+
+  The top check still runs on entry and on `continue` (which targets `S`),
+  and `break` still targets `end`. Steady-state iterations jump straight back
+  to the body, removing exactly **one unconditional `Jump` dispatch per
+  iteration**. The condition block is duplicated, never reordered, so every
+  evaluation still happens once, in the same order, with the same stack
+  effect. `inst_offsets` / `inst_spans` are rebuilt so debugger and coverage
+  line attribution still point at real source lines.
+
+  This is a **real optimizer-only transform**: it lives entirely in
+  `src/vm/opt.rs`, so `compile_program_unoptimized` (`--no-opt`) never sees
+  it. No new `OpCode`, no `Chunk` field, no `.matrixc` format change — v1/v2/v3
+  containers and the bytecode checksum are untouched. Guardrails: chunks with
+  `Try` are skipped; only a whitelist of pure condition opcodes is duplicated
+  (no internal jumps, calls, stores or stack shuffling); at least one body
+  instruction is required; jumps from outside landing inside the loop, or on
+  the back-edge itself, veto the transform; the new offset must fit `i16`.
+  `OptStats.rotations` is the per-pass counter.
+
+  Because the pass removes work at **compile** time, `--prof` on the default
+  path legitimately reports fewer executed instructions than
+  `--prof --no-opt` — one `Jump` per loop iteration. Runtime fusions are still
+  disabled under instrumentation, so no opcode is hidden by a fast path;
+  `tests/engine_matrix.rs` pins the exact delta.
 
 ### Bytecode validation (safety net)
 
