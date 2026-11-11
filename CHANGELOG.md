@@ -101,3 +101,108 @@ These are registered, not silently relaxed; **no unmet gate is claimed as met**.
 - `tools/qa_wasm_test.js` now asserts the wasm version against the crate
   version instead of a hardcoded literal, so a future bump cannot silently
   break the wasm QA gate.
+
+## Unreleased — Phase 5 gap closure (2026-11-12)
+
+No version bump: `LANGUAGE_VERSION = "1.0"` and the `1.1.0` release version are
+unchanged. Phase 5 closes the remaining audit gaps and refreshes the
+documentation, without changing the language surface or lifting a constraint.
+
+- **Plan / docs accuracy.** `plan.html` (a local-only, gitignored working
+  document) had its §1–§14 factual errors corrected and gained §15, an
+  as-shipped v1.1.0 scorecard and Phase 5 close-out: retracted the incorrect
+  "investigator report not delivered" claim, reconciled the test inventory
+  (1314 shipped in v1.1.0; four new Phase 5 parity tests bring it to 1318 =
+  1295 core / 13 gui / 10 aot), corrected the false "AOT consumes the same Chunk" claim
+  (`src/native/ir.rs:4498` lowers from the AST via `crate::lower::lower`), and
+  refreshed stale §9 `file:line` references. `docs/ENGINE_CONTRACT.md` gap #2
+  now states that `--max-call-depth` applies to tree + VM only (AOT excluded),
+  matching `--help` and `src/cli.rs`.
+- **Formal target retirement.** `docs/PERF_TARGET_RETIREMENT.md` quotes every
+  original `plan.html` §7 number verbatim, records the as-shipped results, and
+  formally retires the P2 stretch / P3 aspirational numeric targets that would
+  require a `Value` / GC layout change, a JIT, a new crate, or weakened safety
+  semantics. No RED LINE was relaxed and no feature was removed.
+- **Two full Heavy-Load Checker runs.** `run-20261112-003601` and
+  `run-20261112-003649`: both **GO / PASS / 100-of-100 health / 0.0000%
+  errors**, RPS 86.80 vs 85.62 (1.36% apart), `Comparable: YES`. TTFB p95
+  differs by 6.21%, which is **disclosed** rather than reported as a ±3% pass
+  (shared unpinned host, legacy-shell cgroup fallback). **Disclosure:** both
+  runs exercise the pre-existing `spid3rweb-app` container image and the HLC
+  host `spid3r` 1.0.1, i.e. **pre-v1.1.0** binaries. They are an HTTP
+  non-regression check only; their §11 compute numbers are never attributed to
+  v1.1.0, and `docs/html/benchmark.html` is not regenerated from them. The
+  Phase 4 certificate's "Docker daemon not running" limitation is stale.
+- **Performance (safe, additive).** A scalar-only JSON writer fast path that
+  keeps the documented snapshot-clone recursion as its fallback (removing
+  those clones outright would reintroduce a non-reentrant `Mutex` deadlock on
+  self-referential containers); a `MapData.generation` counter plus a bounded,
+  per-VM map inline cache, which is layout-safe because `Value::Map` is
+  pointer-sized; and `opt_enabled` threaded from the CLI so `--no-opt` also
+  disables VM runtime peeks. No `Value` / GC layout change, no new `unsafe`,
+  no new crate, no compiler / bytecode-format change (so no
+  `BYTECODE_CACHE_EPOCH` bump), and no `BENCH_FLOORS` change.
+- **A4 closed without an edit.** `tests/engine_matrix.rs::CASES` and
+  `tools/phase0_fixtures.py --verify` already provide verbatim three-engine
+  parity for the HLC fixtures. Adding them to `tools/difftest.sh` would break
+  its byte-exact diff because the verbatim sources emit a non-deterministic
+  `TIME_US` line.
+- **Measurements remain `ADVISORY_ONLY`.** Two consecutive clean sessions,
+  `benchmarks/results.phase3-run3.json` and `benchmarks/results.phase3-run4.json`
+  (best-effort `--pin-core 2` process affinity on a still-shared host,
+  `--advisory`, nothing frozen): both `numeric_band: PASS`,
+  `selftest_pass: true`, all 12 workload x variant rows `mad_ok=true / PASS`,
+  zero `INVALID_RERUN`, and two-run agreement within ±3% (worst prime/exec
+  +2.97%). The frozen `benchmarks/results.phase3-run2.json` (top-level
+  `numeric_band: BLOCK`) is never edited or re-baselined; the clean rerun
+  supersedes it. No MAD / ±3% / sensitivity threshold was loosened: four
+  invalidate-and-rerun attempts (two no-artifact calibration timeouts, two
+  self-test flakes) were discarded and rerun, each preserved as evidence.
+  Commit-over-commit comparison (`tools/phase0_compare.py`): the
+  pinned-vs-unpinned baseline comparison is disclosed as
+  **config-incomparable** (the untouched tree engine drifted +30% under the
+  pinned session), and the config-matched unpinned comparison is **22 of 24
+  metric rows OK** - the only confirmed regression is `prime/no-opt`, the
+  intentional `--no-opt` semantics change on the A/B diagnostic path, not a
+  performance target. `spid3r bench --gate --compare --runs 5`: 8/8
+  `BENCH_FLOORS` PASS.
+- **Wasm / doc sync.** `web/spid3r.wasm` rebuilt (3,717,132 B) and
+  `web/spid3r_wasm_data.js` regenerated (4,956,565 B); the runtime reports
+  `1.1.0 / 1.0`. `tools/verify_dev_snippets.js` 19/0,
+  `tools/verify_doc_claims.js` 37/37, `tools/qa_wasm_test.js` 8/8.
+  `benchmarks/report-data.json` was deliberately not regenerated: it is the
+  separate `spid3r bench` micro-benchmark data source, whose floor rates
+  still match today's gate output within 0.1%.
+- **Instrumentation fidelity fix.** The `GetLocal a; GetLocal b; Less;
+  JumpIfFalse` and `GetLocal a; GetLocal b; Add; SetLocal; Pop` runtime
+  fusions were the only fusion family not gated on `--prof` / `--coverage`,
+  so the profiler counted a fused pair as one instruction and under-counted
+  the original opcode sequence by ~23%. They now obey the same gate as every
+  other fusion, which is what `docs/BYTECODE.md` already documents. The
+  pinned `--prof` totals become 21242 (default path) and 22306
+  (`--prof --no-opt`), and the difference is exactly the 1064 `Jump`
+  dispatches the compile-time loop rotation removes -- the rotation guard in
+  `tests/engine_matrix.rs` is exact again. Non-instrumented execution is
+  unchanged.
+- **Test isolation fixes.** The CSV round-trip test wrote to the fixed path
+  `target/test_out.csv`; an unrelated process holding that file open made
+  the write fail on Windows with ERROR_SHARING_VIOLATION, which failed the
+  gate in all four feature configurations. The two parallel tests in
+  `tests/tls_fetch.rs` shared one temp `.matrix` file and deleted each
+  other's file mid-run. Both now use per-process / per-invocation unique
+  paths; the assertions are unchanged.
+- **Verification gates (WS8, all observed).** `bash tools/gate.sh 900` twice
+  consecutively: `pass=9 fail=0 hang=0` both times, identical counts.
+  `tools/count_tests.sh`: 1318 tests (1295 core / 13 gui / 10 aot).
+  `tools/difftest.sh`: ALL EXAMPLES MATCH (tree == vm == exec).
+  `tools/native_diff.sh examples/*.matrix`: 24 pass / 0 fail / 1 skip
+  (`math_util` has no `fn main`) / 0 hang. `tools/phase0_fixtures.py
+  --verify` PASS (35 checks), `tools/phase0_manifest.py --verify` PASS (14
+  files), `tools/phase0_selftest.py` PASS on attempt 3 (two attempts
+  invalidated by host noise and rerun; no threshold touched).
+  Exit-code contract re-verified: valid `.matrixc` -> 0, checksum-corrupted
+  container -> 4. `--sandbox` denies filesystem, network, process and
+  environment. `spid3r bench --gate --compare --runs 5`: 8/8 `BENCH_FLOORS`
+  PASS.
+  Final gate and verification results are recorded in `plan.html` §15 and
+  in the Phase 5 commit message.

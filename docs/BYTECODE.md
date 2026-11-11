@@ -181,10 +181,21 @@ bytecode.
   `"prefix" + string(n % k)` key-building shape — and executes them in one step.
   These are **not new opcodes**: there is no `OpCode` variant, no `Chunk` field,
   no optimizer edit and no `.matrixc` format change, so v1/v2/v3 containers are
-  untouched and the fusions apply equally to optimized and `--no-opt` bytecode.
+  untouched. As of Phase 5 the fusions run only on the default optimized VM
+  path: `run --engine vm --no-opt` calls `Vm::set_opt_enabled(false)`, which
+  gates the runtime peeks in addition to the compile-time passes. Per-VM inline
+  caches stay on under `--no-opt` (memoization, not instruction peeks), and no
+  `OpCode`, `Chunk` field or `.matrixc` format change is involved.
   A fusion is taken only when `--prof`, `--coverage`, the debugger,
   `pending_str` and captured locals are all absent, so instrumentation still
-  observes every original opcode and line hit. Integer fast paths use
+  observes every original opcode and line hit. That gate covers the
+  `GetLocal a; GetLocal b; Less; JumpIfFalse` and
+  `GetLocal a; GetLocal b; Add; SetLocal; Pop` pair fusions as well: they
+  used to run under `--prof`, which made the profiler count a fused pair as
+  ONE instruction and under-count the original opcode sequence by ~23%.
+  Phase 5 closes that gap, so `--prof` reports every original opcode in
+  both the default and the `--no-opt` path and their difference is exactly
+  the compile-time rotation effect. Integer fast paths use
   `checked_mul` / `checked_rem` and fall through to the generic handlers on
   overflow or modulo by zero; a global such as `string` is resolved from the
   live globals map on every hit, so a user-defined binding is never fused.
@@ -225,9 +236,10 @@ bytecode.
 
   Because the pass removes work at **compile** time, `--prof` on the default
   path legitimately reports fewer executed instructions than
-  `--prof --no-opt` — one `Jump` per loop iteration. Runtime fusions are still
-  disabled under instrumentation, so no opcode is hidden by a fast path;
-  `tests/engine_matrix.rs` pins the exact delta.
+  `--prof --no-opt` — one `Jump` per loop iteration. Runtime fusions are
+  disabled both under instrumentation and under `--no-opt`, so no opcode is
+  hidden by a fast path; `tests/engine_matrix.rs` pins the exact delta and
+  `tests/phase5_perf_parity.rs` pins `--no-opt` output parity.
 
 ### Bytecode validation (safety net)
 

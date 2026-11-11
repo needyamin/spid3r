@@ -678,6 +678,13 @@ pub struct MapData {
     /// The module's `public const` exports. They are frozen: a namespace copy
     /// of a constant must not be rebindable (`mu["VERSION"] = 9`).
     pub frozen: std::collections::HashSet<super::MapKey>,
+    /// Monotonic mutation counter (Phase 5). Bumped by every value or
+    /// structural mutation so a future inline cache can detect invalidation.
+    /// `Value::Map` is `Ref<MapData>` (pointer-sized `Arc<Mutex<..>>`), so
+    /// adding this scalar does **not** change the `Value` layout and requires
+    /// no GC change. Wrapping (not `+= 1`) keeps `overflow-checks = true`
+    /// builds safe after 2^64 mutations.
+    pub generation: u64,
 }
 
 impl Drop for MapData {
@@ -702,7 +709,15 @@ impl MapData {
             index,
             namespace: false,
             frozen: std::collections::HashSet::new(),
+            generation: 0,
         }
+    }
+
+    /// Invalidate any cached resolution for this map. Called from every
+    /// mutation path (`set_key`, `reindex`, `clear`).
+    #[inline]
+    fn bump_generation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Build a **module namespace**: the exported names of an imported module.
@@ -751,6 +766,7 @@ impl MapData {
     }
     #[inline]
     pub fn set_key(&mut self, k: super::MapKey, val: Value) {
+        self.bump_generation();
         match self.find(&k) {
             Some(i) => self.entries[i].1 = val,
             None => {
@@ -761,6 +777,7 @@ impl MapData {
     }
     /// Rebuild the side index after `entries` shifted (remove/clear paths).
     fn reindex(&mut self) {
+        self.bump_generation();
         self.index.clear();
         for (i, (k, _)) in self.entries.iter().enumerate() {
             self.index.insert(k.clone(), i);
@@ -783,6 +800,7 @@ impl MapData {
                 }
                 self.entries.clear();
                 self.index.clear();
+                self.bump_generation();
                 Ok(Value::Null)
             }
             "set" => {

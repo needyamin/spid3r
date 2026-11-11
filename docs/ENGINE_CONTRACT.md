@@ -58,9 +58,13 @@ conformance test fails:
    spans, snippets, or call-stack traces (see `spid3r_uncaught` in
    `src/native/rt.rs`). Phase + message must still match; uncaught native
    errors additionally print `uncaught throw (thrown: …)`.
-2. **Native `MAX_CALL_DEPTH` accounting** — the depth limit is shared, but
-   native frames consume host stack differently; the abort message matches,
-   the trigger point may differ by a small constant.
+2. **Native `MAX_CALL_DEPTH` accounting** — `--max-call-depth` applies to the
+   **tree and VM engines only**; the AOT/native backend does not enforce that
+   limit (see `spid3r run --help` and `src/cli.rs`). Earlier revisions of this
+   document described the limit as "shared" with native, which was incorrect.
+   Where a native program still aborts on deep recursion it does so through
+   host-stack exhaustion, not through the engine's configured depth counter;
+   the abort message matches, and the trigger point may differ.
 3. **Timing/concurrency interleaving** — `spawn` scheduling is nondeterministic
    on every engine; programs must not depend on it (the test suite orders
    handoffs explicitly).

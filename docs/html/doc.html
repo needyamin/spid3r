@@ -1796,6 +1796,9 @@
                   fatal error <code>execution budget exhausted</code> — for untrusted code), <code>--max-steps N</code>
                   (documented alias of <code>--budget</code>; specify only one of the two), <code>--max-call-depth N</code>
                   (cap the call stack depth — VM and tree engines, default 1000, propagated to tasks and modules),
+                  <code>--coverage</code> (record line coverage), <code>--no-opt</code> (disable the compile-time
+                  bytecode optimizer <em>and</em> the VM runtime fused-superinstruction peeks; per-VM inline caches
+                  remain enabled),
                   <code>--sandbox</code> (deny filesystem, network, process and environment access; denied calls raise
                   a catchable <code>sandboxed: … access denied</code> error).</td>
               </tr>
@@ -5648,7 +5651,9 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           for conditions with internal jumps or side effects, and when a jump from outside could land inside
           the loop. Because it removes work at compile time, <code>--prof</code> on the default path reports
           exactly one fewer executed instruction per loop iteration than <code>--prof --no-opt</code>; the
-          runtime fused superinstructions remain disabled under instrumentation, so no opcode is hidden.
+          runtime fused superinstructions remain disabled under instrumentation and, since Phase 5, under
+          <code>--no-opt</code> as well (<code>Vm::set_opt_enabled</code> gates the VM peeks); per-VM inline caches
+          are memoization and stay on. In both cases no opcode is hidden.
         </p>
 
         <h3 class="section-h3" id="vm-budget">The Execution Budget</h3>

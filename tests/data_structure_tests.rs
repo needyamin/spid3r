@@ -871,8 +871,15 @@ fn npy_and_binary_io_tests() {
 
 #[test]
 fn csv_parser_and_writer_tests() {
-    expect_ok(
-        r#"
+    // The CSV round-trip writes to a per-process UNIQUE path under `target/`.
+    // A fixed shared name can be held open by an unrelated process, and on
+    // Windows that makes the write fail with ERROR_SHARING_VIOLATION
+    // ("The process cannot access the file because it is being used by
+    // another process") — which broke the full gate on 2026-11-12 when
+    // LibreOffice had `target/test_out.csv` open. The round-trip assertion
+    // itself (write -> read back -> same rows) is unchanged.
+    let csv_path = format!("target/test_out_{}.csv", std::process::id());
+    let src = r#"
         fn main() {
             let raw = "id,name,val,active\n1,\"Doe, John\",42.5,true\n2,Jane,null,false\n";
             let parsed = parse_csv(raw, null).unwrap();
@@ -892,14 +899,17 @@ fn csv_parser_and_writer_tests() {
             if r1[2] != null { return 9; }
             if r1[3] != false { return 10; }
 
-            let csv_path = "target/test_out.csv";
+            let csv_path = "__CSV_PATH__";
             write_csv(csv_path, headers, rows).unwrap();
             let read_back = read_csv(csv_path, null).unwrap();
             if read_back["rows"].len() != 2 { return 11; }
             return 0;
         }
-    "#,
-    );
+    "#
+    .replace("__CSV_PATH__", &csv_path);
+    expect_ok(&src);
+    // Best-effort cleanup; the file lives under target/ and is ignored.
+    let _ = std::fs::remove_file(&csv_path);
 }
 
 #[test]

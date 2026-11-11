@@ -10,7 +10,14 @@
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
+
+/// Per-invocation counter: the two tests in this file run in parallel
+/// threads, and they used to share ONE fixed temp path, so whichever test
+/// finished first deleted the file the other one was still running
+/// ("... is not a file"). Every call now gets its own file name.
+static SEQ: AtomicU32 = AtomicU32::new(0);
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_spid3r"))
@@ -25,9 +32,10 @@ fn network_available() -> bool {
 }
 
 fn run(src: &str) -> (i32, String, String) {
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join("spid3r_tls_fetch");
     std::fs::create_dir_all(&dir).expect("mkdir");
-    let path = dir.join("tls_fetch.matrix");
+    let path = dir.join(format!("tls_fetch_{}_{}.matrix", std::process::id(), seq));
     std::fs::write(&path, src).expect("write case");
     let o = Command::new(bin())
         .args(["run", "--engine", "vm", path.to_str().unwrap()])

@@ -1582,8 +1582,15 @@ fn phase1_fused_paths_preserve_instrumentation() {
 /// (`constant`, `get_global`, `get_local`, `constant`, `mod`, `call`, `add`).
 /// It MUST therefore be disabled under `--prof` and `--coverage`, or the
 /// profiler would under-count and coverage would silently lose line hits.
-/// Runtime pattern peeks are reachable in both optimised and `--no-opt`
-/// bytecode, so both are checked here too.
+///
+/// Phase 5: EVERY runtime fusion obeys that same gate. The
+/// `GetLocal a; GetLocal b; Less; JumpIfFalse` and
+/// `GetLocal a; GetLocal b; Add; SetLocal; Pop` fusions are gated on
+/// `--prof` / `--coverage` too (they used to run under instrumentation,
+/// which made the profiler under-count the original opcode sequence by
+/// ~23%), and `--no-opt` additionally turns the Phase 1 peeks off
+/// (`Vm::set_opt_enabled(false)`). Instrumentation therefore observes EVERY
+/// original opcode in both modes, which is what the two totals below pin.
 #[test]
 fn phase1_fused_prefix_string_preserves_instrumentation() {
     let src = concat!(
@@ -1648,24 +1655,25 @@ fn phase1_fused_prefix_string_preserves_instrumentation() {
     };
     let (_, _, prof) = run("vm", &["--prof"]);
     assert!(prof.contains("==== vm profile ===="), "no profile: {}", prof);
-    // Phase 1: with every original opcode observed the run was 18050
-    // instructions; a RUNTIME fused path running under --prof would collapse
-    // this to ~11000, which this assertion is here to catch.
+    // Phase 1: with every original opcode observed the unoptimized run is
+    // 22306 instructions; a RUNTIME fused path running under --prof would
+    // collapse this by thousands of instructions, which this assertion is
+    // here to catch.
     //
     // Phase 2: the optimizer now ROTATES the two `while` back-edges on the
     // default path (see src/vm/opt.rs::rotate_loops). Each rotation removes
     // exactly one unconditional `Jump` dispatch per loop iteration, so the
-    // optimized --prof total is 18050 - (64 + 1000) = 16986. This is a real
+    // optimized --prof total is 22306 - (64 + 1000) = 21242. This is a real
     // COMPILE-TIME reduction in executed work, not a hidden opcode: the
     // profile below still shows the condition opcodes (`less` 1066 times)
     // and the two top-of-loop `jump_if_false` checks, plus 1064 bottom
-    // `jump_if_true` checks. --prof --no-opt must remain 18050 because
+    // `jump_if_true` checks. --prof --no-opt must remain 22306 because
     // rotation lives only in compile_program().
-    assert_eq!(instructions(&prof), 16986, "--prof lost opcodes: {}", prof);
+    assert_eq!(instructions(&prof), 21242, "--prof lost opcodes: {}", prof);
     let (_, _, prof_no_opt) = run("vm", &["--prof", "--no-opt"]);
     assert_eq!(
         instructions(&prof_no_opt),
-        18050,
+        22306,
         "--prof --no-opt lost opcodes: {}",
         prof_no_opt
     );

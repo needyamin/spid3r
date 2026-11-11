@@ -3383,6 +3383,25 @@ fn write_json_key(k: &MapKey, out: &mut String) {
     }
 }
 
+/// Whether `write_json` can emit `v` without re-entering a container lock.
+/// Only the scalar arms qualify; `Option` is transparent (it recurses into a
+/// scalar or writes `null`). Container children must use the snapshot-clone
+/// fallback: recursing into a self-referential container while holding its
+/// `Mutex` deadlocks, because the lock is not reentrant.
+///
+/// This predicate is deliberately conservative: any unrecognised variant
+/// falls through to the original, byte-identical recursion path.
+fn json_is_scalar(v: &Value) -> bool {
+    match v {
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) => true,
+        Value::Option(inner) => match inner {
+            Some(v) => json_is_scalar(v.as_ref()),
+            None => true,
+        },
+        _ => false,
+    }
+}
+
 fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
     if depth > JSON_MAX_DEPTH {
         return Err(format!(
@@ -3414,31 +3433,70 @@ fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
         }
         Value::Str(s) => write_json_str(s, out),
         Value::List(d) | Value::VecDyn(d) => {
-            // Snapshot under the lock and recurse without it: recursing while
-            // holding the Mutex deadlocks on self-referential containers
-            // (non-reentrant lock re-acquired on the same thread).
-            let items = d.lock().unwrap().items.clone();
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
+            // Phase 5 scalar-only fast path. When every child is a scalar,
+            // `write_json` on a child can never take a container lock, so it
+            // is safe to recurse while holding `guard` — and no snapshot
+            // `Vec<Value>` clone is needed. Bytes, depth checks and error
+            // messages are exactly those of the generic path because the
+            // generic path is still called for every child.
+            //
+            // Container (or otherwise unsupported) children take the original
+            // snapshot route below: clone under the lock, then recurse with
+            // the lock released. Removing that clone outright would
+            // reintroduce the documented non-reentrant-Mutex deadlock on
+            // self-referential containers, so the fallback is retained.
+            let guard = d.lock().unwrap();
+            if guard.items.iter().all(json_is_scalar) {
+                out.push('[');
+                for (i, item) in guard.items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write_json(item, out, depth + 1)?;
                 }
-                write_json(item, out, depth + 1)?;
+                out.push(']');
+            } else {
+                let items = guard.items.clone();
+                drop(guard);
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write_json(item, out, depth + 1)?;
+                }
+                out.push(']');
             }
-            out.push(']');
         }
         Value::Map(d) => {
-            let entries = d.lock().unwrap().entries.clone();
-            out.push('{');
-            for (i, (k, val)) in entries.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
+            // Same scalar-only fast path for maps. `write_json_key` only
+            // writes scalar `MapKey` spellings, so it never takes a lock.
+            let guard = d.lock().unwrap();
+            if guard.entries.iter().all(|(_, v)| json_is_scalar(v)) {
+                out.push('{');
+                for (i, (k, val)) in guard.entries.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write_json_key(k, out);
+                    out.push(':');
+                    write_json(val, out, depth + 1)?;
                 }
-                write_json_key(k, out);
-                out.push(':');
-                write_json(val, out, depth + 1)?;
+                out.push('}');
+            } else {
+                let entries = guard.entries.clone();
+                drop(guard);
+                out.push('{');
+                for (i, (k, val)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    write_json_key(k, out);
+                    out.push(':');
+                    write_json(val, out, depth + 1)?;
+                }
+                out.push('}');
             }
-            out.push('}');
         }
         Value::Option(o) => match o {
             Some(v) => write_json(v, out, depth + 1)?,

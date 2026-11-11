@@ -34,7 +34,8 @@ COMMANDS:
                                            Compile and run; --prof (vm) prints
                                            per-opcode execution counts;
                                            --coverage records line coverage;
-                                           --no-opt disables bytecode optimizations;
+                                           --no-opt disables bytecode optimizations
+                                           and VM runtime fusion peeks;
                                            --budget caps the work for untrusted
                                            code (--max-steps is its alias);
                                            --max-call-depth caps recursion;
@@ -522,7 +523,8 @@ USAGE:
 OPTIONS:
     --engine <tree|vm>     Execution engine: tree-walk or bytecode VM (default: tree)
     --prof                 Print per-opcode VM execution counts (requires --engine vm)
-    --no-opt               Disable bytecode optimizer (VM engine)
+    --no-opt               Disable bytecode optimizer + VM runtime peeks
+                               (VM engine; inline caches stay on)
     --coverage             Enable code coverage tracking
     --coverage-out <file>  Write coverage report to file
     --budget <n>           Stop after roughly N steps with the fatal error
@@ -1296,6 +1298,10 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                 let (script, _public) =
                     crate::vm::compile_program_unoptimized(&program, &file, &dirs)?;
                 let mut vm = Vm::new(file_name, dirs);
+                // `--no-opt` disables the compile-time optimizer AND the
+                // Phase 1 runtime superinstruction peeks. Inline caches stay
+                // on (they are memoization, not peeks).
+                vm.set_opt_enabled(false);
                 vm.set_budget(budget.map(crate::budget::Budget::new));
                 if let Some(n) = max_call_depth {
                     vm.set_max_call_depth(n);

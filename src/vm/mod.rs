@@ -189,6 +189,19 @@ pub struct Vm {
     /// method). The class check makes it safe when a site sees several
     /// classes; `clear()` keeps the table bounded.
     invoke_cache: HashMap<(usize, usize), InvokeCache>,
+    /// Phase 5 monomorphic inline cache for `FieldGet` / `FieldGetSoft` on
+    /// maps: (chunk address, instruction offset) → resolved entry index.
+    /// The name is a compile-time constant at such a site, so it is genuinely
+    /// monomorphic. Every hit is re-validated under the map lock (identity,
+    /// name, generation and the key at the cached index) and the value is
+    /// read fresh, so correctness never depends on the cache.
+    map_cache: HashMap<(usize, usize), MapFieldCache>,
+    /// Master switch for the Phase 1 runtime superinstruction peeks. `true`
+    /// by default; `spid3r run --engine vm --no-opt` sets it to `false` so
+    /// `--no-opt` really disables every optimizer (compile-time pass AND
+    /// runtime peeks). Inline caches are not peeks and stay enabled, exactly
+    /// like `invoke_cache`.
+    opt_enabled: bool,
     /// Recycled `CallFrame::slots` buffers to avoid malloc/free on every call.
     slot_pool: Vec<Vec<Value>>,
     /// Execution budget (`Engine::budget` / `spid3r run --budget`, spelled
@@ -220,6 +233,20 @@ struct InvokeCache {
     _chunk: Arc<Chunk>,
     class: usize,
     func: Arc<VmFunc>,
+}
+
+/// One map-field inline-cache entry. `_chunk` is the same lifetime pin as
+/// `InvokeCache`: it keeps the cached site's chunk alive so the
+/// `(chunk address, ip)` key can never be confused with a freed chunk whose
+/// address was reused. `map` is a strong `Arc` pin used for identity checks.
+struct MapFieldCache {
+    _chunk: Arc<Chunk>,
+    map: Arc<Mutex<collections::MapData>>,
+    name: Arc<str>,
+    generation: u64,
+    /// `None` = the key was missing at fill time. A later insertion bumps the
+    /// generation, so the negative result is invalidated too.
+    index: Option<usize>,
 }
 
 // ------------------------------------------------------------------ profiler
@@ -294,6 +321,8 @@ impl Vm {
             coverage: None,
             prof: None,
             invoke_cache: HashMap::new(),
+            map_cache: HashMap::new(),
+            opt_enabled: true,
             slot_pool: Vec::with_capacity(16),
             budget: None,
             wall_clock: None,
@@ -346,6 +375,14 @@ impl Vm {
         self.max_depth = limit.max(1);
     }
 
+    /// Enable or disable the Phase 1 runtime superinstruction peeks.
+    /// `spid3r run --engine vm --no-opt` calls `set_opt_enabled(false)` so the
+    /// flag turns off **both** the compile-time optimizer pass and the runtime
+    /// peeks. Inline caches are unaffected (see the `opt_enabled` field docs).
+    pub fn set_opt_enabled(&mut self, enabled: bool) {
+        self.opt_enabled = enabled;
+    }
+
     /// A VM that shares globals/imported-const names/scheduler/module cache
     /// with another (used for spawned tasks and imported modules).
     #[allow(clippy::too_many_arguments)] // the shared handles a child VM needs
@@ -377,6 +414,8 @@ impl Vm {
             coverage: None,
             prof: None,
             invoke_cache: HashMap::new(),
+            map_cache: HashMap::new(),
+            opt_enabled: true,
             slot_pool: Vec::with_capacity(8),
             budget: None,
             wall_clock: None,
@@ -384,6 +423,79 @@ impl Vm {
             max_depth: MAX_CALL_DEPTH,
             pending_str: None,
         }
+    }
+
+    /// Resolve a constant-name map field read (`FieldGet` / `FieldGetSoft`)
+    /// through the per-VM monomorphic inline cache.
+    ///
+    /// The cache stores only an **index**, never a value. On every hit the
+    /// map lock is taken first and the cached entry is re-validated by map
+    /// identity, field name, `MapData::generation`, and equality of the key
+    /// at that index; the returned value is then read fresh from `entries`.
+    /// Correctness therefore does **not** depend on the generation counter:
+    /// even a path that mutates `MapData` without bumping it (e.g. the GC's
+    /// `gc_clear`) cannot yield a stale value. The generation is a cheap
+    /// invalidation signal that keeps the cache from re-walking after any
+    /// ordinary mutation.
+    ///
+    /// `IndexGet` (`obj[key]` with a dynamic key) is deliberately NOT cached:
+    /// `MapData::index` is already an O(1) `HashMap`, and a per-site cache
+    /// would thrash on workloads with many distinct keys (the Phase 0 `map`
+    /// fixture rotates 64 keys at one site). Constant-name dot access is
+    /// monomorphic, which is exactly the case an inline cache can help.
+    fn cached_map_field_get(
+        &mut self,
+        nf: usize,
+        ip: usize,
+        map: &Arc<Mutex<collections::MapData>>,
+        name: &Arc<str>,
+    ) -> Option<Value> {
+        let site = (Arc::as_ptr(&self.frames[nf].func.chunk) as usize, ip);
+        let guard = map.lock().unwrap();
+        let mk = crate::value::MapKey::Str(name.clone());
+        let hit: Option<Option<usize>> = self.map_cache.get(&site).and_then(|c| {
+            if !Arc::ptr_eq(&c.map, map)
+                || c.name != *name
+                || c.generation != guard.generation
+            {
+                return None;
+            }
+            match c.index {
+                Some(i)
+                    if guard
+                        .entries
+                        .get(i)
+                        .is_some_and(|(k, _): &(crate::value::MapKey, Value)| *k == mk) =>
+                {
+                    Some(Some(i))
+                }
+                None => Some(None),
+                _ => None,
+            }
+        });
+        let index: Option<usize> = match hit {
+            Some(v) => v,
+            None => {
+                let found = guard.find(&mk);
+                // Bounded, exactly like `invoke_cache`.
+                if self.map_cache.len() > 4096 {
+                    self.map_cache.clear();
+                }
+                let chunk = self.frames[nf].func.chunk.clone();
+                self.map_cache.insert(
+                    site,
+                    MapFieldCache {
+                        _chunk: chunk,
+                        map: map.clone(),
+                        name: name.clone(),
+                        generation: guard.generation,
+                        index: found,
+                    },
+                );
+                found
+            }
+        };
+        index.map(|i| guard.entries[i].1.clone())
     }
 
     fn install_stdlib(&mut self) {
@@ -861,7 +973,8 @@ impl Vm {
                     // when a pending string builder needs its generic flush.
                     // `continue` returns to the loop head so the 2048-dispatch
                     // budget / wall / heap / cancel / GC cadence is unchanged.
-                    if self.debug.is_none()
+                    if self.opt_enabled
+                        && self.debug.is_none()
                         && self.prof.is_none()
                         && self.coverage.is_none()
                         && self.pending_str.is_none()
@@ -899,7 +1012,24 @@ impl Vm {
                 }
                 OpCode::GetLocal => {
                     let slot = self.code_u8(nf, ip + 1) as usize;
-                    if self.debug.is_none() && self.frames[nf].captured.is_empty() {
+                    // The `GetLocal a; GetLocal b; Less; JumpIfFalse` and
+                    // `GetLocal a; GetLocal b; Add; SetLocal; Pop` patterns
+                    // below are runtime fusions, exactly like the Phase 1
+                    // prefix peeks. They therefore obey the SAME gate: they
+                    // are taken only on the default optimized path
+                    // (`opt_enabled`), never under `--prof` / `--coverage`
+                    // and never under the debugger. Before this gate existed
+                    // they ran under `--prof`, so the profiler counted a
+                    // fused pair as ONE instruction and silently under-counted
+                    // the original opcode sequence by ~23%. Instrumentation
+                    // now observes every original opcode, which is what
+                    // `tests/engine_matrix.rs` pins.
+                    if self.opt_enabled
+                        && self.debug.is_none()
+                        && self.prof.is_none()
+                        && self.coverage.is_none()
+                        && self.frames[nf].captured.is_empty()
+                    {
                         let code = &self.frames[nf].func.chunk.code;
                         if let Some(&next_op) = code.get(ip + 2) {
                             if next_op == OpCode::GetLocal as u8 {
@@ -2251,18 +2381,13 @@ impl Vm {
                             }
                         }
                         Value::Map(m) => {
-                            let mb = m.lock().unwrap();
-                            let mk = crate::value::MapKey::Str(name.clone());
-                            match mb.find(&mk) {
-                                Some(i) => {
-                                    let val = mb.entries[i].1.clone();
-                                    drop(mb);
-                                    self.frames[nf].slots.push(val);
-                                }
-                                None => {
-                                    drop(mb);
-                                    self.fail(format!("missing key '{}'", name));
-                                }
+                            // Phase 5 per-VM monomorphic inline cache. The
+                            // helper re-validates identity / name /
+                            // generation / key under the lock and reads the
+                            // value fresh, so behavior is byte-identical.
+                            match self.cached_map_field_get(nf, ip, &m, &name) {
+                                Some(val) => self.frames[nf].slots.push(val),
+                                None => self.fail(format!("missing key '{}'", name)),
                             }
                         }
                         other => self.fail(crate::value::no_field_error(&other, name.as_ref())),
@@ -2285,18 +2410,12 @@ impl Vm {
                     match obj {
                         Value::Null => self.frames[nf].slots.push(Value::Null),
                         Value::Map(m) => {
-                            let mb = m.lock().unwrap();
-                            let mk = crate::value::MapKey::Str(name.clone());
-                            match mb.find(&mk) {
-                                Some(i) => {
-                                    let val = mb.entries[i].1.clone();
-                                    drop(mb);
-                                    self.frames[nf].slots.push(val);
-                                }
-                                None => {
-                                    drop(mb);
-                                    self.frames[nf].slots.push(Value::Null);
-                                }
+                            // `obj?.field` on a map: a missing key pushes
+                            // `null` instead of failing (F-4). The same
+                            // generation-validated inline cache as FieldGet.
+                            match self.cached_map_field_get(nf, ip, &m, &name) {
+                                Some(val) => self.frames[nf].slots.push(val),
+                                None => self.frames[nf].slots.push(Value::Null),
                             }
                         }
                         // Instances and non-fieldable types keep the plain
@@ -2640,6 +2759,7 @@ impl Vm {
                     let wall_clock = self.wall_clock.clone();
                     let mem_limit = self.mem_limit.clone();
                     let max_depth = self.max_depth;
+                    let opt_enabled = self.opt_enabled;
                     let handle = self.sched.spawn_job(Box::new(move || {
                         let mut vm = Vm::with_shared(
                             globals,
@@ -2656,6 +2776,7 @@ impl Vm {
                         vm.wall_clock = wall_clock;
                         vm.mem_limit = mem_limit;
                         vm.max_depth = max_depth;
+                        vm.opt_enabled = opt_enabled;
                         // Carry the thrown value across the task boundary so
                         // `join`/`await` rethrow is structural: `catch` on the
                         // joining side rebinds the original value (audit A-9).
@@ -3513,6 +3634,7 @@ impl Vm {
                 mvm.wall_clock = self.wall_clock.clone();
                 mvm.mem_limit = self.mem_limit.clone();
                 mvm.max_depth = self.max_depth;
+                mvm.opt_enabled = self.opt_enabled;
                 // Seed the builtins into the module's own globals (see the
                 // source path's note).
                 mvm.install_stdlib();
@@ -3598,6 +3720,7 @@ impl Vm {
         mvm.wall_clock = self.wall_clock.clone();
         mvm.mem_limit = self.mem_limit.clone();
         mvm.max_depth = self.max_depth;
+        mvm.opt_enabled = self.opt_enabled;
         let budget_exhausted = self.budget.as_ref().is_some_and(|b| b.exhausted());
         let wall_exceeded = self.wall_clock.as_ref().is_some_and(|wc| wc.exceeded());
         let exports = mvm.run_module(&program).map_err(|d| VmError {
