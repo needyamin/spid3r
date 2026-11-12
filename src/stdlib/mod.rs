@@ -2746,8 +2746,8 @@ static SMALL_INT_STRINGS: OnceLock<[Arc<str>; SMALL_INT_STRINGS_LEN]> = OnceLock
 pub(crate) fn int_to_string_value(i: i64) -> Arc<str> {
     if let Ok(idx) = usize::try_from(i) {
         if idx < SMALL_INT_STRINGS_LEN {
-            let table = SMALL_INT_STRINGS
-                .get_or_init(|| std::array::from_fn(|n| Arc::from(n.to_string())));
+            let table =
+                SMALL_INT_STRINGS.get_or_init(|| std::array::from_fn(|n| Arc::from(n.to_string())));
             return table[idx].clone();
         }
     }
@@ -2971,31 +2971,9 @@ fn json_write_capacity(v: &Value) -> usize {
     n.saturating_mul(64).min(1 << 20)
 }
 
-/// Build the parser's char buffer with an exact upper-bound capacity.
-/// `Chars::size_hint()` advertises a lower bound of 0, so `collect()` grows
-/// the Vec repeatedly for a large document. `s.len()` (byte length) is an
-/// upper bound on the number of `char`s, so this allocates exactly once and
-/// never reallocates — a pure buffer pre-sizing with no semantic effect.
-#[inline]
-fn json_char_buf(s: &str) -> Vec<char> {
-    let mut chars = Vec::with_capacity(s.len());
-    chars.extend(s.chars());
-    chars
-}
-
 fn n_json_parse(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     let s = want_str(&one("json_parse", &args)?, "json_parse")?;
-    let mut parser = JsonParser {
-        chars: json_char_buf(&s),
-        pos: 0,
-        depth: 0,
-    };
-    let v = parser.parse_value()?;
-    parser.skip_ws();
-    if parser.pos != parser.chars.len() {
-        return Err("json_parse: trailing characters after the value".to_string());
-    }
-    Ok(v)
+    json_parse_str(&s)
 }
 
 fn n_json_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
@@ -3017,46 +2995,71 @@ pub fn json_write_text(v: &Value) -> Result<String, String> {
 /// call. Same parser, same errors, same depth guard — one implementation, not
 /// two.
 pub fn json_parse_text(s: &str) -> Result<Value, String> {
+    json_parse_str(s)
+}
+
+// N1 byte-oriented parser ---------------------------------------------------
+//
+// The parser works over the input's UTF-8 bytes instead of a materialized
+// `Vec<char>`, which cost one 4-byte-per-char allocation plus a full decode
+// pass per document (AF3 in optimize_plan.html). All structural characters
+// are ASCII, so byte comparisons are exact; non-ASCII content only ever
+// appears inside strings, where raw UTF-8 runs are copied verbatim — the
+// input is a `&str`, so every copied run is valid UTF-8 by construction.
+// Diagnostics are produced through the same wording as before, so every
+// error string is byte-identical to the previous character-based parser,
+// which is retained verbatim under `cfg(test)` as the differential oracle
+// (`json_char_oracle::json_reference_parse`) and compared case-by-case in
+// `json_byte_parity_tests`.
+
+struct JsonParser<'a> {
+    /// The input, kept for diagnostics: an "unexpected …" message names the
+    /// decoded `char` exactly as the character-based parser did.
+    s: &'a str,
+    /// Byte view of `s`. `pos` always lands on a UTF-8 boundary: every
+    /// advance is over a matched ASCII byte or a whole copied run.
+    b: &'a [u8],
+    pos: usize,
+    depth: usize,
+}
+
+/// One shared entry point behind the `json_parse` builtin and the host-side
+/// `json_parse_text` (the LSP / agent wire path) — one parser, not two.
+fn json_parse_str(s: &str) -> Result<Value, String> {
     let mut parser = JsonParser {
-        chars: json_char_buf(s),
+        s,
+        b: s.as_bytes(),
         pos: 0,
         depth: 0,
     };
     let v = parser.parse_value()?;
     parser.skip_ws();
-    if parser.pos != parser.chars.len() {
+    if parser.pos != parser.b.len() {
         return Err("json_parse: trailing characters after the value".to_string());
     }
     Ok(v)
 }
 
-struct JsonParser {
-    chars: Vec<char>,
-    pos: usize,
-    depth: usize,
-}
-
-/// Render the tail of an "unexpected …" JSON diagnostic (F-8). A `None`
-/// peek is end-of-input: the old `{:?}` Debug formatting leaked Rust's
-/// `Option::None` into the message ("json_parse: unexpected character
-/// None"), so the EOF case gets its own wording instead.
-fn unexpected_json(peeked: Option<char>) -> String {
-    match peeked {
-        Some(c) => format!("unexpected character '{}'", c),
-        None => "unexpected end of input".to_string(),
-    }
-}
-
-impl JsonParser {
-    fn peek(&self) -> Option<char> {
-        self.chars.get(self.pos).copied()
+impl JsonParser<'_> {
+    fn peek(&self) -> Option<u8> {
+        self.b.get(self.pos).copied()
     }
     fn skip_ws(&mut self) {
         while matches!(
             self.peek(),
-            Some(' ') | Some('\t') | Some('\n') | Some('\r')
+            Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
         ) {
             self.pos += 1;
+        }
+    }
+    /// The "unexpected …" diagnostic tail: names the decoded char at `pos`
+    /// (never Rust's `Option` Debug text — the F-8 wording is preserved).
+    /// `pos` is always a char boundary, but `get` keeps a corrupt position a
+    /// clean error instead of a panic.
+    fn unexpected_at(&self) -> String {
+        match self.s.get(self.pos..).and_then(|t| t.chars().next()) {
+            Some(c) => format!("unexpected character '{}'", c),
+            None => "unexpected end of input".to_string(),
         }
     }
     fn parse_value(&mut self) -> Result<Value, String> {
@@ -3077,18 +3080,19 @@ impl JsonParser {
     fn parse_value_inner(&mut self) -> Result<Value, String> {
         self.skip_ws();
         match self.peek() {
-            Some('{') => self.parse_object(),
-            Some('[') => self.parse_array(),
-            Some('"') => Ok(Value::Str(self.parse_string()?.into())),
-            Some('t') => self.expect_word("true", Value::Bool(true)),
-            Some('f') => self.expect_word("false", Value::Bool(false)),
-            Some('n') => self.expect_word("null", Value::Null),
-            Some(c) if c == '-' || c.is_ascii_digit() => self.parse_number(),
-            other => Err(format!("json_parse: {}", unexpected_json(other))),
+            Some(b'{') => self.parse_object(),
+            Some(b'[') => self.parse_array(),
+            Some(b'"') => Ok(Value::Str(self.parse_string()?.into())),
+            Some(b't') => self.expect_word("true", Value::Bool(true)),
+            Some(b'f') => self.expect_word("false", Value::Bool(false)),
+            Some(b'n') => self.expect_word("null", Value::Null),
+            Some(c) if c == b'-' || c.is_ascii_digit() => self.parse_number(),
+            None => Err("json_parse: unexpected end of input".to_string()),
+            Some(_) => Err(format!("json_parse: {}", self.unexpected_at())),
         }
     }
     fn expect_word(&mut self, word: &str, v: Value) -> Result<Value, String> {
-        for expected in word.chars() {
+        for expected in word.bytes() {
             match self.peek() {
                 Some(c) if c == expected => self.pos += 1,
                 _ => return Err(format!("json_parse: expected '{}'", word)),
@@ -3101,9 +3105,9 @@ impl JsonParser {
     /// `str::parse::<i64>()` exactly, including `i64::MIN` and the overflow
     /// fallback: `None` means the caller builds the token text and takes the
     /// pre-existing f64 path, so no error text or rounding changes.
-    fn integer_token(chars: &[char]) -> Option<i64> {
-        let neg = chars.first() == Some(&'-');
-        let digits = if neg { &chars[1..] } else { chars };
+    fn integer_token(bytes: &[u8]) -> Option<i64> {
+        let neg = bytes.first() == Some(&b'-');
+        let digits = if neg { &bytes[1..] } else { bytes };
         if digits.is_empty() {
             return None;
         }
@@ -3112,7 +3116,7 @@ impl JsonParser {
             if !c.is_ascii_digit() {
                 return None;
             }
-            mag = mag.checked_mul(10)?.checked_add((c as u8 - b'0') as u64)?;
+            mag = mag.checked_mul(10)?.checked_add((c - b'0') as u64)?;
         }
         if neg {
             if mag == 1u64 << 63 {
@@ -3131,7 +3135,7 @@ impl JsonParser {
 
     fn parse_number(&mut self) -> Result<Value, String> {
         let start = self.pos;
-        if self.peek() == Some('-') {
+        if self.peek() == Some(b'-') {
             self.pos += 1;
         }
         let mut is_float = false;
@@ -3139,16 +3143,16 @@ impl JsonParser {
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.pos += 1;
-            } else if c == '.' && !is_float && !has_exp {
+            } else if c == b'.' && !is_float && !has_exp {
                 is_float = true;
                 self.pos += 1;
                 if !matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
                     return Err("json_parse: bad number".to_string());
                 }
-            } else if (c == 'e' || c == 'E') && !has_exp && self.pos > start {
+            } else if (c == b'e' || c == b'E') && !has_exp && self.pos > start {
                 has_exp = true;
                 self.pos += 1;
-                if matches!(self.peek(), Some('+') | Some('-')) {
+                if matches!(self.peek(), Some(b'+') | Some(b'-')) {
                     self.pos += 1;
                 }
                 if !matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
@@ -3162,11 +3166,17 @@ impl JsonParser {
         // Falls through on overflow so the exact pre-existing f64 fallback
         // (and its "bad number" error text) is preserved byte-for-byte.
         if !is_float && !has_exp {
-            if let Some(i) = Self::integer_token(&self.chars[start..self.pos]) {
+            if let Some(i) = Self::integer_token(&self.b[start..self.pos]) {
                 return Ok(Value::Int(i));
             }
         }
-        let text: String = self.chars[start..self.pos].iter().collect();
+        // The scan above only ever advances over ASCII, so the token slice
+        // is ASCII and this conversion cannot fail; the defensive arm maps a
+        // corrupt slice to the same "bad number" text instead of a panic.
+        let text = match std::str::from_utf8(&self.b[start..self.pos]) {
+            Ok(t) => t,
+            Err(_) => return Err("json_parse: bad number".to_string()),
+        };
         if is_float || has_exp {
             text.parse::<f64>()
                 .ok()
@@ -3190,49 +3200,55 @@ impl JsonParser {
     }
     fn parse_string(&mut self) -> Result<String, String> {
         self.pos += 1; // opening quote
-        let mut out = String::new();
+        let mut out: Vec<u8> = Vec::new();
         loop {
             match self.peek() {
                 None => return Err("json_parse: unterminated string".to_string()),
-                Some('"') => {
+                Some(b'"') => {
                     self.pos += 1;
-                    return Ok(out);
+                    // Raw runs are copied from a valid `&str` and every escape
+                    // pushes a valid encoding, so this cannot fail; the arm
+                    // exists so corrupted input is a clean error, not a panic.
+                    return match String::from_utf8(out) {
+                        Ok(s) => Ok(s),
+                        Err(_) => Err("json_parse: invalid string encoding".to_string()),
+                    };
                 }
-                Some('\\') => {
+                Some(b'\\') => {
                     self.pos += 1;
                     match self.peek() {
-                        Some('n') => {
-                            out.push('\n');
+                        Some(b'n') => {
+                            out.push(b'\n');
                             self.pos += 1;
                         }
-                        Some('t') => {
-                            out.push('\t');
+                        Some(b't') => {
+                            out.push(b'\t');
                             self.pos += 1;
                         }
-                        Some('r') => {
-                            out.push('\r');
+                        Some(b'r') => {
+                            out.push(b'\r');
                             self.pos += 1;
                         }
-                        Some('"') => {
-                            out.push('"');
+                        Some(b'"') => {
+                            out.push(b'"');
                             self.pos += 1;
                         }
-                        Some('\\') => {
-                            out.push('\\');
+                        Some(b'\\') => {
+                            out.push(b'\\');
                             self.pos += 1;
                         }
-                        Some('/') => {
-                            out.push('/');
+                        Some(b'/') => {
+                            out.push(b'/');
                             self.pos += 1;
                         }
-                        Some('u') => {
+                        Some(b'u') => {
                             // \uXXXX, combining surrogate pairs (standard JSON).
                             self.pos += 1;
                             let hi = self.parse_hex4()?;
                             let ch = if (0xD800..=0xDBFF).contains(&hi) {
-                                if self.peek() == Some('\\') {
+                                if self.peek() == Some(b'\\') {
                                     self.pos += 1;
-                                    if self.peek() != Some('u') {
+                                    if self.peek() != Some(b'u') {
                                         return Err("json_parse: bad surrogate pair".to_string());
                                     }
                                     self.pos += 1;
@@ -3250,16 +3266,29 @@ impl JsonParser {
                                 char::from_u32(hi)
                             };
                             match ch {
-                                Some(c) => out.push(c),
+                                Some(c) => {
+                                    let mut tmp = [0u8; 4];
+                                    out.extend_from_slice(c.encode_utf8(&mut tmp).as_bytes());
+                                }
                                 None => return Err("json_parse: bad \\u escape".to_string()),
                             }
                         }
                         _ => return Err("json_parse: bad escape".to_string()),
                     }
                 }
-                Some(c) => {
-                    out.push(c);
-                    self.pos += 1;
+                Some(_) => {
+                    // Raw UTF-8 run: copy bytes verbatim up to the next ASCII
+                    // structural byte (`"` or `\`). A multi-byte character is
+                    // never split — its continuation bytes are >= 0x80 and can
+                    // never equal an ASCII structural byte.
+                    let start = self.pos;
+                    while let Some(c) = self.peek() {
+                        if c == b'"' || c == b'\\' {
+                            break;
+                        }
+                        self.pos += 1;
+                    }
+                    out.extend_from_slice(&self.b[start..self.pos]);
                 }
             }
         }
@@ -3267,7 +3296,7 @@ impl JsonParser {
     fn parse_hex4(&mut self) -> Result<u32, String> {
         let mut v: u32 = 0;
         for _ in 0..4 {
-            match self.peek().and_then(|c| c.to_digit(16)) {
+            match self.peek().and_then(|c| (c as char).to_digit(16)) {
                 Some(d) => {
                     v = v * 16 + d;
                     self.pos += 1;
@@ -3282,7 +3311,7 @@ impl JsonParser {
         self.pos += 1;
         let mut items = Vec::new();
         self.skip_ws();
-        if self.peek() == Some(']') {
+        if self.peek() == Some(b']') {
             self.pos += 1;
             return Ok(collections::make_list(items));
         }
@@ -3290,12 +3319,12 @@ impl JsonParser {
             items.push(self.parse_value()?);
             self.skip_ws();
             match self.peek() {
-                Some(',') => self.pos += 1,
-                Some(']') => {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
                     self.pos += 1;
                     return Ok(collections::make_list(items));
                 }
-                other => return Err(format!("json_parse: {} in array", unexpected_json(other))),
+                _ => return Err(format!("json_parse: {} in array", self.unexpected_at())),
             }
         }
     }
@@ -3303,7 +3332,7 @@ impl JsonParser {
         self.pos += 1;
         let mut entries: Vec<(crate::value::MapKey, Value)> = Vec::new();
         self.skip_ws();
-        if self.peek() == Some('}') {
+        if self.peek() == Some(b'}') {
             self.pos += 1;
             return Ok(Value::Map(crate::value::new_ref(
                 crate::value::collections::seq::MapData::from_entries(entries),
@@ -3313,7 +3342,7 @@ impl JsonParser {
             self.skip_ws();
             let key = self.parse_string()?;
             self.skip_ws();
-            if self.peek() != Some(':') {
+            if self.peek() != Some(b':') {
                 return Err("json_parse: expected ':'".to_string());
             }
             self.pos += 1;
@@ -3326,16 +3355,514 @@ impl JsonParser {
             }
             self.skip_ws();
             match self.peek() {
-                Some(',') => self.pos += 1,
-                Some('}') => {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
                     self.pos += 1;
                     return Ok(Value::Map(crate::value::new_ref(
                         crate::value::collections::seq::MapData::from_entries(entries),
                     )));
                 }
-                other => return Err(format!("json_parse: {} in object", unexpected_json(other))),
+                _ => return Err(format!("json_parse: {} in object", self.unexpected_at())),
             }
         }
+    }
+}
+
+/// Verbatim copy of the pre-N1 character-based parser (F-8 wording included),
+/// retained under `cfg(test)` as the differential oracle for the byte parser.
+/// Nothing in production references this module; the parity tests feed both
+/// implementations the same inputs and require identical values and error
+/// strings.
+#[cfg(test)]
+mod json_char_oracle {
+    use super::{collections, JSON_MAX_DEPTH};
+    use crate::value::Value;
+
+    /// Build the parser's char buffer with an exact upper-bound capacity.
+    /// `Chars::size_hint()` advertises a lower bound of 0, so `collect()` grows
+    /// the Vec repeatedly for a large document. `s.len()` (byte length) is an
+    /// upper bound on the number of `char`s, so this allocates exactly once and
+    /// never reallocates — a pure buffer pre-sizing with no semantic effect.
+    #[inline]
+    fn json_char_buf(s: &str) -> Vec<char> {
+        let mut chars = Vec::with_capacity(s.len());
+        chars.extend(s.chars());
+        chars
+    }
+
+    /// Render the tail of an "unexpected …" JSON diagnostic (F-8). A `None`
+    /// peek is end-of-input: the old `{:?}` Debug formatting leaked Rust's
+    /// `Option::None` into the message ("json_parse: unexpected character
+    /// None"), so the EOF case gets its own wording instead.
+    fn unexpected_json(peeked: Option<char>) -> String {
+        match peeked {
+            Some(c) => format!("unexpected character '{}'", c),
+            None => "unexpected end of input".to_string(),
+        }
+    }
+
+    pub fn json_reference_parse(s: &str) -> Result<Value, String> {
+        let mut parser = JsonParserRef {
+            chars: json_char_buf(s),
+            pos: 0,
+            depth: 0,
+        };
+        let v = parser.parse_value()?;
+        parser.skip_ws();
+        if parser.pos != parser.chars.len() {
+            return Err("json_parse: trailing characters after the value".to_string());
+        }
+        Ok(v)
+    }
+
+    struct JsonParserRef {
+        chars: Vec<char>,
+        pos: usize,
+        depth: usize,
+    }
+
+    impl JsonParserRef {
+        fn peek(&self) -> Option<char> {
+            self.chars.get(self.pos).copied()
+        }
+        fn skip_ws(&mut self) {
+            while matches!(
+                self.peek(),
+                Some(' ') | Some('\t') | Some('\n') | Some('\r')
+            ) {
+                self.pos += 1;
+            }
+        }
+        fn parse_value(&mut self) -> Result<Value, String> {
+            self.depth += 1;
+            if self.depth > JSON_MAX_DEPTH {
+                return Err(format!(
+                    "json_parse: nesting deeper than {} levels",
+                    JSON_MAX_DEPTH
+                ));
+            }
+            let r = self.parse_value_inner();
+            self.depth -= 1;
+            r
+        }
+
+        fn parse_value_inner(&mut self) -> Result<Value, String> {
+            self.skip_ws();
+            match self.peek() {
+                Some('{') => self.parse_object(),
+                Some('[') => self.parse_array(),
+                Some('"') => Ok(Value::Str(self.parse_string()?.into())),
+                Some('t') => self.expect_word("true", Value::Bool(true)),
+                Some('f') => self.expect_word("false", Value::Bool(false)),
+                Some('n') => self.expect_word("null", Value::Null),
+                Some(c) if c == '-' || c.is_ascii_digit() => self.parse_number(),
+                other => Err(format!("json_parse: {}", unexpected_json(other))),
+            }
+        }
+        fn expect_word(&mut self, word: &str, v: Value) -> Result<Value, String> {
+            for expected in word.chars() {
+                match self.peek() {
+                    Some(c) if c == expected => self.pos += 1,
+                    _ => return Err(format!("json_parse: expected '{}'", word)),
+                }
+            }
+            Ok(v)
+        }
+        fn integer_token(chars: &[char]) -> Option<i64> {
+            let neg = chars.first() == Some(&'-');
+            let digits = if neg { &chars[1..] } else { chars };
+            if digits.is_empty() {
+                return None;
+            }
+            let mut mag: u64 = 0;
+            for &c in digits {
+                if !c.is_ascii_digit() {
+                    return None;
+                }
+                mag = mag.checked_mul(10)?.checked_add((c as u8 - b'0') as u64)?;
+            }
+            if neg {
+                if mag == 1u64 << 63 {
+                    Some(i64::MIN)
+                } else if mag <= i64::MAX as u64 {
+                    Some(-(mag as i64))
+                } else {
+                    None
+                }
+            } else if mag <= i64::MAX as u64 {
+                Some(mag as i64)
+            } else {
+                None
+            }
+        }
+
+        fn parse_number(&mut self) -> Result<Value, String> {
+            let start = self.pos;
+            if self.peek() == Some('-') {
+                self.pos += 1;
+            }
+            let mut is_float = false;
+            let mut has_exp = false;
+            while let Some(c) = self.peek() {
+                if c.is_ascii_digit() {
+                    self.pos += 1;
+                } else if c == '.' && !is_float && !has_exp {
+                    is_float = true;
+                    self.pos += 1;
+                    if !matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
+                        return Err("json_parse: bad number".to_string());
+                    }
+                } else if (c == 'e' || c == 'E') && !has_exp && self.pos > start {
+                    has_exp = true;
+                    self.pos += 1;
+                    if matches!(self.peek(), Some('+') | Some('-')) {
+                        self.pos += 1;
+                    }
+                    if !matches!(self.peek(), Some(d) if d.is_ascii_digit()) {
+                        return Err("json_parse: bad number".to_string());
+                    }
+                } else {
+                    break;
+                }
+            }
+            if !is_float && !has_exp {
+                if let Some(i) = Self::integer_token(&self.chars[start..self.pos]) {
+                    return Ok(Value::Int(i));
+                }
+            }
+            let text: String = self.chars[start..self.pos].iter().collect();
+            if is_float || has_exp {
+                text.parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .map(Value::Float)
+                    .ok_or_else(|| "json_parse: bad number".to_string())
+            } else {
+                match text.parse::<i64>() {
+                    Ok(i) => Ok(Value::Int(i)),
+                    Err(_) => text
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|v| v.is_finite())
+                        .map(Value::Float)
+                        .ok_or_else(|| "json_parse: bad number".to_string()),
+                }
+            }
+        }
+        fn parse_string(&mut self) -> Result<String, String> {
+            self.pos += 1; // opening quote
+            let mut out = String::new();
+            loop {
+                match self.peek() {
+                    None => return Err("json_parse: unterminated string".to_string()),
+                    Some('"') => {
+                        self.pos += 1;
+                        return Ok(out);
+                    }
+                    Some('\\') => {
+                        self.pos += 1;
+                        match self.peek() {
+                            Some('n') => {
+                                out.push('\n');
+                                self.pos += 1;
+                            }
+                            Some('t') => {
+                                out.push('\t');
+                                self.pos += 1;
+                            }
+                            Some('r') => {
+                                out.push('\r');
+                                self.pos += 1;
+                            }
+                            Some('"') => {
+                                out.push('"');
+                                self.pos += 1;
+                            }
+                            Some('\\') => {
+                                out.push('\\');
+                                self.pos += 1;
+                            }
+                            Some('/') => {
+                                out.push('/');
+                                self.pos += 1;
+                            }
+                            Some('u') => {
+                                // \uXXXX, combining surrogate pairs (standard JSON).
+                                self.pos += 1;
+                                let hi = self.parse_hex4()?;
+                                let ch = if (0xD800..=0xDBFF).contains(&hi) {
+                                    if self.peek() == Some('\\') {
+                                        self.pos += 1;
+                                        if self.peek() != Some('u') {
+                                            return Err(
+                                                "json_parse: bad surrogate pair".to_string()
+                                            );
+                                        }
+                                        self.pos += 1;
+                                        let lo = self.parse_hex4()?;
+                                        if !(0xDC00..=0xDFFF).contains(&lo) {
+                                            return Err(
+                                                "json_parse: bad surrogate pair".to_string()
+                                            );
+                                        }
+                                        char::from_u32(
+                                            0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00),
+                                        )
+                                    } else {
+                                        return Err("json_parse: lone high surrogate".to_string());
+                                    }
+                                } else if (0xDC00..=0xDFFF).contains(&hi) {
+                                    return Err("json_parse: lone low surrogate".to_string());
+                                } else {
+                                    char::from_u32(hi)
+                                };
+                                match ch {
+                                    Some(c) => out.push(c),
+                                    None => return Err("json_parse: bad \\u escape".to_string()),
+                                }
+                            }
+                            _ => return Err("json_parse: bad escape".to_string()),
+                        }
+                    }
+                    Some(c) => {
+                        out.push(c);
+                        self.pos += 1;
+                    }
+                }
+            }
+        }
+        fn parse_hex4(&mut self) -> Result<u32, String> {
+            let mut v: u32 = 0;
+            for _ in 0..4 {
+                match self.peek().and_then(|c| c.to_digit(16)) {
+                    Some(d) => {
+                        v = v * 16 + d;
+                        self.pos += 1;
+                    }
+                    None => return Err("json_parse: bad \\u escape".to_string()),
+                }
+            }
+            Ok(v)
+        }
+
+        fn parse_array(&mut self) -> Result<Value, String> {
+            self.pos += 1;
+            let mut items = Vec::new();
+            self.skip_ws();
+            if self.peek() == Some(']') {
+                self.pos += 1;
+                return Ok(collections::make_list(items));
+            }
+            loop {
+                items.push(self.parse_value()?);
+                self.skip_ws();
+                match self.peek() {
+                    Some(',') => self.pos += 1,
+                    Some(']') => {
+                        self.pos += 1;
+                        return Ok(collections::make_list(items));
+                    }
+                    other => {
+                        return Err(format!("json_parse: {} in array", unexpected_json(other)))
+                    }
+                }
+            }
+        }
+        fn parse_object(&mut self) -> Result<Value, String> {
+            self.pos += 1;
+            let mut entries: Vec<(crate::value::MapKey, Value)> = Vec::new();
+            self.skip_ws();
+            if self.peek() == Some('}') {
+                self.pos += 1;
+                return Ok(Value::Map(crate::value::new_ref(
+                    crate::value::collections::seq::MapData::from_entries(entries),
+                )));
+            }
+            loop {
+                self.skip_ws();
+                let key = self.parse_string()?;
+                self.skip_ws();
+                if self.peek() != Some(':') {
+                    return Err("json_parse: expected ':'".to_string());
+                }
+                self.pos += 1;
+                let value = self.parse_value()?;
+                let mk = crate::value::MapKey::Str(key.into());
+                if let Some(pos) = entries.iter().position(|(k, _)| k == &mk) {
+                    entries[pos].1 = value;
+                } else {
+                    entries.push((mk, value));
+                }
+                self.skip_ws();
+                match self.peek() {
+                    Some(',') => self.pos += 1,
+                    Some('}') => {
+                        self.pos += 1;
+                        return Ok(Value::Map(crate::value::new_ref(
+                            crate::value::collections::seq::MapData::from_entries(entries),
+                        )));
+                    }
+                    other => {
+                        return Err(format!("json_parse: {} in object", unexpected_json(other)))
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod json_byte_parity_tests {
+    use super::json_char_oracle::json_reference_parse;
+    use super::json_parse_str;
+
+    /// Parse `s` with the N1 byte parser and the verbatim char-based oracle:
+    /// parsed values (compared through the deterministic writer) and error
+    /// strings must agree exactly.
+    fn parity(s: &str) {
+        let new_r = json_parse_str(s);
+        let ref_r = json_reference_parse(s);
+        match (new_r, ref_r) {
+            (Ok(a), Ok(b)) => {
+                let wa = super::json_write_text(&a).expect("write new-parser value");
+                let wb = super::json_write_text(&b).expect("write oracle value");
+                assert_eq!(wa, wb, "value mismatch for {s:?}");
+            }
+            (Err(a), Err(b)) => assert_eq!(a, b, "error mismatch for {s:?}"),
+            (new_r, ref_r) => panic!("ok/err mismatch for {s:?}: new={new_r:?} ref={ref_r:?}"),
+        }
+    }
+
+    /// Structural shapes, number edges, escapes, surrogates, raw UTF-8 and
+    /// every reachable diagnostic — including the F-8 wordings.
+    const CASES: &[&str] = &[
+        "",
+        " ",
+        "{",
+        "}",
+        "[",
+        "]",
+        "{\"a\"",
+        "{\"a\":",
+        "{\"a\": ",
+        "tru",
+        "fals",
+        "nul",
+        "@",
+        "[1 2]",
+        "{\"a\": @}",
+        "1.",
+        "1e",
+        "1e+",
+        "-",
+        "01",
+        "-0",
+        "0",
+        "17",
+        "-9223372036854775808",
+        "9223372036854775808",
+        "18446744073709551616",
+        "1e30",
+        "1.5",
+        "1E+2",
+        "2.5e-3",
+        "0.1",
+        "1e-400",
+        "1e309",
+        "-1e309",
+        "true",
+        "false",
+        "null",
+        "[]",
+        "{}",
+        "[1,2,3]",
+        "{\"a\":1}",
+        "{\"id\":1,\"sku\":\"SKU-7\",\"qty\":2,\"price\":37}",
+        "[{\"a\":1},{\"b\":[2,3]}]",
+        "[,]",
+        "[1,]",
+        "[1 2]",
+        "{\"a\" 1}",
+        "{\"a\":1}{",
+        "\"hello\"",
+        "\"\\n\\t\\r\\\"\\\\\\/\"",
+        "\"\\b\\f\"",
+        "\"\\u0041\"",
+        "\"\\u00e9\"",
+        "\"\\ud83d\\ude00\"",
+        "\"\\uD83D\\uDE00\"",
+        "\"\\ud83d\"",
+        "\"\\ude00\"",
+        "\"\\ud800\\ud800\"",
+        "\"\\ud83dX\"",
+        "\"\\ud83d\\uXX00\"",
+        "\"\\uZZZZ\"",
+        "\"\\u12\"",
+        "\"\\q\"",
+        "\"\\uあ\"",
+        "\"日本語\"",
+        "日本",
+        "  [ 1 , 2 ]  ",
+        "\t\n\r [1]",
+        "{\"dup\":1,\"dup\":2}",
+        "{\"\":1}",
+        "{\"k\":\"v\"}x",
+        "[1]trash",
+        "nulL",
+        "TRUE",
+        "\"a\tb\"",
+        "{\"\\u0041\":1}",
+    ];
+
+    #[test]
+    fn byte_parser_matches_char_oracle() {
+        for s in CASES {
+            parity(s);
+        }
+    }
+
+    #[test]
+    fn depth_guard_parity() {
+        // Both parsers must agree at and around JSON_MAX_DEPTH (512) — the
+        // exact boundary is the depth guard's business, parity is ours.
+        for n in [1usize, 100, 511, 512, 513, 600] {
+            let arr = format!("{}1{}", "[".repeat(n), "]".repeat(n));
+            parity(&arr);
+            let obj = format!("{}1{}", "{\"k\":".repeat(n), "}".repeat(n));
+            parity(&obj);
+        }
+    }
+
+    #[test]
+    fn fixture_shape_round_trip_parity() {
+        // The json.matrix fixture shape: rows of 4-key maps, written then
+        // re-parsed by both parsers, then re-written and re-parsed again.
+        for i in 0..8u64 {
+            let doc = format!(
+                "{{\"id\":{i},\"sku\":\"SKU-{i}\",\"qty\":{},\"price\":{}}}",
+                i % 7 + 1,
+                (i * 37) % 1000
+            );
+            parity(&doc);
+            let list = format!("[{doc},{doc},{doc}]");
+            parity(&list);
+            let v = json_parse_str(&list).expect("fixture list parses");
+            let s = super::json_write_text(&v).expect("write");
+            parity(&s);
+        }
+    }
+
+    #[test]
+    fn f8_eof_wordings_unchanged() {
+        parity("{\"broken\": ");
+        parity("[\"a\", 100000");
+        parity("[1, ");
+        parity("{\"k\":");
+        parity("@");
+        parity("[1 2]");
+        parity("{\"a\": @}");
+        parity("tru");
+        parity("1.");
     }
 }
 

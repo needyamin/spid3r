@@ -66,6 +66,12 @@ tao = { version = "0.34", optional = true }
 
 [profile.release]
 opt-level = 3
+# N1.1 (optimize_plan.html AF8): cross-crate LTO over the interpreter dispatch
+# loop, the runtime peeks and the stdlib fast paths, and a single codegen unit
+# so the hot match arms can inline across the crate boundary. Build-config
+# only: no code semantics, no new dependency, no unsafe. Build time increases.
+lto = "thin"
+codegen-units = 1
 # Panic on integer overflow in release builds instead of silently wrapping
 # (audit S-5). The runtime computes indices, sizes and hashes from
 # script-controlled i64 values; the per-call-site checked/saturating guards

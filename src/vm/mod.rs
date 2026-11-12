@@ -178,6 +178,13 @@ pub struct Vm {
     stop: usize,
     /// Active debugger session (`spid3r debug`); `None` in normal runs.
     debug: Option<DebugState>,
+    /// N2.1 observer bitmask, kept in sync by the three install paths
+    /// (`enable_debug`, `enable_profiling`, `enable_coverage`): bit 0 debug,
+    /// bit 1 coverage, bit 2 prof. Zero means no observer is attached, which
+    /// lets the dispatch prelude run its trimmed form; any observer restores
+    /// the exact original per-instruction sequence (prof counts, coverage
+    /// line hits, pause/step location are all unchanged).
+    obs: u8,
     /// Line coverage (`spid3r run --coverage`); `None` in normal runs, so the
     /// hot loop pays one `Option` check per instruction when disabled.
     coverage: Option<coverage::Coverage>,
@@ -300,6 +307,11 @@ impl Profiler {
     }
 }
 
+/// N2.1 observer bitmask bits (see `Vm::obs`).
+const OBS_DEBUG: u8 = 1;
+const OBS_COVERAGE: u8 = 2;
+const OBS_PROF: u8 = 4;
+
 impl Vm {
     /// Create a VM with its own globals (natives + `Object`) and module cache.
     pub fn new(file: Arc<str>, module_dirs: Vec<PathBuf>) -> Self {
@@ -318,6 +330,7 @@ impl Vm {
             depth: 0,
             stop: 0,
             debug: None,
+            obs: 0,
             coverage: None,
             prof: None,
             invoke_cache: HashMap::new(),
@@ -411,6 +424,7 @@ impl Vm {
             depth: 0,
             stop: 0,
             debug: None,
+            obs: 0,
             coverage: None,
             prof: None,
             invoke_cache: HashMap::new(),
@@ -454,10 +468,7 @@ impl Vm {
         let guard = map.lock().unwrap();
         let mk = crate::value::MapKey::Str(name.clone());
         let hit: Option<Option<usize>> = self.map_cache.get(&site).and_then(|c| {
-            if !Arc::ptr_eq(&c.map, map)
-                || c.name != *name
-                || c.generation != guard.generation
-            {
+            if !Arc::ptr_eq(&c.map, map) || c.name != *name || c.generation != guard.generation {
                 return None;
             }
             match c.index {
@@ -839,11 +850,22 @@ impl Vm {
     /// [`Self::profiling_report`] after the run.
     pub fn enable_profiling(&mut self) {
         self.prof = Some(Profiler::default());
+        self.refresh_obs();
     }
 
     /// Collect line coverage for the next run.
     pub fn enable_coverage(&mut self) {
         self.coverage = Some(coverage::Coverage::default());
+        self.refresh_obs();
+    }
+
+    /// N2.1: recompute the observer bitmask from the three install fields.
+    /// Called from every install path so a prelude keyed on `obs == 0` can
+    /// never miss a late observer attach.
+    fn refresh_obs(&mut self) {
+        self.obs = (self.debug.is_some() as u8)
+            | ((self.coverage.is_some() as u8) << 1)
+            | ((self.prof.is_some() as u8) << 2);
     }
 
     /// Credit the instruction the innermost frame is about to execute.
@@ -925,19 +947,34 @@ impl Vm {
                 }
             }
             let nf = self.frames.len() - 1;
-            let ip = self.frames[nf].ip;
-            self.frames[nf].inst_ip = ip;
-            // Debugger: may pause here (breakpoints, stepping). It runs before
-            // the instruction so the paused location is what is about to run.
-            if self.debug.is_some() {
-                self.flush_pending_str();
-                self.debug_hook()?;
+            let mut ip = self.frames[nf].ip;
+            // N2.1 dispatch-prelude trim. With no observer attached, the ip
+            // read above feeds the fetch directly — nothing between them can
+            // move `ip`, so one inst_ip write replaces the write / re-read /
+            // write sequence. With any observer attached (--prof /
+            // --coverage / debug stepping) the exact original sequence below
+            // runs, so observer behaviour (prof counts, coverage line hits,
+            // pause/step location) is unchanged. `obs` is maintained by the
+            // three install paths.
+            if self.obs == 0 {
+                self.frames[nf].inst_ip = ip;
+            } else {
+                self.frames[nf].inst_ip = ip;
+                // Debugger: may pause here (breakpoints, stepping). It runs
+                // before the instruction so the paused location is what is
+                // about to run. The mask bits are equivalent to the
+                // corresponding Option checks — `refresh_obs` is the only
+                // writer and every install path calls it.
+                if self.obs & OBS_DEBUG != 0 {
+                    self.flush_pending_str();
+                    self.debug_hook()?;
+                }
+                if self.obs & OBS_COVERAGE != 0 {
+                    self.coverage_hit();
+                }
+                ip = self.frames[nf].ip;
+                self.frames[nf].inst_ip = ip;
             }
-            if self.coverage.is_some() {
-                self.coverage_hit();
-            }
-            let ip = self.frames[nf].ip;
-            self.frames[nf].inst_ip = ip;
             // Bounds-checked fetch (audit A-8): `validate_chunk` rejects chunks
             // that can fall off the end, but a corrupt `.matrixc` (or a future
             // opcode whose length changes) must still fail as a clean VM error
@@ -960,8 +997,10 @@ impl Vm {
                     continue;
                 }
             };
-            if let Some(p) = self.prof.as_mut() {
-                p.count(b);
+            if self.obs & OBS_PROF != 0 {
+                if let Some(p) = self.prof.as_mut() {
+                    p.count(b);
+                }
             }
             match op {
                 OpCode::Constant => {
@@ -1059,6 +1098,32 @@ impl Vm {
                                         && code.get(ip + 7) == Some(&(OpCode::Pop as u8))
                                     {
                                         let dst = code[ip + 6] as usize;
+                                        // N3 back-edge fold, computed BEFORE the
+                                        // mutable slot write so the immutable
+                                        // `code` borrow never overlaps it: fold
+                                        // the loop-back-edge Jump into the fused
+                                        // increment (identical semantics — Jump
+                                        // is unconditional and pure ip; an
+                                        // out-of-bounds target leaves `next`
+                                        // before the Jump so the generic handler
+                                        // produces its exact "invalid jump
+                                        // target").
+                                        let folded: Option<usize> = {
+                                            let n0 = ip + 8;
+                                            if code.get(n0) == Some(&(OpCode::Jump as u8)) {
+                                                match (code.get(n0 + 1), code.get(n0 + 2)) {
+                                                    (Some(&lo), Some(&hi)) => {
+                                                        let t = (n0 as i64 + 3)
+                                                            + i16::from_le_bytes([lo, hi]) as i64;
+                                                        (t >= 0 && (t as usize) < code.len())
+                                                            .then_some(t as usize)
+                                                    }
+                                                    _ => None,
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        };
                                         if let (Some(&Value::Int(a)), Some(&Value::Int(b))) = (
                                             self.frames[nf].slots.get(slot),
                                             self.frames[nf].slots.get(slot_b),
@@ -1071,7 +1136,7 @@ impl Vm {
                                                         self.pending_str = None;
                                                     }
                                                     self.frames[nf].slots[dst] = Value::Int(v);
-                                                    self.frames[nf].ip = ip + 8;
+                                                    self.frames[nf].ip = folded.unwrap_or(ip + 8);
                                                     continue;
                                                 }
                                             }
@@ -1130,13 +1195,11 @@ impl Vm {
                                         // Still a generic runtime pattern
                                         // peek, disabled under prof /
                                         // coverage / debug like the rest.
-                                        let inverted = code.get(ip + 8)
-                                            == Some(&(OpCode::JumpIfTrue as u8));
-                                        if let (Some(&sc), Some(&lo), Some(&hi)) = (
-                                            code.get(ip + 6),
-                                            code.get(ip + 9),
-                                            code.get(ip + 10),
-                                        ) {
+                                        let inverted =
+                                            code.get(ip + 8) == Some(&(OpCode::JumpIfTrue as u8));
+                                        if let (Some(&sc), Some(&lo), Some(&hi)) =
+                                            (code.get(ip + 6), code.get(ip + 9), code.get(ip + 10))
+                                        {
                                             let slot_c = sc as usize;
                                             if let (
                                                 Some(&Value::Int(a)),
@@ -1236,6 +1299,29 @@ impl Vm {
                                     && code.get(ip + 8) == Some(&(OpCode::Pop as u8))
                                 {
                                     let dst = code[ip + 7] as usize;
+                                    // N3 back-edge fold, computed BEFORE the
+                                    // mutable slot write (same rationale as the
+                                    // GetLocal+Add arm above): fold the
+                                    // loop-back-edge Jump into the fused
+                                    // increment; an out-of-bounds target leaves
+                                    // `next` before the Jump so the generic
+                                    // handler produces its exact error.
+                                    let folded: Option<usize> = {
+                                        let n0 = ip + 9;
+                                        if code.get(n0) == Some(&(OpCode::Jump as u8)) {
+                                            match (code.get(n0 + 1), code.get(n0 + 2)) {
+                                                (Some(&lo), Some(&hi)) => {
+                                                    let t = (n0 as i64 + 3)
+                                                        + i16::from_le_bytes([lo, hi]) as i64;
+                                                    (t >= 0 && (t as usize) < code.len())
+                                                        .then_some(t as usize)
+                                                }
+                                                _ => None,
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    };
                                     if let (Some(&Value::Int(a)), Some(&Value::Int(b))) = (
                                         self.frames[nf].slots.get(slot),
                                         self.frames[nf].func.chunk.constants.get(cidx),
@@ -1248,7 +1334,7 @@ impl Vm {
                                                     self.pending_str = None;
                                                 }
                                                 self.frames[nf].slots[dst] = Value::Int(v);
-                                                self.frames[nf].ip = ip + 9;
+                                                self.frames[nf].ip = folded.unwrap_or(ip + 9);
                                                 continue;
                                             }
                                         }
@@ -1619,6 +1705,18 @@ impl Vm {
                         (Value::Int(a), Value::Int(b)) => {
                             crate::value::checked_int("+", *a, *b).map(Value::Int)
                         }
+                        (Value::Str(a), Value::Str(b)) => {
+                            // N1 concat fast path: concrete `Str` operands can
+                            // never carry an `__add__` / `__radd__` overload
+                            // (`try_operator` fires only for Map / VInstance
+                            // receivers), so the generic dispatch is pure
+                            // overhead here. Identical spelling to
+                            // `vm_eval_binary`'s Str arm.
+                            let mut s = String::with_capacity(a.len() + b.len());
+                            s.push_str(a);
+                            s.push_str(b);
+                            Ok(Value::Str(s.into()))
+                        }
                         _ => match self
                             .try_operator(&l, &r, "__add__")
                             .or_else(|| self.try_operator(&r, &l, "__radd__"))
@@ -1909,7 +2007,8 @@ impl Vm {
                                 };
                                 self.frames[nf].slots.push(Value::Str(s));
                                 continue;
-                            } else if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_len_impl()) {
+                            } else if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_len_impl())
+                            {
                                 let arg = self.frames[nf].slots.pop().unwrap();
                                 self.frames[nf].slots.pop();
                                 match collections::len_of(&arg) {
@@ -2333,7 +2432,34 @@ impl Vm {
                     self.frames[nf].ip = ip + 1;
                     let idx = self.pop_top();
                     let obj = self.pop_top();
-                    match collections::index_get(&obj, &idx) {
+                    // N1.2 Map fast path: for the two hot key shapes (string
+                    // / int) this inlines the exact lock -> find -> clone
+                    // sequence and the exact `missing key {}` text of
+                    // `collections::index_get`'s Map arm, skipping only the
+                    // generic dispatcher hop and the `as_map_key` conversion
+                    // round-trip. A per-site index cache cannot beat the O(1)
+                    // `MapData::find` for dynamic keys (the key must be
+                    // hashed either way), so this is a dispatch trim, not a
+                    // cache. Every other receiver/key shape keeps the
+                    // generic path.
+                    let res = match (&obj, &idx) {
+                        (Value::Map(m), Value::Str(k)) => {
+                            let guard = m.lock().unwrap();
+                            match guard.find(&crate::value::MapKey::Str(k.clone())) {
+                                Some(i) => Ok(guard.entries[i].1.clone()),
+                                None => Err(format!("missing key {}", k)),
+                            }
+                        }
+                        (Value::Map(m), Value::Int(n)) => {
+                            let guard = m.lock().unwrap();
+                            match guard.find(&crate::value::MapKey::Int(*n)) {
+                                Some(i) => Ok(guard.entries[i].1.clone()),
+                                None => Err(format!("missing key {}", n)),
+                            }
+                        }
+                        _ => collections::index_get(&obj, &idx),
+                    };
+                    match res {
                         Ok(v) => self.frames[nf].slots.push(v),
                         Err(msg) => self.fail(msg),
                     }
@@ -3042,8 +3168,7 @@ impl Vm {
             && code.get(ip + 13) == Some(&1)
             && code.get(ip + 14) == Some(&(OpCode::Add as u8))
         {
-            let kidx =
-                u16::from_le_bytes([*code.get(ip + 9)?, *code.get(ip + 10)?]) as usize;
+            let kidx = u16::from_le_bytes([*code.get(ip + 9)?, *code.get(ip + 10)?]) as usize;
             let a = match frame.slots.get(slot) {
                 Some(Value::Int(a)) => *a,
                 _ => return None,

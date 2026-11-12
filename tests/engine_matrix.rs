@@ -1559,8 +1559,16 @@ fn phase1_fused_paths_preserve_instrumentation() {
     // Under --prof the original opcodes must still be observed: a fused path
     // that ran anyway would erase these lines from the profile.
     let (_, _, prof) = run("vm", &["--prof"]);
-    assert!(prof.contains("==== vm profile ===="), "no profile: {}", prof);
-    assert!(prof.contains("instructions:"), "no instruction count: {}", prof);
+    assert!(
+        prof.contains("==== vm profile ===="),
+        "no profile: {}",
+        prof
+    );
+    assert!(
+        prof.contains("instructions:"),
+        "no instruction count: {}",
+        prof
+    );
     for opcode in ["mul", "mod", "less_eq", "equal", "jump_if_false"] {
         assert!(
             prof.lines().any(|l| l.trim_end().ends_with(opcode)),
@@ -1654,7 +1662,11 @@ fn phase1_fused_prefix_string_preserves_instrumentation() {
             .unwrap_or(-1)
     };
     let (_, _, prof) = run("vm", &["--prof"]);
-    assert!(prof.contains("==== vm profile ===="), "no profile: {}", prof);
+    assert!(
+        prof.contains("==== vm profile ===="),
+        "no profile: {}",
+        prof
+    );
     // Phase 1: with every original opcode observed the unoptimized run is
     // 22306 instructions; a RUNTIME fused path running under --prof would
     // collapse this by thousands of instructions, which this assertion is

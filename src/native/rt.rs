@@ -741,6 +741,20 @@ pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mu
             BinOp::Ge => spid3r_value_bool((a >= b) as u8),
         };
     }
+    if let (Value::Str(a), Value::Str(b)) = (l_ref, r_ref) {
+        if op == BinOp::Add {
+            // N2.2: Str+Str concat with the exact `vm_eval_binary` spelling —
+            // skips the `to_owned` clones and the generic dispatcher hop.
+            // `native_try_operator` fires only for Map / instance receivers,
+            // so concrete `Str` operands can never carry an overload, and any
+            // non-Add op on Str operands keeps the generic path (identical
+            // error text).
+            let mut s = String::with_capacity(a.len() + b.len());
+            s.push_str(a);
+            s.push_str(b);
+            return leak(Value::Str(s.into()));
+        }
+    }
     let l = to_owned(l);
     let r = to_owned(r);
     // Operator overloading first: a value carrying `__add__`/`__sub__`/
@@ -1363,7 +1377,33 @@ fn find_method_cclass(
 pub extern "C" fn spid3r_index_get(obj: *const Value, idx: *const Value) -> *mut Value {
     let object = deref(obj);
     let idx = deref(idx);
-    match collections::index_get(object, idx) {
+    // N2.2: inline the hot Map / List arms of `collections::index_get` with
+    // the exact lock -> resolve -> clone sequence and the exact error text,
+    // skipping only the generic dispatcher hop. Every other receiver / key
+    // shape keeps the generic path (identical behaviour by construction).
+    let res = match (object, idx) {
+        (Value::Map(m), Value::Str(k)) => {
+            let guard = m.lock().unwrap();
+            match guard.find(&crate::value::MapKey::Str(k.clone())) {
+                Some(i) => Ok(guard.entries[i].1.clone()),
+                None => Err(format!("missing key {}", k)),
+            }
+        }
+        (Value::Map(m), Value::Int(n)) => {
+            let guard = m.lock().unwrap();
+            match guard.find(&crate::value::MapKey::Int(*n)) {
+                Some(i) => Ok(guard.entries[i].1.clone()),
+                None => Err(format!("missing key {}", n)),
+            }
+        }
+        (Value::List(d) | Value::VecDyn(d), _) => {
+            let guard = d.lock().unwrap();
+            crate::value::collections::seq::resolve_index(idx, guard.items.len(), "index")
+                .map(|i| guard.items[i].clone())
+        }
+        _ => collections::index_get(object, idx),
+    };
+    match res {
         Ok(v) => leak(v),
         Err(msg) => rt_throw(&msg),
     }

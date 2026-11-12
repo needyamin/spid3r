@@ -119,6 +119,7 @@ impl Vm {
     /// Enable debugger support for the next run.
     pub fn enable_debug(&mut self, state: DebugState) {
         self.debug = Some(state);
+        self.refresh_obs();
     }
 
     /// True when the user quit the debugger (the CLI maps this to exit code 3).

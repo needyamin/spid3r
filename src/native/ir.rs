@@ -2087,7 +2087,10 @@ impl<'ctx> Ir<'ctx> {
 
     /// Inline i64 negation with the exact `spid3r_i64_neg` semantics: only
     /// `i64::MIN` overflows, and the trampoline raises that error.
-    fn emit_i64_neg(&mut self, a: inkwell::values::IntValue<'ctx>) -> IrResult<inkwell::values::IntValue<'ctx>> {
+    fn emit_i64_neg(
+        &mut self,
+        a: inkwell::values::IntValue<'ctx>,
+    ) -> IrResult<inkwell::values::IntValue<'ctx>> {
         let is_min = self
             .builder
             .build_int_compare(IntPredicate::EQ, a, self.i64c(i64::MIN), "negchk")
@@ -2115,10 +2118,7 @@ impl<'ctx> Ir<'ctx> {
         self.br_to(cont_bb);
         self.builder.position_at_end(cont_bb);
         let merged = self.builder.build_phi(self.i64_ty(), "neg.phi").unwrap();
-        merged.add_incoming(&[
-            (&fast, fast_bb),
-            (&slow, slow_def_bb.unwrap()),
-        ]);
+        merged.add_incoming(&[(&fast, fast_bb), (&slow, slow_def_bb.unwrap())]);
         Ok(merged.as_basic_value().into_int_value())
     }
 
@@ -2185,10 +2185,7 @@ impl<'ctx> Ir<'ctx> {
                 self.br_to(cont_bb);
                 self.builder.position_at_end(cont_bb);
                 let merged = self.builder.build_phi(self.i64_ty(), "i64op.phi").unwrap();
-                merged.add_incoming(&[
-                    (&fast, entry_bb.unwrap()),
-                    (&slow, slow_def_bb.unwrap()),
-                ]);
+                merged.add_incoming(&[(&fast, entry_bb.unwrap()), (&slow, slow_def_bb.unwrap())]);
                 Ok(merged.as_basic_value().into_int_value())
             }
             BinOp::Div => {
@@ -2236,10 +2233,7 @@ impl<'ctx> Ir<'ctx> {
                 self.br_to(cont_bb);
                 self.builder.position_at_end(cont_bb);
                 let merged = self.builder.build_phi(self.i64_ty(), "div.phi").unwrap();
-                merged.add_incoming(&[
-                    (&fast, fast_bb),
-                    (&slow, slow_def_bb.unwrap()),
-                ]);
+                merged.add_incoming(&[(&fast, fast_bb), (&slow, slow_def_bb.unwrap())]);
                 Ok(merged.as_basic_value().into_int_value())
             }
             BinOp::Mod => {

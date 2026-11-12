@@ -607,8 +607,7 @@ fn is_rotatable_cond_op(op: OpCode) -> bool {
 /// loop body or on the back-edge itself; and the new back-edge offset must
 /// fit an `i16`. Anything uncertain falls through untouched.
 fn rotate_one_loop(ins: &mut Vec<Ins>, synthetic_base: usize) -> bool {
-    let index_of: HashMap<usize, usize> =
-        ins.iter().enumerate().map(|(k, i)| (i.old, k)).collect();
+    let index_of: HashMap<usize, usize> = ins.iter().enumerate().map(|(k, i)| (i.old, k)).collect();
     // (source index, absolute target in ORIGINAL byte offsets).
     let mut jumps: Vec<(usize, usize)> = Vec::new();
     for (i, x) in ins.iter().enumerate() {
@@ -1026,7 +1025,11 @@ mod tests {
         let plain = compile(src);
         let mut opt = compile(src);
         let stats = optimize_script(&mut opt);
-        assert!(stats.rotations >= 2, "both loops should rotate: {:?}", stats);
+        assert!(
+            stats.rotations >= 2,
+            "both loops should rotate: {:?}",
+            stats
+        );
         assert_eq!(outcome(opt), outcome(plain));
     }
 

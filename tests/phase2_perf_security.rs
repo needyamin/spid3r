@@ -113,7 +113,10 @@ fn disabled_len_is_denied_by_every_engine() {
     let ini = dir.join("spid3r.ini");
     let src = dir.join("probe.matrix");
     write_file(&ini, "[security]\ndisable_natives = len\n");
-    write_file(&src, "fn main() {\n    println(len(\"abc\"));\n    return 0;\n}\n");
+    write_file(
+        &src,
+        "fn main() {\n    println(len(\"abc\"));\n    return 0;\n}\n",
+    );
     let out = all_engines(&dir, &ini, &src);
     assert_uniform(&out, 1, "", "disabled by configuration");
 }
@@ -124,7 +127,10 @@ fn disabled_string_is_denied_by_every_engine() {
     let ini = dir.join("spid3r.ini");
     let src = dir.join("probe.matrix");
     write_file(&ini, "[security]\ndisable_natives = string\n");
-    write_file(&src, "fn main() {\n    println(string(7));\n    return 0;\n}\n");
+    write_file(
+        &src,
+        "fn main() {\n    println(string(7));\n    return 0;\n}\n",
+    );
     let out = all_engines(&dir, &ini, &src);
     assert_uniform(&out, 1, "", "disabled by configuration");
 }
