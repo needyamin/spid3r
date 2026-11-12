@@ -90,6 +90,7 @@ desktop.ini
 # Local planning document: spid3r.ini control-plane analysis (2026-11-08).
 # Kept local per the same convention — never pushed.
 /plan.html
+/optimize_plan.html
 
 # --- SQLite runtime sidecars (churn every time a demo/test opens a committed db) ---
 *.db-shm
@@ -105,3 +106,4 @@ __pycache__/
 # file is ADVISORY ONLY and must never be committed. The frozen, pinned-host
 # snapshot is benchmarks/results.phase0.json (which IS committed).
 /benchmarks/results.phase0.ci-advisory.json
+/.mimosa/
