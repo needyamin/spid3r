@@ -1,10 +1,10 @@
 {
-  "generated": "2026-11-11 21:10:01",
+  "generated": "2026-11-13 02:45:15",
   "host": {
     "os": "Windows-11-10.0.26300-SP0",
     "cpu": "Intel(R) Core(TM) Ultra 7 265K",
     "cores": 20,
-    "python": "3.13.14"
+    "python": "3.15.0"
   },
   "runs": {
     "spid3r": 5,
@@ -13,112 +13,112 @@
   },
   "spid3r_version": "spid3r 1.1.0 (language 1.0)",
   "startup": {
-    "spid3r": 11.032299999897077,
-    "php": 24.662099999886777,
-    "python": 203.3269000000928
+    "spid3r": 7.6330000010784715,
+    "php": 22.024099998816382,
+    "python": 15.680399999837391
   },
   "vm": {
-    "arith": 99.65,
-    "closures": 21.04,
-    "json": 19.526,
-    "list": 38.027,
-    "map": 28.082,
-    "methods": 94.435,
-    "stress_suite": 36.286,
-    "strings": 29.412,
-    "tasks": 14.287
+    "arith": 94.645,
+    "closures": 17.085,
+    "json": 15.051,
+    "list": 33.272,
+    "map": 24.205,
+    "methods": 91.031,
+    "stress_suite": 33.762,
+    "strings": 25.241,
+    "tasks": 10.759
   },
   "tree": {
-    "arith": 376.216,
-    "closures": 58.712,
-    "json": 23.462,
-    "list": 56.553,
-    "map": 46.483,
-    "methods": 135.627,
-    "stress_suite": 55.071,
-    "strings": 35.6,
-    "tasks": 15.86
+    "arith": 377.276,
+    "closures": 53.583,
+    "json": 17.572,
+    "list": 52.295,
+    "map": 35.223,
+    "methods": 135.572,
+    "stress_suite": 50.901,
+    "strings": 31.607,
+    "tasks": 13.615
   },
   "php": {
-    "arith": 45.4144999998789,
-    "closures": 27.844899999990957,
-    "json": 28.122199999870645,
-    "list": 29.59329999998772,
-    "map": 28.635699999995268,
-    "methods": 34.49810000006437,
-    "strings": 29.98980000006668,
-    "tasks": 26.387499999827924
+    "arith": 41.26940000423929,
+    "closures": 24.181300002965145,
+    "json": 24.723499998799525,
+    "list": 26.3314999974682,
+    "map": 25.0778999979957,
+    "methods": 30.852000003505964,
+    "strings": 26.499100000364706,
+    "tasks": 23.428200001944788
   },
   "python": {
-    "arith": 250.99819999991269,
-    "closures": 203.02550000019437,
-    "json": 204.7655000001214,
-    "list": 208.4096999999474,
-    "map": 204.19109999988905,
-    "methods": 209.4812999998794,
-    "strings": 203.3758999998554,
-    "tasks": 224.54000000016094
+    "arith": 55.29519999981858,
+    "closures": 17.80249999865191,
+    "json": 31.867400000919588,
+    "list": 21.240000001853332,
+    "map": 20.492499999818392,
+    "methods": 22.23950000188779,
+    "strings": 17.469700003857724,
+    "tasks": 23.75709999614628
   },
   "gate": [
     {
       "stem": "arith",
-      "rate": 20070245.86051179,
+      "rate": 21131597.02044482,
       "floor": 6000000,
-      "margin": 3.345040976751965,
+      "margin": 3.5219328367408034,
       "pass": true
     },
     {
       "stem": "closures",
-      "rate": 1901140.6844106463,
+      "rate": 2341235.001463272,
       "floor": 170000,
-      "margin": 11.183180496533213,
+      "margin": 13.771970596842777,
       "pass": true
     },
     {
       "stem": "json",
-      "rate": 102427.53252074159,
+      "rate": 132881.53611055744,
       "floor": 8000,
-      "margin": 12.8034415650927,
+      "margin": 16.61019201381968,
       "pass": true
     },
     {
       "stem": "list",
-      "rate": 5259420.937754753,
+      "rate": 6011060.351045925,
       "floor": 800000,
-      "margin": 6.574276172193441,
+      "margin": 7.513825438807406,
       "pass": true
     },
     {
       "stem": "map",
-      "rate": 1424399.9715120005,
+      "rate": 1652551.1258004545,
       "floor": 160000,
-      "margin": 8.902499821950004,
+      "margin": 10.32844453625284,
       "pass": true
     },
     {
       "stem": "methods",
-      "rate": 2117858.8447080003,
+      "rate": 2197053.7509200163,
       "floor": 500000,
-      "margin": 4.235717689416001,
+      "margin": 4.394107501840033,
       "pass": true
     },
     {
       "stem": "strings",
-      "rate": 1019991.8400652795,
+      "rate": 1188542.4507745334,
       "floor": 140000,
-      "margin": 7.2856560004662825,
+      "margin": 8.48958893410381,
       "pass": true
     },
     {
       "stem": "tasks",
-      "rate": 139987.40113389795,
+      "rate": 185890.8820522353,
       "floor": 6000,
-      "margin": 23.331233522316325,
+      "margin": 30.98181367537255,
       "pass": true
     }
   ],
   "php_version": "8.3.33",
   "compare": true,
-  "vm_raw": "spid3r bench - engine vm, best of 5 runs, tree vs vm compared\nbenchmark           iters      best time  iters/sec\narith             2000000       99.650ms   20070326\nclosures            40000       21.040ms    1901159\njson                 2000       19.526ms     102426\nlist               200000       38.027ms    5259476\nmap                 40000       28.082ms    1424385\nmethods            200000       94.435ms    2117863\nstress_suite            -       36.286ms          -\nstrings             30000       29.412ms    1020009\ntasks                2000       14.287ms     139983\n",
-  "tree_raw": "spid3r bench - engine tree, best of 3 runs\nbenchmark           iters      best time  iters/sec\narith             2000000      376.216ms    5316089\nclosures            40000       58.712ms     681295\njson                 2000       23.462ms      85246\nlist               200000       56.553ms    3536506\nmap                 40000       46.483ms     860532\nmethods            200000      135.627ms    1474628\nstress_suite            -       55.071ms          -\nstrings             30000       35.600ms     842687\ntasks                2000       15.860ms     126100\n"
+  "vm_raw": "spid3r bench - engine vm, best of 5 runs, tree vs vm compared\nbenchmark           iters      best time  iters/sec\narith             2000000       94.645ms   21131664\nclosures            40000       17.085ms    2341249\njson                 2000       15.051ms     132878\nlist               200000       33.272ms    6011096\nmap                 40000       24.205ms    1652578\nmethods            200000       91.031ms    2197051\nstress_suite            -       33.762ms          -\nstrings             30000       25.241ms    1188533\ntasks                2000       10.759ms     185887\n",
+  "tree_raw": "spid3r bench - engine tree, best of 3 runs\nbenchmark           iters      best time  iters/sec\narith             2000000      377.276ms    5301163\nclosures            40000       53.583ms     746501\njson                 2000       17.572ms     113817\nlist               200000       52.295ms    3824465\nmap                 40000       35.223ms    1135635\nmethods            200000      135.572ms    1475230\nstress_suite            -       50.901ms          -\nstrings             30000       31.607ms     949154\ntasks                2000       13.615ms     146892\n"
 }
