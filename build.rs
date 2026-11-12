@@ -511,28 +511,31 @@ fn windows_llvm() {
 }
 
 fn unix_llvm() {
-    // Prefer llvm-config when available.
-    for name in ["llvm-config", "llvm-config-18"] {
-        if let Ok(out) = Command::new(name).arg("--libdir").output() {
+    // Prefer llvm-config when available. Probe the distro wrapper and the
+    // Debian version-suffixed binary, each by its LITERAL name (parameter-list
+    // invocation, no shell, no interpolated program path).
+    let mut libdir: Option<String> = None;
+    if let Ok(out) = Command::new("llvm-config").arg("--libdir").output() {
+        if out.status.success() {
+            let d = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !d.is_empty() {
+                libdir = Some(d);
+            }
+        }
+    }
+    if libdir.is_none() {
+        if let Ok(out) = Command::new("llvm-config-18").arg("--libdir").output() {
             if out.status.success() {
-                let libdir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !libdir.is_empty() {
-                    println!("cargo:rustc-link-search=native={libdir}");
-                    // Debian/Ubuntu ship the single libLLVM-18 dylib; Homebrew
-                    // uses libLLVM. Try both by emitting the versioned name.
-                    let prefix = env::var_os("LLVM_SYS_181_PREFIX")
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    if prefix.contains("homebrew") || prefix.contains("Cellar") {
-                        println!("cargo:rustc-link-lib=dylib=LLVM");
-                    } else {
-                        println!("cargo:rustc-link-lib=dylib=LLVM-18");
-                        println!("cargo:rustc-link-lib=dylib=LLVM");
-                    }
-                    return;
+                let d = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !d.is_empty() {
+                    libdir = Some(d);
                 }
             }
         }
+    }
+    if let Some(d) = libdir {
+        emit_unix_llvm_link(&d);
+        return;
     }
 
     // Homebrew fallback.
@@ -552,6 +555,27 @@ fn unix_llvm() {
          Install llvm-18 development packages and llvm-config, or set \
          LLVM_SYS_181_PREFIX. See docs/BUILDING.md."
     );
+}
+
+/// Emit the link directive for the dylib that ACTUALLY exists in the resolved
+/// libdir: Debian/Ubuntu ship the versioned `libLLVM-18.so[.1]` (rust-lld
+/// hard-fails on a missing unversioned `-lLLVM`), Homebrew/macOS ship
+/// `libLLVM.dylib`. Only when neither is present fall back to trying both
+/// names (legacy behaviour).
+fn emit_unix_llvm_link(libdir: &str) {
+    println!("cargo:rustc-link-search=native={libdir}");
+    let dir = PathBuf::from(libdir);
+    let has_unversioned = dir.join("libLLVM.so").is_file() || dir.join("libLLVM.dylib").is_file();
+    let has_versioned =
+        dir.join("libLLVM-18.so").is_file() || dir.join("libLLVM-18.so.1").is_file();
+    if has_unversioned {
+        println!("cargo:rustc-link-lib=dylib=LLVM");
+    } else if has_versioned {
+        println!("cargo:rustc-link-lib=dylib=LLVM-18");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=LLVM-18");
+        println!("cargo:rustc-link-lib=dylib=LLVM");
+    }
 }
 
 fn windows_resources() {
