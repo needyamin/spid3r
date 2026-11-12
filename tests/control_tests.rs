@@ -343,3 +343,83 @@ fn op_passthrough_parses_params_after_the_flag() {
     let stdout = String::from_utf8_lossy(&out2.stdout);
     assert!(stdout.contains(r#""value":"true""#), "{stdout}");
 }
+
+/// Panel/CLI parity enforcement: EVERY top-level command `spid3r --help`
+/// advertises must be decidable by the control panel — runnable with captured
+/// output (`lang_exec`), runnable in its own terminal / window
+/// (`lang_terminal`), or in the documented non-runnable set (`control` /
+/// `config` are driven through their structured ops; `lsp` is a long-running
+/// stdio server). This is what makes the desktop panel (`spid3r-control.exe`)
+/// and the CLI provably cover the same language surface: a new CLI command
+/// cannot ship without a panel decision.
+#[test]
+fn every_cli_command_is_panel_decidable() {
+    let out = bin().arg("--help").output().expect("run spid3r --help");
+    assert!(out.status.success(), "--help failed");
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    // Top-level commands are the lowercase first words of the indented
+    // command lines, e.g. "    run [--engine tree|vm] ...". Command lines use
+    // EXACTLY 4 spaces; wrapped description continuations are aligned deeper
+    // (so a prose line like "    ...and VM runtime fusion peeks" is not
+    // mistaken for a command).
+    let mut commands: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if !line.starts_with("    ") || line.starts_with("     ") {
+            continue;
+        }
+        let t = line.trim_start();
+        let first = t.split([' ', '<', '[']).next().unwrap_or("");
+        if first.is_empty() || !first.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+            continue;
+        }
+        if first == "spid3r" {
+            continue; // the "spid3r <command> [options]" usage header
+        }
+        if !commands.iter().any(|c| c == first) {
+            commands.push(first.to_string());
+        }
+    }
+    assert!(
+        commands.len() >= 30,
+        "parsed too few commands from --help ({:?})",
+        commands
+    );
+
+    for cmd in &commands {
+        let exec = spid3r_lang::control::lang::lang_exec_allowed(cmd);
+        let term = spid3r_lang::control::lang::lang_terminal_allowed(cmd);
+        let non = spid3r_lang::control::lang::lang_non_runnable(cmd);
+        assert!(
+            exec || term || non,
+            "CLI command '{}' has no panel decision: not in lang_exec ALLOWED, \
+             not a lang_terminal command, and not in the documented non-runnable set",
+            cmd
+        );
+        // A command must be decidable by exactly one path.
+        assert!(
+            (exec as u8) + (term as u8) + (non as u8) == 1,
+            "CLI command '{}' is ambiguously decidable (exec={} terminal={} non={})",
+            cmd,
+            exec,
+            term,
+            non
+        );
+    }
+
+    // The interactive trio must be terminal-runnable, never exec-runnable:
+    // `repl` / `debug` / `gui` would occupy the captured-output path until the
+    // wall-clock timeout with nothing to show.
+    for cmd in ["repl", "debug", "gui"] {
+        assert!(
+            spid3r_lang::control::lang::lang_terminal_allowed(cmd),
+            "'{}' must stay terminal-runnable",
+            cmd
+        );
+        assert!(
+            !spid3r_lang::control::lang::lang_exec_allowed(cmd),
+            "'{}' must not be exec-runnable (it is interactive)",
+            cmd
+        );
+    }
+}

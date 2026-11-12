@@ -17,10 +17,57 @@ use super::ops::{field, jstr};
 /// Subcommands the panel may run. Interactive/long-lived ones (`repl`,
 /// `debug`, `lsp`, `agent`, `admin`) are deliberately absent: they need a
 /// terminal or have their own panel tabs.
+/// One-shot toolchain commands the panel may run through `lang_exec`. This is
+/// the FULL CLI surface minus four documented exclusions:
+///
+///   - `repl`, `debug`, `gui`  → interactive; run through `op_lang_terminal`
+///     (own console / window) instead of the captured-output exec path.
+///   - `lsp`                   → a long-running stdio server; it would occupy
+///     the exec path until the wall-clock timeout with nothing to show.
+///
+/// `control` and `config` are not here because the panel drives their exact
+/// operations directly through `ops::dispatch` (status / config_* / agent_* /
+/// devices_* / audit_tail) — the same ops the `spid3r control` CLI uses, so
+/// both surfaces stay provably identical. `tests/control_tests.rs` enforces
+/// this whitelist against `spid3r --help` so a new CLI command cannot ship
+/// without a panel decision.
 const ALLOWED: &[&str] = &[
     "run", "check", "compile", "build", "test", "fmt", "disasm", "exec", "modules", "init",
     "install", "pack", "unpack", "dist", "bench", "plugin", "info", "version", "magic", "bundle",
+    // Package / registry one-shots and module tooling (parity with the CLI).
+    "add", "publish", "remove", "search", "verify", "tree",
+    // Device-pairing and remote administration one-shots.
+    "admin", "agent", "help",
 ];
+
+/// Commands that run interactively in their own console / window instead of
+/// the captured-output exec path.
+const TERMINAL: &[&str] = &["repl", "debug", "gui"];
+
+/// Commands deliberately NOT panel-runnable, with the reason surfaced in the
+/// parity test: `control` and `config` are driven through their structured
+/// `ops::dispatch` operations (never by re-execing the CLI), and `lsp` is a
+/// long-running stdio server that would occupy the exec path until the
+/// wall-clock timeout.
+const NON_RUNNABLE: &[&str] = &["control", "config", "lsp"];
+
+/// Single authority for "can the panel run this command with captured
+/// output?" — used by `op_lang_exec`, reported by `op_lang_info` and enforced
+/// against `spid3r --help` by `tests/control_tests.rs`.
+pub fn lang_exec_allowed(cmd: &str) -> bool {
+    ALLOWED.contains(&cmd)
+}
+
+/// Single authority for "does this command open in its own terminal /
+/// window?" — used by `op_lang_terminal`.
+pub fn lang_terminal_allowed(cmd: &str) -> bool {
+    TERMINAL.contains(&cmd)
+}
+
+/// Single authority for the documented non-runnable set.
+pub fn lang_non_runnable(cmd: &str) -> bool {
+    NON_RUNNABLE.contains(&cmd)
+}
 
 /// Output cap per stream, so a chatty program cannot balloon the IPC reply.
 const MAX_OUTPUT: usize = 256 * 1024;
@@ -123,7 +170,7 @@ fn valid_dir(cwd: &str) -> Result<Option<PathBuf>, String> {
 /// first positional), `args` (extra flags/args, whitespace-split), `cwd`.
 pub fn op_lang_exec(params: &str) -> Result<String, String> {
     let cmd = field(params, "cmd").unwrap_or_default();
-    if !ALLOWED.contains(&cmd.as_str()) {
+    if !lang_exec_allowed(&cmd) {
         return Err(format!(
             "'{}' is not a panel-runnable command (allowed: {})",
             cmd,
@@ -216,7 +263,7 @@ pub fn op_lang_exec(params: &str) -> Result<String, String> {
 /// them a terminal without a dependency).
 pub fn op_lang_terminal(params: &str) -> Result<String, String> {
     let cmd = field(params, "cmd").unwrap_or_default();
-    if !["repl", "debug", "gui"].contains(&cmd.as_str()) {
+    if !lang_terminal_allowed(&cmd) {
         return Err(format!("'{}' cannot be opened in a terminal window", cmd));
     }
     let file = field(params, "file").unwrap_or_default();
