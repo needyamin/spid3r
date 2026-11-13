@@ -1056,3 +1056,67 @@ fn aliasing_cases_agree_on_all_paths() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// VM closure-cycle reclamation (the VM mirror of audit A-13).
+//
+// A nested named function captures its own name through an upvalue cell:
+// `VmFunc -> cell -> VFunc(same VmFunc)`. With the closure and the cell both
+// registered (the VM's A-13 treatment), the collector sees the closed cycle
+// and reclaims it; before that, every call of such a function leaked one
+// closure island (+1 live cell per call, growing with n) while the tree
+// engine collected the same shape since A-13.
+// ---------------------------------------------------------------------------
+
+/// The nested-recursive-function probe run on both VM modes: the live-cell
+/// count after the loop's forced collection must be back at its baseline.
+#[test]
+fn vm_closure_cycles_are_collected() {
+    let src = concat!(
+        "fn make() {\n",
+        "    let payload = list();\n",
+        "    payload.push(1);\n",
+        "    fn step(n) {\n",
+        "        if (n <= 0) { return payload.len(); }\n",
+        "        return step(n - 1);\n",
+        "    }\n",
+        "    return step(2);\n",
+        "}\n",
+        "fn main() {\n",
+        "    gc_collect();\n",
+        "    let before = gc_live_cells();\n",
+        "    let i = 0;\n",
+        "    while (i < 2000) {\n",
+        "        let n = make();\n",
+        "        i = i + 1;\n",
+        "    }\n",
+        "    gc_collect();\n",
+        "    let after = gc_live_cells();\n",
+        "    println(before);\n",
+        "    println(after);\n",
+        "    return 0;\n",
+        "}\n",
+    );
+    let path = scratch("vm_closure_cycles", src);
+    for extra in [&[][..], &["--no-opt"][..]] {
+        let out = run("vm", extra, &path);
+        assert_eq!(out.code, 0, "[{extra:?}] probe failed: {}", out.stderr);
+        let counts: Vec<i64> = out
+            .stdout
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect();
+        assert_eq!(
+            counts.len(),
+            2,
+            "[{extra:?}] expected two counts: {}",
+            out.stdout
+        );
+        assert!(
+            counts[1] <= counts[0] + 4,
+            "[{extra:?}] VM closure cycles were not reclaimed: before={} after={}",
+            counts[0],
+            counts[1]
+        );
+    }
+}

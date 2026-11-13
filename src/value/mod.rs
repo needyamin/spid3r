@@ -30,6 +30,24 @@ pub fn new_untracked_ref<T>(v: T) -> Ref<T> {
 /// and survives after the defining frame returns (and across spawned tasks).
 pub type UpvalueCell = Arc<Mutex<Value>>;
 
+impl GcTrace for Value {
+    /// A capture cell (`new_ref::<Value>`) holds exactly one value: emit it so
+    /// the collector sees `upvalue cell -> captured value` edges. Without
+    /// this, a cell holding a container pins it as an external root forever,
+    /// and the `VmFunc -> cell -> VFunc(same VmFunc)` recursion cycle of a
+    /// nested named function is invisible to the collector (the VM mirror of
+    /// audit A-13).
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        f(self);
+    }
+    /// The sweep's cycle-breaker: emptying the cell drops the `VFunc` Arc
+    /// inside it, which drops the closure, which drops its `upvalues` vec,
+    /// which drops the remaining cells of the island.
+    fn gc_clear(&mut self) {
+        *self = Value::Null;
+    }
+}
+
 /// A function compiled to bytecode. `upvalues` holds the upvalue *cells*
 /// captured from the enclosing frame (read via `OpGetUpvalue`); `own_upvalues`
 /// is how many upvalue cells this function must allocate for its *own* captured
@@ -109,7 +127,9 @@ impl VmClass {
             slot_index.insert(n.clone(), slot_names.len());
             slot_names.push(n.clone());
         }
-        Arc::new(VmClass {
+        // A-13 (VM side): the class is a registry cell so its method cells are
+        // traversable, mirroring `new_class` for the tree's `ClassData`.
+        gc::track_immutable(Arc::new(VmClass {
             name,
             parent,
             fields,
@@ -117,7 +137,7 @@ impl VmClass {
             slot_index,
             methods,
             ctor,
-        })
+        }))
     }
 }
 
@@ -135,6 +155,50 @@ impl Drop for VmInstanceData {
         // }` chains recurse once per link if the slots are dropped in place.
         crate::value::collections::drop_iteratively(std::mem::take(&mut self.slots));
     }
+}
+
+impl GcTrace for VmFunc {
+    /// The VM mirror of `FunctionData`'s A-13 treatment: a closure is a
+    /// registry cell whose non-`Value` children are its upvalue cells (each a
+    /// tracked `new_ref::<Value>` cell) and whose `Value` children are its
+    /// baked defaults. A nested named function captures its own name through
+    /// one of those cells, so the `VmFunc -> cell -> VFunc(same VmFunc)`
+    /// recursion cycle is collectible only when BOTH endpoints are visible to
+    /// the registry.
+    fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
+        for v in &self.defaults {
+            f(v);
+        }
+    }
+    fn gc_trace_cells(&self, f: &mut dyn FnMut(usize)) {
+        for c in &self.upvalues {
+            f(Arc::as_ptr(c) as *const () as usize);
+        }
+    }
+    /// Empty on purpose (registered via `track_immutable`, which never
+    /// clears): the cycle breaks from the capture-cell side, whose `gc_clear`
+    /// drops the `VFunc` Arc holding this closure.
+    fn gc_clear(&mut self) {}
+}
+
+impl GcTrace for VmClass {
+    /// The VM mirror of `ClassData`'s A-13 treatment: methods and the ctor are
+    /// closure cells, the parent is a class cell.
+    fn gc_trace(&self, _f: &mut dyn FnMut(&Value)) {}
+    fn gc_trace_cells(&self, f: &mut dyn FnMut(usize)) {
+        for (_, fd) in self.methods.values() {
+            f(Arc::as_ptr(fd) as *const () as usize);
+        }
+        if let Some(c) = &self.ctor {
+            f(Arc::as_ptr(c) as *const () as usize);
+        }
+        if let Some(p) = &self.parent {
+            f(Arc::as_ptr(p) as *const () as usize);
+        }
+    }
+    /// Empty on purpose: the class is reclaimed when its last reference
+    /// outside the registry drops.
+    fn gc_clear(&mut self) {}
 }
 
 /// Keys allowed by `map`, `set`, `bag`, `hash_table`, and graph node ids:

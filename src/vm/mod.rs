@@ -30,7 +30,7 @@ use crate::sched::Scheduler;
 use crate::semantic;
 use crate::value::collections;
 use crate::value::{
-    new_ref, truthy, type_name, values_equal, NativeCtx, NativeFn, UpvalueCell, Value, VmClass,
+    gc, new_ref, truthy, type_name, values_equal, NativeCtx, NativeFn, UpvalueCell, Value, VmClass,
     VmFunc, VmInstanceData,
 };
 use crate::vm::bytecode::*;
@@ -3003,7 +3003,12 @@ impl Vm {
                     {
                         continue;
                     }
-                    let cell = crate::value::new_untracked_ref(
+                    // A-13 (VM side): the capture cell is a registered cell
+                    // (its `GcTrace for Value` impl emits the captured value),
+                    // so `VmFunc -> cell -> captured value` edges are visible
+                    // to the collector and the recursion cycle of a nested
+                    // named function is collectible.
+                    let cell = new_ref(
                         self.frames[nf]
                             .slots
                             .get(slot)
@@ -3578,11 +3583,16 @@ impl Vm {
             });
         }
         self.depth += 1;
+        // A-13 (VM side): pre-created cells are registered like every capture
+        // cell. The compiler's `CaptureSync` replaces the placeholder for a
+        // captured slot before any closure can read it; the placeholder exists
+        // so the cell list is indexable and, on a malformed chunk that skips
+        // `CaptureSync`, the fallback still yields a tracked cell.
         let own_cells = if fd.own_upvalues == 0 {
             Vec::new()
         } else {
             (0..fd.own_upvalues as usize)
-                .map(|_| crate::value::new_untracked_ref(Value::Null))
+                .map(|_| new_ref(Value::Null))
                 .collect()
         };
         let frame_globals = fd.globals.clone().unwrap_or_else(|| self.globals.clone());
@@ -3625,7 +3635,9 @@ impl Vm {
                             .get(nf)
                             .and_then(|f| f.slots.get(slot).cloned())
                             .unwrap_or(Value::Null);
-                        crate::value::new_untracked_ref(val)
+                        // A-13 (VM side): registered, like every capture cell
+                        // (see the Capture opcode).
+                        new_ref(val)
                     }
                 }
             } else {
@@ -3637,7 +3649,7 @@ impl Vm {
                             .get(nf)
                             .and_then(|f| f.slots.get(slot).cloned())
                             .unwrap_or(Value::Null);
-                        crate::value::new_untracked_ref(val)
+                        new_ref(val)
                     }
                 }
             };
@@ -3652,7 +3664,13 @@ impl Vm {
             .last()
             .map(|f| f.globals.clone())
             .unwrap_or_else(|| self.globals.clone());
-        Arc::new(VmFunc {
+        // A-13 (VM side): every closure is a registered cell. A nested named
+        // function captures its own name through an upvalue cell, forming
+        // `VmFunc -> cell -> VFunc(same VmFunc)`; with the closure and the
+        // cell both in the registry, the collector sees the closed cycle and
+        // reclaims it. Unregistered, each such call leaked one closure island
+        // (measured: +1 live cell per `make()` call, growing with n).
+        gc::track_immutable(Arc::new(VmFunc {
             globals: Some(defining_globals),
             name: fproto.name.clone(),
             arity: fproto.arity,
@@ -3665,7 +3683,7 @@ impl Vm {
             upvalues,
             own_upvalues: fproto.own_upvalues,
             debug_locals: fproto.debug_locals.clone(),
-        })
+        }))
     }
 
     /// Build a `VmClass` from its prototype, resolving the parent by name from

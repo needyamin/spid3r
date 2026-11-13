@@ -484,8 +484,15 @@ fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
         // closures as `Value::Function`, so the `env -> closure` edge is only
         // visible when function values map to their registered cells. The
         // mirror `closure -> env` edge comes from `FunctionData::gc_trace_cells`.
+        // `VFunc` / `VClass` are the bytecode VM's counterparts: a VM closure
+        // is registered by `make_closure` (track_immutable) and its upvalue
+        // cells are registered capture cells, so the
+        // `VmFunc -> cell -> VFunc(same VmFunc)` recursion cycle of a nested
+        // named function is fully visible and collectible.
         Value::Function(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Class(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::VFunc(a) => f(Arc::as_ptr(a) as *const () as usize),
+        Value::VClass(a) => f(Arc::as_ptr(a) as *const () as usize),
         Value::Option(Some(inner)) => for_each_cell_id(inner, f),
         Value::Result(Ok(inner) | Err(inner)) => for_each_cell_id(inner, f),
         _ => {}
