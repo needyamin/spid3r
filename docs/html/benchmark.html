@@ -257,7 +257,7 @@
         identical output, and each run must reproduce its own output exactly.
       </p>
       <div class="chips">
-        <span class="chip"><b>2026-11-13 23:37:14</b></span>
+        <span class="chip"><b>2026-11-14 00:27:56</b></span>
         <span class="chip">spid3r 1.1.0 (language 1.0)</span>
         <span class="chip">Intel(R) Core(TM) Ultra 7 265K &middot; 20 threads</span>
         <span class="chip">Windows-11-10.0.26300-SP0</span>
@@ -272,12 +272,12 @@
       </div>
       <div class="card">
         <div class="k">Narrowest margin</div>
-        <div class="v">5.3&times;</div>
+        <div class="v">5.4&times;</div>
         <div class="n">methods &mdash; closest to its floor</div>
       </div>
       <div class="card">
         <div class="k">Widest margin</div>
-        <div class="v">31.1&times;</div>
+        <div class="v">28.4&times;</div>
         <div class="n">tasks</div>
       </div>
       <div class="card">
@@ -310,65 +310,65 @@
         <tr>
           <td class="name">Arithmetic &amp; Loop<small>2M-iteration integer accumulation loop</small></td>
           <td class="mono">2,000,000</td>
-          <td class="mono">41.99M<span class="dim">/s</span></td>
+          <td class="mono">41.95M<span class="dim">/s</span></td>
           <td class="mono dim">6.00M</td>
           <td class="mono">7.0&times;</td>
-          <td><div class="track"><span style="width:38.7%"></span></div></td>
+          <td><div class="track"><span style="width:38.6%"></span></div></td>
           <td><span class="badge pass">PASS</span></td>
         </tr><tr>
           <td class="name">String Building<small>30K string concatenations and slices</small></td>
           <td class="mono">30,000</td>
-          <td class="mono">2.85M<span class="dim">/s</span></td>
+          <td class="mono">2.65M<span class="dim">/s</span></td>
           <td class="mono dim">140k</td>
-          <td class="mono">20.3&times;</td>
-          <td><div class="track"><span style="width:100.0%"></span></div></td>
+          <td class="mono">18.9&times;</td>
+          <td><div class="track"><span style="width:96.8%"></span></div></td>
           <td><span class="badge pass">PASS</span></td>
         </tr><tr>
           <td class="name">List Churn<small>200K pushes then pops, summing values</small></td>
           <td class="mono">200,000</td>
-          <td class="mono">6.60M<span class="dim">/s</span></td>
+          <td class="mono">6.46M<span class="dim">/s</span></td>
           <td class="mono dim">800k</td>
-          <td class="mono">8.3&times;</td>
-          <td><div class="track"><span style="width:48.3%"></span></div></td>
+          <td class="mono">8.1&times;</td>
+          <td><div class="track"><span style="width:47.0%"></span></div></td>
           <td><span class="badge pass">PASS</span></td>
         </tr><tr>
           <td class="name">Map / Dict<small>40K hash inserts and lookups</small></td>
           <td class="mono">40,000</td>
-          <td class="mono">1.77M<span class="dim">/s</span></td>
+          <td class="mono">1.70M<span class="dim">/s</span></td>
           <td class="mono dim">160k</td>
-          <td class="mono">11.1&times;</td>
-          <td><div class="track"><span style="width:65.6%"></span></div></td>
+          <td class="mono">10.6&times;</td>
+          <td><div class="track"><span style="width:63.0%"></span></div></td>
           <td><span class="badge pass">PASS</span></td>
         </tr><tr>
           <td class="name">Method Dispatch<small>200K method calls on objects</small></td>
           <td class="mono">200,000</td>
-          <td class="mono">2.63M<span class="dim">/s</span></td>
+          <td class="mono">2.70M<span class="dim">/s</span></td>
           <td class="mono dim">500k</td>
-          <td class="mono">5.3&times;</td>
-          <td><div class="track"><span style="width:21.9%"></span></div></td>
+          <td class="mono">5.4&times;</td>
+          <td><div class="track"><span style="width:23.5%"></span></div></td>
           <td><span class="badge pass">PASS</span></td>
         </tr><tr>
           <td class="name">Closures<small>40K closure allocations and calls</small></td>
           <td class="mono">40,000</td>
-          <td class="mono">2.25M<span class="dim">/s</span></td>
+          <td class="mono">2.09M<span class="dim">/s</span></td>
           <td class="mono dim">170k</td>
-          <td class="mono">13.2&times;</td>
-          <td><div class="track"><span style="width:75.8%"></span></div></td>
+          <td class="mono">12.3&times;</td>
+          <td><div class="track"><span style="width:71.5%"></span></div></td>
           <td><span class="badge pass">PASS</span></td>
         </tr><tr>
           <td class="name">JSON Encode / Decode<small>2K encode/decode round-trips</small></td>
           <td class="mono">2,000</td>
-          <td class="mono">133k<span class="dim">/s</span></td>
+          <td class="mono">121k<span class="dim">/s</span></td>
           <td class="mono dim">8k</td>
-          <td class="mono">16.6&times;</td>
-          <td><div class="track"><span style="width:89.2%"></span></div></td>
+          <td class="mono">15.1&times;</td>
+          <td><div class="track"><span style="width:83.5%"></span></div></td>
           <td><span class="badge pass">PASS</span></td>
         </tr><tr>
           <td class="name">Spawn &amp; Join<small>2K spawn/join task round-trips</small></td>
           <td class="mono">2,000</td>
-          <td class="mono">187k<span class="dim">/s</span></td>
+          <td class="mono">171k<span class="dim">/s</span></td>
           <td class="mono dim">6k</td>
-          <td class="mono">31.1&times;</td>
+          <td class="mono">28.4&times;</td>
           <td><div class="track"><span style="width:100.0%"></span></div></td>
           <td><span class="badge pass">PASS</span></td>
         </tr>
@@ -398,58 +398,58 @@
         <tbody>
         <tr>
           <td class="name">Arithmetic &amp; Loop</td>
-          <td class="mono">47.6</td>
-          <td class="mono dim">379.4</td>
-          <td class="mono">7.97&times; faster</td>
+          <td class="mono">47.7</td>
+          <td class="mono dim">377.0</td>
+          <td class="mono">7.91&times; faster</td>
           <td><div class="track"><span style="width:12.6%"></span></div></td>
         </tr><tr>
           <td class="name">String Building</td>
-          <td class="mono">10.5</td>
-          <td class="mono dim">32.0</td>
-          <td class="mono">3.04&times; faster</td>
-          <td><div class="track"><span style="width:32.9%"></span></div></td>
+          <td class="mono">11.3</td>
+          <td class="mono dim">32.8</td>
+          <td class="mono">2.90&times; faster</td>
+          <td><div class="track"><span style="width:34.5%"></span></div></td>
         </tr><tr>
           <td class="name">List Churn</td>
-          <td class="mono">30.3</td>
-          <td class="mono dim">51.2</td>
+          <td class="mono">31.0</td>
+          <td class="mono dim">52.3</td>
           <td class="mono">1.69&times; faster</td>
           <td><div class="track"><span style="width:59.2%"></span></div></td>
         </tr><tr>
           <td class="name">Map / Dict</td>
-          <td class="mono">22.5</td>
-          <td class="mono dim">34.9</td>
-          <td class="mono">1.55&times; faster</td>
-          <td><div class="track"><span style="width:64.5%"></span></div></td>
+          <td class="mono">23.5</td>
+          <td class="mono dim">37.1</td>
+          <td class="mono">1.58&times; faster</td>
+          <td><div class="track"><span style="width:63.4%"></span></div></td>
         </tr><tr>
           <td class="name">Method Dispatch</td>
-          <td class="mono">76.1</td>
-          <td class="mono dim">135.2</td>
-          <td class="mono">1.78&times; faster</td>
-          <td><div class="track"><span style="width:56.3%"></span></div></td>
+          <td class="mono">74.1</td>
+          <td class="mono dim">138.1</td>
+          <td class="mono">1.86&times; faster</td>
+          <td><div class="track"><span style="width:53.7%"></span></div></td>
         </tr><tr>
           <td class="name">Closures</td>
-          <td class="mono">17.8</td>
-          <td class="mono dim">55.3</td>
-          <td class="mono">3.10&times; faster</td>
-          <td><div class="track"><span style="width:32.2%"></span></div></td>
+          <td class="mono">19.2</td>
+          <td class="mono dim">55.6</td>
+          <td class="mono">2.90&times; faster</td>
+          <td><div class="track"><span style="width:34.5%"></span></div></td>
         </tr><tr>
           <td class="name">JSON Encode / Decode</td>
-          <td class="mono">15.0</td>
-          <td class="mono dim">17.6</td>
-          <td class="mono">1.17&times; faster</td>
-          <td><div class="track"><span style="width:85.5%"></span></div></td>
+          <td class="mono">16.6</td>
+          <td class="mono dim">18.9</td>
+          <td class="mono">1.14&times; faster</td>
+          <td><div class="track"><span style="width:87.9%"></span></div></td>
         </tr><tr>
           <td class="name">Spawn &amp; Join</td>
-          <td class="mono">10.7</td>
-          <td class="mono dim">13.0</td>
-          <td class="mono">1.22&times; faster</td>
-          <td><div class="track"><span style="width:82.1%"></span></div></td>
+          <td class="mono">11.7</td>
+          <td class="mono dim">12.3</td>
+          <td class="mono">1.05&times; faster</td>
+          <td><div class="track"><span style="width:94.9%"></span></div></td>
         </tr><tr>
           <td class="name">Stress Suite<small>correctness only, not gated</small></td>
-          <td class="mono">33.3</td>
-          <td class="mono dim">51.3</td>
-          <td class="mono">1.54&times; faster</td>
-          <td><div class="track"><span style="width:64.8%"></span></div></td>
+          <td class="mono">34.1</td>
+          <td class="mono dim">52.9</td>
+          <td class="mono">1.55&times; faster</td>
+          <td><div class="track"><span style="width:64.5%"></span></div></td>
         </tr>
         </tbody>
       </table>
@@ -472,14 +472,14 @@
           </tr>
         </thead>
         <tbody>
-        <tr><td class="name">Arithmetic &amp; Loop</td><td class="mono">47.6</td><td class="mono">39.9</td><td class="mono">54.9</td></tr><tr><td class="name">String Building</td><td class="mono">10.5</td><td class="mono">26.4</td><td class="mono">17.2</td></tr><tr><td class="name">List Churn</td><td class="mono">30.3</td><td class="mono">26.8</td><td class="mono">21.1</td></tr><tr><td class="name">Map / Dict</td><td class="mono">22.5</td><td class="mono">25.2</td><td class="mono">19.7</td></tr><tr><td class="name">Method Dispatch</td><td class="mono">76.1</td><td class="mono">31.2</td><td class="mono">21.6</td></tr><tr><td class="name">Closures</td><td class="mono">17.8</td><td class="mono">24.3</td><td class="mono">17.8</td></tr><tr><td class="name">JSON Encode / Decode</td><td class="mono">15.0</td><td class="mono">24.5</td><td class="mono">31.2</td></tr><tr><td class="name">Spawn &amp; Join</td><td class="mono">10.7</td><td class="mono">22.8</td><td class="mono">23.7</td></tr>
+        <tr><td class="name">Arithmetic &amp; Loop</td><td class="mono">47.7</td><td class="mono">40.7</td><td class="mono">55.3</td></tr><tr><td class="name">String Building</td><td class="mono">11.3</td><td class="mono">25.8</td><td class="mono">17.3</td></tr><tr><td class="name">List Churn</td><td class="mono">31.0</td><td class="mono">27.0</td><td class="mono">21.6</td></tr><tr><td class="name">Map / Dict</td><td class="mono">23.5</td><td class="mono">25.4</td><td class="mono">20.1</td></tr><tr><td class="name">Method Dispatch</td><td class="mono">74.1</td><td class="mono">31.2</td><td class="mono">21.5</td></tr><tr><td class="name">Closures</td><td class="mono">19.2</td><td class="mono">24.6</td><td class="mono">18.3</td></tr><tr><td class="name">JSON Encode / Decode</td><td class="mono">16.6</td><td class="mono">24.7</td><td class="mono">31.2</td></tr><tr><td class="name">Spawn &amp; Join</td><td class="mono">11.7</td><td class="mono">23.0</td><td class="mono">23.4</td></tr>
         </tbody>
       </table>
     </div>
     <div class="note">
       
-      <b>Startup is not free for anyone:</b> the measured fixed cost is 7.8&nbsp;ms
-      for Spid3r, 21.9&nbsp;ms for PHP and 15.5&nbsp;ms for
+      <b>Startup is not free for anyone:</b> the measured fixed cost is 8.2&nbsp;ms
+      for Spid3r, 22.2&nbsp;ms for PHP and 16.0&nbsp;ms for
       Python. For the light benchmarks that fixed cost is the same order as the workload itself, which is
       why the table below subtracts it.
     </div>
@@ -504,51 +504,51 @@
         <tbody>
         <tr>
           <td class="name">Arithmetic &amp; Loop</td>
-          <td class="mono">39.8</td>
-          <td class="mono dim">18.0</td>
+          <td class="mono">39.4</td>
+          <td class="mono dim">18.5</td>
           <td class="mono dim">39.4</td>
           <td><span class="badge muted">PHP</span></td>
         </tr><tr>
           <td class="name">String Building</td>
-          <td class="mono">2.70</td>
-          <td class="mono dim">4.51</td>
-          <td class="mono dim">1.69</td>
+          <td class="mono">3.08</td>
+          <td class="mono dim">3.67</td>
+          <td class="mono dim">1.31</td>
           <td><span class="badge muted">Python</span></td>
         </tr><tr>
           <td class="name">List Churn</td>
-          <td class="mono">22.5</td>
-          <td class="mono dim">4.87</td>
-          <td class="mono dim">5.57</td>
+          <td class="mono">22.7</td>
+          <td class="mono dim">4.85</td>
+          <td class="mono dim">5.59</td>
           <td><span class="badge muted">PHP</span></td>
         </tr><tr>
           <td class="name">Map / Dict</td>
-          <td class="mono">14.7</td>
-          <td class="mono dim">3.33</td>
-          <td class="mono dim">4.17</td>
+          <td class="mono">15.3</td>
+          <td class="mono dim">3.26</td>
+          <td class="mono dim">4.16</td>
           <td><span class="badge muted">PHP</span></td>
         </tr><tr>
           <td class="name">Method Dispatch</td>
-          <td class="mono">68.3</td>
-          <td class="mono dim">9.28</td>
-          <td class="mono dim">6.07</td>
+          <td class="mono">65.9</td>
+          <td class="mono dim">9.08</td>
+          <td class="mono dim">5.52</td>
           <td><span class="badge muted">Python</span></td>
         </tr><tr>
           <td class="name">Closures</td>
-          <td class="mono">9.96</td>
-          <td class="mono dim">2.39</td>
-          <td class="mono dim">2.29</td>
+          <td class="mono">10.9</td>
+          <td class="mono dim">2.49</td>
+          <td class="mono dim">2.35</td>
           <td><span class="badge muted">Python</span></td>
         </tr><tr>
           <td class="name">JSON Encode / Decode</td>
-          <td class="mono">7.20</td>
-          <td class="mono dim">2.59</td>
-          <td class="mono dim">15.7</td>
+          <td class="mono">8.35</td>
+          <td class="mono dim">2.58</td>
+          <td class="mono dim">15.3</td>
           <td><span class="badge muted">PHP</span></td>
         </tr><tr>
           <td class="name">Spawn &amp; Join</td>
-          <td class="mono">2.86</td>
-          <td class="mono dim">0.94</td>
-          <td class="mono dim">8.14</td>
+          <td class="mono">3.48</td>
+          <td class="mono dim">0.85</td>
+          <td class="mono dim">7.41</td>
           <td><span class="badge muted">PHP</span></td>
         </tr>
         </tbody>
@@ -559,7 +559,7 @@
       <span><i class="php"></i>PHP</span>
       <span><i class="python"></i>Python</span>
     </div>
-    <svg class="chart" viewBox="0 0 688 558" role="img" aria-label="Startup-adjusted compute time per benchmark, log scale, lower is faster"><line x1="112.0" y1="2" x2="112.0" y2="528" class="grid"/><text x="112.0" y="546" class="chart-tick" text-anchor="middle">1</text><line x1="236.1" y1="2" x2="236.1" y2="528" class="grid"/><text x="236.1" y="546" class="chart-tick" text-anchor="middle">3</text><line x1="372.0" y1="2" x2="372.0" y2="528" class="grid"/><text x="372.0" y="546" class="chart-tick" text-anchor="middle">10</text><line x1="496.1" y1="2" x2="496.1" y2="528" class="grid"/><text x="496.1" y="546" class="chart-tick" text-anchor="middle">30</text><text x="2" y="33.0" class="chart-label">arith</text><rect x="112.0" y="2.0" width="415.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 39.8 ms</title></rect><text x="532.9" y="14.0" class="chart-val">39.8</text><rect x="112.0" y="20.0" width="326.1" height="13" rx="2.5" class="bar php"><title>php: 18.0 ms</title></rect><text x="443.1" y="32.0" class="chart-val">18.0</text><rect x="112.0" y="38.0" width="414.8" height="13" rx="2.5" class="bar python"><title>python: 39.4 ms</title></rect><text x="531.8" y="50.0" class="chart-val">39.4</text><text x="2" y="99.0" class="chart-label">strings</text><rect x="112.0" y="68.0" width="112.1" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 2.70 ms</title></rect><text x="229.1" y="80.0" class="chart-val">2.70</text><rect x="112.0" y="86.0" width="170.2" height="13" rx="2.5" class="bar php"><title>php: 4.51 ms</title></rect><text x="287.2" y="98.0" class="chart-val">4.51</text><rect x="112.0" y="104.0" width="59.6" height="13" rx="2.5" class="bar python"><title>python: 1.69 ms</title></rect><text x="176.6" y="116.0" class="chart-val">1.69</text><text x="2" y="165.0" class="chart-label">list</text><rect x="112.0" y="134.0" width="351.4" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 22.5 ms</title></rect><text x="468.4" y="146.0" class="chart-val">22.5</text><rect x="112.0" y="152.0" width="178.7" height="13" rx="2.5" class="bar php"><title>php: 4.87 ms</title></rect><text x="295.7" y="164.0" class="chart-val">4.87</text><rect x="112.0" y="170.0" width="193.9" height="13" rx="2.5" class="bar python"><title>python: 5.57 ms</title></rect><text x="310.9" y="182.0" class="chart-val">5.57</text><text x="2" y="231.0" class="chart-label">map</text><rect x="112.0" y="200.0" width="303.5" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 14.7 ms</title></rect><text x="420.5" y="212.0" class="chart-val">14.7</text><rect x="112.0" y="218.0" width="136.0" height="13" rx="2.5" class="bar php"><title>php: 3.33 ms</title></rect><text x="253.0" y="230.0" class="chart-val">3.33</text><rect x="112.0" y="236.0" width="161.1" height="13" rx="2.5" class="bar python"><title>python: 4.17 ms</title></rect><text x="278.1" y="248.0" class="chart-val">4.17</text><text x="2" y="297.0" class="chart-label">methods</text><rect x="112.0" y="266.0" width="476.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 68.3 ms</title></rect><text x="593.9" y="278.0" class="chart-val">68.3</text><rect x="112.0" y="284.0" width="251.6" height="13" rx="2.5" class="bar php"><title>php: 9.28 ms</title></rect><text x="368.6" y="296.0" class="chart-val">9.28</text><rect x="112.0" y="302.0" width="203.7" height="13" rx="2.5" class="bar python"><title>python: 6.07 ms</title></rect><text x="320.7" y="314.0" class="chart-val">6.07</text><text x="2" y="363.0" class="chart-label">closures</text><rect x="112.0" y="332.0" width="259.6" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 9.96 ms</title></rect><text x="376.6" y="344.0" class="chart-val">9.96</text><rect x="112.0" y="350.0" width="98.6" height="13" rx="2.5" class="bar php"><title>php: 2.39 ms</title></rect><text x="215.6" y="362.0" class="chart-val">2.39</text><rect x="112.0" y="368.0" width="93.6" height="13" rx="2.5" class="bar python"><title>python: 2.29 ms</title></rect><text x="210.6" y="380.0" class="chart-val">2.29</text><text x="2" y="429.0" class="chart-label">json</text><rect x="112.0" y="398.0" width="222.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 7.20 ms</title></rect><text x="339.9" y="410.0" class="chart-val">7.20</text><rect x="112.0" y="416.0" width="107.5" height="13" rx="2.5" class="bar php"><title>php: 2.59 ms</title></rect><text x="224.5" y="428.0" class="chart-val">2.59</text><rect x="112.0" y="434.0" width="311.0" height="13" rx="2.5" class="bar python"><title>python: 15.7 ms</title></rect><text x="428.0" y="446.0" class="chart-val">15.7</text><text x="2" y="495.0" class="chart-label">tasks</text><rect x="112.0" y="464.0" width="118.8" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 2.86 ms</title></rect><text x="235.8" y="476.0" class="chart-val">2.86</text><rect x="112.0" y="482.0" width="1.5" height="13" rx="2.5" class="bar php"><title>php: 0.94 ms</title></rect><text x="117.0" y="494.0" class="chart-val">0.94</text><rect x="112.0" y="500.0" width="236.8" height="13" rx="2.5" class="bar python"><title>python: 8.14 ms</title></rect><text x="353.8" y="512.0" class="chart-val">8.14</text></svg>
+    <svg class="chart" viewBox="0 0 688 558" role="img" aria-label="Startup-adjusted compute time per benchmark, log scale, lower is faster"><line x1="112.0" y1="2" x2="112.0" y2="528" class="grid"/><text x="112.0" y="546" class="chart-tick" text-anchor="middle">1</text><line x1="236.1" y1="2" x2="236.1" y2="528" class="grid"/><text x="236.1" y="546" class="chart-tick" text-anchor="middle">3</text><line x1="372.0" y1="2" x2="372.0" y2="528" class="grid"/><text x="372.0" y="546" class="chart-tick" text-anchor="middle">10</text><line x1="496.1" y1="2" x2="496.1" y2="528" class="grid"/><text x="496.1" y="546" class="chart-tick" text-anchor="middle">30</text><text x="2" y="33.0" class="chart-label">arith</text><rect x="112.0" y="2.0" width="414.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 39.4 ms</title></rect><text x="531.9" y="14.0" class="chart-val">39.4</text><rect x="112.0" y="20.0" width="329.5" height="13" rx="2.5" class="bar php"><title>php: 18.5 ms</title></rect><text x="446.5" y="32.0" class="chart-val">18.5</text><rect x="112.0" y="38.0" width="414.7" height="13" rx="2.5" class="bar python"><title>python: 39.4 ms</title></rect><text x="531.7" y="50.0" class="chart-val">39.4</text><text x="2" y="99.0" class="chart-label">strings</text><rect x="112.0" y="68.0" width="127.1" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 3.08 ms</title></rect><text x="244.1" y="80.0" class="chart-val">3.08</text><rect x="112.0" y="86.0" width="146.7" height="13" rx="2.5" class="bar php"><title>php: 3.67 ms</title></rect><text x="263.7" y="98.0" class="chart-val">3.67</text><rect x="112.0" y="104.0" width="30.9" height="13" rx="2.5" class="bar python"><title>python: 1.31 ms</title></rect><text x="147.9" y="116.0" class="chart-val">1.31</text><text x="2" y="165.0" class="chart-label">list</text><rect x="112.0" y="134.0" width="352.6" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 22.7 ms</title></rect><text x="469.6" y="146.0" class="chart-val">22.7</text><rect x="112.0" y="152.0" width="178.4" height="13" rx="2.5" class="bar php"><title>php: 4.85 ms</title></rect><text x="295.4" y="164.0" class="chart-val">4.85</text><rect x="112.0" y="170.0" width="194.3" height="13" rx="2.5" class="bar python"><title>python: 5.59 ms</title></rect><text x="311.3" y="182.0" class="chart-val">5.59</text><text x="2" y="231.0" class="chart-label">map</text><rect x="112.0" y="200.0" width="308.0" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 15.3 ms</title></rect><text x="425.0" y="212.0" class="chart-val">15.3</text><rect x="112.0" y="218.0" width="133.6" height="13" rx="2.5" class="bar php"><title>php: 3.26 ms</title></rect><text x="250.6" y="230.0" class="chart-val">3.26</text><rect x="112.0" y="236.0" width="161.0" height="13" rx="2.5" class="bar python"><title>python: 4.16 ms</title></rect><text x="278.0" y="248.0" class="chart-val">4.16</text><text x="2" y="297.0" class="chart-label">methods</text><rect x="112.0" y="266.0" width="472.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 65.9 ms</title></rect><text x="589.9" y="278.0" class="chart-val">65.9</text><rect x="112.0" y="284.0" width="249.1" height="13" rx="2.5" class="bar php"><title>php: 9.08 ms</title></rect><text x="366.1" y="296.0" class="chart-val">9.08</text><rect x="112.0" y="302.0" width="192.9" height="13" rx="2.5" class="bar python"><title>python: 5.52 ms</title></rect><text x="309.9" y="314.0" class="chart-val">5.52</text><text x="2" y="363.0" class="chart-label">closures</text><rect x="112.0" y="332.0" width="270.0" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 10.9 ms</title></rect><text x="387.0" y="344.0" class="chart-val">10.9</text><rect x="112.0" y="350.0" width="103.0" height="13" rx="2.5" class="bar php"><title>php: 2.49 ms</title></rect><text x="220.0" y="362.0" class="chart-val">2.49</text><rect x="112.0" y="368.0" width="96.3" height="13" rx="2.5" class="bar python"><title>python: 2.35 ms</title></rect><text x="213.3" y="380.0" class="chart-val">2.35</text><text x="2" y="429.0" class="chart-label">json</text><rect x="112.0" y="398.0" width="239.6" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 8.35 ms</title></rect><text x="356.6" y="410.0" class="chart-val">8.35</text><rect x="112.0" y="416.0" width="106.9" height="13" rx="2.5" class="bar php"><title>php: 2.58 ms</title></rect><text x="223.9" y="428.0" class="chart-val">2.58</text><rect x="112.0" y="434.0" width="307.7" height="13" rx="2.5" class="bar python"><title>python: 15.3 ms</title></rect><text x="424.7" y="446.0" class="chart-val">15.3</text><text x="2" y="495.0" class="chart-label">tasks</text><rect x="112.0" y="464.0" width="140.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 3.48 ms</title></rect><text x="257.9" y="476.0" class="chart-val">3.48</text><rect x="112.0" y="482.0" width="1.5" height="13" rx="2.5" class="bar php"><title>php: 0.85 ms</title></rect><text x="117.0" y="494.0" class="chart-val">0.85</text><rect x="112.0" y="500.0" width="226.2" height="13" rx="2.5" class="bar python"><title>python: 7.41 ms</title></rect><text x="343.2" y="512.0" class="chart-val">7.41</text></svg>
     <p class="dim" style="text-align:center">Startup-adjusted compute time, log scale &mdash; shorter is faster.</p>
 
     <h2><span class="num">04</span>Method and caveats</h2>
@@ -591,7 +591,7 @@ python tools/bench_report.py</pre>
   </main>
 
   <footer>
-    <span>Generated by <code>tools/bench_report.py</code> &middot; 2026-11-13 23:37:14</span>
+    <span>Generated by <code>tools/bench_report.py</code> &middot; 2026-11-14 00:27:56</span>
     <span><a href="doc.html">Documentation</a> &middot; <a href="playground.html">Playground</a></span>
   </footer>
 
