@@ -99,3 +99,43 @@ issue IDs (documented in `docs/AUDIT_REPORT.md` and `docs/ROADMAP.md`).
   every increment. Documented behavior.
 - **Byte strings for indexing**: the char-indexed model is *more* correct
   than byte-indexed alternatives; keep it.
+
+## 2026-11-13 — tree-engine slot resolution (W4.1) and the int fast path (W4.2): measured, not built
+
+The optimize plan projected a ≥2.5× "tree compute" win from slot-resolved
+variables plus an int/int fast path. Fresh measurement refutes the
+projection, and both items are **rejected** on that evidence:
+
+| Measurement (tree engine, 2M-iteration loop, release build, median of 3) | Result |
+| --- | --- |
+| `while i < n { i = i + 1; }` (dispatch floor: condition eval + 1 read + 1 assign) | 237.8 ms — 119 ns/iteration |
+| `while i < n { total = total + i; i = i + 1; }` (the arith shape) | 382.7 ms — 191 ns/iteration |
+
+Even a **zero-cost** variable system leaves the dispatch floor at
+237.8 ms, so slot resolution alone caps the arith win at ~1.6× — the
+≥2.5× gate is arithmetically unreachable without redesigning the eval
+dispatch itself (the interpreter's `eval` recursion, `Flow` plumbing and
+per-statement budget charging), which is a different and much larger
+project than the plan described.
+
+What the measurement also showed:
+
+- The int/int fast path **already exists**: `eval_binary`'s first match
+  arm handles `Int + Int` directly through `checked_int`. There is no
+  remaining int fast-path win of substance.
+- The assign path **already reads its target exactly once**: `Expr::Assign`
+  evaluates the value first and the plain-`=` arm assigns without
+  re-reading the target, so the double-read the VM's fusion eliminates
+  does not exist in the tree interpreter.
+
+Cost/benefit of the rejected W4.1 refactor: annotating the AST with
+resolved scopes, converting `EnvironmentData` to slot arrays, and
+re-plumbing every named access (consts, module imports, REPL defines,
+the debugger, LSP, task-shared envs) is an L-size change to the
+**semantic reference engine** for a measured ~1.4–1.6× win on one
+engine's microbenchmarks — while the VM is already ~9× faster on the
+same workload and `D4.1` (VM as the default `run` engine, blocked on
+owner approval) addresses the tree's absolute speed directly. A defect
+in the oracle engine poisons every differential gate downstream.
+
+Recorded so the next planner does not re-project these numbers.
