@@ -95,3 +95,13 @@ two-local shape (`GetLocal a; GetLocal b; Add; SetLocal d`, `d == a`, both
 operands `Str`, `b != a`), not to re-target the flush. Call-result rhs (`s +
 f(x)`) cannot be buffered across the call: the callee may read the pending
 slot, and the call-boundary flush exists precisely to protect that.
+
+**Follow-up landed (W3.2, 2026-11-13):** the two-local shape now feeds the
+same pending buffer, with one rule the constant arm never needs — a pending
+buffer for the *rhs* slot is materialized before the rhs is read, because the
+slot is stale while its buffer is pending (the interleaved
+`s = s + t; t = t + "!"` loop caught the first draft cloning from the stale
+slot; pinned in `tests/perf_oracle_parity.rs::
+two_local_append_with_rhs_rebinds_and_reads`). `s = s + s` stays generic.
+Measured: 26.2 ms -> 11.6 ms at 30k appends, 69.0 -> 12.1 ms at 60k —
+scaling 2.63x -> 1.04x per doubling; all eight perf floors PASS.

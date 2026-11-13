@@ -592,9 +592,9 @@ fn cache_negative_result_survives_unrelated_mutation() {
             "fn peek(m) { return m?.k; }\n",
             "fn main() {\n",
             "    let m = map();\n",
-            "    println(peek(m));\n",   // null
-            "    m[\"other\"] = 1;\n",   // bump: k still absent
-            "    println(peek(m));\n",   // null again, freshly re-resolved
+            "    println(peek(m));\n", // null
+            "    m[\"other\"] = 1;\n", // bump: k still absent
+            "    println(peek(m));\n", // null again, freshly re-resolved
             "    return 0;\n",
             "}\n",
         ),
@@ -669,10 +669,10 @@ fn cache_reads_values_fresh_on_every_hit() {
             "    m[\"k\"] = 1;\n",
             "    let i = 0;\n",
             "    while i < 3 {\n",
-            "        println(peek(m));\n",   // 1, then 0, then 10
+            "        println(peek(m));\n",  // 1, then 0, then 10
             "        m[\"k\"] = i * 10;\n", // rebind in place
             "        i += 1;\n",
-            "        println(peek(m));\n",   // 0, 10, 20
+            "        println(peek(m));\n", // 0, 10, 20
             "    }\n",
             "    return 0;\n",
             "}\n",
@@ -703,4 +703,100 @@ fn cache_tracks_clear_and_rebuild() {
         ),
         "1\nnull\n2\n",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Two-local string append (W3.2).
+//
+// The pending-string buffer only matched `local + constant`, so `s = s + t`
+// ran the generic Add and re-copied the accumulated length per append. The
+// fused arm follows the constant arm's buffer discipline plus one rule the
+// constant arm never needs: a pending buffer for the RHS slot is materialized
+// BEFORE the rhs is read, because the slot itself is stale while its buffer
+// is pending.
+// ---------------------------------------------------------------------------
+
+/// The plain two-local append loop: three paths, one answer.
+#[test]
+fn two_local_append_matches_the_oracle() {
+    let out = assert_parity(
+        "two_local_append",
+        concat!(
+            "fn main() {\n",
+            "    let n = 2000;\n",
+            "    let s = \"\";\n",
+            "    let t = \"x\";\n",
+            "    let i = 0;\n",
+            "    while i < n {\n",
+            "        s = s + t;\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s.len());\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(out.code, 0);
+    assert_eq!(out.stdout.replace("\r\n", "\n"), "2000\n");
+}
+
+/// Appends interleaved with reads of the pending slot and rebinding of the
+/// RHS slot — the shape that caught the first draft.
+///
+/// While `t`'s own buffer is pending, `slots[t]` still holds the OLD `t`; a
+/// draft that cloned the rhs from the slot dropped every `t = t + \"!\"`
+/// append (the VM printed 172 where the tree printed 189 at i == 17). The
+/// fused arm must materialize the rhs-slot buffer before reading the rhs.
+#[test]
+fn two_local_append_with_rhs_rebinds_and_reads() {
+    let out = assert_parity(
+        "two_local_rebind",
+        concat!(
+            "fn main() {\n",
+            "    let n = 100;\n",
+            "    let s = \"\";\n",
+            "    let t = \"ab\";\n",
+            "    let i = 0;\n",
+            "    while i < n {\n",
+            "        s = s + t;\n",
+            "        if i % 17 == 0 { println(s.len()); }\n",
+            "        t = t + \"!\";\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s.len());\n",
+            "    println(t.len());\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(out.code, 0);
+    assert_eq!(
+        out.stdout.replace("\r\n", "\n"),
+        "2\n189\n665\n1430\n2484\n3827\n5150\n102\n",
+        "interleaved two-local output differs"
+    );
+}
+
+/// `s = s + s` deliberately stays on the generic path (the rhs must observe
+/// the materialized lhs); pin that it still answers correctly.
+#[test]
+fn self_append_stays_generic_and_correct() {
+    let out = assert_parity(
+        "self_append",
+        concat!(
+            "fn main() {\n",
+            "    let n = 10;\n",
+            "    let s = \"x\";\n",
+            "    let i = 0;\n",
+            "    while i < n {\n",
+            "        s = s + s;\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s.len());\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(out.code, 0);
+    assert_eq!(out.stdout.replace("\r\n", "\n"), "1024\n");
 }

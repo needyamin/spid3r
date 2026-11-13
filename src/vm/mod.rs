@@ -1267,6 +1267,72 @@ impl Vm {
                                                 }
                                             }
                                         }
+                                        // W3.2: extend the pending-string
+                                        // append to the two-local shape
+                                        // (`s = s + t`). The buffer only
+                                        // matched `local + constant`, so
+                                        // this shape ran the generic Add,
+                                        // which allocates a fresh String
+                                        // and re-copies the accumulated
+                                        // length on every append — O(n^2)
+                                        // over a loop (measured 26.2 ms at
+                                        // 30k appends, 2.63x per doubling;
+                                        // see VM_NOTES.md).
+                                        //
+                                        // The buffer discipline is the
+                                        // constant arm's, with one extra
+                                        // rule the constant arm never needs:
+                                        // a pending buffer for the RHS slot
+                                        // holds a NEWER value than the slot
+                                        // itself does, so it is materialized
+                                        // before the rhs is read. The
+                                        // interleaved `s = s + t; t = t +
+                                        // "!"` loop caught the first draft
+                                        // cloning from the stale slot, and
+                                        // every `!` went missing (17 chars
+                                        // short at i == 17).
+                                        //
+                                        // `s = s + s` (slot_b == slot) stays
+                                        // generic: the rhs must observe the
+                                        // materialized lhs, and the generic
+                                        // path's flush guarantees it.
+                                        else if op2 == OpCode::Add as u8
+                                            && dst == slot
+                                            && slot_b != slot
+                                        {
+                                            if self.pending_str.as_ref().is_some_and(
+                                                |&(pf, ps, _)| pf == nf && ps == slot_b,
+                                            ) {
+                                                self.flush_pending_str();
+                                            }
+                                            if let (Some(Value::Str(lhs)), Some(Value::Str(rhs))) = (
+                                                self.frames[nf].slots.get(slot),
+                                                self.frames[nf].slots.get(slot_b),
+                                            ) {
+                                                let (lhs, rhs) = (lhs.clone(), rhs.clone());
+                                                if self.pending_str.as_ref().is_some_and(
+                                                    |&(pf, ps, _)| pf == nf && ps == slot,
+                                                ) {
+                                                    if let Some((_, _, ref mut buf)) =
+                                                        self.pending_str
+                                                    {
+                                                        buf.push_str(&rhs);
+                                                        self.frames[nf].ip =
+                                                            folded.unwrap_or(ip + 8);
+                                                        continue;
+                                                    }
+                                                }
+                                                self.flush_pending_str();
+                                                let mut buf = String::with_capacity(
+                                                    (lhs.len() + rhs.len() + 64).max(128),
+                                                );
+                                                buf.push_str(&lhs);
+                                                buf.push_str(&rhs);
+                                                self.pending_str = Some((nf, slot, buf));
+                                                self.frames[nf].ip = folded.unwrap_or(ip + 8);
+                                                continue;
+                                            }
+                                        }
                                     // Phase 1 fused superinstructions.
                                     //
                                     // These are RUNTIME pattern peeks over the
