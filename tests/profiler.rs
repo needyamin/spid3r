@@ -78,7 +78,9 @@ fn without_prof_stderr_stays_clean() {
 
 #[test]
 fn prof_with_the_tree_engine_is_a_usage_error() {
-    let (code, _, stderr) = run("prof_tree", &["--prof"], LOOP);
+    // Explicit `--engine tree`: the VM is the default engine (D4.1), so an
+    // unqualified `--prof` runs on the VM and is no longer a usage error.
+    let (code, _, stderr) = run("prof_tree", &["--engine", "tree", "--prof"], LOOP);
     assert_eq!(code, 2, "usage errors exit 2: {}", stderr);
     assert!(
         stderr.contains("--prof is a VM-engine feature"),

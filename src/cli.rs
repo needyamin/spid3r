@@ -511,7 +511,7 @@ USAGE:
     spid3r magic [options] [command] [args...]
 
 OPTIONS:
-    --engine <tree|vm>     Execution engine: tree-walk or bytecode VM (default: tree)
+    --engine <tree|vm>     Execution engine: bytecode VM (default) or the tree-walk oracle
     -h, --help             Print help information
 "),
         "run" => Some("\
@@ -521,7 +521,7 @@ USAGE:
     spid3r run [options] <file.matrix> [args...]
 
 OPTIONS:
-    --engine <tree|vm>     Execution engine: tree-walk or bytecode VM (default: tree)
+    --engine <tree|vm>     Execution engine: bytecode VM (default) or the tree-walk oracle
     --prof                 Print per-opcode VM execution counts (requires --engine vm)
     --no-opt               Disable bytecode optimizer + VM runtime peeks
                                (VM engine; inline caches stay on)
@@ -1077,7 +1077,12 @@ fn cmd_magic(rest: &[String]) -> Result<i32, Diagnostic> {
 }
 
 fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
-    let mut engine = "tree";
+    // D4.1: the bytecode VM is the default engine. The tree interpreter stays
+    // available as the oracle via `--engine tree`; README.md's CLI table has
+    // documented `run` as "execute on the VM" since the engine contract
+    // (ARC-06), and every differential gate pins the two engines to identical
+    // observable behavior, so this flip changes speed, not semantics.
+    let mut engine = "vm";
     let mut file: Option<String> = None;
     let mut no_opt = false;
     let mut prof = false;
