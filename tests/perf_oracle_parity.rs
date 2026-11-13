@@ -354,6 +354,33 @@ fn i64_min_mod_neg_one_wraps_like_the_generic_path() {
 // debugger, so the same program must produce the same answer under them.
 // ---------------------------------------------------------------------------
 
+/// A captured upvalue disables every fusion in the frame (`captured` must be
+/// empty for the peek to run), because a slot backed by a shared cell cannot
+/// be read straight out of `slots`. The answer must not change either way.
+#[test]
+fn captured_upvalue_disables_fusion_without_changing_the_answer() {
+    let out = assert_parity(
+        "captured_upvalue",
+        concat!(
+            "fn main() {\n",
+            "    let n = 500;\n",
+            "    let total = 0;\n",
+            "    let i = 0;\n",
+            "    while i < n {\n",
+            "        let add = fn(x) { return x + i; };\n",
+            "        total = total + add(i);\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(total);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(out.code, 0);
+    // sum over i in [0, 500) of (i + i) = 2 * (499 * 500 / 2) = 249500
+    assert_eq!(out.stdout.replace("\r\n", "\n"), "249500\n");
+}
+
 #[test]
 fn instrumentation_flags_do_not_change_the_answer() {
     let src = concat!(
