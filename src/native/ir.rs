@@ -3397,8 +3397,15 @@ impl<'ctx> Ir<'ctx> {
                 phi.add_incoming(&[(&n, null_from), (&r, r_from)]);
                 Ok(phi.as_basic_value().into_pointer_value())
             }
-            Expr::New { class, args, .. } => {
-                let cls = self.global_value(class);
+            Expr::New { class, args, span } => {
+                // Resolve the class name like any identifier: locals first,
+                // then globals. A class value can sit in a local (`let C =
+                // Pt; new C(9)`, or a class pulled out of a module namespace:
+                // `let C = mod.C; new C(9)`), and the old global-only lookup
+                // returned null for those — the tree/VM engines call through
+                // the value. `new SomeClass(...)` with the class at global
+                // scope takes the same global-read path this way.
+                let cls = self.compile_expr(&Expr::Ident(class.clone(), span.clone()))?;
                 let mut argv: Vec<PointerValue<'ctx>> = Vec::with_capacity(args.len());
                 for a in args {
                     argv.push(self.compile_expr(a)?);

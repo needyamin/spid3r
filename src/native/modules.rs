@@ -81,23 +81,62 @@ fn flatten_stmts(
                 let module: Program = crate::parser::parse_file(&src, file_id)?;
                 crate::semantic::check_file(&module, false, &resolved_str)?;
                 let lowered = crate::lower::lower(&module);
-                let mut sub_stmts = Vec::new();
-                in_progress.push(canon.clone());
-                flatten_stmts(
-                    &lowered.stmts,
-                    &resolved_str,
-                    &mut sub_stmts,
-                    done,
-                    done_aliased,
-                    in_progress,
-                )?;
-                in_progress.retain(|p| p != &canon);
+                // The namespace's export set is the module's OWN top-level
+                // declarations, collected BEFORE nested flattening: a module
+                // that plain-imports another does not re-export that module's
+                // names (the tree/VM build the namespace from the module's
+                // declared exports, so `mid.LIB_TAG` is an error when `mid_mod`
+                // merely plain-imports `mod_lib`). Mangling used to scan the
+                // flattened list, where those transitive declarations sit, and
+                // both exported them through the namespace map and prefixed
+                // their definitions as if they were the module's own.
+                let own_tops = own_top_decls(&lowered.stmts);
+                // The selection index is captured BEFORE the walk: nested
+                // aliased imports grow `done_aliased` during it, and the
+                // prefix baked into the mangled definitions must match the one
+                // the bindings below reference.
                 let sel_idx = done_aliased.len();
-                done_aliased.insert(key);
-                if let Some(selections) = crate::modules::parse_import_selections(alias_name) {
-                    mangle_selective_module(&sub_stmts, &selections, sel_idx, span, out);
+                let selections = crate::modules::parse_import_selections(alias_name);
+                let (sel_mode, prefix) = if selections.is_some() {
+                    (true, format!("__sel_{}_", sel_idx))
                 } else {
-                    mangle_aliased_module(&sub_stmts, alias_name, span, out);
+                    (false, format!("__mod_{}_", alias_name))
+                };
+                in_progress.push(canon.clone());
+                let mut scopes: Vec<HashSet<String>> = Vec::new();
+                for s in &lowered.stmts {
+                    if matches!(s, Stmt::Import { .. }) {
+                        // A nested plain import is flattened unprefixed into
+                        // the program: the module's own code resolves those
+                        // names globally, exactly like the tree/VM paths, and
+                        // the dedup sets make a later import of the same
+                        // module a no-op.
+                        flatten_stmts(
+                            std::slice::from_ref(s),
+                            &resolved_str,
+                            out,
+                            done,
+                            done_aliased,
+                            in_progress,
+                        )?;
+                    } else {
+                        out.push(rewrite_top_stmt(s, &prefix, &own_tops.names, &mut scopes));
+                    }
+                }
+                in_progress.retain(|p| p != &canon);
+                done_aliased.insert(key);
+                if sel_mode {
+                    // `import { a, b as c } from "m";`: bind each selected own
+                    // export to its local name.
+                    append_selection_bindings(
+                        out,
+                        &prefix,
+                        &own_tops,
+                        selections.as_deref().unwrap(),
+                        span,
+                    );
+                } else {
+                    out.push(build_namespace_const(alias_name, &own_tops, span));
                 }
                 continue;
             }
@@ -141,47 +180,79 @@ fn flatten_stmts(
     Ok(())
 }
 
-fn mangle_aliased_module(stmts: &[Stmt], alias: &str, span: &Span, out: &mut Vec<Stmt>) {
-    let prefix = format!("__mod_{}_", alias);
-    let mut top_names: HashSet<String> = HashSet::new();
-    let mut exports: Vec<String> = Vec::new();
+/// The module's OWN top-level declarations — the namespace's export set.
+/// Transitively plain-imported names are deliberately absent: the tree/VM
+/// build a namespace from the module's declared exports only, so a module that
+/// plain-imports another does not re-export that module's names.
+struct OwnTops {
+    /// Every own top-level name (functions, classes, lets, consts), mangled or
+    /// not — the rewrite set for references inside the module's own code.
+    names: HashSet<String>,
+    /// Own names declared `public` — what the namespace map exposes.
+    public_exports: Vec<String>,
+    /// Own `public const` names — namespace bindings are frozen like the
+    /// module's own constants.
+    consts: HashSet<String>,
+}
+
+fn own_top_decls(stmts: &[Stmt]) -> OwnTops {
+    let mut names = HashSet::new();
+    let mut public_exports = Vec::new();
+    let mut consts = HashSet::new();
     for s in stmts {
         match s {
             Stmt::Fn(p) => {
                 if let Some(name) = &p.name {
-                    top_names.insert(name.clone());
+                    names.insert(name.clone());
                     if p.vis == Vis::Public {
-                        exports.push(name.clone());
+                        public_exports.push(name.clone());
                     }
                 }
             }
             Stmt::Class(c) => {
-                top_names.insert(c.name.clone());
+                names.insert(c.name.clone());
                 if c.vis == Vis::Public {
-                    exports.push(c.name.clone());
+                    public_exports.push(c.name.clone());
                 }
             }
-            Stmt::Let { vis, name, .. } | Stmt::Const { vis, name, .. } => {
-                top_names.insert(name.clone());
+            Stmt::Let { vis, name, .. } => {
+                names.insert(name.clone());
                 if *vis == Vis::Public {
-                    exports.push(name.clone());
+                    public_exports.push(name.clone());
                 }
             }
+            Stmt::Const { vis, name, .. } => {
+                names.insert(name.clone());
+                if *vis == Vis::Public {
+                    public_exports.push(name.clone());
+                    consts.insert(name.clone());
+                }
+            }
+            // Nested imports are expanded elsewhere; they contribute nothing
+            // to this module's export set.
             _ => {}
         }
     }
-
-    let mut scopes: Vec<HashSet<String>> = Vec::new();
-    for s in stmts {
-        out.push(rewrite_top_stmt(s, &prefix, &top_names, &mut scopes));
+    OwnTops {
+        names,
+        public_exports,
+        consts,
     }
+}
 
-    let mut map_args: Vec<Expr> = Vec::with_capacity(exports.len() * 2);
-    for exp in exports {
+/// The `alias` binding: a frozen namespace map of the module's public exports
+/// (`module_namespace` is the shared constructor the tree/VM paths use too),
+/// bound as a private const so rebinding the alias is a const violation.
+fn build_namespace_const(alias: &str, own: &OwnTops, span: &Span) -> Stmt {
+    let mut map_args: Vec<Expr> = Vec::with_capacity(own.public_exports.len() * 2);
+    for exp in &own.public_exports {
         map_args.push(Expr::Str(exp.clone(), span.clone()));
-        map_args.push(Expr::Ident(format!("{}{}", prefix, exp), span.clone()));
+        map_args.push(Expr::Ident(
+            format!("__mod_{}_{}", alias, exp),
+            span.clone(),
+        ));
     }
-    out.push(Stmt::Const {
+    Stmt::Const {
         vis: Vis::Private,
         name: alias.to_string(),
         ty: None,
@@ -191,51 +262,25 @@ fn mangle_aliased_module(stmts: &[Stmt], alias: &str, span: &Span, out: &mut Vec
             span: span.clone(),
         },
         span: span.clone(),
-    });
+    }
 }
 
-fn mangle_selective_module(
-    stmts: &[Stmt],
-    selections: &[(String, String)],
-    idx: usize,
-    span: &Span,
+/// `import { a, b as c } from "m";`: bind each selected own export to its
+/// local name. Consts bind as consts (frozen), everything else as lets —
+/// mirroring what the plain-import path does with the same names.
+fn append_selection_bindings(
     out: &mut Vec<Stmt>,
+    prefix: &str,
+    own: &OwnTops,
+    selections: &[(String, String)],
+    span: &Span,
 ) {
-    let prefix = format!("__sel_{}_", idx);
-    let mut top_names: HashSet<String> = HashSet::new();
-    let mut const_names: HashSet<String> = HashSet::new();
-    for s in stmts {
-        match s {
-            Stmt::Fn(p) => {
-                if let Some(name) = &p.name {
-                    top_names.insert(name.clone());
-                }
-            }
-            Stmt::Class(c) => {
-                top_names.insert(c.name.clone());
-            }
-            Stmt::Let { name, .. } => {
-                top_names.insert(name.clone());
-            }
-            Stmt::Const { name, .. } => {
-                top_names.insert(name.clone());
-                const_names.insert(name.clone());
-            }
-            _ => {}
-        }
-    }
-
-    let mut scopes: Vec<HashSet<String>> = Vec::new();
-    for s in stmts {
-        out.push(rewrite_top_stmt(s, &prefix, &top_names, &mut scopes));
-    }
-
     for (exp, loc) in selections {
-        if !top_names.contains(exp) {
+        if !own.names.contains(exp) {
             continue;
         }
         let target = Expr::Ident(format!("{}{}", prefix, exp), span.clone());
-        if const_names.contains(exp) {
+        if own.consts.contains(exp) {
             out.push(Stmt::Const {
                 vis: Vis::Private,
                 name: loc.clone(),

@@ -617,8 +617,9 @@ fn native_operator_overloading_matches_tree() {
 
     // `complex` and `bigint` both export `to_string`, so a single program
     // importing both unaliased is a semantic import collision (correctly
-    // rejected). Aliasing is unsupported on the native backend, so the two
-    // stdlib types are exercised in separate programs.
+    // rejected). Aliased imports of both in one program would work, but the
+    // two stdlib types are exercised in separate programs here so each set of
+    // expected values stays self-contained.
     let cx = r#"import "complex";
 
 class Money {
@@ -967,6 +968,138 @@ fn main() {
     assert_eq!(tree, vm, "tree vs vm stdout differ");
 
     let exe = dir.join("spid3r_nat_alias_deep.exe");
+    let exe_s = exe.to_str().unwrap().to_string();
+    out(&["build", &main_path_s, "-o", &exe_s])
+        .unwrap_or_else(|e| panic!("native build failed:\n{}", e));
+    let native = run_exe(&exe_s).unwrap_or_else(|e| panic!("native run failed:\n{}", e));
+    assert_eq!(tree, native, "tree vs native stdout differ");
+
+    let _ = std::fs::remove_file(&mod_path);
+    let _ = std::fs::remove_file(&main_path);
+    let _ = std::fs::remove_file(&exe);
+}
+
+/// A namespace import of a module that itself plain-imports another module
+/// must not re-export the transitive module's names.
+///
+/// The flattener used to collect the namespace's export set (and mangle
+/// definitions) from the FLATTENED statement list, where transitively
+/// inlined plain-import declarations sit — so `mid.LIB_TAG` answered on
+/// native while the tree/VM correctly raised "missing key 'LIB_TAG'"
+/// (`mid_mod` merely imports `mod_lib`; it does not re-export it).
+#[test]
+fn native_namespace_does_not_leak_transitive_imports() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let lib_path = dir.join("spid3r_nat_ns_lib.matrix");
+    let mid_path = dir.join("spid3r_nat_ns_mid.matrix");
+    let main_path = dir.join("spid3r_nat_ns_trans.matrix");
+
+    std::fs::write(
+        &lib_path,
+        "public const LIB_TAG = \"lib-v1\";\n\npublic fn lib_add(a, b) {\n    return a + b;\n}\n",
+    )
+    .expect("write lib");
+    std::fs::write(
+        &mid_path,
+        "import \"spid3r_nat_ns_lib\";\n\npublic fn combined(x) {\n    return lib_add(x, 10);\n}\n",
+    )
+    .expect("write mid");
+    std::fs::write(
+        &main_path,
+        "import \"spid3r_nat_ns_mid\" as mid;\n\nfn main() {\n    println(mid.combined(4));\n    println(mid.LIB_TAG);\n    return 0;\n}\n",
+    )
+    .expect("write main");
+
+    let main_path_s = main_path.to_str().unwrap().to_string();
+
+    // The reference: `combined` resolves, the transitive name does not.
+    let tree_run = out(&["run", "--engine", "tree", &main_path_s]);
+    match &tree_run {
+        Ok(_) => panic!("tree must fail on mid.LIB_TAG (not re-exported)"),
+        Err(e) => assert!(
+            e.contains("missing key 'LIB_TAG'"),
+            "tree error drifted: {}",
+            e
+        ),
+    }
+    let tree = tree_run.unwrap_err();
+    assert!(tree.starts_with("error[runtime]"), "tree stderr drifted: {}", tree);
+
+    let exe = dir.join("spid3r_nat_ns_trans.exe");
+    let exe_s = exe.to_str().unwrap().to_string();
+    out(&["build", &main_path_s, "-o", &exe_s])
+        .unwrap_or_else(|e| panic!("native build failed:\n{}", e));
+    let native = run_exe(&exe_s).unwrap_or_else(|e| e);
+    assert!(
+        native.contains("missing key 'LIB_TAG'"),
+        "native must fail the same way, got: {}",
+        native
+    );
+
+    // The working half (`mid.combined`) through the same namespace, with no
+    // error: compile a main that only uses what the namespace really exports.
+    std::fs::write(
+        &main_path,
+        "import \"spid3r_nat_ns_mid\" as mid;\n\nfn main() {\n    println(mid.combined(4));\n    return 0;\n}\n",
+    )
+    .expect("rewrite main");
+    let tree_ok = out(&["run", "--engine", "tree", &main_path_s])
+        .unwrap_or_else(|e| panic!("tree run failed:\n{}", e));
+    assert_eq!(tree_ok.trim(), "14");
+    out(&["build", &main_path_s, "-o", &exe_s])
+        .unwrap_or_else(|e| panic!("native build failed:\n{}", e));
+    let native_ok = run_exe(&exe_s).unwrap_or_else(|e| panic!("native run failed:\n{}", e));
+    assert_eq!(tree_ok, native_ok, "tree vs native stdout differ");
+
+    let _ = std::fs::remove_file(&lib_path);
+    let _ = std::fs::remove_file(&mid_path);
+    let _ = std::fs::remove_file(&main_path);
+    let _ = std::fs::remove_file(&exe);
+}
+
+/// `new X(...)` where X is a local holding a class value — an alias (`let C =
+/// Pt; new C(9)`) or a class pulled out of a module namespace
+/// (`let C = mod.Cls; new C(5)`) — must construct like the tree/VM engines.
+///
+/// Expr::New's codegen resolved the class name through the GLOBAL table only,
+/// so a local class value read as null: "null is not callable" on native
+/// where tree/VM constructed normally. (`mod.Cls(5)` — calling the member —
+/// worked, which is why the aliased-import parity test above never caught
+/// the `new` path.)
+#[test]
+fn native_first_class_class_construction_matches_tree() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let mod_path = dir.join("spid3r_nat_ns_cls.matrix");
+    let main_path = dir.join("spid3r_nat_ns_cls_main.matrix");
+
+    std::fs::write(
+        &mod_path,
+        "public class Counter {\n    public let n;\n    fn new(start) {\n        self.n = start;\n    }\n    public fn bump(self) -> int {\n        self.n = self.n + 1;\n        return self.n;\n    }\n}\n",
+    )
+    .expect("write mod");
+    std::fs::write(
+        &main_path,
+        "import \"spid3r_nat_ns_cls\" as mc;\n\nclass Local {\n    public let x;\n    fn new(x) { self.x = x; }\n    public fn get(self) -> int { return self.x; }\n}\n\nfn main() {\n    let C = Local;\n    let p = new C(9);\n    println(p.get());\n    let K = mc.Counter;\n    let c = new K(5);\n    println(c.bump());\n    println(c.bump());\n    println(new Local(3).get());\n    return 0;\n}\n",
+    )
+    .expect("write main");
+
+    let main_path_s = main_path.to_str().unwrap().to_string();
+
+    let tree = out(&["run", "--engine", "tree", &main_path_s])
+        .unwrap_or_else(|e| panic!("tree run failed:\n{}", e));
+    let vm = out(&["run", "--engine", "vm", &main_path_s])
+        .unwrap_or_else(|e| panic!("vm run failed:\n{}", e));
+    assert_eq!(tree, vm, "tree vs vm stdout differ");
+
+    let exe = dir.join("spid3r_nat_ns_cls.exe");
     let exe_s = exe.to_str().unwrap().to_string();
     out(&["build", &main_path_s, "-o", &exe_s])
         .unwrap_or_else(|e| panic!("native build failed:\n{}", e));

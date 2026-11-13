@@ -192,7 +192,6 @@ Explicitly rejected with a clear diagnostic (never silently mis-compiled):
 | Construct | Diagnostic |
 | --- | --- |
 | class inside a function | `'class declaration inside a function' is not supported ...` |
-| `import "x" as alias;` (module namespace) | `'x as alias' is not supported by the native backend yet; run it with --engine vm or use a plain import` |
 
 These are compile-time `error[usage]` diagnostics (exit code 2), the same
 phase the CLI uses for other usage errors.
@@ -233,14 +232,24 @@ canonical path), so `build_module` compiles one self-contained module with no
 runtime import window — the AST-level analogue of the bytecode path embedding
 imported modules into `.matrixc`. Resolution mirrors the bytecode path (the
 importing file's directory, then `SPID3R_PATH`); circular imports are reported
-and missing modules produce a clean "module not found" diagnostic. **Known
-gap:** `import "name" as alias;` (module namespaces) is not supported — the
-program is rejected at build time with a clean `error[usage]` diagnostic
-(exit code 2), never silently mis-compiled; run it with `--engine vm` or use
-a plain import (a namespace would need mangled globals and a frozen-map
-constructor the AOT runtime does not have yet). Visibility
+and missing modules produce a clean "module not found" diagnostic. Visibility
 is already enforced by the semantic pass, which runs before flattening in the
 `build` flow, so only public names may be imported.
+
+**Namespace and selective imports are supported.** `import "name" as alias;`
+mangles the module's own top-level declarations (`__mod_{alias}_{name}`),
+rewrites the module's internal references to match, and binds the alias to a
+frozen namespace map built by the same `module_namespace` constructor the
+tree/VM paths use — so `alias.member`, first-class extraction
+(`let f = alias.member; f(...)`) and `let C = alias.Cls; new C(...)` all
+behave like the interpreters. `import { a, b as c } from "name";` binds the
+selected own exports to their local names (consts frozen, values as lets).
+The export set is the module's **own** top-level declarations, collected
+before nested flattening: a module that plain-imports another does not
+re-export that module's names (`mid.LIB_TAG` is "missing key 'LIB_TAG'" on
+every engine when `mid_mod` merely imports `mod_lib`), and the transitive
+declarations are inlined unprefixed so the module's own code resolves them
+globally, exactly like the interpreters.
 
 ## Memory model
 
