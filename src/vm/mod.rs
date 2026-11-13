@@ -1328,7 +1328,11 @@ impl Vm {
                                 let cidx =
                                     u16::from_le_bytes([code[ip + 3], code[ip + 4]]) as usize;
                                 let op2 = code[ip + 5];
-                                if op2 == OpCode::Add as u8
+                                if (op2 == OpCode::Add as u8
+                                    || op2 == OpCode::Sub as u8
+                                    || op2 == OpCode::Mul as u8
+                                    || op2 == OpCode::Div as u8
+                                    || op2 == OpCode::Mod as u8)
                                     && code.get(ip + 6) == Some(&(OpCode::SetLocal as u8))
                                     && code.get(ip + 8) == Some(&(OpCode::Pop as u8))
                                 {
@@ -1361,7 +1365,36 @@ impl Vm {
                                         self.frames[nf].func.chunk.constants.get(cidx),
                                     ) {
                                         if dst < self.frames[nf].slots.len() {
-                                            if let Some(v) = a.checked_add(b) {
+                                            // Each op reproduces its generic
+                                            // handler exactly (OpCode::Sub /
+                                            // Mul / Div / Mod below):
+                                            // checked_* for + - * /, and
+                                            // wrapping_rem for % when b != 0
+                                            // (so i64::MIN % -1 yields the
+                                            // same 0 the generic path yields).
+                                            // None, or a zero divisor, falls
+                                            // through to generic dispatch so
+                                            // overflow / division by zero raise
+                                            // the identical error.
+                                            let computed: Option<i64> =
+                                                if op2 == OpCode::Add as u8 {
+                                                    a.checked_add(b)
+                                                } else if op2 == OpCode::Sub as u8 {
+                                                    a.checked_sub(b)
+                                                } else if op2 == OpCode::Mul as u8 {
+                                                    a.checked_mul(b)
+                                                } else if op2 == OpCode::Div as u8 {
+                                                    if b != 0 {
+                                                        a.checked_div(b)
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else if b != 0 {
+                                                    Some(a.wrapping_rem(b))
+                                                } else {
+                                                    None
+                                                };
+                                            if let Some(v) = computed {
                                                 if self.pending_str.as_ref().is_some_and(
                                                     |&(pf, ps, _)| pf == nf && ps == dst,
                                                 ) {
@@ -1372,7 +1405,7 @@ impl Vm {
                                                 continue;
                                             }
                                         }
-                                    } else if dst == slot {
+                                    } else if op2 == OpCode::Add as u8 && dst == slot {
                                         if let Some(Value::Str(rhs)) =
                                             self.frames[nf].func.chunk.constants.get(cidx).cloned()
                                         {
