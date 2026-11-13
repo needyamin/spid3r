@@ -501,6 +501,7 @@ configuration plus a release build.
 | `no Windows SDK found` | Install the Windows 10/11 SDK component. |
 | `cannot find the Spid3r runtime library` | Build the toolchain first: `cargo build --features native` produces the staticlib that program links use. |
 | `linking failed` with `LNK2019` on `LLVM*` symbols | The final link needs `LLVM-C.lib` on the libpath; a non-default LLVM location needs `SPID3R_LLVM_LIB_DIR` set for the linker stage too. |
+| `cannot locate the LLVM shared library (libLLVM-18.so / libLLVM.dylib)` on `spid3r build` | Every link attempt failed because no `-lLLVM*` spelling resolved. Set `SPID3R_LLVM_LIB_DIR` to the directory `llvm-config-18 --libdir` reports (the linker's own line is printed under the message). If instead a single `cannot find -lLLVM` appears without this message, that is a genuine link error being reported verbatim — read the rest of the output, not the LLVM line. |
 | `error deleting lock file ... (os error 5)` during builds | A OneDrive-over-Windows incremental-build quirk, not a code issue; vanishes after `cargo clean`. |
 | `spid3r build` says the backend is not enabled | The binary was built with `--no-default-features` (and without `native`); rebuild with the defaults. |
 | `spid3r gui` says the GUI is not enabled | The binary was built with `--no-default-features`; rebuild without it (or add `--features gui`). |

@@ -1704,7 +1704,22 @@ fn link_plain(
     for e in extra {
         args.push(e.to_string());
     }
-    let mut last_err: Option<Diagnostic> = None;
+    // Each group is one complete attempt: the first is whatever `llvm-config`
+    // says this machine needs, the rest are spellings tried when that library
+    // is simply absent (Debian ships `libLLVM-18.so`, Homebrew `libLLVM.dylib`,
+    // and neither answers to the other's name).
+    //
+    // What a failure means is the subtle part. Retrying is only legitimate
+    // while the error is "that library does not exist". A GENUINE link error —
+    // an undefined program symbol, a duplicate definition, a `--link-lib` that
+    // does not resolve — is the answer, and walking on to the fallback names
+    // would replace it with a later `cannot find -lLLVM` that names nothing the
+    // user can act on. That masking is what made
+    // tests/ffi.rs::a_missing_symbol_fails_at_build_not_at_run report a missing
+    // LLVM instead of the missing symbol on the CI runner, where `-lLLVM-18`
+    // resolves fine and only the LLVM-19 / unversioned fallbacks do not.
+    let mut genuine_err: Option<Diagnostic> = None;
+    let mut absent_err: Option<Diagnostic> = None;
     for lgroup in llvm_candidates {
         let mut attempt = args.clone();
         for lname in lgroup {
@@ -1712,15 +1727,43 @@ fn link_plain(
         }
         match run_linker(&exe, &attempt) {
             Ok(()) => return Ok(()),
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                if llvm_library_absent(&format!("{e}")) {
+                    absent_err = Some(e);
+                } else if genuine_err.is_none() {
+                    // Keep the FIRST real failure. Later attempts differ only
+                    // in the LLVM spelling, so they would report the same
+                    // problem less specifically.
+                    genuine_err = Some(e);
+                }
+            }
         }
     }
-    // no LLVM library found under any known name: report the first attempt's
-    // failure (or a targeted message if none ran)
-    Err(last_err.unwrap_or_else(|| {
-        err("cannot locate the LLVM shared library (libLLVM-18); set \
-             SPID3R_LLVM_LIB_DIR to its directory")
+    Err(genuine_err.unwrap_or_else(|| {
+        // Every attempt failed for the same reason: the library is not on the
+        // search path. Say so, and keep the linker's own line as context.
+        let detail = absent_err.map(|e| format!("\n  {e}")).unwrap_or_default();
+        err(format!(
+            "cannot locate the LLVM shared library (libLLVM-18.so / libLLVM.dylib); \
+             set SPID3R_LLVM_LIB_DIR to the directory that holds it{detail}"
+        ))
     }))
+}
+
+/// Did the linker fail because the LLVM shared library itself is missing?
+///
+/// Retrying with another spelling is only sensible for that one condition, and
+/// every way a linker words it names the library it could not find — so
+/// requiring `-lLLVM` in the message keeps an absent `--link-lib` (or any other
+/// missing library) classified as a genuine error instead of being retried and
+/// masked by the fallback names.
+fn llvm_library_absent(message: &str) -> bool {
+    const MISSING: &[&str] = &[
+        "cannot find",            // GNU ld / gold: "cannot find -lLLVM-18"
+        "unable to find library", // lld: "unable to find library -lLLVM"
+        "library not found",      // macOS ld64: "library not found for -lLLVM"
+    ];
+    message.contains("-lLLVM") && MISSING.iter().any(|m| message.contains(m))
 }
 
 /// Look up a program on `PATH` (Windows also tries the `.exe` suffix).
@@ -1829,4 +1872,42 @@ fn explain_plugin_name(mut d: crate::diagnostics::Diagnostic) -> crate::diagnost
         ));
     }
     d
+}
+
+#[cfg(test)]
+mod tests {
+    use super::llvm_library_absent;
+
+    /// Only "the LLVM library is not on the search path" may trigger a retry
+    /// with the next spelling; the three linkers word it three ways.
+    #[test]
+    fn a_missing_llvm_library_is_recognised() {
+        // GNU ld / ld.bfd (Debian, Ubuntu).
+        assert!(llvm_library_absent(
+            "error[link]: linking failed (/usr/bin/cc):\n\
+             /usr/bin/ld.bfd: cannot find -lLLVM-18: No such file or directory"
+        ));
+        // lld.
+        assert!(llvm_library_absent(
+            "ld.lld: error: unable to find library -lLLVM"
+        ));
+        // macOS ld64.
+        assert!(llvm_library_absent("ld: library not found for -lLLVM"));
+    }
+
+    /// The CI regression this guards: an undefined program symbol must surface
+    /// verbatim. Retrying it produced a later `cannot find -lLLVM`, so
+    /// `a_missing_symbol_fails_at_build_not_at_run` saw a toolchain error
+    /// instead of the symbol it was asserting on.
+    #[test]
+    fn a_genuine_link_error_is_not_a_missing_library() {
+        assert!(!llvm_library_absent(
+            "/usr/bin/ld.bfd: /tmp/spid3r_ffi_missing_1/app.o: in function `main':\n\
+             app.o: undefined reference to `no_such_symbol'"
+        ));
+        // A `--link-lib` that does not resolve is the user's error, not ours.
+        assert!(!llvm_library_absent(
+            "/usr/bin/ld.bfd: cannot find -lfoo: No such file or directory"
+        ));
+    }
 }

@@ -273,6 +273,24 @@ jobs:
         with:
           key: aot
 
+      - name: Record the LLVM installation
+        # A program link resolves -lLLVM through llvm-config and a set of
+        # fallback names. When that fails, the test only prints the linker's
+        # last line, which is not enough to tell "LLVM is absent" from "LLVM is
+        # fine and the program has a genuine link error". Record what this
+        # runner actually has so the next occurrence is diagnosable from the
+        # job log alone. Informational: never fails the job.
+        run: |
+          {
+            echo "### LLVM"
+            echo '```'
+            llvm-config-18 --version || echo "llvm-config-18 not on PATH"
+            libdir=$(llvm-config-18 --libdir 2>/dev/null || echo /usr/lib/llvm-18/lib)
+            echo "libdir: $libdir"
+            ls -1 "$libdir" 2>/dev/null | grep -i llvm || echo "no libLLVM* under $libdir"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Builds core + native (no gui). Includes the engine-matrix AOT subset
       # and the native runtime tests.
       - name: Build the native toolchain and runtime staticlib
