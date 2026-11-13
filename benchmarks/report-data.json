@@ -1,124 +1,268 @@
 {
-  "generated": "2026-11-13 02:45:15",
+  "generated": "2026-11-13 14:58:12",
   "host": {
     "os": "Windows-11-10.0.26300-SP0",
     "cpu": "Intel(R) Core(TM) Ultra 7 265K",
     "cores": 20,
-    "python": "3.15.0"
+    "python": "3.13.14"
   },
   "runs": {
     "spid3r": 5,
     "tree": 3,
-    "other": 3
+    "other": 21
   },
   "spid3r_version": "spid3r 1.1.0 (language 1.0)",
   "startup": {
-    "spid3r": 7.6330000010784715,
-    "php": 22.024099998816382,
-    "python": 15.680399999837391
+    "spid3r": 10.623499998473562,
+    "php": 25.047600007383153,
+    "python": 197.4931999866385
   },
   "vm": {
-    "arith": 94.645,
-    "closures": 17.085,
-    "json": 15.051,
-    "list": 33.272,
-    "map": 24.205,
-    "methods": 91.031,
-    "stress_suite": 33.762,
-    "strings": 25.241,
-    "tasks": 10.759
+    "arith": 98.396,
+    "closures": 21.479,
+    "json": 18.806,
+    "list": 37.625,
+    "map": 27.015,
+    "methods": 93.695,
+    "stress_suite": 36.611,
+    "strings": 28.359,
+    "tasks": 14.475
   },
   "tree": {
-    "arith": 377.276,
-    "closures": 53.583,
-    "json": 17.572,
-    "list": 52.295,
-    "map": 35.223,
-    "methods": 135.572,
-    "stress_suite": 50.901,
-    "strings": 31.607,
-    "tasks": 13.615
+    "arith": 381.843,
+    "closures": 58.73,
+    "json": 21.619,
+    "list": 55.624,
+    "map": 47.006,
+    "methods": 139.814,
+    "stress_suite": 55.228,
+    "strings": 36.769,
+    "tasks": 18.533
   },
   "php": {
-    "arith": 41.26940000423929,
-    "closures": 24.181300002965145,
-    "json": 24.723499998799525,
-    "list": 26.3314999974682,
-    "map": 25.0778999979957,
-    "methods": 30.852000003505964,
-    "strings": 26.499100000364706,
-    "tasks": 23.428200001944788
+    "arith": 44.20449999452103,
+    "closures": 28.993700005230494,
+    "json": 28.935100010130554,
+    "list": 30.93049999733921,
+    "map": 28.986400007852353,
+    "methods": 35.632700004498474,
+    "strings": 30.64180001092609,
+    "tasks": 27.828399994177744
   },
   "python": {
-    "arith": 55.29519999981858,
-    "closures": 17.80249999865191,
-    "json": 31.867400000919588,
-    "list": 21.240000001853332,
-    "map": 20.492499999818392,
-    "methods": 22.23950000188779,
-    "strings": 17.469700003857724,
-    "tasks": 23.75709999614628
+    "arith": 253.06299999647308,
+    "closures": 203.89560000330675,
+    "json": 207.04379999369849,
+    "list": 203.7139999883948,
+    "map": 201.96809999470133,
+    "methods": 207.93240000784863,
+    "strings": 197.3541000043042,
+    "tasks": 204.53030000498984
   },
   "gate": [
     {
       "stem": "arith",
-      "rate": 21131597.02044482,
+      "rate": 20326029.513394855,
       "floor": 6000000,
-      "margin": 3.5219328367408034,
+      "margin": 3.3876715855658093,
       "pass": true
     },
     {
       "stem": "closures",
-      "rate": 2341235.001463272,
+      "rate": 1862284.091438149,
       "floor": 170000,
-      "margin": 13.771970596842777,
+      "margin": 10.954612302577347,
       "pass": true
     },
     {
       "stem": "json",
-      "rate": 132881.53611055744,
+      "rate": 106349.03754121026,
       "floor": 8000,
-      "margin": 16.61019201381968,
+      "margin": 13.293629692651283,
       "pass": true
     },
     {
       "stem": "list",
-      "rate": 6011060.351045925,
+      "rate": 5315614.6179402,
       "floor": 800000,
-      "margin": 7.513825438807406,
+      "margin": 6.644518272425249,
       "pass": true
     },
     {
       "stem": "map",
-      "rate": 1652551.1258004545,
+      "rate": 1480658.8932074772,
       "floor": 160000,
-      "margin": 10.32844453625284,
+      "margin": 9.254118082546732,
       "pass": true
     },
     {
       "stem": "methods",
-      "rate": 2197053.7509200163,
+      "rate": 2134585.6235658256,
       "floor": 500000,
-      "margin": 4.394107501840033,
+      "margin": 4.269171247131651,
       "pass": true
     },
     {
       "stem": "strings",
-      "rate": 1188542.4507745334,
+      "rate": 1057865.2279699566,
       "floor": 140000,
-      "margin": 8.48958893410381,
+      "margin": 7.556180199785405,
       "pass": true
     },
     {
       "stem": "tasks",
-      "rate": 185890.8820522353,
+      "rate": 138169.2573402418,
       "floor": 6000,
-      "margin": 30.98181367537255,
+      "margin": 23.02820955670697,
       "pass": true
     }
   ],
+  "startup_mad": {
+    "spid3r": 0.31030000536702573,
+    "php": 0.33719999191816896,
+    "python": 1.4223000034689903
+  },
+  "resolution": {
+    "spid3r": 0.6206000107340515,
+    "php": 0.6743999838363379,
+    "python": 2.8446000069379807
+  },
   "php_version": "8.3.33",
   "compare": true,
-  "vm_raw": "spid3r bench - engine vm, best of 5 runs, tree vs vm compared\nbenchmark           iters      best time  iters/sec\narith             2000000       94.645ms   21131664\nclosures            40000       17.085ms    2341249\njson                 2000       15.051ms     132878\nlist               200000       33.272ms    6011096\nmap                 40000       24.205ms    1652578\nmethods            200000       91.031ms    2197051\nstress_suite            -       33.762ms          -\nstrings             30000       25.241ms    1188533\ntasks                2000       10.759ms     185887\n",
-  "tree_raw": "spid3r bench - engine tree, best of 3 runs\nbenchmark           iters      best time  iters/sec\narith             2000000      377.276ms    5301163\nclosures            40000       53.583ms     746501\njson                 2000       17.572ms     113817\nlist               200000       52.295ms    3824465\nmap                 40000       35.223ms    1135635\nmethods            200000      135.572ms    1475230\nstress_suite            -       50.901ms          -\nstrings             30000       31.607ms     949154\ntasks                2000       13.615ms     146892\n"
+  "vm_raw": "spid3r bench - engine vm, best of 5 runs, tree vs vm compared\nbenchmark           iters      best time  iters/sec\narith             2000000       98.396ms   20326071\nclosures            40000       21.479ms    1862293\njson                 2000       18.806ms     106346\nlist               200000       37.625ms    5315600\nmap                 40000       27.015ms    1480637\nmethods            200000       93.695ms    2134586\nstress_suite            -       36.611ms          -\nstrings             30000       28.359ms    1057850\ntasks                2000       14.475ms     138167\n",
+  "tree_raw": "spid3r bench - engine tree, best of 3 runs\nbenchmark           iters      best time  iters/sec\narith             2000000      381.843ms    5237749\nclosures            40000       58.730ms     681085\njson                 2000       21.619ms      92513\nlist               200000       55.624ms    3595551\nmap                 40000       47.006ms     850953\nmethods            200000      139.814ms    1430471\nstress_suite            -       55.228ms          -\nstrings             30000       36.769ms     815902\ntasks                2000       18.533ms     107915\n",
+  "adj": {
+    "vm": {
+      "arith": 87.77250000152644,
+      "closures": 10.855500001526437,
+      "json": 8.182500001526439,
+      "list": 27.001500001526438,
+      "map": 16.39150000152644,
+      "methods": 83.07150000152643,
+      "stress_suite": 25.987500001526435,
+      "strings": 17.73550000152644,
+      "tasks": 3.8515000015264373
+    },
+    "tree": {
+      "arith": 371.21950000152646,
+      "closures": 48.106500001526435,
+      "json": 10.995500001526437,
+      "list": 45.00050000152644,
+      "map": 36.38250000152644,
+      "methods": 129.19050000152643,
+      "stress_suite": 44.60450000152644,
+      "strings": 26.145500001526436,
+      "tasks": 7.909500001526439
+    },
+    "php": {
+      "arith": 19.156899987137876,
+      "closures": 3.946099997847341,
+      "json": 3.8875000027474016,
+      "list": 5.882899989956059,
+      "map": 3.9388000004692003,
+      "methods": 10.585099997115321,
+      "strings": 5.594200003542937,
+      "tasks": 2.780799986794591
+    },
+    "python": {
+      "arith": 55.56980000983458,
+      "closures": 6.402400016668253,
+      "json": 9.550600007059984,
+      "list": 6.220800001756288,
+      "map": 4.474900008062832,
+      "methods": 10.439200021210127,
+      "strings": 0.0,
+      "tasks": 7.037100018351339
+    }
+  },
+  "ratio_php": {
+    "vm": {
+      "arith": 4.581769496132345,
+      "closures": 2.7509439718831965,
+      "json": 2.1048231500305192,
+      "list": 4.589828154078159,
+      "map": 4.161546663850371,
+      "methods": 7.8479655387445835,
+      "strings": 3.1703371331547197,
+      "tasks": 1.3850330911307414
+    },
+    "tree": {
+      "arith": 19.37784820355938,
+      "closures": 12.190897348716272,
+      "json": 2.8284244356927637,
+      "list": 7.649373621573765,
+      "map": 9.236950339492347,
+      "methods": 12.204939021524005,
+      "strings": 4.6736798800486,
+      "tasks": 2.8443253880490933
+    }
+  },
+  "ratio_adj": {
+    "vm": {
+      "arith": 4.581769496132345,
+      "closures": 2.7509439718831965,
+      "json": 2.1048231500305192,
+      "list": 4.589828154078159,
+      "map": 4.161546663850371,
+      "methods": 7.957649995473185,
+      "strings": 3.1703371331547197,
+      "tasks": 1.3850330911307414
+    },
+    "tree": {
+      "arith": 19.37784820355938,
+      "closures": 12.190897348716272,
+      "json": 2.8284244356927637,
+      "list": 7.649373621573765,
+      "map": 9.236950339492347,
+      "methods": 12.375517256019632,
+      "strings": 4.6736798800486,
+      "tasks": 2.8443253880490933
+    }
+  },
+  "ratio_ref": {
+    "vm": {
+      "arith": "php",
+      "closures": "php",
+      "json": "php",
+      "list": "php",
+      "map": "php",
+      "methods": "python",
+      "strings": "php",
+      "tasks": "php"
+    },
+    "tree": {
+      "arith": "php",
+      "closures": "php",
+      "json": "php",
+      "list": "php",
+      "map": "php",
+      "methods": "python",
+      "strings": "php",
+      "tasks": "php"
+    }
+  },
+  "ratio_resolved": {
+    "vm": {
+      "arith": true,
+      "closures": true,
+      "json": true,
+      "list": true,
+      "map": true,
+      "methods": true,
+      "stress_suite": false,
+      "strings": true,
+      "tasks": true
+    },
+    "tree": {
+      "arith": true,
+      "closures": true,
+      "json": true,
+      "list": true,
+      "map": true,
+      "methods": true,
+      "stress_suite": false,
+      "strings": true,
+      "tasks": true
+    }
+  }
 }
