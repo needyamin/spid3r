@@ -1127,7 +1127,11 @@ impl Vm {
                                                 }
                                             }
                                         }
-                                    } else if op2 == OpCode::Add as u8
+                                    } else if (op2 == OpCode::Add as u8
+                                        || op2 == OpCode::Sub as u8
+                                        || op2 == OpCode::Mul as u8
+                                        || op2 == OpCode::Div as u8
+                                        || op2 == OpCode::Mod as u8)
                                         && code.get(ip + 5) == Some(&(OpCode::SetLocal as u8))
                                         && code.get(ip + 7) == Some(&(OpCode::Pop as u8))
                                     {
@@ -1163,7 +1167,34 @@ impl Vm {
                                             self.frames[nf].slots.get(slot_b),
                                         ) {
                                             if dst < self.frames[nf].slots.len() {
-                                                if let Some(v) = a.checked_add(b) {
+                                                // Same mapping as the
+                                                // GetLocal+Constant write-back
+                                                // arm below, and as the generic
+                                                // OpCode::Sub/Mul/Div/Mod arms:
+                                                // checked_* for + - * /,
+                                                // wrapping_rem for % when
+                                                // b != 0. Anything else falls
+                                                // through so the generic path
+                                                // raises the identical error.
+                                                let computed: Option<i64> =
+                                                    if op2 == OpCode::Add as u8 {
+                                                        a.checked_add(b)
+                                                    } else if op2 == OpCode::Sub as u8 {
+                                                        a.checked_sub(b)
+                                                    } else if op2 == OpCode::Mul as u8 {
+                                                        a.checked_mul(b)
+                                                    } else if op2 == OpCode::Div as u8 {
+                                                        if b != 0 {
+                                                            a.checked_div(b)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    } else if b != 0 {
+                                                        Some(a.wrapping_rem(b))
+                                                    } else {
+                                                        None
+                                                    };
+                                                if let Some(v) = computed {
                                                     if self.pending_str.as_ref().is_some_and(
                                                         |&(pf, ps, _)| pf == nf && ps == dst,
                                                     ) {
