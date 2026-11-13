@@ -395,7 +395,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
         let mut diag = Diagnostic::new(
             Phase::Build,
             "LLVM-C.dll not found (needed to compile with the native backend); \
-             install LLVM 18.1+ or set SPID3R_LLVM_BIN_DIR — see docs/BUILDING.md",
+             install LLVM 23.1+ or set SPID3R_LLVM_BIN_DIR — see docs/BUILDING.md",
         );
         if let Some(note) = llvm_dll_elsewhere() {
             diag = diag.with_note(note);
@@ -935,14 +935,14 @@ fn find_llvm_lib_dir() -> Option<PathBuf> {
             }
         }
     }
-    if let Ok(p) = std::env::var("LLVM_SYS_181_PREFIX") {
+    if let Ok(p) = std::env::var("LLVM_SYS_231_PREFIX") {
         let dir = Path::new(&p).join("lib");
         if dir.is_dir() {
             return Some(dir);
         }
     }
     if !cfg!(windows) {
-        for cmd in ["llvm-config-18", "llvm-config", "llvm-config-19"] {
+        for cmd in ["llvm-config-23", "llvm-config", "llvm-config-24"] {
             if let Ok(out) = Command::new(cmd).arg("--libdir").output() {
                 if out.status.success() {
                     let dir =
@@ -956,6 +956,7 @@ fn find_llvm_lib_dir() -> Option<PathBuf> {
     }
     let candidates: &[&str] = if cfg!(windows) {
         &[
+            r"C:\LLVM-23\lib",
             r"C:\Program Files\LLVM\lib",
             r"C:\Program Files (x86)\LLVM\lib",
         ]
@@ -963,8 +964,8 @@ fn find_llvm_lib_dir() -> Option<PathBuf> {
         &["/usr/local/lib", "/opt/homebrew/lib", "/usr/lib"]
     } else {
         &[
-            "/usr/lib/llvm-18/lib",
-            "/usr/lib/llvm-19/lib",
+            "/usr/lib/llvm-23/lib",
+            "/usr/lib/llvm-24/lib",
             "/usr/local/lib",
             "/usr/lib/x86_64-linux-gnu",
             "/usr/lib",
@@ -1006,14 +1007,20 @@ fn find_llvm_dll() -> Option<PathBuf> {
             return Some(dll);
         }
     }
-    if let Ok(prefix) = std::env::var("LLVM_SYS_181_PREFIX") {
+    if let Ok(prefix) = std::env::var("LLVM_SYS_231_PREFIX") {
         let dll = Path::new(&prefix).join("bin").join(NAME);
         if dll.is_file() {
             return Some(dll);
         }
     }
-    // 2. The standard install locations, whether or not `bin` is on `PATH`.
+    // 2. The unzipped official release archive (the documented layout,
+    //    `C:\LLVM-23`), then the stock installer's locations. The order
+    //    matters: whichever DLL this returns is PINNED by `preload_llvm_c`,
+    //    so a machine with both LLVM 18 and LLVM 23 must resolve 23 here —
+    //    the code links against LLVM 23's C API and an older DLL misses its
+    //    newer entry points (0xC06D007F before the first diagnostic).
     for base in [
+        r"C:\LLVM-23\bin",
         r"C:\Program Files\LLVM\bin",
         r"C:\Program Files (x86)\LLVM\bin",
     ] {
@@ -1120,9 +1127,10 @@ fn prepend_to_path(dir: &Path) {
 /// installed) and "LLVM is installed, but its `bin` directory is not on `PATH`".
 fn llvm_dll_elsewhere() -> Option<String> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(p) = std::env::var("LLVM_SYS_181_PREFIX") {
+    if let Ok(p) = std::env::var("LLVM_SYS_231_PREFIX") {
         dirs.push(Path::new(&p).join("bin"));
     }
+    dirs.push(PathBuf::from(r"C:\LLVM-23\bin"));
     dirs.push(PathBuf::from(r"C:\Program Files\LLVM\bin"));
     dirs.push(PathBuf::from(r"C:\Program Files (x86)\LLVM\bin"));
     dirs.iter()
@@ -1589,7 +1597,7 @@ fn llvm_link_hint(e: Diagnostic, llvm_dir_known: bool) -> Diagnostic {
     Diagnostic::new(
         Phase::Build,
         "cannot locate LLVM-C.lib, which the runtime static library links against; \
-         install LLVM 18.1+ or set SPID3R_LLVM_LIB_DIR (see docs/BUILDING.md)",
+         install LLVM 23.1+ or set SPID3R_LLVM_LIB_DIR (see docs/BUILDING.md)",
     )
     .with_note(e.message)
 }
@@ -1646,7 +1654,7 @@ fn link_plain(
     }
     // Query llvm-config for any additional system libs and ldflags if present.
     if !cfg!(windows) {
-        for cmd in ["llvm-config-18", "llvm-config", "llvm-config-19"] {
+        for cmd in ["llvm-config-23", "llvm-config", "llvm-config-24"] {
             if let Ok(out) = Command::new(cmd)
                 .args(["--ldflags", "--system-libs"])
                 .output()
@@ -1679,7 +1687,7 @@ fn link_plain(
     }
     let mut llvm_candidates: Vec<Vec<String>> = Vec::new();
     if !cfg!(windows) {
-        for cmd in ["llvm-config-18", "llvm-config", "llvm-config-19"] {
+        for cmd in ["llvm-config-23", "llvm-config", "llvm-config-24"] {
             if let Ok(out) = Command::new(cmd).arg("--libs").output() {
                 if out.status.success() {
                     let out_text = String::from_utf8_lossy(&out.stdout);
@@ -1696,7 +1704,7 @@ fn link_plain(
     let fallback_names: &[&str] = if cfg!(target_os = "macos") {
         &["-lLLVM"]
     } else {
-        &["-lLLVM-18", "-lLLVM-19", "-lLLVM"]
+        &["-lLLVM-23", "-lLLVM-24", "-lLLVM"]
     };
     for name in fallback_names {
         llvm_candidates.push(vec![name.to_string()]);
@@ -1706,7 +1714,7 @@ fn link_plain(
     }
     // Each group is one complete attempt: the first is whatever `llvm-config`
     // says this machine needs, the rest are spellings tried when that library
-    // is simply absent (Debian ships `libLLVM-18.so`, Homebrew `libLLVM.dylib`,
+    // is simply absent (Debian ships `libLLVM-23.so`, Homebrew `libLLVM.dylib`,
     // and neither answers to the other's name).
     //
     // What a failure means is the subtle part. Retrying is only legitimate
@@ -1744,7 +1752,7 @@ fn link_plain(
         // search path. Say so, and keep the linker's own line as context.
         let detail = absent_err.map(|e| format!("\n  {e}")).unwrap_or_default();
         err(format!(
-            "cannot locate the LLVM shared library (libLLVM-18.so / libLLVM.dylib); \
+            "cannot locate the LLVM shared library (libLLVM-23.so / libLLVM.dylib); \
              set SPID3R_LLVM_LIB_DIR to the directory that holds it{detail}"
         ))
     }))

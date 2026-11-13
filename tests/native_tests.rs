@@ -1027,7 +1027,11 @@ fn native_namespace_does_not_leak_transitive_imports() {
         ),
     }
     let tree = tree_run.unwrap_err();
-    assert!(tree.starts_with("error[runtime]"), "tree stderr drifted: {}", tree);
+    assert!(
+        tree.starts_with("error[runtime]"),
+        "tree stderr drifted: {}",
+        tree
+    );
 
     let exe = dir.join("spid3r_nat_ns_trans.exe");
     let exe_s = exe.to_str().unwrap().to_string();

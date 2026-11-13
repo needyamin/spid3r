@@ -8,7 +8,7 @@ default:
 | --- | --- | --- |
 | *(core, `--no-default-features`)* | — | Rust toolchain only |
 | `gui` *(default)* | embedded webview GUI (`spid3r gui`) via tao + wry | system webview runtime (see below) |
-| `native` *(default)* | LLVM AOT backend (`spid3r build`) via inkwell 0.10 | LLVM 18.1+ |
+| `native` *(default)* | LLVM AOT backend (`spid3r build`) via inkwell 0.11 | LLVM 23.1+ |
 | `plugins-wasm` *(default)* | sandboxed WASM plugin loading via wasmi | nothing beyond the crate |
 | `tls` *(default)* | `https://` in `http_fetch` via native-tls | OS certificate store (schannel / OpenSSL / Security.framework) |
 
@@ -31,7 +31,7 @@ Everything below assumes the repository root as the working directory.
     Windows 10/11 SDK.
   - macOS: Xcode command line tools (`clang`).
   - Linux: `cc` / `clang` plus `libc` dev files.
-- **LLVM 18.1+** — only needed for the `native` feature.
+- **LLVM 23.1+** — only needed for the `native` feature.
 - **A system webview runtime** — only needed for the `gui` feature:
   - Windows: the evergreen **WebView2 Runtime** (preinstalled on Windows 11 and
     on patched Windows 10; otherwise install from Microsoft).
@@ -40,20 +40,22 @@ Everything below assumes the repository root as the working directory.
     `libgtk-3-dev`, `libxdo-dev` (for `xdotool`-style synthetic input) and
     `libssl-dev`.
 
-## Installing LLVM 18.1+
+## Installing LLVM 23.1+
 
-**Windows** — run the official `LLVM-18.1.x-win64.exe` installer from the
-LLVM GitHub releases. The default location `C:\Program Files\LLVM` is probed
-automatically; for a custom location set `SPID3R_LLVM_LIB_DIR` (see below).
+**Windows** — run the official `LLVM-23.1.0-win64.msi` installer from the
+LLVM GitHub releases, or unzip the `clang+llvm-23.1.0-x86_64-pc-windows-msvc`
+release archive to `C:\LLVM-23` (both layouts are probed automatically); for
+a custom location set `SPID3R_LLVM_LIB_DIR` (see below).
 
-**macOS** — `brew install llvm@18`.
+**macOS** — `brew install llvm@23`.
 
-**Linux (Debian/Ubuntu)** — `sudo apt install llvm-18 libllvm18 llvm-18-dev`
-(distros shipping `llvm-18` expose `llvm-config-18`, which `build.rs` probes
-alongside plain `llvm-config`).
+**Linux (Debian/Ubuntu)** — `sudo apt install llvm-23 libllvm23 llvm-23-dev`
+(from [apt.llvm.org](https://apt.llvm.org) on distros whose release archive
+predates LLVM 23; distros shipping `llvm-23` expose `llvm-config-23`, which
+`build.rs` probes alongside plain `llvm-config`).
 
 If LLVM is missing, the build still **succeeds** with a
-`cargo:warning=LLVM 18 not found ...` and `spid3r build` later fails with a
+`cargo:warning=LLVM 23 not found ...` and `spid3r build` later fails with a
 usage error pointing at this document — the rest of the toolchain
 (`run`, `check`, `compile`, `exec`, `repl`, `test`) works fine.
 
@@ -397,7 +399,7 @@ sh install.sh --source --core        # build from source instead of downloading
 - The installer no longer fetches `https://github.com/<repo>/archive/...` to
   obtain the stdlib: an install is a single download of the release tarball.
 - `--source` compiles with `cargo install --no-default-features` (plus
-  `native`/`gui` when LLVM 18 / WebKit2GTK 4.1 are detected) and installs the
+  `native`/`gui` when LLVM 23 / WebKit2GTK 4.1 are detected) and installs the
   same self-contained binary.
 
 ### Environment variables
@@ -405,14 +407,14 @@ sh install.sh --source --core        # build from source instead of downloading
 | Variable | Meaning |
 | --- | --- |
 | `SPID3R_NO_INSTALLER` | Any value skips the Windows installer step of `cargo build --release`. |
-| `SPID3R_LLVM_LIB_DIR` | Directory containing `LLVM-C.lib` (Windows) or `libLLVM-18.so` / `libLLVM.dylib` (Unix). Checked first by both `build.rs` and the linker stage. |
-| `SPID3R_LLVM_BIN_DIR` | Windows: directory containing `LLVM-C.dll` (default: `C:\Program Files\LLVM\bin`). `build.rs` copies it next to the built binaries (and into `deps/` for test executables) so `cargo run` / `cargo test` work without modifying PATH. |
-| `LLVM_SYS_181_PREFIX` | The llvm-sys convention prefix; `<prefix>/lib` is searched as a fallback when the variables above are unset. |
+| `SPID3R_LLVM_LIB_DIR` | Directory containing `LLVM-C.lib` (Windows) or `libLLVM-23.so` / `libLLVM.dylib` (Unix). Checked first by both `build.rs` and the linker stage. |
+| `SPID3R_LLVM_BIN_DIR` | Windows: directory containing `LLVM-C.dll` (default: `C:\LLVM-23\bin`, then `C:\Program Files\LLVM\bin`). `build.rs` copies it next to the built binaries (and into `deps/` for test executables) so `cargo run` / `cargo test` work without modifying PATH. |
+| `LLVM_SYS_231_PREFIX` | The llvm-sys convention prefix; `<prefix>/lib` is searched as a fallback when the variables above are unset. |
 
 Set them when LLVM lives somewhere non-standard, e.g.:
 
 ```
-SPID3R_LLVM_LIB_DIR=/opt/llvm-18/lib SPID3R_LLVM_BIN_DIR=/opt/llvm-18/bin \
+SPID3R_LLVM_LIB_DIR=/opt/llvm-23/lib SPID3R_LLVM_BIN_DIR=/opt/llvm-23/bin \
   cargo build --release --features native
 ```
 
@@ -423,9 +425,9 @@ SPID3R_LLVM_LIB_DIR=/opt/llvm-18/lib SPID3R_LLVM_BIN_DIR=/opt/llvm-18/bin \
 support there. Instead, `build.rs` links the LLVM C API itself:
 
 - **Windows**: locates `LLVM-C.lib` (import library for `LLVM-C.dll`) via
-  `SPID3R_LLVM_LIB_DIR` → `LLVM_SYS_181_PREFIX\lib` →
-  `C:\Program Files\LLVM\lib`.
-- **Linux/macOS**: runs `llvm-config --libdir` (Debian emits `-lLLVM-18`,
+  `SPID3R_LLVM_LIB_DIR` → `LLVM_SYS_231_PREFIX\lib` →
+  `C:\LLVM-23\lib` → `C:\Program Files\LLVM\lib`.
+- **Linux/macOS**: runs `llvm-config --libdir` (Debian emits `-lLLVM-23`,
   Homebrew `-lLLVM`), with Homebrew prefix fallbacks.
 
 When *linking a compiled program*, `link.rs` additionally needs a system
@@ -496,12 +498,13 @@ configuration plus a release build.
 
 | Symptom | Cause / fix |
 | --- | --- |
-| `cargo:warning=LLVM 18 not found for the native backend` | Install LLVM 18.1+ or set `SPID3R_LLVM_LIB_DIR`. Harmless if you don't need `spid3r build`. |
+| `cargo:warning=LLVM 23 not found for the native backend` | Install LLVM 23.1+ or set `SPID3R_LLVM_LIB_DIR`. Harmless if you don't need `spid3r build`. |
 | `no MSVC linker (link.exe) found` (on `spid3r build`) | Install Visual Studio Build Tools, or run from a Developer prompt (`VCINSTALLDIR` is honored). |
 | `no Windows SDK found` | Install the Windows 10/11 SDK component. |
 | `cannot find the Spid3r runtime library` | Build the toolchain first: `cargo build --features native` produces the staticlib that program links use. |
 | `linking failed` with `LNK2019` on `LLVM*` symbols | The final link needs `LLVM-C.lib` on the libpath; a non-default LLVM location needs `SPID3R_LLVM_LIB_DIR` set for the linker stage too. |
-| `cannot locate the LLVM shared library (libLLVM-18.so / libLLVM.dylib)` on `spid3r build` | Every link attempt failed because no `-lLLVM*` spelling resolved. Set `SPID3R_LLVM_LIB_DIR` to the directory `llvm-config-18 --libdir` reports (the linker's own line is printed under the message). If instead a single `cannot find -lLLVM` appears without this message, that is a genuine link error being reported verbatim — read the rest of the output, not the LLVM line. |
+| `cannot locate the LLVM shared library (libLLVM-23.so / libLLVM.dylib)` on `spid3r build` | Every link attempt failed because no `-lLLVM*` spelling resolved. Set `SPID3R_LLVM_LIB_DIR` to the directory `llvm-config-23 --libdir` reports (the linker's own line is printed under the message). If instead a single `cannot find -lLLVM` appears without this message, that is a genuine link error being reported verbatim — read the rest of the output, not the LLVM line. |
+| A compiled program dies with no output (exit `3221225782` / `0xC06D007F`) | A stale `LLVM-C.dll` shadowed the current one: the delay-loaded import resolved through `PATH` to an older LLVM that lacks the new C API entry points. `spid3r build` preloads the DLL it was built against, so seeing this means the preload's candidates all missed — set `SPID3R_LLVM_BIN_DIR` to the `bin` directory of the LLVM the toolchain was built with, or remove the stale copy from `PATH`. |
 | `error deleting lock file ... (os error 5)` during builds | A OneDrive-over-Windows incremental-build quirk, not a code issue; vanishes after `cargo clean`. |
 | `spid3r build` says the backend is not enabled | The binary was built with `--no-default-features` (and without `native`); rebuild with the defaults. |
 | `spid3r gui` says the GUI is not enabled | The binary was built with `--no-default-features`; rebuild without it (or add `--features gui`). |

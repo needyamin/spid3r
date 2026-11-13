@@ -3,7 +3,7 @@
 This document describes the `native` backend: `spid3r build` compiles a
 `.matrix` program all the way to a standalone machine-code executable, the
 same way `rustc` builds a binary. It is gated behind the `native` Cargo
-feature (adds `inkwell` and requires LLVM 18.1+ — see
+feature (adds `inkwell` and requires LLVM 23.1+ — see
 [BUILDING.md](BUILDING.md)). The core toolchain itself stays
 zero-dependency.
 
@@ -301,9 +301,9 @@ globally, exactly like the interpreters.
 | Variable | Effect |
 | --- | --- |
 | `SPID3R_DUMP_IR` | Print the generated LLVM IR to stderr before emitting the object |
-| `SPID3R_LLVM_LIB_DIR` | Directory holding `LLVM-C.lib` / `libLLVM-18.so`; also read by `build.rs` |
+| `SPID3R_LLVM_LIB_DIR` | Directory holding `LLVM-C.lib` / `libLLVM-23.so`; also read by `build.rs` |
 | `SPID3R_LLVM_BIN_DIR` | Windows: directory holding `LLVM-C.dll`; `build.rs` copies it next to the built binaries so `cargo run`/`cargo test` work without touching PATH |
-| `LLVM_SYS_181_PREFIX` | llvm-sys convention prefix; its `lib/` is searched as a fallback |
+| `LLVM_SYS_231_PREFIX` | llvm-sys convention prefix; its `lib/` and `bin/` are searched as fallbacks |
 
 ## Desktop executables
 

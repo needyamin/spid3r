@@ -13,7 +13,7 @@
 //!
 //! - Windows: `LLVM-C.lib` (import library for `LLVM-C.dll`, which the official
 //!   LLVM installer ships) found via `SPID3R_LLVM_LIB_DIR`, else
-//!   `LLVM_SYS_181_PREFIX`, else the default install path.
+//!   `LLVM_SYS_231_PREFIX`, else the default install paths.
 //! - Linux/macOS: `llvm-config --libdir` + `-lLLVM-N`, else Homebrew prefixes.
 //!
 //! On Windows we also copy `LLVM-C.dll` next to the built binaries so
@@ -250,7 +250,7 @@ fn windows_installer() {
             _ => {
                 println!(
                     "cargo:warning=installer skipped: the native backend needs LLVM-C.dll \
-                     and LLVM-C.lib (install LLVM 18.1+; see docs/BUILDING.md)"
+                     and LLVM-C.lib (install LLVM 23.1+; see docs/BUILDING.md)"
                 );
                 return;
             }
@@ -414,7 +414,7 @@ fn find_on_path(exe: &str) -> Option<PathBuf> {
 
 fn native_llvm() {
     println!("cargo:rerun-if-env-changed=SPID3R_LLVM_LIB_DIR");
-    println!("cargo:rerun-if-env-changed=LLVM_SYS_181_PREFIX");
+    println!("cargo:rerun-if-env-changed=LLVM_SYS_231_PREFIX");
     println!("cargo:rerun-if-env-changed=SPID3R_LLVM_BIN_DIR");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
@@ -451,7 +451,11 @@ fn native_llvm() {
 fn windows_llvm_lib_dir() -> Option<PathBuf> {
     [
         env::var_os("SPID3R_LLVM_LIB_DIR").map(PathBuf::from),
-        env::var_os("LLVM_SYS_181_PREFIX").map(|p| PathBuf::from(p).join("lib")),
+        env::var_os("LLVM_SYS_231_PREFIX").map(|p| PathBuf::from(p).join("lib")),
+        // The unzipped official release archive (the documented install layout,
+        // `C:\LLVM-23`), then the stock installer's path (LLVM 23.1 overwrites
+        // it in place, so this stays version-correct).
+        Some(PathBuf::from(r"C:\LLVM-23\lib")),
         Some(PathBuf::from(r"C:\Program Files\LLVM\lib")),
         Some(PathBuf::from(r"C:\Program Files (x86)\LLVM\lib")),
     ]
@@ -464,7 +468,8 @@ fn windows_llvm_lib_dir() -> Option<PathBuf> {
 fn windows_llvm_dll() -> Option<PathBuf> {
     [
         env::var_os("SPID3R_LLVM_BIN_DIR").map(PathBuf::from),
-        env::var_os("LLVM_SYS_181_PREFIX").map(|p| PathBuf::from(p).join("bin")),
+        env::var_os("LLVM_SYS_231_PREFIX").map(|p| PathBuf::from(p).join("bin")),
+        Some(PathBuf::from(r"C:\LLVM-23\bin")),
         Some(PathBuf::from(r"C:\Program Files\LLVM\bin")),
         Some(PathBuf::from(r"C:\Program Files (x86)\LLVM\bin")),
     ]
@@ -502,8 +507,8 @@ fn windows_llvm() {
         }
         None => {
             println!(
-                "cargo:warning=LLVM 18 not found for the `native` backend. \
-                 Install LLVM 18.1+ (https://github.com/llvm/llvm-project/releases) \
+                "cargo:warning=LLVM 23 not found for the `native` backend. \
+                 Install LLVM 23.1+ (https://github.com/llvm/llvm-project/releases) \
                  or set SPID3R_LLVM_LIB_DIR. See docs/BUILDING.md."
             );
         }
@@ -524,7 +529,7 @@ fn unix_llvm() {
         }
     }
     if libdir.is_none() {
-        if let Ok(out) = Command::new("llvm-config-18").arg("--libdir").output() {
+        if let Ok(out) = Command::new("llvm-config-23").arg("--libdir").output() {
             if out.status.success() {
                 let d = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !d.is_empty() {
@@ -540,8 +545,8 @@ fn unix_llvm() {
 
     // Homebrew fallback.
     for base in [
-        "/opt/homebrew/opt/llvm@18/lib",
-        "/usr/local/opt/llvm@18/lib",
+        "/opt/homebrew/opt/llvm@23/lib",
+        "/usr/local/opt/llvm@23/lib",
     ] {
         if PathBuf::from(base).is_dir() {
             println!("cargo:rustc-link-search=native={base}");
@@ -551,14 +556,14 @@ fn unix_llvm() {
     }
 
     println!(
-        "cargo:warning=LLVM 18 not found for the `native` backend. \
-         Install llvm-18 development packages and llvm-config, or set \
-         LLVM_SYS_181_PREFIX. See docs/BUILDING.md."
+        "cargo:warning=LLVM 23 not found for the `native` backend. \
+         Install llvm-23 development packages and llvm-config, or set \
+         LLVM_SYS_231_PREFIX. See docs/BUILDING.md."
     );
 }
 
 /// Emit the link directive for the dylib that ACTUALLY exists in the resolved
-/// libdir: Debian/Ubuntu ship the versioned `libLLVM-18.so[.1]` (rust-lld
+/// libdir: Debian/Ubuntu ship the versioned `libLLVM-23.so[.1]` (rust-lld
 /// hard-fails on a missing unversioned `-lLLVM`), Homebrew/macOS ship
 /// `libLLVM.dylib`. Only when neither is present fall back to trying both
 /// names (legacy behaviour).
@@ -567,13 +572,13 @@ fn emit_unix_llvm_link(libdir: &str) {
     let dir = PathBuf::from(libdir);
     let has_unversioned = dir.join("libLLVM.so").is_file() || dir.join("libLLVM.dylib").is_file();
     let has_versioned =
-        dir.join("libLLVM-18.so").is_file() || dir.join("libLLVM-18.so.1").is_file();
+        dir.join("libLLVM-23.so").is_file() || dir.join("libLLVM-23.so.1").is_file();
     if has_unversioned {
         println!("cargo:rustc-link-lib=dylib=LLVM");
     } else if has_versioned {
-        println!("cargo:rustc-link-lib=dylib=LLVM-18");
+        println!("cargo:rustc-link-lib=dylib=LLVM-23");
     } else {
-        println!("cargo:rustc-link-lib=dylib=LLVM-18");
+        println!("cargo:rustc-link-lib=dylib=LLVM-23");
         println!("cargo:rustc-link-lib=dylib=LLVM");
     }
 }

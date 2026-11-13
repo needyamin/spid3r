@@ -33,7 +33,7 @@ required-features = ["gui"]
 # --no-default-features, or pick one with --no-default-features --features gui):
 #   gui    - embedded webview GUI via wry + tao.
 #   native - LLVM AOT backend (machine code) via inkwell, like rustc; needs
-#            LLVM 18.1+ installed to build (see docs/BUILDING.md).
+#            LLVM 23.1+ installed to build (see docs/BUILDING.md).
 default = ["gui", "native", "plugins-wasm", "tls"]
 native = ["dep:inkwell"]
 gui = ["dep:wry", "dep:tao"]
@@ -49,11 +49,22 @@ plugins-wasm = ["dep:wasmi"]
 
 [dependencies]
 # inkwell is a BUILD-TIME dependency of the native backend only. It requires
-# LLVM 18.1+ installed on the machine (see docs/BUILDING.md). The
+# LLVM 23.1+ installed on the machine (see docs/BUILDING.md). The
 # `no-llvm-linking` feature is required because llvm-sys neither supports
 # dynamic linking on Windows nor ships a built-in llvm-config for the stock
 # installer; build.rs links the LLVM C API library itself.
-inkwell = { version = "0.10.0", features = ["llvm18-1-no-llvm-linking"], optional = true }
+#
+# The AOT backend compiles for the host only (x86_64 / aarch64), so inkwell is
+# restricted to those two targets with `default-features = false` — inkwell's
+# default feature is target-all, and LLVM 23's LLVM-C import library no longer
+# exports the C API initializers for the exotic targets (Mips, Lanai, ... were
+# dropped from the C API surface: 44 LLVMInitialize* symbols, down from 116 in
+# LLVM 18), so target-all cannot link.
+inkwell = { version = "0.11.0", default-features = false, features = [
+    "llvm23-1-no-llvm-linking",
+    "target-x86",
+    "target-aarch64",
+], optional = true }
 # TLS backend for the `tls` feature (https:// in http_fetch). Uses the OS
 # certificate store; no pinned CA bundle to rotate.
 native-tls = { version = "0.2", optional = true }

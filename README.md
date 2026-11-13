@@ -42,7 +42,7 @@ Values are reference counted, so ordinary garbage dies the moment it is dropped.
 The prebuilt release binaries are the **core toolchain only** (interpreter, VM, WASM) — no runtime dependencies, no dev tools required. Two backends have platform caveats when built from source:
 
 - **GUI** needs the OS webview: WebView2 (preinstalled on Windows 10/11; the installer bundles its bootstrapper), or WebKit2GTK + GTK3 on Linux (install `libwebkit2gtk-4.1-dev` at build time and the `webkit2gtk` runtime package to run).
-- **Native AOT** needs LLVM 18.1+ **at build time only**. Built executables are standalone — on Windows the toolchain delay-loads the bundled `LLVM-C.dll`; on Linux/macOS a source build with the `native` feature needs `libLLVM-18` present at runtime.
+- **Native AOT** needs LLVM 23.1+ **at build time only**. Built executables are standalone — on Windows the toolchain delay-loads the bundled `LLVM-C.dll`; on Linux/macOS a source build with the `native` feature needs `libLLVM-23` present at runtime.
 
 ## Ecosystem
 
@@ -101,7 +101,7 @@ By default a program runs with the full authority of the user who started it. `s
 
 ![Automated CI, multi-platform release, and libfuzzer workflows](docs/diagrams/workflows.svg)
 
-Every commit and tag is gated through GitHub Actions workflows: a 3-platform differential CI matrix (core, webview GUI, WebAssembly runtime, and LLVM 18 native AOT), automated multi-architecture releases (Linux glibc/ARM64, macOS Apple Silicon/Intel, and the full Windows NSIS installer), and nightly continuous libfuzzer regression testing.
+Every commit and tag is gated through GitHub Actions workflows: a 3-platform differential CI matrix (core, webview GUI, WebAssembly runtime, and LLVM 23 native AOT), automated multi-architecture releases (Linux glibc/ARM64, macOS Apple Silicon/Intel, and the full Windows NSIS installer), and nightly continuous libfuzzer regression testing.
 
 ## What's inside
 
