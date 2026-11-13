@@ -209,6 +209,7 @@ cargo install --path . --no-default-features
 | [Runtime management](docs/AGENT.md) | `spid3r.ini`, `spid3rinfo()`, the encrypted remote agent |
 | [Security policy](SECURITY.md) | trust model, reporting, known gaps |
 | [Audit status](docs/AUDIT_STATUS.md) | known issues and their state |
+| [Self-hosting ADR](docs/SELFHOST.md) | the bootstrap plan: stages, frozen corpus, rollback — the decision index behind [full_plan.html](full_plan.html) |
 
 ## License
 
