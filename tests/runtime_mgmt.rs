@@ -166,6 +166,18 @@ fn agent_pair_and_ping() {
         .spawn()
         .expect("start agent");
 
+    // Kill the agent on EVERY exit path: a panic between spawn and the
+    // success-path kill used to leak a running agent into later tests, which
+    // hung a macOS CI run for the whole 30-minute step timeout.
+    struct KillOnDrop<'a>(&'a mut std::process::Child);
+    impl Drop for KillOnDrop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _guard = KillOnDrop(&mut child);
+
     let mut connected = false;
     for _ in 0..50 {
         if TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
@@ -240,9 +252,9 @@ fn agent_pair_and_ping() {
     assert!(ok, "info: {} {}", stdout, stderr);
     assert!(stdout.contains("Spid3r"), "info body {}", stdout);
 
-    let _ = child.kill();
-    // Reap the killed process so it does not linger as a zombie.
-    let _ = child.wait();
+    // The KillOnDrop guard kills and reaps the agent here (and on any
+    // earlier panic path).
+    drop(_guard);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -953,6 +953,34 @@ fn process_start() -> i64 {
 /// Pair with a running agent. Returns the stored ClientHost name.
 pub fn pair(addr: &str, code: &str, name: &str, role: &str) -> Result<store::ClientHost, String> {
     let _ = role; // role is chosen by the pairing code, not the client
+                  // A fresh agent's listener sits in the TCP backlog before its accept
+                  // loop is serving, so the very first pairing exchange can fail with a
+                  // transport error (connection refused / reset) even though a probe
+                  // connect succeeded moments earlier. Retry the whole exchange on
+                  // transport errors only — a protocol-level "invalid or expired pairing
+                  // code" answer is deterministic and must not be retried.
+    let mut transport_failures = 0;
+    loop {
+        let attempt = pair_once(addr, code, name);
+        match attempt {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let transient = e.contains("connect ")
+                    || e.contains("os error 10061")
+                    || e.contains("os error 10054")
+                    || e.contains("connection refused")
+                    || e.contains("connection reset");
+                transport_failures += 1;
+                if !transient || transport_failures >= 10 {
+                    return Err(e);
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        }
+    }
+}
+
+fn pair_once(addr: &str, code: &str, name: &str) -> Result<store::ClientHost, String> {
     let mut stream = TcpStream::connect(addr).map_err(|e| format!("connect {}: {}", addr, e))?;
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
