@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spid3r Self-Hosting Roadmap — full_plan</title>
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b22; --panel2: #1c2330; --line: #2d333b;
+    --text: #d6dde6; --dim: #8b98a5; --accent: #58a6ff; --ok: #3fb950;
+    --warn: #d29922; --err: #f85149; --mono: "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.55 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 80px; }
+  h1 { font-size: 26px; margin: 0 0 4px; color: #f0f6fc; }
+  h1 .sub { color: var(--accent); }
+  h2 { font-size: 20px; margin: 42px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); color: #f0f6fc; }
+  h2 .phase-tag { color: var(--accent); font-family: var(--mono); font-size: 15px; }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: #e6edf3; }
+  p { margin: 8px 0; }
+  .dim { color: var(--dim); }
+  .mono { font-family: var(--mono); font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; margin: 14px 0; }
+  .panel.note { border-left: 4px solid var(--warn); }
+  .panel.ok { border-left: 4px solid var(--ok); }
+  .panel.err { border-left: 4px solid var(--err); }
+
+  /* progress */
+  .progress-shell { position: sticky; top: 0; z-index: 10; background: rgba(14,17,23,.92);
+                    backdrop-filter: blur(6px); border-bottom: 1px solid var(--line);
+                    margin: -32px -24px 20px; padding: 14px 24px; }
+  .bar-outer { background: var(--panel2); border-radius: 999px; height: 14px; overflow: hidden; border: 1px solid var(--line); }
+  .bar-inner { height: 100%; width: 0%; background: linear-gradient(90deg, #1f6feb, #3fb950); transition: width .3s; }
+  .bar-label { font-family: var(--mono); font-size: 12.5px; color: var(--dim); margin-top: 5px; }
+
+  /* checkbox steps */
+  .step { display: flex; gap: 12px; padding: 12px 14px; margin: 8px 0;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .step:hover { border-color: #3d444d; }
+  .step input[type=checkbox] { width: 19px; height: 19px; margin-top: 2px; accent-color: var(--ok); cursor: default; flex: none; }
+  .step.done { background: #12261a; border-color: #1d4429; }
+  .step.done .st-title { color: var(--ok); text-decoration: line-through; text-decoration-color: rgba(63,185,80,.6); }
+  .step .body { flex: 1; }
+  .st-title { font-weight: 600; color: #e6edf3; }
+  .st-title .id { font-family: var(--mono); font-size: 12px; color: var(--accent); margin-right: 8px; }
+  .st-meta { margin-top: 6px; font-size: 13.5px; }
+  .st-meta .lbl { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 1px 7px;
+                  border-radius: 4px; margin-right: 6px; vertical-align: 1px; }
+  .lbl.del { background: #1c2a44; color: var(--accent); }
+  .lbl.gate { background: #2a1f0f; color: var(--warn); }
+  .lbl.sec { background: #2b1215; color: var(--err); }
+  .gate, .deliv { color: var(--dim); margin: 4px 0 0; }
+  .gate code, .deliv code, .panel code, .step code { font-family: var(--mono); font-size: 12.5px;
+    background: #0d1117; border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; color: #cfe1ff; }
+  .gate { border-left: 3px solid var(--warn); padding-left: 8px; }
+  .deliv { border-left: 3px solid #1f3a5f; padding-left: 8px; }
+
+  /* tables */
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: #e6edf3; font-family: var(--mono); font-size: 12.5px; }
+  td.num { font-family: var(--mono); text-align: right; }
+
+  /* bootstrap diagram */
+  .chain { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin: 14px 0; font-family: var(--mono); font-size: 12.5px; }
+  .chain .node { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; flex: 1; min-width: 200px; }
+  .chain .node b { color: var(--accent); display: block; margin-bottom: 4px; }
+  .chain .arrow { align-self: center; color: var(--dim); font-size: 20px; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .ledger td { font-family: var(--mono); font-size: 12.5px; }
+  .toplink { float: right; font-size: 12px; font-family: var(--mono); }
+</style>
+</head>
+<body>
+<div class="progress-shell">
+  <div class="bar-outer"><div class="bar-inner" id="bar"></div></div>
+  <div class="bar-label" id="barlabel">progress: counting…</div>
+</div>
+
+<div class="wrap">
+<h1>Spid3r <span class="sub">→ self-hosted</span> · full_plan</h1>
+<p class="dim">Roadmap document — living file, updated as phases complete. Created 2026-11-14 against
+the audited state of the repository (v1.1.0, LLVM 23.1.0 AOT backend, CI green).
+This is a plan, not a claim: <b>no step below has been done yet</b>, so every checkbox is unchecked.</p>
+
+<div class="panel note">
+<b>The one rule that governs every checkbox on this page.</b><br>
+A checkbox may only be checked when its <b>Gate</b> — the concrete verification written under the step —
+has actually run and passed on the real repository, with the evidence (date, command, result) recorded in the
+<a href="#ledger">Progress ledger</a> at the bottom. If a gate cannot be verified, the step stays open and says
+why. <b>No fake implementations, no fake results, no “done” without evidence.</b>
+</div>
+
+<h2 id="top">Mission</h2>
+<p>Make Spid3r compile <b>its own compiler, standard library, runtime, and core build tools</b> through the
+LLVM Native AOT backend, so that future compiler builds do not require Rust. Rust remains forever as the
+<b>stage-0 bootstrap</b> — the same role it plays in GCC, Go and Rust’s own histories — but day-to-day
+development and releases become self-hosted.</p>
+
+<div class="panel ok">
+<b>Scope decisions (owner-confirmed 2026-11-14):</b>
+<ul>
+  <li><b>Core dev tools</b> are in scope: the self-hosted toolchain must include the test runner, formatter
+      and package tooling. LSP, GUI, agent, debugger and REPL remain Rust-side tools; porting them is an
+      optional late phase.</li>
+  <li><b>Prebuilt runtime first:</b> during bootstrap the self-hosted compiler links the existing runtime
+      staticlib (AOT trampolines + 230 stdlib natives) shipped as a checksummed, versioned binary artifact.
+      Rebuilding <i>compilers</i> needs no Rust; rebuilding the <i>runtime</i> itself is Phase 9.</li>
+</ul>
+</div>
+
+<h3>Bootstrap chain</h3>
+<div class="chain">
+  <div class="node"><b>Stage 0 — Rust compiler</b>today’s <code>spid3r</code>; compiles any .matrix program; stays the bootstrap and the parity oracle</div>
+  <div class="arrow">→</div>
+  <div class="node"><b>Stage 1 — Spid3r compiler</b>sources in <code>selfhost/</code>, compiled by Stage 0’s AOT backend into <code>spid3r-self</code></div>
+  <div class="arrow">→</div>
+  <div class="node"><b>Stage 2 — fixed point</b><code>spid3r-self</code> compiles its own sources again; the result must work identically</div>
+</div>
+<p class="dim">After the fixed point holds, Stage 0 is retired from the build path (Phase 10) and kept only as
+the historical bootstrap and the reference oracle.</p>
+
+<h2>Ground rules (non-negotiable)</h2>
+<div class="step"><input type="checkbox" id="gr1"><div class="body">
+  <span class="st-title"><span class="id">GR-1</span>No fake implementations, no fake results</span>
+  <p class="gate"><span class="lbl gate">GATE</span> every checkbox on this page carries a verifiable Gate line; the ledger records the evidence. A phase without a passing gate is reported as open, never as done.</p>
+</div></div>
+<div class="step"><input type="checkbox" id="gr2"><div class="body">
+  <span class="st-title"><span class="id">GR-2</span>Engine contract holds at every step</span>
+  <p class="gate"><span class="lbl gate">GATE</span> after every merged step: <code>tools/gate.sh</code> 9/9 and <code>tools/difftest.sh</code> ALL MATCH — the tree interpreter remains the semantic oracle throughout (docs/ENGINE_CONTRACT.md).</p>
+</div></div>
+<div class="step"><input type="checkbox" id="gr3"><div class="body">
+  <span class="st-title"><span class="id">GR-3</span>Security invariants</span>
+  <p class="deliv"><span class="lbl sec">SEC</span> no new <code>unsafe</code> outside <code>src/native/rt.rs</code> with a written safety argument; the new FFI pointer surface is sandbox-aware (capability-filtered like every native); all artifacts (selfhost binaries, .matrixc, runtime staticlib) carry SHA-256 integrity; the Spid3r-written lexer/parser is fuzzed against the Rust oracle before any parity claim; compiler operations perform no network access.</p>
+</div></div>
+<div class="step"><input type="checkbox" id="gr4"><div class="body">
+  <span class="st-title"><span class="id">GR-4</span>Frozen corpus contract</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> Phase 0 locks a corpus of programs (the 24 examples, the 87-case engine-matrix programs, the hand-built edge corpus, negative/error programs) with committed SHA-256 checksums. Every parity gate in Phases 1–7 runs against this exact corpus; changing the corpus requires a new ledger entry stating why.</p>
+</div></div>
+
+<h2>Grounded inventory (what we verified before writing this plan)</h2>
+<table>
+<tr><th>Fact</th><th>Value</th><th>Evidence</th></tr>
+<tr><td>Rust implementation size</td><td class="num">76,478 lines / 103 files</td><td class="mono">wc -l over src/, 2026-11-14</td></tr>
+<tr><td>Frontend (lexer+parser+semantic+lower)</td><td class="num">9,441 lines</td><td class="mono">src/lexer, src/parser, src/semantic, src/lower</td></tr>
+<tr><td>Bytecode VM (compiler+VM+opt+debug)</td><td class="num">10,030 lines</td><td class="mono">src/vm/</td></tr>
+<tr><td>AOT backend (ir+rt+link+llvm+modules)</td><td class="num">10,440 lines</td><td class="mono">src/native/</td></tr>
+<tr><td>Stdlib natives (builtin registry)</td><td class="num">230 entries / 224 unique</td><td class="mono">src/stdlib/mod.rs builtin_defs() + 17 submodules</td></tr>
+<tr><td>Stdlib modules already written in Spid3r</td><td class="num">29 modules, 12,402 lines</td><td class="mono">stdlib/*.matrix, embedded by build.rs</td></tr>
+<tr><td>extern fn boundary types today</td><td>int, float, bool, string — <b>no pointer type</b></td><td class="mono">src/native/ir.rs c_type(); docs/FFI.md</td></tr>
+<tr><td>AOT memory model</td><td>arena (boxed values, no GC) — workable for batch compiles, documented</td><td class="mono">docs/NATIVE.md “Memory model”</td></tr>
+<tr><td>AOT conformance coverage</td><td class="num">75 / 87 engine-matrix cases</td><td class="mono">tests/engine_matrix.rs</td></tr>
+<tr><td>Estimated new Spid3r code (Phases 1–6)</td><td class="num">~20–25k lines</td><td class="mono">frontend 9.5k + codegen layer ~4.5k + driver/tools ~4k + tests</td></tr>
+</table>
+<p class="dim">The full audit trail lives in <a href="#ledger">the ledger</a> and in <code>docs/</code>
+(ENGINE_CONTRACT.md, NATIVE.md, FFI.md, GC.md, SECURITY.md — all govern this plan).</p>
+
+<!-- ================================================================ PHASE 0 -->
+<h2 id="p0"><span class="phase-tag">PHASE 0</span> Foundations &amp; enablers <span class="dim">(prerequisite for everything)</span></h2>
+
+<div class="step"><input type="checkbox" id="s0-1"><div class="body">
+  <span class="st-title"><span class="id">0.1</span>Bootstrap ADR — <code>docs/SELFHOST.md</code></span>
+  <p class="deliv"><span class="lbl del">DELIV</span> Architecture decision record: stage-0/1/2 definitions, what “no Rust” means at each milestone (compiler builds = no Rust from Phase 7; runtime rebuild = Phase 9 decision), the source layout (<code>selfhost/</code>), the frozen-corpus contract, and the rollback story (Stage 0 always available until Phase 10).</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the ADR is committed, links from README, and every later checkbox in this file references its decision IDs.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s0-2"><div class="body">
+  <span class="st-title"><span class="id">0.2</span>FFI pointer support in the AOT backend — the LLVM-C enabler</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> extend <code>extern fn</code> boundary types with <code>ptr</code> (opaque pointer as <code>i64</code>-encoded handle or real pointer via trampoline) and <code>usize</code>: marshalling trampolines (<code>spid3r_to_ptr</code>/<code>spid3r_value_from_ptr</code>) in <code>src/native/rt.rs</code>, type mapping in <code>src/native/ir.rs</code> <code>c_type()</code>/<code>declare_externs</code>/<code>compile_extern_call</code>, docs/FFI.md update. Sandbox-aware: ptr FFI is behind the same capability gate.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> new FFI tests: a Spid3r program calls a C test library with pointer round-trips (write through a pointer, read back, free); <code>cargo test --features native</code> green; the 87-case engine matrix unchanged; docs/FFI.md documents the trust tier (T5-level) and the sandbox interaction.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s0-3"><div class="body">
+  <span class="st-title"><span class="id">0.3</span>Frozen differential corpus</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>selfhost/corpus/</code> locked: the 24 runnable examples, the 87 engine-matrix programs, the hand-built edge corpus (closures/try-finally/int-edges/unicode/OOP/concurrency/namespaces), and negative programs (every error diagnostic class) — with a committed SHA-256 manifest.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the manifest verifies; a CI step fails if corpus programs change without a ledger entry; the corpus count and checksums are recorded in the ledger.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s0-4"><div class="body">
+  <span class="st-title"><span class="id">0.4</span>Stage-0 debug dump surface (oracle tooling)</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> small stage-0 additions used only as the parity oracle: <code>spid3r tokens --json</code> (Phase 1), <code>spid3r parse --dump-ast-json</code> (Phase 2), diagnostic dumps. These are bootstrap tooling, clearly marked, and never change user-visible behavior.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> each dump runs on the whole corpus without differences across two consecutive runs (deterministic); documented in docs/BUILDING.md; exit codes follow the 0/1/2/4 contract.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s0-5"><div class="body">
+  <span class="st-title"><span class="id">0.5</span>CI parity-gate job</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> a new workflow job (extend <code>ci.yml</code>) that, from Phase 1 onward, runs the self-host differential harness on every push so a regression cannot merge.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the job exists, runs on GitHub CI, and is observed green — and observed RED once with a deliberately introduced bug (teeth proof, reverted immediately).</p>
+</div></div>
+
+<!-- ================================================================ PHASE 1 -->
+<h2 id="p1"><span class="phase-tag">PHASE 1</span> Spid3r-written lexer <span class="dim">(~1.2k Rust LOC to port first)</span></h2>
+<p class="dim">Sources live in <code>selfhost/lexer/</code> as Spid3r modules, compiled and exercised by Stage 0
+(<code>spid3r build</code> / <code>spid3r run</code>), so every phase ships working code before its checkbox moves.</p>
+
+<div class="step"><input type="checkbox" id="s1-1"><div class="body">
+  <span class="st-title"><span class="id">1.1</span>Token model + spans</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the token set as Spid3r data (kind, lexeme, byte span line/col/len) matching <code>src/lexer/token.rs</code>; JSON serialization for the parity harness.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the token model round-trips: serialized tokens of the corpus lexed by the Rust oracle re-parse into the Spid3r model without loss.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s1-2"><div class="body">
+  <span class="st-title"><span class="id">1.2</span>All lexical rules</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> integers, floats, bigint <code>123n</code> literals, strings with every escape, identifiers/keywords, line + block comments, every operator and punctuation form, byte-exact spans — per <code>src/lexer/mod.rs</code>.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> token-stream parity (Spid3r lexer vs stage-0 oracle, byte-for-byte JSON) on the frozen corpus; any gap is fixed or the corpus case is diagnosed — no silent acceptances.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s1-3"><div class="body">
+  <span class="st-title"><span class="id">1.3</span>Lexer errors</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> unterminated strings/comments, invalid characters, number errors — same first-error behavior and message text as the oracle.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> diagnostic parity on the corpus error programs (phase label + message + span).</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s1-4"><div class="body">
+  <span class="st-title"><span class="id">1.4</span>Fuzz + teeth proof</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the existing fuzz infrastructure feeds random/mutated inputs to both lexers; a deliberately broken comparison harness is proven RED, then restored.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> ≥1,000 fuzz cases with zero token-stream differences; teeth test recorded in the ledger; CI parity job green.</p>
+</div></div>
+
+<!-- ================================================================ PHASE 2 -->
+<h2 id="p2"><span class="phase-tag">PHASE 2</span> Spid3r-written parser <span class="dim">(~2.5k Rust LOC)</span></h2>
+
+<div class="step"><input type="checkbox" id="s2-1"><div class="body">
+  <span class="st-title"><span class="id">2.1</span>AST model in Spid3r</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the AST as Spid3r data structures mirroring <code>src/ast/mod.rs</code> (statements, expressions, patterns, classes, enums, spans), with JSON serialization matching the stage-0 dump.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> round-trip: the oracle AST JSON of the corpus loads into the Spid3r model and re-serializes identically.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s2-2"><div class="body">
+  <span class="st-title"><span class="id">2.2</span>Expression and statement grammar</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the full grammar per docs/GRAMMAR.md: precedence, if/while/for-in/for-C, match with guards, classes/enums/interfaces, closures, destructuring, named args, <code>?.</code>/<code>??</code>/<code>?</code> (as lowered by the surface), string interpolation.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> AST parity on the frozen corpus — every program’s JSON AST identical to the oracle’s, including the lowering-adjacent shapes.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s2-3"><div class="body">
+  <span class="st-title"><span class="id">2.3</span>Parser diagnostics</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> first-error behavior with identical messages and spans (“expected ‘(’ after match…”, selective-import errors, etc.).</p>
+  <p class="gate"><span class="lbl gate">GATE</span> diagnostic parity on the corpus negative programs; fuzz ≥1,000 cases with zero AST/diagnostic differences.</p>
+</div></div>
+
+<!-- ================================================================ PHASE 3 -->
+<h2 id="p3"><span class="phase-tag">PHASE 3</span> Spid3r-written semantic checker <span class="dim">(~3.7k Rust LOC)</span></h2>
+
+<div class="step"><input type="checkbox" id="s3-1"><div class="body">
+  <span class="st-title"><span class="id">3.1</span>Scope + declaration registries</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> class/interface/enum registries, function signatures with defaults and min-arity, import resolution (plain, namespace, selective) mirroring <code>src/semantic/mod.rs</code>.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the registry state (dumped as JSON) matches the oracle’s on the corpus.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s3-2"><div class="body">
+  <span class="st-title"><span class="id">3.2</span>All semantic diagnostics</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> shadowing, duplicate declarations, visibility (private fields/methods, interface method exposure), type mismatches, match exhaustiveness, const violations, await placement, unknown names — the full diagnostic catalog.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> diagnostic parity (phase + message) on every corpus negative program, byte-for-byte on the first line per the engine contract.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s3-3"><div class="body">
+  <span class="st-title"><span class="id">3.3</span>Type system behaviors</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> optional/nullable/union handling, list/element typing, method signature checks, interface satisfaction — per <code>src/semantic/ty.rs</code> + checker.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> parity on the typed-program corpus cases; fuzz round 2 (semantic-level) zero-diff.</p>
+</div></div>
+
+<!-- ================================================================ PHASE 4 -->
+<h2 id="p4"><span class="phase-tag">PHASE 4</span> Spid3r lowering + bytecode compiler <span class="dim">(~4k Rust LOC)</span></h2>
+
+<div class="step"><input type="checkbox" id="s4-1"><div class="body">
+  <span class="st-title"><span class="id">4.1</span>The lowering pass</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the ANF-style desugarings (ternary, <code>?.</code>, <code>??</code>, enums→constructors, generators, bigints) in evaluation-order-preserving form, per <code>src/lower/mod.rs</code>.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> lowered-program parity (JSON dump comparison) on the corpus.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s4-2"><div class="body">
+  <span class="st-title"><span class="id">4.2</span>Chunk compiler — opcode emission</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the 56-opcode set + additive opcodes, constants, nested function/class protos, upvalue capture, the optimizer’s loop rotation.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> disassembly parity: <code>spid3r compile --dump</code> of the Spid3r compiler’s output matches the oracle’s on the corpus (modulo documented optimizer-timing freedoms — anything else is a defect).</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s4-3"><div class="body">
+  <span class="st-title"><span class="id">4.3</span>v3 checksummed container writer</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>MAGIC | version | len | payload | sha256(payload)</code> writer, bounds-checked reader mindset, MAX_DESERIALIZE_DEPTH-compatible structure.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the Spid3r-written <code>.matrixc</code> loads via the Rust <code>spid3r exec</code> (integrity + execution) and runs the corpus identically; artifact byte-equality vs the oracle’s container, or a ledger-recorded normalization.</p>
+</div></div>
+
+<!-- ================================================================ PHASE 5 -->
+<h2 id="p5"><span class="phase-tag">PHASE 5</span> LLVM-C codegen layer written in Spid3r <span class="dim">(~4.5k Rust LOC equivalent — the heart of self-hosting)</span></h2>
+
+<div class="step"><input type="checkbox" id="s5-1"><div class="body">
+  <span class="st-title"><span class="id">5.1</span>LLVM-C extern surface in Spid3r</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>extern fn</code> declarations (using Phase 0’s ptr support) for the exact LLVM C API subset <code>src/native/ir.rs</code> exercises — module/context/builder/type/target-machine/object-emission — discovered by enumerating inkwell’s call sites, kept in one auditable <code>selfhost/llvm/</code> module.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the declarations compile and a minimal Spid3r program creates a module, builds one function, verifies it, and emits an object that the system linker accepts.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s5-2"><div class="body">
+  <span class="st-title"><span class="id">5.2</span>Expression/statement codegen</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the ir.rs port: locals/slots, control flow, closures/upvalue cells, classes/vtables, match lowering, try/catch pending-throw protocol, string append buffer, spawn/await — every arm parity-checked against the Rust codegen’s behavior, not reimplemented from imagination.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the Spid3r compiler compiles the corpus to objects; LLVM <code>verify</code> passes; the linked executables answer byte-identically to Stage-0 builds on the corpus.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s5-3"><div class="body">
+  <span class="st-title"><span class="id">5.3</span>Diagnostics from codegen</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> runtime-error paths (division by zero, overflow, missing field, depth limit) raise the identical <code>error[runtime]</code> first lines the contract pins.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> error parity on the corpus negative-runtime programs (first stderr line + exit code, the documented decoration gap aside).</p>
+</div></div>
+
+<!-- ================================================================ PHASE 6 -->
+<h2 id="p6"><span class="phase-tag">PHASE 6</span> Self-hosted <code>build</code> driver</h2>
+
+<div class="step"><input type="checkbox" id="s6-1"><div class="body">
+  <span class="st-title"><span class="id">6.1</span>Linker invocation + runtime linkage</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the build driver: front end → codegen → object → system linker (MSVC <code>link.exe</code> / <code>cc</code>) with the prebuilt runtime staticlib, LLVM-C, and the checksum/metadata steps — the link.rs flow minus Rust.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the driver produces working executables for the whole corpus on this machine (exit codes + stdout parity vs Stage 0); integrity metadata present on every artifact.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s6-2"><div class="body">
+  <span class="st-title"><span class="id">6.2</span>Module flattening in the driver</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> plain/namespace/selective import flattening (the modules.rs semantics), cycle detection, missing-module diagnostics.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the multi-module corpus programs (incl. the transitive no-leak case and namespace shapes) build and run identically.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s6-3"><div class="body">
+  <span class="st-title"><span class="id">6.3</span>Sandbox + capability parity in the driver</span>
+  <p class="deliv"><span class="lbl sec">SEC</span> <code>--sandbox</code>, capability filtering and the native funnel install identically in self-hosted-built binaries; no new bypass surface from the ptr FFI.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the sandbox test corpus passes against self-hosted builds (the same sandboxed-denied behavior, catchable errors, funnel coverage).</p>
+</div></div>
+
+<!-- ================================================================ PHASE 7 -->
+<h2 id="p7"><span class="phase-tag">PHASE 7</span> The bootstrap — Spid3r compiles itself</h2>
+
+<div class="step"><input type="checkbox" id="s7-1"><div class="body">
+  <span class="st-title"><span class="id">7.1</span>Stage 1: the Rust compiler builds the Spid3r compiler</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r build selfhost/main.matrix</code> produces <code>spid3r-self</code>: a compiler binary whose frontend/codegen/driver are the Phases 1–6 code, with the full runtime + 230 natives from the linked staticlib.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> <code>spid3r-self</code> compiles the frozen corpus; outputs byte-identical to Stage-0 builds.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s7-2"><div class="body">
+  <span class="st-title"><span class="id">7.2</span>Stage 2: the fixed point</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r-self build selfhost/main.matrix -o spid3r-self-2</code>: the self-hosted compiler compiles ITS OWN sources; the stage-2 binary must also work.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> three-way comparison on the corpus: Stage-0-built, stage-1-built and stage-2-built executables answer identically (stdout + exit codes); the fixed point is recorded in the ledger with checksums.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s7-3"><div class="body">
+  <span class="st-title"><span class="id">7.3</span>Self-compile resource envelope</span>
+  <p class="deliv"><span class="lbl sec">SEC</span> memory and time of the self-compile measured (arena model: the compiler process leaks its intermediates by design — the total must be bounded and reported honestly); budget/deadline behavior documented.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> peak memory and wall time recorded in the ledger; no unbounded growth across repeated self-compiles within a process.</p>
+</div></div>
+
+<!-- ================================================================ PHASE 8 -->
+<h2 id="p8"><span class="phase-tag">PHASE 8</span> Core dev tools in Spid3r</h2>
+
+<div class="step"><input type="checkbox" id="s8-1"><div class="body">
+  <span class="st-title"><span class="id">8.1</span>Test runner (the 3-engine differential, self-hosted)</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r-self test</code>: runs every corpus/project test through tree == vm == exec parity with filters.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the self-hosted runner’s verdict matches the Rust runner’s on the corpus, including failure detection (teeth-proven).</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s8-2"><div class="body">
+  <span class="st-title"><span class="id">8.2</span>Formatter + check driver</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>fmt</code> (canonical formatting per src/fmt.rs semantics) and <code>check</code> as self-hosted subcommands.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> formatting parity on the corpus (--check mode); check-driver diagnostic parity.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s8-3"><div class="body">
+  <span class="st-title"><span class="id">8.3</span>Package tooling</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>pack</code>/<code>dist</code> (deterministic tar), spider.toml/lock handling, checksum verification.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> a packaged project round-trips byte-identically vs the Rust tooling; lockfile checksums verify.</p>
+</div></div>
+
+<!-- ================================================================ PHASE 9 -->
+<h2 id="p9"><span class="phase-tag">PHASE 9</span> Runtime purity <span class="dim">(decision point — may remain a binary artifact)</span></h2>
+
+<div class="step"><input type="checkbox" id="s9-1"><div class="body">
+  <span class="st-title"><span class="id">9.1</span>Runtime artifact formalization</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the staticlib (<code>spid3r.lib</code>/<code>libspid3r.a</code>) shipped as a versioned, SHA-256-pinned release artifact with a documented interface (trampoline list, native table) — this alone already satisfies “no Rust to build compilers”.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the self-hosted build consumes the pinned artifact by checksum; the artifact’s provenance (commit, LLVM version) recorded.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s9-2"><div class="body">
+  <span class="st-title"><span class="id">9.2</span>(optional) Runtime port to Spid3r</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the 2.2k-line trampoline layer ported; the scheduler stays shared via the artifact. This phase is explicit and optional: it trades engineering effort for purity, and the ADR records whichever choice is made with its reasoning.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> if ported: the ported runtime passes the same trampoline-level differential tests as rt.rs; if not ported: the ADR records the decision and the artifact pinning is the accepted mechanism.</p>
+</div></div>
+
+<!-- ================================================================ PHASE 10 -->
+<h2 id="p10"><span class="phase-tag">PHASE 10</span> Release pipeline switch</h2>
+
+<div class="step"><input type="checkbox" id="s10-1"><div class="body">
+  <span class="st-title"><span class="id">10.1</span>Release builds by the self-hosted toolchain</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the release pipeline (the 4 tarballs + Windows installer) builds compilers/tools with <code>spid3r-self</code>; Stage 0 remains only as the bootstrap reference.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> a full release cycle produced end-to-end by the self-hosted toolchain, with the standard gate evidence (checksums, corpus parity, smoke tests) recorded in the ledger.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s10-2"><div class="body">
+  <span class="st-title"><span class="id">10.2</span>Retirement review</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> a written review: what still requires Rust (runtime rebuild, optional tools), the rollback story (Stage 0 pinned by tag), and the maintenance rules for the self-hosted compiler going forward.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the review is committed; the “no Rust for future compiler builds” objective is met within the documented boundary — and the boundary is honest.</p>
+</div></div>
+
+<!-- ================================================================ SECURITY -->
+<h2>Security invariants ledger (checked per phase, never silently)</h2>
+<div class="step"><input type="checkbox" id="sec1"><div class="body">
+  <span class="st-title"><span class="id">SEC-A</span>FFI pointer surface is capability-aware</span>
+  <p class="gate"><span class="lbl gate">GATE</span> <code>--sandbox</code> denies the new ptr FFI the same way existing natives are denied; funnel coverage test present.</p>
+</div></div>
+<div class="step"><input type="checkbox" id="sec2"><div class="body">
+  <span class="st-title"><span class="id">SEC-B</span>Integrity on every artifact</span>
+  <p class="gate"><span class="lbl gate">GATE</span> selfhost binaries, .matrixc containers and the runtime artifact all verify by SHA-256 in the driver; tampered artifact ⇒ clean exit 4/usage error, never execution.</p>
+</div></div>
+<div class="step"><input type="checkbox" id="sec3"><div class="body">
+  <span class="st-title"><span class="id">SEC-C</span>Fuzz coverage of the Spid3r frontend</span>
+  <p class="gate"><span class="lbl gate">GATE</span> the Spid3r lexer/parser survive the fuzz corpus with zero oracle differences and zero crashes/hangs; fuzz runs are part of CI.</p>
+</div></div>
+<div class="step"><input type="checkbox" id="sec4"><div class="body">
+  <span class="st-title"><span class="id">SEC-D</span>No unsafe creep</span>
+  <p class="gate"><span class="lbl gate">GATE</span> <code>cargo clippy</code>/<code>grep</code> audit shows unsafe only in <code>src/native/rt.rs</code> (plus pre-existing CompiledFn blocks), each with its safety comment — checked at every phase merge.</p>
+</div></div>
+
+<!-- ================================================================ LEDGER -->
+<h2 id="ledger">Progress ledger (evidence — append-only)</h2>
+<table class="ledger">
+<tr><th>Date</th><th>Step</th><th>Gate / command</th><th>Result</th></tr>
+<tr><td>2026-11-14</td><td class="mono">plan</td><td>this roadmap created; grounded in the 2026-11-14 audit</td><td>document committed, all checkboxes open</td></tr>
+<tr><td></td><td></td><td></td><td></td></tr>
+<tr><td></td><td></td><td></td><td></td></tr>
+</table>
+
+<!-- ================================================================ APPENDIX -->
+<h2>Appendix A — porting scope, subsystem by subsystem</h2>
+<table>
+<tr><th>Rust subsystem (today)</th><th>Lines</th><th>Self-hosting treatment</th><th>Phase</th></tr>
+<tr><td class="mono">src/lexer (1,206)</td><td class="num">1,206</td><td>port to Spid3r — token parity vs oracle</td><td>1</td></tr>
+<tr><td class="mono">src/parser (2,521)</td><td class="num">2,521</td><td>port — AST/diagnostic parity vs oracle</td><td>2</td></tr>
+<tr><td class="mono">src/semantic (3,685)</td><td class="num">3,685</td><td>port — diagnostic parity vs oracle</td><td>3</td></tr>
+<tr><td class="mono">src/lower (2,029)</td><td class="num">2,029</td><td>port — lowered-form parity</td><td>4</td></tr>
+<tr><td class="mono">src/vm/compiler (1,698)</td><td class="num">1,698</td><td>port — chunk/opcode emission + v3 container</td><td>4</td></tr>
+<tr><td class="mono">src/native/ir (4,511)</td><td class="num">4,511</td><td>re-expressed as LLVM-C extern calls from Spid3r</td><td>5</td></tr>
+<tr><td class="mono">src/native/link (driver parts)</td><td class="num">~600</td><td>port the build driver; linker invocation via process natives</td><td>6</td></tr>
+<tr><td class="mono">src/native/modules (834)</td><td class="num">834</td><td>port (flattening/mangling)</td><td>6</td></tr>
+<tr><td class="mono">src/vm (interpreter 10,030)</td><td class="num">10,030</td><td>port for <code>run --engine vm</code> parity (after the AOT path works)</td><td>8+</td></tr>
+<tr><td class="mono">src/native/rt (2,215)</td><td class="num">2,215</td><td>prebuilt checksummed artifact first; optional port</td><td>9</td></tr>
+<tr><td class="mono">stdlib natives (230)</td><td class="num">26,610</td><td>stays in the runtime artifact (installed identically in self-hosted builds)</td><td>artifact</td></tr>
+<tr><td class="mono">fmt/test/pack tooling</td><td class="num">~1,300</td><td>port the core dev tools</td><td>8</td></tr>
+<tr><td class="mono">LSP / GUI / agent / debugger / REPL</td><td class="num">~8,700</td><td>remains Rust-side (optional late phase)</td><td>—</td></tr>
+</table>
+
+<h2>Appendix B — governing documents</h2>
+<p class="mono">
+docs/ENGINE_CONTRACT.md — the three-engine acceptance bar ·
+docs/NATIVE.md — AOT subset, memory model, exit codes ·
+docs/FFI.md — extern fn contract (Phase 0 extends it) ·
+docs/GC.md · docs/SECURITY.md ·
+docs/VM_NOTES.md — the W3.1/W3.2 buffer investigation ·
+docs/IMPROVEMENT_PLAN.md — measured rejections (do not re-project those numbers) ·
+full_plan.html — this document
+</p>
+
+<p class="dim" style="margin-top:30px">This file is the single source of truth for self-hosting progress.
+Update it in the same commit that lands a gate; the ledger is append-only.</p>
+</div>
+
+<script>
+(function () {
+  var boxes = document.querySelectorAll('.step input[type=checkbox]');
+  var bar = document.getElementById('bar');
+  var label = document.getElementById('barlabel');
+  function refresh() {
+    var total = boxes.length, done = 0;
+    boxes.forEach(function (b) {
+      if (b.checked) {
+        done++;
+        b.closest('.step').classList.add('done');
+      } else {
+        b.closest('.step').classList.remove('done');
+      }
+    });
+    var pct = total ? Math.round(done * 100 / total) : 0;
+    bar.style.width = pct + '%';
+    label.textContent = 'progress: ' + done + ' / ' + total + ' steps (' + pct + '%) — a box may be checked only when its Gate passed, with evidence in the ledger';
+  }
+  boxes.forEach(function (b) { b.addEventListener('change', refresh); });
+  refresh();
+})();
+</script>
+</body>
+</html>
