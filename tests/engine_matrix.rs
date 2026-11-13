@@ -1716,3 +1716,45 @@ fn phase1_fused_prefix_string_preserves_instrumentation() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// Printing an instance must be reproducible, and identical on every engine.
+///
+/// The field maps use the default randomly seeded hasher, so iterating one
+/// directly printed the fields in a different order on every process: the same
+/// source could print `P {alpha: 1, beta: 2}` on one run and
+/// `P {beta: 2, alpha: 1}` on the next, and the tree engine and the VM could
+/// disagree within a single run. Display now orders by the class declaration
+/// list (parents first, matching construction order), so the output is a
+/// function of the source. This test runs the same program several times on
+/// each engine and requires one single answer.
+#[test]
+fn instance_display_field_order_is_deterministic() {
+    let src = concat!(
+        "class Base {\n",
+        "    public let zeta;\n",
+        "    public let alpha;\n",
+        "    fn new () { self.zeta = 1; self.alpha = 2; }\n",
+        "}\n",
+        "class Child extends Base {\n",
+        "    public let mid;\n",
+        "    fn new () { self.mid = 3; }\n",
+        "}\n",
+        "fn main() {\n",
+        "    let c = new Child();\n",
+        "    println(c);\n",
+        "    return 0;\n",
+        "}\n",
+    );
+    let expected = "Child {zeta: null, alpha: null, mid: 3}";
+    for engine in ["tree", "vm"] {
+        for attempt in 0..4 {
+            let (code, out, err) = run_engine(engine, "instance_display_order", src);
+            assert_eq!(code, 0, "[{engine} #{attempt}] exit {code}: {err}");
+            assert_eq!(
+                out.trim_end(),
+                expected,
+                "[{engine} #{attempt}] field order is not deterministic"
+            );
+        }
+    }
+}

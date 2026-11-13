@@ -1062,6 +1062,48 @@ pub fn display_value(v: &Value) -> String {
     display_value_inner(v, &mut seen)
 }
 
+/// `Class { a: 1, b: 2 }` with the fields in **declaration order**.
+///
+/// The instance field maps use the default, randomly seeded hasher, so
+/// iterating one directly printed the fields in a different order on every
+/// process — and differently on the tree engine and the VM. That broke the
+/// three-engine contract for any program that prints an instance: the same
+/// source could print `P {alpha: 1, beta: 2}` and `P {beta: 2, alpha: 1}` on
+/// two runs of the same binary. Ordering by the class's declaration list makes
+/// the output a function of the source instead of the hasher seed.
+///
+/// `order` is the full inheritance chain, parents first, which is the order the
+/// constructors populate the map in. Anything present in the map but absent
+/// from `order` is appended in name order so a field can never be silently
+/// dropped from the output.
+fn format_instance_ordered(
+    cname: &str,
+    order: &[&str],
+    fields: &std::collections::HashMap<String, Value>,
+    seen: &mut std::collections::HashSet<u64>,
+) -> String {
+    if fields.is_empty() {
+        return format!("{} {{}}", cname);
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(fields.len());
+    for name in order {
+        if let Some(v) = fields.get(*name) {
+            parts.push(format!("{}: {}", name, display_value_inner(v, seen)));
+        }
+    }
+    if parts.len() < fields.len() {
+        let mut extra: Vec<(&String, &Value)> = fields
+            .iter()
+            .filter(|(k, _)| !order.contains(&k.as_str()))
+            .collect();
+        extra.sort_by(|a, b| a.0.cmp(b.0));
+        for (k, v) in extra {
+            parts.push(format!("{}: {}", k, display_value_inner(v, seen)));
+        }
+    }
+    format!("{} {{{}}}", cname, parts.join(", "))
+}
+
 fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> String {
     if let Some(id) = ref_id(v) {
         if !seen.insert(id) {
@@ -1333,36 +1375,40 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
         Value::Class(c) => format!("<class {}>", c.name),
         Value::VClass(c) => format!("<vclass {}>", c.name),
         Value::Instance(i) => {
-            let (cname, fields) = {
+            let (class, fields) = {
                 let i = i.lock().unwrap();
-                (i.class.name.clone(), i.fields.clone())
+                (i.class.clone(), i.fields.clone())
             };
-            if fields.is_empty() {
-                format!("{} {{}}", cname)
-            } else {
-                let body = fields
-                    .iter()
-                    .map(|(k, v)| format!("{}: {}", k, display_value_inner(v, seen)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{} {{{}}}", cname, body)
+            let mut chain: Vec<Arc<ClassData>> = Vec::new();
+            let mut cur = Some(class.clone());
+            while let Some(c) = cur {
+                cur = c.parent.clone();
+                chain.push(c);
             }
+            let order: Vec<&str> = chain
+                .iter()
+                .rev()
+                .flat_map(|c| c.fields.iter().map(|(f, _)| f.as_str()))
+                .collect();
+            format_instance_ordered(&class.name, &order, &fields, seen)
         }
         Value::VInstance(i) => {
-            let (cname, fields) = {
+            let (class, fields) = {
                 let i = i.lock().unwrap();
-                (i.class.name.clone(), i.fields.clone())
+                (i.class.clone(), i.fields.clone())
             };
-            if fields.is_empty() {
-                format!("{} {{}}", cname)
-            } else {
-                let body = fields
-                    .iter()
-                    .map(|(k, v)| format!("{}: {}", k, display_value_inner(v, seen)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{} {{{}}}", cname, body)
+            let mut chain: Vec<Arc<VmClass>> = Vec::new();
+            let mut cur = Some(class.clone());
+            while let Some(c) = cur {
+                cur = c.parent.clone();
+                chain.push(c);
             }
+            let order: Vec<&str> = chain
+                .iter()
+                .rev()
+                .flat_map(|c| c.fields.iter().map(|(f, _)| f.as_str()))
+                .collect();
+            format_instance_ordered(&class.name, &order, &fields, seen)
         }
         Value::Task(t) => format!("<task {}>", t.id),
         Value::Channel(_) => "<channel>".to_string(),
