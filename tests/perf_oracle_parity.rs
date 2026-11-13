@@ -349,6 +349,76 @@ fn i64_min_mod_neg_one_wraps_like_the_generic_path() {
     assert_eq!(out.stdout.replace("\r\n", "\n"), "0\n");
 }
 
+/// One invoke site, two classes: the inline cache is monomorphic, so the
+/// second class must miss, re-resolve and overwrite the slot. If the cache
+/// ever returned the first class's method here, the sum would be wrong.
+#[test]
+fn one_invoke_site_with_two_classes_stays_correct() {
+    let out = assert_parity(
+        "two_classes_one_site",
+        concat!(
+            "class A {\n",
+            "    public let v;\n",
+            "    fn new () { self.v = 1; }\n",
+            "    public fn get(self) -> int { return self.v; }\n",
+            "}\n",
+            "class B {\n",
+            "    public let v;\n",
+            "    fn new () { self.v = 2; }\n",
+            "    public fn get(self) -> int { return self.v * 10; }\n",
+            "}\n",
+            "fn call_get(o) -> int { return o.get(); }\n",
+            "fn main() {\n",
+            "    let a = new A();\n",
+            "    let b = new B();\n",
+            "    let i = 0;\n",
+            "    let t = 0;\n",
+            "    while i < 100 {\n",
+            "        t = t + call_get(a) + call_get(b);\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(t);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(out.code, 0);
+    // 100 * (A.get()=1 + B.get()=20) = 2100
+    assert_eq!(out.stdout.replace("\r\n", "\n"), "2100\n");
+}
+
+/// A field write between calls must not be masked by anything the cache holds:
+/// the cache stores the *method*, never the field value.
+#[test]
+fn cached_method_sees_fresh_field_values() {
+    let out = assert_parity(
+        "cache_sees_fresh_fields",
+        concat!(
+            "class C {\n",
+            "    public let n;\n",
+            "    fn new () { self.n = 0; }\n",
+            "    public fn bump(self) -> int {\n",
+            "        self.n = self.n + 1;\n",
+            "        return self.n;\n",
+            "    }\n",
+            "}\n",
+            "fn main() {\n",
+            "    let c = new C();\n",
+            "    let i = 0;\n",
+            "    let last = 0;\n",
+            "    while i < 1000 {\n",
+            "        last = c.bump();\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(last);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(out.code, 0);
+    assert_eq!(out.stdout.replace("\r\n", "\n"), "1000\n");
+}
+
 // ---------------------------------------------------------------------------
 // Observers: the fusions are gated off under --prof / --coverage / the
 // debugger, so the same program must produce the same answer under them.

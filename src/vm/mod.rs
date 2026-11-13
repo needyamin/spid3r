@@ -191,11 +191,26 @@ pub struct Vm {
     /// Opcode profiler (`spid3r run --prof`); `None` in normal runs, so the
     /// hot loop pays a single well-predicted `Option` check per instruction.
     prof: Option<Profiler>,
-    /// Monomorphic inline cache for `Invoke` on instances: keyed by
-    /// (chunk address, instruction offset) → (class identity, resolved
-    /// method). The class check makes it safe when a site sees several
-    /// classes; `clear()` keeps the table bounded.
-    invoke_cache: HashMap<(usize, usize), InvokeCache>,
+    /// Monomorphic inline cache for `Invoke` on instances: a direct-mapped
+    /// table indexed by (chunk address, instruction offset), storing the
+    /// class identity and the resolved method.
+    ///
+    /// This used to be `HashMap<(usize, usize), InvokeCache>`. Two things
+    /// were wrong with that on the hot path: every method call paid a
+    /// SipHash of a two-word key, and keeping the table bounded meant a
+    /// `len() > 4096` branch plus a wholesale `clear()` that threw away every
+    /// other site's entry. A fixed-size direct-mapped table has neither: the
+    /// index is a shift, an xor and a mask, and an insert simply overwrites
+    /// the one slot it collides with, so memory is bounded by construction
+    /// and no site can evict the whole cache.
+    ///
+    /// Correctness does not depend on the cache: an entry is used only when
+    /// the stored (chunk_ptr, ip) matches the site AND the class identity
+    /// matches, and the class check is a complete invalidation key because a
+    /// `VmClass` is immutable once built (`methods` is a plain HashMap inside
+    /// an `Arc`, with no `&mut` path). Redefining a class produces a new
+    /// `Arc<VmClass>`, hence a new identity, hence a miss.
+    invoke_cache: Vec<Option<InvokeCache>>,
     /// Phase 5 monomorphic inline cache for `FieldGet` / `FieldGetSoft` on
     /// maps: (chunk address, instruction offset) → resolved entry index.
     /// The name is a compile-time constant at such a site, so it is genuinely
@@ -236,10 +251,30 @@ pub struct Vm {
 /// `_chunk` is a lifetime pin: it keeps the cached site's chunk alive for as
 /// long as the entry exists, so the `(chunk address, ip)` key can never be
 /// confused by a freed chunk whose address was reused by a different one.
+#[derive(Clone)]
 struct InvokeCache {
     _chunk: Arc<Chunk>,
+    /// The full key, stored so a direct-mapped slot can be validated after a
+    /// collision. `chunk_ptr` duplicates what `_chunk` pins, deliberately:
+    /// the pin guarantees the address is still ours, the stored copy lets us
+    /// compare it without dereferencing.
+    chunk_ptr: usize,
+    ip: usize,
     class: usize,
     func: Arc<VmFunc>,
+}
+
+/// Slots in the direct-mapped invoke cache. Must be a power of two. 1024
+/// entries of ~48 bytes is ~48 KB per VM; a real program has far fewer invoke
+/// sites than that, and a collision only costs one re-resolution.
+const INVOKE_CACHE_SLOTS: usize = 1024;
+
+#[inline]
+fn invoke_cache_index(chunk_ptr: usize, ip: usize) -> usize {
+    // Arc allocations are at least 8-byte aligned, so the low bits of
+    // `chunk_ptr` carry little information; shift them out and mix in the
+    // instruction offset instead.
+    ((chunk_ptr >> 4) ^ ip) & (INVOKE_CACHE_SLOTS - 1)
 }
 
 /// One map-field inline-cache entry. `_chunk` is the same lifetime pin as
@@ -333,7 +368,7 @@ impl Vm {
             obs: 0,
             coverage: None,
             prof: None,
-            invoke_cache: HashMap::new(),
+            invoke_cache: vec![None; INVOKE_CACHE_SLOTS],
             map_cache: HashMap::new(),
             opt_enabled: true,
             slot_pool: Vec::with_capacity(16),
@@ -427,7 +462,7 @@ impl Vm {
             obs: 0,
             coverage: None,
             prof: None,
-            invoke_cache: HashMap::new(),
+            invoke_cache: vec![None; INVOKE_CACHE_SLOTS],
             map_cache: HashMap::new(),
             opt_enabled: true,
             slot_pool: Vec::with_capacity(8),
@@ -2404,28 +2439,40 @@ impl Vm {
                                     _ => unreachable!(),
                                 };
                                 let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
-                                let key = (chunk_ptr, ip);
                                 let class_id = Arc::as_ptr(&class) as usize;
-                                let hit = match self.invoke_cache.get(&key) {
-                                    Some(c) if c.class == class_id => Some(c.func.clone()),
+                                let slot_idx = invoke_cache_index(chunk_ptr, ip);
+                                // A hit needs the site AND the class to match:
+                                // the same instruction offset in a different
+                                // chunk hashes to the same slot often enough
+                                // that the chunk check is not optional, and
+                                // the class check is what makes one site safe
+                                // when it sees several classes.
+                                let hit = match &self.invoke_cache[slot_idx] {
+                                    Some(c)
+                                        if c.chunk_ptr == chunk_ptr
+                                            && c.ip == ip
+                                            && c.class == class_id =>
+                                    {
+                                        Some(c.func.clone())
+                                    }
                                     _ => None,
                                 };
                                 let resolved = match hit {
                                     Some(fd) => Some(fd),
                                     None => match find_method_vclass(&class, &name) {
                                         Some(fd) => {
-                                            if self.invoke_cache.len() > 4096 {
-                                                self.invoke_cache.clear();
-                                            }
-                                            let chunk = self.frames[nf].func.chunk.clone();
-                                            self.invoke_cache.insert(
-                                                key,
-                                                InvokeCache {
-                                                    _chunk: chunk,
-                                                    class: class_id,
-                                                    func: fd.clone(),
-                                                },
-                                            );
+                                            // Overwrite the slot: a collision
+                                            // costs this one site's entry, not
+                                            // the whole cache. The dropped
+                                            // `_chunk` pin releases the evicted
+                                            // site's chunk normally.
+                                            self.invoke_cache[slot_idx] = Some(InvokeCache {
+                                                _chunk: self.frames[nf].func.chunk.clone(),
+                                                chunk_ptr,
+                                                ip,
+                                                class: class_id,
+                                                func: fd.clone(),
+                                            });
                                             Some(fd)
                                         }
                                         None => None,
