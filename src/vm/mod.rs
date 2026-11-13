@@ -113,16 +113,43 @@ struct Handler {
     reraise: Option<VmError>,
 }
 
+/// How a frame names itself in a stack trace.
+///
+/// The qualified form (`Class::method`, `Class::new`) has to survive until a
+/// trace is built, but building it eagerly means a heap `String` per method
+/// call for a value that is almost never read. Holding the pieces costs two
+/// `Arc` increments instead.
+#[derive(Clone)]
+enum FrameLabel {
+    /// No qualified name: fall back to `func.name`.
+    Fn,
+    Method { class: Arc<VmClass>, method: Arc<str> },
+    Ctor { class: Arc<VmClass> },
+}
+
+impl FrameLabel {
+    /// The trace label, or `None` to fall back to the function's own name.
+    fn render(&self) -> Option<String> {
+        match self {
+            FrameLabel::Fn => None,
+            FrameLabel::Method { class, method } => Some(format!("{}::{}", class.name, method)),
+            FrameLabel::Ctor { class } => Some(format!("{}::new", class.name)),
+        }
+    }
+}
+
 /// One function activation.
 struct CallFrame {
     func: Arc<VmFunc>,
     /// The globals this frame resolves names against: the defining module's
     /// map, not the caller's (see `VmFunc::globals`).
     globals: Arc<Mutex<HashMap<String, Value>>>,
-    /// Display name for stack traces. `None` means "use `func.name`". Method
-    /// frames carry the qualified `Class::method` form and constructor frames
-    /// `Class::new`, so a trace reads the same on the tree engine and the VM.
-    display: Option<String>,
+    /// Display name for stack traces, kept as pieces rather than a formatted
+    /// String. Building `"Class::method"` eagerly cost a heap allocation and a
+    /// `format!` on EVERY method call, for a label that is only read when a
+    /// trace is built — i.e. on error. The pieces are two `Arc` clones
+    /// (atomic increments, no allocation); `render()` formats on demand.
+    label: FrameLabel,
     ip: usize,
     /// Byte offset of the instruction currently executing (or waiting on a
     /// call) in this frame, recorded before `ip` advances past its operands.
@@ -629,13 +656,13 @@ impl Vm {
             c.instrument(&script.chunk);
         }
         let result = (|| {
-            self.call_vfunc_frame(script, Vec::new(), None)
+            self.call_vfunc_frame(script, Vec::new(), FrameLabel::Fn)
                 .map_err(|e| e.to_diag())?;
             let _ = self.run().map_err(|e| e.to_diag())?;
             let main = self.globals.lock().unwrap().get("main").cloned();
             match main {
                 Some(Value::VFunc(f)) => {
-                    self.call_vfunc_frame(f, Vec::new(), None)
+                    self.call_vfunc_frame(f, Vec::new(), FrameLabel::Fn)
                         .map_err(|e| e.to_diag())?;
                     let ret = self.run().map_err(|e| e.to_diag())?;
                     match ret {
@@ -670,7 +697,7 @@ impl Vm {
             }
         }
         validate_chunk(&script.chunk)?;
-        self.call_vfunc_frame(Arc::new(script), Vec::new(), None)
+        self.call_vfunc_frame(Arc::new(script), Vec::new(), FrameLabel::Fn)
             .map_err(|e| e.to_diag())?;
         let _ = self.run().map_err(|e| e.to_diag())?;
         // Const-ness of public bindings, from the module AST (mirrors the
@@ -698,7 +725,7 @@ impl Vm {
 
     /// Run a single function to completion (used by spawned tasks).
     fn run_function(&mut self, fd: Arc<VmFunc>, args: Vec<Value>) -> Result<Value, VmError> {
-        self.call_vfunc_frame(fd, args, None)?;
+        self.call_vfunc_frame(fd, args, FrameLabel::Fn)?;
         self.run()
     }
 
@@ -793,7 +820,7 @@ impl Vm {
                 let saved = self.stop;
                 self.stop = self.frames.len();
                 let r = self
-                    .call_vfunc_frame(fd.clone(), args, None)
+                    .call_vfunc_frame(fd.clone(), args, FrameLabel::Fn)
                     .and_then(|_| self.run_loop());
                 self.stop = saved;
                 r
@@ -1769,11 +1796,18 @@ impl Vm {
                     let mut call_args = self.alloc_slots(want);
                     call_args.push(recv);
                     call_args.extend(args);
-                    let display = match &method {
-                        Some(m) => Some(format!("{}::{}", class.name, m)),
-                        None => Some(format!("{}::new", class.name)),
+                    // `super()` is rare, so materialising the name here is
+                    // fine; the hot Invoke path below keeps the pieces.
+                    let label = match &method {
+                        Some(m) => FrameLabel::Method {
+                            class: class.clone(),
+                            method: Arc::from(m.as_str()),
+                        },
+                        None => FrameLabel::Ctor {
+                            class: class.clone(),
+                        },
                     };
-                    if let Err(e) = self.call_vfunc_frame(target, call_args, display) {
+                    if let Err(e) = self.call_vfunc_frame(target, call_args, label) {
                         self.error = Some(e);
                         continue;
                     }
@@ -2156,7 +2190,7 @@ impl Vm {
                     let callee = self.pop_top();
                     match callee {
                         Value::VFunc(fd) => {
-                            if let Err(e) = self.call_vfunc_frame(fd, args, None) {
+                            if let Err(e) = self.call_vfunc_frame(fd, args, FrameLabel::Fn) {
                                 self.error = Some(e);
                                 continue;
                             }
@@ -2365,7 +2399,7 @@ impl Vm {
                                             match callee {
                                                 Value::VFunc(fd) => {
                                                     if let Err(e) =
-                                                        self.call_vfunc_frame(fd, call_args, None)
+                                                        self.call_vfunc_frame(fd, call_args, FrameLabel::Fn)
                                                     {
                                                         self.error = Some(e);
                                                         continue;
@@ -2501,9 +2535,12 @@ impl Vm {
                                         call_args.extend(self.frames[nf].slots.drain(recv_idx..));
                                         // Stack traces name the frame
                                         // `Class::method`, like the tree engine.
-                                        let display = Some(format!("{}::{}", class.name, name));
+                                        let label = FrameLabel::Method {
+                                            class: class.clone(),
+                                            method: name.clone(),
+                                        };
                                         if let Err(e) =
-                                            self.call_vfunc_frame(fd, call_args, display)
+                                            self.call_vfunc_frame(fd, call_args, label)
                                         {
                                             self.error = Some(e);
                                             continue;
@@ -3227,7 +3264,7 @@ impl Vm {
             // `span_at` maps a byte offset to the span of the instruction that
             // contains it (inst_spans is indexed by instruction, not by byte).
             let span = f.func.chunk.span_at(f.inst_ip);
-            let name = f.display.clone().or_else(|| f.func.name.clone());
+            let name = f.label.render().or_else(|| f.func.name.clone());
             if let Some(last) = out.last() {
                 let last: &crate::diagnostics::TraceFrame = last;
                 if last.func == name && last.span.line == span.line && last.span.file == span.file {
@@ -3426,7 +3463,7 @@ impl Vm {
         &mut self,
         fd: Arc<VmFunc>,
         mut args: Vec<Value>,
-        display: Option<String>,
+        label: FrameLabel,
     ) -> Result<(), VmError> {
         if args.len() < fd.min_arity || args.len() > fd.arity {
             let want = if fd.min_arity == fd.arity {
@@ -3486,7 +3523,7 @@ impl Vm {
         self.frames.push(CallFrame {
             func: fd,
             globals: frame_globals,
-            display,
+            label,
             ip: 0,
             inst_ip: 0,
             slots: args,
@@ -3659,8 +3696,10 @@ impl Vm {
                 call_args.push(obj.clone());
                 call_args.extend(args);
                 // Constructor frames read `Class::new` in stack traces.
-                let display = Some(format!("{}::new", class.name));
-                self.call_vfunc_frame(ctor, call_args, display)?;
+                let label = FrameLabel::Ctor {
+                    class: class.clone(),
+                };
+                self.call_vfunc_frame(ctor, call_args, label)?;
                 let nf = self.frames.len() - 1;
                 self.frames[nf].ctor_result = Some(obj);
             }
@@ -4034,7 +4073,7 @@ impl Vm {
                 trace: Vec::new(),
             });
         }
-        self.call_vfunc_frame(func, Vec::new(), None)?;
+        self.call_vfunc_frame(func, Vec::new(), FrameLabel::Fn)?;
         let _ = self.run()?;
         let g = self.globals.lock().unwrap();
         // Const-ness comes from the module's own constant set (populated by
