@@ -520,10 +520,187 @@ fn shadowed_instance_field_renders_once_on_every_path() {
     assert_eq!(out.code, 0);
     // One value per name, the shadowed `x` at its outermost position, and the
     // non-shadowed fields (`y`, assigned by A's ctor) unchanged: the same
-    // answers the old field map produced.
+    // answers the old field-map layout produced.
     assert_eq!(
         out.stdout.replace("\r\n", "\n"),
         "B {x: 10, y: 2}\n10\n2\n",
         "shadowed field output differs"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Map inline-cache invalidation corpus (W2.3).
+//
+// `cached_map_field_get` caches an INDEX (never a value) per constant-name dot
+// site, validated on every hit by map identity, name, `MapData::generation`
+// and the key at the cached index. The corpus pins the mutations that must
+// invalidate it — and, through the expected outputs below, the ones that must
+// not. The gate for this corpus: removing the generation check from the hit
+// validation must fail at least one case (the negative cache — a missing key
+// has no index to re-check, so generation is the only thing that invalidates
+// it); it was verified by hand when this corpus landed and is re-verifiable by
+// deleting `|| c.generation != guard.generation` from `cached_map_field_get`
+// and running this module.
+// ---------------------------------------------------------------------------
+
+/// Assert three-engine parity plus the exact expected stdout (CRLF-normalized).
+fn assert_map_cache_case(name: &str, body: &str, expected: &str) {
+    let out = assert_parity(name, body);
+    assert_eq!(out.code, 0, "[{name}] exit code {}", out.code);
+    assert_eq!(
+        out.stdout.replace("\r\n", "\n"),
+        expected,
+        "[{name}] stdout differs"
+    );
+}
+
+/// A key inserted after a site cached its absence must be visible on the next
+/// read through that same site.
+///
+/// This is THE generation-dependent case: the missing-key result is cached as
+/// `index: None`, and a missing key has no cached index whose entry could be
+/// re-checked, so the generation is the only invalidation signal there is.
+/// Insertions bump the generation (`set_key`); without the check the site
+/// would answer `null` forever.
+#[test]
+fn cache_negative_result_invalidated_by_insertion() {
+    assert_map_cache_case(
+        "cache_neg_insert",
+        concat!(
+            "fn peek(m) { return m?.k; }\n",
+            "fn main() {\n",
+            "    let m = map();\n",
+            "    println(peek(m));\n", // null — site caches the absence
+            "    m[\"k\"] = 5;\n",     // insertion bumps the generation
+            "    println(peek(m));\n", // must re-resolve to 5
+            "    m[\"k\"] = 7;\n",     // in-place rebind, fresh read
+            "    println(peek(m));\n", // 7
+            "    return 0;\n",
+            "}\n",
+        ),
+        "null\n5\n7\n",
+    );
+}
+
+/// Mutating some other key must not make a still-missing key crash or leak a
+/// stale index: the site re-resolves and the absence is re-cached.
+#[test]
+fn cache_negative_result_survives_unrelated_mutation() {
+    assert_map_cache_case(
+        "cache_neg_unrelated",
+        concat!(
+            "fn peek(m) { return m?.k; }\n",
+            "fn main() {\n",
+            "    let m = map();\n",
+            "    println(peek(m));\n",   // null
+            "    m[\"other\"] = 1;\n",   // bump: k still absent
+            "    println(peek(m));\n",   // null again, freshly re-resolved
+            "    return 0;\n",
+            "}\n",
+        ),
+        "null\nnull\n",
+    );
+}
+
+/// Removing a key shifts later entries down and reinserting appends it at the
+/// end; the cache must follow through all three shapes (positive → negative →
+/// positive at a different index).
+///
+/// With the generation check removed this also fails: after `remove("k")` the
+/// site re-resolves to a *negative* cache entry, and the later insertion of
+/// `"k"` then reads as the stale null forever.
+#[test]
+fn cache_tracks_removal_and_reinsertion() {
+    assert_map_cache_case(
+        "cache_remove_reinsert",
+        concat!(
+            "fn peek(m) { return m?.k; }\n",
+            "fn main() {\n",
+            "    let m = map();\n",
+            "    m[\"a\"] = 1; m[\"b\"] = 2; m[\"k\"] = 3; m[\"d\"] = 4;\n",
+            "    println(peek(m));\n", // 3 — k at index 2
+            "    m.remove(\"k\");\n",  // reindex shifts `d` 3 -> 2
+            "    println(peek(m));\n", // null — key check on the stale index
+            "    m[\"k\"] = 30;\n",    // appended at index 3
+            "    println(peek(m));\n", // 30 — new index, fresh read
+            "    m.remove(\"d\");\n",  // reindex again
+            "    println(peek(m));\n", // 30 — re-resolve finds the new slot
+            "    return 0;\n",
+            "}\n",
+        ),
+        "3\nnull\n30\n30\n",
+    );
+}
+
+/// Two maps alternating through one constant-name site must never answer with
+/// the other map's value: the entry is validated by map identity on every hit.
+#[test]
+fn cache_distinguishes_maps_by_identity() {
+    assert_map_cache_case(
+        "cache_two_maps",
+        concat!(
+            "fn peek(m) { return m.k; }\n",
+            "fn main() {\n",
+            "    let a = map(); a[\"k\"] = 1;\n",
+            "    let b = map(); b[\"k\"] = 2;\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        println(peek(a));\n",
+            "        println(peek(b));\n",
+            "        i += 1;\n",
+            "    }\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "1\n2\n1\n2\n1\n2\n",
+    );
+}
+
+/// In-place rebinding must be visible immediately: the cache stores an index,
+/// the value is read fresh under the lock on every hit.
+#[test]
+fn cache_reads_values_fresh_on_every_hit() {
+    assert_map_cache_case(
+        "cache_fresh_value",
+        concat!(
+            "fn peek(m) { return m.k; }\n",
+            "fn main() {\n",
+            "    let m = map();\n",
+            "    m[\"k\"] = 1;\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        println(peek(m));\n",   // 1, then 0, then 10
+            "        m[\"k\"] = i * 10;\n", // rebind in place
+            "        i += 1;\n",
+            "        println(peek(m));\n",   // 0, 10, 20
+            "    }\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "1\n0\n0\n10\n10\n20\n",
+    );
+}
+
+/// `clear` empties and reindexes (bumping the generation), so a positive cache
+/// goes negative and the rebuild must be visible — the mirror of the insertion
+/// case, and it fails without the generation check for the same reason.
+#[test]
+fn cache_tracks_clear_and_rebuild() {
+    assert_map_cache_case(
+        "cache_clear_rebuild",
+        concat!(
+            "fn peek(m) { return m?.k; }\n",
+            "fn main() {\n",
+            "    let m = map();\n",
+            "    m[\"k\"] = 1;\n",
+            "    println(peek(m));\n", // 1
+            "    m.clear();\n",
+            "    println(peek(m));\n", // null
+            "    m[\"k\"] = 2;\n",
+            "    println(peek(m));\n", // 2 — back at index 0, freshly resolved
+            "    return 0;\n",
+            "}\n",
+        ),
+        "1\nnull\n2\n",
     );
 }
