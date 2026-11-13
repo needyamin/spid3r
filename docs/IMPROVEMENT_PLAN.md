@@ -139,3 +139,39 @@ owner approval) addresses the tree's absolute speed directly. A defect
 in the oracle engine poisons every differential gate downstream.
 
 Recorded so the next planner does not re-project these numbers.
+
+## 2026-11-13 — W5.1 (JSON writer) already built; W5.2 (scheduler per-message cost) measured, no viable A/B
+
+**W5.1 — JSON writer: one pass, pre-sized.** Already implemented in the
+phase-5/N1 performance program: `write_json` is a single pass over the value
+with a top-level-only capacity hint (`json_write_capacity`, capped at 1 MiB),
+a no-intermediate-String key writer (`write_json_key`) and a conservative
+scalar fast path that avoids re-entering container locks (`json_is_scalar`).
+The byte-identical guarantees the plan asked for are asserted by the JSON
+regression tests (`tests/audit_regressions.rs`, `tests/engine_matrix.rs`) and
+the `json` benchmark passes its perf floor. Nothing left to do.
+
+**W5.2 — scheduler per-message cost.** Measured breakdown (release build,
+9 runs per case, output asserted):
+
+| Pattern (2000 messages, VM engine) | Median |
+| --- | --- |
+| Batched: one join wake, then 2000 immediate lock+pop | 11.04 ms |
+| Streaming: a condvar wake per message (`tasks.matrix`) | 11.50 ms |
+| Spawn/join only, no channel (same python-timing overhead) | 9.8–9.8 ms |
+
+The condvar wakeup — the only addressable component — costs ~0.23 us of the
+~1.3 us/message total (the repo's own startup-adjusted harness: `tasks`
+2.6 ms / 2000). The rest is the task lifecycle: spawn dispatch through the
+bounded ready queue plus the join handshake, i.e. two cross-thread wakes per
+message round — near the OS wakeup floor. Both channel operations (lock,
+push/pop, notify) and the await path are already minimal (`recv_checked`
+parks only when empty; the fast path is one lock).
+
+No A/B candidate with a win above measurement noise exists without changing
+observable scheduling semantics: suppressing the notify on a non-empty push
+saves nothing when the consumer keeps up (the streaming queue is empty -> 1
+per message, so the notify fires anyway) and risks a 50 ms latency spike on
+lost wakeups; batching channels or pooling tasks changes message timing and
+spawn semantics. Recorded so the next planner starts from the measured
+breakdown instead of re-projecting a win.
