@@ -1075,23 +1075,57 @@ impl Vm {
                                 let slot_b = code[ip + 3] as usize;
                                 if let Some(&op2) = code.get(ip + 4) {
                                     if op2 == OpCode::Less as u8
-                                        && code.get(ip + 5) == Some(&(OpCode::JumpIfFalse as u8))
+                                        && matches!(
+                                            code.get(ip + 5),
+                                            Some(&b)
+                                                if b == OpCode::JumpIfFalse as u8
+                                                    || b == OpCode::JumpIfTrue as u8
+                                        )
                                     {
+                                        // `rotate_loops` moves the `while`
+                                        // condition to the bottom of the
+                                        // body, so the emitted jump is
+                                        // JumpIfTrue (back to the body)
+                                        // rather than JumpIfFalse (exit).
+                                        // Fuse both polarities here exactly
+                                        // as the Mul arm below does. Before
+                                        // this, every rotated loop paid the
+                                        // generic 4-instruction condition --
+                                        // and, worse, the generic GetLocal
+                                        // path flushed `pending_str` on each
+                                        // of those reads, which is what kept
+                                        // string building O(n^2) even though
+                                        // the append arm already existed.
+                                        let inverted =
+                                            code.get(ip + 5) == Some(&(OpCode::JumpIfTrue as u8));
                                         if let (Some(&Value::Int(a)), Some(&Value::Int(b))) = (
                                             self.frames[nf].slots.get(slot),
                                             self.frames[nf].slots.get(slot_b),
                                         ) {
-                                            if a < b {
-                                                self.frames[nf].ip = ip + 8;
-                                            } else {
-                                                let off = i16::from_le_bytes([
-                                                    code[ip + 6],
-                                                    code[ip + 7],
-                                                ]);
-                                                self.frames[nf].ip =
-                                                    ((ip + 8) as i64 + off as i64) as usize;
+                                            if let (Some(&lo), Some(&hi)) =
+                                                (code.get(ip + 6), code.get(ip + 7))
+                                            {
+                                                let off = i16::from_le_bytes([lo, hi]);
+                                                // JumpIfFalse jumps when the
+                                                // condition is FALSE;
+                                                // JumpIfTrue when TRUE.
+                                                let take_branch = (a < b) == inverted;
+                                                let next = if !take_branch {
+                                                    Some(ip + 8)
+                                                } else {
+                                                    let t = (ip + 8) as i64 + off as i64;
+                                                    (t >= 0 && (t as usize) < code.len())
+                                                        .then_some(t as usize)
+                                                };
+                                                // An out-of-range target must
+                                                // fall through so generic
+                                                // dispatch emits "invalid jump
+                                                // target", not an ip error.
+                                                if let Some(next) = next {
+                                                    self.frames[nf].ip = next;
+                                                    continue;
+                                                }
                                             }
-                                            continue;
                                         }
                                     } else if op2 == OpCode::Add as u8
                                         && code.get(ip + 5) == Some(&(OpCode::SetLocal as u8))
