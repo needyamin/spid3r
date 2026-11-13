@@ -123,8 +123,13 @@ struct Handler {
 enum FrameLabel {
     /// No qualified name: fall back to `func.name`.
     Fn,
-    Method { class: Arc<VmClass>, method: Arc<str> },
-    Ctor { class: Arc<VmClass> },
+    Method {
+        class: Arc<VmClass>,
+        method: Arc<str>,
+    },
+    Ctor {
+        class: Arc<VmClass>,
+    },
 }
 
 impl FrameLabel {
@@ -1469,24 +1474,24 @@ impl Vm {
                                             // through to generic dispatch so
                                             // overflow / division by zero raise
                                             // the identical error.
-                                            let computed: Option<i64> =
-                                                if op2 == OpCode::Add as u8 {
-                                                    a.checked_add(b)
-                                                } else if op2 == OpCode::Sub as u8 {
-                                                    a.checked_sub(b)
-                                                } else if op2 == OpCode::Mul as u8 {
-                                                    a.checked_mul(b)
-                                                } else if op2 == OpCode::Div as u8 {
-                                                    if b != 0 {
-                                                        a.checked_div(b)
-                                                    } else {
-                                                        None
-                                                    }
-                                                } else if b != 0 {
-                                                    Some(a.wrapping_rem(b))
+                                            let computed: Option<i64> = if op2 == OpCode::Add as u8
+                                            {
+                                                a.checked_add(b)
+                                            } else if op2 == OpCode::Sub as u8 {
+                                                a.checked_sub(b)
+                                            } else if op2 == OpCode::Mul as u8 {
+                                                a.checked_mul(b)
+                                            } else if op2 == OpCode::Div as u8 {
+                                                if b != 0 {
+                                                    a.checked_div(b)
                                                 } else {
                                                     None
-                                                };
+                                                }
+                                            } else if b != 0 {
+                                                Some(a.wrapping_rem(b))
+                                            } else {
+                                                None
+                                            };
                                             if let Some(v) = computed {
                                                 if self.pending_str.as_ref().is_some_and(
                                                     |&(pf, ps, _)| pf == nf && ps == dst,
@@ -2398,9 +2403,11 @@ impl Vm {
                                             self.frames[nf].slots.pop();
                                             match callee {
                                                 Value::VFunc(fd) => {
-                                                    if let Err(e) =
-                                                        self.call_vfunc_frame(fd, call_args, FrameLabel::Fn)
-                                                    {
+                                                    if let Err(e) = self.call_vfunc_frame(
+                                                        fd,
+                                                        call_args,
+                                                        FrameLabel::Fn,
+                                                    ) {
                                                         self.error = Some(e);
                                                         continue;
                                                     }
@@ -2539,8 +2546,7 @@ impl Vm {
                                             class: class.clone(),
                                             method: name.clone(),
                                         };
-                                        if let Err(e) =
-                                            self.call_vfunc_frame(fd, call_args, label)
+                                        if let Err(e) = self.call_vfunc_frame(fd, call_args, label)
                                         {
                                             self.error = Some(e);
                                             continue;
