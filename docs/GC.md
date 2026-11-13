@@ -234,8 +234,37 @@ Both directions of `env -> closure -> env` are therefore registry edges: the
 cycle is unmarked (no external refs) and swept from the environment's side.
 `tests/closure_cycle_leak.rs` — which used to pin the leak — now asserts
 reclamation, including the safety half (captured containers survive
-collections and keep working). The VM needs none of this: its closures carry
-upvalue *cells* (untracked external refs, no env cycle).
+collections and keep working). The tree needs no more than this: its closures
+carry environments, and the two kinds above cover both directions.
+
+**The VM mirror (implemented 2026-11-14).** The text above once claimed "the
+VM needs none of this: its closures carry upvalue cells (untracked external
+refs, no env cycle)" — measured, that was wrong twice over. A nested named
+function captures its own name through an upvalue cell (`CaptureSync slot 1
+cell 1`, the recursive call resolving via `GetUpvalue`), so every activation
+of `make()`-style code built `VmFunc -> cell -> VFunc(same VmFunc)` — a closed
+cycle among *untracked* cells that the collector cannot even see, and it
+pinned the captured payload with it: 2000 calls left 2000 live cells, 20000
+left 20000 (the tree collected the identical shape to its baseline all along).
+The fix gives the VM the same A-13 treatment:
+
+1. `make_closure` registers every `VmFunc` via `track_immutable`;
+   `gc_trace_cells` reports the upvalue cells, `gc_trace` the baked defaults.
+2. Every capture cell is a registered `new_ref::<Value>` cell (the `Capture`
+   opcode, the call frame's `own_cells` placeholders and `make_closure`'s
+   fallbacks); the `GcTrace for Value` impl emits the captured value and, on
+   sweep, Nulls the cell — which breaks the cycle: the cell drops the `VFunc`
+   Arc, the closure drops its `upvalues` vec, the island cascades away.
+3. `VmClass::build` registers classes (methods/ctor/parent edges), mirroring
+   `ClassData`; `for_each_cell_id` maps `Value::VFunc` / `Value::VClass` to
+   their registered cell ids, completing both directions of every edge.
+
+Safety argument: a live call frame holds its `VmFunc` and its capture cells
+from outside the registry (`external > 0`), so running closures are roots and
+are never swept; the invoke cache's last-resolved method is the same shape,
+bounded to one entry per call site. `tests/perf_oracle_parity.rs::
+vm_closure_cycles_are_collected` pins both VM modes; the closure-leak suite
+now passes on the default (VM) engine as well.
 
 ## The native backend: arena model and GC observability (policy, decided 2026-10-25)
 

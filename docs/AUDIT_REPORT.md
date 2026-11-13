@@ -237,6 +237,12 @@ columns, CSV BOM, `[^a]` versus newline, tar entry types, non-UTF-8 CLI
 arguments, `spid3r test --filter/--list`). **A-13 (closure/environment cycles)
 remains open**: measured at one leaked cell per closure, with the required design
 recorded in `docs/GC.md`.
+> Closed since this report was written: the tree side landed 2026-10-21 as
+> designed (see `docs/GC.md`), and the VM side — whose closures form the same
+> cycle through their own-name upvalue cell and leaked one island per call —
+> landed 2026-11-14 (`make_closure`/`VmClass::build` registration plus tracked
+> capture cells; pinned by `tests/perf_oracle_parity.rs::
+> vm_closure_cycles_are_collected`).
 
 Stage-4 (2026-10-21) finished the toolchain and docs pass — see
 `audit_notes/stage4_toolchain_docs.md`: `spid3r check` now validates the index

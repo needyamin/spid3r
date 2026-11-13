@@ -22,10 +22,13 @@
 //! Auto-collection runs at statement boundaries by default, amortized so a
 //! deep build pays O(N) total collection work instead of O(N²) (see
 //! `maybe_collect`); `SPID3R_GC=0` disables it and `gc_collect()` can always
-//! be called explicitly. Tracking
-//! covers every container and instance type that can form reference cycles
-//! (20+ `*Data` types below); closures/environments are not tracked yet
-//! (cycles through them leak — see GC.md).
+//! be called explicitly. Tracking covers every container and instance type
+//! that can form reference cycles (20+ `*Data` types below) plus, since audit
+//! A-13, environments and the tree's `FunctionData`/`ClassData` — and, since
+//! 2026-11-14, the VM's closure model: `VmFunc`/`VmClass` cells and the
+//! capture cells, without which a nested named function's
+//! `VmFunc -> cell -> VFunc(same VmFunc)` recursion cycle leaked one island
+//! per call (see the "VM mirror" note in GC.md).
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};

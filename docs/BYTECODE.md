@@ -186,8 +186,8 @@ bytecode.
   gates the runtime peeks in addition to the compile-time passes. Per-VM inline
   caches stay on under `--no-opt` (memoization, not instruction peeks), and no
   `OpCode`, `Chunk` field or `.matrixc` format change is involved.
-  A fusion is taken only when `--prof`, `--coverage`, the debugger,
-  `pending_str` and captured locals are all absent, so instrumentation still
+  A fusion is taken only when `--prof`, `--coverage`, the debugger and
+  captured locals are all absent, so instrumentation still
   observes every original opcode and line hit. That gate covers the
   `GetLocal a; GetLocal b; Less; JumpIfFalse` and
   `GetLocal a; GetLocal b; Add; SetLocal; Pop` pair fusions as well: they
@@ -202,6 +202,20 @@ bytecode.
   Phase 2 also accepts `JumpIfTrue` after the `LessEq` pattern, because the
   optimizer can rotate that loop condition to the bottom of the loop; both
   branch polarities take the same fused path.
+
+  The pending-string buffer interacts with these fusions in two distinct
+  regimes. The Phase-1 *prefix* fusion (`"prefix" + string(n % k)` key
+  building) requires `pending_str` to be absent — it pushes onto the operand
+  stack, which a pending buffer would make stale. The *pair* fusions run with
+  a pending buffer alive and manage it themselves, deliberately: the W1.1
+  rotated-loop condition keeps the buffer alive across iterations (the
+  generic path's flush is what used to keep string building O(n^2)), the
+  int write-back drops a buffer whose destination the fused op overwrites,
+  and the two-local string append (`s = s + t`, W3.2) feeds the same buffer
+  with the constant arm's discipline plus one extra rule — a buffer pending
+  for the *rhs* slot is materialized before the rhs is read, because the
+  slot is stale while its buffer is pending. The full buffer contract,
+  with the measurements, is recorded in `docs/VM_NOTES.md`.
 
 - **Compile-time loop back-edge rotation** (Phase 2): `optimize_script()`
   rewrites a canonical `while` loop from
