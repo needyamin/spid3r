@@ -63,21 +63,77 @@ pub struct VmClass {
     pub name: String,
     pub parent: Option<Arc<VmClass>>,
     pub fields: Vec<(String, Vis)>,
+    /// Every instance lays its fields out as slots indexed by the flattened
+    /// inheritance chain, parents first; a name shadowed by a subclass keeps
+    /// its outermost slot, which is where the old per-instance map kept the
+    /// value too (parents inserted first, overwritten in place by the child's
+    /// insert). `slot_names[i]` names `slots[i]`; `slot_index` maps a field
+    /// name to its slot. Derived once per class, so a field read is a map
+    /// lookup plus a `Vec` index, and an instance costs one `Vec<Value>`
+    /// instead of a `HashMap` with a freshly cloned `String` key per field.
+    pub slot_names: Vec<String>,
+    pub slot_index: std::collections::HashMap<String, usize>,
     pub methods: std::collections::HashMap<String, (Vis, Arc<VmFunc>)>,
     pub ctor: Option<Arc<VmFunc>>,
 }
 
+impl VmClass {
+    /// The one way to build a `VmClass`: the slot tables must agree with
+    /// `parent` and `fields`, so they are derived here instead of at each of
+    /// the construction sites (`Object`, the bytecode reader, the tree-bridge).
+    pub fn build(
+        name: String,
+        parent: Option<Arc<VmClass>>,
+        fields: Vec<(String, Vis)>,
+        methods: std::collections::HashMap<String, (Vis, Arc<VmFunc>)>,
+        ctor: Option<Arc<VmFunc>>,
+    ) -> Arc<VmClass> {
+        let mut slot_names: Vec<String> = Vec::new();
+        let mut slot_index: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        if let Some(p) = &parent {
+            slot_names.extend(p.slot_names.iter().cloned());
+            for (i, n) in slot_names.iter().enumerate() {
+                slot_index.insert(n.clone(), i);
+            }
+        }
+        for (n, _) in &fields {
+            // A shadowed name keeps its outermost slot: the instance holds one
+            // value per name, so re-declaring it must not mint a second slot
+            // (nor, as the first draft did by overwriting through `insert`,
+            // point the name past the end of `slot_names` — the unoptimized
+            // VM caught that as an out-of-bounds `FieldSet`).
+            if slot_index.contains_key(n) {
+                continue;
+            }
+            slot_index.insert(n.clone(), slot_names.len());
+            slot_names.push(n.clone());
+        }
+        Arc::new(VmClass {
+            name,
+            parent,
+            fields,
+            slot_names,
+            slot_index,
+            methods,
+            ctor,
+        })
+    }
+}
+
 /// An instance of a bytecode class. Mirrors `InstanceData` but the class is a
-/// `VmClass`.
+/// `VmClass`. Field layout comes from the class: `slots[i]` holds
+/// `class.slot_names[i]`.
 pub struct VmInstanceData {
     pub class: Arc<VmClass>,
-    pub fields: std::collections::HashMap<String, Value>,
+    pub slots: Vec<Value>,
 }
 
 impl Drop for VmInstanceData {
     fn drop(&mut self) {
-        // A-17: same iterative teardown as `InstanceData`.
-        crate::value::collections::drop_iteratively(self.fields.drain().map(|(_, v)| v).collect());
+        // A-17: same iterative teardown as `InstanceData` — `class Node { next
+        // }` chains recurse once per link if the slots are dropped in place.
+        crate::value::collections::drop_iteratively(std::mem::take(&mut self.slots));
     }
 }
 
@@ -1064,18 +1120,21 @@ pub fn display_value(v: &Value) -> String {
 
 /// `Class { a: 1, b: 2 }` with the fields in **declaration order**.
 ///
-/// The instance field maps use the default, randomly seeded hasher, so
-/// iterating one directly printed the fields in a different order on every
-/// process — and differently on the tree engine and the VM. That broke the
-/// three-engine contract for any program that prints an instance: the same
-/// source could print `P {alpha: 1, beta: 2}` and `P {beta: 2, alpha: 1}` on
-/// two runs of the same binary. Ordering by the class's declaration list makes
-/// the output a function of the source instead of the hasher seed.
+/// The tree and native instance field maps use the default, randomly seeded
+/// hasher, so iterating one directly printed the fields in a different order
+/// on every process — and differently on the tree engine and the VM. That
+/// broke the three-engine contract for any program that prints an instance:
+/// the same source could print `P {alpha: 1, beta: 2}` and
+/// `P {beta: 2, alpha: 1}` on two runs of the same binary. Ordering by the
+/// class's declaration list makes the output a function of the source instead
+/// of the hasher seed.
 ///
-/// `order` is the full inheritance chain, parents first, which is the order the
-/// constructors populate the map in. Anything present in the map but absent
-/// from `order` is appended in name order so a field can never be silently
-/// dropped from the output.
+/// `order` is the full inheritance chain, parents first. A name that appears
+/// more than once in it — a subclass shadowing a parent's field — is rendered
+/// once, at its outermost position: the runtime keeps one value per name, so
+/// printing it twice reported one field as two. Anything present in the map
+/// but absent from `order` is appended in name order so a field can never be
+/// silently dropped from the output.
 fn format_instance_ordered(
     cname: &str,
     order: &[&str],
@@ -1086,9 +1145,12 @@ fn format_instance_ordered(
         return format!("{} {{}}", cname);
     }
     let mut parts: Vec<String> = Vec::with_capacity(fields.len());
+    let mut rendered: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for name in order {
-        if let Some(v) = fields.get(*name) {
-            parts.push(format!("{}: {}", name, display_value_inner(v, seen)));
+        if rendered.insert(name) {
+            if let Some(v) = fields.get(*name) {
+                parts.push(format!("{}: {}", name, display_value_inner(v, seen)));
+            }
         }
     }
     if parts.len() < fields.len() {
@@ -1100,6 +1162,30 @@ fn format_instance_ordered(
         for (k, v) in extra {
             parts.push(format!("{}: {}", k, display_value_inner(v, seen)));
         }
+    }
+    format!("{} {{{}}}", cname, parts.join(", "))
+}
+
+/// The VM counterpart of [`format_instance_ordered`]: instances hold their
+/// fields as slots laid out by the class (`slots[i]` is `class.slot_names[i]`,
+/// already parents-first and shadow-free), so the display walks the two
+/// arrays side by side instead of going through a map. Slots beyond the name
+/// table cannot exist, but are appended rather than dropped if they ever do.
+fn format_instance_slots(
+    cname: &str,
+    names: &[String],
+    slots: &[Value],
+    seen: &mut std::collections::HashSet<u64>,
+) -> String {
+    if slots.is_empty() {
+        return format!("{} {{}}", cname);
+    }
+    let mut parts: Vec<String> = Vec::with_capacity(slots.len());
+    for (name, v) in names.iter().zip(slots.iter()) {
+        parts.push(format!("{}: {}", name, display_value_inner(v, seen)));
+    }
+    for v in slots.iter().skip(names.len()) {
+        parts.push(format!("<unnamed slot>: {}", display_value_inner(v, seen)));
     }
     format!("{} {{{}}}", cname, parts.join(", "))
 }
@@ -1393,22 +1479,11 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
             format_instance_ordered(&class.name, &order, &fields, seen)
         }
         Value::VInstance(i) => {
-            let (class, fields) = {
+            let (class, slots) = {
                 let i = i.lock().unwrap();
-                (i.class.clone(), i.fields.clone())
+                (i.class.clone(), i.slots.clone())
             };
-            let mut chain: Vec<Arc<VmClass>> = Vec::new();
-            let mut cur = Some(class.clone());
-            while let Some(c) = cur {
-                cur = c.parent.clone();
-                chain.push(c);
-            }
-            let order: Vec<&str> = chain
-                .iter()
-                .rev()
-                .flat_map(|c| c.fields.iter().map(|(f, _)| f.as_str()))
-                .collect();
-            format_instance_ordered(&class.name, &order, &fields, seen)
+            format_instance_slots(&class.name, &class.slot_names, &slots, seen)
         }
         Value::Task(t) => format!("<task {}>", t.id),
         Value::Channel(_) => "<channel>".to_string(),
@@ -1789,20 +1864,17 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
             Value::Instance(nd)
         }
         Value::VInstance(i) => {
-            let (class, fields) = {
+            let (class, slots) = {
                 let i = i.lock().unwrap();
-                (i.class.clone(), i.fields.clone())
+                (i.class.clone(), i.slots.clone())
             };
             let nd = new_ref(VmInstanceData {
                 class,
-                fields: std::collections::HashMap::new(),
+                slots: Vec::new(),
             });
             register!(Value::VInstance(nd.clone()));
-            let fields: std::collections::HashMap<String, Value> = fields
-                .iter()
-                .map(|(k, vv)| (k.clone(), deep_clone_inner(vv, memo)))
-                .collect();
-            nd.lock().unwrap().fields = fields;
+            let slots: Vec<Value> = slots.iter().map(|v| deep_clone_inner(v, memo)).collect();
+            nd.lock().unwrap().slots = slots;
             Value::VInstance(nd)
         }
         Value::CInstance(i) => {

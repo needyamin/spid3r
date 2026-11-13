@@ -343,12 +343,12 @@ impl GcTrace for InstanceData {
 
 impl GcTrace for VmInstanceData {
     fn gc_trace(&self, f: &mut dyn FnMut(&Value)) {
-        for v in self.fields.values() {
+        for v in &self.slots {
             f(v);
         }
     }
     fn gc_clear(&mut self) {
-        self.fields.clear();
+        self.slots.clear();
     }
 }
 

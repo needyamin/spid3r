@@ -473,3 +473,57 @@ fn instrumentation_flags_do_not_change_the_answer() {
         assert_eq!(base.stdout, other.stdout, "stdout with {extra:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Instance layout: the VM's field slots and the tree's field map must agree.
+// ---------------------------------------------------------------------------
+
+/// A subclass re-declaring a parent's field keeps one value per name, and all
+/// three execution paths agree on it.
+///
+/// The checkers reject a duplicate field within one class but not across the
+/// inheritance chain, so the old per-instance field map ended up with one
+/// entry (parents inserted first, the child's insert overwriting in place)
+/// while the display order — the full declaration chain — contained the name
+/// twice. Every engine printed `B {x: 10, x: 10}`: one field reported as two,
+/// a defect rather than a semantic choice anyone could depend on.
+///
+/// VM instances now lay fields out as slots named by the class (a shadowed
+/// name keeps its outermost slot, where the old map kept the value), and the
+/// tree display dedupes the declaration order by first occurrence.
+/// `--no-opt` is part of the gate on purpose: the first draft of the slot
+/// table was inverted exactly there — the optimized run fused the `FieldSet`
+/// away and masked it, the unoptimized one took the out-of-bounds index.
+#[test]
+fn shadowed_instance_field_renders_once_on_every_path() {
+    let out = assert_parity(
+        "shadowed_field",
+        concat!(
+            "class A {\n",
+            "    public let x;\n",
+            "    public let y;\n",
+            "    fn new () { self.x = 1; self.y = 2; }\n",
+            "}\n",
+            "class B extends A {\n",
+            "    public let x;\n",
+            "    fn new () { super(); self.x = 10; }\n",
+            "}\n",
+            "fn main() {\n",
+            "    let b = new B();\n",
+            "    println(b);\n",
+            "    println(b.x);\n",
+            "    println(b.y);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+    );
+    assert_eq!(out.code, 0);
+    // One value per name, the shadowed `x` at its outermost position, and the
+    // non-shadowed fields (`y`, assigned by A's ctor) unchanged: the same
+    // answers the old field map produced.
+    assert_eq!(
+        out.stdout.replace("\r\n", "\n"),
+        "B {x: 10, y: 2}\n10\n2\n",
+        "shadowed field output differs"
+    );
+}

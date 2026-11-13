@@ -91,7 +91,14 @@ pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
             }
         }
         Value::Instance(a) => fields!(a),
-        Value::VInstance(a) => fields!(a),
+        // VM instances hold fields as a slot `Vec` (the class names them), so
+        // they drain the whole vector instead of a map's values.
+        Value::VInstance(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.extend(std::mem::take(&mut d.slots));
+            }
+        }
         Value::CInstance(a) => fields!(a),
         Value::Tuple(a) => {
             if let Ok(items) = Arc::try_unwrap(a) {

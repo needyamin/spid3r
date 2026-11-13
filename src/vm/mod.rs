@@ -614,13 +614,7 @@ impl Vm {
                 .unwrap()
                 .insert(name, Value::NativeClosure(Arc::new(data)));
         }
-        let object = Arc::new(VmClass {
-            name: "Object".to_string(),
-            parent: None,
-            fields: Vec::new(),
-            methods: HashMap::new(),
-            ctor: None,
-        });
+        let object = VmClass::build("Object".to_string(), None, Vec::new(), HashMap::new(), None);
         self.globals
             .lock()
             .unwrap()
@@ -2678,9 +2672,9 @@ impl Vm {
                     match obj {
                         Value::VInstance(inst) => {
                             let ib = inst.lock().unwrap();
-                            match ib.fields.get(name.as_ref()) {
-                                Some(v) => {
-                                    let val = v.clone();
+                            match ib.class.slot_index.get(name.as_ref()) {
+                                Some(&i) => {
+                                    let val = ib.slots[i].clone();
                                     drop(ib);
                                     self.frames[nf].slots.push(val);
                                 }
@@ -2737,9 +2731,9 @@ impl Vm {
                         other => match other {
                             Value::VInstance(inst) => {
                                 let ib = inst.lock().unwrap();
-                                match ib.fields.get(name.as_ref()) {
-                                    Some(v) => {
-                                        let val = v.clone();
+                                match ib.class.slot_index.get(name.as_ref()) {
+                                    Some(&i) => {
+                                        let val = ib.slots[i].clone();
                                         drop(ib);
                                         self.frames[nf].slots.push(val);
                                     }
@@ -2775,9 +2769,9 @@ impl Vm {
                         Value::VInstance(inst) => {
                             let name = field_name;
                             let mut ib = inst.lock().unwrap();
-                            match ib.fields.get_mut(name.as_ref()) {
-                                Some(slot) => {
-                                    *slot = v.clone();
+                            match ib.class.slot_index.get(name.as_ref()) {
+                                Some(&i) => {
+                                    ib.slots[i] = v.clone();
                                     drop(ib);
                                     self.frames[nf].slots.push(v);
                                 }
@@ -3640,34 +3634,26 @@ impl Vm {
                 ctor = Some(fd);
             }
         }
-        Ok(Arc::new(VmClass {
-            name: cproto.name,
+        Ok(VmClass::build(
+            cproto.name,
             parent,
-            fields: cproto.fields,
+            cproto.fields,
             methods,
             ctor,
-        }))
+        ))
     }
 
     /// Create an instance and run its constructor (if any). The constructed
     /// instance is placed on the caller's stack by `OpReturn` of the ctor
     /// frame.
     fn new_instance_vm(&mut self, class: Arc<VmClass>, args: Vec<Value>) -> Result<(), VmError> {
-        let mut fields: HashMap<String, Value> = HashMap::new();
-        let mut cur = Some(class.clone());
-        let mut chain: Vec<Arc<VmClass>> = Vec::new();
-        while let Some(c) = cur {
-            cur = c.parent.clone();
-            chain.push(c);
-        }
-        for c in chain.iter().rev() {
-            for (fname, _) in &c.fields {
-                fields.insert(fname.clone(), Value::Null);
-            }
-        }
+        // One Null slot per flattened field, laid out by the class. The ctor
+        // assigns through the same slots (`FieldSet`), so a field is never
+        // missing — reading one before the ctor writes it yields null, which
+        // is what the old pre-populated map produced too.
         let instance = VmInstanceData {
             class: class.clone(),
-            fields,
+            slots: vec![Value::Null; class.slot_names.len()],
         };
         let obj = Value::VInstance(new_ref(instance));
         let ctor = {
@@ -4327,13 +4313,13 @@ fn find_method_vclass(class: &Arc<VmClass>, name: &str) -> Option<Arc<VmFunc>> {
 /// Convert a tree-walk `ClassData` to a `VmClass`. Used only for `Object`
 /// (which has no methods), so method/ctor shells are intentionally empty.
 fn tree_class_to_vclass(cd: &crate::value::ClassData) -> Arc<VmClass> {
-    Arc::new(VmClass {
-        name: cd.name.clone(),
-        parent: cd.parent.as_ref().map(|p| tree_class_to_vclass(p)),
-        fields: cd.fields.clone(),
-        methods: HashMap::new(),
-        ctor: None,
-    })
+    VmClass::build(
+        cd.name.clone(),
+        cd.parent.as_ref().map(|p| tree_class_to_vclass(p)),
+        cd.fields.clone(),
+        HashMap::new(),
+        None,
+    )
 }
 
 /// Binary operator semantics, identical to the tree-walk interpreter.

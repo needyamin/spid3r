@@ -1441,7 +1441,15 @@ pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *m
         }
         Value::VInstance(inst) => {
             let inst = inst.lock().unwrap();
-            match inst.fields.get(&name) {
+            // Fields live in class-laid-out slots; the class's index map does
+            // the name resolution the old per-instance map did.
+            match inst
+                .class
+                .slot_index
+                .get(&name)
+                .copied()
+                .and_then(|i| inst.slots.get(i))
+            {
                 Some(v) => leak(v.clone()),
                 None => rt_throw(&format!(
                     "instance of {} has no field '{}'",
