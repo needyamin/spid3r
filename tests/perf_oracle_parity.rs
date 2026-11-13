@@ -800,3 +800,259 @@ fn self_append_stays_generic_and_correct() {
     assert_eq!(out.code, 0);
     assert_eq!(out.stdout.replace("\r\n", "\n"), "1024\n");
 }
+
+// ---------------------------------------------------------------------------
+// Aliasing and flush-interaction corpus (W3.3).
+//
+// The pending-string buffer REPLACES the slot on flush with a fresh
+// `Arc<str>`; every alias of the slot's old value must keep that old value,
+// and every read of the pending slot must observe the accumulated one. The
+// corpus pins eleven shapes where aliasing, buffering, calls and rebinds
+// interact, each run three ways (fused VM, --no-opt VM, tree) and required to
+// agree byte for byte on full stdout. The explicit expected outputs make a
+// systematic wrong answer fail even when all three paths agree on it.
+// ---------------------------------------------------------------------------
+
+/// (name, source, expected stdout lines) — every case is asserted for
+/// three-engine parity and the exact stdout.
+const ALIASING_CASES: &[(&str, &str, &str)] = &[
+    (
+        // A plain alias keeps the pre-append value while the buffer flushes
+        // into the slot.
+        "alias_local_keeps_old_value",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let a = s;\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        s = s + \"x\";\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(a);\n",
+            "    println(s);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "ab\nabxxx\n",
+    ),
+    (
+        // The same through a list element, which aliases the old string.
+        "alias_list_element_keeps_old_value",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let l = [s];\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        s = s + \"x\";\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(l[0]);\n",
+            "    println(s);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "ab\nabxxx\n",
+    ),
+    (
+        // The same through a map value.
+        "alias_map_value_keeps_old_value",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let m = map();\n",
+            "    m[\"k\"] = s;\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        s = s + \"x\";\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(m[\"k\"]);\n",
+            "    println(s);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "ab\nabxxx\n",
+    ),
+    (
+        // t aliases s's value and never rebinds: appends read the accurate
+        // (never-pending) rhs slot, so s grows by one "x" per iteration.
+        "alias_rhs_never_rebound",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"x\";\n",
+            "    let t = s;\n",
+            "    let i = 0;\n",
+            "    while i < 4 {\n",
+            "        s = s + t;\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s);\n",
+            "    println(t);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "xxxxx\nx\n",
+    ),
+    (
+        // The rhs rebinds inside the loop: at the next append the rhs slot's
+        // own buffer is pending, so the arm must materialize it before the
+        // rhs is read — the exact rule the W3.2 first draft got wrong.
+        "alias_rhs_rebinds_in_loop",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let t = \"z\";\n",
+            "    let i = 0;\n",
+            "    while i < 4 {\n",
+            "        s = s + t;\n",
+            "        t = t + \"!\";\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s);\n",
+            "    println(t);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "abzz!z!!z!!!\nz!!!!\n",
+    ),
+    (
+        // An alias passed across a call: the call boundary flushes the
+        // buffer, and the callee sees the materialized value.
+        "alias_across_call_sees_materialized_value",
+        concat!(
+            "fn useit(v) { return v + \"|\"; }\n",
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let a = s;\n",
+            "    s = s + \"x\";\n",
+            "    println(useit(a));\n",
+            "    println(useit(s));\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "ab|\nabx|\n",
+    ),
+    (
+        // Two buffers in one loop: `s = s + f()` (call rhs, generic) builds
+        // s, then `u = u + s` reads a pending s as its RHS — the
+        // materialize-before-read rule again, now with the roles swapped.
+        "two_buffers_rhs_pending_swap",
+        concat!(
+            "fn t_alias() { return \"Q\"; }\n",
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let u = \"\";\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        s = s + t_alias();\n",
+            "        u = u + s;\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s);\n",
+            "    println(u);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "abQQQ\nabQabQQabQQQ\n",
+    ),
+    (
+        // An int rebind replaces the appended value entirely: the buffer's
+        // content must not resurrect after the assignment.
+        "int_rebind_replaces_appended_value",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        s = s + \"x\";\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    s = 5;\n",
+            "    println(s);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "5\n",
+    ),
+    (
+        // Reading the pending slot mid-loop (flush) and aliasing the
+        // materialized value inside a branch.
+        "alias_after_midloop_flush",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        s = s + \"x\";\n",
+            "        if i == 1 {\n",
+            "            let u = s;\n",
+            "            println(u);\n",
+            "        }\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "abxx\nabxxx\n",
+    ),
+    (
+        // A three-operand shape through the generic Add (`s + t + \"y\"`):
+        // the fused arm covers only the two-operand shapes, the rest must
+        // still answer with the generic semantics.
+        "three_operand_chain_stays_generic",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let t = s;\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        s = s + t + \"y\";\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s);\n",
+            "    println(t);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "ababyabyaby\nab\n",
+    ),
+    (
+        // The pending slot is reassigned FROM another pending-ish value: the
+        // buffer flushes at the generic SetLocal, and both names observe the
+        // same accumulated string.
+        "rebind_from_accumulated_value",
+        concat!(
+            "fn main() {\n",
+            "    let s = \"ab\";\n",
+            "    let parts = [\"a\", \"b\"];\n",
+            "    let acc = \"\";\n",
+            "    let i = 0;\n",
+            "    while i < 3 {\n",
+            "        acc = acc + parts[i % 2];\n",
+            "        s = acc;\n",
+            "        i = i + 1;\n",
+            "    }\n",
+            "    println(s);\n",
+            "    println(acc);\n",
+            "    return 0;\n",
+            "}\n",
+        ),
+        "aba\naba\n",
+    ),
+];
+
+#[test]
+fn aliasing_cases_agree_on_all_paths() {
+    for &(name, src, expected) in ALIASING_CASES {
+        let out = assert_parity(name, src);
+        assert_eq!(out.code, 0, "[{name}] exit code {}", out.code);
+        assert_eq!(
+            out.stdout.replace("\r\n", "\n"),
+            expected,
+            "[{name}] stdout differs"
+        );
+    }
+}
