@@ -58,3 +58,40 @@ regression fails the matrix rather than a user's program.
 
 `stdlib/yaml.matrix` still binds the logical to a local before negating it.
 That is now a readability choice, not a workaround.
+
+## The pending string buffer: what it covers, and where the quadratic lives
+
+**Status:** investigated (W3.1, 2026-11-13) with a temporary flush counter;
+the counter was removed after the measurement. Findings below are the record.
+
+`pending_str` is the VM's lazily-flushed growable buffer for consecutive
+`s = s + rhs` appends **to the same local slot**: the fused shape
+`GetLocal slot; Constant rhs; Add; SetLocal dst` with `dst == slot` and a
+string constant pushes `rhs` into an owned `String` instead of materializing
+`Value::Str` per append, and the buffer is written back to the slot when
+anything else can observe it (generic `GetLocal`/`SetLocal`, any call, frame
+pop below the slot, return, program end).
+
+Measured with an env-gated flush counter (release build):
+
+- The in-tree `strings` benchmark (constant rhs, 30k appends): **1 flush**,
+  at program end, len 30000. The W1.1 rotated-loop fusion keeps the loop
+  condition off the generic path, so the buffer survives every iteration:
+  12.1 ms at 30k, 12.8 ms at 60k — already linear (1.06x per doubling).
+- `s = s + t` (two-local rhs): **0 flushes** — the buffer never engages at
+  all, because the append fusion only matches a constant rhs. Every append
+  runs the generic `Add`, which allocates a fresh `String` and copies the
+  accumulated length: 26.2 ms at 30k, 69.0 ms at 60k — 2.63x per doubling.
+- `s = s + string(i)` (call-result rhs): **0 flushes**, same reason —
+  329 ms at 30k, 876 ms at 60k — 2.66x per doubling.
+- `tasks` (2k -> 4k spawn/join): linear (10.4 -> 11.5 ms).
+
+So the plan's premise for W3.1 — "flushes grow with n and kill the append" —
+is **refuted** by measurement: flushes do not grow with n in any append loop
+shape, and the quadratic shapes never build a buffer in the first place. The
+quadratic cost is the *unbuffered* generic `Add`, not the flush. The
+actionable follow-up (W3.2) is therefore to extend the append fusion to the
+two-local shape (`GetLocal a; GetLocal b; Add; SetLocal d`, `d == a`, both
+operands `Str`, `b != a`), not to re-target the flush. Call-result rhs (`s +
+f(x)`) cannot be buffered across the call: the callee may read the pending
+slot, and the call-boundary flush exists precisely to protect that.
