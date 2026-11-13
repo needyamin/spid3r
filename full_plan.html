@@ -126,8 +126,9 @@ the historical bootstrap and the reference oracle.</p>
 
 <h2>Ground rules (non-negotiable)</h2>
 <div class="step"><input type="checkbox" id="gr1"><div class="body">
-  <span class="st-title"><span class="id">GR-1</span>No fake implementations, no fake results</span>
+  <span class="st-title"><span class="id">GR-1</span>No fake implementations, no fake results — including speed</span>
   <p class="gate"><span class="lbl gate">GATE</span> every checkbox on this page carries a verifiable Gate line; the ledger records the evidence. A phase without a passing gate is reported as open, never as done.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> <b>no speed claim without benchmark evidence</b> under the phase0 protocol (9 warmups / 21 repeats / 2 passes, MAD gates, startup calibration — tools/phase0_bench.py). Targets are tiered: <b>Tier A</b> no-regression floors (blocking), <b>Tier B</b> measured-improvement targets vs frozen baselines (blocking), <b>Tier C</b> stretch (measured, labeled, never blocking). This discipline exists because earlier targets were formally retired when measured unreachable — docs/PERF_TARGET_RETIREMENT.md.</p>
 </div></div>
 <div class="step"><input type="checkbox" id="gr2"><div class="body">
   <span class="st-title"><span class="id">GR-2</span>Engine contract holds at every step</span>
@@ -154,6 +155,11 @@ the historical bootstrap and the reference oracle.</p>
 <tr><td>extern fn boundary types today</td><td>int, float, bool, string — <b>no pointer type</b></td><td class="mono">src/native/ir.rs c_type(); docs/FFI.md</td></tr>
 <tr><td>AOT memory model</td><td>arena (boxed values, no GC) — workable for batch compiles, documented</td><td class="mono">docs/NATIVE.md “Memory model”</td></tr>
 <tr><td>AOT conformance coverage</td><td class="num">75 / 87 engine-matrix cases</td><td class="mono">tests/engine_matrix.rs</td></tr>
+<tr><td>VM compute baseline (adj, startup-subtracted)</td><td>arith 39.4 ms = 2.13× PHP · methods 65.9 ms = 11.9× best · closures 10.9 ms = 4.65× · strings 3.08 ms = 2.34×</td><td class="mono">benchmarks/report-data.json 2026-11-14</td></tr>
+<tr><td>AOT native speed (the speed path)</td><td>HLC prime: native 9.03 ms = <b>3.26× faster</b> than the VM’s 30.5 ms</td><td class="mono">docs/PERF_TARGET_RETIREMENT.md (phase5 records)</td></tr>
+<tr><td>Startup (empty program, best)</td><td class="num">spid3r 8.24 ms · PHP 22.2 ms · Python 16.0 ms</td><td class="mono">report-data.json “startup”</td></tr>
+<tr><td>Perf floors (Tier A, blocking)</td><td class="num">8 workloads, margins 5.4×–28.4×</td><td class="mono">src/cli.rs BENCH_FLOORS + report-data.json gate block</td></tr>
+<tr><td>Node.js / Rust reference workloads</td><td>prime.js · json.js · map.js · prime.rs exist in benchmarks/compare/ — <b>not yet measured under the phase0 protocol</b> (Phase 11, step P-1)</td><td class="mono">benchmarks/compare/ + manifest.json</td></tr>
 <tr><td>Estimated new Spid3r code (Phases 1–6)</td><td class="num">~20–25k lines</td><td class="mono">frontend 9.5k + codegen layer ~4.5k + driver/tools ~4k + tests</td></tr>
 </table>
 <p class="dim">The full audit trail lives in <a href="#ledger">the ledger</a> and in <code>docs/</code>
@@ -219,6 +225,7 @@ the historical bootstrap and the reference oracle.</p>
   <span class="st-title"><span class="id">1.4</span>Fuzz + teeth proof</span>
   <p class="deliv"><span class="lbl del">DELIV</span> the existing fuzz infrastructure feeds random/mutated inputs to both lexers; a deliberately broken comparison harness is proven RED, then restored.</p>
   <p class="gate"><span class="lbl gate">GATE</span> ≥1,000 fuzz cases with zero token-stream differences; teeth test recorded in the ledger; CI parity job green.</p>
+  <p class="gate"><span class="lbl gate">GATE · PERF</span> <b>Tier B</b>: selfhost lexer throughput ≥ ½ the stage-0 lexer’s MB/s on the corpus — measured A/B on the same machine under the phase0 protocol (the port must be fast, not just correct).</p>
 </div></div>
 
 <!-- ================================================================ PHASE 2 -->
@@ -240,6 +247,7 @@ the historical bootstrap and the reference oracle.</p>
   <span class="st-title"><span class="id">2.3</span>Parser diagnostics</span>
   <p class="deliv"><span class="lbl del">DELIV</span> first-error behavior with identical messages and spans (“expected ‘(’ after match…”, selective-import errors, etc.).</p>
   <p class="gate"><span class="lbl gate">GATE</span> diagnostic parity on the corpus negative programs; fuzz ≥1,000 cases with zero AST/diagnostic differences.</p>
+  <p class="gate"><span class="lbl gate">GATE · PERF</span> <b>Tier B</b>: selfhost parser throughput ≥ ½ the stage-0 parser’s (programs/second on the corpus, phase0 protocol).</p>
 </div></div>
 
 <!-- ================================================================ PHASE 3 -->
@@ -297,6 +305,7 @@ the historical bootstrap and the reference oracle.</p>
   <span class="st-title"><span class="id">5.2</span>Expression/statement codegen</span>
   <p class="deliv"><span class="lbl del">DELIV</span> the ir.rs port: locals/slots, control flow, closures/upvalue cells, classes/vtables, match lowering, try/catch pending-throw protocol, string append buffer, spawn/await — every arm parity-checked against the Rust codegen’s behavior, not reimplemented from imagination.</p>
   <p class="gate"><span class="lbl gate">GATE</span> the Spid3r compiler compiles the corpus to objects; LLVM <code>verify</code> passes; the linked executables answer byte-identically to Stage-0 builds on the corpus.</p>
+  <p class="gate"><span class="lbl gate">GATE · PERF</span> <b>Tier B — output-quality parity</b>: corpus programs compiled by the self-hosted compiler run ≤ 1.25× the wall time of the same programs compiled by Stage 0 (the Spid3r codegen must reproduce Stage 0’s optimization quality — loop rotation, fusion, inlining — or the whole language silently gets slower). The LLVM optimization pipeline runs via the LLVM-C FFI (Phase 11, P-3).</p>
 </div></div>
 
 <div class="step"><input type="checkbox" id="s5-3"><div class="body">
@@ -339,12 +348,14 @@ the historical bootstrap and the reference oracle.</p>
   <span class="st-title"><span class="id">7.2</span>Stage 2: the fixed point</span>
   <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r-self build selfhost/main.matrix -o spid3r-self-2</code>: the self-hosted compiler compiles ITS OWN sources; the stage-2 binary must also work.</p>
   <p class="gate"><span class="lbl gate">GATE</span> three-way comparison on the corpus: Stage-0-built, stage-1-built and stage-2-built executables answer identically (stdout + exit codes); the fixed point is recorded in the ledger with checksums.</p>
+  <p class="gate"><span class="lbl gate">GATE · PERF</span> the three-way comparison also covers the Phase 5.2 output-quality gate (≤1.25× wall time vs Stage-0 builds) — the fixed point must not degrade speed any more than it degrades semantics.</p>
 </div></div>
 
 <div class="step"><input type="checkbox" id="s7-3"><div class="body">
   <span class="st-title"><span class="id">7.3</span>Self-compile resource envelope</span>
   <p class="deliv"><span class="lbl sec">SEC</span> memory and time of the self-compile measured (arena model: the compiler process leaks its intermediates by design — the total must be bounded and reported honestly); budget/deadline behavior documented.</p>
   <p class="gate"><span class="lbl gate">GATE</span> peak memory and wall time recorded in the ledger; no unbounded growth across repeated self-compiles within a process.</p>
+  <p class="gate"><span class="lbl gate">GATE · PERF</span> <b>Tier B</b>: self-compile throughput (compiler-source MB/s compiled) recorded vs Stage 0 compiling the same sources — the ratio is the honest number for “the self-hosted compiler is as fast as the Rust one”, published whatever it is, with Tier C improvement targets set only from that measured baseline.</p>
 </div></div>
 
 <!-- ================================================================ PHASE 8 -->
@@ -398,6 +409,83 @@ the historical bootstrap and the reference oracle.</p>
   <p class="gate"><span class="lbl gate">GATE</span> the review is committed; the “no Rust for future compiler builds” objective is met within the documented boundary — and the boundary is honest.</p>
 </div></div>
 
+<!-- ================================================================ PHASE 11 -->
+<h2 id="p11"><span class="phase-tag">PHASE 11</span> Performance engineering — “lightweight and rocket speed”, with receipts</h2>
+
+<div class="panel ok">
+<b>What “rocket speed” honestly means here, in three tiers</b> (the retirement discipline of
+docs/PERF_TARGET_RETIREMENT.md applies — every tier is a measured number, never a slogan):
+<ul>
+<li><b>Tier A — no-regression floors (blocking).</b> The 8 existing bench floors stay enforced; the selfhost
+toolchain and its outputs get their own floors. A regression that breaks a floor blocks the merge.</li>
+<li><b>Tier B — measured-improvement targets (blocking).</b> Speedups vs frozen, checksummed baselines —
+each landed only with A/B numbers under the phase0 protocol, exactly like the W1–W5 program did
+(W2.2 −21.8% construction, W3.2 2.63×→1.04× scaling, native prime 3.26× vs VM).</li>
+<li><b>Tier C — stretch (measured, labeled, non-blocking).</b> Closing the measured gap to the Node.js and
+Rust reference points on the shared workloads. These are pursued, published, and retired openly if
+measured unreachable — never promised.</li>
+</ul>
+<b>The reference points are real, not marketing:</b> Node.js and Rust reference implementations of the same
+workloads already exist in <code>benchmarks/compare/</code> (prime.js/json.js/map.js, prime.rs) — Phase 11
+first measures them under the identical phase0 protocol, then publishes Spid3r-AOT vs Node vs Rust on the
+same machine, same inputs, same statistics. Where the gap to Rust/Node is structural (JIT vs AOT, boxed
+dynamic values vs unboxed), the benchmark page says so — honestly, with the measured ratio.
+</div>
+
+<div class="step"><input type="checkbox" id="s11-1"><div class="body">
+  <span class="st-title"><span class="id">P-1</span>Measure the Node.js and Rust reference points</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> extend <code>tools/phase0_bench.py</code> to run <code>benchmarks/compare/*.js</code> via node and <code>prime.rs</code> via its compiled binary under the same protocol as the Spid3r variants (9 warmups / 21 repeats / 2 passes, checksum-first RESULT lines, startup calibration for node itself).</p>
+  <p class="gate"><span class="lbl gate">GATE</span> a frozen reference table (Spid3r-VM / Spid3r-native / Node / Rust on prime, json, map) with MAD÷median ≤ 5% and two-pass agreement ≤3%; published in Appendix B and the benchmark page.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s11-2"><div class="body">
+  <span class="st-title"><span class="id">P-2</span>Selfhost toolchain benchmarks, frozen</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> throughput workloads for the toolchain itself — lexing MB/s, parsing programs/s, self-compile MB/s, corpus-build time — checksummed in <code>benchmarks/selfhost/</code>, measured by the same harness.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the baseline table (Stage-0 and selfhost numbers side by side) is frozen and recorded; the Phase 1–7 throughput gates read their targets from this table.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s11-3"><div class="body">
+  <span class="st-title"><span class="id">P-3</span>LLVM optimization pipeline in the self-hosted codegen</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the Spid3r codegen drives the LLVM pass pipeline through the LLVM-C FFI (the passes Stage 0 relies on: loop rotation equivalents, fusion pre-conditions, inlining, constant folding) so the machine code quality matches Stage 0’s.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> the Phase 5.2 output-quality gate (≤1.25× vs Stage-0 builds) passes on the whole corpus, plus the HLC workloads; per-workload deltas recorded.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s11-4"><div class="body">
+  <span class="st-title"><span class="id">P-4</span>Toolchain build hardening: LTO + PGO</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> release builds of the toolchain (and the runtime artifact) with LTO and profile-guided optimization, profiles collected from real compiler workloads (the self-compile itself).</p>
+  <p class="gate"><span class="lbl gate">GATE</span> A/B measured improvement on the self-compile benchmark recorded in the ledger; floors still pass; binary size tracked (no unbounded growth).</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s11-5"><div class="body">
+  <span class="st-title"><span class="id">P-5</span>Startup and lightness budgets</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> lazy initialization of the native table / tzdata / unicode tables where semantics allow; binary- and installer-size budgets recorded per release; memory envelope of a plain run measured.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> <b>Tier A</b>: startup floor frozen at ≤ 8.5 ms (the measured 8.24 ms baseline + margin); size budgets recorded; any init change is parity-checked (lazy init must not change observable behavior).</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s11-6"><div class="body">
+  <span class="st-title"><span class="id">P-6</span>Hot-path optimization backlog (W-program discipline)</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the measured-bottleneck backlog for the self-hosted compiler and its generated code (arena allocation tuning, boxed-value hot paths, dispatch costs) — each item lands only with an A/B measurement, like W2.2 (−21.8%) and W3.2 (2.63×→1.04×) did.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> every accepted optimization has a ledger entry: baseline number, change, after number, regression check; rejected experiments are recorded too (negative results count as results).</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s11-7"><div class="body">
+  <span class="st-title"><span class="id">P-7</span>CI performance tracking</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the bench floors extended to the selfhost toolchain workloads; the phase0 regression rule (median >1.05× previous AND >3× pooled MAD on two consecutive runs) wired into CI as an advisory gate.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> CI reports perf deltas per push; a deliberate perf regression is demonstrated RED once (teeth), then reverted.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s11-8"><div class="body">
+  <span class="st-title"><span class="id">P-8</span>The honest target table — Spid3r-AOT vs Node vs Rust</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> the benchmark page publishes the three-way table with Tier A/B/C labels, structural-gap notes where they exist (JIT vs AOT, boxed dynamic values vs unboxed), and the retirement discipline: a target measured unreachable is retired openly, with the owner’s approval — exactly like docs/PERF_TARGET_RETIREMENT.md did before.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> every published number traces to a run in the ledger; no target is presented as a promise without its Tier label and measurement.</p>
+</div></div>
+
+<div class="step"><input type="checkbox" id="s11-9"><div class="body">
+  <span class="st-title"><span class="id">P-9</span>Documentation loop</span>
+  <p class="deliv"><span class="lbl del">DELIV</span> <code>docs/html/benchmark.html</code> and this file’s Appendix B updated on every accepted optimization; the performance log stays continuous (the W-program style), from the first selfhost lexer benchmark to the final published three-way table.</p>
+  <p class="gate"><span class="lbl gate">GATE</span> doc-verification tools clean; the ledger and the benchmark page agree on every number.</p>
+</div></div>
+
 <!-- ================================================================ SECURITY -->
 <h2>Security invariants ledger (checked per phase, never silently)</h2>
 <div class="step"><input type="checkbox" id="sec1"><div class="body">
@@ -422,6 +510,7 @@ the historical bootstrap and the reference oracle.</p>
 <table class="ledger">
 <tr><th>Date</th><th>Step</th><th>Gate / command</th><th>Result</th></tr>
 <tr><td>2026-11-14</td><td class="mono">plan</td><td>this roadmap created; grounded in the 2026-11-14 audit</td><td>document committed, all checkboxes open</td></tr>
+<tr><td>2026-11-14</td><td class="mono">plan rev 2</td><td>performance-engineering program added (Phase 11 P-1…P-9, Tier A/B/C target discipline, inline PERF gates in Phases 1/2/5/7, Appendix B measured baselines); grounded in report-data.json 2026-11-14 and docs/PERF_TARGET_RETIREMENT.md</td><td>document committed, checkboxes still all open</td></tr>
 <tr><td></td><td></td><td></td><td></td></tr>
 <tr><td></td><td></td><td></td><td></td></tr>
 </table>
@@ -445,7 +534,26 @@ the historical bootstrap and the reference oracle.</p>
 <tr><td class="mono">LSP / GUI / agent / debugger / REPL</td><td class="num">~8,700</td><td>remains Rust-side (optional late phase)</td><td>—</td></tr>
 </table>
 
-<h2>Appendix B — governing documents</h2>
+<h2>Appendix B — measured performance baselines (frozen reference numbers)</h2>
+<p class="dim">Every target in Phase 11 reads from these tables. Protocol: tools/phase0_bench.py — 9 warmups,
+21 measured repeats, 2 independent passes, MAD÷median ≤ 5%, checksum-first RESULT lines, startup-subtracted
+compute times. On the unpinned shared host all absolute milliseconds are ADVISORY_ONLY; ratios and deltas are
+the portable truth.</p>
+<table>
+<tr><th>Engine / reference</th><th>HLC prime</th><th>HLC json</th><th>HLC map</th><th>Source</th></tr>
+<tr><td>Spid3r VM</td><td class="num">30.5 ms</td><td class="num">191.3 ms</td><td class="num">22.2 ms</td><td class="mono">PERF_TARGET_RETIREMENT (phase5)</td></tr>
+<tr><td><b>Spid3r native (AOT)</b></td><td class="num"><b>9.03 ms (3.26× vs VM)</b></td><td class="num">213.2 ms</td><td class="num">48.2 ms</td><td class="mono">same</td></tr>
+<tr><td>Spid3r exec (.matrixc)</td><td class="num">30.8 ms</td><td class="num">190.0 ms</td><td class="num">22.2 ms</td><td class="mono">same</td></tr>
+<tr><td>Spid3r tree (oracle)</td><td class="num">249.9 ms</td><td class="num">259.8 ms</td><td class="num">74.6 ms</td><td class="mono">same</td></tr>
+<tr><td>Node.js reference</td><td class="num">unmeasured — Phase 11 P-1</td><td class="num">unmeasured</td><td class="num">unmeasured</td><td class="mono">benchmarks/compare/*.js exist</td></tr>
+<tr><td>Rust reference</td><td class="num">unmeasured — Phase 11 P-1</td><td class="num">n/a</td><td class="num">n/a</td><td class="mono">benchmarks/compare/prime.rs exists</td></tr>
+</table>
+<p class="dim">VM-engine adj baselines (report-data.json 2026-11-14, the 8 gated workloads): arith 39.4 ms ·
+strings 3.08 ms · list 22.7 ms · map 15.3 ms · methods 65.9 ms · closures 10.9 ms · json 8.3 ms · tasks 3.5 ms.
+Startup: spid3r 8.24 ms. The AOT native path is the performance reason self-hosting targets it: the compiler
+compiling itself compiles to native code, exactly like every other AOT program.</p>
+
+<h2>Appendix C — governing documents</h2>
 <p class="mono">
 docs/ENGINE_CONTRACT.md — the three-engine acceptance bar ·
 docs/NATIVE.md — AOT subset, memory model, exit codes ·
