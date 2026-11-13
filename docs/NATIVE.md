@@ -170,7 +170,11 @@ produced. Full contract: `docs/FFI.md`.
 
 ## Supported subset
 
-Supported today: functions/closures with upvalues, `let`/`const`,
+Supported today: functions/closures with upvalues, `let`/`const`, global
+`let`/`const` bindings, `if`/`elif`/`else`, `while`, C-style `for`, `for-in`
+(including over maps), `match` with enum variants and exhaustiveness
+checking, top-level `enum` declarations (variants lower to constructor
+functions),
 `if`/`elif`/`else`, `while`, C-style `for`, `for-in`,
 `return`/`break`/`continue`, `try`/`catch`/`finally`/`throw` (see
 [Exceptions](#exceptions)), `import` (see [Modules](#modules)),
@@ -367,6 +371,14 @@ byte-identical to the tree interpreter.**
   run) is wrapped in a timeout and reported as `HANG` if it ever stalls.
   Current result: **24 pass / 0 fail / 1 skip** — the one skip is `math_util`,
   a no-`main` library example (not a native gap; there is no program to run).
+- `tests/engine_matrix.rs` (`the_aot_subset_matches_the_same_expectations`,
+  runs under `cargo test --features native`): **75 of the 87 conformance
+  cases** — everything except the VM-fusion internals and the HLC performance
+  pins — build and run natively, comparing exit code, stdout and the first
+  stderr line against the same expectations the tree/VM runs satisfy,
+  including semantic-error cases (a failed `spid3r build` is a result, not a
+  harness error: the front end's diagnostics are part of the engine
+  contract).
 - Spot checks, all identical to the tree interpreter: `fib(10)` = 55,
   fizzbuzz(15), `sum_to(999)` = 499500, a 1,000,000-iteration spin =
   499999500000, nested 1000×1000 loops = 249500250000, and a 100,000-line

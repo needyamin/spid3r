@@ -99,8 +99,15 @@ fn run_aot(name: &str, src: &str) -> Option<(i32, String, String)> {
         .expect("spawn spid3r build");
     let _ = std::fs::remove_file(&src_path);
     if !build.status.success() {
+        // A failed build is a result, not a harness error: the front end's
+        // parse/semantic diagnostics are part of the engine contract, so they
+        // are returned as `(build_exit, "", first line)` and compared against
+        // the same expectations the tree/VM runs satisfy. The span/trace
+        // decoration under the first line is the one documented AOT gap
+        // (docs/NATIVE.md).
         let msg = String::from_utf8_lossy(&build.stderr).to_string();
-        panic!("[{} / aot] build failed: {}", name, msg);
+        let first = msg.lines().next().unwrap_or("").trim().to_string();
+        return Some((build.status.code().unwrap_or(-1), String::new(), first));
     }
     let o = Command::new(&exe).output().expect("run aot binary");
     let _ = std::fs::remove_file(&exe);
@@ -236,7 +243,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[semantic]: type mismatch in 'xs': expected list<int>, got list<string>"),
-        aot: false,
+        aot: true,
     },
     // I-2: an uncaught RUNTIME error prints the bare message on every engine —
     // `error[runtime]: division by zero` — not the user-throw shape. The AOT
@@ -293,7 +300,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[semantic]: this match is not exhaustive for enum 'Color': missing 'Blue' (add an arm or `_`)"),
-        aot: false,
+        aot: true,
     },
     // -------------------------------------------------------------- syntax (3)
     Case {
@@ -337,7 +344,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[semantic]: an if-expression branch must end with an expression (or with return/throw)"),
-        aot: false,
+        aot: true,
     },
     // -------------------------------------------------------------- syntax (2)
     Case {
@@ -368,7 +375,7 @@ const CASES: &[Case] = &[
         // `==` binds tighter than `&`, so this is `6 & (3 == 2)` — a bool
         // operand, rejected by the one implementation.
         err: Some("error[runtime]: bit_and expects int operands, found bool"),
-        aot: false,
+        aot: true,
     },
     // ---------------------------------------------------------------- operators
     Case {
@@ -440,7 +447,7 @@ const CASES: &[Case] = &[
         // An instance without the dunder is still a type error — the overload
         // path must not swallow it.
         err: Some("error[runtime]: cannot add instance and instance"),
-        aot: false,
+        aot: true,
     },
     // Cancellation latency (audit S-23). A loop body that blocks — the
     // canonical `while true { sleep_ms(..) }` worker — burns wall-clock time
@@ -472,7 +479,7 @@ const CASES: &[Case] = &[
         out: "10",
         code: 0,
         err: None,
-        aot: false,
+        aot: true,
     },
     // ---------------------------------------------------------------- branching
     Case {
@@ -516,7 +523,7 @@ const CASES: &[Case] = &[
         out: "a\nb\n2",
         code: 0,
         err: None,
-        aot: false,
+        aot: true,
     },
     Case {
         name: "for_c",
@@ -648,7 +655,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[semantic]: unknown parameter 'nope' in the call to f"),
-        aot: false,
+        aot: true,
     },
     Case {
         name: "named_args_positional_after_named",
@@ -656,7 +663,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[semantic]: a positional argument cannot follow a named one"),
-        aot: false,
+        aot: true,
     },
     Case {
         name: "named_args_method_rejected",
@@ -664,7 +671,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[semantic]: named arguments on method calls are not supported yet (call m as a function, or pass arguments positionally)"),
-        aot: false,
+        aot: true,
     },
     Case {
         name: "interface",
@@ -672,7 +679,7 @@ const CASES: &[Case] = &[
         out: "ada",
         code: 0,
         err: None,
-        aot: false,
+        aot: true,
     },
     Case {
         name: "field_assign",
@@ -697,7 +704,7 @@ const CASES: &[Case] = &[
         out: "[1, 2]\n[]\n2\n2",
         code: 0,
         err: None,
-        aot: false,
+        aot: true,
     },
     Case {
         name: "string_methods",
@@ -705,7 +712,7 @@ const CASES: &[Case] = &[
         out: "[a, b, c]\nx\n1\ntrue\nabab",
         code: 0,
         err: None,
-        aot: false,
+        aot: true,
     },
     Case {
         name: "null_handling",
@@ -773,7 +780,7 @@ const CASES: &[Case] = &[
         out: "7",
         code: 0,
         err: None,
-        aot: false,
+        aot: true,
     },
     // ------------------------------------------------------------ error paths
     Case {
@@ -782,7 +789,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[semantic]: 'x' is already declared in this scope"),
-        aot: false,
+        aot: true,
     },
     Case {
         name: "err_await_outside_async",
@@ -790,7 +797,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[semantic]: await is only allowed inside an async function"),
-        aot: false,
+        aot: true,
     },
     Case {
         name: "err_index_oob",
@@ -799,7 +806,7 @@ const CASES: &[Case] = &[
         code: 1,
         // Was `error[vm]` on the VM and `error[runtime]` on the tree engine.
         err: Some("error[runtime]: index 5 out of bounds for length 1"),
-        aot: false,
+        aot: true,
     },
     Case {
         name: "err_div_zero",
@@ -807,7 +814,7 @@ const CASES: &[Case] = &[
         out: "",
         code: 1,
         err: Some("error[runtime]: division by zero"),
-        aot: false,
+        aot: true,
     },
     // ------------------------------------------------- Phase 0 HLC golden values
     // Inline RESULT-only sources for the three Heavy-Load Checker compute
@@ -1201,9 +1208,13 @@ fn every_construct_behaves_identically_on_tree_and_vm() {
     );
 }
 
-/// The AOT subset: one case per construct family the native backend claims to
-/// support. A construct that compiles but computes a different answer is worse
-/// than one that is rejected, so these compare against the same expectations.
+/// The AOT subset: every case except the VM-fusion internals and the HLC
+/// performance pins. A construct that compiles but computes a different answer
+/// is worse than one that is rejected, so these compare exit code, stdout and
+/// the FIRST stderr line against the same expectations the tree/VM runs
+/// satisfy — semantic errors too, since a failed `spid3r build` is a result
+/// (the span/trace decoration under that first line is the one documented AOT
+/// gap, docs/NATIVE.md).
 #[cfg(feature = "native")]
 #[test]
 fn the_aot_subset_matches_the_same_expectations() {
