@@ -126,7 +126,7 @@ jobs:
 
   # Windows NSIS installer: build.rs packages Spid3r-Setup-<version>.exe on any
   # Windows *release* build (see `windows_installer` in build.rs — nested release
-  # build + makensis, APPVERSION from Cargo.toml). This job installs LLVM 18
+  # build + makensis, APPVERSION from Cargo.toml). This job installs LLVM 23
   # first so the NATIVE AOT backend ships too — matching the 1.0.0 installer
   # (LLVM-C.dll + LLVM-C.lib + spid3r_lang.lib in the payload, ~30 MB); without
   # it `spid3r build` cannot produce standalone executables. SPID3R_NO_INSTALLER
@@ -149,15 +149,17 @@ jobs:
         with:
           key: windows-installer
 
-      # NSIS (packaging) + LLVM 18.1.8 (the exact major.minor the `native`
-      # backend's inkwell binding targets — "llvm18-1"). Choco installs into
-      # C:\Program Files\LLVM, which build.rs probes by default; pin the
-      # version or choco serves the latest major and the binding fails.
-      - name: Install NSIS and LLVM 18.1.8
-        timeout-minutes: 15
+      # NSIS (packaging) + LLVM 23.1.0 — the exact major.minor the `native`
+      # backend's inkwell binding targets ("llvm23-1"). Chocolatey does not
+      # carry 23.1.0, so install the official MSI (pinned release asset);
+      # msiexec lands it in C:\Program Files\LLVM, which build.rs probes by
+      # default. Pin the URL to the release tag or the payload drifts.
+      - name: Install NSIS and LLVM 23.1.0
+        timeout-minutes: 20
         run: |
           choco install nsis -y --no-progress
-          choco install llvm --version=18.1.8 -y --no-progress --allow-downgrade
+          curl -L -o LLVM-23.1.0-win64.msi https://github.com/llvm/llvm-project/releases/download/llvmorg-23.1.0/LLVM-23.1.0-win64.msi
+          Start-Process msiexec -ArgumentList '/i', 'LLVM-23.1.0-win64.msi', '/qn', '/norestart' -Wait
           Test-Path "C:\Program Files\LLVM\bin\LLVM-C.dll"
           Test-Path "C:\Program Files\LLVM\lib\LLVM-C.lib"
 
