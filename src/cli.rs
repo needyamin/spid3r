@@ -1083,6 +1083,10 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     // (ARC-06), and every differential gate pins the two engines to identical
     // observable behavior, so this flip changes speed, not semantics.
     let mut engine = "vm";
+    // An explicit `--engine` wins over the `spid3r.engine` config setting,
+    // which (when present) wins over this built-in default — the precedence
+    // the config schema documents for the key.
+    let mut engine_set = false;
     let mut file: Option<String> = None;
     let mut no_opt = false;
     let mut prof = false;
@@ -1206,7 +1210,10 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             "--engine" => {
                 i += 1;
                 match args.get(i) {
-                    Some(e) if e == "tree" || e == "vm" => engine = e,
+                    Some(e) if e == "tree" || e == "vm" => {
+                        engine = e;
+                        engine_set = true;
+                    }
                     Some(e) => return Err(usage(&format!("unknown engine '{}'", e))),
                     None => return Err(usage("--engine needs a value")),
                 }
@@ -1215,6 +1222,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                 let e = a.strip_prefix("--engine=").unwrap();
                 if e == "tree" || e == "vm" {
                     engine = e;
+                    engine_set = true;
                 } else {
                     return Err(usage(&format!("unknown engine '{}'", e)));
                 }
@@ -1282,6 +1290,17 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
         crate::logging::record("config", note);
     }
     let run_limits = crate::budget::run_limits(&cfg);
+    // The `spid3r.engine` config key ("Default engine for `spid3r run` when
+    // --engine is omitted", per the schema) was historically declared but
+    // never read — the CLI used its own default regardless. An explicit
+    // `--engine` flag always wins; the config value fills the gap when the
+    // flag is absent.
+    if !engine_set {
+        match cfg.get("spid3r.engine") {
+            Some("tree") | Some("vm") => engine = cfg.get("spid3r.engine").unwrap(),
+            _ => {}
+        }
+    }
     match engine {
         "tree" => {
             if prof {

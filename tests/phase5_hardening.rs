@@ -164,3 +164,60 @@ fn config_init_help_is_help_and_init_requires_force_to_overwrite() {
         .unwrap()
         .contains("[spid3r]"));
 }
+
+/// The `spid3r.engine` config key must actually select the engine.
+///
+/// The key is documented as "Default engine for `spid3r run` when --engine is
+/// omitted" and the schema's own default is `vm`, but `cmd_run` never read it:
+/// the CLI used its built-in default regardless, so an INI `engine = tree`
+/// was silently ignored. The observable used here is `--prof`, which is a
+/// usage error on the tree engine (exit 2) and a working run on the VM
+/// (exit 0) — deterministic, no timing involved.
+#[test]
+fn config_engine_key_selects_the_run_engine() {
+    let dir = scratch("config-engine");
+    let prog = dir.join("loop.matrix");
+    std::fs::write(&prog, "fn main() {\n    println(7);\n    return 0;\n}\n").expect("write prog");
+
+    // No INI: the built-in default (VM) runs --prof fine.
+    let none = dir.join("none.ini");
+    std::fs::write(&none, "").expect("write ini");
+    let out = run_in(&dir, &none, &["run", "--prof", prog.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "unconfigured --prof must run on the VM"
+    );
+
+    // INI `engine = tree`: --prof becomes the tree-engine usage error, which
+    // proves the config key is consumed.
+    let tree = dir.join("tree.ini");
+    std::fs::write(&tree, "[spid3r]\nengine = tree\n").expect("write ini");
+    let out = run_in(&dir, &tree, &["run", "--prof", prog.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "config engine = tree must be honored: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("--prof is a VM-engine feature"), "{err}");
+
+    // An explicit flag overrides the INI: --engine vm with engine = tree.
+    let out = run_in(
+        &dir,
+        &tree,
+        &["run", "--engine", "vm", "--prof", prog.to_str().unwrap()],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "explicit --engine must override the INI"
+    );
+
+    // And INI `engine = vm` runs --prof fine, matching the schema default.
+    let vm = dir.join("vm.ini");
+    std::fs::write(&vm, "[spid3r]\nengine = vm\n").expect("write ini");
+    let out = run_in(&dir, &vm, &["run", "--prof", prog.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0));
+}
