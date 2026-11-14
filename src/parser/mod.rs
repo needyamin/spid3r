@@ -421,12 +421,15 @@ impl Parser {
         }
         // `extern fn …;` — an FFI declaration. `extern` is not a keyword (it
         // must remain usable as an ordinary identifier), so this is a
-        // two-token lookahead rather than a keyword arm.
-        if !had_vis && matches!(self.kind(), TokenKind::Ident(w) if w == "extern") {
+        // two-token lookahead rather than a keyword arm. Works with or
+        // without a visibility prefix (`public extern fn` exports the FFI
+        // symbol from its module).
+        if matches!(self.kind(), TokenKind::Ident(w) if w == "extern") {
             let save = self.pos;
             self.pos += 1;
             if self.at_kw(Keyword::Fn) {
-                return Ok(Stmt::Fn(self.parse_fn(false, None, true)?));
+                let pre_vis = if had_vis { Some(vis) } else { None };
+                return Ok(Stmt::Fn(self.parse_fn(false, pre_vis, true)?));
             }
             self.pos = save;
         }

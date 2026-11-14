@@ -1,0 +1,232 @@
+// selfhost/llvm.matrix — the LLVM-C extern surface (roadmap Phase 5, step
+// 5.1, docs/SELFHOST.md SH-7).
+//
+// The exact LLVM C API subset the codegen (selfhost/codegen.matrix) drives,
+// declared through the Phase-0 ptr/usize boundary (SH-7). The oracle's
+// inkwell bindings resolve these same symbols from LLVM-C.lib — which
+// `spid3r build` already puts on every built executable's link line
+// (docs/BUILDING.md; src/native/link.rs passes LLVM-C.lib + /DELAYLOAD).
+//
+// Type mapping (docs/FFI.md, the Phase-0 contract):
+//   LLVM pointer handles  -> ptr     (opaque, i64-encoded handles)
+//   C int / LLVMBool      -> int     (32-bit C ABI width; mask returns to 32
+//                                    bits — the upper half of an i64 read of
+//                                    a C `int` return is zero-extended by the
+//                                    x86-64 `mov eax` write, but mask anyway)
+//   C size_t / u64        -> usize
+//   const char* params    -> string  (copied to a C buffer, freed after the
+//                                    call)
+//   const char* returns   -> string  (spid3r_value_from_cstr boxes the C
+//                                    string into a Spid3r value; the buffer
+//                                    is NOT freed — the callee may own it.
+//                                    LLVM results disposed by
+//                                    LLVMDisposeMessage leak into the
+//                                    process arena: a compiler process exits
+//                                    after emitting.)
+//
+// The runtime trampolines (src/native/rt.rs) ride the same extern surface:
+// they live in the runtime staticlib linked into every built executable.
+
+// ------------------------------------------------------------ LLVM core
+
+public extern fn LLVMContextCreate() -> ptr;
+public extern fn LLVMModuleCreateWithNameInContext(name: string, ctx: ptr) -> ptr;
+public extern fn LLVMCreateBuilderInContext(ctx: ptr) -> ptr;
+public extern fn LLVMDisposeModule(m: ptr);
+public extern fn LLVMDisposeBuilder(b: ptr);
+public extern fn LLVMContextDispose(c: ptr);
+
+// ------------------------------------------------------------- LLVM types
+
+public extern fn LLVMInt1TypeInContext(ctx: ptr) -> ptr;
+public extern fn LLVMInt8TypeInContext(ctx: ptr) -> ptr;
+public extern fn LLVMInt16TypeInContext(ctx: ptr) -> ptr;
+public extern fn LLVMInt32TypeInContext(ctx: ptr) -> ptr;
+public extern fn LLVMInt64TypeInContext(ctx: ptr) -> ptr;
+public extern fn LLVMDoubleTypeInContext(ctx: ptr) -> ptr;
+public extern fn LLVMVoidTypeInContext(ctx: ptr) -> ptr;
+public extern fn LLVMPointerTypeInContext(ctx: ptr, elem: ptr, addrspace: int) -> ptr;
+public extern fn LLVMFunctionType(ret: ptr, params: ptr, count: int, is_var_arg: int) -> ptr;
+public extern fn LLVMStructTypeInContext(ctx: ptr, elems: ptr, count: int, packed: int) -> ptr;
+public extern fn LLVMArrayType2(ctx: ptr, elem: ptr, count: int) -> ptr;
+
+// ------------------------------------------------------------ LLVM values
+
+public extern fn LLVMConstInt(ty: ptr, val: usize, sign_extend: int) -> ptr;
+public extern fn LLVMConstReal(ty: ptr, val: float) -> ptr;
+public extern fn LLVMConstNull(ty: ptr) -> ptr;
+public extern fn LLVMConstStringInContext(ctx: ptr, s: string, len: usize, dont_null_terminate: int) -> ptr;
+public extern fn LLVMAddGlobal(m: ptr, ty: ptr, name: string) -> ptr;
+public extern fn LLVMSetInitializer(g: ptr, val: ptr);
+public extern fn LLVMSetGlobalConstant(g: ptr, is_const: int);
+public extern fn LLVMSetUnnamedAddress(g: ptr, unnamed: int);
+public extern fn LLVMSetLinkage(g: ptr, linkage: int);
+
+// ---------------------------------------------------------- LLVM functions
+
+public extern fn LLVMAddFunction(m: ptr, name: string, fn_ty: ptr) -> ptr;
+public extern fn LLVMGetNamedFunction(m: ptr, name: string) -> ptr;
+public extern fn LLVMAppendBasicBlockInContext(ctx: ptr, fn_val: ptr, name: string) -> ptr;
+public extern fn LLVMGetEntryBasicBlock(fn_val: ptr) -> ptr;
+public extern fn LLVMGetFirstBasicBlock(fn_val: ptr) -> ptr;
+public extern fn LLVMPositionBuilderAtEnd(b: ptr, bb: ptr);
+public extern fn LLVMGetInsertBlock(b: ptr) -> ptr;
+
+// --------------------------------------------------------------- builders
+
+public extern fn LLVMBuildAdd(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildSub(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildMul(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildSDiv(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildSRem(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildFAdd(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildFSub(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildFMul(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildFDiv(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildICmp(b: ptr, pred: int, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildFCmp(b: ptr, pred: int, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildRet(b: ptr, v: ptr) -> ptr;
+public extern fn LLVMBuildRetVoid(b: ptr) -> ptr;
+public extern fn LLVMBuildBr(b: ptr, bb: ptr) -> ptr;
+public extern fn LLVMBuildCondBr(b: ptr, cond: ptr, then_bb: ptr, else_bb: ptr) -> ptr;
+public extern fn LLVMBuildAlloca(b: ptr, ty: ptr, name: string) -> ptr;
+public extern fn LLVMBuildLoad2(b: ptr, ty: ptr, ptr_val: ptr, name: string) -> ptr;
+public extern fn LLVMBuildStore(b: ptr, val: ptr, ptr_val: ptr) -> ptr;
+public extern fn LLVMBuildCall2(b: ptr, fn_ty: ptr, fn_val: ptr, args: ptr, argc: int, name: string) -> ptr;
+public extern fn LLVMBuildZExt(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
+public extern fn LLVMBuildSExt(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
+public extern fn LLVMBuildTrunc(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
+public extern fn LLVMBuildBitCast(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
+public extern fn LLVMBuildInBoundsGEP2(b: ptr, ty: ptr, ptr_val: ptr, indices: ptr, count: int, name: string) -> ptr;
+public extern fn LLVMBuildIsNotNull(b: ptr, val: ptr, name: string) -> ptr;
+public extern fn LLVMBuildIsNull(b: ptr, val: ptr, name: string) -> ptr;
+public extern fn LLVMBuildUnreachable(b: ptr) -> ptr;
+public extern fn LLVMBuildPhi(b: ptr, ty: ptr, name: string) -> ptr;
+public extern fn LLVMBuildSwitch(b: ptr, val: ptr, default_bb: ptr, case_count: int) -> ptr;
+public extern fn LLVMBuildExtractValue(b: ptr, agg: ptr, index: int, name: string) -> ptr;
+
+// ------------------------------------------------------ verify + targets
+
+// LLVMBool returns are C `int` (32-bit) — mask to 32 bits at the call site.
+public extern fn LLVMVerifyFunction(fn_val: ptr, action: int) -> int;
+public extern fn LLVMVerifyModule(m: ptr, action: int, msg_out: ptr) -> int;
+public extern fn LLVMGetDefaultTargetTriple() -> string;
+public extern fn LLVMGetHostCPUName() -> string;
+public extern fn LLVMGetFirstTarget() -> ptr;
+public extern fn LLVMGetTargetName(target: ptr) -> string;
+public extern fn LLVMGetNextTarget(target: ptr) -> ptr;
+public extern fn LLVMCreateTargetMachine(target: ptr, triple: string, cpu: string, features: string, opt_level: int, reloc: int, code_model: int) -> ptr;
+public extern fn LLVMTargetMachineEmitToFile(tm: ptr, m: ptr, filename: string, codegen: int, err_out: ptr) -> int;
+public extern fn LLVMSetTarget(m: ptr, triple: string);
+public extern fn LLVMPrintModuleToString(m: ptr) -> string;
+public extern fn LLVMCreateTargetDataLayout(tm: ptr) -> ptr;
+public extern fn LLVMSetModuleDataLayout(m: ptr, dl: ptr);
+public extern fn LLVMGetTargetMachineTriple(tm: ptr) -> string;
+public extern fn LLVMDisposeMessage(msg: ptr);
+
+// -------------------------------------------------- gate-5.1 verification
+
+// LLVMCodeGenFileType: LLVMAssemblyFile = 0, LLVMObjectFile = 1.
+public const OBJECT_FILE = 1;
+// LLVMVerifierFailureAction: LLVMReturnStatusAction = 1.
+public const RETURN_STATUS_ACTION = 1;
+// LLVMCodeGenOptLevel::Default = 2; LLVMRelocMode::Default = 0;
+// LLVMCodeModel::Default = 0.
+public const OPT_DEFAULT = 2;
+public const RELOC_DEFAULT = 0;
+public const CODE_MODEL_DEFAULT = 0;
+
+// The gate-5.1 pipeline: initialize targets, create context/module/builder,
+// build one function returning i64 42, verify it, and emit an object file.
+// Returns 0 on success; a nonzero step number on failure (1 = verify failed,
+// 2 = emit failed).
+public fn llvm_emit_object(out_path, file_label) {
+    init_targets();
+    let ctx = LLVMContextCreate();
+    let m = LLVMModuleCreateWithNameInContext(file_label, ctx);
+    let b = LLVMCreateBuilderInContext(ctx);
+    let i64_ty = LLVMInt64TypeInContext(ctx);
+    let fn_ty = LLVMFunctionType(i64_ty, malloc(8), 0, 0);
+    let fn_val = LLVMAddFunction(m, "main", fn_ty);
+    let bb = LLVMAppendBasicBlockInContext(ctx, fn_val, "entry");
+    LLVMPositionBuilderAtEnd(b, bb);
+    let forty_two = LLVMConstInt(i64_ty, 42, 0);
+    LLVMBuildRet(b, forty_two);
+    let verdict = LLVMVerifyFunction(fn_val, RETURN_STATUS_ACTION) & 4294967295;
+    if verdict != 0 {
+        return 1;
+    }
+    let triple = LLVMGetDefaultTargetTriple();
+    LLVMSetTarget(m, triple);
+    // LLVMGetTargetFromTriple needs an LLVMTargetRef* output parameter —
+    // the FFI's ptr type can't dereference raw memory to read it back.
+    // The iteration API is the single-pointer equivalent: walk the target
+    // list and match by name (the x86_64 triple maps to LLVM's "x86"
+    // target; aarch64 triples map to "aarch64").
+    // LLVM 23 registers separate targets per arch: "x86-64" (x86_64),
+    // "x86" (i386+), "aarch64". The triple's arch selects the target name.
+    let want = "x86-64";
+    if triple.len() >= 6 and triple.slice(0, 6) == "aarch6" {
+        want = "aarch64";
+    }
+    let target = LLVMGetFirstTarget();
+    while target != null {
+        if LLVMGetTargetName(target) == want {
+            break;
+        }
+        target = LLVMGetNextTarget(target);
+    }
+    if target == null {
+        return 3;
+    }
+    let cpu = LLVMGetHostCPUName();
+    let tm = LLVMCreateTargetMachine(target, triple, cpu, "", OPT_DEFAULT, RELOC_DEFAULT, CODE_MODEL_DEFAULT);
+    // The error slot: malloc'd storage LLVM writes on failure. The port does
+    // not read it (the return code carries the verdict; the leaked slot and
+    // message die with the compiler process — the documented arena model).
+    let err_slot = malloc(8);
+    let rc = LLVMTargetMachineEmitToFile(tm, m, out_path, OBJECT_FILE, err_slot) & 4294967295;
+    if rc != 0 {
+        return 2;
+    }
+    return 0;
+}
+
+public extern fn malloc(size: usize) -> ptr;
+
+
+
+// The RUNTIME TRAMPOLINES (spid3r_binop, spid3r_value_int, spid3r_call, ...)
+// are deliberately NOT declared here: they are the AOT backend's internal
+// calling convention, declared on demand by src/native/ir.rs's tramp() when
+// the compiled program's own operations need them — declaring them as extern
+// fn collides (LLVM auto-renames the duplicate, producing unresolvable
+// .N-suffixed symbols). The codegen references them at the IR level of the
+// TARGET program it emits (LLVMAddFunction on the target module), which is
+// an IR-level symbol, not a process-level extern.
+
+// The x86 + aarch64 target initializers (the llvm23 target-x86/target-aarch64
+// build). LLVMInitializeNativeTarget is a header inline in LLVM-C, not a
+// symbol — declare the per-target inits inkwell's features drive.
+public extern fn LLVMInitializeX86TargetInfo();
+public extern fn LLVMInitializeX86Target();
+public extern fn LLVMInitializeX86TargetMC();
+public extern fn LLVMInitializeX86AsmPrinter();
+public extern fn LLVMInitializeAArch64TargetInfo();
+public extern fn LLVMInitializeAArch64Target();
+public extern fn LLVMInitializeAArch64TargetMC();
+public extern fn LLVMInitializeAArch64AsmPrinter();
+
+public fn init_targets() {
+    LLVMInitializeX86TargetInfo();
+    LLVMInitializeX86Target();
+    LLVMInitializeX86TargetMC();
+    LLVMInitializeX86AsmPrinter();
+    // AArch64 init on an x86 host is harmless (the target exists in the
+    // library) and keeps the surface honest for a cross-compile future.
+    LLVMInitializeAArch64TargetInfo();
+    LLVMInitializeAArch64Target();
+    LLVMInitializeAArch64TargetMC();
+    LLVMInitializeAArch64AsmPrinter();
+    return;
+}

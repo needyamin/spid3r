@@ -1,0 +1,11 @@
+import "llvm";
+
+fn main() {
+    let rc = llvm_emit_object("llvm_min.obj", "llvm_min");
+    if rc == 0 {
+        println("gate 5.1: object emitted, function verified");
+        return 0;
+    }
+    println("gate 5.1 FAILED at step " + string(rc));
+    return 1;
+}
