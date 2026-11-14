@@ -9,7 +9,7 @@
 // Usage: spid3r run selfhost/lexer/roundtrip.matrix <tokens.json>
 
 import "token";
-import "json";
+import "lexer_json";
 
 fn kind_code(name) {
     let n = KIND_NAMES.len();

@@ -10,13 +10,9 @@
 #     and fail later (parse/semantic/runtime) are compared on stdout like the
 #     positives, since their token stream is well-defined.
 #
-# KNOWN DIVERGENCES (each named here and in the full_plan.html ledger — a
-# divergence outside this list is a failure):
-#   - engine_matrix/string_interp: the oracle validates a `{expr}` capture by
-#     PARSING it (src/parser hole_is_expression); the parser is Phase 2, so
-#     the self-host lexer accepts captures that pass the scan-level checks.
-#     `{not a hole}` is rejected by the oracle, accepted literally by the
-#     port. Removed when Phase 2 lands hole_is_expression.
+# KNOWN DIVERGENCES: none. (The Phase-2 parser closed the one this harness
+# used to carry — engine_matrix/string_interp — by wiring the oracle's
+# hole_is_expression into the lexer through the injected hole check.)
 #
 # Usage: bash tools/selfhost_lex_parity.sh [spid3r-binary] [engine]
 #   default binary: target/debug/spid3r (engine: tree)
@@ -26,20 +22,7 @@ BIN="${1:-target/debug/spid3r}"
 ENGINE="${2:-tree}"
 [ -x "$BIN" ] || BIN="${BIN}.exe"
 
-# Divergences by corpus file stem (without .matrix). Every entry must have a
-# ledger row in full_plan.html explaining it.
-KNOWN_DIVERGENT="string_interp"
-
-is_known_divergent() {
-  local stem="$1"
-  local k
-  for k in $KNOWN_DIVERGENT; do
-    [ "$stem" = "$k" ] && return 0
-  done
-  return 1
-}
-
-SELFHOST="selfhost/lexer/main.matrix"
+SELFHOST="selfhost/main.matrix"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 
@@ -53,7 +36,7 @@ for f in selfhost/corpus/examples/*.matrix \
   base=$(basename "$f" .matrix)
   "$BIN" tokens "$f" --json </dev/null > "$OUT/o.out" 2> "$OUT/o.err"
   ocode=$?
-  "$BIN" run --engine "$ENGINE" "$SELFHOST" "$f" </dev/null > "$OUT/s.out" 2> "$OUT/s.err"
+  "$BIN" run --engine "$ENGINE" "$SELFHOST" tokens "$f" </dev/null > "$OUT/s.out" 2> "$OUT/s.err"
   scode=$?
 
   # A file whose ORACLE run lexes cleanly (exit 0, JSON on stdout) is compared
@@ -67,12 +50,6 @@ for f in selfhost/corpus/examples/*.matrix \
       continue
     fi
     if ! cmp -s "$OUT/o.out" "$OUT/s.out"; then
-      if is_known_divergent "$base"; then
-        echo "KNOWN DIVERGENCE (ledger-recorded): $base"
-        divergent=$((divergent + 1))
-        pass=$((pass + 1))
-        continue
-      fi
       echo "PARITY FAIL (token stream): $base"
       fail=$((fail + 1))
       continue

@@ -1,0 +1,375 @@
+// selfhost/roundtrip_ast.matrix — the Phase-2 model round-trip gate (2.1).
+//
+// Reads an AST JSON dump (as `spid3r parse --dump-ast-json` writes it), loads
+// it into this port's node model, re-serializes with the same serializer the
+// parser feeds, and prints the result. Byte-equality with the input proves
+// the oracle's AST JSON re-parses into the Spid3r model without loss.
+//
+// Usage: spid3r run selfhost/main.matrix <tokens.json> — no: this entry takes
+// the JSON file directly:
+//   spid3r run selfhost/roundtrip_ast.matrix <ast.json>
+// (It is a gate tool, not part of the parity surface.)
+
+import "token";
+import "lexer_json";
+import "ast";
+
+// JSON → model. The node lists mirror the dump shape; json_parse gives maps,
+// converted per variant here.
+fn from_json_node(m) {
+    let tag = m["node"];
+    if tag == "Int" {
+        return ["Int", m["value"], spj(m)];
+    }
+    if tag == "Float" {
+        return ["Float", m["value"], spj(m)];
+    }
+    if tag == "Str" {
+        return ["Str", m["value"], spj(m)];
+    }
+    if tag == "Bool" {
+        return ["Bool", m["value"], spj(m)];
+    }
+    if tag == "Null" {
+        return ["Null", spj(m)];
+    }
+    if tag == "Ident" {
+        return ["Ident", m["name"], spj(m)];
+    }
+    if tag == "List" {
+        return ["List", node_list(m["items"]), spj(m)];
+    }
+    if tag == "Fn" {
+        return ["Fn", fnproto(m["fn"]), spj(m)];
+    }
+    if tag == "Unary" {
+        return ["Unary", m["op"], from_json_node(m["expr"]), spj(m)];
+    }
+    if tag == "Binary" {
+        return ["Binary", m["op"], from_json_node(m["l"]), from_json_node(m["r"]), spj(m)];
+    }
+    if tag == "Logical" {
+        return ["Logical", m["op"], from_json_node(m["l"]), from_json_node(m["r"]), spj(m)];
+    }
+    if tag == "Assign" {
+        return ["Assign", m["op"], from_json_node(m["target"]), from_json_node(m["value"]), spj(m)];
+    }
+    if tag == "Call" {
+        return ["Call", from_json_node(m["callee"]), node_list(m["args"]), spj(m)];
+    }
+    if tag == "Method" {
+        return ["Method", m["name"], from_json_node(m["object"]), node_list(m["args"]), spj(m)];
+    }
+    if tag == "Index" {
+        return ["Index", from_json_node(m["object"]), from_json_node(m["index"]), spj(m)];
+    }
+    if tag == "Field" {
+        // Two shapes share the name: the expression form carries object,
+        // the declaration form carries vis/ty.
+        if m.has("object") {
+            return ["FieldE", m["name"], from_json_node(m["object"]), spj(m)];
+        }
+        return ["FieldDecl", m["vis"], m["name"], type_opt(m["ty"]), spj(m)];
+    }
+    if tag == "New" {
+        return ["New", m["class"], node_list(m["args"]), spj(m)];
+    }
+    if tag == "Await" {
+        return ["Await", from_json_node(m["expr"]), spj(m)];
+    }
+    if tag == "NamedArg" {
+        return ["NamedArg", m["name"], from_json_node(m["value"]), spj(m)];
+    }
+    if tag == "Spawn" {
+        return ["Spawn", from_json_node(m["callable"]), spj(m)];
+    }
+    if tag == "Super" {
+        return ["Super", spj(m)];
+    }
+    if tag == "SuperCall" {
+        return ["SuperCall", m["parent"], m["method"], node_list(m["args"]), spj(m)];
+    }
+    if tag == "If" {
+        if m.has("elifs") {
+            let elifs = [];
+            let raw = m["elifs"];
+            let n = raw.len();
+            let i = 0;
+            while i < n {
+                elifs.push(["Elif", from_json_node(raw[i]["cond"]), block_n(raw[i]["body"])]);
+                i += 1;
+            }
+            return ["If", from_json_node(m["cond"]), block_n(m["then"]), elifs, block_opt(m["els"]), spj(m)];
+        }
+        return ["IfE", from_json_node(m["cond"]), block_n(m["then"]), block_opt(m["els"]), spj(m)];
+    }
+    if tag == "OptField" {
+        return ["OptField", m["name"], from_json_node(m["object"]), spj(m)];
+    }
+    if tag == "Coalesce" {
+        return ["Coalesce", from_json_node(m["l"]), from_json_node(m["r"]), spj(m)];
+    }
+    if tag == "Propagate" {
+        return ["Propagate", from_json_node(m["expr"]), spj(m)];
+    }
+    if tag == "Match" {
+        return ["Match", from_json_node(m["scrutinee"]), node_list(m["arms"]), spj(m)];
+    }
+    if tag == "MatchArm" {
+        return ["MatchArm", pattern(m["pattern"]), expr_opt(m["guard"]), block_n(m["body"]), spj(m)];
+    }
+    if tag == "Block" {
+        return ["Block", stmt_list(m["stmts"]), spj(m)];
+    }
+    if tag == "FnProto" {
+        return ["FnProto", m["vis"], m["is_async"], m["is_extern"], m["name"],
+            node_list(m["params"]), type_opt(m["ret"]), str_list(m["type_params"]),
+            block_n(m["body"]), spj(m)];
+    }
+    if tag == "Param" {
+        return ["Param", m["name"], type_opt(m["ty"]), expr_opt(m["default"]), spj(m)];
+    }
+    if tag == "Type" {
+        let arg = null;
+        if m["arg"] != null {
+            arg = from_json_node(m["arg"]);
+        }
+        return ["Type", m["name"], arg, m["nullable"], node_list(m["union"]), spj(m)];
+    }
+    if tag == "Variant" {
+        // The name is shared: an enum variant carries `fields`, a pattern
+        // variant carries `args`.
+        if m.has("fields") {
+            return ["Variant", m["name"], str_list(m["fields"]), spj(m)];
+        }
+        let args = [];
+        let raw = m["args"];
+        let n = raw.len();
+        let i = 0;
+        while i < n {
+            args.push(from_json_node(raw[i]));
+            i += 1;
+        }
+        return ["PatVariant", m["name"], args, spj(m)];
+    }
+    if tag == "Wild" {
+        return ["Wild"];
+    }
+    if tag == "Bind" {
+        return ["Bind", m["name"]];
+    }
+    if tag == "Literal" {
+        return ["PatLit", from_json_node(m["expr"]), spj(m)];
+    }
+    return ["UNKNOWN", tag];
+}
+
+fn pattern(m) {
+    return from_json_node(m);
+}
+
+fn block_n(m) {
+    return ["Block", stmt_list(m["stmts"]), spj(m)];
+}
+
+fn block_opt(m) {
+    if m == null {
+        return null;
+    }
+    return block_n(m);
+}
+
+fn expr_opt(m) {
+    if m == null {
+        return null;
+    }
+    return from_json_node(m);
+}
+
+fn type_opt(m) {
+    if m == null {
+        return null;
+    }
+    return from_json_node(m);
+}
+
+fn spj(m) {
+    return [m["line"], m["col"], m["len"]];
+}
+
+fn str_list(xs) {
+    return xs;
+}
+
+fn node_list(xs) {
+    let out = [];
+    let n = xs.len();
+    let i = 0;
+    while i < n {
+        out.push(from_json_node(xs[i]));
+        i += 1;
+    }
+    return out;
+}
+
+fn stmt_list(xs) {
+    return node_list_stmts(xs);
+}
+
+fn node_list_stmts(xs) {
+    let out = [];
+    let n = xs.len();
+    let i = 0;
+    while i < n {
+        out.push(stmt_from_json(xs[i]));
+        i += 1;
+    }
+    return out;
+}
+
+fn stmt_from_json(m) {
+    let tag = m["node"];
+    if tag == "Import" {
+        return ["Import", m["path"], m["alias"], spj(m)];
+    }
+    if tag == "Fn" {
+        return ["Fn", fnproto(m["fn"]), spj(m)];
+    }
+    if tag == "Class" {
+        let fields = [];
+        let raw = m["fields"];
+        let n = raw.len();
+        let i = 0;
+        while i < n {
+            fields.push(from_json_node(raw[i]));
+            i += 1;
+        }
+        let methods = [];
+        raw = m["methods"];
+        n = raw.len();
+        i = 0;
+        while i < n {
+            methods.push(fnproto(raw[i]));
+            i += 1;
+        }
+        let abstracts = m["abstracts"];
+        return ["Class", m["vis"], m["name"], m["is_abstract"], abstracts, m["parent"],
+            m["interfaces"], m["type_params"], fields, methods, spj(m)];
+    }
+    if tag == "Interface" {
+        let methods = [];
+        let raw = m["methods"];
+        let n = raw.len();
+        let i = 0;
+        while i < n {
+            let x = raw[i];
+            methods.push(["IMethod", x["name"], node_list(x["params"]), type_opt(x["ret"]), spj(x)]);
+            i += 1;
+        }
+        let defaults = [];
+        raw = m["default_methods"];
+        n = raw.len();
+        i = 0;
+        while i < n {
+            defaults.push(fnproto(raw[i]));
+            i += 1;
+        }
+        return ["Interface", m["vis"], m["name"], methods, defaults, spj(m)];
+    }
+    if tag == "Enum" {
+        return ["Enum", m["vis"], m["name"], node_list(m["variants"]), spj(m)];
+    }
+    if tag == "Let" {
+        return ["Let", m["vis"], m["name"], type_opt(m["ty"]), expr_opt(m["value"]), spj(m)];
+    }
+    if tag == "Const" {
+        return ["Const", m["vis"], m["name"], type_opt(m["ty"]), from_json_node(m["value"]), spj(m)];
+    }
+    if tag == "LetTuple" {
+        return ["LetTuple", m["vis"], m["names"], from_json_node(m["value"]), spj(m)];
+    }
+    if tag == "If" {
+        let elifs = [];
+        let raw = m["elifs"];
+        let n = raw.len();
+        let i = 0;
+        while i < n {
+            elifs.push(["Elif", from_json_node(raw[i]["cond"]), block_n(raw[i]["body"])]);
+            i += 1;
+        }
+        return ["If", from_json_node(m["cond"]), block_n(m["then"]), elifs, block_opt(m["els"]), spj(m)];
+    }
+    if tag == "While" {
+        return ["While", from_json_node(m["cond"]), block_n(m["body"]), spj(m)];
+    }
+    if tag == "ForIn" {
+        return ["ForIn", m["var"], m["var2"], from_json_node(m["iter"]), block_n(m["body"]), spj(m)];
+    }
+    if tag == "ForC" {
+        return ["ForC", stmt_from_json(m["init"]), from_json_node(m["cond"]), from_json_node(m["post"]), block_n(m["body"]), spj(m)];
+    }
+    if tag == "Return" {
+        return ["Return", expr_opt(m["value"]), spj(m)];
+    }
+    if tag == "Break" {
+        return ["Break", spj(m)];
+    }
+    if tag == "Continue" {
+        return ["Continue", spj(m)];
+    }
+    if tag == "Block" {
+        let inner = block_n(m["block"]);
+        return ["BlockStmt", inner, spj(m)];
+    }
+    if tag == "Expr" {
+        return ["ExprStmt", from_json_node(m["expr"]), spj(m)];
+    }
+    if tag == "Spawn" {
+        return ["Spawn", from_json_node(m["callable"]), spj(m)];
+    }
+    if tag == "Yield" {
+        return ["Yield", from_json_node(m["value"]), spj(m)];
+    }
+    if tag == "Try" {
+        let cx = null;
+        if m["catch"] != null {
+            let c = m["catch"];
+            cx = ["Catch", c["name"], block_n(c["body"]), spj(c)];
+        }
+        return ["Try", block_n(m["body"]), cx, block_opt(m["finally"]), spj(m)];
+    }
+    if tag == "Throw" {
+        return ["Throw", from_json_node(m["value"]), spj(m)];
+    }
+    return ["UNKNOWN-STMT", tag];
+}
+
+fn fnproto(m) {
+    return ["FnProto", m["vis"], m["is_async"], m["is_extern"], m["name"],
+        node_list(m["params"]), type_opt(m["ret"]), str_list(m["type_params"]),
+        block_n(m["body"]), spj(m)];
+}
+
+fn main() {
+    let a = args();
+    if a.len() != 1 {
+        eprint("usage: roundtrip_ast <ast.json>\n");
+        return 2;
+    }
+    let r = read_file(a[0]);
+    if r.is_err() {
+        eprint("error[usage]: cannot read '" + a[0] + "'\n");
+        return 2;
+    }
+    let parsed = json_parse(r.unwrap());
+    let stmts = [];
+    let raw = parsed["stmts"];
+    let n = raw.len();
+    let i = 0;
+    while i < n {
+        stmts.push(stmt_from_json(raw[i]));
+        i += 1;
+    }
+    print(program_to_json(parsed["file"], [stmts]));
+    return 0;
+}

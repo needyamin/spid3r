@@ -1,0 +1,1905 @@
+// selfhost/parser/parser.matrix — the Spid3r-written parser (roadmap Phase 2).
+//
+// A 1:1 port of src/parser/mod.rs over the Phase-1 lexer's token model
+// ([kind, value, line, col, len] lists). Parity targets (SH-5): AST JSON
+// identical to `spid3r parse --dump-ast-json` on the frozen corpus, and
+// first-error diagnostics with the oracle's exact messages and spans.
+//
+// State is an explicit handle `st = [toks, pos, saw_bigint, saw_yield, depth,
+// value_block_depth, in_match_guard]` rather than module globals: the
+// interpolation-hole paths re-enter the parser (hole_is_expression and the
+// `{expr}` desugar), and a re-entrant parse needs its own state. All parse
+// errors throw [message, line, col, len] — the same channel the lexer uses;
+// main.matrix renders the phase (error[parser], with the one deliberate
+// lexer-phase error named by a 5th element).
+
+import "token";
+import "ast";
+import "lexer";
+
+const MAX_PARSE_DEPTH = 64;
+const I64_MIN = -9223372036854775808;
+
+// ------------------------------------------------------------------ state
+
+public fn new_state(toks) {
+    return [toks, 0, false, false, 0, 0, false];
+}
+
+fn tk(st) {
+    return st[0][st[1]];
+}
+
+fn kd(st) {
+    return st[0][st[1]][0];
+}
+
+fn kv(st) {
+    return st[0][st[1]][1];
+}
+
+fn tsp(st) {
+    let t = st[0][st[1]];
+    return [t[2], t[3], t[4]];
+}
+
+fn tok_at(st, i) {
+    let n = st[0].len();
+    if i < 0 {
+        i = 0;
+    }
+    if i > n - 1 {
+        i = n - 1;
+    }
+    return st[0][i];
+}
+
+// peek_kind: clamped to the last token (EOF), exactly like the oracle.
+fn pkd(st, n) {
+    return tok_at(st, st[1] + n)[0];
+}
+
+fn pkv(st, n) {
+    return tok_at(st, st[1] + n)[1];
+}
+
+fn p_adv(st) {
+    st[1] += 1;
+}
+
+fn at_kw(st, name) {
+    return kd(st) == K_KW and kv(st) == name;
+}
+
+fn eat_kw(st, name) {
+    if at_kw(st, name) {
+        p_adv(st);
+        return true;
+    }
+    return false;
+}
+
+fn at_c(st, code) {
+    return kd(st) == code;
+}
+
+fn eat_c(st, code) {
+    if kd(st) == code {
+        p_adv(st);
+        return true;
+    }
+    return false;
+}
+
+fn perr(st, msg) {
+    let sp = tsp(st);
+    throw [msg, sp[0], sp[1], sp[2]];
+}
+
+// The one error the oracle reports under the lexer phase (a bare
+// IntMinMagnitude token reaching expression position).
+fn perr_lexer_phase(st, msg) {
+    let sp = tsp(st);
+    throw [msg, sp[0], sp[1], sp[2], "lexer"];
+}
+
+fn expect_c(st, code, what) {
+    if eat_c(st, code) {
+        return;
+    }
+    perr(st, "expected " + what + ", found " + describe(st));
+}
+
+fn expect_ident(st) {
+    if kd(st) == K_IDENT {
+        let name = kv(st);
+        let sp = tsp(st);
+        p_adv(st);
+        return [name, sp];
+    }
+    if kd(st) == K_KW and kv(st) == "self" {
+        let sp = tsp(st);
+        p_adv(st);
+        return ["self", sp];
+    }
+    perr(st, "expected an identifier, found " + describe(st));
+}
+
+fn expect_kw_n(st, name) {
+    if at_kw(st, name) {
+        let sp = tsp(st);
+        p_adv(st);
+        return sp;
+    }
+    perr(st, "expected '" + name + "', found " + describe(st));
+}
+
+fn prev_span(st) {
+    let t = tok_at(st, st[1] - 1);
+    return [t[2], t[3], t[4]];
+}
+
+fn at_eof(st) {
+    return kd(st) == K_EOF;
+}
+
+// ------------------------------------------------------------- describe
+
+// The oracle's describe(): error-facing token descriptions. The fallback arm
+// is Rust's Debug for TokenKind — variant name, with payloads for InterpStr
+// and BigIntLit rendered through Rust's string Debug.
+fn describe(st) {
+    let k = kd(st);
+    if k == K_EOF {
+        return "end of file";
+    }
+    if k == K_KW {
+        return "keyword '" + kv(st) + "'";
+    }
+    if k == K_IDENT {
+        return "'" + kv(st) + "'";
+    }
+    if k == K_INT {
+        return "integer " + string(kv(st));
+    }
+    if k == K_FLOAT {
+        return "number " + rust_float(kv(st));
+    }
+    if k == K_STR {
+        return "string \"" + kv(st) + "\"";
+    }
+    if k == K_ASSIGN {
+        return "'='";
+    }
+    if k == K_SEMI {
+        return "';'";
+    }
+    if k == K_RPAREN {
+        return "')'";
+    }
+    if k == K_RBRACE {
+        return "'}'";
+    }
+    if k == K_RBRACKET {
+        return "']'";
+    }
+    if k == K_LPAREN {
+        return "'('";
+    }
+    if k == K_LBRACE {
+        return "'{'";
+    }
+    if k == K_BIGINT {
+        return "BigIntLit(" + str_debug(kv(st)) + ")";
+    }
+    if k == K_INTERP {
+        return "InterpStr([" + pieces_debug(kv(st)) + "])";
+    }
+    return kind_name(k);
+}
+
+fn pieces_debug(pieces) {
+    let frags = [];
+    let n = pieces.len();
+    let i = 0;
+    while i < n {
+        if i > 0 {
+            frags.push(", ");
+        }
+        let p = pieces[i];
+        if p[0] == "lit" {
+            frags.push("Lit(" + str_debug(p[1]) + ")");
+        } else if p[0] == "path" {
+            let inner = [];
+            let m = p[1].len();
+            let j = 0;
+            while j < m {
+                inner.push(str_debug(p[1][j]));
+                j += 1;
+            }
+            frags.push("Path([" + inner.join(", ") + "])");
+        } else {
+            frags.push("Hole(" + str_debug(p[1]) + ")");
+        }
+        i += 1;
+    }
+    return frags.join("");
+}
+
+// --------------------------------------------------------------- program
+
+public fn parse_program(st) {
+    let stmts = [];
+    let seen_non_import = false;
+    while not at_eof(st) {
+        if at_c(st, K_AT) {
+            seen_non_import = true;
+            let decs = parse_decorators(st);
+            let decl = parse_declaration(st);
+            let name = null;
+            if decl[0] == "Fn" {
+                name = decl[1][4];
+            } else if decl[0] == "Class" {
+                name = decl[2];
+            }
+            if name == null {
+                perr(st, "a decorator must precede a function or a class declaration");
+            }
+            stmts.push(decl);
+            // Bottom-up, like Python: the last decorator is applied first.
+            let n = decs.len();
+            let i = n - 1;
+            while i >= 0 {
+                let sp = prev_span(st);
+                let call = n_call(decs[i], [n_ident(name, sp)], sp);
+                let assign = n_assign("Assign", n_ident(name, sp), call, sp);
+                stmts.push(n_expr_stmt(assign));
+                i -= 1;
+            }
+            continue;
+        }
+        if at_kw(st, "import") {
+            if seen_non_import {
+                perr(st, "import must appear before other declarations");
+            }
+            stmts.push(parse_import(st));
+        } else {
+            seen_non_import = true;
+            stmts.push(parse_declaration(st));
+        }
+    }
+    if st[3] {
+        stmts.insert(0, n_import("gen", "__gen", [0, 0, 0]));
+    }
+    if st[2] {
+        stmts.insert(0, n_import("bigint", "__bigint", [0, 0, 0]));
+    }
+    return [stmts];
+}
+
+// `@name` or `@name(args)`, one or more in a row.
+fn parse_decorators(st) {
+    let out = [];
+    while at_c(st, K_AT) {
+        p_adv(st);
+        let sp = tsp(st);
+        let dec = null;
+        if kd(st) == K_IDENT {
+            let name = kv(st);
+            p_adv(st);
+            dec = n_ident(name, sp);
+        } else {
+            perr(st, "a decorator must be a name or a call, e.g. `@memo` or `@cache(10)`");
+        }
+        if at_c(st, K_LPAREN) {
+            let args = parse_args(st);
+            let csp = join(sp, prev_span(st));
+            dec = n_call(dec, args, csp);
+        }
+        out.push(dec);
+    }
+    return out;
+}
+
+fn parse_import(st) {
+    let sp = expect_kw_n(st, "import");
+    if eat_c(st, K_LBRACE) {
+        let specs = [];
+        while not at_c(st, K_RBRACE) {
+            let r = expect_ident(st);
+            let export_name = r[0];
+            if eat_kw(st, "as") {
+                let local = expect_ident(st);
+                specs.push(export_name + ":" + local[0]);
+            } else {
+                specs.push(export_name);
+            }
+            if not eat_c(st, K_COMMA) {
+                break;
+            }
+        }
+        if specs.len() == 0 {
+            perr(st, "selective import requires at least one symbol");
+        }
+        expect_c(st, K_RBRACE, "'}' after selective import list");
+        if kd(st) == K_IDENT and kv(st) == "from" {
+            p_adv(st);
+        } else {
+            perr(st, "expected 'from' after selective import list");
+        }
+        let path = null;
+        if kd(st) == K_STR {
+            path = kv(st);
+            p_adv(st);
+        } else {
+            perr(st, "import expects a quoted module path, e.g. import { a } from \"math_util\";");
+        }
+        expect_c(st, K_SEMI, "';' after import");
+        return n_import(path, "{" + specs.join(",") + "}", sp);
+    }
+    let path = null;
+    if kd(st) == K_STR {
+        path = kv(st);
+        p_adv(st);
+    } else {
+        perr(st, "import expects a quoted module path, e.g. import \"math_util\";");
+    }
+    let alias = null;
+    if eat_kw(st, "as") {
+        alias = expect_ident(st)[0];
+    }
+    expect_c(st, K_SEMI, "';' after import");
+    return n_import(path, alias, sp);
+}
+
+fn parse_declaration(st) {
+    let vis = "private";
+    let had_vis = false;
+    if eat_kw(st, "public") {
+        vis = "public";
+        had_vis = true;
+    } else if eat_kw(st, "private") {
+        had_vis = true;
+    }
+    // `extern fn …;` — `extern` is not a keyword; two-token lookahead.
+    if not had_vis and kd(st) == K_IDENT and kv(st) == "extern" {
+        let save = st[1];
+        p_adv(st);
+        if at_kw(st, "fn") {
+            return n_fn_stmt(parse_fn(st, false, null, true));
+        }
+        st[1] = save;
+    }
+    let k = kd(st);
+    if k == K_KW and (kv(st) == "fn" or kv(st) == "async") {
+        let pre = null;
+        if had_vis {
+            pre = vis;
+        }
+        return n_fn_stmt(parse_fn(st, false, pre, false));
+    }
+    if k == K_KW and kv(st) == "class" {
+        return parse_class(st, vis, false);
+    }
+    if k == K_KW and kv(st) == "abstract" {
+        p_adv(st);
+        if not at_kw(st, "class") {
+            perr(st, "`abstract` must be followed by `class`");
+        }
+        return parse_class(st, vis, true);
+    }
+    if k == K_KW and kv(st) == "interface" {
+        return parse_interface(st, vis);
+    }
+    if k == K_KW and kv(st) == "enum" {
+        return parse_enum(st, vis);
+    }
+    if k == K_KW and (kv(st) == "let" or kv(st) == "const") {
+        let s = parse_statement(st);
+        if s[0] == "Let" {
+            return n_let(vis, s[2], s[3], s[4], s[5]);
+        }
+        if s[0] == "Const" {
+            return n_const(vis, s[2], s[3], s[4], s[5]);
+        }
+        if had_vis {
+            perr(st, "public/private must precede a fn, class, interface, const, or let");
+        }
+        return s;
+    }
+    if had_vis {
+        perr(st, "public/private must precede a fn, class, interface, const, or let");
+    }
+    return parse_statement(st);
+}
+
+// ---------------------------------------------------------------- functions
+
+fn parse_fn(st, allow_anon, pre_vis, is_extern) {
+    let start = tsp(st);
+    let vis = "private";
+    if pre_vis != null {
+        vis = pre_vis;
+    } else {
+        if eat_kw(st, "public") {
+            vis = "public";
+        } else if eat_kw(st, "private") {
+            vis = "private";
+        }
+    }
+    let is_async = eat_kw(st, "async");
+    expect_kw_n(st, "fn");
+    let name = null;
+    if kd(st) == K_IDENT {
+        name = kv(st);
+        p_adv(st);
+    } else if kd(st) == K_KW and kv(st) == "new" {
+        p_adv(st);
+        name = "new";
+    } else if allow_anon and at_c(st, K_LPAREN) {
+        name = null;
+    } else {
+        perr(st, "expected a function name, found " + describe(st));
+    }
+    if name == null and not allow_anon {
+        perr(st, "a function declaration needs a name");
+    }
+    let type_params = parse_type_params(st);
+    let params = parse_params(st);
+    let ret = null;
+    if eat_c(st, K_ARROW) {
+        ret = parse_type(st);
+    }
+    let body = null;
+    if is_extern {
+        let semi = tsp(st);
+        expect_c(st, K_SEMI, "';'");
+        body = n_block([], semi);
+    } else {
+        body = parse_block(st);
+    }
+    let sp = join(start, nsp(body));
+    return n_fnproto(vis, is_async, is_extern, name, params, ret, type_params, body, sp);
+}
+
+fn parse_params(st) {
+    expect_c(st, K_LPAREN, "'('");
+    let params = [];
+    // Defaults are trailing-only.
+    let seen_default = false;
+    if not at_c(st, K_RPAREN) {
+        while true {
+            let sp = tsp(st);
+            let r = expect_ident(st);
+            let name = r[0];
+            let ty = null;
+            if eat_c(st, K_COLON) {
+                ty = parse_type(st);
+            }
+            let default = null;
+            if eat_c(st, K_ASSIGN) {
+                seen_default = true;
+                default = parse_expr(st);
+            } else if seen_default {
+                perr(st, "parameter '" + name + "' needs a default value: once one parameter has a default, every parameter after it must have one");
+            }
+            if name == "self" and default != null {
+                perr(st, "the receiver 'self' cannot have a default value");
+            }
+            params.push(n_param(name, ty, default, sp));
+            if not eat_c(st, K_COMMA) {
+                break;
+            }
+        }
+    }
+    expect_c(st, K_RPAREN, "')'");
+    return params;
+}
+
+fn parse_single_type(st) {
+    let name = null;
+    let span = null;
+    if kd(st) == K_KW and kv(st) == "null" {
+        span = tsp(st);
+        p_adv(st);
+        name = "null";
+    } else {
+        let r = expect_ident(st);
+        name = r[0];
+        span = r[1];
+    }
+    let arg = null;
+    if eat_c(st, K_LT) {
+        arg = parse_type(st);
+        expect_c(st, K_GT, "'>'");
+    }
+    let nullable = eat_c(st, K_QUESTION);
+    return n_type(name, arg, nullable, [], span);
+}
+
+fn parse_type(st) {
+    if st[4] >= MAX_PARSE_DEPTH {
+        perr(st, "nesting deeper than " + string(MAX_PARSE_DEPTH) + " levels");
+    }
+    st[4] += 1;
+    let first = parse_single_type(st);
+    while eat_c(st, K_PIPE) {
+        let next = parse_single_type(st);
+        first[4].push(next);
+    }
+    st[4] -= 1;
+    return first;
+}
+
+fn parse_type_params(st) {
+    if not at_c(st, K_LT) {
+        return [];
+    }
+    p_adv(st);
+    let names = [];
+    let depth = 1;
+    while depth > 0 {
+        let k = kd(st);
+        if k == K_LT {
+            depth += 1;
+        } else if k == K_GT {
+            depth -= 1;
+        } else if k == K_COMMA and depth == 1 {
+            // separator
+        } else if k == K_IDENT and depth == 1 {
+            names.push(kv(st));
+        } else if k == K_EOF {
+            perr(st, "unterminated type parameter list");
+        }
+        p_adv(st);
+    }
+    return names;
+}
+
+// ------------------------------------------------- classes and interfaces
+
+fn parse_class(st, vis, is_abstract) {
+    let start = expect_kw_n(st, "class");
+    let name = expect_ident(st)[0];
+    let type_params = parse_type_params(st);
+    let parent = null;
+    if eat_kw(st, "extends") {
+        parent = expect_ident(st)[0];
+    }
+    let interfaces = [];
+    if eat_kw(st, "implements") {
+        interfaces.push(expect_ident(st)[0]);
+        while eat_c(st, K_COMMA) {
+            interfaces.push(expect_ident(st)[0]);
+        }
+    }
+    expect_c(st, K_LBRACE, "'{' to open the class body");
+    let fields = [];
+    let methods = [];
+    let abstracts = [];
+    while not at_c(st, K_RBRACE) {
+        if at_eof(st) {
+            perr(st, "unterminated class body");
+        }
+        let is_abstract_method = eat_kw(st, "abstract");
+        let mvis = "private";
+        if eat_kw(st, "public") {
+            mvis = "public";
+        } else {
+            let _ignored = eat_kw(st, "private");
+        }
+        if not is_abstract_method and eat_kw(st, "abstract") {
+            is_abstract_method = true;
+        }
+        let is_static_method = false;
+        if kd(st) == K_IDENT and kv(st) == "static" {
+            p_adv(st);
+            is_static_method = true;
+        }
+        if eat_kw(st, "let") {
+            let r = expect_ident(st);
+            let fname = r[0];
+            let fspan = r[1];
+            let ty = null;
+            if eat_c(st, K_COLON) {
+                ty = parse_type(st);
+            }
+            expect_c(st, K_SEMI, "';' after field declaration");
+            fields.push(n_field_decl(mvis, fname, ty, fspan));
+        } else if is_abstract_method or is_static_method or at_kw(st, "fn") or at_kw(st, "async") {
+            let is_async = eat_kw(st, "async");
+            let _f = eat_kw(st, "fn");
+            let mname = null;
+            let mspan = null;
+            if at_kw(st, "new") {
+                mspan = tsp(st);
+                p_adv(st);
+                mname = "new";
+            } else {
+                let r = expect_ident(st);
+                mname = r[0];
+                mspan = r[1];
+            }
+            let params = parse_params(st);
+            if is_static_method and mname != "new" {
+                let first_self = false;
+                if params.len() > 0 {
+                    if params[0][1] == "self" {
+                        first_self = true;
+                    }
+                }
+                if not first_self {
+                    params.insert(0, n_param("self", null, null, mspan));
+                }
+            }
+            let ret = null;
+            if eat_c(st, K_ARROW) or eat_c(st, K_COLON) {
+                ret = parse_type(st);
+            }
+            if is_abstract_method or (is_abstract and at_c(st, K_SEMI)) {
+                expect_c(st, K_SEMI, "';' after an abstract method");
+                let semi = prev_span(st);
+                abstracts.push(mname);
+                methods.push(n_fnproto(mvis, is_async, false, mname, params, ret, [], n_block([], semi), join(mspan, semi)));
+            } else {
+                let body = parse_block(st);
+                methods.push(n_fnproto(mvis, is_async, false, mname, params, ret, [], body, join(mspan, nsp(body))));
+            }
+        } else if at_kw(st, "new") {
+            // constructor shorthand: `new(params) { ... }`
+            let sp = expect_kw_n(st, "new");
+            let params = parse_params(st);
+            let body = parse_block(st);
+            methods.push(n_fnproto(mvis, false, false, "new", params, null, [], body, join(sp, nsp(body))));
+        } else {
+            perr(st, "expected a field or method in class body, found " + describe(st));
+        }
+    }
+    let end = expect_kw_rbrace(st);
+    return n_class(vis, name, is_abstract, abstracts, parent, interfaces, type_params, fields, methods, join(start, end));
+}
+
+fn expect_kw_rbrace(st) {
+    if eat_c(st, K_RBRACE) {
+        return prev_span(st);
+    }
+    perr(st, "expected '}'");
+}
+
+fn parse_enum(st, vis) {
+    let start = expect_kw_n(st, "enum");
+    let name = expect_ident(st)[0];
+    expect_c(st, K_LBRACE, "'{' to open the enum body");
+    let variants = [];
+    while not at_c(st, K_RBRACE) {
+        if at_eof(st) {
+            perr(st, "unterminated enum body");
+        }
+        let r = expect_ident(st);
+        let vname = r[0];
+        let vspan = r[1];
+        let fields = [];
+        if eat_c(st, K_LPAREN) {
+            while not at_c(st, K_RPAREN) {
+                let fr = expect_ident(st);
+                fields.push(fr[0]);
+                if eat_c(st, K_COLON) {
+                    let _t = parse_type(st);
+                }
+                if not eat_c(st, K_COMMA) {
+                    break;
+                }
+            }
+            expect_c(st, K_RPAREN, "')' after the variant's fields");
+        }
+        variants.push(n_variant(vname, fields, vspan));
+        if not eat_c(st, K_COMMA) {
+            break;
+        }
+    }
+    let end = expect_kw_rbrace(st);
+    return n_enum(vis, name, variants, join(start, end));
+}
+
+fn parse_interface(st, vis) {
+    let start = expect_kw_n(st, "interface");
+    let name = expect_ident(st)[0];
+    expect_c(st, K_LBRACE, "'{' to open the interface body");
+    let methods = [];
+    let default_methods = [];
+    while not at_c(st, K_RBRACE) {
+        if at_eof(st) {
+            perr(st, "unterminated interface body");
+        }
+        let _p = eat_kw(st, "public");
+        expect_kw_n(st, "fn");
+        let r = expect_ident(st);
+        let mname = r[0];
+        let mspan = r[1];
+        let params = parse_params(st);
+        let ret = null;
+        if eat_c(st, K_ARROW) or eat_c(st, K_COLON) {
+            ret = parse_type(st);
+        }
+        if at_c(st, K_LBRACE) {
+            let body = parse_block(st);
+            default_methods.push(n_fnproto("public", false, false, mname, params, ret, [], body, join(mspan, nsp(body))));
+        } else {
+            expect_c(st, K_SEMI, "';' after interface method");
+            methods.push(n_imethod(mname, params, ret, mspan));
+        }
+    }
+    let end = expect_kw_rbrace(st);
+    return n_interface(vis, name, methods, default_methods, join(start, end));
+}
+
+// -------------------------------------------------------------- statements
+
+fn parse_block(st) {
+    if st[4] >= MAX_PARSE_DEPTH {
+        perr(st, "nesting deeper than " + string(MAX_PARSE_DEPTH) + " levels");
+    }
+    st[4] += 1;
+    expect_c(st, K_LBRACE, "'{'");
+    let start = prev_span(st);
+    let stmts = [];
+    while not at_c(st, K_RBRACE) {
+        if at_eof(st) {
+            let n = st[0].len();
+            throw ["unterminated block; expected '}'", start[0], start[1], start[2]];
+        }
+        stmts.push(parse_statement(st));
+    }
+    let end = expect_kw_rbrace(st);
+    st[4] -= 1;
+    return n_block(stmts, join(start, end));
+}
+
+// A block in value position: the trailing expression may omit its `;`.
+fn parse_value_block(st) {
+    st[5] += 1;
+    let b = parse_block(st);
+    st[5] -= 1;
+    return b;
+}
+
+fn parse_statement(st) {
+    let k = kd(st);
+    if k == K_KW and kv(st) == "yield" {
+        let sp = expect_kw_n(st, "yield");
+        if at_c(st, K_LPAREN) and pkd(st, 1) == K_RPAREN {
+            p_adv(st);
+            p_adv(st);
+            expect_c(st, K_SEMI, "';' after yield()");
+            let csp = join(sp, prev_span(st));
+            return n_expr_stmt(n_call(n_ident("yield", sp), [], csp));
+        }
+        st[3] = true;
+        let value = null;
+        if at_c(st, K_SEMI) {
+            value = n_null(sp);
+        } else {
+            value = parse_expr(st);
+        }
+        expect_c(st, K_SEMI, "';' after yield");
+        return n_yield(value, join(sp, prev_span(st)));
+    }
+    if k == K_KW and kv(st) == "let" and pkd(st, 1) == K_LPAREN {
+        return parse_let_tuple(st, "private");
+    }
+    if k == K_KW and kv(st) == "let" {
+        return parse_let(st, true);
+    }
+    if k == K_KW and kv(st) == "const" {
+        return parse_const(st);
+    }
+    if k == K_KW and kv(st) == "fn" and pkd(st, 1) == K_IDENT {
+        return n_fn_stmt(parse_fn(st, false, "private", false));
+    }
+    if k == K_KW and kv(st) == "async" and pkd(st, 1) == K_KW and pkv(st, 1) == "fn" and pkd(st, 2) == K_IDENT {
+        return n_fn_stmt(parse_fn(st, false, "private", false));
+    }
+    if k == K_KW and kv(st) == "if" {
+        return parse_if(st);
+    }
+    if k == K_KW and kv(st) == "while" {
+        return parse_while(st);
+    }
+    if k == K_KW and kv(st) == "for" {
+        return parse_for(st);
+    }
+    if k == K_KW and kv(st) == "return" {
+        let sp = tsp(st);
+        p_adv(st);
+        let value = null;
+        if not at_c(st, K_SEMI) {
+            value = parse_expr(st);
+        }
+        expect_c(st, K_SEMI, "';' after return");
+        return n_return(value, sp);
+    }
+    if k == K_KW and kv(st) == "break" {
+        let sp = tsp(st);
+        p_adv(st);
+        expect_c(st, K_SEMI, "';' after break");
+        return n_break(sp);
+    }
+    if k == K_KW and kv(st) == "continue" {
+        let sp = tsp(st);
+        p_adv(st);
+        expect_c(st, K_SEMI, "';' after continue");
+        return n_continue(sp);
+    }
+    if k == K_KW and kv(st) == "try" {
+        return parse_try(st);
+    }
+    if k == K_KW and kv(st) == "throw" {
+        let sp = tsp(st);
+        p_adv(st);
+        let value = parse_expr(st);
+        expect_c(st, K_SEMI, "';' after throw");
+        return n_throw(value, sp);
+    }
+    if k == K_KW and kv(st) == "spawn" {
+        let sp = tsp(st);
+        p_adv(st);
+        let callable = parse_expr(st);
+        expect_c(st, K_SEMI, "';' after spawn");
+        return n_spawn_stmt(callable, sp);
+    }
+    // A `match` in statement position: the trailing `;` is optional.
+    if k == K_KW and kv(st) == "match" {
+        let e = parse_match_expr(st);
+        let _semi = eat_c(st, K_SEMI);
+        return n_expr_stmt(e);
+    }
+    if k == K_LBRACE {
+        return n_block_stmt(parse_block(st));
+    }
+    let e = parse_expr(st);
+    // The last expression of an `if`-expression branch is its value, so the
+    // `;` is optional there.
+    if not (st[5] > 0 and at_c(st, K_RBRACE)) {
+        expect_c(st, K_SEMI, "';' after expression");
+    }
+    return n_expr_stmt(e);
+}
+
+// `let (a, b) = expr;`
+fn parse_let_tuple(st, vis) {
+    let start = expect_kw_n(st, "let");
+    expect_c(st, K_LPAREN, "'(' after let");
+    let names = [];
+    while true {
+        names.push(expect_ident(st)[0]);
+        if not eat_c(st, K_COMMA) {
+            break;
+        }
+        if at_c(st, K_RPAREN) {
+            break;
+        }
+    }
+    expect_c(st, K_RPAREN, "')' after the names");
+    expect_c(st, K_ASSIGN, "'=' before the value");
+    let value = parse_expr(st);
+    let sp = join(start, nsp(value));
+    expect_c(st, K_SEMI, "';' after the let");
+    return n_let_tuple(vis, names, value, sp);
+}
+
+fn parse_let(st, with_semi) {
+    return parse_let_inner(st, with_semi, true);
+}
+
+fn parse_let_inner(st, with_semi, eat_let) {
+    let sp = null;
+    if eat_let {
+        sp = expect_kw_n(st, "let");
+    } else {
+        sp = prev_span(st);
+    }
+    let name = expect_ident(st)[0];
+    let ty = null;
+    if eat_c(st, K_COLON) {
+        ty = parse_type(st);
+    }
+    let value = null;
+    if eat_c(st, K_ASSIGN) {
+        value = parse_expr(st);
+    }
+    if with_semi {
+        expect_c(st, K_SEMI, "';' after let");
+    }
+    return n_let("private", name, ty, value, sp);
+}
+
+fn parse_const(st) {
+    let sp = expect_kw_n(st, "const");
+    let name = expect_ident(st)[0];
+    let ty = null;
+    if eat_c(st, K_COLON) {
+        ty = parse_type(st);
+    }
+    expect_c(st, K_ASSIGN, "'=' in const declaration");
+    let value = parse_expr(st);
+    expect_c(st, K_SEMI, "';' after const");
+    return n_const("private", name, ty, value, sp);
+}
+
+// `if` in value position; `else if` nests as a one-statement block.
+fn parse_if_expr(st) {
+    let sp = expect_kw_n(st, "if");
+    let cond = parse_expr(st);
+    let then = parse_value_block(st);
+    let els = null;
+    if eat_kw(st, "else") {
+        if at_kw(st, "if") {
+            st[4] += 1;
+            st[4] -= 1;
+            let nested = parse_if_expr(st);
+            els = n_block([n_expr_stmt(nested)], nsp(nested));
+        } else {
+            els = parse_value_block(st);
+        }
+    }
+    let end_span = nsp(then);
+    if els != null {
+        end_span = nsp(els);
+    }
+    return n_if_expr(cond, then, els, join(sp, end_span));
+}
+
+// `match (value) { Pattern => body, … }` — statement and value forms share it.
+fn parse_match_expr(st) {
+    let start = expect_kw_n(st, "match");
+    expect_c(st, K_LPAREN, "'(' after match");
+    let scrutinee = parse_expr(st);
+    expect_c(st, K_RPAREN, "')' after the matched value");
+    expect_c(st, K_LBRACE, "'{' to open the match arms");
+    let arms = [];
+    while not at_c(st, K_RBRACE) {
+        if at_eof(st) {
+            perr(st, "unterminated match body");
+        }
+        let arm_start = tsp(st);
+        let pattern = parse_pattern(st);
+        let guard = null;
+        if eat_kw(st, "if") {
+            let prev = st[6];
+            st[6] = true;
+            let g = parse_expr(st);
+            st[6] = prev;
+            guard = g;
+        }
+        expect_c(st, K_FATARROW, "'=>' after the pattern");
+        let body = null;
+        if at_c(st, K_LBRACE) {
+            body = parse_value_block(st);
+        } else {
+            let e = parse_expr(st);
+            body = n_block([n_expr_stmt(e)], nsp(e));
+        }
+        arms.push(n_match_arm(pattern, guard, body, join(arm_start, nsp(body))));
+        let _comma = eat_c(st, K_COMMA);
+    }
+    let end = expect_kw_rbrace(st);
+    return n_match(scrutinee, arms, join(start, end));
+}
+
+fn parse_pattern(st) {
+    if st[4] >= MAX_PARSE_DEPTH {
+        perr(st, "nesting deeper than " + string(MAX_PARSE_DEPTH) + " levels");
+    }
+    st[4] += 1;
+    let res = null;
+    let k = kd(st);
+    if k == K_IDENT {
+        let sp = tsp(st);
+        let name = kv(st);
+        p_adv(st);
+        if at_c(st, K_LPAREN) {
+            p_adv(st);
+            let args = [];
+            while not at_c(st, K_RPAREN) {
+                args.push(parse_pattern(st));
+                if not eat_c(st, K_COMMA) {
+                    break;
+                }
+            }
+            expect_c(st, K_RPAREN, "')' after the variant's fields");
+            st[4] -= 1;
+            return n_pat_variant(name, args, sp);
+        }
+        if name == "_" {
+            res = n_wild();
+        } else if is_pascal_case(name) {
+            // A bare PascalCase identifier is a payload-less enum variant.
+            res = n_pat_variant(name, [], sp);
+        } else {
+            res = n_bind(name);
+        }
+    } else if k == K_INT or k == K_FLOAT or k == K_STR or k == K_INTERP
+        or (k == K_KW and (kv(st) == "true" or kv(st) == "false" or kv(st) == "null")) {
+        let e = parse_primary(st);
+        res = n_pat_lit(e);
+    } else {
+        st[4] -= 1;
+        perr(st, "expected a pattern: `_`, a name to bind, a literal, or `Variant(...)`");
+    }
+    st[4] -= 1;
+    return res;
+}
+
+fn is_pascal_case(name) {
+    if name.len() == 0 {
+        return false;
+    }
+    let c0 = ord(name[0]);
+    return c0 >= 65 and c0 <= 90;
+}
+
+fn parse_if(st) {
+    let sp = expect_kw_n(st, "if");
+    let cond = parse_expr(st);
+    let then = parse_block(st);
+    let elifs = [];
+    let els = null;
+    while true {
+        if eat_kw(st, "elif") {
+            let c = parse_expr(st);
+            let b = parse_block(st);
+            elifs.push(["Elif", c, b]);
+        } else if eat_kw(st, "else") {
+            // `else if` is `elif`.
+            if at_kw(st, "if") {
+                p_adv(st);
+                let c = parse_expr(st);
+                let b = parse_block(st);
+                elifs.push(["Elif", c, b]);
+                continue;
+            }
+            els = parse_block(st);
+            break;
+        } else {
+            break;
+        }
+    }
+    let end_span = nsp(then);
+    if elifs.len() > 0 {
+        end_span = nsp(elifs[elifs.len() - 1][2]);
+    }
+    if els != null {
+        end_span = nsp(els);
+    }
+    return n_if(cond, then, elifs, els, join(sp, end_span));
+}
+
+fn parse_while(st) {
+    let sp = expect_kw_n(st, "while");
+    let cond = parse_expr(st);
+    let body = parse_block(st);
+    return n_while(cond, body, join(sp, nsp(body)));
+}
+
+fn parse_for(st) {
+    let sp = expect_kw_n(st, "for");
+    // `for x in …`, `for (k, v) in map`, or the C-style `for let i = …`.
+    // A `(` after `for` is always the two-variable form.
+    let for_in = at_c(st, K_LPAREN) or pkd(st, 1) == K_KW and pkv(st, 1) == "in";
+    if for_in {
+        let v = null;
+        let v2 = null;
+        if eat_c(st, K_LPAREN) {
+            let a = expect_ident(st)[0];
+            if eat_c(st, K_COMMA) {
+                v2 = expect_ident(st)[0];
+            }
+            expect_c(st, K_RPAREN, "')' after the loop variables");
+            v = a;
+        } else {
+            v = expect_ident(st)[0];
+        }
+        expect_kw_n(st, "in");
+        let iter = parse_expr(st);
+        let body = parse_block(st);
+        return n_for_in(v, v2, iter, body, join(sp, nsp(body)));
+    }
+    expect_kw_n(st, "let");
+    let init = parse_let_inner(st, false, false);
+    expect_c(st, K_SEMI, "';' after for-init");
+    let cond = parse_expr(st);
+    expect_c(st, K_SEMI, "';' after for-condition");
+    let post = parse_expr(st);
+    let body = parse_block(st);
+    return n_for_c(init, cond, post, body, join(sp, nsp(body)));
+}
+
+fn parse_try(st) {
+    let sp = expect_kw_n(st, "try");
+    let body = parse_block(st);
+    let cx = null;
+    if eat_kw(st, "catch") {
+        let catch_sp = prev_span(st);
+        let name = null;
+        if eat_c(st, K_LPAREN) {
+            name = expect_ident(st)[0];
+            expect_c(st, K_RPAREN, "')'");
+        } else if kd(st) == K_IDENT {
+            name = expect_ident(st)[0];
+        } else {
+            let csp = tsp(st);
+            throw ["catch requires parentheses: `catch (err)`", csp[0], csp[1], csp[2]];
+        }
+        let cbody = parse_block(st);
+        cx = n_catch(name, cbody, join(catch_sp, nsp(cbody)));
+    }
+    let fin = null;
+    if eat_kw(st, "finally") {
+        fin = parse_block(st);
+    }
+    if cx == null and fin == null {
+        throw ["try needs a catch or a finally block", sp[0], sp[1], sp[2]];
+    }
+    let end_span = nsp(body);
+    if cx != null {
+        end_span = nsp(cx);
+    }
+    if fin != null {
+        end_span = nsp(fin);
+    }
+    return n_try(body, cx, fin, join(sp, end_span));
+}
+
+// ------------------------------------------------------------- expressions
+
+public fn parse_expr(st) {
+    if st[4] >= MAX_PARSE_DEPTH {
+        perr(st, "nesting deeper than " + string(MAX_PARSE_DEPTH) + " levels");
+    }
+    st[4] += 1;
+    let r = parse_assign(st);
+    st[4] -= 1;
+    return r;
+}
+
+fn parse_assign(st) {
+    let left = parse_coalesce_inline(st);
+    let op = null;
+    let k = kd(st);
+    if k == K_ASSIGN {
+        op = "Assign";
+    } else if k == K_PLUSEQ {
+        op = "AddAssign";
+    } else if k == K_MINUSEQ {
+        op = "SubAssign";
+    } else if k == K_STAREQ {
+        op = "MulAssign";
+    } else if k == K_SLASHEQ {
+        op = "DivAssign";
+    } else if k == K_PERCENTEQ {
+        op = "ModAssign";
+    }
+    if op != null {
+        let sp = nsp(left);
+        let ok = left[0] == "Ident" or left[0] == "Index" or left[0] == "FieldE";
+        if not ok {
+            throw ["invalid assignment target; expected a variable, field, or index", sp[0], sp[1], sp[2]];
+        }
+        p_adv(st);
+        if st[4] >= MAX_PARSE_DEPTH {
+            perr(st, "nesting deeper than " + string(MAX_PARSE_DEPTH) + " levels");
+        }
+        st[4] += 1;
+        let value = parse_assign(st);
+        st[4] -= 1;
+        return n_assign(op, left, value, join(sp, nsp(value)));
+    }
+    return left;
+}
+
+// `a ?? b` — looser than `or`, tighter than assignment. Left-associative.
+fn parse_coalesce_inline(st) {
+    let left = parse_or(st);
+    while at_c(st, K_QUESTIONQUESTION) {
+        p_adv(st);
+        let right = parse_or(st);
+        left = n_coalesce(left, right, join(nsp(left), nsp(right)));
+    }
+    return left;
+}
+
+fn parse_or(st) {
+    let left = parse_and(st);
+    while at_kw(st, "or") or at_c(st, K_PIPEPIPE) {
+        p_adv(st);
+        let right = parse_and(st);
+        left = n_logical("Or", left, right, join(nsp(left), nsp(right)));
+    }
+    return left;
+}
+
+fn parse_and(st) {
+    let left = parse_bit_or(st);
+    while at_kw(st, "and") or at_c(st, K_AMPAMP) {
+        p_adv(st);
+        let right = parse_bit_or(st);
+        left = n_logical("And", left, right, join(nsp(left), nsp(right)));
+    }
+    return left;
+}
+
+// Bitwise operators desugar into stdlib calls (one implementation, all engines).
+fn parse_bit_or(st) {
+    let left = parse_bit_xor(st);
+    while at_c(st, K_PIPE) {
+        p_adv(st);
+        let right = parse_bit_xor(st);
+        left = bit_call("bit_or", left, right);
+    }
+    return left;
+}
+
+fn parse_bit_xor(st) {
+    let left = parse_bit_and(st);
+    while at_c(st, K_CARET) {
+        p_adv(st);
+        let right = parse_bit_and(st);
+        left = bit_call("bit_xor", left, right);
+    }
+    return left;
+}
+
+fn parse_bit_and(st) {
+    let left = parse_cmp(st);
+    while at_c(st, K_AMP) {
+        p_adv(st);
+        let right = parse_cmp(st);
+        left = bit_call("bit_and", left, right);
+    }
+    return left;
+}
+
+fn parse_shift(st) {
+    let left = parse_add(st);
+    while true {
+        let name = null;
+        if at_c(st, K_SHL) {
+            name = "shl";
+        } else if at_c(st, K_SHR) {
+            name = "shr";
+        } else {
+            break;
+        }
+        p_adv(st);
+        let right = parse_add(st);
+        left = bit_call(name, left, right);
+    }
+    return left;
+}
+
+fn parse_cmp(st) {
+    let left = parse_shift(st);
+    while true {
+        let op = null;
+        let k = kd(st);
+        if k == K_EQEQ {
+            op = "Eq";
+        } else if k == K_BANGEQ {
+            op = "Ne";
+        } else if k == K_LT {
+            op = "Lt";
+        } else if k == K_LE {
+            op = "Le";
+        } else if k == K_GT {
+            op = "Gt";
+        } else if k == K_GE {
+            op = "Ge";
+        } else {
+            break;
+        }
+        p_adv(st);
+        let right = parse_shift(st);
+        left = n_binary(op, left, right, join(nsp(left), nsp(right)));
+    }
+    return left;
+}
+
+fn parse_add(st) {
+    let left = parse_mul(st);
+    while true {
+        let op = null;
+        let k = kd(st);
+        if k == K_PLUS {
+            op = "Add";
+        } else if k == K_MINUS {
+            op = "Sub";
+        } else {
+            break;
+        }
+        p_adv(st);
+        let right = parse_mul(st);
+        left = n_binary(op, left, right, join(nsp(left), nsp(right)));
+    }
+    return left;
+}
+
+fn parse_mul(st) {
+    let left = parse_as(st);
+    while true {
+        let op = null;
+        let k = kd(st);
+        if k == K_STAR {
+            op = "Mul";
+        } else if k == K_SLASH {
+            op = "Div";
+        } else if k == K_PERCENT {
+            op = "Mod";
+        } else {
+            break;
+        }
+        p_adv(st);
+        let right = parse_as(st);
+        left = n_binary(op, left, right, join(nsp(left), nsp(right)));
+    }
+    return left;
+}
+
+// `expr as type` — desugared to the int()/float()/string()/bool() call.
+fn parse_as(st) {
+    let left = parse_unary(st);
+    while at_kw(st, "as") {
+        p_adv(st);
+        let ty = null;
+        if kd(st) == K_IDENT and (kv(st) == "int" or kv(st) == "float" or kv(st) == "string" or kv(st) == "bool") {
+            ty = kv(st);
+        } else {
+            perr(st, "unknown type in 'as' cast: expected int, float, string, or bool, found " + describe(st));
+        }
+        p_adv(st);
+        let csp = join(nsp(left), prev_span(st));
+        left = n_call(n_ident(ty, csp), [left], csp);
+    }
+    return left;
+}
+
+fn parse_unary(st) {
+    if st[4] >= MAX_PARSE_DEPTH {
+        perr(st, "nesting deeper than " + string(MAX_PARSE_DEPTH) + " levels");
+    }
+    st[4] += 1;
+    let r = parse_unary_inner(st);
+    st[4] -= 1;
+    return r;
+}
+
+fn parse_unary_inner(st) {
+    let sp = tsp(st);
+    if at_kw(st, "await") {
+        p_adv(st);
+        let e = parse_unary(st);
+        return n_await(e, join(sp, nsp(e)));
+    }
+    if at_kw(st, "spawn") {
+        p_adv(st);
+        let callable = parse_unary(st);
+        return n_spawn_expr(callable, join(sp, nsp(callable)));
+    }
+    if at_kw(st, "not") {
+        p_adv(st);
+        let e = parse_unary(st);
+        return n_unary("Not", e, join(sp, nsp(e)));
+    }
+    if at_c(st, K_MINUS) {
+        p_adv(st);
+        if at_c(st, K_INTMIN) {
+            let min_span = tsp(st);
+            p_adv(st);
+            return n_int(I64_MIN, join(sp, min_span));
+        }
+        let e = parse_unary(st);
+        return n_unary("Neg", e, join(sp, nsp(e)));
+    }
+    return parse_postfix(st);
+}
+
+fn parse_postfix(st) {
+    let e = parse_primary(st);
+    while true {
+        let k = kd(st);
+        if k == K_LPAREN {
+            let args = parse_args(st);
+            e = n_call(e, args, join(nsp(e), prev_span(st)));
+        } else if k == K_LBRACKET {
+            p_adv(st);
+            let idx = parse_expr(st);
+            expect_c(st, K_RBRACKET, "']'");
+            let end = prev_span(st);
+            e = n_index(e, idx, join(nsp(e), end));
+        } else if k == K_DOT {
+            p_adv(st);
+            let r = expect_ident(st);
+            let name = r[0];
+            let nspan = r[1];
+            if at_c(st, K_LPAREN) {
+                let args = parse_args(st);
+                e = n_method(name, e, args, join(nsp(e), prev_span(st)));
+            } else {
+                e = n_field(name, e, join(nsp(e), nspan));
+            }
+        } else if k == K_QUESTIONDOT {
+            // `obj?.field` — a call through `?.` is deliberately rejected.
+            p_adv(st);
+            let r = expect_ident(st);
+            let name = r[0];
+            let nspan = r[1];
+            if at_c(st, K_LPAREN) {
+                perr(st, "`?.` takes a field, not a call; write `(obj?.f)(...)` or check for null first");
+            }
+            e = n_opt_field(name, e, join(nsp(e), nspan));
+        } else if k == K_QUESTION {
+            if is_ternary_lookahead(st) {
+                let csp = tsp(st);
+                throw ["the conditional operator is not supported; use an if statement", csp[0], csp[1], csp[2]];
+            }
+            p_adv(st);
+            e = n_propagate(e, join(nsp(e), prev_span(st)));
+        } else {
+            return e;
+        }
+    }
+}
+
+fn is_ternary_lookahead(st) {
+    if st[1] + 1 >= st[0].len() {
+        return false;
+    }
+    let k1 = pkd(st, 1);
+    let v1 = pkv(st, 1);
+    let expr_start = k1 == K_IDENT or k1 == K_INT or k1 == K_FLOAT or k1 == K_STR
+        or k1 == K_INTERP or k1 == K_BIGINT or k1 == K_LPAREN or k1 == K_LBRACKET
+        or k1 == K_LBRACE or k1 == K_MINUS
+        or (k1 == K_KW and (v1 == "fn" or v1 == "true" or v1 == "false" or v1 == "null"
+            or v1 == "super" or v1 == "new" or v1 == "not" or v1 == "spawn"));
+    if not expr_start {
+        return false;
+    }
+    let depth = 0;
+    let idx = st[1] + 1;
+    let n = st[0].len();
+    while idx < n {
+        let k = st[0][idx][0];
+        if k == K_SEMI or k == K_EOF {
+            return false;
+        }
+        if k == K_COMMA and depth == 0 {
+            return false;
+        }
+        if k == K_LPAREN or k == K_LBRACKET or k == K_LBRACE {
+            depth += 1;
+        } else if k == K_RPAREN or k == K_RBRACKET or k == K_RBRACE {
+            if depth == 0 {
+                return false;
+            }
+            depth -= 1;
+        } else if k == K_COLON and depth == 0 {
+            return true;
+        }
+        idx += 1;
+    }
+    return false;
+}
+
+fn parse_args(st) {
+    expect_c(st, K_LPAREN, "'('");
+    let args = [];
+    if not at_c(st, K_RPAREN) {
+        while true {
+            // A named argument is `ident : expr`.
+            if kd(st) == K_IDENT and pkd(st, 1) == K_COLON {
+                let sp = tsp(st);
+                let name = kv(st);
+                p_adv(st);
+                p_adv(st);
+                let value = parse_expr(st);
+                args.push(n_named_arg(name, value, sp));
+                if not eat_c(st, K_COMMA) {
+                    break;
+                }
+                if at_c(st, K_RPAREN) {
+                    break;
+                }
+                continue;
+            }
+            args.push(parse_expr(st));
+            if not eat_c(st, K_COMMA) {
+                break;
+            }
+            if at_c(st, K_RPAREN) {
+                break;
+            }
+        }
+    }
+    expect_c(st, K_RPAREN, "')'");
+    return args;
+}
+
+fn parse_primary(st) {
+    let sp = tsp(st);
+    let k = kd(st);
+    if k == K_INT {
+        let v = kv(st);
+        p_adv(st);
+        return n_int(v, sp);
+    }
+    if k == K_BIGINT {
+        let digits = kv(st);
+        p_adv(st);
+        st[2] = true;
+        return n_method("from_string", n_ident("__bigint", sp), [n_str(digits, sp)], sp);
+    }
+    if k == K_FLOAT {
+        let v = kv(st);
+        p_adv(st);
+        return n_float(v, sp);
+    }
+    if k == K_STR {
+        let s = kv(st);
+        p_adv(st);
+        return n_str(s, sp);
+    }
+    if k == K_INTERP {
+        let pieces = kv(st);
+        p_adv(st);
+        return interp_to_expr(st, pieces, sp);
+    }
+    if k == K_KW and kv(st) == "if" {
+        return parse_if_expr(st);
+    }
+    if k == K_KW and kv(st) == "match" {
+        return parse_match_expr(st);
+    }
+    if k == K_KW and kv(st) == "true" {
+        p_adv(st);
+        return n_bool(true, sp);
+    }
+    if k == K_KW and kv(st) == "false" {
+        p_adv(st);
+        return n_bool(false, sp);
+    }
+    if k == K_KW and kv(st) == "null" {
+        p_adv(st);
+        return n_null(sp);
+    }
+    if k == K_KW and kv(st) == "self" {
+        p_adv(st);
+        return n_ident("self", sp);
+    }
+    if k == K_KW and kv(st) == "super" {
+        p_adv(st);
+        return n_super(sp);
+    }
+    if k == K_IDENT {
+        let name = kv(st);
+        p_adv(st);
+        if not st[6] and eat_c(st, K_FATARROW) {
+            return parse_ident_arrow(st, name, sp);
+        }
+        return n_ident(name, sp);
+    }
+    if k == K_KW and kv(st) == "new" {
+        p_adv(st);
+        let cls = expect_ident(st)[0];
+        let args = parse_args(st);
+        return n_new(cls, args, join(sp, prev_span(st)));
+    }
+    if k == K_KW and (kv(st) == "fn" or kv(st) == "async") {
+        let f = parse_fn(st, true, null, false);
+        return n_fn_expr(f);
+    }
+    if k == K_LBRACE {
+        return parse_map_literal(st, sp);
+    }
+    if k == K_LBRACKET {
+        return parse_list_literal(st, sp);
+    }
+    if k == K_LPAREN {
+        if not st[6] and is_arrow_closure_at_lparen(st) {
+            return parse_paren_arrow(st, sp);
+        }
+        p_adv(st);
+        if at_c(st, K_RPAREN) {
+            p_adv(st);
+            return n_call(n_ident("tuple", join(sp, prev_span(st))), [], join(sp, prev_span(st)));
+        }
+        let first = parse_expr(st);
+        if eat_c(st, K_COMMA) {
+            return parse_tuple_rest(st, first, sp);
+        }
+        expect_c(st, K_RPAREN, "')'");
+        return first;
+    }
+    if k == K_KW and kv(st) == "yield" {
+        let ysp = expect_kw_n(st, "yield");
+        if at_c(st, K_LPAREN) and pkd(st, 1) == K_RPAREN {
+            p_adv(st);
+            p_adv(st);
+            return n_call(n_ident("yield", ysp), [], join(ysp, prev_span(st)));
+        }
+        perr(st, "`yield` in expression position must be `yield()`");
+    }
+    if k == K_INTMIN {
+        perr_lexer_phase(st, "integer '9223372036854775808' is out of i64 range (add an `n` suffix for a big integer)");
+    }
+    perr(st, "unexpected " + describe(st));
+}
+
+fn parse_ident_arrow(st, name, sp) {
+    let body = parse_arrow_body(st);
+    return n_fn_expr(n_fnproto("private", false, false, null, [n_param(name, null, null, sp)], null, [], body, join(sp, nsp(body))));
+}
+
+fn parse_paren_arrow(st, sp) {
+    let params = parse_params(st);
+    let ret = null;
+    if eat_c(st, K_ARROW) {
+        ret = parse_type(st);
+    }
+    expect_c(st, K_FATARROW, "'=>' after arrow parameters");
+    let body = parse_arrow_body(st);
+    return n_fn_expr(n_fnproto("private", false, false, null, params, ret, [], body, join(sp, nsp(body))));
+}
+
+fn parse_map_literal(st, sp) {
+    p_adv(st);
+    let args = [];
+    if not at_c(st, K_RBRACE) {
+        while true {
+            let key = parse_expr(st);
+            expect_c(st, K_COLON, "':' after map key");
+            let val = parse_expr(st);
+            args.push(key);
+            args.push(val);
+            if not eat_c(st, K_COMMA) {
+                break;
+            }
+            if at_c(st, K_RBRACE) {
+                break;
+            }
+        }
+    }
+    expect_c(st, K_RBRACE, "'}'");
+    let end = prev_span(st);
+    let csp = join(sp, end);
+    return n_call(n_ident("map", csp), args, csp);
+}
+
+fn parse_list_literal(st, sp) {
+    p_adv(st);
+    let items = [];
+    if not at_c(st, K_RBRACKET) {
+        while true {
+            items.push(parse_expr(st));
+            if not eat_c(st, K_COMMA) {
+                break;
+            }
+            if at_c(st, K_RBRACKET) {
+                break;
+            }
+        }
+    }
+    expect_c(st, K_RBRACKET, "']'");
+    let end = prev_span(st);
+    return n_list(items, join(sp, end));
+}
+
+fn parse_tuple_rest(st, first, sp) {
+    let items = [first];
+    while not at_c(st, K_RPAREN) {
+        items.push(parse_expr(st));
+        if not eat_c(st, K_COMMA) {
+            break;
+        }
+    }
+    expect_c(st, K_RPAREN, "')'");
+    let csp = join(sp, prev_span(st));
+    return n_call(n_ident("tuple", csp), items, csp);
+}
+
+// Look ahead from `(`: an arrow-closure parameter list?
+fn is_arrow_closure_at_lparen(st) {
+    let idx = st[1] + 1;
+    let k0 = pkd(st, 1);
+    if not (k0 == K_RPAREN or k0 == K_IDENT) {
+        return false;
+    }
+    let depth = 1;
+    let n = st[0].len();
+    while idx < n and depth > 0 {
+        let k = st[0][idx][0];
+        if k == K_LPAREN {
+            depth += 1;
+        } else if k == K_RPAREN {
+            depth -= 1;
+        } else if k == K_SEMI or k == K_EOF {
+            return false;
+        }
+        idx += 1;
+    }
+    if depth != 0 {
+        return false;
+    }
+    if idx < n and st[0][idx][0] == K_ARROW {
+        idx += 1;
+        while true {
+            if idx >= n {
+                return false;
+            }
+            let k = st[0][idx][0];
+            if k == K_IDENT or (k == K_KW and st[0][idx][1] == "null") {
+                idx += 1;
+            } else {
+                return false;
+            }
+            if idx < n and st[0][idx][0] == K_LT {
+                let adepth = 1;
+                idx += 1;
+                while idx < n and adepth > 0 {
+                    let kk = st[0][idx][0];
+                    if kk == K_LT {
+                        adepth += 1;
+                    } else if kk == K_GT {
+                        adepth -= 1;
+                    } else if kk == K_EOF {
+                        return false;
+                    }
+                    idx += 1;
+                }
+            }
+            if idx < n and st[0][idx][0] == K_QUESTION {
+                idx += 1;
+            }
+            if idx < n and st[0][idx][0] == K_PIPE {
+                idx += 1;
+                continue;
+            }
+            break;
+        }
+    }
+    if idx < n {
+        return st[0][idx][0] == K_FATARROW;
+    }
+    return false;
+}
+
+fn parse_arrow_body(st) {
+    // `{ ... }` that opens a map literal (`x => {"a": 1}`) is an expression.
+    let is_map_lit = false;
+    if at_c(st, K_LBRACE) {
+        let k1 = pkd(st, 1);
+        let v1 = pkv(st, 1);
+        let stmt_start = k1 == K_RBRACE
+            or (k1 == K_KW and (v1 == "let" or v1 == "const" or v1 == "return" or v1 == "if"
+                or v1 == "while" or v1 == "for" or v1 == "try" or v1 == "throw"
+                or v1 == "break" or v1 == "continue" or v1 == "yield" or v1 == "fn"
+                or v1 == "class"));
+        if not stmt_start and pkd(st, 2) == K_COLON {
+            is_map_lit = true;
+        }
+    }
+    if at_c(st, K_LBRACE) and not is_map_lit {
+        return parse_block(st);
+    }
+    let e = parse_expr(st);
+    return n_block([n_return(e, nsp(e))], nsp(e));
+}
+
+fn bit_call(name, l, r) {
+    let sp = join(nsp(l), nsp(r));
+    return n_call(n_ident(name, sp), [l, r], sp);
+}
+
+// --------------------------------------------------- interpolation desugar
+
+// `"hi {name}"` becomes `"hi " + string(name)`; `{expr}` holes are lexed and
+// parsed as expressions, with an unparseable capture staying literal text.
+fn interp_to_expr(st, pieces, sp) {
+    let parts = [];
+    let n = pieces.len();
+    let i = 0;
+    while i < n {
+        let p = pieces[i];
+        if p[0] == "lit" {
+            if p[1] != "" {
+                parts.push(n_str(p[1], sp));
+            }
+        } else if p[0] == "path" {
+            let segs = p[1];
+            let path = n_ident(segs[0], sp);
+            let m = segs.len();
+            let j = 1;
+            while j < m {
+                path = n_field(segs[j], path, sp);
+                j += 1;
+            }
+            parts.push(n_call(n_ident("string", sp), [path], sp));
+        } else {
+            // `{expr}`: compile the capture; an unparseable hole stays text.
+            let compiled = compile_hole(st, p[1]);
+            if compiled == null {
+                parts.push(n_str("{" + p[1] + "}", sp));
+            } else {
+                if compiled[1] {
+                    st[2] = true;
+                }
+                parts.push(n_call(n_ident("string", sp), [compiled[0]], sp));
+            }
+        }
+        i += 1;
+    }
+    if parts.len() == 0 {
+        return n_str("", sp);
+    }
+    let out = parts[0];
+    let m = parts.len();
+    let j = 1;
+    while j < m {
+        out = n_binary("Add", out, parts[j], sp);
+        j += 1;
+    }
+    return out;
+}
+
+// Lex+parse a `{expr}` capture as exactly one expression. Returns
+// [expr, used_bigint] or null. The sub-parse runs on a FRESH state handle
+// (the outer parse continues untouched); the sub-lex re-enters the lexer,
+// which is idle during parsing.
+fn compile_hole(st, raw) {
+    let ok = false;
+    let expr = null;
+    let used_bigint = false;
+    try {
+        let toks = lex_all(raw);
+        let sub = new_state(toks);
+        sub[4] = st[4];
+        sub[5] = st[5];
+        expr = parse_expr(sub);
+        if at_eof(sub) {
+            ok = true;
+            used_bigint = sub[2];
+        }
+    } catch (ignored) {
+        ok = false;
+    }
+    if not ok {
+        return null;
+    }
+    return [expr, used_bigint];
+}
+
+// --------------------------------------------------- the lex-time hole gate
+
+// `hole_is_expression` (src/parser): does `raw` lex and parse as exactly one
+// expression (and not a bare string literal)? The LEXER calls this on every
+// `{...}` capture to decide hole-vs-literal text; it is injected as a
+// function (set_hole_check) because the lexer must not import the parser at
+// the module level — the parser imports the lexer, and import cycles are
+// rejected. The sub-lex runs DURING a lex, so the lexer globals are saved and
+// restored around it (lex_save/lex_restore); the sub-parse uses a fresh state
+// handle.
+public fn hole_check(raw, depth) {
+    let save = lex_save();
+    let ok = false;
+    try {
+        let toks = lex_all_depth(raw, depth);
+        let sub = new_state(toks);
+        sub[4] = MAX_INTERP_DEPTH;
+        let e = parse_expr(sub);
+        if at_eof(sub) and e[0] != "Str" {
+            ok = true;
+        }
+    } catch (ignored) {
+        ok = false;
+    }
+    lex_restore(save);
+    return ok;
+}

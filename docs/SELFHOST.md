@@ -69,16 +69,23 @@ mirroring `src/`'s boundaries so the parity mapping stays mechanical:
 
 ```
 selfhost/
-  lexer/       Phase 1 — port of src/lexer        (token parity vs oracle)
-  parser/      Phase 2 — port of src/parser       (AST + diagnostic parity)
-  semantic/    Phase 3 — port of src/semantic     (diagnostic parity)
-  lower/       Phase 4 — port of src/lower + src/vm/compiler (chunk emission)
-  llvm/        Phase 5 — LLVM-C extern surface + codegen (port of src/native/ir)
-  driver/      Phase 6 — build driver: linking, modules, sandbox (link.rs/modules.rs)
-  tools/       Phase 8 — test runner, fmt, pack/dist
-  main.matrix  Phase 7 — compiler entry point
-  corpus/      Phase 0 — the frozen differential corpus (SH-4), not shipped code
+  token.matrix         Phase 1 — the token model (port of src/lexer/token)
+  lexer.matrix         Phase 1 — the scanner (port of src/lexer; token parity)
+  lexer_json.matrix    Phase 1 — token-stream JSON (the parity surface)
+  ast.matrix           Phase 2 — the AST model + dump serializer
+  parser.matrix        Phase 2 — the grammar (port of src/parser; AST parity)
+  main.matrix          entry: `tokens` and `parse` parity surfaces
+  roundtrip_*.matrix   the model round-trip gate tools (2.1)
+  corpus/              Phase 0 — the frozen differential corpus (SH-4)
 ```
+
+Amendment (ledger 2026-11-14, Phase 2): the original sketch had one
+directory per subsystem, but Spid3r module imports resolve against the
+importer's directory and reject parent escapes (`../` is a rejected spec) —
+a multi-root tree cannot import across its own subdirectories. The subsystem
+separation lives in the module boundaries instead: one module root, one file
+per Rust subsystem, entry points at the root. The parity mapping to `src/`
+is unchanged.
 
 Each phase ships working code: sources are compiled and exercised by stage 0
 (`spid3r build` / `spid3r run`) from the moment they exist, so a phase's

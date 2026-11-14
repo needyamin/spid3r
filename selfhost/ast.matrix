@@ -1,0 +1,994 @@
+// selfhost/parser/ast.matrix — the AST model and its JSON serializer
+// (roadmap Phase 2, docs/SELFHOST.md SH-3/SH-5).
+//
+// The parser builds positional node lists shaped like the stage-0 oracle's
+// dump (src/oracle.rs program_to_json): a node is
+//   [tag, field..., [line, col, len]]
+// where `tag` is an internal name (distinct where the dump reuses one node
+// name for two shapes: BlockStmt vs Block, If vs IfE, FieldDecl vs FieldE)
+// and the trailing span triple is what the dump emits as line/col/len.
+// The serializer below emits byte-identical JSON to the oracle; the parity
+// harness diffs this output against `spid3r parse --dump-ast-json`.
+//
+// Serialization accumulates into a fragment list and joins once — immutable
+// Spid3r strings make `+=` quadratic (Phase 1 finding, ledger).
+
+import "token";
+
+// ---------------------------------------------------------------- spans
+
+// Span composition, ported 1:1 from src/parser/mod.rs `join`: a composite
+// node runs from a's start to b's end; multi-line spans keep a's own length.
+public fn join(a, b) {
+    if b[0] >= a[0] {
+        let end_col = b[1] + b[2];
+        let len = end_col - a[1];
+        if len < 1 {
+            len = 1;
+        }
+        return [a[0], a[1], len];
+    }
+    let len = a[2];
+    if len < 1 {
+        len = 1;
+    }
+    return [a[0], a[1], len];
+}
+
+// The span of any node that carries one (the trailing triple).
+public fn nsp(node) {
+    return node[node.len() - 1];
+}
+
+// ---------------------------------------------------------- constructors
+
+public fn n_import(path, alias, sp) {
+    return ["Import", path, alias, sp];
+}
+
+public fn n_fn_stmt(f) {
+    return ["Fn", f, nsp(f)];
+}
+
+public fn n_class(vis, name, is_abstract, abstracts, parent, interfaces, type_params, fields, methods, sp) {
+    return ["Class", vis, name, is_abstract, abstracts, parent, interfaces, type_params, fields, methods, sp];
+}
+
+public fn n_interface(vis, name, methods, default_methods, sp) {
+    return ["Interface", vis, name, methods, default_methods, sp];
+}
+
+public fn n_imethod(name, params, ret, sp) {
+    return ["IMethod", name, params, ret, sp];
+}
+
+public fn n_enum(vis, name, variants, sp) {
+    return ["Enum", vis, name, variants, sp];
+}
+
+public fn n_let(vis, name, ty, value, sp) {
+    return ["Let", vis, name, ty, value, sp];
+}
+
+public fn n_const(vis, name, ty, value, sp) {
+    return ["Const", vis, name, ty, value, sp];
+}
+
+public fn n_let_tuple(vis, names, value, sp) {
+    return ["LetTuple", vis, names, value, sp];
+}
+
+public fn n_if(cond, then, elifs, els, sp) {
+    return ["If", cond, then, elifs, els, sp];
+}
+
+public fn n_while(cond, body, sp) {
+    return ["While", cond, body, sp];
+}
+
+public fn n_for_in(v, v2, iter, body, sp) {
+    return ["ForIn", v, v2, iter, body, sp];
+}
+
+public fn n_for_c(init, cond, post, body, sp) {
+    return ["ForC", init, cond, post, body, sp];
+}
+
+public fn n_return(value, sp) {
+    return ["Return", value, sp];
+}
+
+public fn n_break(sp) {
+    return ["Break", sp];
+}
+
+public fn n_continue(sp) {
+    return ["Continue", sp];
+}
+
+public fn n_block_stmt(block) {
+    return ["BlockStmt", block, nsp(block)];
+}
+
+public fn n_expr_stmt(e) {
+    return ["ExprStmt", e, nsp(e)];
+}
+
+public fn n_spawn_stmt(callable, sp) {
+    return ["Spawn", callable, sp];
+}
+
+public fn n_yield(value, sp) {
+    return ["Yield", value, sp];
+}
+
+public fn n_try(body, cx, fin, sp) {
+    return ["Try", body, cx, fin, sp];
+}
+
+public fn n_catch(name, body, sp) {
+    return ["Catch", name, body, sp];
+}
+
+public fn n_throw(value, sp) {
+    return ["Throw", value, sp];
+}
+
+public fn n_block(stmts, sp) {
+    return ["Block", stmts, sp];
+}
+
+public fn n_fnproto(vis, is_async, is_extern, name, params, ret, type_params, body, sp) {
+    return ["FnProto", vis, is_async, is_extern, name, params, ret, type_params, body, sp];
+}
+
+public fn n_param(name, ty, default, sp) {
+    return ["Param", name, ty, default, sp];
+}
+
+public fn n_type(name, arg, nullable, union, sp) {
+    return ["Type", name, arg, nullable, union, sp];
+}
+
+public fn n_field_decl(vis, name, ty, sp) {
+    return ["FieldDecl", vis, name, ty, sp];
+}
+
+public fn n_variant(name, fields, sp) {
+    return ["Variant", name, fields, sp];
+}
+
+public fn n_match_arm(pattern, guard, body, sp) {
+    return ["MatchArm", pattern, guard, body, sp];
+}
+
+public fn n_wild() {
+    return ["Wild"];
+}
+
+public fn n_bind(name) {
+    return ["Bind", name];
+}
+
+public fn n_pat_lit(e) {
+    return ["PatLit", e, nsp(e)];
+}
+
+public fn n_pat_variant(name, args, sp) {
+    return ["PatVariant", name, args, sp];
+}
+
+// expressions
+
+public fn n_int(v, sp) {
+    return ["Int", v, sp];
+}
+
+public fn n_float(v, sp) {
+    return ["Float", v, sp];
+}
+
+public fn n_str(s, sp) {
+    return ["Str", s, sp];
+}
+
+public fn n_bool(v, sp) {
+    return ["Bool", v, sp];
+}
+
+public fn n_null(sp) {
+    return ["Null", sp];
+}
+
+public fn n_ident(name, sp) {
+    return ["Ident", name, sp];
+}
+
+public fn n_list(items, sp) {
+    return ["List", items, sp];
+}
+
+public fn n_fn_expr(f) {
+    return ["Fn", f, nsp(f)];
+}
+
+public fn n_unary(op, e, sp) {
+    return ["Unary", op, e, sp];
+}
+
+public fn n_binary(op, l, r, sp) {
+    return ["Binary", op, l, r, sp];
+}
+
+public fn n_logical(op, l, r, sp) {
+    return ["Logical", op, l, r, sp];
+}
+
+public fn n_assign(op, target, value, sp) {
+    return ["Assign", op, target, value, sp];
+}
+
+public fn n_call(callee, args, sp) {
+    return ["Call", callee, args, sp];
+}
+
+public fn n_method(name, object, args, sp) {
+    return ["Method", name, object, args, sp];
+}
+
+public fn n_index(object, index, sp) {
+    return ["Index", object, index, sp];
+}
+
+public fn n_field(name, object, sp) {
+    return ["FieldE", name, object, sp];
+}
+
+public fn n_new(cls, args, sp) {
+    return ["New", cls, args, sp];
+}
+
+public fn n_await(e, sp) {
+    return ["Await", e, sp];
+}
+
+public fn n_named_arg(name, value, sp) {
+    return ["NamedArg", name, value, sp];
+}
+
+public fn n_spawn_expr(callable, sp) {
+    return ["Spawn", callable, sp];
+}
+
+public fn n_super(sp) {
+    return ["Super", sp];
+}
+
+public fn n_super_call(parent, method, args, sp) {
+    return ["SuperCall", parent, method, args, sp];
+}
+
+public fn n_if_expr(cond, then, els, sp) {
+    return ["IfE", cond, then, els, sp];
+}
+
+public fn n_opt_field(name, object, sp) {
+    return ["OptField", name, object, sp];
+}
+
+public fn n_coalesce(l, r, sp) {
+    return ["Coalesce", l, r, sp];
+}
+
+public fn n_propagate(e, sp) {
+    return ["Propagate", e, sp];
+}
+
+public fn n_match(scrutinee, arms, sp) {
+    return ["Match", scrutinee, arms, sp];
+}
+
+// ---------------------------------------------------------------- output
+
+let OUT = [];
+
+fn aemit(s) {
+    OUT.push(s);
+}
+
+fn aemit_int(v) {
+    OUT.push(string(v));
+}
+
+fn emit_span(sp) {
+    aemit(",\"line\":");
+    aemit_int(sp[0]);
+    aemit(",\"col\":");
+    aemit_int(sp[1]);
+    aemit(",\"len\":");
+    aemit_int(sp[2]);
+}
+
+fn emit_str_list(items) {
+    aemit("[");
+    let n = items.len();
+    let i = 0;
+    while i < n {
+        if i > 0 {
+            aemit(",");
+        }
+        aemit(jstr(items[i]));
+        i += 1;
+    }
+    aemit("]");
+}
+
+// The dump's `vis` spelling.
+fn vis_str(v) {
+    if v == "public" {
+        return "public";
+    }
+    return "private";
+}
+
+// Rust's Debug for a string payload (describe()'s fallback shapes).
+public fn str_debug(s) {
+    let frags = ["\""];
+    let n = s.len();
+    let i = 0;
+    while i < n {
+        let cp = ord(s[i]);
+        if cp == 34 {
+            frags.push("\\\"");
+        } else if cp == 92 {
+            frags.push("\\\\");
+        } else if cp == 10 {
+            frags.push("\\n");
+        } else if cp == 13 {
+            frags.push("\\r");
+        } else if cp == 9 {
+            frags.push("\\t");
+        } else if cp < 0x20 or cp == 0x7f {
+            frags.push("\\u{" + str_debug_hex(cp) + "}");
+        } else {
+            frags.push(s[i]);
+        }
+        i += 1;
+    }
+    frags.push("\"");
+    return frags.join("");
+}
+
+fn str_debug_hex(v) {
+    // Rust Debug: lowercase hex, no padding, no leading zeros.
+    if v == 0 {
+        return "0";
+    }
+    let digits = "0123456789abcdef";
+    let out = "";
+    let parts = [];
+    let x = v;
+    while x > 0 {
+        parts.push(digits.slice(x % 16, x % 16 + 1));
+        x = x / 16;
+    }
+    let n = parts.len();
+    let i = n - 1;
+    while i >= 0 {
+        out += parts[i];
+        i -= 1;
+    }
+    return out;
+}
+
+// ------------------------------------------------------------- serializer
+
+// Byte-identical twin of src/oracle.rs program_to_json.
+public fn program_to_json(file, prog) {
+    OUT = [];
+    aemit("{\"file\":");
+    aemit(jstr(file));
+    aemit(",\"stmts\":[");
+    let stmts = prog[0];
+    let n = stmts.len();
+    let i = 0;
+    while i < n {
+        if i > 0 {
+            aemit(",");
+        }
+        stmt_json(stmts[i]);
+        i += 1;
+    }
+    aemit("]}\n");
+    return OUT.join("");
+}
+
+fn stmt_json(s) {
+    let tag = s[0];
+    if tag == "Import" {
+        aemit("{\"node\":\"Import\",\"path\":");
+        aemit(jstr(s[1]));
+        aemit(",\"alias\":");
+        aemit(jstr_null(s[2]));
+        emit_span(s[3]);
+        aemit("}");
+    } else if tag == "Fn" {
+        aemit("{\"node\":\"Fn\",\"fn\":");
+        fn_proto_json(s[1]);
+        emit_span(s[2]);
+        aemit("}");
+    } else if tag == "Class" {
+        aemit("{\"node\":\"Class\",\"vis\":\"");
+        aemit(vis_str(s[1]));
+        aemit("\",\"name\":");
+        aemit(jstr(s[2]));
+        aemit(",\"is_abstract\":");
+        aemit(string(s[3]));
+        aemit(",\"abstracts\":");
+        emit_str_list(s[4]);
+        aemit(",\"parent\":");
+        aemit(jstr_null(s[5]));
+        aemit(",\"interfaces\":");
+        emit_str_list(s[6]);
+        aemit(",\"type_params\":");
+        emit_str_list(s[7]);
+        aemit(",\"fields\":[");
+        list_json(s[8], "field_decl_json");
+        aemit("],\"methods\":[");
+        list_json(s[9], "fn_proto_json");
+        aemit("]");
+        emit_span(s[10]);
+        aemit("}");
+    } else if tag == "Interface" {
+        aemit("{\"node\":\"Interface\",\"vis\":\"");
+        aemit(vis_str(s[1]));
+        aemit("\",\"name\":");
+        aemit(jstr(s[2]));
+        aemit(",\"methods\":[");
+        let ms = s[3];
+        let n = ms.len();
+        let i = 0;
+        while i < n {
+            if i > 0 {
+                aemit(",");
+            }
+            let m = ms[i];
+            aemit("{\"name\":");
+            aemit(jstr(m[1]));
+            aemit(",\"params\":");
+            params_json(m[2]);
+            aemit(",\"ret\":");
+            type_opt_json(m[3]);
+            emit_span(m[4]);
+            aemit("}");
+            i += 1;
+        }
+        aemit("],\"default_methods\":[");
+        list_json(s[4], "fn_proto_json");
+        aemit("]");
+        emit_span(s[5]);
+        aemit("}");
+    } else if tag == "Enum" {
+        aemit("{\"node\":\"Enum\",\"vis\":\"");
+        aemit(vis_str(s[1]));
+        aemit("\",\"name\":");
+        aemit(jstr(s[2]));
+        aemit(",\"variants\":[");
+        list_json(s[3], "variant_json");
+        aemit("]");
+        emit_span(s[4]);
+        aemit("}");
+    } else if tag == "Let" {
+        aemit("{\"node\":\"Let\",\"vis\":\"");
+        aemit(vis_str(s[1]));
+        aemit("\",\"name\":");
+        aemit(jstr(s[2]));
+        aemit(",\"ty\":");
+        type_opt_json(s[3]);
+        aemit(",\"value\":");
+        expr_opt_json(s[4]);
+        emit_span(s[5]);
+        aemit("}");
+    } else if tag == "Const" {
+        aemit("{\"node\":\"Const\",\"vis\":\"");
+        aemit(vis_str(s[1]));
+        aemit("\",\"name\":");
+        aemit(jstr(s[2]));
+        aemit(",\"ty\":");
+        type_opt_json(s[3]);
+        aemit(",\"value\":");
+        expr_json(s[4]);
+        emit_span(s[5]);
+        aemit("}");
+    } else if tag == "LetTuple" {
+        aemit("{\"node\":\"LetTuple\",\"vis\":\"");
+        aemit(vis_str(s[1]));
+        aemit("\",\"names\":");
+        emit_str_list(s[2]);
+        aemit(",\"value\":");
+        expr_json(s[3]);
+        emit_span(s[4]);
+        aemit("}");
+    } else if tag == "If" {
+        aemit("{\"node\":\"If\",\"cond\":");
+        expr_json(s[1]);
+        aemit(",\"then\":");
+        block_json(s[2]);
+        aemit(",\"elifs\":[");
+        let es = s[3];
+        let n = es.len();
+        let i = 0;
+        while i < n {
+            if i > 0 {
+                aemit(",");
+            }
+            aemit("{\"cond\":");
+            expr_json(es[i][1]);
+            aemit(",\"body\":");
+            block_json(es[i][2]);
+            aemit("}");
+            i += 1;
+        }
+        aemit("],\"els\":");
+        block_opt_json(s[4]);
+        emit_span(s[5]);
+        aemit("}");
+    } else if tag == "While" {
+        aemit("{\"node\":\"While\",\"cond\":");
+        expr_json(s[1]);
+        aemit(",\"body\":");
+        block_json(s[2]);
+        emit_span(s[3]);
+        aemit("}");
+    } else if tag == "ForIn" {
+        aemit("{\"node\":\"ForIn\",\"var\":");
+        aemit(jstr(s[1]));
+        aemit(",\"var2\":");
+        aemit(jstr_null(s[2]));
+        aemit(",\"iter\":");
+        expr_json(s[3]);
+        aemit(",\"body\":");
+        block_json(s[4]);
+        emit_span(s[5]);
+        aemit("}");
+    } else if tag == "ForC" {
+        aemit("{\"node\":\"ForC\",\"init\":");
+        stmt_json(s[1]);
+        aemit(",\"cond\":");
+        expr_json(s[2]);
+        aemit(",\"post\":");
+        expr_json(s[3]);
+        aemit(",\"body\":");
+        block_json(s[4]);
+        emit_span(s[5]);
+        aemit("}");
+    } else if tag == "Return" {
+        aemit("{\"node\":\"Return\",\"value\":");
+        expr_opt_json(s[1]);
+        emit_span(s[2]);
+        aemit("}");
+    } else if tag == "Break" {
+        aemit("{\"node\":\"Break\"");
+        emit_span(s[1]);
+        aemit("}");
+    } else if tag == "Continue" {
+        aemit("{\"node\":\"Continue\"");
+        emit_span(s[1]);
+        aemit("}");
+    } else if tag == "BlockStmt" {
+        aemit("{\"node\":\"Block\",\"block\":");
+        block_json(s[1]);
+        emit_span(s[2]);
+        aemit("}");
+    } else if tag == "ExprStmt" {
+        aemit("{\"node\":\"Expr\",\"expr\":");
+        expr_json(s[1]);
+        emit_span(s[2]);
+        aemit("}");
+    } else if tag == "Spawn" {
+        aemit("{\"node\":\"Spawn\",\"callable\":");
+        expr_json(s[1]);
+        emit_span(s[2]);
+        aemit("}");
+    } else if tag == "Yield" {
+        aemit("{\"node\":\"Yield\",\"value\":");
+        expr_json(s[1]);
+        emit_span(s[2]);
+        aemit("}");
+    } else if tag == "Try" {
+        aemit("{\"node\":\"Try\",\"body\":");
+        block_json(s[1]);
+        aemit(",\"catch\":");
+        if s[2] == null {
+            aemit("null");
+        } else {
+            aemit("{\"name\":");
+            aemit(jstr(s[2][1]));
+            aemit(",\"body\":");
+            block_json(s[2][2]);
+            emit_span(s[2][3]);
+            aemit("}");
+        }
+        aemit(",\"finally\":");
+        block_opt_json(s[3]);
+        emit_span(s[4]);
+        aemit("}");
+    } else if tag == "Throw" {
+        aemit("{\"node\":\"Throw\",\"value\":");
+        expr_json(s[1]);
+        emit_span(s[2]);
+        aemit("}");
+    } else {
+        aemit("{\"node\":\"UNKNOWN-STMT\"}");
+    }
+}
+
+fn field_decl_json(f) {
+    aemit("{\"node\":\"Field\",\"vis\":\"");
+    aemit(vis_str(f[1]));
+    aemit("\",\"name\":");
+    aemit(jstr(f[2]));
+    aemit(",\"ty\":");
+    type_opt_json(f[3]);
+    emit_span(f[4]);
+    aemit("}");
+}
+
+fn variant_json(v) {
+    aemit("{\"node\":\"Variant\",\"name\":");
+    aemit(jstr(v[1]));
+    aemit(",\"fields\":");
+    emit_str_list(v[2]);
+    emit_span(v[3]);
+    aemit("}");
+}
+
+fn fn_proto_json(f) {
+    aemit("{\"node\":\"FnProto\",\"vis\":\"");
+    aemit(vis_str(f[1]));
+    aemit("\",\"is_async\":");
+    aemit(string(f[2]));
+    aemit(",\"is_extern\":");
+    aemit(string(f[3]));
+    aemit(",\"name\":");
+    aemit(jstr_null(f[4]));
+    aemit(",\"params\":");
+    params_json(f[5]);
+    aemit(",\"ret\":");
+    type_opt_json(f[6]);
+    aemit(",\"type_params\":");
+    emit_str_list(f[7]);
+    aemit(",\"body\":");
+    block_json(f[8]);
+    emit_span(f[9]);
+    aemit("}");
+}
+
+fn params_json(params) {
+    aemit("[");
+    list_json(params, "param_json");
+    aemit("]");
+}
+
+fn param_json(p) {
+    aemit("{\"node\":\"Param\",\"name\":");
+    aemit(jstr(p[1]));
+    aemit(",\"ty\":");
+    type_opt_json(p[2]);
+    aemit(",\"default\":");
+    expr_opt_json(p[3]);
+    emit_span(p[4]);
+    aemit("}");
+}
+
+fn type_json(t) {
+    aemit("{\"node\":\"Type\",\"name\":");
+    aemit(jstr(t[1]));
+    aemit(",\"arg\":");
+    if t[2] == null {
+        aemit("null");
+    } else {
+        type_json(t[2]);
+    }
+    aemit(",\"nullable\":");
+    aemit(string(t[3]));
+    aemit(",\"union\":[");
+    list_json(t[4], "type_json");
+    aemit("]");
+    emit_span(t[5]);
+    aemit("}");
+}
+
+fn pattern_json(p) {
+    let tag = p[0];
+    if tag == "Wild" {
+        aemit("{\"node\":\"Wild\"}");
+    } else if tag == "Bind" {
+        aemit("{\"node\":\"Bind\",\"name\":");
+        aemit(jstr(p[1]));
+        aemit("}");
+    } else if tag == "PatLit" {
+        aemit("{\"node\":\"Literal\",\"expr\":");
+        expr_json(p[1]);
+        emit_span(p[2]);
+        aemit("}");
+    } else {
+        aemit("{\"node\":\"Variant\",\"name\":");
+        aemit(jstr(p[1]));
+        aemit(",\"args\":[");
+        list_json(p[2], "pattern_json");
+        aemit("]");
+        emit_span(p[3]);
+        aemit("}");
+    }
+}
+
+fn block_json(b) {
+    aemit("{\"node\":\"Block\",\"stmts\":[");
+    list_json(b[1], "stmt_json");
+    aemit("]");
+    emit_span(b[2]);
+    aemit("}");
+}
+
+fn expr_json(e) {
+    let tag = e[0];
+    if tag == "Int" {
+        aemit("{\"node\":\"Int\",\"value\":");
+        aemit_int(e[1]);
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "Float" {
+        aemit("{\"node\":\"Float\",\"value\":");
+        aemit(rust_float(e[1]));
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "Str" {
+        aemit("{\"node\":\"Str\",\"value\":");
+        aemit(jstr(e[1]));
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "Bool" {
+        aemit("{\"node\":\"Bool\",\"value\":");
+        aemit(string(e[1]));
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "Null" {
+        aemit("{\"node\":\"Null\"");
+        emit_span(e[1]);
+        aemit("}");
+    } else if tag == "Ident" {
+        aemit("{\"node\":\"Ident\",\"name\":");
+        aemit(jstr(e[1]));
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "List" {
+        aemit("{\"node\":\"List\",\"items\":[");
+        list_json(e[1], "expr_json");
+        aemit("]");
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "Fn" {
+        aemit("{\"node\":\"Fn\",\"fn\":");
+        fn_proto_json(e[1]);
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "Unary" {
+        aemit("{\"node\":\"Unary\",\"op\":\"");
+        aemit(e[1]);
+        aemit("\",\"expr\":");
+        expr_json(e[2]);
+        emit_span(e[3]);
+        aemit("}");
+    } else if tag == "Binary" {
+        aemit("{\"node\":\"Binary\",\"op\":\"");
+        aemit(e[1]);
+        aemit("\",\"l\":");
+        expr_json(e[2]);
+        aemit(",\"r\":");
+        expr_json(e[3]);
+        emit_span(e[4]);
+        aemit("}");
+    } else if tag == "Logical" {
+        aemit("{\"node\":\"Logical\",\"op\":\"");
+        aemit(e[1]);
+        aemit("\",\"l\":");
+        expr_json(e[2]);
+        aemit(",\"r\":");
+        expr_json(e[3]);
+        emit_span(e[4]);
+        aemit("}");
+    } else if tag == "Assign" {
+        aemit("{\"node\":\"Assign\",\"op\":\"");
+        aemit(e[1]);
+        aemit("\",\"target\":");
+        expr_json(e[2]);
+        aemit(",\"value\":");
+        expr_json(e[3]);
+        emit_span(e[4]);
+        aemit("}");
+    } else if tag == "Call" {
+        aemit("{\"node\":\"Call\",\"callee\":");
+        expr_json(e[1]);
+        aemit(",\"args\":[");
+        list_json(e[2], "expr_json");
+        aemit("]");
+        emit_span(e[3]);
+        aemit("}");
+    } else if tag == "Method" {
+        aemit("{\"node\":\"Method\",\"name\":");
+        aemit(jstr(e[1]));
+        aemit(",\"object\":");
+        expr_json(e[2]);
+        aemit(",\"args\":[");
+        list_json(e[3], "expr_json");
+        aemit("]");
+        emit_span(e[4]);
+        aemit("}");
+    } else if tag == "Index" {
+        aemit("{\"node\":\"Index\",\"object\":");
+        expr_json(e[1]);
+        aemit(",\"index\":");
+        expr_json(e[2]);
+        emit_span(e[3]);
+        aemit("}");
+    } else if tag == "FieldE" {
+        aemit("{\"node\":\"Field\",\"name\":");
+        aemit(jstr(e[1]));
+        aemit(",\"object\":");
+        expr_json(e[2]);
+        emit_span(e[3]);
+        aemit("}");
+    } else if tag == "New" {
+        aemit("{\"node\":\"New\",\"class\":");
+        aemit(jstr(e[1]));
+        aemit(",\"args\":[");
+        list_json(e[2], "expr_json");
+        aemit("]");
+        emit_span(e[3]);
+        aemit("}");
+    } else if tag == "Await" {
+        aemit("{\"node\":\"Await\",\"expr\":");
+        expr_json(e[1]);
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "NamedArg" {
+        aemit("{\"node\":\"NamedArg\",\"name\":");
+        aemit(jstr(e[1]));
+        aemit(",\"value\":");
+        expr_json(e[2]);
+        emit_span(e[3]);
+        aemit("}");
+    } else if tag == "Spawn" {
+        aemit("{\"node\":\"Spawn\",\"callable\":");
+        expr_json(e[1]);
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "Super" {
+        aemit("{\"node\":\"Super\"");
+        emit_span(e[1]);
+        aemit("}");
+    } else if tag == "SuperCall" {
+        aemit("{\"node\":\"SuperCall\",\"parent\":");
+        aemit(jstr(e[1]));
+        aemit(",\"method\":");
+        aemit(jstr_null(e[2]));
+        aemit(",\"args\":[");
+        list_json(e[3], "expr_json");
+        aemit("]");
+        emit_span(e[4]);
+        aemit("}");
+    } else if tag == "IfE" {
+        aemit("{\"node\":\"If\",\"cond\":");
+        expr_json(e[1]);
+        aemit(",\"then\":");
+        block_json(e[2]);
+        aemit(",\"els\":");
+        block_opt_json(e[3]);
+        emit_span(e[4]);
+        aemit("}");
+    } else if tag == "OptField" {
+        aemit("{\"node\":\"OptField\",\"name\":");
+        aemit(jstr(e[1]));
+        aemit(",\"object\":");
+        expr_json(e[2]);
+        emit_span(e[3]);
+        aemit("}");
+    } else if tag == "Coalesce" {
+        aemit("{\"node\":\"Coalesce\",\"l\":");
+        expr_json(e[1]);
+        aemit(",\"r\":");
+        expr_json(e[2]);
+        emit_span(e[3]);
+        aemit("}");
+    } else if tag == "Propagate" {
+        aemit("{\"node\":\"Propagate\",\"expr\":");
+        expr_json(e[1]);
+        emit_span(e[2]);
+        aemit("}");
+    } else if tag == "Match" {
+        aemit("{\"node\":\"Match\",\"scrutinee\":");
+        expr_json(e[1]);
+        aemit(",\"arms\":[");
+        list_json(e[2], "match_arm_json");
+        aemit("]");
+        emit_span(e[3]);
+        aemit("}");
+    } else {
+        aemit("{\"node\":\"UNKNOWN-EXPR\"}");
+    }
+}
+
+fn match_arm_json(a) {
+    aemit("{\"node\":\"MatchArm\",\"pattern\":");
+    pattern_json(a[1]);
+    aemit(",\"guard\":");
+    expr_opt_json(a[2]);
+    aemit(",\"body\":");
+    block_json(a[3]);
+    emit_span(a[4]);
+    aemit("}");
+}
+
+// ---------------------------------------------------------------- helpers
+
+fn list_json(items, fname) {
+    let n = items.len();
+    let i = 0;
+    while i < n {
+        if i > 0 {
+            aemit(",");
+        }
+        if fname == "stmt_json" {
+            stmt_json(items[i]);
+        } else if fname == "expr_json" {
+            expr_json(items[i]);
+        } else if fname == "pattern_json" {
+            pattern_json(items[i]);
+        } else if fname == "type_json" {
+            type_json(items[i]);
+        } else if fname == "param_json" {
+            param_json(items[i]);
+        } else if fname == "fn_proto_json" {
+            fn_proto_json(items[i]);
+        } else if fname == "field_decl_json" {
+            field_decl_json(items[i]);
+        } else if fname == "variant_json" {
+            variant_json(items[i]);
+        } else if fname == "match_arm_json" {
+            match_arm_json(items[i]);
+        }
+        i += 1;
+    }
+}
+
+fn jstr_null(v) {
+    if v == null {
+        return "null";
+    }
+    return jstr(v);
+}
+
+fn type_opt_json(t) {
+    if t == null {
+        aemit("null");
+    } else {
+        type_json(t);
+    }
+}
+
+fn expr_opt_json(e) {
+    if e == null {
+        aemit("null");
+    } else {
+        expr_json(e);
+    }
+}
+
+fn block_opt_json(b) {
+    if b == null {
+        aemit("null");
+    } else {
+        block_json(b);
+    }
+}

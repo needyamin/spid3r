@@ -29,7 +29,18 @@ let LINE = 1;
 let COL = 1;
 let DEPTH = 0;
 
-const MAX_INTERP_DEPTH = 32;
+// The lex-time `{expr}` capture validator (parser::hole_is_expression in the
+// oracle), injected by the entry point to avoid an import cycle: the parser
+// imports this module, and module import cycles are rejected. Entry points
+// that parse wire it up before lexing; a lexer-only entry (null) accepts
+// scan-clean captures.
+let HOLE_CHECK = null;
+
+public fn set_hole_check(f) {
+    HOLE_CHECK = f;
+}
+
+public const MAX_INTERP_DEPTH = 32;
 const INF = float("inf");
 
 // ------------------------------------------------------------------ scanning
@@ -921,6 +932,14 @@ fn try_interp_expr() {
                         rewind(p0, l0, c0);
                         return null;
                     }
+                    // The oracle validates the capture by lexing AND PARSING
+                    // it (hole_is_expression) — see HOLE_CHECK above.
+                    if HOLE_CHECK != null {
+                        if not HOLE_CHECK(raw, DEPTH + 1) {
+                            rewind(p0, l0, c0);
+                            return null;
+                        }
+                    }
                     return raw;
                 }
                 depth -= 1;
@@ -951,12 +970,18 @@ fn all_ascii_digits(raw) {
 // Lex `src` into the token model. Throws [msg, line, col, len] on a lexical
 // error, exactly where the oracle's Diagnostic would carry it.
 public fn lex_all(src) {
+    return lex_all_depth(src, 0);
+}
+
+// The interpolation-hole validator lexes with the capture's nesting depth
+// (Lexer::with_depth in the oracle) so pathological nesting is bounded.
+public fn lex_all_depth(src, depth) {
     BS = bytes(src);
     N = BS.len();
     POS = 0;
     LINE = 1;
     COL = 1;
-    DEPTH = 0;
+    DEPTH = depth;
     // The oracle skips a UTF-8 BOM without moving line/col.
     if N >= 3 and BS[0] == 239 and BS[1] == 187 and BS[2] == 191 {
         POS = 3;
@@ -969,4 +994,21 @@ public fn lex_all(src) {
             return toks;
         }
     }
+}
+
+// Save/restore of the scanner state, for the hole validator's re-entrant
+// sub-lex: the check runs DURING a lex (inside try_interp_expr) on the same
+// globals. The parser's hole_check wraps its sub-lex with these.
+public fn lex_save() {
+    return [BS, N, POS, LINE, COL, DEPTH, ESC];
+}
+
+public fn lex_restore(save) {
+    BS = save[0];
+    N = save[1];
+    POS = save[2];
+    LINE = save[3];
+    COL = save[4];
+    DEPTH = save[5];
+    ESC = save[6];
 }
