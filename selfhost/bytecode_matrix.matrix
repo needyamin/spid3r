@@ -1,0 +1,318 @@
+// selfhost/bytecode_matrix.matrix — the .matrixc binary writer
+// (roadmap Phase 4, step 4.3, docs/SELFHOST.md SH-5).
+//
+// A port of src/vm/bytecode.rs put_vmfunc/put_chunk/serialize_vmfunc. The
+// byte stream accumulates as a list of ints; write_bytes ships it. Helpers:
+//
+//   * put_usize — u64 little-endian (the oracle's usize encoding);
+//     Spid3r ints are i64, so negative magnitudes never occur here (every
+//     serialized usize is a length/offset/count).
+//   * put_value — tags 0..4 (Int/Float/Str/Bool/Null). The Float tag carries
+//     the IEEE-754 bits, obtained from msgpack_encode (tag 203 + big-endian
+//     f64) — the runtime's own encoder, so the bit pattern is exact.
+//   * the checksum — sha256(bytes) via the linked runtime, hex-decoded back
+//     into 32 payload bytes (the same crate::pkg::sha256_bytes the oracle
+//     calls).
+//
+// Parity gate: the written file must be byte-identical to the oracle's
+// `spid3r compile --no-opt -o` artifact, and `spid3r exec` must run it.
+
+import "token";
+
+public fn put_u16_le(b, v) {
+    b.push(v & 255);
+    b.push((v / 256) & 255);
+    return;
+}
+
+public fn put_i16_le(b, v) {
+    let u = v;
+    if u < 0 {
+        u = u + 65536;
+    }
+    put_u16_le(b, u);
+    return;
+}
+
+// i64 → 8 little-endian bytes (two's complement via 8 shifted masks).
+fn put_i64_le(b, v) {
+    let i = 0;
+    while i < 8 {
+        let shift = 8 * i;
+        let byte = (v >> shift) & 255;
+        b.push(byte);
+        i += 1;
+    }
+    return;
+}
+
+fn put_usize(b, v) {
+    put_i64_le(b, v);
+    return;
+}
+
+fn put_bool(b, v) {
+    if v {
+        b.push(1);
+    } else {
+        b.push(0);
+    }
+    return;
+}
+
+// UTF-8 bytes of a string, via the bytes() constructor.
+public fn put_str(b, s) {
+    if type_of(s) != "string" {
+        throw ["put_str got a " + type_of(s) + " value " + string(s), 0, 0, 0, "vm"];
+    }
+    // The oracle writes the UTF-8 BYTE length; s.len() counts characters.
+    let data = bytes(s);
+    put_usize(b, data.len());
+    let n = data.len();
+    let i = 0;
+    while i < n {
+        b.push(data[i]);
+        i += 1;
+    }
+    return;
+}
+
+fn put_opt_str(b, o) {
+    if o != null {
+        b.push(1);
+        put_str(b, o);
+    } else {
+        b.push(0);
+    }
+    return;
+}
+
+fn put_vis(b, v) {
+    if v == "public" {
+        b.push(1);
+    } else {
+        b.push(0);
+    }
+    return;
+}
+
+public fn put_span(b, sp) {
+    put_str(b, sp[0]);
+    put_usize(b, sp[1]);
+    put_usize(b, sp[2]);
+    put_usize(b, sp[3]);
+    return;
+}
+
+// IEEE-754 little-endian bits for a float: msgpack_encode carries the value
+// as tag 203 (0xCB) + 8 big-endian bytes; strip the tag, reverse to LE.
+fn float_bits_bytes(x) {
+    let enc = msgpack_encode(x);
+    let out = [];
+    let i = 8;
+    while i >= 1 {
+        out.push(enc[i]);
+        i -= 1;
+    }
+    return out;
+}
+
+fn put_value(b, v) {
+    let tag = v[0];
+    if tag == "Int" {
+        b.push(0);
+        put_i64_le(b, v[1]);
+        return;
+    }
+    if tag == "Float" {
+        b.push(1);
+        let bits = float_bits_bytes(v[1]);
+        for x in bits {
+            b.push(x);
+        }
+        return;
+    }
+    if tag == "Str" {
+        b.push(2);
+        put_str(b, v[1]);
+        return;
+    }
+    if tag == "Bool" {
+        b.push(3);
+        if v[1] {
+            b.push(1);
+        } else {
+            b.push(0);
+        }
+        return;
+    }
+    if tag == "Null" {
+        b.push(4);
+        return;
+    }
+    throw ["bytecode: cannot serialize constant " + tag, 0, 0, 0, "vm"];
+}
+
+fn put_chunk(b, c) {
+    // code
+    put_usize(b, c[0].len());
+    for x in c[0] {
+        b.push(x);
+    }
+    // constants
+    put_usize(b, c[1].len());
+    for v in c[1] {
+        put_value(b, v);
+    }
+    // functions
+    put_usize(b, c[2].len());
+    for f in c[2] {
+        put_func_proto(b, f);
+    }
+    // classes
+    put_usize(b, c[3].len());
+    for cl in c[3] {
+        put_class_proto(b, cl);
+    }
+    // inst_offsets
+    put_usize(b, c[4].len());
+    for o in c[4] {
+        put_usize(b, o);
+    }
+    // inst_spans
+    put_usize(b, c[5].len());
+    for s in c[5] {
+        put_span(b, s);
+    }
+    // pending_span
+    put_span(b, c[6]);
+    // modules
+    put_usize(b, c[7].len());
+    for m in c[7] {
+        put_embedded(b, m);
+    }
+    return;
+}
+
+fn put_embedded(b, m) {
+    put_str(b, m[1]);
+    put_usize(b, m[2].len());
+    for n in m[2] {
+        put_str(b, n);
+    }
+    put_vmfunc(b, m[3]);
+    return;
+}
+
+// put_vmfunc: name(null at compile time), arity, is_async, upvalue VALUES
+// (empty at compile time — cells bind at run time), own_upvalues, has_
+// defaults + (min_arity, defaults) when non-empty, chunk. The shape mirrors
+// the oracle's put_vmfunc exactly (the v2 defaults block sits between
+// own_upvalues and the chunk).
+fn put_vmfunc(b, f) {
+    // f = ["VMFUNC", name, arity, is_async, upvalue_values, own_upvalues,
+    //       has_defaults_unused, chunk]
+    put_opt_str(b, f[1]);
+    put_usize(b, f[2]);
+    put_bool(b, f[3]);
+    put_usize(b, f[4].len());
+    for v in f[4] {
+        put_value(b, v);
+    }
+    b.push(f[5]);
+    let defaults = f[7];
+    let has_defaults = defaults.len() > 0;
+    put_bool(b, has_defaults);
+    if has_defaults {
+        put_usize(b, f[6]);
+        put_usize(b, defaults.len());
+        for v in defaults {
+            put_value(b, v);
+        }
+    }
+    put_chunk(b, f[8]);
+    return;
+}
+
+fn put_func_proto(b, f) {
+    // f = ["FNPROTO", name, arity, is_async, upvalue_bytes, own_upvalues,
+    //       defaults, chunk]
+    put_opt_str(b, f[1]);
+    put_usize(b, f[2]);
+    put_bool(b, f[3]);
+    put_usize(b, f[4].len());
+    for u in f[4] {
+        b.push(u);
+    }
+    b.push(f[5]);
+    let defaults = f[6];
+    let has_defaults = defaults.len() > 0;
+    put_bool(b, has_defaults);
+    if has_defaults {
+        put_usize(b, f[2] - defaults.len());
+        put_usize(b, defaults.len());
+        for v in defaults {
+            put_value(b, v);
+        }
+    }
+    put_chunk(b, f[7]);
+    return;
+}
+
+fn put_class_proto(b, c) {
+    // c = ["CLASS", name, parent, fields, methods]
+    put_str(b, c[1]);
+    put_opt_str(b, c[2]);
+    put_usize(b, c[3].len());
+    for f in c[3] {
+        put_str(b, f[0]);
+        put_vis(b, f[1]);
+    }
+    put_usize(b, c[4].len());
+    for m in c[4] {
+        put_str(b, m[0]);
+        put_vis(b, m[1]);
+        put_u16_le(b, m[2]);
+        put_bool(b, m[3]);
+    }
+    return;
+}
+
+// The v3 checksummed container: MAGIC | u16 3 | u64 payload_len | payload |
+// sha256(payload). The payload itself is a complete plain v2 stream.
+public fn serialize_vmfunc(func) {
+    let inner = [];
+    for x in bytes("SPID3R") {
+        inner.push(x);
+    }
+    put_u16_le(inner, 2);
+    put_vmfunc(inner, func);
+    let b = [];
+    for x in bytes("SPID3R") {
+        b.push(x);
+    }
+    put_u16_le(b, 3);
+    put_i64_le(b, inner.len());
+    for x in inner {
+        b.push(x);
+    }
+    // sha256(bytes) → hex → hex_decode → the 32 raw digest bytes.
+    let payload_bytes = bytes_from_ints(inner);
+    let hex = sha256(payload_bytes);
+    let digest = hex_decode(hex);
+    for x in digest {
+        b.push(x);
+    }
+    return b;
+}
+
+// A Spid3r `bytes` value from a list of byte ints.
+public fn bytes_from_ints(ints) {
+    let b = bytes(ints.len());
+    let i = 0;
+    while i < ints.len() {
+        b[i] = ints[i];
+        i += 1;
+    }
+    return b;
+}

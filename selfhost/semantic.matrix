@@ -695,7 +695,7 @@ fn dirname_of(s) {
     return "";
 }
 
-fn resolve_module_path(path, source_file) {
+public fn resolve_module_path(path, source_file) {
     let dir = dirname_of(source_file);
     let candidates = [dir + path + ".matrix", dir + path, "stdlib/" + path + ".matrix", "stdlib/" + path];
     for c in candidates {
@@ -1077,7 +1077,7 @@ public fn check_program(st, prog) {
     pop_scope(st);
 }
 
-fn map_keys(m) {
+public fn map_keys(m) {
     let ks = [];
     for k in keys_of(m) {
         ks.push(k);

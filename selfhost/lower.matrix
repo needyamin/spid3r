@@ -1,0 +1,1540 @@
+// selfhost/lower.matrix — the AST lowering pass (roadmap Phase 4, step 4.1).
+//
+// A faithful port of src/lower/mod.rs over the Phase-2 AST node model: the
+// single seam between surface syntax and the backends. Three surface nodes
+// become conditional statements (if-expressions, `?.` assignments via the
+// spill rule, `??`), match becomes a linear guarded-if chain, enums become
+// constructor functions, generators become emit closures, named-argument
+// calls are reordered positionally, and every multi-child expression whose
+// child needs a prelude is spilled into temporaries in source order (ANF
+// where it is needed — the hoisting rule preserves evaluation order).
+//
+// Parity surface (SH-5): the lowered program dumps through the SAME
+// serializer as the parse tree (ast.matrix program_to_json) — the oracle
+// surface is `spid3r parse --dump-lowered-json`.
+
+import "token";
+import "ast";
+import "lexer";
+import "parser";
+
+// st = [next_temp, current_parent, variants, fns, classes, default_ifaces]
+//   fns:    map name -> params list (raw AST Param nodes)
+//   classes:map name -> ["CP", parent-or-null, ctor-params-or-null, methods-map]
+//   variants: map variant-name -> field names
+//   default_ifaces: map iface-name -> list of FnProto nodes
+
+public fn new_lower() {
+    return [0, null, map(), map(), map(), map()];
+}
+
+fn fresh(st) {
+    let n = st[0];
+    st[0] = n + 1;
+    return "__spid3r_t" + string(n);
+}
+
+// ------------------------------------------------------------ scan: needs?
+
+fn is_scalar_default(e) {
+    let tag = e[0];
+    if tag == "Int" or tag == "Float" or tag == "Str" or tag == "Bool" or tag == "Null" {
+        return true;
+    }
+    if tag == "Unary" and e[1] == "Neg" {
+        let inner = e[2];
+        return inner[0] == "Int" or inner[0] == "Float";
+    }
+    return false;
+}
+
+fn fn_needs_lowering(f) {
+    for p in f[5] {
+        if p[3] != null {
+            if not is_scalar_default(p[3]) {
+                return true;
+            }
+        }
+    }
+    return block_needs_lowering(f[8]);
+}
+
+fn stmt_needs_lowering(s) {
+    let tag = s[0];
+    if tag == "Yield" {
+        return true;
+    }
+    if tag == "Import" {
+        return true;
+    }
+    if tag == "Interface" {
+        return s[4].len() > 0;
+    }
+    if tag == "Break" or tag == "Continue" {
+        return false;
+    }
+    if tag == "Enum" {
+        return true;
+    }
+    if tag == "Fn" {
+        return fn_needs_lowering(s[1]);
+    }
+    if tag == "Class" {
+        if s[6].len() > 0 {
+            return true;
+        }
+        for m in s[9] {
+            if fn_needs_lowering(m) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if tag == "Let" {
+        if s[4] != null {
+            return expr_needs_lowering(s[4]);
+        }
+        return false;
+    }
+    if tag == "Const" {
+        return expr_needs_lowering(s[4]);
+    }
+    if tag == "LetTuple" {
+        return true;
+    }
+    if tag == "If" {
+        if expr_needs_lowering(s[1]) or block_needs_lowering(s[2]) {
+            return true;
+        }
+        for e in s[3] {
+            if expr_needs_lowering(e[1]) or block_needs_lowering(e[2]) {
+                return true;
+            }
+        }
+        if s[4] != null {
+            return block_needs_lowering(s[4]);
+        }
+        return false;
+    }
+    if tag == "While" {
+        return expr_needs_lowering(s[1]) or block_needs_lowering(s[2]);
+    }
+    if tag == "ForIn" {
+        if s[2] != null {
+            return true;
+        }
+        return expr_needs_lowering(s[3]) or block_needs_lowering(s[4]);
+    }
+    if tag == "ForC" {
+        return stmt_needs_lowering(s[1]) or expr_needs_lowering(s[2])
+            or expr_needs_lowering(s[3]) or block_needs_lowering(s[4]);
+    }
+    if tag == "Return" {
+        if s[1] != null {
+            return expr_needs_lowering(s[1]);
+        }
+        return false;
+    }
+    if tag == "BlockStmt" {
+        return block_needs_lowering(s[1]);
+    }
+    if tag == "ExprStmt" {
+        return expr_needs_lowering(s[1]);
+    }
+    if tag == "Spawn" {
+        return expr_needs_lowering(s[1]);
+    }
+    if tag == "Try" {
+        if block_needs_lowering(s[1]) {
+            return true;
+        }
+        if s[2] != null {
+            if block_needs_lowering(s[2][2]) {
+                return true;
+            }
+        }
+        if s[3] != null {
+            return block_needs_lowering(s[3]);
+        }
+        return false;
+    }
+    if tag == "Throw" {
+        return expr_needs_lowering(s[1]);
+    }
+    return false;
+}
+
+fn block_needs_lowering(b) {
+    for s in b[1] {
+        if stmt_needs_lowering(s) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn expr_needs_lowering(e) {
+    let tag = e[0];
+    if tag == "OptField" {
+        return expr_needs_lowering(e[2]);
+    }
+    if tag == "IfE" or tag == "Coalesce" or tag == "NamedArg" or tag == "Match" or tag == "Propagate" or tag == "Super" {
+        return true;
+    }
+    if tag == "Int" or tag == "Float" or tag == "Str" or tag == "Bool" or tag == "Null" or tag == "Ident" or tag == "SuperCall" {
+        return false;
+    }
+    if tag == "List" {
+        for it in e[1] {
+            if expr_needs_lowering(it) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if tag == "Fn" {
+        return fn_needs_lowering(e[1]);
+    }
+    if tag == "Unary" {
+        return expr_needs_lowering(e[2]);
+    }
+    if tag == "Binary" or tag == "Logical" {
+        return expr_needs_lowering(e[2]) or expr_needs_lowering(e[3]);
+    }
+    if tag == "Assign" {
+        return expr_needs_lowering(e[2]) or expr_needs_lowering(e[3]);
+    }
+    if tag == "Call" {
+        if expr_needs_lowering(e[1]) {
+            return true;
+        }
+        for a in e[2] {
+            if expr_needs_lowering(a) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if tag == "Method" {
+        if expr_needs_lowering(e[2]) {
+            return true;
+        }
+        for a in e[3] {
+            if expr_needs_lowering(a) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if tag == "Index" {
+        return expr_needs_lowering(e[1]) or expr_needs_lowering(e[2]);
+    }
+    if tag == "FieldE" {
+        return expr_needs_lowering(e[2]);
+    }
+    if tag == "New" {
+        for a in e[2] {
+            if expr_needs_lowering(a) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if tag == "Await" {
+        return expr_needs_lowering(e[1]);
+    }
+    if tag == "Spawn" {
+        return expr_needs_lowering(e[1]);
+    }
+    return false;
+}
+
+// ------------------------------------------------------- the tables pass
+
+fn collect_tables(st, prog) {
+    for s in prog[0] {
+        let tag = s[0];
+        if tag == "Import" {
+            let alias = s[2];
+            let selections = null;
+            if alias != null {
+                selections = parse_import_selections_lower(alias);
+            }
+            if alias == null or selections != null {
+                import_tables(st, s[1], selections);
+            }
+        } else if tag == "Interface" {
+            if s[4].len() > 0 {
+                st[5][s[2]] = s[4];
+            }
+        } else if tag == "Fn" {
+            let f = s[1];
+            if f[4] != null {
+                st[3][f[4]] = f[5];
+            }
+        } else if tag == "Enum" {
+            for v in s[3] {
+                if v[2].len() > 0 {
+                    let params = [];
+                    for fname in v[2] {
+                        params.push(n_param(fname, null, null, v[3]));
+                    }
+                    st[3][v[1]] = params;
+                }
+            }
+        } else if tag == "Class" {
+            let cp = ["CP", s[5], null, map()];
+            for m in s[9] {
+                if m[4] == "new" {
+                    cp[2] = m[5];
+                } else if m[4] != null {
+                    let params = m[5];
+                    if params.len() > 0 and params[0][1] == "self" {
+                        params = params.slice(1, params.len());
+                    }
+                    cp[3][m[4]] = params;
+                }
+            }
+            st[4][s[2]] = cp;
+        }
+    }
+}
+
+fn parse_import_selections_lower(alias) {
+    if alias.len() < 2 or alias.slice(0, 1) != "{" {
+        return null;
+    }
+    let inner = alias.slice(1, alias.len() - 1);
+    if inner == "" {
+        return [];
+    }
+    let out = [];
+    let parts = inner.split(",");
+    for p in parts {
+        let sub = p.split(":");
+        if sub.len() == 2 {
+            out.push([sub[0], sub[1]]);
+        } else {
+            out.push([p, p]);
+        }
+    }
+    return out;
+}
+
+// The public classes/interfaces/enums of an imported module feed the
+// named-argument reorder tables and the cross-module match field names.
+fn import_tables(st, path, selections) {
+    let dir = dirname_of_lower(path);
+    let src = "";
+    let resolved = "";
+    let cands = [dir + path + ".matrix", dir + path, "stdlib/" + path + ".matrix", "stdlib/" + path];
+    for c in cands {
+        if file_exists(c) {
+            resolved = c;
+            break;
+        }
+    }
+    if resolved == "" {
+        return;
+    }
+    let r = read_file(resolved);
+    if r.is_err() {
+        return;
+    }
+    src = r.unwrap();
+    let toks = null;
+    try {
+        toks = lex_all(src);
+    } catch (e) {
+        return;
+    }
+    let prog = null;
+    try {
+        prog = parse_program(new_state(toks));
+    } catch (e2) {
+        return;
+    }
+    for s in prog[0] {
+        let tag = s[0];
+        if tag == "Interface" {
+            if s[1] == "public" and s[4].len() > 0 {
+                st[5][s[2]] = s[4];
+                if selections != null {
+                    for pair in selections {
+                        if pair[0] == s[2] and pair[1] != s[2] {
+                            if not st[5].has(pair[1]) {
+                                st[5][pair[1]] = s[4];
+                            }
+                        }
+                    }
+                }
+            }
+        } else if tag == "Class" {
+            if s[1] != "public" {
+                continue;
+            }
+            let cp = ["CP", s[5], null, map()];
+            for m in s[9] {
+                if m[4] == "new" {
+                    cp[2] = m[5];
+                } else if m[4] != null {
+                    let params = m[5];
+                    if params.len() > 0 and params[0][1] == "self" {
+                        params = params.slice(1, params.len());
+                    }
+                    cp[3][m[4]] = params;
+                }
+            }
+            st[4][s[2]] = cp;
+            if selections != null {
+                for pair in selections {
+                    if pair[0] == s[2] and pair[1] != s[2] {
+                        if not st[4].has(pair[1]) {
+                            st[4][pair[1]] = cp;
+                        }
+                    }
+                }
+            }
+        } else if tag == "Enum" {
+            if s[1] != "public" {
+                continue;
+            }
+            for v in s[3] {
+                if not st[2].has(v[1]) {
+                    st[2][v[1]] = v[2];
+                }
+            }
+        }
+    }
+}
+
+fn dirname_of_lower(s) {
+    let cut = -1;
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let cp = ord(s[i]);
+        if cp == 47 or cp == 92 {
+            cut = i;
+        }
+        i += 1;
+    }
+    if cut >= 0 {
+        return s.slice(0, cut + 1);
+    }
+    return "";
+}
+
+// ------------------------------------------------------------- resolution
+
+fn resolve_ctor_params(st, kls) {
+    let cur = kls;
+    let seen = map();
+    while cur != null {
+        if seen.has(cur) {
+            return null;
+        }
+        seen[cur] = 1;
+        if not st[4].has(cur) {
+            return null;
+        }
+        let cp = st[4][cur];
+        if cp[2] != null {
+            return cp[2];
+        }
+        cur = cp[1];
+    }
+    return null;
+}
+
+fn resolve_method_params(st, kls, method) {
+    let cur = kls;
+    let seen = map();
+    while cur != null {
+        if seen.has(cur) {
+            return null;
+        }
+        seen[cur] = 1;
+        if not st[4].has(cur) {
+            return null;
+        }
+        let cp = st[4][cur];
+        if cp[3].has(method) {
+            return cp[3][method];
+        }
+        cur = cp[1];
+    }
+    return null;
+}
+
+// -------------------------------------------------- named-arg reordering
+
+fn reorder_named_args(st, args, params) {
+    let slots = [];
+    for p in params {
+        slots.push(null);
+    }
+    let named_seen = false;
+    let positional = 0;
+    let ok = true;
+    let extra = [];
+    for a in args {
+        if a[0] == "NamedArg" {
+            named_seen = true;
+            let name = a[1];
+            let hit = -1;
+            let j = 0;
+            while j < params.len() {
+                if params[j][1] == name {
+                    hit = j;
+                }
+                j += 1;
+            }
+            if hit >= 0 and slots[hit] == null {
+                slots[hit] = a[2];
+            } else {
+                ok = false;
+            }
+        } else {
+            if named_seen {
+                ok = false;
+            }
+            if positional < slots.len() {
+                slots[positional] = a;
+            } else {
+                extra.push(a);
+            }
+            positional += 1;
+        }
+    }
+    if not ok {
+        return null;
+    }
+    let out = [];
+    let i = 0;
+    while i < slots.len() {
+        if slots[i] != null {
+            out.push(slots[i]);
+        } else {
+            let d = params[i][3];
+            if d != null {
+                out.push(d);
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        i += 1;
+    }
+    if not ok {
+        return null;
+    }
+    for x in extra {
+        out.push(x);
+    }
+    return out;
+}
+
+// --------------------------------------------------------------- the pass
+
+public fn lower_program(st, prog) {
+    // The fast path: a program with no surface-only node passes through
+    // untouched (Cow::Borrowed in the oracle) — the lowered dump of such a
+    // program is the raw AST, empty-Block ForC inits and all.
+    let needed = false;
+    for s in prog[0] {
+        if stmt_needs_lowering(s) {
+            needed = true;
+            break;
+        }
+    }
+    if not needed {
+        return prog;
+    }
+    collect_tables(st, prog);
+    let stmts = [];
+    for s in prog[0] {
+        for ns in lower_stmt(st, s) {
+            stmts.push(ns);
+        }
+    }
+    return [stmts];
+}
+
+fn lower_block(st, b) {
+    let stmts = [];
+    for s in b[1] {
+        for ns in lower_stmt(st, s) {
+            stmts.push(ns);
+        }
+    }
+    return n_block(stmts, b[2]);
+}
+
+// `name["key"] = value;`
+fn set_index(name, key, value, sp) {
+    return n_expr_stmt(n_assign("Assign",
+        n_index(n_ident(name, sp), n_str(key, sp), sp),
+        value, sp));
+}
+
+// `name = value;` for an existing binding.
+fn set_local(name, value, sp) {
+    return n_expr_stmt(n_assign("Assign", n_ident(name, sp), value, sp));
+}
+
+fn let_stmt_n(name, value, sp) {
+    return n_let("private", name, null, value, sp);
+}
+
+fn lower_stmt(st, s) {
+    let tag = s[0];
+    if tag == "Yield" {
+        let call = n_call(n_ident("emit", s[2]), [s[1]], s[2]);
+        return lower_stmt(st, n_expr_stmt(call));
+    }
+    if tag == "Fn" {
+        return [n_fn_stmt(lower_fn_proto(st, s[1]))];
+    }
+    if tag == "Class" {
+        return [lower_class_decl(st, s)];
+    }
+    if tag == "Enum" {
+        return lower_enum_decl(st, s);
+    }
+    if tag == "Interface" or tag == "Import" or tag == "Break" or tag == "Continue" {
+        return [s];
+    }
+    if tag == "Let" {
+        if s[4] != null {
+            let pair = lower_expr(st, s[4]);
+            let pre = pair[1];
+            pre.push(n_let(s[1], s[2], s[3], pair[0], s[5]));
+            return pre;
+        }
+        return [s];
+    }
+    if tag == "LetTuple" {
+        let pair = lower_expr(st, s[3]);
+        let pre = pair[1];
+        let d = fresh(st);
+        pre.push(let_stmt_n(d, pair[0], s[4]));
+        let names = s[2];
+        let i = 0;
+        while i < names.len() {
+            pre.push(n_let(s[1], names[i], null,
+                n_index(n_ident(d, s[4]), n_int(i, s[4]), s[4]), s[4]));
+            i += 1;
+        }
+        return pre;
+    }
+    if tag == "Const" {
+        let pair = lower_expr(st, s[4]);
+        let pre = pair[1];
+        pre.push(n_const(s[1], s[2], s[3], pair[0], s[5]));
+        return pre;
+    }
+    if tag == "If" {
+        return lower_if_stmt(st, s);
+    }
+    if tag == "While" {
+        return lower_while_stmt(st, s);
+    }
+    if tag == "ForIn" {
+        return lower_for_in(st, s);
+    }
+    if tag == "ForC" {
+        return lower_for_c(st, s);
+    }
+    if tag == "Return" {
+        if s[1] != null {
+            let pair = lower_expr(st, s[1]);
+            let pre = pair[1];
+            pre.push(n_return(pair[0], s[2]));
+            return pre;
+        }
+        return [s];
+    }
+    if tag == "BlockStmt" {
+        return [n_block_stmt(lower_block(st, s[1]))];
+    }
+    if tag == "ExprStmt" {
+        let pair = lower_expr(st, s[1]);
+        let pre = pair[1];
+        pre.push(n_expr_stmt(pair[0]));
+        return pre;
+    }
+    if tag == "Spawn" {
+        let pair = lower_expr(st, s[1]);
+        let pre = pair[1];
+        pre.push(n_spawn_stmt(pair[0], s[2]));
+        return pre;
+    }
+    if tag == "Try" {
+        let body = lower_block(st, s[1]);
+        let cx = null;
+        if s[2] != null {
+            cx = n_catch(s[2][1], lower_block(st, s[2][2]), s[2][3]);
+        }
+        let fin = null;
+        if s[3] != null {
+            fin = lower_block(st, s[3]);
+        }
+        return [n_try(body, cx, fin, stmt_span_of(s))];
+    }
+    if tag == "Throw" {
+        let pair = lower_expr(st, s[1]);
+        let pre = pair[1];
+        pre.push(n_throw(pair[0], s[2]));
+        return pre;
+    }
+    return [s];
+}
+
+public fn stmt_span_of(s) {
+    return s[s.len() - 1];
+}
+
+fn lower_fn_proto(st, f) {
+    // Generators: a body containing `yield` becomes an `emit` closure handed
+    // to __gen.gen, and the function returns the generator object.
+    if contains_yield(f[8][1]) {
+        let body = f[8];
+        let new_stmts = replace_yields(body[1]);
+        let inner_body = n_block(new_stmts, body[2]);
+        let emit_param = n_param("emit", null, null, f[9]);
+        let inner = n_fn_expr(n_fnproto("private", false, false, null, [emit_param], null, [], inner_body, f[9]));
+        let gen_call = n_method("gen", n_ident("__gen", f[9]), [inner], f[9]);
+        let wrapped = n_return(gen_call, f[9]);
+        let out_body = n_block([wrapped], body[2]);
+        return n_fnproto(f[1], f[2], f[3], f[4], f[5], f[6], f[7], lower_block(st, out_body), f[9]);
+    }
+    let params = [];
+    let init_stmts = [];
+    for p in f[5] {
+        if p[3] != null {
+            if is_scalar_default(p[3]) {
+                params.push(p);
+            } else {
+                let pair = lower_expr(st, p[3]);
+                let d_low = pair[0];
+                let pre = pair[1];
+                let sp = p[4];
+                let p2 = n_param(p[1], p[2], n_null(sp), sp);
+                params.push(p2);
+                pre.push(n_expr_stmt(n_assign("Assign", n_ident(p[1], sp), d_low, sp)));
+                init_stmts.push(n_if(
+                    n_binary("Eq", n_ident(p[1], sp), n_null(sp), sp),
+                    n_block(pre, sp), [], null, sp));
+            }
+        } else {
+            params.push(p);
+        }
+    }
+    let body = lower_block(st, f[8]);
+    if init_stmts.len() > 0 {
+        for s in body[1] {
+            init_stmts.push(s);
+        }
+        body = n_block(init_stmts, body[2]);
+    }
+    return n_fnproto(f[1], f[2], f[3], f[4], params, f[6], f[7], body, f[9]);
+}
+
+fn lower_class_decl(st, c) {
+    let outer_parent = st[1];
+    st[1] = c[5];
+    let raw_methods = [];
+    for m in c[9] {
+        raw_methods.push(m);
+    }
+    for iface in c[6] {
+        if st[5].has(iface) {
+            for dm in st[5][iface] {
+                let dm_name = dm[4];
+                if dm_name == null {
+                    dm_name = "";
+                }
+                let already = false;
+                for m in raw_methods {
+                    if m[4] == dm_name {
+                        already = true;
+                    }
+                }
+                if not already {
+                    raw_methods.push(dm);
+                }
+            }
+        }
+    }
+    let methods = [];
+    for m in raw_methods {
+        methods.push(lower_fn_proto(st, m));
+    }
+    st[1] = outer_parent;
+    return n_class(c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], methods, c[10]);
+}
+
+// `enum Name { A, B(x) }` -> one public constructor function per variant.
+fn lower_enum_decl(st, e) {
+    let out = [];
+    let ev = e[3];
+    for v in ev {
+        st[2][v[1]] = v[2];
+        let sp = v[3];
+        let body = [];
+        body.push(n_let("private", "__m", null, n_call(n_ident("map", sp), [], sp), sp));
+        body.push(set_index("__m", "__tag", n_str(v[1], sp), sp));
+        let field_strs = [];
+        for f in v[2] {
+            field_strs.push(n_str(f, sp));
+        }
+        body.push(set_index("__m", "__fields", n_list(field_strs, sp), sp));
+        for f in v[2] {
+            body.push(set_index("__m", f, n_ident(f, sp), sp));
+        }
+        body.push(n_return(n_ident("__m", sp), sp));
+        let params = [];
+        for f in v[2] {
+            params.push(n_param(f, null, null, sp));
+        }
+        out.push(n_fn_stmt(n_fnproto(e[1], false, false, v[1], params, null, [], n_block(body, sp), sp)));
+    }
+    return out;
+}
+
+// `match (v) {...}` -> a linear chain of guarded ifs (the __d flag keeps it
+// linear so a failed guard falls through without arm duplication).
+fn lower_match_expr(st, s) {
+    let scrutinee_pair = lower_expr(st, s[1]);
+    let pre = scrutinee_pair[1];
+    let scrutinee = scrutinee_pair[0];
+    let s_span = nsp(scrutinee);
+    let scrut = fresh(st);
+    pre.push(let_stmt_n(scrut, scrutinee, s_span));
+
+    let result = fresh(st);
+    pre.push(let_stmt_n(result, n_null(s[3]), s[3]));
+    let done = fresh(st);
+    pre.push(let_stmt_n(done, n_bool(false, s[3]), s[3]));
+
+    for arm in s[2] {
+        let base = n_ident(scrut, s_span);
+        let pt = pattern_test(st, arm[1], base, s[3]);
+        let test = pt[0];
+        let binds = pt[1];
+        let inner = binds;
+        let body = value_block(st, arm[3], result);
+        let guarded = [];
+        for x in body[1] {
+            guarded.push(x);
+        }
+        guarded.push(set_local(done, n_bool(true, s[3]), s[3]));
+        if arm[2] != null {
+            let gpair = lower_expr(st, arm[2]);
+            let g = gpair[0];
+            for x in gpair[1] {
+                inner.push(x);
+            }
+            inner.push(n_if(g, n_block(guarded, s[3]), [], null, s[3]));
+        } else {
+            for x in guarded {
+                inner.push(x);
+            }
+        }
+        let cond = n_logical("And", n_unary("Not", n_ident(done, s[3]), s[3]), test, s[3]);
+        pre.push(n_if(cond, n_block(inner, s[3]), [], null, s[3]));
+    }
+
+    pre.push(n_if(n_unary("Not", n_ident(done, s[3]), s[3]),
+        n_block([n_throw(n_str("no match arm matched the value (the match is not exhaustive)", s[3]), s[3])], s[3]),
+        [], null, s[3]));
+
+    return [n_ident(result, s[3]), pre];
+}
+
+// `expr?` — propagate the failure out of the enclosing function.
+fn lower_propagate(st, inner, sp) {
+    let pair = lower_expr(st, inner);
+    let pre = pair[1];
+    let value = pair[0];
+    let vspan = nsp(value);
+    let v = fresh(st);
+    pre.push(let_stmt_n(v, value, vspan));
+    pre.push(n_if(n_call(n_ident("is_failure", sp), [n_ident(v, vspan)], sp),
+        n_block([n_return(n_ident(v, vspan), sp)], sp), [], null, sp));
+    let unwrapped = n_method("unwrap", n_ident(v, vspan), [], sp);
+    return [unwrapped, pre];
+}
+
+// The condition a pattern imposes plus the bindings it introduces.
+fn pattern_test(st, p, base, sp) {
+    let tag = p[0];
+    if tag == "Wild" {
+        return [n_bool(true, sp), []];
+    }
+    if tag == "Bind" {
+        return [n_bool(true, sp), [let_stmt_n(p[1], base, sp)]];
+    }
+    if tag == "PatLit" {
+        return [n_binary("Eq", base, p[1], sp), []];
+    }
+    // PatVariant: base["__tag"] == "Name", then per-field sub-tests.
+    let vspan = p[3];
+    let tagx = n_index(base, n_str("__tag", vspan), vspan);
+    let cond = n_binary("Eq", tagx, n_str(p[1], vspan), vspan);
+    let fields = null;
+    if st[2].has(p[1]) {
+        fields = st[2][p[1]];
+    }
+    let binds = [];
+    let dynamic_fields = null;
+    if fields == null and p[2].len() > 0 {
+        let fl = fresh(st);
+        binds.push(let_stmt_n(fl, n_index(base, n_str("__fields", vspan), vspan), vspan));
+        dynamic_fields = fl;
+    }
+    let i = 0;
+    while i < p[2].len() {
+        let arg = p[2][i];
+        let key = null;
+        if fields != null {
+            if i < fields.len() {
+                key = n_str(fields[i], vspan);
+            } else {
+                i += 1;
+                continue;
+            }
+        } else if dynamic_fields != null {
+            key = n_index(n_ident(dynamic_fields, vspan), n_int(i, vspan), vspan);
+        } else {
+            i += 1;
+            continue;
+        }
+        let sub = n_index(base, key, vspan);
+        let sub_pair = pattern_test(st, arg, sub, sp);
+        let sub_cond = sub_pair[0];
+        let sub_binds = sub_pair[1];
+        for x in sub_binds {
+            binds.push(x);
+        }
+        cond = n_logical("And", cond, sub_cond, vspan);
+        i += 1;
+    }
+    return [cond, binds];
+}
+
+// ---------------------------------------------------------- expressions
+
+// Lower one expression: returns [expr, prelude-statements].
+fn lower_expr(st, e) {
+    let tag = e[0];
+    if tag == "NamedArg" {
+        return [n_null(e[3]), []];
+    }
+    if tag == "IfE" {
+        return lower_if_expr(st, e);
+    }
+    if tag == "Coalesce" {
+        return lower_coalesce(st, e);
+    }
+    if tag == "OptField" {
+        let pair = lower_expr(st, e[2]);
+        return [n_opt_field(e[1], pair[0], e[3]), pair[1]];
+    }
+    if tag == "Match" {
+        return lower_match_expr(st, e);
+    }
+    if tag == "Propagate" {
+        return lower_propagate(st, e[1], e[2]);
+    }
+    if tag == "Super" {
+        return [e, []];
+    }
+    if tag == "SuperCall" {
+        return [e, []];
+    }
+    if tag == "Int" or tag == "Float" or tag == "Str" or tag == "Bool" or tag == "Null" or tag == "Ident" {
+        return [e, []];
+    }
+    if tag == "List" {
+        let pair = lower_seq_list(st, e[1]);
+        return [n_list(pair[0], e[2]), pair[1]];
+    }
+    if tag == "Fn" {
+        return [n_fn_expr(lower_fn_proto(st, e[1])), []];
+    }
+    if tag == "Unary" {
+        let pair = lower_expr(st, e[2]);
+        return [n_unary(e[1], pair[0], e[3]), pair[1]];
+    }
+    if tag == "Binary" {
+        let pair = lower_seq2(st, e[2], e[3]);
+        let pre = pair[1];
+        let vs = pair[0];
+        return [n_binary(e[1], vs[0], vs[1], e[4]), pre];
+    }
+    if tag == "Logical" {
+        return lower_logical(st, e);
+    }
+    if tag == "Assign" {
+        return lower_assign(st, e);
+    }
+    if tag == "Call" {
+        return lower_call(st, e);
+    }
+    if tag == "Method" {
+        return lower_method(st, e);
+    }
+    if tag == "Index" {
+        let pair = lower_seq2(st, e[1], e[2]);
+        let pre = pair[1];
+        let vs = pair[0];
+        return [n_index(vs[0], vs[1], e[3]), pre];
+    }
+    if tag == "FieldE" {
+        let pair = lower_expr(st, e[2]);
+        return [n_field(e[1], pair[0], e[3]), pair[1]];
+    }
+    if tag == "New" {
+        let args = e[2];
+        if has_named_arg(args) {
+            let params = resolve_ctor_params(st, e[1]);
+            if params != null {
+                let reordered = reorder_named_args(st, args, params);
+                if reordered != null {
+                    args = reordered;
+                }
+            }
+        }
+        let pair = lower_seq_list(st, args);
+        return [n_new(e[1], pair[0], e[3]), pair[1]];
+    }
+    if tag == "Await" {
+        let pair = lower_expr(st, e[1]);
+        return [n_await(pair[0], e[2]), pair[1]];
+    }
+    if tag == "Spawn" {
+        let pair = lower_expr(st, e[1]);
+        return [n_spawn_expr(pair[0], e[2]), pair[1]];
+    }
+    return [e, []];
+}
+
+fn has_named_arg(args) {
+    for a in args {
+        if a[0] == "NamedArg" {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn lower_seq2(st, a, b) {
+    let pa = lower_expr(st, a);
+    let pb = lower_expr(st, b);
+    if pa[1].len() == 0 and pb[1].len() == 0 {
+        return [[pa[0], pb[0]], []];
+    }
+    let pre = [];
+    for x in pa[1] {
+        pre.push(x);
+    }
+    let t0 = fresh(st);
+    pre.push(let_stmt_n(t0, pa[0], nsp(pa[0])));
+    for x in pb[1] {
+        pre.push(x);
+    }
+    let t1 = fresh(st);
+    pre.push(let_stmt_n(t1, pb[0], nsp(pb[0])));
+    return [[n_ident(t0, nsp(pa[0])), n_ident(t1, nsp(pb[0]))], pre];
+}
+
+fn lower_seq_list(st, exprs) {
+    let lowered = [];
+    let all_empty = true;
+    for e in exprs {
+        let pair = lower_expr(st, e);
+        lowered.push(pair);
+        if pair[1].len() > 0 {
+            all_empty = false;
+        }
+    }
+    if all_empty {
+        let out = [];
+        for pair in lowered {
+            out.push(pair[0]);
+        }
+        return [out, []];
+    }
+    let pre = [];
+    let out = [];
+    for pair in lowered {
+        for x in pair[1] {
+            pre.push(x);
+        }
+        let t = fresh(st);
+        pre.push(let_stmt_n(t, pair[0], nsp(pair[0])));
+        out.push(n_ident(t, nsp(pair[0])));
+    }
+    return [out, pre];
+}
+
+// `if (c) { a } else { b }` -> a temporary assigned in both branches.
+fn lower_if_expr(st, e) {
+    let pair = lower_expr(st, e[1]);
+    let pre = pair[1];
+    let cond = pair[0];
+    let t = fresh(st);
+    pre.push(let_stmt_n(t, n_null(e[4]), e[4]));
+    let then = value_block(st, e[2], t);
+    let els = null;
+    if e[3] != null {
+        els = value_block(st, e[3], t);
+    }
+    pre.push(n_if(cond, then, [], els, e[4]));
+    return [n_ident(t, e[4]), pre];
+}
+
+// A block whose trailing expression becomes `temp = <value>`.
+fn value_block(st, b, temp) {
+    let stmts = [];
+    let stmts_in = b[1];
+    let last = stmts_in.len() - 1;
+    if last < 0 {
+        last = 0;
+    }
+    let i = 0;
+    while i < stmts_in.len() {
+        let s = stmts_in[i];
+        if i == last and s[0] == "ExprStmt" {
+            let pair = lower_expr(st, s[1]);
+            let value = pair[0];
+            let pre = pair[1];
+            let span = nsp(value);
+            for x in pre {
+                stmts.push(x);
+            }
+            stmts.push(n_expr_stmt(n_assign("Assign", n_ident(temp, span), value, span)));
+        } else {
+            for ns in lower_stmt(st, s) {
+                stmts.push(ns);
+            }
+        }
+        i += 1;
+    }
+    return n_block(stmts, b[2]);
+}
+
+// `a ?? b` — b evaluates only when a is null.
+fn lower_coalesce(st, e) {
+    let lpair = lower_expr(st, e[1]);
+    let pre = lpair[1];
+    let left = lpair[0];
+    let t = fresh(st);
+    let lspan = nsp(left);
+    pre.push(let_stmt_n(t, left, lspan));
+    let rpair = lower_expr(st, e[2]);
+    let right = rpair[0];
+    let then_stmts = rpair[1];
+    then_stmts.push(n_expr_stmt(n_assign("Assign", n_ident(t, e[3]), right, e[3])));
+    pre.push(n_if(n_binary("Eq", n_ident(t, lspan), n_null(lspan), lspan),
+        n_block(then_stmts, e[3]), [], null, e[3]));
+    return [n_ident(t, e[3]), pre];
+}
+
+// and/or with a prelude: the temp carries the operand (they return it).
+fn lower_logical(st, e) {
+    let op = e[1];
+    let lpair = lower_expr(st, e[2]);
+    let left = lpair[0];
+    let left_pre = lpair[1];
+    let rpair = lower_expr(st, e[3]);
+    let right = rpair[0];
+    let right_pre = rpair[1];
+    if left_pre.len() == 0 and right_pre.len() == 0 {
+        return [n_logical(op, left, right, e[4]), []];
+    }
+    let t = fresh(st);
+    let pre = [];
+    for x in left_pre {
+        pre.push(x);
+    }
+    let lspan = nsp(left);
+    pre.push(let_stmt_n(t, left, lspan));
+    let cond = null;
+    if op == "And" {
+        cond = n_ident(t, lspan);
+    } else {
+        cond = n_unary("Not", n_ident(t, lspan), lspan);
+    }
+    let then_stmts = [];
+    for x in right_pre {
+        then_stmts.push(x);
+    }
+    then_stmts.push(n_expr_stmt(n_assign("Assign", n_ident(t, e[4]), right, e[4])));
+    pre.push(n_if(cond, n_block(then_stmts, e[4]), [], null, e[4]));
+    return [n_ident(t, e[4]), pre];
+}
+
+// Assignment: the target's parts are lowered first (unless the value needs a
+// prelude, in which case target-prelude then value-prelude — the shared spill
+// rule keeps the target computed before the value).
+fn lower_assign(st, e) {
+    let vpair = lower_expr(st, e[3]);
+    let value_l = vpair[0];
+    let value_pre = vpair[1];
+    if value_pre.len() == 0 {
+        let tpair = lower_expr(st, e[2]);
+        return [n_assign(e[1], tpair[0], value_l, e[4]), tpair[1]];
+    }
+    let tpair = lower_expr(st, e[2]);
+    let pre = [];
+    for x in tpair[1] {
+        pre.push(x);
+    }
+    for x in value_pre {
+        pre.push(x);
+    }
+    return [n_assign(e[1], tpair[0], value_l, e[4]), pre];
+}
+
+fn lower_call(st, e) {
+    let sp = e[3];
+    let callee = e[1];
+    let args = e[2];
+    // super(args) — reorder against the parent's constructor.
+    if callee[0] == "Super" {
+        if has_named_arg(args) {
+            let parent = st[1];
+            if parent == null {
+                parent = "";
+            }
+            let params = resolve_ctor_params(st, parent);
+            if params != null {
+                let reordered = reorder_named_args(st, args, params);
+                if reordered != null {
+                    args = reordered;
+                }
+            }
+        }
+        let pair = lower_seq_list(st, args);
+        let parent = st[1];
+        if parent == null {
+            parent = "";
+        }
+        return [n_super_call(parent, null, pair[0], sp), pair[1]];
+    }
+    // Named arguments: reorder against the callee's declared parameters.
+    if has_named_arg(args) {
+        if callee[0] == "Ident" {
+            if st[3].has(callee[1]) {
+                let reordered = reorder_named_args(st, args, st[3][callee[1]]);
+                if reordered != null {
+                    args = reordered;
+                }
+            }
+        }
+    }
+    // The shared spill rule spans callee and arguments: one prelude spills
+    // EVERY part into a temporary in source order.
+    let parts = [callee];
+    for a in args {
+        parts.push(a);
+    }
+    let pair = lower_seq_list(st, parts);
+    let pre = pair[1];
+    let vs = pair[0];
+    let callee_l = vs[0];
+    let call_args = [];
+    let i = 1;
+    while i < vs.len() {
+        call_args.push(vs[i]);
+        i += 1;
+    }
+    return [n_call(callee_l, call_args, sp), pre];
+}
+
+fn lower_method(st, e) {
+    let sp = e[4];
+    let object = e[2];
+    let name = e[1];
+    let args = e[3];
+    // super.m(args) — reorder against the parent's method parameters.
+    if object[0] == "Super" {
+        if has_named_arg(args) {
+            let parent = st[1];
+            if parent == null {
+                parent = "";
+            }
+            let params = resolve_method_params(st, parent, name);
+            if params != null {
+                let reordered = reorder_named_args(st, args, params);
+                if reordered != null {
+                    args = reordered;
+                }
+            }
+        }
+        let pair = lower_seq_list(st, args);
+        let parent = st[1];
+        if parent == null {
+            parent = "";
+        }
+        return [n_super_call(parent, name, pair[0], sp), pair[1]];
+    }
+    // The shared spill rule spans receiver and arguments (see lower_call).
+    let parts = [object];
+    for a in args {
+        parts.push(a);
+    }
+    let pair = lower_seq_list(st, parts);
+    let pre = pair[1];
+    let vs = pair[0];
+    let object_l = vs[0];
+    let call_args = [];
+    let i = 1;
+    while i < vs.len() {
+        call_args.push(vs[i]);
+        i += 1;
+    }
+    return [n_method(name, object_l, call_args, sp), pre];
+}
+
+// ------------------------------------------------------------ for loops
+
+fn lower_if_stmt(st, s) {
+    let pair = lower_expr(st, s[1]);
+    let pre = pair[1];
+    let cond = pair[0];
+    let then = lower_block(st, s[2]);
+    let lowered_elifs = [];
+    let tail_els = null;
+    if s[4] != null {
+        tail_els = lower_block(st, s[4]);
+    }
+    for e in s[3] {
+        let cpair = lower_expr(st, e[1]);
+        let lc = cpair[0];
+        let lpre = cpair[1];
+        let lb = lower_block(st, e[2]);
+        if lpre.len() == 0 {
+            lowered_elifs.push(["Elif", lc, lb]);
+        } else {
+            // Everything after this arm nests inside the else block.
+            let inner = [];
+            for x in lpre {
+                inner.push(x);
+            }
+            inner.push(n_if(lc, lb, [], tail_els, s[5]));
+            tail_els = n_block(inner, s[5]);
+        }
+    }
+    pre.push(n_if(cond, then, lowered_elifs, tail_els, s[5]));
+    return pre;
+}
+
+// A while whose condition needs a prelude becomes while (true) { prelude;
+// if (not cond) { break } body }.
+fn lower_while_stmt(st, s) {
+    let pair = lower_expr(st, s[1]);
+    let pre = pair[1];
+    let cond = pair[0];
+    if pre.len() == 0 {
+        return [n_while(cond, lower_block(st, s[2]), s[3])];
+    }
+    let stmts = [];
+    for x in pre {
+        stmts.push(x);
+    }
+    stmts.push(n_if(n_unary("Not", cond, s[3]),
+        n_block([n_break(s[3])], s[3]), [], null, s[3]));
+    let body = lower_block(st, s[2]);
+    for x in body[1] {
+        stmts.push(x);
+    }
+    return [n_while(n_bool(true, s[3]), n_block(stmts, body[2]), s[3])];
+}
+
+// `for (k, v) in m`: maps iterate keys with a `let v = m[k]` body; lists
+// iterate a positional counter. The type_of dispatch keeps both shapes.
+fn lower_for_in(st, s) {
+    let pair = lower_expr(st, s[3]);
+    let pre = pair[1];
+    let iter = pair[0];
+    let body = lower_block(st, s[4]);
+    let sp = s[5];
+    if s[2] != null {
+        let v2 = s[2];
+        let src = fresh(st);
+        let idx = fresh(st);
+        let item = fresh(st);
+        pre.push(let_stmt_n(src, iter, sp));
+
+        let body_map_stmts = [];
+        for x in body[1] {
+            body_map_stmts.push(x);
+        }
+        body_map_stmts.insert(0, n_let("private", v2, null,
+            n_index(n_ident(src, sp), n_ident(s[1], sp), sp), sp));
+        let for_map = n_for_in(s[1], null, n_ident(src, sp), n_block(body_map_stmts, body[2]), sp);
+
+        let body_seq_stmts = [];
+        for x in body[1] {
+            body_seq_stmts.push(x);
+        }
+        body_seq_stmts.insert(0, set_local(idx,
+            n_binary("Add", n_ident(idx, sp), n_int(1, sp), sp), sp));
+        body_seq_stmts.insert(0, let_stmt_n(v2, n_ident(item, sp), sp));
+        body_seq_stmts.insert(0, let_stmt_n(s[1], n_ident(idx, sp), sp));
+        let for_seq = n_for_in(item, null, n_ident(src, sp), n_block(body_seq_stmts, body[2]), sp);
+
+        let type_call = n_call(n_ident("type_of", sp), [n_ident(src, sp)], sp);
+        let is_map = n_binary("Eq", type_call, n_str("map", sp), sp);
+        let type_call2 = n_call(n_ident("type_of", sp), [n_ident(src, sp)], sp);
+        let is_hash_table = n_binary("Eq", type_call2, n_str("hash_table", sp), sp);
+        let cond = n_logical("Or", is_map, is_hash_table, sp);
+
+        pre.push(n_if(cond,
+            n_block([for_map], sp), [],
+            n_block([let_stmt_n(idx, n_int(0, sp), sp), for_seq], sp), sp));
+        return pre;
+    }
+    pre.push(n_for_in(s[1], null, iter, body, sp));
+    return pre;
+}
+
+// `for let i = …; cond; post { body }` — with preludes this becomes the
+// equivalent while (true) loop.
+fn lower_for_c(st, s) {
+    let init_stmts = lower_stmt(st, s[1]);
+    let cpair = lower_expr(st, s[2]);
+    let cond = cpair[0];
+    let cond_pre = cpair[1];
+    let ppair = lower_expr(st, s[3]);
+    let post = ppair[0];
+    let post_pre = ppair[1];
+    let lowered_body = lower_block(st, s[4]);
+    let sp = s[5];
+
+    if cond_pre.len() == 0 and post_pre.len() == 0 {
+        let out = [];
+        for x in init_stmts {
+            out.push(x);
+        }
+        out.push(n_for_c(n_block_stmt(n_block([], sp)), cond, post, lowered_body, sp));
+        return out;
+    }
+
+    let loop_body = [];
+    for x in cond_pre {
+        loop_body.push(x);
+    }
+    loop_body.push(n_if(n_unary("Not", cond, sp),
+        n_block([n_break(sp)], sp), [], null, sp));
+    for x in lowered_body[1] {
+        loop_body.push(x);
+    }
+    for x in post_pre {
+        loop_body.push(x);
+    }
+    loop_body.push(n_expr_stmt(post));
+
+    let out = [];
+    for x in init_stmts {
+        out.push(x);
+    }
+    out.push(n_while(n_bool(true, sp), n_block(loop_body, lowered_body[2]), sp));
+    return out;
+}
+
+// --------------------------------------------------------------- yields
+
+fn contains_yield(stmts) {
+    for s in stmts {
+        let tag = s[0];
+        if tag == "Yield" {
+            return true;
+        }
+        if tag == "If" {
+            if contains_yield(s[2][1]) {
+                return true;
+            }
+            for e in s[3] {
+                if contains_yield(e[2][1]) {
+                    return true;
+                }
+            }
+            if s[4] != null {
+                if contains_yield(s[4][1]) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if tag == "While" or tag == "ForIn" or tag == "ForC" or tag == "BlockStmt" {
+            let b = s[2];
+            if tag == "ForIn" {
+                b = s[4];
+            }
+            if tag == "ForC" {
+                b = s[4];
+            }
+            if tag == "BlockStmt" {
+                b = s[1];
+            }
+            if contains_yield(b[1]) {
+                return true;
+            }
+            return false;
+        }
+        if tag == "Try" {
+            if contains_yield(s[1][1]) {
+                return true;
+            }
+            if s[2] != null {
+                if contains_yield(s[2][2][1]) {
+                    return true;
+                }
+            }
+            if s[3] != null {
+                if contains_yield(s[3][1]) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
+// Rewrite `yield v;` into `emit(v);` throughout a generator body.
+fn replace_yields(stmts) {
+    let out = [];
+    for s in stmts {
+        let tag = s[0];
+        if tag == "Yield" {
+            out.push(n_expr_stmt(n_call(n_ident("emit", s[2]), [s[1]], s[2])));
+        } else if tag == "If" {
+            let elifs = [];
+            for e in s[3] {
+                elifs.push(["Elif", e[1], n_block(replace_yields(e[2][1]), e[2][2])]);
+            }
+            let els = null;
+            if s[4] != null {
+                els = n_block(replace_yields(s[4][1]), s[4][2]);
+            }
+            out.push(n_if(s[1], n_block(replace_yields(s[2][1]), s[2][2]), elifs, els, s[5]));
+        } else if tag == "While" {
+            out.push(n_while(s[1], n_block(replace_yields(s[2][1]), s[2][2]), s[3]));
+        } else if tag == "ForIn" {
+            out.push(n_for_in(s[1], s[2], s[3], n_block(replace_yields(s[4][1]), s[4][2]), s[5]));
+        } else if tag == "ForC" {
+            out.push(n_for_c(s[1], s[2], s[3], n_block(replace_yields(s[4][1]), s[4][2]), s[5]));
+        } else if tag == "BlockStmt" {
+            out.push(n_block_stmt(n_block(replace_yields(s[1][1]), s[1][2])));
+        } else {
+            out.push(s);
+        }
+    }
+    return out;
+}

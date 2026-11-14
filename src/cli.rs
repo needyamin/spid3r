@@ -1980,16 +1980,44 @@ fn cmd_tokens(args: &[String]) -> Result<i32, Diagnostic> {
     Ok(EXIT_OK)
 }
 
-/// `spid3r parse <file.matrix> [--dump-ast-json]` — the stage-0 oracle dump
-/// (SH-5): the parse tree. `--dump-ast-json` prints the deterministic JSON
-/// the Phase-2 parity gates compare against. Parse errors exit 1; the dump
-/// never runs the semantic checker or any engine.
+/// `spid3r parse <file.matrix> [--dump-ast-json] [--dump-lowered-json]` —
+/// the stage-0 oracle dumps (SH-5): the parse tree, or the tree after
+/// `crate::lower` (the form every backend consumes — the Phase-4 parity
+/// target). Both print deterministic JSON. Parse errors exit 1; the dumps
+/// never run the semantic checker or any engine.
 fn cmd_parse(args: &[String]) -> Result<i32, Diagnostic> {
-    let (dump, file) = dump_args(args, "parse", "--dump-ast-json")?;
+    let mut dump = false;
+    let mut dump_lowered = false;
+    let mut file: Option<String> = None;
+    for a in args {
+        match a.as_str() {
+            "--dump-ast-json" => dump = true,
+            "--dump-lowered-json" => dump_lowered = true,
+            other if other.starts_with("--") => {
+                return Err(usage(&format!(
+                    "unknown option '{}' for parse (supported: --dump-ast-json, --dump-lowered-json)",
+                    other
+                )));
+            }
+            other => {
+                if file.is_some() {
+                    return Err(usage("parse takes exactly one file"));
+                }
+                file = Some(other.to_string());
+            }
+        }
+    }
+    let file = file.ok_or_else(|| usage("parse needs a .matrix file"))?;
     let (src, file_name) = read_source(&file)?;
     let prog = parser::parse_file(&src, file_name.clone())?;
     if dump {
         print!("{}", crate::oracle::program_to_json(&file_name, &prog));
+    } else if dump_lowered {
+        let lowered = crate::lower::lower(&prog);
+        print!(
+            "{}",
+            crate::oracle::program_to_json(&file_name, lowered.as_ref())
+        );
     } else {
         println!("ok: {} top-level statements", prog.stmts.len());
     }

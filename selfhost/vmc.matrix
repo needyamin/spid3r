@@ -1,0 +1,1413 @@
+// selfhost/vmc.matrix — the Spid3r-written bytecode compiler
+// (roadmap Phase 4, step 4.2, docs/SELFHOST.md SH-5).
+//
+// A port of src/vm/compiler.rs (the unoptimized path — compile_program_
+// unoptimized; the optimizer is the perf program's scope, Phase 11 P-3).
+// The parity target: the serialized chunk (selfhost/bytecode_matrix.matrix)
+// must be byte-identical to the oracle's `spid3r compile --no-opt` artifact.
+//
+// Chunk shape (a state handle):
+//   [code(list of byte ints), constants, functions, classes,
+//    inst_offsets, inst_spans, pending_span, modules]
+// Constants are tagged lists: ["Int", v] ["Float", bits-hex] ["Str", s]
+// ["Bool", b] ["Null"] — the Float carries IEEE-754 bits as 16 hex chars so
+// byte-equality survives serialization (via msgpack_encode's f64 form).
+//
+// The compiler frame:
+//   [chunk, locals, scope_depth, is_global, upvalues, own_upvalues,
+//    public, loops, tries, pending_syncs, import_keys]
+//   local: [name, depth, is_captured, upvalue_index-or-null]
+//   loop:  [break_patches, continue_patches, locals_base]
+
+import "token";
+import "ast";
+import "lexer";
+import "parser";
+import "semantic";
+import "lower";
+import "bytecode_matrix";
+
+// ----------------------------------------------------------- opcode table
+
+// The opcode byte for each mnemonic (src/vm/bytecode.rs OpCode discriminants).
+public fn op(name) {
+    let names = ["constant", "null", "true", "false", "none", "pop", "get_local",
+        "set_local", "get_global", "set_global", "define_global", "get_upvalue",
+        "set_upvalue", "closure", "add", "sub", "mul", "div", "mod", "neg", "not",
+        "equal", "not_equal", "less", "less_eq", "greater", "greater_eq", "jump",
+        "jump_if_false", "jump_if_true", "loop", "call", "invoke", "index_get",
+        "index_set", "field_get", "field_set", "construct", "return", "try",
+        "end_try", "throw", "await", "spawn", "import", "class", "truthy",
+        "for_each_init", "len", "enter_finally", "dup", "dup2", "capture_sync",
+        "uncapture", "import_as", "define_const", "super_ctor", "super_method",
+        "field_get_soft", "rotate"];
+    let i = 0;
+    while i < names.len() {
+        if names[i] == name {
+            return i;
+        }
+        i += 1;
+    }
+    return -1;
+}
+
+fn is_constructor_name(name) {
+    // src/value/collections is_constructor — the Construct opcode targets.
+    let cons = ["list", "vec", "stack", "queue", "deque", "linked_list",
+        "singly_linked_list", "doubly_linked_list", "map", "module_namespace",
+        "set", "tuple", "binary_tree", "bst", "heap", "priority_queue", "graph",
+        "hash_table", "trie", "matrix", "matrix_from_list", "vector", "bytes",
+        "ring_buffer", "bag", "ref", "channel", "mutex", "some", "none", "ok", "err"];
+    for c in cons {
+        if c == name {
+            return true;
+        }
+    }
+    return false;
+}
+
+// --------------------------------------------------------------- chunk ops
+
+fn chunk_new(file) {
+    // code, constants, functions, classes, inst_offsets, inst_spans,
+    // pending_span, modules, file
+    // The pending_span keeps the oracle's "<spid3r>" default; set_span
+    // synthesizes the 4-element [file, line, col, len] the artifact carries
+    // from the 3-element AST spans (my token model drops the file — the
+    // compiler restores it from the file being compiled).
+    return [[], [], [], [], [], [], ["<spid3r>", 0, 0, 0], [], file];
+}
+
+fn set_span(ch, sp) {
+    // 4-element spans (hole-internal, file baked in) pass through; 3-element
+    // AST spans get the compile file synthesized.
+    if sp.len() == 4 {
+        ch[6] = sp;
+    } else {
+        ch[6] = [ch[8], sp[0], sp[1], sp[2]];
+    }
+}
+
+fn emit_op(ch, opname) {
+    ch[4].push(ch[0].len());
+    ch[5].push(ch[6]);
+    ch[0].push(op(opname));
+}
+
+fn emit_u8(ch, opname, v) {
+    emit_op(ch, opname);
+    ch[0].push(v);
+}
+
+fn emit_u16(ch, opname, v) {
+    emit_op(ch, opname);
+    put_u16_le(ch[0], v);
+}
+
+fn emit_u16_u8(ch, opname, a, b) {
+    emit_op(ch, opname);
+    put_u16_le(ch[0], a);
+    ch[0].push(b);
+}
+
+fn emit_u16_u16(ch, opname, a, b) {
+    emit_op(ch, opname);
+    put_u16_le(ch[0], a);
+    put_u16_le(ch[0], b);
+}
+
+fn emit_u16_u16_u8(ch, opname, a, b, c) {
+    emit_op(ch, opname);
+    put_u16_le(ch[0], a);
+    put_u16_le(ch[0], b);
+    ch[0].push(c);
+}
+
+fn emit_u8_u8(ch, opname, a, b) {
+    emit_op(ch, opname);
+    ch[0].push(a);
+    ch[0].push(b);
+}
+
+fn emit_try_op(ch, has_catch, catch_slot, catch_off, finally_off) {
+    emit_op(ch, "try");
+    ch[0].push(has_catch);
+    ch[0].push(catch_slot);
+    put_i16_le(ch[0], catch_off);
+    put_i16_le(ch[0], finally_off);
+}
+
+fn emit_const(ch, v) {
+    // Reuse identical constants (const_eq in the oracle).
+    let i = 0;
+    while i < ch[1].len() {
+        if const_eq_v(ch[1][i], v) {
+            return i;
+        }
+        i += 1;
+    }
+    ch[1].push(v);
+    return ch[1].len() - 1;
+}
+
+fn emit_str_const(ch, s) {
+    return emit_const(ch, ["Str", s]);
+}
+
+fn add_function(ch, f) {
+    ch[2].push(f);
+    return ch[2].len() - 1;
+}
+
+fn add_class(ch, c) {
+    ch[3].push(c);
+    return ch[3].len() - 1;
+}
+
+fn chunk_here(ch) {
+    return ch[0].len();
+}
+
+fn patch_i16(ch, pos, val) {
+    let u = val;
+    if u < 0 {
+        u = u + 65536;
+    }
+    ch[0][pos] = u & 255;
+    ch[0][pos + 1] = (u / 256) & 255;
+}
+
+fn emit_jump(ch, opname) {
+    emit_op(ch, opname);
+    ch[0].push(0);
+    ch[0].push(0);
+    return ch[0].len() - 2;
+}
+
+fn patch_jump(ch, operand_pos, target, sp) {
+    let diff = target - (operand_pos + 2);
+    if diff > 32767 or diff < -32768 {
+        throw ["function body too large: bytecode exceeds the 32 KiB jump range (split the function)", sp[0], sp[1], sp[2], "vm"];
+    }
+    patch_i16(ch, operand_pos, diff);
+}
+
+fn patch_try_offset(ch, operand_pos, from, target, sp) {
+    let diff = target - from;
+    if diff > 32767 or diff < -32768 {
+        throw ["function body too large: bytecode exceeds the 32 KiB jump range (split the function)", sp[0], sp[1], sp[2], "vm"];
+    }
+    patch_i16(ch, operand_pos, diff);
+}
+
+fn const_eq_v(a, b) {
+    if a[0] != b[0] {
+        return false;
+    }
+    if a[0] == "Int" {
+        return a[1] == b[1];
+    }
+    if a[0] == "Float" {
+        return a[1] == b[1];
+    }
+    if a[0] == "Bool" {
+        return a[1] == b[1];
+    }
+    if a[0] == "Str" {
+        return a[1] == b[1];
+    }
+    if a[0] == "Null" {
+        return true;
+    }
+    return false;
+}
+
+// ------------------------------------------------------ the compiler frame
+
+fn frame_new_script(import_keys, file) {
+    return [chunk_new(file), [], 0, true, [], 0, map(), [], [], [], import_keys];
+}
+
+fn frame_new_function(file) {
+    return [chunk_new(file), [], 0, false, [], 0, map(), [], [], [], map()];
+}
+
+fn add_param(fr, name) {
+    fr[1].push([name, 0, false, null]);
+}
+
+fn add_local(fr, name, sp) {
+    if fr[1].len() >= 256 {
+        throw ["too many locals in one function (max 255)", sp[0], sp[1], sp[2], "vm"];
+    }
+    let slot = fr[1].len();
+    fr[1].push([name, fr[2], false, null]);
+    return slot;
+}
+
+fn begin_scope(fr) {
+    fr[2] += 1;
+}
+
+// Emit the Pops unwinding locals declared inside the innermost loop body.
+fn emit_loop_body_pops(fr) {
+    if fr[7].len() > 0 {
+        let info = fr[7][fr[7].len() - 1];
+        let base = info[2];
+        let extra = fr[1].len() - base;
+        let i = fr[1].len() - 1;
+        while i >= base {
+            if fr[1][i][2] {
+                emit_u8(fr[0], "uncapture", i);
+            }
+            i -= 1;
+        }
+        let k = 0;
+        while k < extra {
+            emit_op(fr[0], "pop");
+            k += 1;
+        }
+    }
+}
+
+fn end_scope(fr) {
+    while fr[1].len() > 0 {
+        let l = fr[1][fr[1].len() - 1];
+        if l[1] == fr[2] {
+            let was_captured = l[2];
+            let slot = fr[1].len() - 1;
+            fr[1].pop();
+            if was_captured {
+                emit_u8(fr[0], "uncapture", slot);
+            }
+            emit_op(fr[0], "pop");
+        } else {
+            break;
+        }
+    }
+    fr[2] -= 1;
+}
+
+fn find_local_slot(fr, name) {
+    let n = fr[1].len();
+    let i = n - 1;
+    while i >= 0 {
+        if fr[1][i][0] == name {
+            return i;
+        }
+        i -= 1;
+    }
+    return -1;
+}
+
+fn capture_local(fr, slot) {
+    if fr[1][slot][3] != null {
+        return fr[1][slot][3];
+    }
+    let idx = fr[5];
+    fr[5] = fr[5] + 1;
+    fr[1][slot][2] = true;
+    fr[1][slot][3] = idx;
+    fr[9].push([slot, idx]);
+    return idx;
+}
+
+fn resolve_upvalue(fr_stack, ci, name) {
+    if ci == 0 {
+        return -1;
+    }
+    let parent = ci - 1;
+    let slot = find_local_slot(fr_stack[parent], name);
+    if slot >= 0 {
+        let up = capture_local(fr_stack[parent], slot);
+        let entry = up & 127;
+        let pos = 0;
+        while pos < fr_stack[ci][4].len() {
+            if fr_stack[ci][4][pos] == entry {
+                return pos;
+            }
+            pos += 1;
+        }
+        let my = fr_stack[ci][4].len();
+        fr_stack[ci][4].push(entry);
+        return my;
+    }
+    let grand = resolve_upvalue(fr_stack, parent, name);
+    if grand >= 0 {
+        let entry = 128 + (grand & 127);
+        let pos = 0;
+        while pos < fr_stack[ci][4].len() {
+            if fr_stack[ci][4][pos] == entry {
+                return pos;
+            }
+            pos += 1;
+        }
+        let my = fr_stack[ci][4].len();
+        fr_stack[ci][4].push(entry);
+        return my;
+    }
+    return -1;
+}
+
+fn resolve_variable(fr_stack, ci, name) {
+    let slot = find_local_slot(fr_stack[ci], name);
+    if slot >= 0 {
+        return [0, slot];
+    }
+    let up = resolve_upvalue(fr_stack, ci, name);
+    if up >= 0 {
+        return [1, up];
+    }
+    return [2, 0];
+}
+
+fn emit_get(fr_stack, ci, name) {
+    let r = resolve_variable(fr_stack, ci, name);
+    if r[0] == 0 {
+        emit_u8(fr_stack[ci][0], "get_local", r[1]);
+    } else if r[0] == 1 {
+        emit_u8(fr_stack[ci][0], "get_upvalue", r[1]);
+    } else {
+        let idx = emit_str_const(fr_stack[ci][0], name);
+        emit_u16(fr_stack[ci][0], "get_global", idx);
+    }
+}
+
+fn emit_set(fr_stack, ci, name) {
+    let r = resolve_variable(fr_stack, ci, name);
+    if r[0] == 0 {
+        emit_u8(fr_stack[ci][0], "set_local", r[1]);
+    } else if r[0] == 1 {
+        emit_u8(fr_stack[ci][0], "set_upvalue", r[1]);
+    } else {
+        let idx = emit_str_const(fr_stack[ci][0], name);
+        emit_u16(fr_stack[ci][0], "set_global", idx);
+    }
+}
+
+fn define_variable(fr_stack, ci, name, vis) {
+    let fr = fr_stack[ci];
+    if fr[3] and fr[2] == 0 {
+        let idx = emit_str_const(fr[0], name);
+        emit_u16(fr[0], "define_global", idx);
+        if vis == "public" {
+            fr_stack[0][6][name] = 1;
+        }
+    } else {
+        let sp = fr[0][6];
+        let _r = add_local(fr, name, sp);
+    }
+    return;
+}
+
+fn define_const_variable(fr_stack, ci, name, vis) {
+    let fr = fr_stack[ci];
+    if fr[3] and fr[2] == 0 {
+        let idx = emit_str_const(fr[0], name);
+        emit_u16(fr[0], "define_const", idx);
+        if vis == "public" {
+            fr_stack[0][6][name] = 1;
+        }
+    } else {
+        let sp = fr[0][6];
+        let _r = add_local(fr, name, sp);
+    }
+    return;
+}
+
+fn emit_closure_syncs(fr_stack, ci, f) {
+    let fr = fr_stack[ci];
+    let emitted = map();
+    let syncs = fr[9];
+    fr[9] = [];
+    for pair in syncs {
+        emitted[string(pair[0]) + ":" + string(pair[1])] = 1;
+        emit_u8_u8(fr[0], "capture_sync", pair[0], pair[1]);
+    }
+    for u in f[4] {
+        if (u & 128) == 0 {
+            let idx = u & 127;
+            let slot = -1;
+            let i = fr[1].len() - 1;
+            while i >= 0 {
+                if fr[1][i][3] == idx {
+                    slot = i;
+                }
+                i -= 1;
+            }
+            if slot >= 0 {
+                let key = string(slot) + ":" + string(idx);
+                if not emitted.has(key) {
+                    emitted[key] = 1;
+                    emit_u8_u8(fr[0], "capture_sync", slot, idx);
+                }
+            }
+        }
+    }
+}
+
+fn emit_pending_syncs(fr_stack, ci) {
+    let fr = fr_stack[ci];
+    let syncs = fr[9];
+    fr[9] = [];
+    for pair in syncs {
+        emit_u8_u8(fr[0], "capture_sync", pair[0], pair[1]);
+    }
+}
+
+// Unwind enclosing try blocks inside the current loop before a break/continue.
+fn emit_loop_exit(fr_stack, ci, sp, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    let loop_depth = fr[7].len();
+    if loop_depth == 0 {
+        return;
+    }
+    let has_loop_try = false;
+    if fr[8].len() > 0 {
+        if fr[8][fr[8].len() - 1][0] == loop_depth {
+            has_loop_try = true;
+        }
+    }
+    if not has_loop_try {
+        emit_loop_body_pops(fr);
+        return;
+    }
+    let saved_locals = fr[1];
+    let saved_scope_depth = fr[2];
+    let saved_tries = fr[8];
+
+    while fr[8].len() > 0 and fr[8][fr[8].len() - 1][0] == loop_depth {
+        let t = fr[8][fr[8].len() - 1];
+        fr[8].pop();
+        let extra = fr[1].len() - t[1];
+        let i = fr[1].len() - 1;
+        while i >= t[1] {
+            if fr[1][i][2] {
+                emit_u8(fr[0], "uncapture", i);
+            }
+            i -= 1;
+        }
+        let k = 0;
+        while k < extra {
+            emit_op(fr[0], "pop");
+            k += 1;
+        }
+        let trunc = [];
+        let j = 0;
+        while j < t[1] {
+            trunc.push(fr[1][j]);
+            j += 1;
+        }
+        fr[1] = trunc;
+        fr[2] = t[2];
+        emit_op(fr[0], "enter_finally");
+        if t[3] != null {
+            begin_scope(fr);
+            compile_block(fr_stack, ci, t[3][1], importer_file, embedded, keys, in_progress, top, st_ck);
+            end_scope(fr);
+        }
+        emit_op(fr[0], "end_try");
+    }
+
+    emit_loop_body_pops(fr);
+
+    fr[1] = saved_locals;
+    fr[2] = saved_scope_depth;
+    fr[8] = saved_tries;
+    return;
+}
+
+// ------------------------------------------------------------- compilation
+
+// The recursive compile core. Returns the script frame; the VmFunc shape is
+// assembled by the caller (compile_mode in main.matrix).
+public fn compile_one(st_ck, prog, importer_file, embedded, keys, in_progress, top) {
+    // Pre-resolve imports: Import ops carry the resolved path key.
+    let import_keys = map();
+    for s in prog[0] {
+        if s[0] == "Import" {
+            if import_keys.has(s[1]) {
+                continue;
+            }
+            let resolved = resolve_module_path(s[1], importer_file);
+            if resolved == null {
+                throw ["module '" + s[1] + "' not found (looked next to the importing file and on SPID3R_PATH)", s[3][0], s[3][1], s[3][2], "semantic"];
+            }
+            import_keys[s[1]] = resolved;
+        }
+    }
+    let fr_stack = [frame_new_script(import_keys, importer_file)];
+    for s in prog[0] {
+        compile_stmt(fr_stack, 0, s, importer_file, embedded, keys, in_progress, top, st_ck);
+    }
+    emit_op(fr_stack[0][0], "null");
+    emit_op(fr_stack[0][0], "return");
+    let fr = fr_stack[0];
+    if fr[5] > 128 {
+        throw ["too many captured variables in one function (max 128, got " + string(fr[5]) + ")", 0, 0, 0, "vm"];
+    }
+    // Embed every import transitively.
+    for s in prog[0] {
+        if s[0] == "Import" {
+            let rkey = s[1];
+            if import_keys.has(s[1]) {
+                rkey = import_keys[s[1]];
+            }
+            if keys.has(rkey) {
+                continue;
+            }
+            let ip = 0;
+            while ip < in_progress.len() {
+                if in_progress[ip] == rkey {
+                    throw ["circular import: '" + s[1] + "' is already being imported (a cycle exists in the import graph)", s[3][0], s[3][1], s[3][2], "semantic"];
+                }
+                ip += 1;
+            }
+            let src = "";
+            if file_exists(rkey) {
+                let r = read_file(rkey);
+                if r.is_ok() {
+                    src = r.unwrap();
+                }
+            }
+            let toks = null;
+            try {
+                toks = lex_all(src);
+            } catch (e) {
+                throw [e[0], e[1], e[2], e[3], "parser", rkey];
+            }
+            let mod_prog = null;
+            try {
+                mod_prog = parse_program(new_state(toks));
+            } catch (e2) {
+                throw [e2[0], e2[1], e2[2], e2[3], "parser", rkey];
+            }
+            let has_main_mod = false;
+            for ms in mod_prog[0] {
+                if ms[0] == "Fn" and ms[1][4] == "main" {
+                    has_main_mod = true;
+                }
+            }
+            let mcst = new_checker(has_main_mod, rkey);
+            try {
+                check_program(mcst, mod_prog);
+            } catch (e3) {
+                let phase = "semantic";
+                if e3.len() >= 5 {
+                    phase = e3[4];
+                }
+                throw [msg_of(e3), e3[1], e3[2], e3[3], phase, rkey];
+            }
+            let mlst = new_lower();
+            let mod_lowered = lower_program(mlst, mod_prog);
+            in_progress.push(rkey);
+            let mod_result = compile_one(st_ck, mod_lowered, rkey, embedded, keys, in_progress, false);
+            in_progress.pop();
+            let mod_fr = mod_result;
+            let public_list = map_keys(mod_fr[6]);
+            embedded.push(["EM", rkey, public_list, make_vmfunc(mod_fr)]);
+            keys[rkey] = 1;
+        }
+    }
+    if top {
+        fr[0][7] = embedded;
+    }
+    return fr;
+}
+
+public fn make_vmfunc(fr) {
+    // VmFunc serialization shape (put_vmfunc): name(null), arity, is_async,
+    // upvalue VALUES (empty at compile time), own_upvalues, min_arity,
+    // defaults (a module script has none), chunk.
+    return ["VMFUNC", null, 0, false, [], fr[5], 0, [], fr[0]];
+}
+
+fn compile_stmt(fr_stack, ci, s, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    set_span(fr[0], stmt_span_of(s));
+    let tag = s[0];
+    let sp = stmt_span_of(s);
+    if tag == "Yield" or tag == "LetTuple" or tag == "Enum" {
+        throw ["internal error: a lowered-only node (" + tag + ") reached the bytecode compiler without lowering (this is a bug in spid3r)", sp[0], sp[1], sp[2], "vm"];
+    }
+    if tag == "ExprStmt" {
+        compile_expr(fr_stack, ci, s[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        emit_op(fr[0], "pop");
+        return;
+    }
+    if tag == "Let" {
+        if s[4] != null {
+            compile_expr(fr_stack, ci, s[4], importer_file, embedded, keys, in_progress, top, st_ck);
+        } else {
+            emit_op(fr[0], "null");
+        }
+        define_variable(fr_stack, ci, s[2], s[1]);
+        return;
+    }
+    if tag == "Const" {
+        compile_expr(fr_stack, ci, s[4], importer_file, embedded, keys, in_progress, top, st_ck);
+        define_const_variable(fr_stack, ci, s[2], s[1]);
+        return;
+    }
+    if tag == "Fn" {
+        if s[1][3] {
+            throw ["extern fn '" + s[1][4] + "' needs a native executable: the bytecode VM cannot call C. Build with `spid3r build`.", s[1][9][0], s[1][9][1], s[1][9][2], "usage"];
+        }
+        if fr[3] and fr[2] == 0 {
+            let f = compile_function(fr_stack, ci, s[1], importer_file, embedded, keys, in_progress, top, st_ck);
+            emit_closure_syncs(fr_stack, ci, f);
+            let idx = add_function(fr[0], f);
+            emit_u16(fr[0], "closure", idx);
+            define_variable(fr_stack, ci, s[1][4], s[1][1]);
+        } else {
+            let fname = s[1][4];
+            if fname == null {
+                fname = "";
+            }
+            emit_op(fr[0], "null");
+            let slot = add_local(fr, fname, sp);
+            let f = compile_function(fr_stack, ci, s[1], importer_file, embedded, keys, in_progress, top, st_ck);
+            emit_closure_syncs(fr_stack, ci, f);
+            let idx = add_function(fr[0], f);
+            emit_u16(fr[0], "closure", idx);
+            emit_u8(fr[0], "set_local", slot);
+            emit_op(fr[0], "pop");
+        }
+        return;
+    }
+    if tag == "Class" {
+        let c = compile_class(fr_stack, ci, s, importer_file, embedded, keys, in_progress, top, st_ck);
+        emit_pending_syncs(fr_stack, ci);
+        let idx = add_class(fr[0], c);
+        emit_u16(fr[0], "class", idx);
+        define_variable(fr_stack, ci, s[2], s[1]);
+        return;
+    }
+    if tag == "Interface" {
+        if fr[3] and fr[2] == 0 and s[1] == "public" {
+            fr_stack[0][6][s[2]] = 1;
+        }
+        return;
+    }
+    if tag == "Return" {
+        if s[1] != null {
+            compile_expr(fr_stack, ci, s[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        } else {
+            emit_op(fr[0], "null");
+        }
+        set_span(fr[0], s[2]);
+        emit_op(fr[0], "return");
+        return;
+    }
+    if tag == "Break" {
+        if fr[7].len() == 0 {
+            throw ["break outside a loop", sp[0], sp[1], sp[2], "vm"];
+        }
+        emit_loop_exit(fr_stack, ci, sp, importer_file, embedded, keys, in_progress, top, st_ck);
+        let pos = emit_jump(fr[0], "jump");
+        fr[7][fr[7].len() - 1][0].push(pos);
+        return;
+    }
+    if tag == "Continue" {
+        if fr[7].len() == 0 {
+            throw ["continue outside a loop", sp[0], sp[1], sp[2], "vm"];
+        }
+        emit_loop_exit(fr_stack, ci, sp, importer_file, embedded, keys, in_progress, top, st_ck);
+        let pos = emit_jump(fr[0], "jump");
+        fr[7][fr[7].len() - 1][1].push(pos);
+        return;
+    }
+    if tag == "BlockStmt" {
+        compile_block(fr_stack, ci, s[1][1], importer_file, embedded, keys, in_progress, top, st_ck);
+        return;
+    }
+    if tag == "If" {
+        compile_if(fr_stack, ci, s, importer_file, embedded, keys, in_progress, top, st_ck);
+        return;
+    }
+    if tag == "While" {
+        compile_while(fr_stack, ci, s[1], s[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        return;
+    }
+    if tag == "ForIn" {
+        compile_for_in(fr_stack, ci, s[1], s[3], s[4], importer_file, embedded, keys, in_progress, top, st_ck);
+        return;
+    }
+    if tag == "ForC" {
+        compile_stmt(fr_stack, ci, s[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        let start = chunk_here(fr[0]);
+        compile_expr(fr_stack, ci, s[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        let exit_jump = emit_jump(fr[0], "jump_if_false");
+        let locals_base = fr[1].len();
+        fr[7].push([[], [], locals_base]);
+        compile_block(fr_stack, ci, s[4][1], importer_file, embedded, keys, in_progress, top, st_ck);
+        let post_pos = chunk_here(fr[0]);
+        compile_expr(fr_stack, ci, s[3], importer_file, embedded, keys, in_progress, top, st_ck);
+        emit_op(fr[0], "pop");
+        let loop_jump = emit_jump(fr[0], "jump");
+        let end = chunk_here(fr[0]);
+        patch_jump(fr[0], exit_jump, end, sp);
+        patch_jump(fr[0], loop_jump, start, sp);
+        let info = fr[7][fr[7].len() - 1];
+        fr[7].pop();
+        for p in info[0] {
+            patch_jump(fr[0], p, end, sp);
+        }
+        for p in info[1] {
+            patch_jump(fr[0], p, post_pos, sp);
+        }
+        return;
+    }
+    if tag == "Try" {
+        compile_try(fr_stack, ci, s[1], s[2], s[3], importer_file, embedded, keys, in_progress, top, st_ck);
+        return;
+    }
+    if tag == "Throw" {
+        compile_expr(fr_stack, ci, s[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], s[2]);
+        emit_op(fr[0], "throw");
+        return;
+    }
+    if tag == "Spawn" {
+        compile_expr(fr_stack, ci, s[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], s[2]);
+        emit_op(fr[0], "spawn");
+        emit_op(fr[0], "pop");
+        return;
+    }
+    if tag == "Import" {
+        let key = s[1];
+        if fr[10].has(s[1]) {
+            key = fr[10][s[1]];
+        }
+        let path_idx = emit_str_const(fr[0], key);
+        if s[2] != null {
+            let alias_idx = emit_str_const(fr[0], s[2]);
+            emit_u16_u16(fr[0], "import_as", path_idx, alias_idx);
+        } else {
+            emit_u16(fr[0], "import", path_idx);
+        }
+        return;
+    }
+    return;
+}
+
+fn compile_block(fr_stack, ci, stmts, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    begin_scope(fr);
+    let had = false;
+    try {
+        for s in stmts {
+            compile_stmt(fr_stack, ci, s, importer_file, embedded, keys, in_progress, top, st_ck);
+        }
+    } catch (e) {
+        had = true;
+        end_scope(fr);
+        throw e;
+    }
+    if not had {
+        end_scope(fr);
+    }
+    return;
+}
+
+fn compile_if(fr_stack, ci, s, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    compile_expr(fr_stack, ci, s[1], importer_file, embedded, keys, in_progress, top, st_ck);
+    let exit_jumps = [];
+    let else_jump = emit_jump(fr[0], "jump_if_false");
+    compile_block(fr_stack, ci, s[2][1], importer_file, embedded, keys, in_progress, top, st_ck);
+    exit_jumps.push(emit_jump(fr[0], "jump"));
+    let next = chunk_here(fr[0]);
+    patch_jump(fr[0], else_jump, next, s[5]);
+    for e in s[3] {
+        compile_expr(fr_stack, ci, e[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        let ej = emit_jump(fr[0], "jump_if_false");
+        compile_block(fr_stack, ci, e[2][1], importer_file, embedded, keys, in_progress, top, st_ck);
+        exit_jumps.push(emit_jump(fr[0], "jump"));
+        next = chunk_here(fr[0]);
+        patch_jump(fr[0], ej, next, s[5]);
+    }
+    if s[4] != null {
+        compile_block(fr_stack, ci, s[4][1], importer_file, embedded, keys, in_progress, top, st_ck);
+    }
+    let end = chunk_here(fr[0]);
+    for j in exit_jumps {
+        patch_jump(fr[0], j, end, s[5]);
+    }
+    return;
+}
+
+fn compile_while(fr_stack, ci, cond, body, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    let start = chunk_here(fr[0]);
+    compile_expr(fr_stack, ci, cond, importer_file, embedded, keys, in_progress, top, st_ck);
+    let exit_jump = emit_jump(fr[0], "jump_if_false");
+    let locals_base = fr[1].len();
+    fr[7].push([[], [], locals_base]);
+    compile_block(fr_stack, ci, body[1], importer_file, embedded, keys, in_progress, top, st_ck);
+    let loop_jump = emit_jump(fr[0], "jump");
+    let end = chunk_here(fr[0]);
+    patch_jump(fr[0], exit_jump, end, body[2]);
+    patch_jump(fr[0], loop_jump, start, body[2]);
+    let info = fr[7][fr[7].len() - 1];
+    fr[7].pop();
+    for p in info[0] {
+        patch_jump(fr[0], p, end, body[2]);
+    }
+    for p in info[1] {
+        patch_jump(fr[0], p, start, body[2]);
+    }
+    return;
+}
+
+fn compile_for_in(fr_stack, ci, var, iter, body, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    compile_expr(fr_stack, ci, iter, importer_file, embedded, keys, in_progress, top, st_ck);
+    emit_op(fr[0], "for_each_init");
+    let items_slot = add_local(fr, "__for_items", body[2]);
+    let z = emit_const(fr[0], ["Int", 0]);
+    emit_u16(fr[0], "constant", z);
+    let idx_slot = add_local(fr, "__for_idx", body[2]);
+    emit_op(fr[0], "null");
+    let var_slot = add_local(fr, var, body[2]);
+
+    let start = chunk_here(fr[0]);
+    emit_u8(fr[0], "uncapture", var_slot);
+    emit_u8(fr[0], "get_local", idx_slot);
+    emit_u8(fr[0], "get_local", items_slot);
+    emit_op(fr[0], "len");
+    emit_op(fr[0], "less");
+    let exit_jump = emit_jump(fr[0], "jump_if_false");
+
+    emit_u8(fr[0], "get_local", items_slot);
+    emit_u8(fr[0], "get_local", idx_slot);
+    emit_op(fr[0], "index_get");
+    emit_u8(fr[0], "set_local", var_slot);
+    emit_op(fr[0], "pop");
+
+    let locals_base = fr[1].len();
+    fr[7].push([[], [], locals_base]);
+    compile_block(fr_stack, ci, body[1], importer_file, embedded, keys, in_progress, top, st_ck);
+    let post = chunk_here(fr[0]);
+    emit_u8(fr[0], "get_local", idx_slot);
+    let one = emit_const(fr[0], ["Int", 1]);
+    emit_u16(fr[0], "constant", one);
+    emit_op(fr[0], "add");
+    emit_u8(fr[0], "set_local", idx_slot);
+    emit_op(fr[0], "pop");
+    let loop_jump = emit_jump(fr[0], "jump");
+    let end = chunk_here(fr[0]);
+    patch_jump(fr[0], exit_jump, end, body[2]);
+    patch_jump(fr[0], loop_jump, start, body[2]);
+    let info = fr[7][fr[7].len() - 1];
+    fr[7].pop();
+    for p in info[0] {
+        patch_jump(fr[0], p, end, body[2]);
+    }
+    for p in info[1] {
+        patch_jump(fr[0], p, post, body[2]);
+    }
+    for slot in [items_slot, idx_slot, var_slot] {
+        if fr[1][slot][2] {
+            emit_u8(fr[0], "uncapture", slot);
+        }
+    }
+    let k = 0;
+    while k < 3 {
+        fr[1].pop();
+        emit_op(fr[0], "pop");
+        k += 1;
+    }
+    return;
+}
+
+fn compile_try(fr_stack, ci, body, cx, fin, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    let try_pos = chunk_here(fr[0]);
+    let has_catch = 0;
+    if cx != null {
+        has_catch = 1;
+    }
+    emit_try_op(fr[0], has_catch, 0, 0, 0);
+    let operand_end = try_pos + 7;
+
+    fr[8].push([fr[7].len(), fr[1].len(), fr[2], fin]);
+
+    begin_scope(fr);
+    let had = false;
+    try {
+        compile_block(fr_stack, ci, body[1], importer_file, embedded, keys, in_progress, top, st_ck);
+    } catch (e) {
+        had = true;
+        end_scope(fr);
+        fr[8].pop();
+        throw e;
+    }
+    if not had {
+        end_scope(fr);
+    }
+
+    let success_jump = emit_jump(fr[0], "jump");
+    let catch_target = chunk_here(fr[0]);
+    let finally_target = 0;
+    if cx != null {
+        begin_scope(fr);
+        let catch_slot = add_local(fr, cx[1], cx[3]);
+        compile_block(fr_stack, ci, cx[2][1], importer_file, embedded, keys, in_progress, top, st_ck);
+        end_scope(fr);
+        fr[8].pop();
+        let catch_jump = emit_jump(fr[0], "jump");
+        finally_target = chunk_here(fr[0]);
+        fr[0][0][try_pos + 2] = catch_slot;
+        emit_op(fr[0], "enter_finally");
+        if fin != null {
+            begin_scope(fr);
+            compile_block(fr_stack, ci, fin[1], importer_file, embedded, keys, in_progress, top, st_ck);
+            end_scope(fr);
+        }
+        emit_op(fr[0], "end_try");
+        patch_try_offset(fr[0], try_pos + 3, operand_end, catch_target, body[2]);
+        patch_try_offset(fr[0], try_pos + 5, operand_end, finally_target, body[2]);
+        patch_jump(fr[0], success_jump, finally_target, body[2]);
+        patch_jump(fr[0], catch_jump, finally_target, body[2]);
+    } else {
+        fr[8].pop();
+        finally_target = chunk_here(fr[0]);
+        emit_op(fr[0], "enter_finally");
+        if fin != null {
+            begin_scope(fr);
+            compile_block(fr_stack, ci, fin[1], importer_file, embedded, keys, in_progress, top, st_ck);
+            end_scope(fr);
+        }
+        emit_op(fr[0], "end_try");
+        patch_try_offset(fr[0], try_pos + 3, operand_end, finally_target, body[2]);
+        patch_try_offset(fr[0], try_pos + 5, operand_end, finally_target, body[2]);
+        patch_jump(fr[0], success_jump, finally_target, body[2]);
+    }
+    return;
+}
+
+// ------------------------------------------------------------- functions
+
+fn compile_function(fr_stack, _ci, proto, importer_file, embedded, keys, in_progress, top, st_ck) {
+    fr_stack.push(frame_new_function(importer_file));
+    let sub = fr_stack.len() - 1;
+    for p in proto[5] {
+        add_param(fr_stack[sub], p[1]);
+    }
+    begin_scope(fr_stack[sub]);
+    let had = false;
+    try {
+        for s in proto[8][1] {
+            compile_stmt_fn(fr_stack, sub, s, importer_file, embedded, keys, in_progress, top, st_ck);
+        }
+    } catch (e) {
+        had = true;
+        fr_stack.pop();
+        throw e;
+    }
+    if not had {
+        end_scope(fr_stack[sub]);
+    }
+    emit_op(fr_stack[sub][0], "null");
+    emit_op(fr_stack[sub][0], "return");
+    let c = fr_stack[sub];
+    fr_stack.pop();
+    if c[5] > 128 {
+        throw ["too many captured variables in one function (max 128, got " + string(c[5]) + ")", proto[9][0], proto[9][1], proto[9][2], "vm"];
+    }
+    let defaults = [];
+    let params = proto[5];
+    let i = params.len() - 1;
+    while i >= 0 {
+        if params[i][3] != null {
+            let v = const_default_value(params[i][3]);
+            if v != null {
+                defaults.push(v);
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+        i -= 1;
+    }
+    let reversed = [];
+    let j = defaults.len() - 1;
+    while j >= 0 {
+        reversed.push(defaults[j]);
+        j -= 1;
+    }
+    // VmFuncProto shape (put_func_proto): name, arity, is_async, upvalue
+    // DESCRIPTOR bytes, own_upvalues, defaults, chunk. The debug_locals are
+    // deliberately not serialized (docs/BYTECODE_STABILITY.md).
+    return ["FNPROTO", proto[4], params.len(), proto[2], c[4], c[5], reversed, c[0]];
+}
+
+fn const_default_value(e) {
+    let tag = e[0];
+    if tag == "Int" {
+        return ["Int", e[1]];
+    }
+    if tag == "Float" {
+        return ["Float", e[1]];
+    }
+    if tag == "Str" {
+        return ["Str", e[1]];
+    }
+    if tag == "Bool" {
+        return ["Bool", e[1]];
+    }
+    if tag == "Null" {
+        return ["Null"];
+    }
+    if tag == "Unary" and e[1] == "Neg" {
+        let inner = e[2];
+        if inner[0] == "Int" {
+            return ["Int", -inner[1]];
+        }
+        if inner[0] == "Float" {
+            return ["Float", -inner[1]];
+        }
+    }
+    return null;
+}
+
+fn compile_class(fr_stack, ci, s, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let methods = [];
+    for m in s[9] {
+        let proto = m;
+        if m[4] == "new" {
+            let params = [n_param("self", null, null, m[9])];
+            for p in m[5] {
+                params.push(p);
+            }
+            proto = n_fnproto(m[1], m[2], m[3], m[4], params, m[6], m[7], m[8], m[9]);
+        }
+        let f = compile_function(fr_stack, ci, proto, importer_file, embedded, keys, in_progress, top, st_ck);
+        let idx = add_function(fr_stack[ci][0], f);
+        let mname = m[4];
+        if mname == null {
+            mname = "";
+        }
+        let is_ctor = false;
+        if m[4] == "new" {
+            is_ctor = true;
+        }
+        methods.push([mname, m[1], idx, is_ctor]);
+    }
+    let fields = [];
+    for f in s[8] {
+        fields.push([f[2], f[1]]);
+    }
+    return ["CLASS", s[2], s[5], fields, methods];
+}
+
+fn compile_stmt_fn(fr_stack, ci, s, importer_file, embedded, keys, in_progress, top, st_ck) {
+    // Statements inside a function body: the same dispatcher — the context
+    // threads through so nested closures carry the right span file.
+    compile_stmt(fr_stack, ci, s, importer_file, embedded, keys, in_progress, top, st_ck);
+    return;
+}
+
+// ------------------------------------------------------------- expressions
+
+fn compile_expr(fr_stack, ci, e, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    set_span(fr[0], nsp(e));
+    let tag = e[0];
+    if tag == "NamedArg" {
+        throw ["internal error: a named argument reached the compiler without lowering", e[3][0], e[3][1], e[3][2], "vm"];
+    }
+    if tag == "IfE" or tag == "Coalesce" or tag == "Match" or tag == "Propagate" {
+        throw ["internal error: a surface-only expression reached the bytecode compiler without lowering (this is a bug in spid3r)", e[e.len() - 1][0], e[e.len() - 1][1], e[e.len() - 1][2], "vm"];
+    }
+    if tag == "OptField" {
+        compile_expr(fr_stack, ci, e[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], e[3]);
+        let idx = emit_str_const(fr[0], e[1]);
+        emit_u16(fr[0], "field_get_soft", idx);
+        return;
+    }
+    if tag == "Int" {
+        let idx = emit_const(fr[0], ["Int", e[1]]);
+        emit_u16(fr[0], "constant", idx);
+        return;
+    }
+    if tag == "Float" {
+        let idx = emit_const(fr[0], ["Float", e[1]]);
+        emit_u16(fr[0], "constant", idx);
+        return;
+    }
+    if tag == "Str" {
+        let idx = emit_const(fr[0], ["Str", e[1]]);
+        emit_u16(fr[0], "constant", idx);
+        return;
+    }
+    if tag == "Bool" {
+        if e[1] {
+            emit_op(fr[0], "true");
+        } else {
+            emit_op(fr[0], "false");
+        }
+        return;
+    }
+    if tag == "Null" {
+        emit_op(fr[0], "null");
+        return;
+    }
+    if tag == "Ident" {
+        if e[1] == "none" {
+            emit_op(fr[0], "none");
+        } else {
+            emit_get(fr_stack, ci, e[1]);
+        }
+        return;
+    }
+    if tag == "List" {
+        if e[1].len() > 255 {
+            throw ["too many elements in list literal (max 255, got " + string(e[1].len()) + ")", e[2][0], e[2][1], e[2][2], "vm"];
+        }
+        for it in e[1] {
+            compile_expr(fr_stack, ci, it, importer_file, embedded, keys, in_progress, top, st_ck);
+        }
+        set_span(fr[0], e[2]);
+        let idx = emit_str_const(fr[0], "list");
+        emit_u16_u8(fr[0], "construct", idx, e[1].len());
+        return;
+    }
+    if tag == "Fn" {
+        let f = compile_function(fr_stack, ci, e[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], e[1][9]);
+        emit_closure_syncs(fr_stack, ci, f);
+        let idx = add_function(fr[0], f);
+        emit_u16(fr[0], "closure", idx);
+        return;
+    }
+    if tag == "Unary" {
+        compile_expr(fr_stack, ci, e[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], e[3]);
+        if e[1] == "Neg" {
+            emit_op(fr[0], "neg");
+        } else {
+            emit_op(fr[0], "not");
+        }
+        return;
+    }
+    if tag == "Binary" {
+        compile_expr(fr_stack, ci, e[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        compile_expr(fr_stack, ci, e[3], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], e[4]);
+        let oc = "add";
+        if e[1] == "Sub" { oc = "sub"; }
+        else if e[1] == "Mul" { oc = "mul"; }
+        else if e[1] == "Div" { oc = "div"; }
+        else if e[1] == "Mod" { oc = "mod"; }
+        else if e[1] == "Eq" { oc = "equal"; }
+        else if e[1] == "Ne" { oc = "not_equal"; }
+        else if e[1] == "Lt" { oc = "less"; }
+        else if e[1] == "Le" { oc = "less_eq"; }
+        else if e[1] == "Gt" { oc = "greater"; }
+        else if e[1] == "Ge" { oc = "greater_eq"; }
+        emit_op(fr[0], oc);
+        return;
+    }
+    if tag == "Logical" {
+        compile_expr(fr_stack, ci, e[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        if e[1] == "And" {
+            let false_jump = emit_jump(fr[0], "jump_if_false");
+            compile_expr(fr_stack, ci, e[3], importer_file, embedded, keys, in_progress, top, st_ck);
+            emit_op(fr[0], "truthy");
+            let end_jump = emit_jump(fr[0], "jump");
+            let f = chunk_here(fr[0]);
+            patch_jump(fr[0], false_jump, f, e[4]);
+            emit_op(fr[0], "false");
+            let end = chunk_here(fr[0]);
+            patch_jump(fr[0], end_jump, end, e[4]);
+        } else {
+            let true_jump = emit_jump(fr[0], "jump_if_true");
+            compile_expr(fr_stack, ci, e[3], importer_file, embedded, keys, in_progress, top, st_ck);
+            emit_op(fr[0], "truthy");
+            let end_jump = emit_jump(fr[0], "jump");
+            let t = chunk_here(fr[0]);
+            patch_jump(fr[0], true_jump, t, e[4]);
+            emit_op(fr[0], "true");
+            let end = chunk_here(fr[0]);
+            patch_jump(fr[0], end_jump, end, e[4]);
+        }
+        return;
+    }
+    if tag == "Assign" {
+        compile_assign(fr_stack, ci, e[2], e[1], e[3], importer_file, embedded, keys, in_progress, top, st_ck);
+        return;
+    }
+    if tag == "SuperCall" {
+        if e[3].len() > 255 {
+            throw ["too many arguments in call (max 255, got " + string(e[3].len()) + ")", e[4][0], e[4][1], e[4][2], "vm"];
+        }
+        for a in e[3] {
+            compile_expr(fr_stack, ci, a, importer_file, embedded, keys, in_progress, top, st_ck);
+        }
+        set_span(fr[0], e[4]);
+        let pidx = emit_str_const(fr[0], e[1]);
+        if e[2] != null {
+            let midx = emit_str_const(fr[0], e[2]);
+            emit_u16_u16_u8(fr[0], "super_method", pidx, midx, e[3].len());
+        } else {
+            emit_u16_u8(fr[0], "super_ctor", pidx, e[3].len());
+        }
+        return;
+    }
+    if tag == "Super" {
+        throw ["super must be called: write super(...) or super.method(...)", e[1][0], e[1][1], e[1][2], "semantic"];
+    }
+    if tag == "Call" {
+        if e[1][0] == "Ident" and is_constructor_name(e[1][1]) {
+            if e[2].len() > 255 {
+                throw ["too many arguments in call (max 255, got " + string(e[2].len()) + ")", e[3][0], e[3][1], e[3][2], "vm"];
+            }
+            for a in e[2] {
+                compile_expr(fr_stack, ci, a, importer_file, embedded, keys, in_progress, top, st_ck);
+            }
+            set_span(fr[0], e[3]);
+            let idx = emit_str_const(fr[0], e[1][1]);
+            emit_u16_u8(fr[0], "construct", idx, e[2].len());
+            return;
+        }
+        compile_expr(fr_stack, ci, e[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        if e[2].len() > 255 {
+            throw ["too many arguments in call (max 255, got " + string(e[2].len()) + ")", e[3][0], e[3][1], e[3][2], "vm"];
+        }
+        for a in e[2] {
+            compile_expr(fr_stack, ci, a, importer_file, embedded, keys, in_progress, top, st_ck);
+        }
+        set_span(fr[0], e[3]);
+        emit_u8(fr[0], "call", e[2].len());
+        return;
+    }
+    if tag == "Method" {
+        compile_expr(fr_stack, ci, e[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        if e[3].len() > 255 {
+            throw ["too many arguments in call (max 255, got " + string(e[3].len()) + ")", e[4][0], e[4][1], e[4][2], "vm"];
+        }
+        for a in e[3] {
+            compile_expr(fr_stack, ci, a, importer_file, embedded, keys, in_progress, top, st_ck);
+        }
+        set_span(fr[0], e[4]);
+        let idx = emit_str_const(fr[0], e[1]);
+        emit_u16_u8(fr[0], "invoke", idx, e[3].len());
+        return;
+    }
+    if tag == "Index" {
+        compile_expr(fr_stack, ci, e[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        compile_expr(fr_stack, ci, e[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], e[3]);
+        emit_op(fr[0], "index_get");
+        return;
+    }
+    if tag == "FieldE" {
+        compile_expr(fr_stack, ci, e[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], e[3]);
+        let idx = emit_str_const(fr[0], e[1]);
+        emit_u16(fr[0], "field_get", idx);
+        return;
+    }
+    if tag == "New" {
+        emit_get(fr_stack, ci, e[1]);
+        if e[2].len() > 255 {
+            throw ["too many arguments in call (max 255, got " + string(e[2].len()) + ")", e[3][0], e[3][1], e[3][2], "vm"];
+        }
+        for a in e[2] {
+            compile_expr(fr_stack, ci, a, importer_file, embedded, keys, in_progress, top, st_ck);
+        }
+        set_span(fr[0], e[3]);
+        emit_u8(fr[0], "call", e[2].len());
+        return;
+    }
+    if tag == "Await" {
+        compile_expr(fr_stack, ci, e[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], e[2]);
+        emit_op(fr[0], "await");
+        return;
+    }
+    if tag == "Spawn" {
+        compile_expr(fr_stack, ci, e[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        set_span(fr[0], e[2]);
+        emit_op(fr[0], "spawn");
+        return;
+    }
+    return;
+}
+
+// The tree interpreter evaluates the RHS before the target's object/index
+// expressions; Rotate keeps the bytecode in agreement (see the oracle's
+// compile_assign).
+fn compile_assign(fr_stack, ci, target, op, value, importer_file, embedded, keys, in_progress, top, st_ck) {
+    let fr = fr_stack[ci];
+    let value_span = nsp(value);
+    let ttag = target[0];
+    if ttag == "Ident" {
+        let name = target[1];
+        if op != "Assign" {
+            emit_get(fr_stack, ci, name);
+            compile_expr(fr_stack, ci, value, importer_file, embedded, keys, in_progress, top, st_ck);
+            emit_binop(fr, op);
+        } else {
+            compile_expr(fr_stack, ci, value, importer_file, embedded, keys, in_progress, top, st_ck);
+        }
+        emit_set(fr_stack, ci, name);
+        return;
+    }
+    if ttag == "Index" {
+        compile_expr(fr_stack, ci, value, importer_file, embedded, keys, in_progress, top, st_ck);
+        compile_expr(fr_stack, ci, target[1], importer_file, embedded, keys, in_progress, top, st_ck);
+        compile_expr(fr_stack, ci, target[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        if op != "Assign" {
+            emit_op(fr[0], "dup2");
+            emit_op(fr[0], "index_get");
+            emit_u8(fr[0], "rotate", 4);
+            set_span(fr[0], value_span);
+            emit_binop(fr, op);
+        } else {
+            emit_u8(fr[0], "rotate", 3);
+            set_span(fr[0], value_span);
+        }
+        emit_op(fr[0], "index_set");
+        return;
+    }
+    if ttag == "FieldE" {
+        compile_expr(fr_stack, ci, value, importer_file, embedded, keys, in_progress, top, st_ck);
+        compile_expr(fr_stack, ci, target[2], importer_file, embedded, keys, in_progress, top, st_ck);
+        if op != "Assign" {
+            emit_op(fr[0], "dup");
+            let idx = emit_str_const(fr[0], target[1]);
+            emit_u16(fr[0], "field_get", idx);
+            emit_u8(fr[0], "rotate", 3);
+            set_span(fr[0], value_span);
+            emit_binop(fr, op);
+        } else {
+            emit_u8(fr[0], "rotate", 2);
+            set_span(fr[0], value_span);
+        }
+        let idx = emit_str_const(fr[0], target[1]);
+        emit_u16(fr[0], "field_set", idx);
+        return;
+    }
+    return;
+}
+
+fn emit_binop(fr, op) {
+    let oc = "add";
+    if op == "SubAssign" {
+        oc = "sub";
+    } else if op == "MulAssign" {
+        oc = "mul";
+    } else if op == "DivAssign" {
+        oc = "div";
+    } else if op == "ModAssign" {
+        oc = "mod";
+    }
+    emit_op(fr[0], oc);
+    return;
+}

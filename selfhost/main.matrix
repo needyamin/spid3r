@@ -26,17 +26,20 @@ import "lexer_json";
 import "ast";
 import "parser";
 import "semantic";
+import "lower";
+import "vmc";
+import "bytecode_matrix";
 
 fn main() {
     set_hole_check(hole_check);
     let a = args();
-    if a.len() != 2 {
-        eprint("usage: main tokens|parse|check|registry <file.matrix>\n");
+    if a.len() < 2 or a.len() > 3 {
+        eprint("usage: main tokens|parse|check|registry|lowered|compile <file.matrix> [out]\n");
         return 2;
     }
     let mode = a[0];
     let path = a[1];
-    if mode != "tokens" and mode != "parse" and mode != "check" and mode != "registry" {
+    if mode != "tokens" and mode != "parse" and mode != "check" and mode != "registry" and mode != "lowered" and mode != "compile" {
         eprint("error[usage]: unknown mode '" + mode + "' (tokens|parse|check|registry)\n");
         return 2;
     }
@@ -89,6 +92,65 @@ fn main() {
 
     if mode == "parse" {
         print(program_to_json(path, prog));
+        return 0;
+    }
+
+    if mode == "lowered" {
+        // The oracle's --dump-lowered-json parses and lowers WITHOUT the
+        // semantic check — the port matches that pipeline exactly.
+        let lst = new_lower();
+        let lowered = lower_program(lst, prog);
+        print(program_to_json(path, lowered));
+        return 0;
+    }
+
+    if mode == "compile" {
+        // Phase 4.2/4.3: the bytecode compiler + the v3 checksummed container
+        // writer. Oracle pipeline: parse -> check -> lower -> compile ->
+        // serialize -> write. Byte-equality target: `spid3r compile <file>
+        // -o <out> --no-opt` (the optimizer is Phase 11 P-3's scope).
+        let has_main_c = false;
+        for s in prog[0] {
+            if s[0] == "Fn" and s[1][4] == "main" {
+                has_main_c = true;
+            }
+        }
+        let cst2 = new_checker(has_main_c, path);
+        try {
+            check_program(cst2, prog);
+        } catch (e4) {
+            let phase = "semantic";
+            if e4.len() >= 5 {
+                phase = e4[4];
+            }
+            eprint("error[" + phase + "]: " + msg_of(e4) + "
+");
+            if e4[1] >= 0 {
+                eprint("  --> " + path + ":" + string(e4[1]) + ":" + string(e4[2]) + "
+");
+            }
+            return 1;
+        }
+        let lst2 = new_lower();
+        let lowered2 = lower_program(lst2, prog);
+        let embedded = [];
+        let keys = map();
+        let in_progress = [path];
+        let fr = compile_one(cst2, lowered2, path, embedded, keys, in_progress, true);
+        let func = make_vmfunc(fr);
+        let bytes_out = serialize_vmfunc(func);
+        let argv = args();
+        let out_path = path.slice(0, path.len() - 7) + ".matrixc";
+        if argv.len() >= 3 {
+            out_path = argv[2];
+        }
+        let wb = write_bytes(out_path, bytes_from_ints(bytes_out));
+        if wb.is_err() {
+            eprint("error[vm]: cannot write '" + out_path + "'
+");
+            return 1;
+        }
+        print("wrote " + out_path);
         return 0;
     }
 

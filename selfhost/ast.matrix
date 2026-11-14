@@ -301,12 +301,16 @@ fn aemit_int(v) {
 }
 
 fn emit_span(sp) {
+    // Length-agnostic: 3-element [line, col, len] (AST spans) or 4-element
+    // [file, line, col, len] (hole-internal spans) — the dump carries the
+    // last three either way, matching the oracle's Span serialization.
+    let base = sp.len() - 3;
     aemit(",\"line\":");
-    aemit_int(sp[0]);
+    aemit_int(sp[base]);
     aemit(",\"col\":");
-    aemit_int(sp[1]);
+    aemit_int(sp[base + 1]);
     aemit(",\"len\":");
-    aemit_int(sp[2]);
+    aemit_int(sp[base + 2]);
 }
 
 fn emit_str_list(items) {

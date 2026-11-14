@@ -1873,7 +1873,46 @@ fn compile_hole(st, raw) {
     if not ok {
         return null;
     }
+    // The oracle parses holes with file "<interp>" (Lexer::new(raw,
+    // Arc::from("<interp>"))); the artifact's inst_spans carry that file.
+    // My AST spans are 3-element [line, col, len] — bake the file in here so
+    // the compiler's set_span passes it through to serialization.
+    mark_interp_spans(expr);
     return [expr, used_bigint];
+}
+
+// Rewrite every span in the hole's AST from 3-element [line, col, len] to
+// 4-element ["<interp>", line, col, len]. The AST invariant: every node's
+// LAST element is its span (a 3-element int list), so the walk tests the
+// last element and recurses into the rest.
+fn mark_interp_spans(node) {
+    if type_of(node) != "list" {
+        return;
+    }
+    let n = node.len();
+    if n == 0 {
+        return;
+    }
+    let last = node[n - 1];
+    if type_of(last) == "list" and last.len() == 3 {
+        let all_int = true;
+        for x in last {
+            if type_of(x) != "int" {
+                all_int = false;
+            }
+        }
+        if all_int {
+            node[n - 1] = ["<interp>", last[0], last[1], last[2]];
+        }
+    }
+    let i = 0;
+    while i < n - 1 {
+        if type_of(node[i]) == "list" {
+            mark_interp_spans(node[i]);
+        }
+        i += 1;
+    }
+    return;
 }
 
 // --------------------------------------------------- the lex-time hole gate
