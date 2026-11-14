@@ -387,3 +387,44 @@ jobs:
       - name: Advisory Phase 0 measurement (shared runner, never frozen)
         continue-on-error: true
         run: python3 tools/bench_report.py --mode compute --measure --advisory --quick
+
+  # ---------------------------------------------------------------- selfhost
+  # Roadmap step 0.5 (full_plan.html): the self-host parity gate. From Phase 1
+  # onward this job runs the Spid3r-written front end (selfhost/) against the
+  # stage-0 oracle over the frozen corpus (SH-4), so a parity regression
+  # cannot merge. In Phase 0 it enforces the two preconditions that already
+  # exist: the corpus manifest verifies, and the stage-0 oracle dump surface
+  # is byte-deterministic corpus-wide. Teeth were proven 2026-11-14 (ledger).
+  selfhost-parity:
+    name: Self-host Parity Gate (frozen corpus)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain (pinned)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.1"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: selfhost-parity
+
+      - name: Verify the frozen corpus manifest (SH-4)
+        timeout-minutes: 5
+        run: python3 tools/corpus_manifest.py verify
+
+      - name: Build the stage-0 toolchain (zero-dependency core)
+        timeout-minutes: 15
+        run: cargo build --release --no-default-features
+
+      - name: Oracle dump determinism over the frozen corpus (SH-5)
+        timeout-minutes: 10
+        run: bash tools/oracle_dump_check.sh target/release/spid3r
+
+      # Phase 1+ slots the self-host differential harness in here (roadmap
+      # 0.5 DELIV): token/AST parity of selfhost/ vs the stage-0 oracle on the
+      # same corpus. Until then the two gates above are the whole job.
