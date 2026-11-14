@@ -144,17 +144,23 @@ public fn find_runtime_staticlib() {
 public fn link_executable(obj_path, out_path, staticlib_path) {
     let lr = find_msvc_link_exe();
     if lr[0] == null {
-        eprint("error[build]: no MSVC linker (link.exe) found; install Visual Studio Build Tools\n");
-        return 1;
+        eprint("error[usage]: no MSVC linker (link.exe) found; install Visual Studio Build Tools (see docs/BUILDING.md)\n");
+        return 2;
     }
-    let link_exe = lr[0];
-    let msvc_lib = lr[1];
+    // The oracle's diagnostics carry PathBuf-style backslash paths —
+    // normalize the discovered roots so the wrapper text matches.
+    let link_exe = lr[0].replace("/", "\\");
+    let msvc_lib = lr[1].replace("/", "\\");
     let sdk = find_winsdk_lib_root();
     if sdk == null {
-        eprint("error[build]: no Windows SDK found; install the Windows 10/11 SDK\n");
-        return 1;
+        eprint("error[usage]: no Windows SDK found; install the Windows 10/11 SDK (see docs/BUILDING.md)\n");
+        return 2;
     }
+    sdk = sdk.replace("/", "\\");
     let llvm_dir = find_llvm_lib_dir();
+    if llvm_dir != null {
+        llvm_dir = llvm_dir.replace("/", "\\");
+    }
 
     let args = ["-nologo", "-out:" + out_path, "-subsystem:console",
                 "-nodefaultlib", obj_path, staticlib_path];
@@ -179,17 +185,25 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
               "ws2_32.lib", "dbghelp.lib", "advapi32.lib"] {
         args.push(l);
     }
-    // spawn_process returns ok(exit_code) / err(msg) — the linker's verdict
-    // is the exit code (its output goes to the process's stderr directly).
-    let rc = spawn_process(link_exe, args);
-    if rc.is_err() {
-        eprint("error[build]: cannot run the linker '" + link_exe + "'\n");
-        return 1;
+    // exec_capture reproduces the oracle's run_linker exactly: the linker's
+    // stdout/stderr are captured and, on failure, re-printed under the
+    // error[usage] wrapper in the same wrapper-then-output order (a failed
+    // spawn is a result, not a throw).
+    let r = exec_capture(link_exe, args, null);
+    if r.is_err() {
+        eprint("error[usage]: cannot run the linker '" + link_exe + "'\n");
+        return 2;
     }
-    let exit_code = rc.unwrap();
-    if exit_code != 0 {
-        eprint("error[build]: linking failed (exit " + string(exit_code) + ")\n");
-        return 1;
+    let out = r.unwrap();
+    if out["code"] != 0 {
+        let so = out["stdout"].trim();
+        let se = out["stderr"].trim();
+        let msg = "error[usage]: linking failed (" + link_exe + "):\n" + so;
+        if se != "" {
+            msg = msg + "\n" + se;
+        }
+        eprint(msg + "\n");
+        return 2;
     }
     return 0;
 }

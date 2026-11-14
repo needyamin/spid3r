@@ -80,6 +80,44 @@ for f in selfhost/corpus/examples/*.matrix \
   fi
 done
 
+# Phase 5.3: the negative corpus. Compile-time negatives (lexer/parser/
+# semantic) and the link-time negative must produce the same build verdict:
+# identical stderr and exit code. The two negative-RUNTIME programs build
+# everywhere and fail at run: compare the full stderr and exit code (the
+# oracle and the selfhost link the SAME runtime staticlib, so the
+# error[runtime] first lines and the rc are pinned end to end).
+for f in selfhost/corpus/negative/*.matrix; do
+  base=$(basename "$f" .matrix)
+  rm -f "$OUT/o.exe" "$OUT/s.exe"
+  "$ORACLE" build "$f" -o "$OUT/o.exe" > "$OUT/ob.txt" 2>&1
+  ocode=$?
+  SPID3R_RUNTIME_LIB="$(pwd)/target/debug/spid3r_lang.lib"     "$SH" native "$f" "$OUT/s.exe" > "$OUT/sb.txt" 2>&1
+  scode=$?
+  if [ "$ocode" != 0 ] || [ "$scode" != 0 ]; then
+    # A build failure on either side: first diagnostic line + exit code —
+    # the caret/gutter decoration the oracle renders is a documented gap.
+    if [ "$ocode" = "$scode" ]        && [ "$(head -1 "$OUT/ob.txt")" = "$(head -1 "$OUT/sb.txt")" ]; then
+      pass=$((pass + 1))
+    else
+      echo "FAIL(build-diag) $base (oracle rc=$ocode, selfhost rc=$scode)"
+      diff <(head -1 "$OUT/ob.txt") <(head -1 "$OUT/sb.txt") | head -4
+      fail=$((fail + 1))
+    fi
+    continue
+  fi
+  "$OUT/o.exe" > "$OUT/o.stdout" 2> "$OUT/o.stderr"
+  ocode=$?
+  "$OUT/s.exe" > "$OUT/s.stdout" 2> "$OUT/s.stderr"
+  scode=$?
+  if [ "$ocode" = "$scode" ]      && cmp -s "$OUT/o.stdout" "$OUT/s.stdout"      && cmp -s "$OUT/o.stderr" "$OUT/s.stderr"; then
+    pass=$((pass + 1))
+  else
+    echo "FAIL(exec-diag) $base (oracle rc=$ocode, selfhost rc=$scode)"
+    diff "$OUT/o.stderr" "$OUT/s.stderr" | head -6
+    fail=$((fail + 1))
+  fi
+done
+
 echo "native parity: pass=$pass fail=$fail skip=$skip defer=$defer (Phase-6.2 module resolution)"
 if [ "$fail" != 0 ]; then
   exit 1

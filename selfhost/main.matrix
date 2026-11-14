@@ -260,7 +260,36 @@ fn main() {
         if argv3.len() >= 3 {
             out_path = argv3[2];
         }
-        let obj_path = out_path + ".obj";
+        // The oracle's object name: spid3r_<stem>.o (link.rs build dir).
+        // (stem from the input file, like the oracle's path.file_stem();
+        //  the object itself lives next to the output, not in a
+        //  private temp dir — one documented cosmetic divergence.)
+        let pdir = "";
+        let pstem = path;
+        let ci2 = path.len() - 1;
+        while ci2 >= 0 {
+            let c2 = path[ci2];
+            if c2 == "/" or c2 == "\\" {
+                pdir = path.slice(0, ci2 + 1);
+                pstem = path.slice(ci2 + 1, path.len());
+                break;
+            }
+            ci2 -= 1;
+        }
+        if pstem.len() > 7 and pstem.slice(pstem.len() - 7, pstem.len()) == ".matrix" {
+            pstem = pstem.slice(0, pstem.len() - 7);
+        }
+        let odir = "";
+        let ci3 = out_path.len() - 1;
+        while ci3 >= 0 {
+            let c3 = out_path[ci3];
+            if c3 == "/" or c3 == "\\" {
+                odir = out_path.slice(0, ci3 + 1);
+                break;
+            }
+            ci3 -= 1;
+        }
+        let obj_path = odir + "spid3r_" + pstem + ".o";
         let rc = cg_emit_object(cgst, obj_path);
         if rc != 0 {
             eprint("error[build]: object emission failed (step " + string(rc) + ")\n");
@@ -273,7 +302,9 @@ fn main() {
         }
         let lc = link_executable(obj_path, out_path, sl);
         if lc != 0 {
-            return 1;
+            // Propagate the driver's own exit code (2 = usage, the oracle's
+            // class for every build-driver failure).
+            return lc;
         }
         print("built " + out_path);
         return 0;
