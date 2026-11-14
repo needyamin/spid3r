@@ -1,0 +1,156 @@
+// selfhost/lexer/token.matrix — the token model, in Spid3r (roadmap Phase 1).
+//
+// Port of src/lexer/token.rs + the serialization half of src/oracle.rs (SH-3,
+// SH-5): kinds, the keyword table, UTF-8 widths, JSON escaping, and the
+// Rust-Display-compatible float formatting the oracle's token dump uses.
+//
+// A token is a 5-element list: [kind, value, line, col, len]. `value` is null
+// for the kinds that carry no payload; the JSON serializer (json.matrix)
+// decides per kind whether the value field is emitted. Spans match the stage-0
+// oracle exactly: line/col count characters, and `len` counts CHARACTERS for
+// every kind except string/raw-string tokens, where the oracle's span length
+// is the literal's BYTE length (quote to quote) — the scanner tracks bytes for
+// those two kinds, so the model here just carries what it is given.
+
+public const K_INT = 0;
+public const K_BIGINT = 1;
+public const K_FLOAT = 2;
+public const K_STR = 3;
+public const K_INTERP = 4;
+public const K_IDENT = 5;
+public const K_KW = 6;
+public const K_PLUS = 7;
+public const K_MINUS = 8;
+public const K_STAR = 9;
+public const K_SLASH = 10;
+public const K_PERCENT = 11;
+public const K_EQEQ = 12;
+public const K_BANGEQ = 13;
+public const K_LT = 14;
+public const K_LE = 15;
+public const K_GT = 16;
+public const K_GE = 17;
+public const K_ASSIGN = 18;
+public const K_AT = 19;
+public const K_PLUSEQ = 20;
+public const K_MINUSEQ = 21;
+public const K_STAREQ = 22;
+public const K_SLASHEQ = 23;
+public const K_PERCENTEQ = 24;
+public const K_LPAREN = 25;
+public const K_RPAREN = 26;
+public const K_LBRACE = 27;
+public const K_RBRACE = 28;
+public const K_LBRACKET = 29;
+public const K_RBRACKET = 30;
+public const K_COMMA = 31;
+public const K_COLON = 32;
+public const K_SEMI = 33;
+public const K_DOT = 34;
+public const K_ARROW = 35;
+public const K_AMP = 36;
+public const K_AMPAMP = 37;
+public const K_PIPE = 38;
+public const K_PIPEPIPE = 39;
+public const K_CARET = 40;
+public const K_SHL = 41;
+public const K_SHR = 42;
+public const K_QUESTION = 43;
+public const K_QUESTIONDOT = 44;
+public const K_QUESTIONQUESTION = 45;
+public const K_FATARROW = 46;
+public const K_INTMIN = 47;
+public const K_EOF = 48;
+
+// Indexed by kind code; MUST stay in the same order as the constants above.
+// These are the oracle's serialization names (src/oracle.rs token_json).
+public const KIND_NAMES = [
+    "Int", "BigIntLit", "Float", "Str", "InterpStr", "Ident", "Kw",
+    "Plus", "Minus", "Star", "Slash", "Percent",
+    "EqEq", "BangEq", "Lt", "Le", "Gt", "Ge",
+    "Assign", "At", "PlusEq", "MinusEq", "StarEq", "SlashEq", "PercentEq",
+    "LParen", "RParen", "LBrace", "RBrace", "LBracket", "RBracket",
+    "Comma", "Colon", "Semi", "Dot", "Arrow",
+    "Amp", "AmpAmp", "Pipe", "PipePipe", "Caret",
+    "Shl", "Shr", "Question", "QuestionDot", "QuestionQuestion",
+    "FatArrow", "IntMinMagnitude", "Eof",
+];
+
+// The 39 keywords (src/lexer/token.rs Keyword::from_ident). The token VALUE
+// for a keyword is the spelling itself, so no separate keyword codes exist.
+public const KEYWORDS = map(
+    "fn", 1, "let", 1, "const", 1, "if", 1, "elif", 1, "else", 1,
+    "while", 1, "for", 1, "in", 1, "break", 1, "continue", 1, "return", 1,
+    "true", 1, "false", 1, "null", 1, "and", 1, "or", 1, "not", 1,
+    "import", 1, "as", 1, "try", 1, "catch", 1, "finally", 1, "throw", 1,
+    "class", 1, "abstract", 1, "yield", 1, "interface", 1, "new", 1,
+    "self", 1, "public", 1, "private", 1, "spawn", 1, "async", 1, "await", 1,
+    "extends", 1, "implements", 1, "match", 1, "enum", 1, "super", 1,
+);
+
+public fn is_keyword(s) {
+    return KEYWORDS.has(s);
+}
+
+public fn kind_name(k) {
+    return KIND_NAMES[k];
+}
+
+// UTF-8 byte width of one character codepoint — lets the char-level scanner
+// reproduce the oracle's byte-based lengths (string/raw-string token spans).
+public fn utf8_width(cp) {
+    if cp < 0x80 { return 1; }
+    if cp < 0x800 { return 2; }
+    if cp < 0x10000 { return 3; }
+    return 4;
+}
+
+// JSON string escaping, byte-identical to the oracle's `jstr`
+// (src/oracle.rs): quotes, backslashes, \n \r \t, and \u00xx for the C0
+// controls; everything else passes through as raw UTF-8. Accumulates into a
+// fragment list and joins once — string += on immutable Spid3r strings is
+// quadratic, and a long string value would crawl (see json.matrix PERF NOTE).
+public fn jstr(s) {
+    let frags = ["\""];
+    let n = s.len();
+    let i = 0;
+    while i < n {
+        let cp = ord(s[i]);
+        if cp == 34 {
+            frags.push("\\\"");
+        } else if cp == 92 {
+            frags.push("\\\\");
+        } else if cp == 10 {
+            frags.push("\\n");
+        } else if cp == 13 {
+            frags.push("\\r");
+        } else if cp == 9 {
+            frags.push("\\t");
+        } else if cp < 0x20 {
+            frags.push("\\u00" + hex2(cp));
+        } else {
+            frags.push(s[i]);
+        }
+        i += 1;
+    }
+    frags.push("\"");
+    return frags.join("");
+}
+
+public fn hex2(v) {
+    let digits = "0123456789abcdef";
+    return digits.slice((v / 16) % 16, (v / 16) % 16 + 1) + digits.slice(v % 16, v % 16 + 1);
+}
+
+// Rust's Display for f64, which is what the oracle emits for Float values:
+// shortest round-trip decimal, never an exponent, and NO ".0" on integral
+// values. Spid3r's string() adds ".0" exactly there (and matches everywhere
+// else), so strip that one suffix.
+public fn rust_float(x) {
+    let s = string(x);
+    let n = s.len();
+    if n >= 2 and s.slice(n - 2, n) == ".0" {
+        return s.slice(0, n - 2);
+    }
+    return s;
+}

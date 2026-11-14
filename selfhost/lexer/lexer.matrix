@@ -1,0 +1,972 @@
+// selfhost/lexer/lexer.matrix — the Spid3r-written lexer (roadmap Phase 1).
+//
+// A byte-level port of src/lexer/mod.rs, checked token-for-token against the
+// stage-0 oracle (`spid3r tokens --json`) on the frozen corpus (SH-4, SH-5).
+// The source is held as a `bytes` value, not a string: Spid3r string indexing
+// (`s[i]`) is O(i) per access — `chars().nth` walks from the start — which
+// made a char-indexed scanner quadratic (a 1MB file took 300+s; measured
+// 2026-11-14, ledger). Byte indexing is O(1), so this port runs the oracle's
+// own algorithm on the oracle's own unit: bytes. Every quirk is then 1:1 —
+// byte-length token spans, the UTF-8 continuation-byte column rule, the BOM
+// skip, even the oracle's invalid-UTF-8 diagnostics.
+//
+// Documented phase-boundary divergence (ledger, 2026-11-14): the oracle
+// validates a captured `{expr}` interpolation hole by lexing AND PARSING it
+// (src/parser::hole_is_expression). The parser is Phase 2; until it lands,
+// this lexer accepts every capture that passes the scan-level checks (closed,
+// non-empty, not all digits, no line break). The parity harness flags the
+// corpus case where the distinction matters.
+//
+// Errors are thrown as [message, line, col, len]; main.matrix renders them in
+// the oracle's diagnostic shape (`error[lexer]: …` + `  --> file:line:col`).
+
+import "token";
+
+let BS = bytes(0);
+let N = 0;
+let POS = 0;
+let LINE = 1;
+let COL = 1;
+let DEPTH = 0;
+
+const MAX_INTERP_DEPTH = 32;
+const INF = float("inf");
+
+// ------------------------------------------------------------------ scanning
+
+fn pk() {
+    if POS < N {
+        return BS[POS];
+    }
+    return -1;
+}
+
+fn pkat(n) {
+    if POS + n < N {
+        return BS[POS + n];
+    }
+    return -1;
+}
+
+fn at_idx(i) {
+    if i >= 0 and i < N {
+        return BS[i];
+    }
+    return -1;
+}
+
+fn is_digit(c) {
+    return c >= 48 and c <= 57;
+}
+
+fn is_alpha(c) {
+    return (c >= 65 and c <= 90) or (c >= 97 and c <= 122);
+}
+
+fn is_alnum(c) {
+    return is_digit(c) or is_alpha(c);
+}
+
+fn is_ident_start(c) {
+    return is_alpha(c) or c == 95;
+}
+
+fn is_ident_char(c) {
+    return is_alnum(c) or c == 95;
+}
+
+fn is_hex(c) {
+    return is_digit(c) or (c >= 97 and c <= 102) or (c >= 65 and c <= 70);
+}
+
+fn hex_val(c) {
+    if is_digit(c) { return c - 48; }
+    if c >= 97 and c <= 102 { return c - 87; }
+    if c >= 65 and c <= 70 { return c - 55; }
+    return -1;
+}
+
+// Consume one byte. Columns count characters: a UTF-8 continuation byte
+// (10xxxxxx) belongs to the previous character and must not advance the
+// column — the oracle's exact rule.
+fn adv() {
+    if POS >= N {
+        return -1;
+    }
+    let c = BS[POS];
+    POS += 1;
+    if c == 10 {
+        LINE += 1;
+        COL = 1;
+    } else if (c & 192) != 128 {
+        COL += 1;
+    }
+    return c;
+}
+
+fn rewind(pos, line, col) {
+    POS = pos;
+    LINE = line;
+    COL = col;
+}
+
+fn lex_err(msg, line, col) {
+    throw [msg, line, col, 1];
+}
+
+// Decode the UTF-8 character starting at byte `i`. Returns its codepoint, or
+// -1 when the bytes are not a valid encoding (the caller then reports the
+// oracle's invalid-UTF-8 diagnostic).
+fn decode_char(i) {
+    let b0 = at_idx(i);
+    if b0 < 0 {
+        return -1;
+    }
+    if b0 < 128 {
+        return b0;
+    }
+    let cont = 0;
+    if (b0 & 224) == 192 {
+        cont = 1;
+    } else if (b0 & 240) == 224 {
+        cont = 2;
+    } else if (b0 & 248) == 240 {
+        cont = 3;
+    } else {
+        return -1;
+    }
+    let cp = b0 & (127 >> (cont + 1));
+    let k = 0;
+    while k < cont {
+        let b = at_idx(i + 1 + k);
+        if b < 0 or (b & 192) != 128 {
+            return -1;
+        }
+        cp = cp * 64 + (b & 63);
+        k += 1;
+    }
+    return cp;
+}
+
+// The bytes SRC[start..POS) as a string, decoding UTF-8. Callers keep the
+// range ASCII (idents, numbers, hole captures) or valid UTF-8 (the source is
+// text), so an invalid encoding throws the oracle's string-literal diagnostic
+// shape when one is reachable.
+fn text_between(start, end) {
+    let frags = [];
+    let i = start;
+    while i < end {
+        let cp = decode_char(i);
+        if cp < 0 {
+            return null;
+        }
+        if cp < 128 {
+            frags.push(chr(cp));
+            i += 1;
+        } else {
+            let w = 1;
+            if cp >= 128 {
+                if cp < 2048 {
+                    w = 2;
+                } else if cp < 65536 {
+                    w = 3;
+                } else {
+                    w = 4;
+                }
+            }
+            frags.push(chr(cp));
+            i += w;
+        }
+    }
+    return frags.join("");
+}
+
+// ------------------------------------------------------------------- trivia
+
+fn skip_trivia() {
+    while true {
+        let c = pk();
+        if c == 32 or c == 9 or c == 13 or c == 10 {
+            adv();
+        } else if c == 35 and LINE == 1 and COL == 1 and pkat(1) == 33 {
+            // shebang: `#!` on the very first line, kept as a comment
+            while pk() != -1 and pk() != 10 {
+                adv();
+            }
+        } else if c == 47 and pkat(1) == 47 {
+            // line comment
+            while pk() != -1 and pk() != 10 {
+                adv();
+            }
+        } else if c == 47 and pkat(1) == 42 {
+            // block comment — the error span points at the opener
+            let (bl, bc) = (LINE, COL);
+            adv();
+            adv();
+            let closed = false;
+            while true {
+                let d = adv();
+                if d == -1 {
+                    break;
+                }
+                if d == 42 and pk() == 47 {
+                    adv();
+                    closed = true;
+                    break;
+                }
+            }
+            if not closed {
+                throw ["unterminated block comment", bl, bc, 2];
+            }
+        } else {
+            return;
+        }
+    }
+}
+
+// -------------------------------------------------------------- the scanner
+
+fn next_token() {
+    skip_trivia();
+    let (sl, sc) = (LINE, COL);
+    let start = POS;
+
+    let c = pk();
+    if c == -1 {
+        return [K_EOF, null, sl, sc, 0];
+    }
+
+    if is_digit(c) {
+        return lex_number(sl, sc, start);
+    }
+    if c == 114 and (pkat(1) == 34 or (pkat(1) == 35 and pkat(2) == 34)) {
+        return lex_raw_string(sl, sc, start);
+    }
+    if is_ident_start(c) {
+        while is_ident_char(pk()) {
+            adv();
+        }
+        let s = text_between(start, POS);
+        if is_keyword(s) {
+            return [K_KW, s, sl, sc, POS - start];
+        }
+        return [K_IDENT, s, sl, sc, POS - start];
+    }
+    if c == 34 {
+        return lex_string(sl, sc, start);
+    }
+
+    adv();
+    let kind = punct_kind(c, sl, sc, start);
+    if kind >= 0 {
+        return [kind, null, sl, sc, POS - start];
+    }
+    return punct_tail(sl, sc, start);
+}
+
+fn punct_kind(c, sl, sc, start) {
+    if c == 43 {
+        return two(61, K_PLUSEQ, K_PLUS);
+    }
+    if c == 45 {
+        if pk() == 62 {
+            adv();
+            return K_ARROW;
+        }
+        return two(61, K_MINUSEQ, K_MINUS);
+    }
+    if c == 42 {
+        return two(61, K_STAREQ, K_STAR);
+    }
+    if c == 47 {
+        return two(61, K_SLASHEQ, K_SLASH);
+    }
+    if c == 37 {
+        return two(61, K_PERCENTEQ, K_PERCENT);
+    }
+    if c == 64 {
+        return K_AT;
+    }
+    if c == 61 {
+        // `=>` before `=`/`==`: a match arm separator.
+        if pk() == 62 {
+            adv();
+            return K_FATARROW;
+        }
+        return two(61, K_EQEQ, K_ASSIGN);
+    }
+    if c == 33 {
+        if pk() == 61 {
+            adv();
+            return K_BANGEQ;
+        }
+        lex_err("unexpected '!'; did you mean '!=' or 'not'?", sl, sc);
+    }
+    // `<<` / `>>` before the single-character forms.
+    if c == 60 {
+        if pk() == 60 {
+            adv();
+            return K_SHL;
+        }
+        return two(61, K_LE, K_LT);
+    }
+    if c == 62 {
+        if pk() == 62 {
+            adv();
+            return K_SHR;
+        }
+        return two(61, K_GE, K_GT);
+    }
+    if c == 63 {
+        if pk() == 46 {
+            adv();
+            return K_QUESTIONDOT;
+        }
+        if pk() == 63 {
+            adv();
+            return K_QUESTIONQUESTION;
+        }
+        return K_QUESTION;
+    }
+    if c == 38 {
+        if pk() == 38 {
+            adv();
+            return K_AMPAMP;
+        }
+        return K_AMP;
+    }
+    if c == 124 {
+        if pk() == 124 {
+            adv();
+            return K_PIPEPIPE;
+        }
+        return K_PIPE;
+    }
+    if c == 94 {
+        return K_CARET;
+    }
+    if c == 40 {
+        return K_LPAREN;
+    }
+    if c == 41 {
+        return K_RPAREN;
+    }
+    if c == 123 {
+        return K_LBRACE;
+    }
+    if c == 125 {
+        return K_RBRACE;
+    }
+    if c == 91 {
+        return K_LBRACKET;
+    }
+    if c == 93 {
+        return K_RBRACKET;
+    }
+    if c == 44 {
+        return K_COMMA;
+    }
+    if c == 58 {
+        return K_COLON;
+    }
+    if c == 59 {
+        return K_SEMI;
+    }
+    if c == 46 {
+        return K_DOT;
+    }
+    if c == 35 and pk() == 123 {
+        // `#{` lexes as an opening brace (raw-string hash disambiguation)
+        adv();
+        return K_LBRACE;
+    }
+    return -1;
+}
+
+// Everything the punctuation table did not claim: an unexpected character
+// (decoded from the bytes, exactly as the oracle decodes it) — or, when the
+// bytes are not valid UTF-8, the oracle's unexpected-byte diagnostic.
+fn punct_tail(sl, sc, start) {
+    let cp = decode_char(start);
+    if cp >= 0 {
+        lex_err("unexpected character '" + chr(cp) + "'", sl, sc);
+    }
+    lex_err("unexpected byte 0x" + hex2(at_idx(start)), sl, sc);
+    return [K_EOF, null, sl, sc, 0];
+}
+
+fn two(second, if_match, els) {
+    if pk() == second {
+        adv();
+        return if_match;
+    }
+    return els;
+}
+
+// ------------------------------------------------------------------ numbers
+
+fn radix_digit(c, radix) {
+    if radix == 16 {
+        return is_hex(c);
+    }
+    if radix == 8 {
+        return c >= 48 and c <= 55;
+    }
+    return c == 48 or c == 49;
+}
+
+fn lex_number(sl, sc, start) {
+    // Radix prefixes: `0x`/`0o`/`0b` (either case) with at least one digit of
+    // that radix; otherwise the `0` is decimal and the letter an identifier.
+    if pk() == 48 {
+        let r1 = pkat(1);
+        let radix = -1;
+        if r1 == 120 or r1 == 88 {
+            radix = 16;
+        } else if r1 == 111 or r1 == 79 {
+            radix = 8;
+        } else if r1 == 98 or r1 == 66 {
+            radix = 2;
+        }
+        if radix > 0 and radix_digit(pkat(2), radix) {
+            adv();
+            adv();
+            let digits_begin = POS;
+            while radix_digit(pk(), radix) or pk() == 95 {
+                adv();
+            }
+            let digits_raw = bytes_text(digits_begin, POS);
+            let full = bytes_text(start, POS);
+            let len = POS - start;
+            return radix_int(digits_raw, radix, full, sl, sc, len);
+        }
+    }
+    while is_digit(pk()) or pk() == 95 {
+        adv();
+    }
+    let is_float = false;
+    if pk() == 46 and is_digit(pkat(1)) {
+        is_float = true;
+        adv();
+        while is_digit(pk()) or pk() == 95 {
+            adv();
+        }
+    }
+    // Exponent: `e`/`E`, optional `+`/`-`, then at least one digit — checked
+    // by lookahead so `1elif` stays `1` + `elif` and a bare `1e` is not float.
+    if pk() == 101 or pk() == 69 {
+        let after = POS + 1;
+        let a = at_idx(after);
+        if a == 43 or a == 45 {
+            after += 1;
+        }
+        if is_digit(at_idx(after)) {
+            is_float = true;
+            adv();
+            if pk() == 43 or pk() == 45 {
+                adv();
+            }
+            while is_digit(pk()) or pk() == 95 {
+                adv();
+            }
+        }
+    }
+    let text = bytes_text(start, POS);
+    let len = POS - start;
+    let why = separator_error(text);
+    if why != null {
+        throw ["invalid numeric literal '" + text + "': " + why, sl, sc, len];
+    }
+    let stripped = strip_underscores(text);
+    if is_float {
+        let v = float(stripped);
+        if v == INF or v == -INF or v != v {
+            throw ["float '" + text + "' is out of f64 range", sl, sc, len];
+        }
+        return [K_FLOAT, v, sl, sc, len];
+    }
+    // A trailing `n` marks a big-integer literal BEFORE the i64 range check;
+    // `n` must not start an identifier (`1next`).
+    let nxt = pk();
+    let after = pkat(1);
+    let is_suffix = nxt == 110 and not (is_alnum(after) or after == 95);
+    if is_suffix {
+        adv();
+        return [K_BIGINT, stripped, sl, sc, len];
+    }
+    if stripped == "9223372036854775808" {
+        return [K_INTMIN, null, sl, sc, len];
+    }
+    let v = parse_i64_digits(stripped);
+    if v == null {
+        throw [
+            "integer '" + text + "' is out of i64 range (add an `n` suffix for a big integer)",
+            sl, sc, len,
+        ];
+    }
+    return [K_INT, v, sl, sc, len];
+}
+
+// bytes → string for a range known to be ASCII (numeric literals never hold
+// anything else; the loop is linear on a short slice).
+fn bytes_text(start, end) {
+    let frags = [];
+    let i = start;
+    while i < end {
+        frags.push(chr(BS[i]));
+        i += 1;
+    }
+    return frags.join("");
+}
+
+fn strip_underscores(s) {
+    let frags = [];
+    let n = s.len();
+    let i = 0;
+    while i < n {
+        if s[i] != "_" {
+            frags.push(s[i]);
+        }
+        i += 1;
+    }
+    return frags.join("");
+}
+
+// Every `_` must sit between two digits; null when clean.
+fn separator_error(text) {
+    let codes = [];
+    let n = text.len();
+    let i = 0;
+    while i < n {
+        codes.push(ord(text[i]));
+        i += 1;
+    }
+    i = 0;
+    while i < n {
+        if codes[i] == 95 {
+            let before = i > 0 and is_digit(codes[i - 1]);
+            let after = i + 1 < n and is_digit(codes[i + 1]);
+            if not before or not after {
+                return "underscores must separate digits";
+            }
+        }
+        i += 1;
+    }
+    return null;
+}
+
+// i64::from_str_radix with underscore-free digits; null on overflow. The
+// overflow guard mirrors the oracle's `Err(_)` on the same unsigned overflow.
+fn radix_int(digits, radix, full, sl, sc, len) {
+    let n = digits.len();
+    if digits[0] == "_" or digits[n - 1] == "_" {
+        throw ["invalid integer literal '" + full + "': underscores must separate digits", sl, sc, len];
+    }
+    let i = 0;
+    while i + 1 < n {
+        if digits[i] == "_" and digits[i + 1] == "_" {
+            throw ["invalid integer literal '" + full + "': underscores must separate digits", sl, sc, len];
+        }
+        i += 1;
+    }
+    let text = strip_underscores(digits);
+    let v = parse_i64_radix(text, radix);
+    if v == null {
+        throw ["invalid integer literal '" + full + "': value is out of i64 range", sl, sc, len];
+    }
+    return [K_INT, v, sl, sc, len];
+}
+
+fn parse_i64_radix(text, radix) {
+    let v = 0;
+    let n = text.len();
+    let i = 0;
+    while i < n {
+        let d = hex_val(ord(text[i]));
+        if v > (9223372036854775807 - d) / radix {
+            return null;
+        }
+        v = v * radix + d;
+        i += 1;
+    }
+    return v;
+}
+
+fn parse_i64_digits(text) {
+    let v = 0;
+    let n = text.len();
+    let i = 0;
+    while i < n {
+        let d = ord(text[i]) - 48;
+        if v > (9223372036854775807 - d) / 10 {
+            return null;
+        }
+        v = v * 10 + d;
+        i += 1;
+    }
+    return v;
+}
+
+// ------------------------------------------------------------------ strings
+
+fn lex_string(sl, sc, start) {
+    adv(); // opening quote
+    // String bodies accumulate as fragments; joining once at the close is
+    // linear, while `s += ch` on an immutable Spid3r string is quadratic.
+    let sfrags = [];
+    let pieces = [];
+    while true {
+        let c = pk();
+        if c == -1 {
+            throw ["unterminated string literal", sl, sc, 1];
+        }
+        let (bsl, bsc) = (LINE, COL);
+        adv();
+        if c == 34 {
+            let s = sfrags.join("");
+            let len = POS - start;
+            if pieces.len() == 0 {
+                return [K_STR, s, sl, sc, len];
+            }
+            if s != "" {
+                pieces.push(["lit", s]);
+            }
+            return [K_INTERP, pieces, sl, sc, len];
+        }
+        if c == 123 {
+            let path = try_interp_path();
+            if path != null {
+                if sfrags.len() > 0 {
+                    pieces.push(["lit", sfrags.join("")]);
+                    sfrags = [];
+                }
+                pieces.push(["path", path]);
+            } else {
+                let nxt = pk();
+                let hole_start = is_alpha(nxt) or nxt == 95 or is_digit(nxt)
+                    or nxt == 40 or nxt == 91 or nxt == 45 or nxt == 34;
+                if hole_start {
+                    let raw = try_interp_expr();
+                    if raw != null {
+                        if sfrags.len() > 0 {
+                            pieces.push(["lit", sfrags.join("")]);
+                            sfrags = [];
+                        }
+                        pieces.push(["hole", raw]);
+                    } else {
+                        sfrags.push("{");
+                    }
+                } else {
+                    sfrags.push("{");
+                }
+            }
+        } else if c == 92 {
+            let e = pk();
+            if e == -1 {
+                throw ["unterminated string literal", sl, sc, 1];
+            }
+            let e_char = chr(e);
+            adv();
+            if e == 110 {
+                sfrags.push("\n");
+            } else if e == 114 {
+                sfrags.push("\r");
+            } else if e == 116 {
+                sfrags.push("\t");
+            } else if e == 92 {
+                sfrags.push("\\");
+            } else if e == 34 {
+                sfrags.push("\"");
+            } else if e == 39 {
+                sfrags.push("'");
+            } else if e == 123 {
+                sfrags.push("{");
+            } else if e == 125 {
+                sfrags.push("}");
+            } else if e == 117 {
+                unicode_escape(bsl, bsc);
+                // unicode_escape cannot rebind the caller's string; it leaves
+                // the produced text in the ESC channel, picked up here.
+                sfrags.push(take_esc());
+            } else {
+                throw ["unknown escape '\\" + e_char + "'", bsl, bsc, 2];
+            }
+        } else {
+            // One UTF-8 character: the lead byte plus its continuations, the
+            // oracle's exact multi-byte collection. Invalid encodings raise
+            // the oracle's diagnostic.
+            if c < 128 {
+                sfrags.push(chr(c));
+            } else {
+                let cp = decode_char(POS - 1);
+                if cp < 0 {
+                    throw ["invalid UTF-8 in string literal", sl, sc, 1];
+                }
+                let w = utf8_width(cp);
+                let k = 1;
+                while k < w {
+                    adv();
+                    k += 1;
+                }
+                sfrags.push(chr(cp));
+            }
+        }
+    }
+}
+
+// unicode_escape appends through this channel: Spid3r strings are values, so
+// the helper records the produced text here instead of mutating `s`.
+let ESC = "";
+
+fn take_esc() {
+    let t = ESC;
+    ESC = "";
+    return t;
+}
+
+// A `\u` escape: `\u{XXXXXX}` (1–6 hex digits, any scalar value) or the JSON
+// form `\uXXXX` (4 hex digits, surrogate pairs combine).
+fn unicode_escape(bsl, bsc) {
+    if pk() == 123 {
+        adv();
+        let v = 0;
+        let digits = 0;
+        while true {
+            let c = pk();
+            if c == 125 {
+                adv();
+                break;
+            }
+            if is_hex(c) {
+                if digits == 6 {
+                    throw ["\\u{...} escape takes at most 6 hex digits", bsl, bsc, 2];
+                }
+                v = v * 16 + hex_val(c);
+                digits += 1;
+                adv();
+            } else {
+                throw ["invalid hex digit in \\u{...} escape", bsl, bsc, 2];
+            }
+        }
+        if digits == 0 {
+            throw ["\\u{...} escape needs at least one hex digit", bsl, bsc, 2];
+        }
+        if v <= 1114111 and not (v >= 55296 and v <= 57343) {
+            ESC = chr(v);
+            return;
+        }
+        throw ["\\u{...} escape is not a Unicode scalar value", bsl, bsc, 2];
+    }
+    let hi = hex4(bsl, bsc);
+    if hi >= 55296 and hi <= 56319 {
+        // high surrogate: a `\uXXXX` low surrogate must follow and combine
+        if pk() == 92 and pkat(1) == 117 {
+            adv();
+            adv();
+            let lo = hex4(bsl, bsc);
+            if lo < 56320 or lo > 57343 {
+                throw ["bad surrogate pair in \\uXXXX escape", bsl, bsc, 2];
+            }
+            ESC = chr(65536 + ((hi - 55296) * 1024) + (lo - 56320));
+            return;
+        }
+        throw ["lone high surrogate in \\uXXXX escape", bsl, bsc, 2];
+    }
+    if hi >= 56320 and hi <= 57343 {
+        throw ["lone low surrogate in \\uXXXX escape", bsl, bsc, 2];
+    }
+    ESC = chr(hi);
+}
+
+fn hex4(bsl, bsc) {
+    let v = 0;
+    let i = 0;
+    while i < 4 {
+        let d = hex_val(pk());
+        if d < 0 {
+            throw ["\\uXXXX escape needs 4 hex digits", bsl, bsc, 2];
+        }
+        v = v * 16 + d;
+        adv();
+        i += 1;
+    }
+    return v;
+}
+
+// Raw string literal (`r"..."` / `r#"..."#`): no escapes, no interpolation.
+// Content is decoded UTF-8 straight out of the bytes.
+fn lex_raw_string(sl, sc, start) {
+    adv(); // 'r'
+    let has_hash = false;
+    if pk() == 35 {
+        adv();
+        has_hash = true;
+    }
+    adv(); // opening quote
+    let content_start = POS;
+    while true {
+        let c = adv();
+        if c == -1 {
+            throw ["unterminated raw string literal", sl, sc, 1];
+        }
+        if c == 34 {
+            if has_hash {
+                if pk() == 35 {
+                    let s = text_between(content_start, POS - 1);
+                    if s == null {
+                        throw ["invalid UTF-8 in raw string literal", sl, sc, 1];
+                    }
+                    adv();
+                    let len = POS - start;
+                    if len < 1 {
+                        len = 1;
+                    }
+                    return [K_STR, s, sl, sc, len];
+                }
+            } else {
+                let s = text_between(content_start, POS - 1);
+                if s == null {
+                    throw ["invalid UTF-8 in raw string literal", sl, sc, 1];
+                }
+                let len = POS - start;
+                if len < 1 {
+                    len = 1;
+                }
+                return [K_STR, s, sl, sc, len];
+            }
+        }
+    }
+}
+
+// ------------------------------------------------- interpolation hole scans
+
+// `ident(.ident)*}` starting right after `{`; rewinds and returns null when
+// the text is not exactly that shape.
+fn try_interp_path() {
+    let (p0, l0, c0) = (POS, LINE, COL);
+    let segs = [];
+    while true {
+        let start = POS;
+        if not is_ident_start(pk()) {
+            break;
+        }
+        while is_ident_char(pk()) {
+            adv();
+        }
+        segs.push(bytes_text(start, POS));
+        if pk() == 46 {
+            adv();
+            continue;
+        }
+        break;
+    }
+    let kw = false;
+    for seg in segs {
+        if is_keyword(seg) {
+            kw = true;
+        }
+    }
+    let ok = segs.len() > 0 and not kw and pk() == 125;
+    if not ok or POS == p0 {
+        rewind(p0, l0, c0);
+        return null;
+    }
+    adv(); // the closing `}`
+    return segs;
+}
+
+// `{expr}`: the text between the braces, tracked through nested braces and
+// quoted strings. Returns null (rewinding) when the content is empty, spans a
+// newline, is all digits, or never closes. PHASE-BOUNDARY DIVERGENCE: the
+// oracle additionally parses the capture (hole_is_expression); this port
+// accepts every capture that passes the scan-level checks.
+fn try_interp_expr() {
+    if DEPTH >= MAX_INTERP_DEPTH {
+        return null;
+    }
+    let (p0, l0, c0) = (POS, LINE, COL);
+    let start = POS;
+    let depth = 0;
+    let quote = -1;
+    while true {
+        let c = pk();
+        if c == -1 {
+            break;
+        }
+        if quote >= 0 {
+            if c == 92 {
+                adv();
+            } else if c == quote {
+                quote = -1;
+            } else if c == 10 {
+                break;
+            }
+        } else {
+            if c == 34 or c == 39 {
+                quote = c;
+            } else if c == 123 {
+                depth += 1;
+                if DEPTH + depth > MAX_INTERP_DEPTH {
+                    break;
+                }
+            } else if c == 125 {
+                if depth == 0 {
+                    let raw = text_between(start, POS);
+                    adv(); // the `}`
+                    if raw.trim() == "" {
+                        rewind(p0, l0, c0);
+                        return null;
+                    }
+                    if all_ascii_digits(raw) {
+                        rewind(p0, l0, c0);
+                        return null;
+                    }
+                    return raw;
+                }
+                depth -= 1;
+            } else if c == 10 {
+                break;
+            }
+        }
+        adv();
+    }
+    rewind(p0, l0, c0);
+    return null;
+}
+
+fn all_ascii_digits(raw) {
+    let n = raw.len();
+    let i = 0;
+    while i < n {
+        if not is_digit(ord(raw[i])) {
+            return false;
+        }
+        i += 1;
+    }
+    return true;
+}
+
+// -------------------------------------------------------------------- entry
+
+// Lex `src` into the token model. Throws [msg, line, col, len] on a lexical
+// error, exactly where the oracle's Diagnostic would carry it.
+public fn lex_all(src) {
+    BS = bytes(src);
+    N = BS.len();
+    POS = 0;
+    LINE = 1;
+    COL = 1;
+    DEPTH = 0;
+    // The oracle skips a UTF-8 BOM without moving line/col.
+    if N >= 3 and BS[0] == 239 and BS[1] == 187 and BS[2] == 191 {
+        POS = 3;
+    }
+    let toks = [];
+    while true {
+        let t = next_token();
+        toks.push(t);
+        if t[0] == K_EOF {
+            return toks;
+        }
+    }
+}

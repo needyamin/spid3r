@@ -1,0 +1,78 @@
+// selfhost/lexer/roundtrip.matrix — the Phase-1 model round-trip gate.
+//
+// Reads a token-stream JSON (as the stage-0 oracle writes it), loads it into
+// this port's token model, re-serializes with the same serializer the lexer
+// feeds, and prints the result. Byte-equality with the input proves the
+// serialized oracle tokens re-parse into the Spid3r model without loss
+// (roadmap 1.1).
+//
+// Usage: spid3r run selfhost/lexer/roundtrip.matrix <tokens.json>
+
+import "token";
+import "json";
+
+fn kind_code(name) {
+    let n = KIND_NAMES.len();
+    let i = 0;
+    while i < n {
+        if KIND_NAMES[i] == name {
+            return i;
+        }
+        i += 1;
+    }
+    return -1;
+}
+
+// JSON → model: one token map (with optional "value"/"pieces") becomes the
+// 5-element list the scanner produces.
+fn from_json_token(m) {
+    let k = kind_code(m["kind"]);
+    let value = null;
+    if k == K_INT or k == K_FLOAT {
+        value = m["value"];
+    } else if k == K_BIGINT or k == K_STR or k == K_IDENT or k == K_KW {
+        value = m["value"];
+    } else if k == K_INTERP {
+        let raw = m["pieces"];
+        let pieces = [];
+        let n = raw.len();
+        let i = 0;
+        while i < n {
+            let p = raw[i];
+            if p.has("lit") {
+                pieces.push(["lit", p["lit"]]);
+            } else if p.has("path") {
+                pieces.push(["path", p["path"]]);
+            } else {
+                pieces.push(["hole", p["hole"]]);
+            }
+            i += 1;
+        }
+        value = pieces;
+    }
+    return [k, value, m["line"], m["col"], m["len"]];
+}
+
+fn main() {
+    let a = args();
+    if a.len() != 1 {
+        eprint("usage: roundtrip <tokens.json>\n");
+        return 2;
+    }
+    let r = read_file(a[0]);
+    if r.is_err() {
+        eprint("error[usage]: cannot read '" + a[0] + "'\n");
+        return 2;
+    }
+    let parsed = json_parse(r.unwrap());
+    let raw = parsed["tokens"];
+    let toks = [];
+    let n = raw.len();
+    let i = 0;
+    while i < n {
+        toks.push(from_json_token(raw[i]));
+        i += 1;
+    }
+    print(tokens_json(parsed["file"], toks));
+    return 0;
+}

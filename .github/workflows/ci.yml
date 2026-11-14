@@ -425,6 +425,14 @@ jobs:
         timeout-minutes: 10
         run: bash tools/oracle_dump_check.sh target/release/spid3r
 
-      # Phase 1+ slots the self-host differential harness in here (roadmap
-      # 0.5 DELIV): token/AST parity of selfhost/ vs the stage-0 oracle on the
-      # same corpus. Until then the two gates above are the whole job.
+      # Phase 1 (roadmap 1.2-1.4): the self-host differential harness — the
+      # Spid3r-written lexer vs the stage-0 oracle, token stream by token
+      # stream, over the frozen corpus. One ledger-recorded divergence is
+      # named in the harness (the `{expr}` hole validation that needs the
+      # Phase-2 parser); anything else failing blocks the merge.
+      - name: Self-host lexer parity over the frozen corpus (Phase 1)
+        timeout-minutes: 15
+        run: bash tools/selfhost_lex_parity.sh target/release/spid3r tree
+
+      # Phase 2 slots the parser differential in here (token/AST parity of
+      # selfhost/parser/ vs the stage-0 oracle on the same corpus).
