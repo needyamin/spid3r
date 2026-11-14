@@ -533,6 +533,35 @@ pub extern "C" fn spid3r_value_str(ptr: *const u8, len: usize) -> *mut Value {
     leak(Value::Str(s.into()))
 }
 
+// FFI pointer boundary (SH-7): the two shapes that let `extern fn` move raw
+// pointers. A `ptr` value in Spid3r space is an opaque handle — a boxed i64
+// holding the address — so the value model gains no new variant and no new
+// ownership rule: the C side keeps whatever ownership it had, and the only
+// defined operation on a handle is passing it back to a `ptr` parameter.
+
+/// Wrap a raw C pointer as an opaque handle. The pointer is never dereferenced
+/// here and nothing is freed; `extern fn` return values declared `ptr` arrive
+/// here straight from the C callee.
+#[no_mangle]
+pub extern "C" fn spid3r_value_from_ptr(p: *mut c_void) -> *mut Value {
+    leak(Value::Int(p as usize as i64))
+}
+
+/// Extract the raw pointer from a handle boxed by [`spid3r_value_from_ptr`].
+/// Anything that is not an `Int` handle throws `expected pointer`, exactly
+/// like the other boundary conversions (`expected integer`, `expected string`).
+#[no_mangle]
+pub extern "C" fn spid3r_to_ptr(v: *const Value) -> *mut c_void {
+    match deref(v) {
+        Value::Int(n) => *n as usize as *mut c_void,
+        _ => {
+            let msg = leak(Value::Str("expected pointer".into()));
+            rt_throw_ptr(msg);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
 // extern "C" trampolines — operators
 // ----------------------------------------------------------------------------

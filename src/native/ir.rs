@@ -517,6 +517,9 @@ pub struct Ir<'ctx> {
     /// `extern fn` declarations, by Spidr name. These are C symbols the
     /// linker resolves, not runtime trampolines.
     externs: HashMap<String, FunctionValue<'ctx>>,
+    /// The declared boundary types behind [`Ir::externs`], recorded by
+    /// `declare_externs` so marshalling can tell `string` from `ptr`.
+    extern_sigs: HashMap<String, ExternSig>,
     tmp: usize,
     fn_counter: usize,
     /// Phase 3: set while a hybrid compare's SLOW arm recompiles the original
@@ -524,6 +527,16 @@ pub struct Ir<'ctx> {
     /// slow arm must emit the fully generic lowering — re-entering the hybrid
     /// path would recurse forever).
     hybrid_off: bool,
+}
+
+/// Declared boundary types of one `extern fn` (SH-7). Marshalling dispatches
+/// on these names, not on the LLVM type alone: `string` and `ptr` both lower
+/// to an LLVM pointer, but a `string` argument is copied into a C buffer and
+/// freed after the call, while a `ptr` argument travels through untouched.
+#[derive(Clone)]
+struct ExternSig {
+    params: Vec<String>,
+    ret: Option<String>,
 }
 
 /// Signature of compiled Spid3r functions.
@@ -554,6 +567,7 @@ impl<'ctx> Ir<'ctx> {
             strings: HashMap::new(),
             tramps: HashMap::new(),
             externs: HashMap::new(),
+            extern_sigs: HashMap::new(),
             tmp: 0,
             fn_counter: 0,
         }
@@ -3515,18 +3529,22 @@ impl<'ctx> Ir<'ctx> {
 
     /// LLVM type for a declared C parameter or return type.
     ///
-    /// Only the four shapes the FFI contract allows cross the boundary:
+    /// Only the six shapes the FFI contract allows cross the boundary:
     /// `int` (i64), `float` (f64), `bool` (i8 — the C ABI width, not LLVM's
-    /// i1) and `string` (`char*`). Anything else is refused with the reason
-    /// instead of being marshalled as a pointer and crashing later.
+    /// i1), `string` (`char*`), `ptr` (`void*` — the opaque i64-encoded
+    /// handle of SH-7) and `usize` (`size_t`, ABI-identical to int). Anything
+    /// else is refused with the reason instead of being marshalled as a
+    /// pointer and crashing later.
     fn c_type(&self, t: &crate::ast::TypeExpr, who: &str) -> IrResult<BasicTypeEnum<'ctx>> {
         match t.name.as_str() {
             "int" => Ok(self.i64_ty().into()),
             "float" => Ok(self.ctx.f64_type().into()),
             "bool" => Ok(self.i8_ty().into()),
             "string" => Ok(self.ptr_ty().into()),
+            "ptr" => Ok(self.ptr_ty().into()),
+            "usize" => Ok(self.i64_ty().into()),
             other => Err(format!(
-                "extern fn '{who}': cannot pass '{other}' to C (supported: int, float, bool, string)"
+                "extern fn '{who}': cannot pass '{other}' to C (supported: int, float, bool, string, ptr, usize)"
             )),
         }
     }
@@ -3546,17 +3564,27 @@ impl<'ctx> Ir<'ctx> {
                 return Err("extern fn needs a name".to_string());
             }
             let mut params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = Vec::new();
+            let mut param_types: Vec<String> = Vec::new();
             for p in &f.params {
                 let te = p.ty.as_ref().ok_or_else(|| {
-                    format!("extern fn '{name}': every parameter needs a type (int, float, bool, string)")
+                    format!("extern fn '{name}': every parameter needs a type (int, float, bool, string, ptr, usize)")
                 })?;
                 params.push(self.c_type(te, &name)?.into());
+                param_types.push(te.name.clone());
             }
+            let ret_type = f.ret.as_ref().map(|te| te.name.clone());
             let ft = match f.ret.as_ref() {
                 Some(te) => self.c_type(te, &name)?.fn_type(&params, false),
                 None => self.ctx.void_type().fn_type(&params, false),
             };
             let fv = self.module.add_function(&name, ft, Some(Linkage::External));
+            self.extern_sigs.insert(
+                name.clone(),
+                ExternSig {
+                    params: param_types,
+                    ret: ret_type,
+                },
+            );
             self.externs.insert(name, fv);
         }
         Ok(())
@@ -3580,12 +3608,22 @@ impl<'ctx> Ir<'ctx> {
             ));
         }
 
+        let sig = self.extern_sigs.get(name).cloned();
+
         let mut raw: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             Vec::with_capacity(args.len());
         // C strings handed to the callee must be released after it returns.
         let mut free_after: Vec<PointerValue<'ctx>> = Vec::new();
-        for (arg, pt) in args.iter().zip(ptypes.iter()) {
+        for ((i, arg), pt) in args.iter().enumerate().zip(ptypes.iter()) {
             let v = self.compile_expr(arg)?;
+            // The declared name decides the marshalling shape: `string` and
+            // `ptr` are both LLVM pointers, but only a string is copied into
+            // a C buffer and freed after the call; a `ptr` argument travels
+            // through untouched (SH-7).
+            let declared = sig
+                .as_ref()
+                .and_then(|s| s.params.get(i))
+                .map(|t| t.as_str());
             let meta: inkwell::values::BasicMetadataValueEnum<'ctx> = match pt {
                 inkwell::types::BasicMetadataTypeEnum::IntType(t) if t.get_bit_width() == 64 => {
                     let f = self.tramp(
@@ -3623,6 +3661,19 @@ impl<'ctx> Ir<'ctx> {
                         Some(self.ctx.f64_type().into()),
                     );
                     call_float(self.emit_call(f, &[v.into()], "ffi.f")).into()
+                }
+                inkwell::types::BasicMetadataTypeEnum::PointerType(_)
+                    if declared == Some("ptr") =>
+                {
+                    // An opaque handle passes through: the raw pointer the
+                    // script holds goes to C untouched, and nothing is freed
+                    // after the call — the C side owns the memory (SH-7).
+                    let f = self.tramp(
+                        "spid3r_to_ptr",
+                        &[self.ptr_ty().into()],
+                        Some(self.ptr_ty().into()),
+                    );
+                    call_ptr(self.emit_call(f, &[v.into()], "ffi.p")).into()
                 }
                 inkwell::types::BasicMetadataTypeEnum::PointerType(_) => {
                     let f = self.tramp(
@@ -3685,6 +3736,19 @@ impl<'ctx> Ir<'ctx> {
                     Some(self.ptr_ty().into()),
                 );
                 Ok(call_ptr(self.emit_call(f, &[x.into()], "ffi.boxf")))
+            }
+            Some(BasicTypeEnum::PointerType(_))
+                if sig.as_ref().and_then(|s| s.ret.as_deref()) == Some("ptr") =>
+            {
+                // A `ptr` return boxes the raw pointer as an opaque i64
+                // handle (SH-7): no C-string copy, no ownership taken.
+                let p = call_ptr(call);
+                let f = self.tramp(
+                    "spid3r_value_from_ptr",
+                    &[self.ptr_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[p.into()], "ffi.boxp")))
             }
             Some(BasicTypeEnum::PointerType(_)) => {
                 let p = call_ptr(call);

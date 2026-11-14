@@ -2447,6 +2447,11 @@ impl Checker {
             "bool" => Ty::Bool,
             "string" => Ty::Str,
             "null" => Ty::Null,
+            // FFI boundary types (SH-7, docs/FFI.md): `usize` is ABI-identical
+            // to int and checks like one; `ptr` stays opaque — the runtime
+            // marshalling, not the checker, rejects a non-handle argument.
+            "usize" => Ty::Int,
+            "ptr" => Ty::Any,
             "list" | "vec" | "stack" | "queue" | "deque" | "linked_list" | "singly_linked_list"
             | "doubly_linked_list" | "map" | "set" | "tuple" | "binary_tree" | "bst" | "heap"
             | "priority_queue" | "graph" | "hash_table" | "trie" | "matrix" | "vector"
@@ -2932,6 +2937,8 @@ impl Checker {
             "float",
             "bool",
             "string",
+            "ptr",
+            "usize",
             "null",
             "list",
             "vec",
