@@ -1,8 +1,0 @@
-import "lexer";
-fn main() {
-    let a = args();
-    let r = read_file(a[0]);
-    let toks = lex_all(r.unwrap());
-    println("tokens: " + string(toks.len()));
-    return 0;
-}
