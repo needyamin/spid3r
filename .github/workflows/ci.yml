@@ -440,3 +440,10 @@ jobs:
       - name: Self-host parser parity over the frozen corpus (Phase 2)
         timeout-minutes: 15
         run: bash tools/selfhost_parse_parity.sh target/release/spid3r tree
+
+      # Phase 3: the Spid3r-written semantic checker vs the stage-0 oracle —
+      # declaration-registry JSON byte-identical on the positives, first
+      # diagnostic + span parity on the negatives.
+      - name: Self-host semantic parity over the frozen corpus (Phase 3)
+        timeout-minutes: 15
+        run: bash tools/selfhost_semantic_parity.sh target/release/spid3r tree

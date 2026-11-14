@@ -213,6 +213,268 @@ pub fn check_file_with(
     c.check_program(program).map(|_| ())
 }
 
+/// The declaration registry as deterministic JSON (SH-5 oracle tooling,
+/// roadmap 3.1): classes, interfaces, enums, top-level functions and imports,
+/// emitted in source order. The check runs first — a file that does not check
+/// has no registry. The self-host checker (selfhost/semantic.matrix) must
+/// produce byte-identical output; consumed by
+/// tools/selfhost_semantic_parity.sh.
+pub fn registry_json(
+    program: &Program,
+    is_main: bool,
+    source_file: &str,
+) -> Result<String, Diagnostic> {
+    let mut c = Checker::new(is_main, source_file);
+    seed_plugin_externals(&mut c);
+    c.check_program(program)?;
+
+    fn jstr(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for ch in s.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    fn opt_str(v: &Option<String>) -> String {
+        match v {
+            Some(s) => jstr(s),
+            None => "null".to_string(),
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str("{\"file\":");
+    out.push_str(&jstr(source_file));
+    out.push_str(",\"classes\":[");
+    let mut first = true;
+    for s in &program.stmts {
+        if let crate::ast::Stmt::Class(cl) = s {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str("{\"name\":");
+            out.push_str(&jstr(&cl.name));
+            out.push_str(&format!(
+                ",\"vis\":\"{}\"",
+                if cl.vis == crate::ast::Vis::Public {
+                    "public"
+                } else {
+                    "private"
+                }
+            ));
+            out.push_str(&format!(",\"is_abstract\":{}", cl.is_abstract));
+            out.push_str(",\"abstracts\":[");
+            for (i, a) in cl.abstracts.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&jstr(a));
+            }
+            out.push_str("],\"parent\":");
+            out.push_str(&opt_str(&cl.parent));
+            out.push_str(",\"interfaces\":[");
+            for (i, a) in cl.interfaces.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&jstr(a));
+            }
+            out.push_str("],\"type_params\":[");
+            for (i, a) in cl.type_params.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&jstr(a));
+            }
+            out.push_str("],\"fields\":[");
+            for (i, f) in cl.fields.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"name\":{},\"vis\":\"{}\"}}",
+                    jstr(&f.name),
+                    if f.vis == crate::ast::Vis::Public {
+                        "public"
+                    } else {
+                        "private"
+                    }
+                ));
+            }
+            out.push_str("],\"methods\":[");
+            for (i, m) in cl.methods.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                let mname = m.name.clone().unwrap_or_default();
+                out.push_str(&format!(
+                    "{{\"name\":{},\"vis\":\"{}\",\"arity\":{},\"min_arity\":{},\"is_async\":{}}}",
+                    jstr(&mname),
+                    if m.vis == crate::ast::Vis::Public {
+                        "public"
+                    } else {
+                        "private"
+                    },
+                    m.params.len(),
+                    m.min_arity(),
+                    m.is_async
+                ));
+            }
+            out.push_str("]}");
+        }
+    }
+    out.push_str("],\"interfaces\":[");
+    let mut first = true;
+    for s in &program.stmts {
+        if let crate::ast::Stmt::Interface(i) = s {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str("{\"name\":");
+            out.push_str(&jstr(&i.name));
+            out.push_str(&format!(
+                ",\"vis\":\"{}\"",
+                if i.vis == crate::ast::Vis::Public {
+                    "public"
+                } else {
+                    "private"
+                }
+            ));
+            out.push_str(",\"methods\":[");
+            for (n, (mname, params, _, _)) in i.methods.iter().enumerate() {
+                if n > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"name\":{},\"arity\":{}}}",
+                    jstr(mname),
+                    params.len()
+                ));
+            }
+            out.push_str("],\"defaults\":[");
+            for (n, dm) in i.default_methods.iter().enumerate() {
+                if n > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"name\":{},\"arity\":{}}}",
+                    jstr(dm.name.as_deref().unwrap_or("")),
+                    dm.params.len()
+                ));
+            }
+            out.push_str("]}");
+        }
+    }
+    out.push_str("],\"enums\":[");
+    let mut first = true;
+    for s in &program.stmts {
+        if let crate::ast::Stmt::Enum(e) = s {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str("{\"name\":");
+            out.push_str(&jstr(&e.name));
+            out.push_str(&format!(
+                ",\"vis\":\"{}\"",
+                if e.vis == crate::ast::Vis::Public {
+                    "public"
+                } else {
+                    "private"
+                }
+            ));
+            out.push_str(",\"variants\":[");
+            for (n, v) in e.variants.iter().enumerate() {
+                if n > 0 {
+                    out.push(',');
+                }
+                out.push_str(&format!(
+                    "{{\"name\":{},\"nfields\":{}}}",
+                    jstr(&v.name),
+                    v.fields.len()
+                ));
+            }
+            out.push_str("]}");
+        }
+    }
+    out.push_str("],\"functions\":[");
+    let mut first = true;
+    for s in &program.stmts {
+        if let crate::ast::Stmt::Fn(f) = s {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            let name = f.name.clone().unwrap_or_default();
+            out.push_str("{\"name\":");
+            out.push_str(&jstr(&name));
+            out.push_str(&format!(
+                ",\"vis\":\"{}\"",
+                if f.vis == crate::ast::Vis::Public {
+                    "public"
+                } else {
+                    "private"
+                }
+            ));
+            out.push_str(&format!(
+                ",\"is_async\":{},\"is_extern\":{}",
+                f.is_async, f.is_extern
+            ));
+            out.push_str(&format!(
+                ",\"arity\":{},\"min_arity\":{}",
+                f.params.len(),
+                f.min_arity()
+            ));
+            out.push_str(",\"param_names\":[");
+            for (i, p) in f.params.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&jstr(&p.name));
+            }
+            out.push_str("],\"ret\":");
+            out.push_str(&match &f.ret {
+                Some(t) => jstr(&t.name),
+                None => "null".to_string(),
+            });
+            out.push('}');
+        }
+    }
+    out.push_str("],\"imports\":[");
+    let mut first = true;
+    for s in &program.stmts {
+        if let crate::ast::Stmt::Import { path, alias, .. } = s {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+            out.push_str("{\"path\":");
+            out.push_str(&jstr(path));
+            out.push_str(",\"alias\":");
+            out.push_str(&opt_str(alias));
+            out.push('}');
+        }
+    }
+    out.push_str(
+        "]}
+",
+    );
+    Ok(out)
+}
+
 /// Names a chunk of code binds at its top level. The REPL uses this to carry
 /// bindings from one line to the next.
 pub fn declared_names(program: &Program) -> Vec<String> {

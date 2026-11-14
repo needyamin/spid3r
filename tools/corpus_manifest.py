@@ -130,11 +130,26 @@ def build() -> int:
     if not EXAMPLES_DIR.is_dir():
         print("missing examples/", file=sys.stderr)
         return 1
-    n_examples = 0
+    # The runnable examples plus their library siblings: a corpus file that
+    # imports a sibling module cannot check (let alone run) without it — the
+    # modules.matrix/math_util.matrix pair (ledger 2026-11-14, Phase 3).
+    # Imports of stdlib modules ("web", "dataframe", ...) resolve from
+    # stdlib/ and need no sibling here.
+    included = []
     for f in sorted(EXAMPLES_DIR.glob("*.matrix")):
+        if "fn main" in f.read_text(encoding="utf-8"):
+            included.append(f)
+    import re as _re
+    specs = set()
+    for run in included:
+        for m in _re.finditer(r'import\s+"([\w_]+)"\s*;', run.read_text(encoding="utf-8")):
+            specs.add(m.group(1))
+    for f in sorted(EXAMPLES_DIR.glob("*.matrix")):
+        if f not in included and f.stem in specs:
+            included.append(f)
+    n_examples = 0
+    for f in sorted(included):
         text = f.read_text(encoding="utf-8")
-        if "fn main" not in text:
-            continue
         n_examples += 1
         header = GENERATED_HEADER.format(source="examples/" + f.name)
         out = CORPUS / "examples" / f.name

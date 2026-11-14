@@ -25,18 +25,19 @@ import "lexer";
 import "lexer_json";
 import "ast";
 import "parser";
+import "semantic";
 
 fn main() {
     set_hole_check(hole_check);
     let a = args();
     if a.len() != 2 {
-        eprint("usage: main tokens|parse <file.matrix>\n");
+        eprint("usage: main tokens|parse|check|registry <file.matrix>\n");
         return 2;
     }
     let mode = a[0];
     let path = a[1];
-    if mode != "tokens" and mode != "parse" {
-        eprint("error[usage]: unknown mode '" + mode + "' (tokens|parse)\n");
+    if mode != "tokens" and mode != "parse" and mode != "check" and mode != "registry" {
+        eprint("error[usage]: unknown mode '" + mode + "' (tokens|parse|check|registry)\n");
         return 2;
     }
     if not file_exists(path) {
@@ -54,8 +55,12 @@ fn main() {
     try {
         toks = lex_all(src);
     } catch (e) {
+        let pth = path;
+        if e.len() >= 6 {
+            pth = e[5];
+        }
         eprint("error[lexer]: " + e[0] + "\n");
-        eprint("  --> " + path + ":" + string(e[1]) + ":" + string(e[2]) + "\n");
+        eprint("  --> " + pth + ":" + string(e[1]) + ":" + string(e[2]) + "\n");
         return 1;
     }
 
@@ -64,21 +69,64 @@ fn main() {
         return 0;
     }
 
+    let prog = null;
     try {
         let st = new_state(toks);
-        let prog = parse_program(st);
-        print(program_to_json(path, prog));
-        return 0;
-    } catch (e) {
-        // The oracle reports one parse error under the lexer phase (a bare
-        // 9223372036854775808 literal in expression position) — the throw
-        // carries the phase tag.
+        prog = parse_program(st);
+    } catch (e2) {
         let phase = "parser";
-        if e.len() >= 5 {
-            phase = e[4];
+        if e2.len() >= 5 {
+            phase = e2[4];
         }
-        eprint("error[" + phase + "]: " + e[0] + "\n");
-        eprint("  --> " + path + ":" + string(e[1]) + ":" + string(e[2]) + "\n");
+        let pth = path;
+        if e2.len() >= 6 {
+            pth = e2[5];
+        }
+        eprint("error[" + phase + "]: " + e2[0] + "\n");
+        eprint("  --> " + pth + ":" + string(e2[1]) + ":" + string(e2[2]) + "\n");
         return 1;
     }
+
+    if mode == "parse" {
+        print(program_to_json(path, prog));
+        return 0;
+    }
+
+    // `check` and `registry`: the Phase-3 semantic surfaces. The oracle's
+    // error shape is `error[semantic]: msg` + the span line; the type-
+    // mismatch diagnostics carry an `= help:` line the oracle renders after
+    // the caret (decoration — carried here inside the message on a marker).
+    let has_main = false;
+    for s in prog[0] {
+        if s[0] == "Fn" and s[1][4] == "main" {
+            has_main = true;
+        }
+    }
+    let cst = new_checker(has_main, path);
+    try {
+        check_program(cst, prog);
+    } catch (e3) {
+        let phase = "semantic";
+        if e3.len() >= 5 {
+            phase = e3[4];
+        }
+        let pth = path;
+        if e3.len() >= 6 {
+            pth = e3[5];
+        }
+        eprint("error[" + phase + "]: " + msg_of(e3) + "\n");
+        if e3[1] >= 0 {
+            eprint("  --> " + pth + ":" + string(e3[1]) + ":" + string(e3[2]) + "\n");
+        }
+        let h = help_of(e3);
+        if h != null {
+            eprint("  = help: " + h + "\n");
+        }
+        return 1;
+    }
+    if mode == "check" {
+        return 0;
+    }
+    print(registry_json(cst, prog, path));
+    return 0;
 }

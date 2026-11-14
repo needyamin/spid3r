@@ -1,0 +1,3052 @@
+// selfhost/semantic.matrix — the Spid3r-written semantic checker
+// (roadmap Phase 3, docs/SELFHOST.md SH-5).
+//
+// A port of src/semantic/mod.rs + ty.rs over the Phase-2 AST node model.
+// Parity surfaces (all byte-for-byte against the stage-0 oracle):
+//   * the first check diagnostic — `error[semantic]: msg` + span line — on
+//     every corpus negative and fuzz case;
+//   * the declaration registry JSON (`registry` mode here,
+//     `check --dump-registry-json` in the oracle), on every corpus positive.
+//
+// Scoping decisions (ledger 2026-11-14, Phase 3):
+//   * lint WARNINGS (unused-*, unreachable code, explicit main call) are not
+//     ported — the Phase 3 gates gate ERRORS and the registry, not warnings;
+//     pop_scope therefore just pops.
+//   * module resolution covers the corpus's needs: sibling files and the
+//     stdlib/ root; SPID3R_PATH roots are not followed (the parity runs
+//     happen from the repo root).
+//
+// Types are tagged lists: ["Any"] ["Int"] ["Float"] ["Bool"] ["Str"] ["Null"]
+// ["Coll", name, elem-or-null] ["Class", name] ["Interface", name]
+// ["Nullable", inner] ["Union", members] ["Fn", sig-or-null]; a signature is
+// [arity, min_arity, params, ret]. Deep == on lists is the type equality.
+
+import "token";
+import "ast";
+import "lexer";
+import "parser";
+import "lexer_json";
+
+// ------------------------------------------------------------- builtins
+
+const BUILTIN_CONSTRUCTORS = [
+    "list", "vec", "stack", "queue", "deque", "linked_list", "singly_linked_list",
+    "doubly_linked_list", "map", "set", "tuple", "binary_tree", "bst", "heap",
+    "priority_queue", "graph", "hash_table", "trie", "matrix", "matrix_from_list",
+    "vector", "bytes", "ring_buffer", "bag", "ref", "channel", "mutex",
+    "some", "none", "ok", "err",
+];
+
+const BUILTIN_FUNCTIONS = [
+    "print", "println", "assert", "assert_eq", "weak", "deref", "eprint", "read_line",
+    "read_file", "write_file", "write_file_atomic", "file_exists", "file_delete",
+    "remove_file", "rename", "copy_file", "list_dir", "is_dir", "is_file", "file_size",
+    "file_mtime", "cwd", "chdir", "exe_path", "env_set", "path_join", "basename",
+    "dirname", "path_ext", "is_ok", "is_err", "dir_create", "dir_remove", "sleep_ms",
+    "now", "env", "args", "gui_args", "spawn_process", "run_payload",
+    "run_payload_strict", "exec_capture", "yield", "task_count", "len", "abs", "sqrt",
+    "pow", "min", "max", "clamp", "floor", "ceil", "round", "trunc", "sign", "exp",
+    "ln", "log10", "log2", "sin", "cos", "tan", "asin", "acos", "atan", "is_nan",
+    "is_inf", "atan2", "hypot", "float_or", "nan", "inf", "random_float",
+    "random_normal", "sha256", "sha512", "ed25519_keypair", "ed25519_sign",
+    "ed25519_verify", "hmac_sha256", "pbkdf2_sha256", "secure_compare", "random_bytes",
+    "chr", "ord", "crc32", "adler32", "deflate", "inflate", "gzip_compress", "gunzip",
+    "zlib_compress", "unzlib", "zip_create", "zip_read", "zip_list", "msgpack_encode",
+    "msgpack_decode", "cbor_encode", "cbor_decode", "pb_encode", "pb_decode", "fft",
+    "ifft", "scrypt", "redis_close", "redis_command", "redis_connect", "pg_close",
+    "pg_exec", "pg_query", "pg_connect", "mysql_close", "mysql_exec", "mysql_query",
+    "mysql_connect", "argon2", "bcrypt_hash", "bcrypt_verify", "png_decode",
+    "png_encode", "wav_decode", "wav_encode", "pdf_write", "pdf_escape",
+    "base64_encode", "base64_decode", "base64_url_encode", "base64_url_decode",
+    "hex_encode", "hex_decode", "base32_encode", "base32_decode", "int", "float",
+    "string", "bool", "bit_and", "bit_or", "bit_xor", "shl", "shr", "random_int",
+    "json_parse", "json_write", "spid3rinfo", "config_get", "config_set",
+    "config_reload", "type_of", "is_failure", "gc_collect", "gc_live_cells",
+    "tcp_listen", "tcp_accept", "tcp_accept_timeout", "tcp_connect", "tcp_read",
+    "tcp_read_exact", "tcp_write_bytes", "tcp_write", "tcp_close", "tcp_local_addr",
+    "tcp_peer_addr", "tcp_set_timeout", "tcp_poll", "tcp_recv_to_file", "tcp_send_file",
+    "ws_connect", "ws_accept", "ws_send", "ws_send_bytes", "ws_recv", "ws_close",
+    "udp_bind", "udp_local_addr", "udp_send_to", "udp_recv_from", "udp_join_multicast",
+    "udp_leave_multicast", "udp_set_multicast_ttl", "udp_set_broadcast", "udp_close",
+    "http_read_request", "http_write_response", "http_fetch", "__http_fetch",
+    "multipart_parse", "__multipart_parse", "multipart_build", "__multipart_build",
+    "shutdown_requested", "request_shutdown", "reset_shutdown", "url_decode",
+    "url_encode", "read_bytes", "bytes_concat", "write_bytes", "save_npy", "load_npy",
+    "read_csv", "parse_csv", "write_csv", "regex_match", "regex_find", "regex_find_all",
+    "regex_replace", "unix_time", "now_ms", "elapsed_ms", "unix_ms", "datetime_parts",
+    "datetime_from_parts", "format_datetime", "tz_names", "tz_info", "tz_parts",
+    "tz_from_parts", "tz_format", "tz_version", "unicode_normalize",
+    "unicode_is_normalized", "unicode_casefold", "unicode_strip_marks",
+    "unicode_combining_class", "unicode_version", "db_open",
+];
+
+let CONS_MAP = null;
+let FUNCS_MAP = null;
+
+fn builtin_maps() {
+    if CONS_MAP == null {
+        let m1 = map();
+        for x in BUILTIN_CONSTRUCTORS {
+            m1[x] = 1;
+        }
+        let m2 = map();
+        for x in BUILTIN_FUNCTIONS {
+            m2[x] = 1;
+        }
+        CONS_MAP = m1;
+        FUNCS_MAP = m2;
+    }
+}
+
+// The Type list names for known builtin types (check_type_name's TYPES).
+const KNOWN_TYPES = [
+    "int", "float", "bool", "string", "ptr", "usize", "null", "list", "vec", "stack",
+    "queue", "deque", "linked_list", "singly_linked_list", "doubly_linked_list", "map",
+    "set", "tuple", "binary_tree", "bst", "heap", "priority_queue", "graph",
+    "hash_table", "trie", "matrix", "vector", "bytes", "ring_buffer", "bag", "ref",
+    "option", "result", "task", "channel", "mutex", "any",
+];
+
+const COLL_TYPES = [
+    "list", "vec", "stack", "queue", "deque", "linked_list", "singly_linked_list",
+    "doubly_linked_list", "map", "set", "tuple", "binary_tree", "bst", "heap",
+    "priority_queue", "graph", "hash_table", "trie", "matrix", "vector", "bytes",
+    "ring_buffer", "bag", "ref", "option", "result", "task", "channel", "mutex",
+    "some", "none", "ok", "err",
+];
+
+// builtin_return_type: the precise static types of a handful of builtins.
+fn builtin_return_type(name) {
+    if name == "int" or name == "len" or name == "abs" or name == "random_int"
+        or name == "now" or name == "now_ms" or name == "elapsed_ms" or name == "unix_time"
+        or name == "unix_ms" {
+        return ["Int"];
+    }
+    if name == "float" or name == "sqrt" or name == "pow" or name == "clamp"
+        or name == "floor" or name == "ceil" or name == "round" or name == "trunc"
+        or name == "sign" or name == "exp" or name == "ln" or name == "log10"
+        or name == "log2" or name == "sin" or name == "cos" or name == "tan"
+        or name == "asin" or name == "acos" or name == "atan" or name == "atan2"
+        or name == "hypot" or name == "float_or" or name == "nan" or name == "inf"
+        or name == "random_float" or name == "random_normal" {
+        return ["Float"];
+    }
+    if name == "is_nan" or name == "is_inf" or name == "is_ok" or name == "is_err" {
+        return ["Bool"];
+    }
+    if name == "secure_compare" or name == "ed25519_verify" {
+        return ["Bool"];
+    }
+    if name == "string" {
+        return ["Str"];
+    }
+    if name == "bit_and" or name == "bit_or" or name == "bit_xor" or name == "shl" or name == "shr" {
+        return ["Int"];
+    }
+    if name == "sha256" or name == "sha512" or name == "hmac_sha256"
+        or name == "pbkdf2_sha256" or name == "ed25519_sign" {
+        return ["Str"];
+    }
+    if name == "crc32" or name == "adler32" {
+        return ["Int"];
+    }
+    if name == "scrypt" or name == "argon2" or name == "bcrypt_hash" {
+        return ["Str"];
+    }
+    if name == "bcrypt_verify" {
+        return ["Bool"];
+    }
+    if name == "chr" {
+        return ["Str"];
+    }
+    if name == "ord" {
+        return ["Int"];
+    }
+    if name == "base64_encode" or name == "base64_url_encode" {
+        return ["Str"];
+    }
+    if name == "bool" {
+        return ["Bool"];
+    }
+    if name == "type_of" {
+        return ["Str"];
+    }
+    if name == "is_failure" {
+        return ["Bool"];
+    }
+    return null;
+}
+
+// ------------------------------------------------------------------- state
+
+// st = [classes, interfaces, funcs, scopes, loop_depth, fn_depth, in_async,
+//        in_main_fn, current_class, current_ret, is_main, source_file,
+//        predeclared, enums, variant_enum, unexported, type_params]
+// classes:  map name -> ["CI", parent, interfaces, fields, methods, is_abstract, abstracts]
+//           fields:  map name -> [vis, raw-ty-or-null]
+//           methods: map name -> [vis, raw-params, param_names, raw-ret, min_arity]
+// interfaces: map name -> map mname -> [arity, raw-ret]
+// funcs:    map name -> [arity, min_arity, raw-params, param_names, raw-ret]
+// scopes:   list of maps name -> [is_const, cls-or-null, ty-or-null, is_import,
+//                                 kind, used, import_consts-or-null]
+public fn new_checker(is_main, source_file) {
+    builtin_maps();
+    return [
+        map(), map(), map(), [map()], 0, 0, false, false, null, null,
+        is_main, source_file, map(), map(), map(), map(), [], 0,
+    ];
+}
+
+fn classes_of(st) { return st[0]; }
+fn interfaces_of(st) { return st[1]; }
+fn funcs_of(st) { return st[2]; }
+fn scopes_of(st) { return st[3]; }
+
+fn err_at_sp(sp, msg) {
+    throw [msg, sp[0], sp[1], sp[2]];
+}
+
+fn chk_err(st, sp, msg) {
+    err_at_sp(sp, msg);
+}
+
+// The type-mismatch diagnostic's actionable help (the oracle's `= help:` line
+// is decoration; the message itself is the parity surface).
+fn mismatch(sp, msg) {
+    err_at_sp(sp, msg + "\u{1}HELP\u{1}annotations are checked before the program runs; use `any` to opt out, or convert explicitly with string(x) / int(x) / float(x)");
+}
+
+// The help marker travels inside the message; main.matrix splits it off into
+// the oracle's `= help:` line shape.
+fn find_marker(m) {
+    let n = m.len();
+    let i = 0;
+    while i + 6 <= n {
+        if ord(m[i]) == 1 and m.slice(i + 1, i + 5) == "HELP" and ord(m[i + 5]) == 1 {
+            return i;
+        }
+        i += 1;
+    }
+    return -1;
+}
+
+public fn msg_of(e) {
+    let m = e[0];
+    let i = find_marker(m);
+    if i >= 0 {
+        return m.slice(0, i);
+    }
+    return m;
+}
+
+public fn help_of(e) {
+    let m = e[0];
+    let i = find_marker(m);
+    if i >= 0 {
+        return m.slice(i + 6, m.len());
+    }
+    return null;
+}
+
+fn unknown_name(st, sp, name) {
+    let u = st[15];
+    if u.has(name) {
+        let d = u[name];
+        chk_err(st, sp, name + " is declared in " + d[0] + " but not exported — mark it `public " + d[1] + "`");
+    }
+    chk_err(st, sp, "unknown name '" + name + "'");
+}
+
+// ------------------------------------------------------------- Ty helpers
+
+fn ty_any() { return ["Any"]; }
+
+fn ty_name(t) {
+    let tag = t[0];
+    if tag == "Any" { return "any"; }
+    if tag == "Int" { return "int"; }
+    if tag == "Float" { return "float"; }
+    if tag == "Bool" { return "bool"; }
+    if tag == "Str" { return "string"; }
+    if tag == "Null" { return "null"; }
+    if tag == "Coll" {
+        if t[2] != null {
+            return t[1] + "<" + ty_name(t[2]) + ">";
+        }
+        return t[1];
+    }
+    if tag == "Class" { return t[1]; }
+    if tag == "Interface" { return t[1]; }
+    if tag == "Nullable" {
+        return ty_name(t[1]) + "?";
+    }
+    if tag == "Union" {
+        let parts = [];
+        for m in t[1] {
+            parts.push(ty_name(m));
+        }
+        return parts.join(" | ");
+    }
+    if tag == "Fn" { return "function"; }
+    return "any";
+}
+
+fn ty_detail_name(t) {
+    if t[0] == "Fn" and t[1] != null {
+        let sig = t[1];
+        let parts = [];
+        for p in sig[2] {
+            if p != null {
+                parts.push(ty_name(p));
+            } else {
+                parts.push("any");
+            }
+        }
+        let ret = "any";
+        if sig[3] != null {
+            ret = ty_name(sig[3]);
+        }
+        return "fn(" + parts.join(", ") + ") -> " + ret;
+    }
+    return ty_name(t);
+}
+
+fn common_type(a, b) {
+    if a == b {
+        return a;
+    }
+    if a[0] == "Any" or b[0] == "Any" {
+        return ["Any"];
+    }
+    if a[0] == "Null" {
+        return b;
+    }
+    if b[0] == "Null" {
+        return a;
+    }
+    if (a[0] == "Int" and b[0] == "Float") or (a[0] == "Float" and b[0] == "Int") {
+        return ["Float"];
+    }
+    return ["Any"];
+}
+
+// -------------------------------------------------------- registry lookups
+
+fn declare(st, name, sp, info) {
+    info[6] = sp;
+    let scope = st[3][st[3].len() - 1];
+    if scope.has(name) {
+        chk_err(st, sp, "'" + name + "' is already declared in this scope");
+    }
+    scope[name] = info;
+}
+
+fn lookup(st, name) {
+    let scopes = st[3];
+    let i = scopes.len() - 1;
+    while i >= 0 {
+        if scopes[i].has(name) {
+            return scopes[i][name];
+        }
+        i -= 1;
+    }
+    return null;
+}
+
+fn known(st, name) {
+    if lookup(st, name) != null {
+        return true;
+    }
+    if funcs_of(st).has(name) {
+        return true;
+    }
+    if classes_of(st).has(name) {
+        return true;
+    }
+    if interfaces_of(st).has(name) {
+        return true;
+    }
+    if name == "Object" or name == "none" {
+        return true;
+    }
+    if CONS_MAP.has(name) {
+        return true;
+    }
+    if FUNCS_MAP.has(name) {
+        return true;
+    }
+    return false;
+}
+
+fn mark_used(st, name) {
+    let scopes = st[3];
+    let i = scopes.len() - 1;
+    while i >= 0 {
+        if scopes[i].has(name) {
+            scopes[i][name][5] = true;
+            return;
+        }
+        i -= 1;
+    }
+}
+
+fn push_scope(st) {
+    st[3].push(map());
+}
+
+fn pop_scope(st) {
+    // Lint warnings are not ported (ledger, Phase 3): the scope just pops.
+    let _ = st[3].pop();
+}
+
+// Field visibility + declaring cls through the inheritance chain.
+fn field_decl(st, cls, field) {
+    let cur = cls;
+    let seen = map();
+    while cur != null {
+        if seen.has(cur) {
+            return null;
+        }
+        seen[cur] = 1;
+        if not classes_of(st).has(cur) {
+            return null;
+        }
+        let ci = classes_of(st)[cur];
+        if ci[3].has(field) {
+            return [ci[3][field][0], cur];
+        }
+        cur = ci[1];
+    }
+    return null;
+}
+
+fn method_decl(st, cls, method) {
+    let cur = cls;
+    let seen = map();
+    while cur != null {
+        if seen.has(cur) {
+            return null;
+        }
+        seen[cur] = 1;
+        if not classes_of(st).has(cur) {
+            return null;
+        }
+        let ci = classes_of(st)[cur];
+        if ci[4].has(method) {
+            return [ci[4][method], cur];
+        }
+        cur = ci[1];
+    }
+    return null;
+}
+
+fn method_sig(st, cls, method) {
+    let r = method_decl(st, cls, method);
+    if r == null {
+        return null;
+    }
+    return r[0];
+}
+
+fn is_subclass(st, child, ancestor) {
+    let cur = child;
+    let seen = map();
+    while cur != null {
+        if cur == ancestor {
+            return true;
+        }
+        if seen.has(cur) {
+            return false;
+        }
+        seen[cur] = 1;
+        if not classes_of(st).has(cur) {
+            return false;
+        }
+        cur = classes_of(st)[cur][1];
+    }
+    return false;
+}
+
+fn implements_iface(st, cls, iface) {
+    let cur = cls;
+    let seen = map();
+    while cur != null {
+        if seen.has(cur) {
+            return false;
+        }
+        seen[cur] = 1;
+        if not classes_of(st).has(cur) {
+            return false;
+        }
+        let ci = classes_of(st)[cur];
+        for i in ci[2] {
+            if i == iface {
+                return true;
+            }
+        }
+        cur = ci[1];
+    }
+    return false;
+}
+
+// -------------------------------------------------------------- Ty resolve
+
+fn resolve_single_type(st, t) {
+    let lower = lower_name(t[1]);
+    let base = null;
+    if lower == "any" {
+        base = ["Any"];
+    } else if lower == "int" {
+        base = ["Int"];
+    } else if lower == "float" {
+        base = ["Float"];
+    } else if lower == "bool" {
+        base = ["Bool"];
+    } else if lower == "string" {
+        base = ["Str"];
+    } else if lower == "null" {
+        base = ["Null"];
+    } else if lower == "usize" {
+        base = ["Int"];
+    } else if lower == "ptr" {
+        base = ["Any"];
+    } else if in_list(COLL_TYPES, lower) {
+        let elem = null;
+        if t[2] != null {
+            elem = resolve_type(st, t[2]);
+        }
+        base = ["Coll", lower, elem];
+    } else if classes_of(st).has(t[1]) {
+        base = ["Class", t[1]];
+    } else if interfaces_of(st).has(t[1]) {
+        base = ["Interface", t[1]];
+    } else {
+        base = ["Any"];
+    }
+    if t[3] {
+        return ["Nullable", base];
+    }
+    return base;
+}
+
+fn resolve_type(st, t) {
+    let first = resolve_single_type(st, t);
+    if t[4].len() == 0 {
+        return first;
+    }
+    let members = [first];
+    for u in t[4] {
+        members.push(resolve_single_type(st, u));
+    }
+    return ["Union", members];
+}
+
+fn lower_name(s) {
+    let out = "";
+    let n = s.len();
+    let i = 0;
+    while i < n {
+        let cp = ord(s[i]);
+        if cp >= 65 and cp <= 90 {
+            out += chr(cp + 32);
+        } else {
+            out += s[i];
+        }
+        i += 1;
+    }
+    return out;
+}
+
+fn in_list(xs, v) {
+    for x in xs {
+        if x == v {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ------------------------------------------------------ module resolution
+
+// module_info_of_in: read + parse a module file, extract its exported names
+// and its unexported declarations. Resolution: the importing file's directory
+// first, then the stdlib/ root — the corpus's shapes.
+fn module_info(path, source_file, st, sp) {
+    let resolved = resolve_module_path(path, source_file);
+    if resolved == null {
+        chk_err(st, sp, "module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)");
+    }
+    let src = "";
+    if file_exists(resolved) {
+        let r = read_file(resolved);
+        if r.is_ok() {
+            src = r.unwrap();
+        }
+    }
+    let toks = null;
+    try {
+        let save = lex_save();
+        toks = lex_all(src);
+        lex_restore(save);
+    } catch (e) {
+        // A parse/lex error inside the module surfaces with the module's own
+        // file named (the oracle propagates the module's diagnostic).
+        let phase = "lexer";
+        if e.len() >= 5 {
+            phase = e[4];
+        }
+        throw [e[0], e[1], e[2], e[3], phase, resolved];
+    }
+    let sub = new_state(toks);
+    let prog = null;
+    try {
+        prog = parse_program(sub);
+    } catch (e2) {
+        let phase = "parser";
+        if e2.len() >= 5 {
+            phase = e2[4];
+        }
+        throw [e2[0], e2[1], e2[2], e2[3], phase, resolved];
+    }
+    let mod_display = basename_of(resolved);
+    let names = [];
+    let unexported = [];
+    for s in prog[0] {
+        let tag = s[0];
+        if tag == "Fn" {
+            let f = s[1];
+            if f[4] != null {
+                if f[1] == "public" {
+                    names.push([f[4], false]);
+                } else {
+                    unexported.push([f[4], mod_display, "fn"]);
+                }
+            }
+        } else if tag == "Class" {
+            if s[1] == "public" {
+                names.push([s[2], false]);
+            } else {
+                unexported.push([s[2], mod_display, "class"]);
+            }
+        } else if tag == "Interface" {
+            if s[1] == "public" {
+                names.push([s[2], false]);
+            } else {
+                unexported.push([s[2], mod_display, "interface"]);
+            }
+        } else if tag == "Enum" {
+            if s[1] == "public" {
+                for v in s[3] {
+                    names.push([v[1], false]);
+                }
+            } else {
+                for v in s[3] {
+                    unexported.push([v[1], mod_display, "enum"]);
+                }
+            }
+        } else if tag == "Let" {
+            if s[1] == "public" {
+                names.push([s[2], false]);
+            } else {
+                unexported.push([s[2], mod_display, "let"]);
+            }
+        } else if tag == "Const" {
+            if s[1] == "public" {
+                names.push([s[2], true]);
+            } else {
+                unexported.push([s[2], mod_display, "const"]);
+            }
+        }
+    }
+    return [prog, names, unexported, mod_display];
+}
+
+fn basename_of(s) {
+    let cut = -1;
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let cp = ord(s[i]);
+        if cp == 47 or cp == 92 {
+            cut = i;
+        }
+        i += 1;
+    }
+    if cut >= 0 {
+        return s.slice(cut + 1, n);
+    }
+    return s;
+}
+
+fn dirname_of(s) {
+    let cut = -1;
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let cp = ord(s[i]);
+        if cp == 47 or cp == 92 {
+            cut = i;
+        }
+        i += 1;
+    }
+    if cut >= 0 {
+        return s.slice(0, cut + 1);
+    }
+    return "";
+}
+
+fn resolve_module_path(path, source_file) {
+    let dir = dirname_of(source_file);
+    let candidates = [dir + path + ".matrix", dir + path, "stdlib/" + path + ".matrix", "stdlib/" + path];
+    for c in candidates {
+        if file_exists(c) {
+            return c;
+        }
+    }
+    return null;
+}
+
+// The pass-1 registry seed from an imported module: its public classes,
+// interfaces and enums (with `a as b` selections applied).
+fn import_module_decls(st, path, source_file, selections, seen, sp) {
+    let info = module_info(path, source_file, st, sp);
+    let prog = info[0];
+    for s in prog[0] {
+        let tag = s[0];
+        if tag == "Interface" {
+            let name = s[2];
+            if seen.has(name) or interfaces_of(st).has(name) {
+                continue;
+            }
+            let methods = map();
+            for m in s[3] {
+                methods[m[1]] = [m[2].len(), m[3]];
+            }
+            interfaces_of(st)[name] = methods;
+            if selections != null {
+                for pair in selections {
+                    if pair[0] == name and pair[1] != name and not seen.has(pair[1]) {
+                        interfaces_of(st)[pair[1]] = methods;
+                    }
+                }
+            }
+        } else if tag == "Class" {
+            let name = s[2];
+            if seen.has(name) or classes_of(st).has(name) {
+                continue;
+            }
+            let fields = map();
+            for f in s[8] {
+                fields[f[2]] = [f[1], f[3]];
+            }
+            let methods = map();
+            for m in s[9] {
+                let mname = m[4];
+                if mname == null {
+                    mname = "";
+                }
+                let raw_params = [];
+                for p in m[5] {
+                    raw_params.push(p[2]);
+                }
+                let pnames = [];
+                for p in m[5] {
+                    pnames.push(p[1]);
+                }
+                methods[mname] = ["MI", m[1], raw_params, pnames, m[6], m[5].len() - count_defaults(m[5])];
+            }
+            classes_of(st)[name] = ["CI", s[5], s[6], fields, methods, s[3], s[4]];
+            if selections != null {
+                for pair in selections {
+                    if pair[0] == name and pair[1] != name and not seen.has(pair[1]) {
+                        classes_of(st)[pair[1]] = ["CI", s[5], s[6], fields, methods, s[3], s[4]];
+                    }
+                }
+            }
+        } else if tag == "Enum" {
+            let name = s[2];
+            if seen.has(name) or st[14].has(name) {
+                continue;
+            }
+            let vnames = [];
+            for v in s[3] {
+                st[15][v[1]] = name;
+                vnames.push(v[1]);
+            }
+            st[14][name] = vnames;
+        }
+    }
+}
+
+fn count_defaults(params) {
+    // min_arity = params without defaults; defaults are trailing-only, so
+    // count the leading run of default-less parameters.
+    let n = 0;
+    for p in params {
+        if p[3] == null {
+            n += 1;
+        } else {
+            break;
+        }
+    }
+    return params.len() - n;
+}
+
+// ---------------------------------------------------------------- the check
+
+public fn check_program(st, prog) {
+    let stmts = prog[0];
+    // pass 1: collect top-level names
+    let seen = map();
+    for s in stmts {
+        let tag = s[0];
+        if tag == "Enum" {
+            let names = [];
+            for v in s[3] {
+                if seen.has(v[1]) {
+                    chk_err(st, v[3], "'" + v[1] + "' is declared twice");
+                }
+                seen[v[1]] = 1;
+                names.push(v[1]);
+                st[15][v[1]] = s[2];
+                funcs_of(st)[v[1]] = [v[2].len(), v[2].len(), [], v[2], null];
+            }
+            st[14][s[2]] = names;
+        } else if tag == "Fn" {
+            let f = s[1];
+            let name = f[4];
+            if name == null {
+                chk_err(st, f[9], "a top-level function needs a name");
+            }
+            if seen.has(name) {
+                chk_err(st, f[9], "'" + name + "' is declared twice");
+            }
+            seen[name] = 1;
+            for p in f[5] {
+                if p[1] == "self" {
+                    chk_err(st, f[9], "self is only allowed in methods");
+                }
+            }
+            if st[10] and name == "main" {
+                if f[5].len() > 0 {
+                    chk_err(st, f[9], "fn main must take no parameters (found " + string(f[5].len()) + "); the runtime calls it with none");
+                }
+                if f[6] != null {
+                    check_type_name(st, f[6][1], f[6][5]);
+                    if lower_name(f[6][1]) != "int" {
+                        chk_err(st, f[9], "fn main must return int (the exit code) or nothing, not " + f[6][1]);
+                    }
+                }
+            }
+            let raw_params = [];
+            let pnames = [];
+            for p in f[5] {
+                raw_params.push(p[2]);
+                pnames.push(p[1]);
+            }
+            funcs_of(st)[name] = [f[5].len(), f[5].len() - count_defaults(f[5]), raw_params, pnames, f[6]];
+            let v = lookup(st, name);
+            if v != null and v[3] {
+                chk_err(st, f[9], "local '" + name + "' shadows an imported binding");
+            }
+            declare(st, name, f[9], [false, null, fn_sig_type(st, f), false, "local", false, null]);
+            st[12][name] = 1;
+        } else if tag == "Class" {
+            if seen.has(s[2]) {
+                chk_err(st, s[10], "class '" + s[2] + "' is declared twice");
+            }
+            seen[s[2]] = 1;
+        } else if tag == "Interface" {
+            if seen.has(s[2]) {
+                chk_err(st, s[5], "interface '" + s[2] + "' is declared twice");
+            }
+            seen[s[2]] = 1;
+        } else if tag == "Let" or tag == "Const" {
+            if not seen.has(s[2]) {
+                seen[s[2]] = 1;
+            } else {
+                chk_err(st, s[5], "'" + s[2] + "' is declared twice");
+            }
+        }
+    }
+    // imported interfaces/classes/enums (plain and selective imports)
+    let default_iface_methods = map();
+    for s in stmts {
+        if s[0] == "Import" {
+            let alias = s[2];
+            let selections = null;
+            if alias != null {
+                selections = parse_import_selections(alias);
+            }
+            if alias == null or selections != null {
+                import_module_decls(st, s[1], st[11], selections, seen, s[3]);
+            }
+        }
+    }
+    // interface registry + the self-rule
+    for s in stmts {
+        if s[0] == "Interface" {
+            let methods = map();
+            for m in s[3] {
+                if m[2].len() == 0 or m[2][0][1] != "self" {
+                    chk_err(st, m[4], "interface method '" + m[1] + "' must take self");
+                }
+                methods[m[1]] = [m[2].len(), m[3]];
+            }
+            for dm in s[4] {
+                let dm_name = dm[4];
+                if dm_name == null {
+                    dm_name = "";
+                }
+                if dm[5].len() == 0 or dm[5][0][1] != "self" {
+                    chk_err(st, dm[9], "interface method '" + dm_name + "' must take self");
+                }
+            }
+            if s[4].len() > 0 {
+                default_iface_methods[s[2]] = s[4];
+            }
+            interfaces_of(st)[s[2]] = methods;
+        }
+    }
+    // cls registry
+    for s in stmts {
+        if s[0] == "Class" {
+            let fields = map();
+            for f in s[8] {
+                if fields.has(f[2]) {
+                    chk_err(st, f[4], "field '" + f[2] + "' declared twice");
+                }
+                fields[f[2]] = [f[1], f[3]];
+            }
+            let methods = map();
+            for m in s[9] {
+                let name = m[4];
+                if name == null {
+                    name = "";
+                }
+                if methods.has(name) {
+                    chk_err(st, m[9], "method '" + name + "' declared twice");
+                }
+                let raw_params = [];
+                let pnames = [];
+                for p in m[5] {
+                    raw_params.push(p[2]);
+                    pnames.push(p[1]);
+                }
+                methods[name] = ["MI", m[1], raw_params, pnames, m[6], m[5].len() - count_defaults(m)];
+                let is_ctor = name == "new";
+                if not is_ctor {
+                    if m[5].len() == 0 or m[5][0][1] != "self" {
+                        chk_err(st, m[9], "method '" + name + "' must take self explicitly");
+                    }
+                }
+            }
+            for iface in s[6] {
+                if default_iface_methods.has(iface) {
+                    for dm in default_iface_methods[iface] {
+                        let dm_name = dm[4];
+                        if dm_name == null {
+                            dm_name = "";
+                        }
+                        if not methods.has(dm_name) {
+                            let raw_params = [];
+                            let pnames = [];
+                            for p in dm[5] {
+                                raw_params.push(p[2]);
+                                pnames.push(p[1]);
+                            }
+                            methods[dm_name] = ["MI", "public", raw_params, pnames, dm[6], dm[5].len() - count_defaults(dm[5])];
+                        }
+                    }
+                }
+            }
+            if s[5] != null {
+                let parent = s[5];
+                if parent != "Object" and not seen.has(parent) and not classes_of(st).has(parent) {
+                    chk_err(st, s[10], "parent class '" + parent + "' is not declared");
+                }
+            }
+            classes_of(st)[s[2]] = ["CI", s[5], s[6], fields, methods, s[3], s[4]];
+        }
+    }
+    // abstract contracts
+    let class_spans = map();
+    for s in stmts {
+        if s[0] == "Class" {
+            class_spans[s[2]] = s[10];
+        }
+    }
+    let names = map_keys(classes_of(st));
+    for name in names {
+        if not class_spans.has(name) {
+            continue;
+        }
+        let ci = classes_of(st)[name];
+        if ci[5] {
+            continue;
+        }
+        let required = [];
+        let cur = ci[1];
+        while cur != null {
+            if not classes_of(st).has(cur) {
+                break;
+            }
+            let pc = classes_of(st)[cur];
+            for a in pc[6] {
+                required.push([cur, a]);
+            }
+            cur = pc[1];
+        }
+        for req in required {
+            let owner = req[0];
+            let method = req[1];
+            let found = false;
+            let walk = name;
+            while walk != null {
+                if walk == owner {
+                    break;
+                }
+                if not classes_of(st).has(walk) {
+                    break;
+                }
+                let cc = classes_of(st)[walk];
+                if cc[4].has(method) {
+                    let is_abs = false;
+                    for a in cc[6] {
+                        if a == method {
+                            is_abs = true;
+                        }
+                    }
+                    if not is_abs {
+                        found = true;
+                        break;
+                    }
+                }
+                walk = cc[1];
+            }
+            if not found {
+                let sp = class_spans[name];
+                chk_err(st, sp, "class '" + name + "' must implement the abstract method '" + method + "' from '" + owner + "'");
+            }
+        }
+    }
+    // implements conformance
+    for s in stmts {
+        if s[0] == "Class" {
+            for iface in s[6] {
+                if not interfaces_of(st).has(iface) {
+                    chk_err(st, s[10], "interface '" + iface + "' is not declared");
+                }
+                let methods = interfaces_of(st)[iface];
+                let mnames = map_keys(methods);
+                for mname in mnames {
+                    let entry = methods[mname];
+                    let arity = entry[0];
+                    let iface_ret = entry[1];
+                    if not classes_of(st)[s[2]][4].has(mname) {
+                        chk_err(st, s[10], "class '" + s[2] + "' does not implement '" + mname + "' required by interface '" + iface + "'");
+                    }
+                    let mi = classes_of(st)[s[2]][4][mname];
+                    if mi[1] != "public" {
+                        chk_err(st, s[10], "method '" + mname + "' must be public to satisfy interface '" + iface + "'");
+                    }
+                    if mi[2].len() != arity {
+                        chk_err(st, s[10], "method '" + mname + "' has arity " + string(mi[2].len()) + " but interface '" + iface + "' wants " + string(arity));
+                    }
+                    if iface_ret != null {
+                        let exp_ty = resolve_type(st, iface_ret);
+                        if mi[4] != null {
+                            let act_ty = resolve_type(st, mi[4]);
+                            if not assignable(st, act_ty, exp_ty) {
+                                chk_err(st, s[10], "method '" + mname + "' returns " + ty_name(act_ty) + " but interface '" + iface + "' expects " + ty_name(exp_ty));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // main
+    if st[10] and not funcs_of(st).has("main") {
+        throw ["a program run by `spid3r run` needs fn main()", -1, -1, -1];
+    }
+    // pass 2: walk bodies
+    for s in stmts {
+        check_stmt(st, s);
+    }
+    pop_scope(st);
+}
+
+fn map_keys(m) {
+    let ks = [];
+    for k in keys_of(m) {
+        ks.push(k);
+    }
+    return ks;
+}
+
+fn keys_of(m) {
+    // Spid3r maps: `for k in m` iterates keys? Use the documented helper:
+    // a map iterates keys with for-in (see stdlib docs).
+    let ks = [];
+    for k in m {
+        ks.push(k);
+    }
+    return ks;
+}
+
+fn parse_import_selections(alias) {
+    // `import {a, b as c} from "m"` stores the alias as "{a,b:c}".
+    if alias.len() < 2 or alias.slice(0, 1) != "{" {
+        return null;
+    }
+    let inner = alias.slice(1, alias.len() - 1);
+    if inner == "" {
+        return [];
+    }
+    let out = [];
+    let parts = inner.split(",");
+    for p in parts {
+        let sub = p.split(":");
+        if sub.len() == 2 {
+            out.push([sub[0], sub[1]]);
+        } else {
+            out.push([p, p]);
+        }
+    }
+    return out;
+}
+
+fn declare_pattern(st, p) {
+    let tag = p[0];
+    if tag == "Wild" or tag == "PatLit" {
+        return;
+    }
+    if tag == "Bind" {
+        declare(st, p[1], [0, 0, 0], [false, null, null, false, "local", false, null]);
+        return;
+    }
+    // PatVariant
+    if not st[15].has(p[1]) and not known(st, p[1]) {
+        chk_err(st, p[3], "unknown enum variant '" + p[1] + "' in a match pattern");
+    }
+    for a in p[2] {
+        declare_pattern(st, a);
+    }
+}
+
+fn check_exhaustive(st, arms, span) {
+    let owner = null;
+    let covered = [];
+    for arm in arms {
+        let tag = arm[1][0];
+        if tag == "Wild" or tag == "Bind" or tag == "PatLit" {
+            return;
+        }
+        let name = arm[1][1];
+        if not st[15].has(name) {
+            return;
+        }
+        let e = st[15][name];
+        if owner == null {
+            owner = e;
+        } else if owner != e {
+            return;
+        }
+        covered.push(name);
+    }
+    if owner == null {
+        return;
+    }
+    if not st[14].has(owner) {
+        return;
+    }
+    let all = st[14][owner];
+    let missing = [];
+    for v in all {
+        if not in_list(covered, v) {
+            missing.push("'" + v + "'");
+        }
+    }
+    if missing.len() == 0 {
+        return;
+    }
+    chk_err(st, span, "this match is not exhaustive for enum '" + owner + "': missing " + missing.join(", ") + " (add an arm or `_`)");
+}
+
+fn block_has_value(b) {
+    let stmts = b[1];
+    if stmts.len() == 0 {
+        return false;
+    }
+    let last = stmts[stmts.len() - 1];
+    let tag = last[0];
+    if tag == "ExprStmt" or tag == "Return" or tag == "Throw" {
+        return true;
+    }
+    if tag == "BlockStmt" {
+        return block_has_value(last[1]);
+    }
+    return false;
+}
+
+fn block_value_type(st, b) {
+    let stmts = b[1];
+    if stmts.len() == 0 {
+        return ["Any"];
+    }
+    let last = stmts[stmts.len() - 1];
+    let tag = last[0];
+    if tag == "ExprStmt" {
+        return type_of(st, last[1]);
+    }
+    if tag == "BlockStmt" {
+        return block_value_type(st, last[1]);
+    }
+    return ["Any"];
+}
+
+fn coll_kind(name) {
+    if name == "some" or name == "none" {
+        return "option";
+    }
+    if name == "ok" or name == "err" {
+        return "result";
+    }
+    return name;
+}
+
+// ---------------------------------------------------------- statements
+
+fn check_block(st, b) {
+    push_scope(st);
+    let had = false;
+    try {
+        check_stmts(st, b[1]);
+    } catch (e) {
+        had = true;
+        pop_scope(st);
+        throw e;
+    }
+    if not had {
+        pop_scope(st);
+    }
+}
+
+fn check_stmts(st, stmts) {
+    for s in stmts {
+        check_stmt(st, s);
+    }
+}
+
+fn check_stmt(st, s) {
+    let tag = s[0];
+    if tag == "Yield" {
+        if st[7] {
+            chk_err(st, s[2], "fn main cannot be a generator");
+        }
+        check_expr(st, s[1]);
+        return;
+    }
+    if tag == "Enum" {
+        return;
+    }
+    if tag == "LetTuple" {
+        check_expr(st, s[3]);
+        for n in s[2] {
+            declare(st, n, s[4], [false, null, null, false, "local", false, null]);
+        }
+        return;
+    }
+    if tag == "Import" {
+        check_import(st, s);
+        return;
+    }
+    if tag == "Fn" {
+        check_fn_stmt(st, s);
+        return;
+    }
+    if tag == "Class" {
+        check_class_stmt(st, s);
+        return;
+    }
+    if tag == "Interface" {
+        return;
+    }
+    if tag == "Let" {
+        check_let(st, s, false);
+        return;
+    }
+    if tag == "Const" {
+        check_let(st, s, true);
+        return;
+    }
+    if tag == "If" {
+        check_expr(st, s[1]);
+        check_block(st, s[2]);
+        for e in s[3] {
+            check_expr(st, e[1]);
+            check_block(st, e[2]);
+        }
+        if s[4] != null {
+            check_block(st, s[4]);
+        }
+        return;
+    }
+    if tag == "While" {
+        check_expr(st, s[1]);
+        st[4] += 1;
+        let had = false;
+        try {
+            check_block(st, s[2]);
+        } catch (e) {
+            had = true;
+            st[4] -= 1;
+            throw e;
+        }
+        if not had {
+            st[4] -= 1;
+        }
+        return;
+    }
+    if tag == "ForIn" {
+        check_expr(st, s[3]);
+        push_scope(st);
+        declare(st, s[1], stmt_span(s), [false, null, null, false, "local", false, null]);
+        if s[2] != null {
+            declare(st, s[2], stmt_span(s), [false, null, null, false, "local", false, null]);
+        }
+        st[4] += 1;
+        let had = false;
+        try {
+            check_stmts(st, s[4][1]);
+        } catch (e) {
+            had = true;
+            st[4] -= 1;
+            pop_scope(st);
+            throw e;
+        }
+        if not had {
+            st[4] -= 1;
+            pop_scope(st);
+        }
+        return;
+    }
+    if tag == "ForC" {
+        push_scope(st);
+        let init = s[1];
+        if init[0] == "Let" {
+            if init[3] != null {
+                check_type_expr(st, init[3]);
+            }
+            if init[4] != null {
+                check_expr(st, init[4]);
+            }
+            if init[3] != null and init[4] != null {
+                let want = resolve_type(st, init[3]);
+                let got = type_of(st, init[4]);
+                if not assignable(st, got, want) {
+                    mismatch(nsp(init[4]), "type mismatch in '" + init[2] + "': expected " + ty_name(want) + ", got " + ty_name(got));
+                }
+            }
+            let tyo = null;
+            if init[3] != null {
+                tyo = resolve_type(st, init[3]);
+            }
+            declare(st, init[2], init[5], [false, null, tyo, false, "local", false, null]);
+        }
+        check_expr(st, s[2]);
+        check_expr(st, s[3]);
+        st[4] += 1;
+        let had = false;
+        try {
+            check_stmts(st, s[4][1]);
+        } catch (e) {
+            had = true;
+            st[4] -= 1;
+            pop_scope(st);
+            throw e;
+        }
+        if not had {
+            st[4] -= 1;
+            pop_scope(st);
+        }
+        return;
+    }
+    if tag == "Return" {
+        if st[5] == 0 {
+            chk_err(st, s[2], "return outside a function");
+        }
+        if s[1] != null {
+            check_expr(st, s[1]);
+        }
+        if st[9] != null {
+            if s[1] != null {
+                let got = type_of(st, s[1]);
+                if not assignable(st, got, st[9]) {
+                    mismatch(s[2], "return type mismatch: expected " + ty_name(st[9]) + ", got " + ty_name(got));
+                }
+            } else {
+                chk_err(st, s[2], "function declared to return " + ty_name(st[9]) + " but returns nothing");
+            }
+        }
+        return;
+    }
+    if tag == "Break" {
+        if st[4] == 0 {
+            chk_err(st, s[1], "break outside a loop");
+        }
+        return;
+    }
+    if tag == "Continue" {
+        if st[4] == 0 {
+            chk_err(st, s[1], "continue outside a loop");
+        }
+        return;
+    }
+    if tag == "BlockStmt" {
+        check_block(st, s[1]);
+        return;
+    }
+    if tag == "ExprStmt" {
+        check_expr(st, s[1]);
+        return;
+    }
+    if tag == "Spawn" {
+        check_expr(st, s[1]);
+        return;
+    }
+    if tag == "Try" {
+        check_block(st, s[1]);
+        if s[2] != null {
+            push_scope(st);
+            declare(st, s[2][1], s[2][3], [false, null, null, false, "local", false, null]);
+            let had = false;
+            try {
+                check_stmts(st, s[2][2][1]);
+            } catch (e) {
+                had = true;
+                pop_scope(st);
+                throw e;
+            }
+            if not had {
+                pop_scope(st);
+            }
+        }
+        if s[3] != null {
+            check_block(st, s[3]);
+        }
+        return;
+    }
+    if tag == "Throw" {
+        check_expr(st, s[1]);
+        return;
+    }
+    return;
+}
+
+fn stmt_span(s) {
+    return s[s.len() - 1];
+}
+
+fn check_import(st, s) {
+    let path = s[1];
+    let alias = s[2];
+    let sp = s[3];
+    let info = module_info(path, st[11], st, sp);
+    let names = info[1];
+    let unexported = info[2];
+    for u in unexported {
+        st[15][u[0]] = [u[1], u[2]];
+    }
+    let selections = null;
+    if alias != null {
+        selections = parse_import_selections(alias);
+    }
+    if selections != null {
+        for pair in selections {
+            let export_name = pair[0];
+            let local_name = pair[1];
+            let found = null;
+            for n in names {
+                if n[0] == export_name {
+                    found = n;
+                }
+            }
+            if found == null {
+                if st[15].has(export_name) {
+                    let d = st[15][export_name];
+                    chk_err(st, sp, d[1] + " '" + export_name + "' in module '" + d[0] + "' is private (add 'public' to export it)");
+                }
+                chk_err(st, sp, "module '" + path + "' does not export '" + export_name + "'");
+            }
+            let is_const = found[1];
+            let scope = st[3][st[3].len() - 1];
+            let local_here = false;
+            if scope.has(local_name) {
+                local_here = not scope[local_name][3];
+            }
+            if local_here and not st[12].has(local_name) {
+                chk_err(st, sp, "import '" + local_name + "' shadows a local binding");
+            }
+            if scope.has(local_name) {
+                if scope[local_name][3] {
+                    chk_err(st, sp, "import collision: '" + local_name + "' is imported by multiple modules");
+                }
+            }
+            scope[local_name] = [is_const, null, null, true, "import", false, null, sp];
+        }
+    } else if alias != null {
+        let scope = st[3][st[3].len() - 1];
+        let local_here = false;
+        if scope.has(alias) {
+            local_here = not scope[alias][3];
+        }
+        if local_here and not st[12].has(alias) {
+            chk_err(st, sp, "import '" + alias + "' shadows a local binding");
+        }
+        if scope.has(alias) {
+            if scope[alias][3] {
+                chk_err(st, sp, "import collision: '" + alias + "' is imported multiple times");
+            }
+        }
+        let consts = [];
+        for n in names {
+            if n[1] {
+                consts.push(n[0]);
+            }
+        }
+        let ic = null;
+        if consts.len() > 0 {
+            ic = consts;
+        }
+        scope[alias] = [true, null, null, true, "import", false, ic, sp];
+    } else {
+        for n in names {
+            let scope = st[3][st[3].len() - 1];
+            let local_here = false;
+            if scope.has(n[0]) {
+                local_here = not scope[n[0]][3];
+            }
+            if local_here and not st[12].has(n[0]) {
+                chk_err(st, sp, "import '" + n[0] + "' shadows a local binding");
+            }
+            if scope.has(n[0]) {
+                if scope[n[0]][3] {
+                    chk_err(st, sp, "import collision: '" + n[0] + "' is imported by multiple modules");
+                }
+            }
+            scope[n[0]] = [n[1], null, null, true, "import", false, null, sp];
+        }
+    }
+}
+
+fn check_fn_stmt(st, s) {
+    let f = s[1];
+    st[16].push(f[7]);
+    for p in f[5] {
+        if p[1] == "self" {
+            chk_err(st, f[9], "self is only allowed in methods");
+        }
+    }
+    if f[4] != null {
+        let name = f[4];
+        let scope = st[3][st[3].len() - 1];
+        if scope.has(name) {
+            if scope[name][3] {
+                chk_err(st, f[9], "local '" + name + "' shadows an imported binding");
+            }
+        }
+    }
+    if st[3].len() > 1 {
+        if f[4] != null {
+            declare(st, f[4], f[9], [false, null, fn_sig_type(st, f), false, "local", false, null]);
+        }
+    }
+    st[5] += 1;
+    let was_main_fn = st[7];
+    if st[10] and f[4] == "main" {
+        st[7] = true;
+    }
+    let was_async = st[6];
+    st[6] = f[2];
+    let was_loop_depth = st[4];
+    st[4] = 0;
+    push_scope(st);
+    let names = map();
+    if f[5].len() > 255 {
+        chk_err(st, f[9], "too many parameters in one function (max 255)");
+    }
+    for p in f[5] {
+        if names.has(p[1]) {
+            chk_err(st, p[4], "duplicate parameter '" + p[1] + "'");
+        }
+        names[p[1]] = 1;
+        if p[3] != null {
+            if not is_const_default(p[3]) {
+                chk_err(st, p[4], "the default for parameter '" + p[1] + "' must be a constant (a literal number, string, bool, or null)");
+            }
+        }
+        let cls = null;
+        if p[2] != null {
+            if classes_of(st).has(p[2][1]) {
+                cls = p[2][1];
+            }
+        }
+        let tyo = null;
+        if p[2] != null {
+            tyo = resolve_type(st, p[2]);
+        }
+        declare(st, p[1], p[4], [false, cls, tyo, false, "param", false, null]);
+    }
+    if f[6] != null {
+        check_type_expr(st, f[6]);
+    }
+    let saved_ret = st[9];
+    st[9] = null;
+    if f[6] != null {
+        st[9] = resolve_type(st, f[6]);
+    }
+    let had = false;
+    try {
+        check_stmts(st, f[8][1]);
+    } catch (e) {
+        // restore and rethrow
+        st[7] = was_main_fn;
+        st[9] = saved_ret;
+        pop_scope(st);
+        st[6] = was_async;
+        st[4] = was_loop_depth;
+        st[5] -= 1;
+        let _popped = st[16].pop();
+        throw e;
+    }
+    st[7] = was_main_fn;
+    st[9] = saved_ret;
+    pop_scope(st);
+    st[6] = was_async;
+    st[4] = was_loop_depth;
+    st[5] -= 1;
+    let _popped = st[16].pop();
+    return;
+}
+
+fn check_class_stmt(st, s) {
+    let c = s;
+    st[8] = c[2];
+    st[16].push(c[7]);
+    for m in c[9] {
+        if m[5].len() > 255 {
+            chk_err(st, m[9], "too many parameters in one function (max 255)");
+        }
+        let is_decl = false;
+        if m[4] != null {
+            for a in c[4] {
+                if a == m[4] {
+                    is_decl = true;
+                }
+            }
+        }
+        if is_decl {
+            for p in m[5] {
+                if p[2] != null {
+                    check_type_expr(st, p[2]);
+                }
+            }
+            if m[6] != null {
+                check_type_expr(st, m[6]);
+            }
+            continue;
+        }
+        st[5] += 1;
+        let was_async = st[6];
+        st[6] = m[2];
+        let was_loop_depth = st[4];
+        st[4] = 0;
+        push_scope(st);
+        st[16].push([]);
+        let is_ctor = m[4] == "new";
+        if is_ctor {
+            declare(st, "self", m[9], [false, c[2], ["Class", c[2]], false, "local", false, null]);
+            let names = map();
+            for p in m[5] {
+                if names.has(p[1]) {
+                    chk_err(st, p[4], "duplicate parameter '" + p[1] + "'");
+                }
+                names[p[1]] = 1;
+                let tyo = null;
+                if p[2] != null {
+                    tyo = resolve_type(st, p[2]);
+                }
+                declare(st, p[1], p[4], [false, null, tyo, false, "local", false, null]);
+            }
+        } else {
+            declare(st, "self", m[9], [false, c[2], ["Class", c[2]], false, "local", false, null]);
+            let names = map();
+            let i = 1;
+            while i < m[5].len() {
+                let p = m[5][i];
+                if names.has(p[1]) {
+                    chk_err(st, p[4], "duplicate parameter '" + p[1] + "'");
+                }
+                names[p[1]] = 1;
+                let tyo = null;
+                if p[2] != null {
+                    tyo = resolve_type(st, p[2]);
+                }
+                declare(st, p[1], p[4], [false, null, tyo, false, "local", false, null]);
+                i += 1;
+            }
+        }
+        let saved_ret = st[9];
+        st[9] = null;
+        if m[6] != null {
+            st[9] = resolve_type(st, m[6]);
+        }
+        let had = false;
+        try {
+            check_stmts(st, m[8][1]);
+        } catch (e) {
+            st[9] = saved_ret;
+            pop_scope(st);
+            let _p = st[16].pop();
+            st[6] = was_async;
+            st[4] = was_loop_depth;
+            st[5] -= 1;
+            throw e;
+        }
+        st[9] = saved_ret;
+        pop_scope(st);
+        let _p = st[16].pop();
+        st[6] = was_async;
+        st[4] = was_loop_depth;
+        st[5] -= 1;
+    }
+    st[8] = null;
+    let _tp = st[16].pop();
+    return;
+}
+
+fn check_let(st, s, is_const) {
+    if s[3] != null {
+        check_type_expr(st, s[3]);
+    }
+    let cls = null;
+    if s[4] != null and s[4][0] == "New" {
+        if classes_of(st).has(s[4][1]) {
+            cls = s[4][1];
+        }
+    }
+    if cls == null and s[3] != null {
+        if classes_of(st).has(s[3][1]) {
+            cls = s[3][1];
+        }
+    }
+    if s[4] != null {
+        check_expr(st, s[4]);
+    }
+    if s[3] != null and s[4] != null {
+        let want = resolve_type(st, s[3]);
+        let got = type_of(st, s[4]);
+        if not assignable(st, got, want) {
+            mismatch(nsp(s[4]), "type mismatch in '" + s[2] + "': expected " + ty_name(want) + ", got " + ty_name(got));
+        }
+    }
+    let scope = st[3][st[3].len() - 1];
+    if scope.has(s[2]) {
+        if scope[s[2]][3] {
+            chk_err(st, s[5], "local '" + s[2] + "' shadows an imported binding");
+        }
+    }
+    let tyo = null;
+    if s[3] != null {
+        tyo = resolve_type(st, s[3]);
+    } else if s[4] != null {
+        tyo = fn_value_type(st, s[4]);
+    }
+    declare(st, s[2], s[5], [is_const, cls, tyo, false, "local", false, null]);
+}
+
+fn is_const_default(e) {
+    let tag = e[0];
+    if tag == "Int" or tag == "Float" or tag == "Str" or tag == "Bool" or tag == "Null" {
+        return true;
+    }
+    if tag == "Unary" and e[1] == "Neg" {
+        let inner = e[2];
+        return inner[0] == "Int" or inner[0] == "Float";
+    }
+    if tag == "List" {
+        for it in e[1] {
+            if not is_const_default(it) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if tag == "Call" {
+        if e[1][0] == "Ident" and (e[1][1] == "map" or e[1][1] == "list" or e[1][1] == "set" or e[1][1] == "tuple") {
+            for a in e[2] {
+                if not is_const_default(a) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+fn fn_sig_type(st, f) {
+    let params = [];
+    for p in f[5] {
+        if p[2] != null {
+            params.push(resolve_type(st, p[2]));
+        } else {
+            params.push(null);
+        }
+    }
+    let ret = null;
+    if f[6] != null {
+        ret = resolve_type(st, f[6]);
+    }
+    let sig = [f[5].len(), f[5].len() - count_defaults(f[5]), params, ret];
+    return ["Fn", sig];
+}
+
+fn fn_value_type(st, e) {
+    let tag = e[0];
+    if tag == "Fn" {
+        return fn_sig_type(st, e[1]);
+    }
+    if tag == "Ident" {
+        let v = lookup(st, e[1]);
+        if v != null and v[2] != null {
+            if v[2][0] == "Fn" {
+                return v[2];
+            }
+        }
+    }
+    return null;
+}
+
+fn check_type_expr(st, t) {
+    check_type_name(st, t[1], t[5]);
+    if t[2] != null {
+        check_type_expr(st, t[2]);
+    }
+    for u in t[4] {
+        check_type_name(st, u[1], u[5]);
+        if u[2] != null {
+            check_type_expr(st, u[2]);
+        }
+    }
+    return;
+}
+
+fn check_type_name(st, name, sp) {
+    for t in KNOWN_TYPES {
+        if lower_name(t) == lower_name(name) {
+            return;
+        }
+    }
+    if classes_of(st).has(name) {
+        return;
+    }
+    if interfaces_of(st).has(name) {
+        return;
+    }
+    for level in st[16] {
+        for p in level {
+            if p == name {
+                return;
+            }
+        }
+    }
+    chk_err(st, sp, "unknown type '" + name + "'");
+}
+
+// ------------------------------------------------------------- expressions
+
+fn receiver_class(st, e) {
+    let tag = e[0];
+    if tag == "Ident" {
+        let n = e[1];
+        if n == "self" {
+            return st[8];
+        }
+        let v = lookup(st, n);
+        if v != null {
+            if v[1] != null {
+                return v[1];
+            }
+            if v[2] != null and v[2][0] == "Class" {
+                if classes_of(st).has(v[2][1]) {
+                    return v[2][1];
+                }
+            }
+            if v[3] and classes_of(st).has(n) {
+                return n;
+            }
+            return null;
+        }
+        if classes_of(st).has(n) {
+            return n;
+        }
+        return null;
+    }
+    let t = type_of(st, e);
+    if t[0] == "Class" {
+        if classes_of(st).has(t[1]) {
+            return t[1];
+        }
+    }
+    return null;
+}
+
+fn check_sig_args(st, label, sig, args, sp) {
+    if has_named_args(args) {
+        chk_err(st, sp, "named arguments on a call through '" + label + "' are not supported yet (call the declared function directly)");
+    }
+    if args.len() < sig[1] or args.len() > sig[0] {
+        let want = "";
+        if sig[1] == sig[0] {
+            want = string(sig[0]) + " argument(s)";
+        } else {
+            want = string(sig[1]) + " to " + string(sig[0]) + " argument(s)";
+        }
+        chk_err(st, sp, label + " expects " + want + ", got " + string(args.len()));
+    }
+    let i = 0;
+    while i < args.len() {
+        if i < sig[2].len() and sig[2][i] != null {
+            let want = sig[2][i];
+            let got = type_of(st, args[i]);
+            if not assignable(st, got, want) {
+                chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of '" + label + "' expects " + ty_name(want) + ", got " + ty_name(got));
+            }
+        }
+        i += 1;
+    }
+    return;
+}
+
+fn has_named_args(args) {
+    for a in args {
+        if a[0] == "NamedArg" {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn check_arg(st, a) {
+    if a[0] == "NamedArg" {
+        check_expr(st, a[2]);
+    } else {
+        check_expr(st, a);
+    }
+}
+
+fn string_literal(e) {
+    if e[0] == "Str" {
+        return e[1];
+    }
+    return null;
+}
+
+fn alias_const_exports(st, e) {
+    if e[0] != "Ident" {
+        return null;
+    }
+    let v = lookup(st, e[1]);
+    if v != null {
+        return v[6];
+    }
+    return null;
+}
+
+fn check_super(st, sp, method, args) {
+    if st[8] == null {
+        chk_err(st, sp, "super is only allowed inside a class method");
+    }
+    let cls = st[8];
+    if not classes_of(st).has(cls) {
+        chk_err(st, sp, "class '" + cls + "' has no parent class: super is not available here");
+    }
+    let parent = classes_of(st)[cls][1];
+    if parent == null {
+        chk_err(st, sp, "class '" + cls + "' has no parent class: super is not available here");
+    }
+    check_super_in(st, parent, sp, method, args);
+}
+
+fn check_super_in(st, parent, sp, method, args) {
+    let argc = args.len();
+    if method != null {
+        let r = method_decl(st, parent, method);
+        if r == null {
+            chk_err(st, sp, "class '" + parent + "' has no method '" + method + "'");
+        }
+        let sig = r[0];
+        let decl_cls = r[1];
+        if sig[1] == "private" {
+            chk_err(st, sp, "method '" + method + "' of class '" + decl_cls + "' is private");
+        }
+        if has_named_args(args) {
+            let names = sig[3];
+            let from = 0;
+            if sig[3].len() > 0 and sig[3][0] == "self" {
+                names = sig[3].slice(1, sig[3].len());
+            }
+            let required = sig[5];
+            if required >= 1 {
+                required -= 1;
+            }
+            check_named_args(st, args, names, required, "super." + method, sp);
+        } else if argc + 1 < sig[5] or argc + 1 > sig[2].len() {
+            let want = "";
+            if sig[5] == sig[2].len() {
+                want = string(sig[2].len() - 1) + " argument(s)";
+            } else {
+                want = string(sig[5] - 1) + " to " + string(sig[2].len() - 1) + " argument(s)";
+            }
+            chk_err(st, sp, "method " + parent + "::" + method + " expects " + want + ", got " + string(argc));
+        }
+        return;
+    }
+    let sig = method_sig(st, parent, "new");
+    if sig == null {
+        chk_err(st, sp, "class '" + parent + "' has no constructor");
+    }
+    if has_named_args(args) {
+        check_named_args(st, args, sig[3], sig[5], "super", sp);
+    } else if argc < sig[5] or argc > sig[2].len() {
+        let want = "";
+        if sig[5] == sig[2].len() {
+            want = string(sig[2].len()) + " argument(s)";
+        } else {
+            want = string(sig[5]) + " to " + string(sig[2].len()) + " argument(s)";
+        }
+        chk_err(st, sp, "constructor " + parent + "::new expects " + want + ", got " + string(argc));
+    }
+    return;
+}
+
+fn check_named_args(st, args, names, required, label, sp) {
+    let seen_named = false;
+    let provided = [];
+    let k = 0;
+    while k < names.len() {
+        provided.push(false);
+        k += 1;
+    }
+    let positional = 0;
+    for a in args {
+        if a[0] == "NamedArg" {
+            seen_named = true;
+            let name = a[1];
+            let idx = -1;
+            let j = 0;
+            while j < names.len() {
+                if names[j] == name {
+                    idx = j;
+                }
+                j += 1;
+            }
+            if idx < 0 {
+                chk_err(st, a[3], "unknown parameter '" + name + "' in the call to " + label);
+            }
+            if provided[idx] {
+                chk_err(st, a[3], "duplicate named argument '" + name + "'");
+            }
+            provided[idx] = true;
+        } else {
+            if seen_named {
+                chk_err(st, nsp(a), "a positional argument cannot follow a named one");
+            }
+            if positional < names.len() {
+                provided[positional] = true;
+            }
+            positional += 1;
+        }
+    }
+    if positional > names.len() {
+        chk_err(st, sp, "too many positional arguments for " + label + " (at most " + string(names.len()) + ")");
+    }
+    k = 0;
+    while k < names.len() {
+        if not provided[k] and k < required {
+            chk_err(st, sp, "missing required parameter '" + names[k] + "' in the call to " + label);
+        }
+        k += 1;
+    }
+    return;
+}
+
+fn check_expr(st, e) {
+    let tag = e[0];
+    if tag == "NamedArg" {
+        chk_err(st, e[3], "a named argument (name: value) is only valid inside a call");
+    }
+    if tag == "IfE" {
+        check_expr(st, e[1]);
+        let blocks = [e[2]];
+        if e[3] != null {
+            blocks.push(e[3]);
+        }
+        for b in blocks {
+            if not block_has_value(b) {
+                chk_err(st, e[4], "an if-expression branch must end with an expression (or with return/throw)");
+            }
+        }
+        check_block(st, e[2]);
+        if e[3] != null {
+            check_block(st, e[3]);
+        }
+        return;
+    }
+    if tag == "OptField" {
+        check_expr(st, e[2]);
+        return;
+    }
+    if tag == "Propagate" {
+        check_expr(st, e[1]);
+        return;
+    }
+    if tag == "Match" {
+        check_expr(st, e[1]);
+        if e[2].len() == 0 {
+            chk_err(st, e[3], "a match needs at least one arm");
+        }
+        for arm in e[2] {
+            push_scope(st);
+            declare_pattern(st, arm[1]);
+            let had = false;
+            try {
+                if arm[2] != null {
+                    check_expr(st, arm[2]);
+                }
+                if not block_has_value(arm[3]) {
+                    chk_err(st, arm[4], "a match arm must end with an expression (or with return/throw)");
+                }
+                check_block(st, arm[3]);
+            } catch (ex) {
+                had = true;
+                pop_scope(st);
+                throw ex;
+            }
+            if not had {
+                pop_scope(st);
+            }
+        }
+        check_exhaustive(st, e[2], e[3]);
+        return;
+    }
+    if tag == "Coalesce" {
+        check_expr(st, e[1]);
+        check_expr(st, e[2]);
+        return;
+    }
+    if tag == "Int" or tag == "Float" or tag == "Str" or tag == "Bool" or tag == "Null" {
+        return;
+    }
+    if tag == "Ident" {
+        let name = e[1];
+        if name == "self" and st[8] == null {
+            chk_err(st, e[2], "self outside a method");
+        }
+        if known(st, name) {
+            mark_used(st, name);
+            return;
+        }
+        unknown_name(st, e[2], name);
+    }
+    if tag == "List" {
+        for it in e[1] {
+            check_expr(st, it);
+        }
+        return;
+    }
+    if tag == "Fn" {
+        let f = e[1];
+        st[5] += 1;
+        let was_async = st[6];
+        st[6] = f[2];
+        let was_loop_depth = st[4];
+        st[4] = 0;
+        push_scope(st);
+        let names = map();
+        if f[5].len() > 255 {
+            chk_err(st, f[9], "too many parameters in one function (max 255)");
+        }
+        for p in f[5] {
+            if names.has(p[1]) {
+                chk_err(st, p[4], "duplicate parameter '" + p[1] + "'");
+            }
+            names[p[1]] = 1;
+            if p[3] != null {
+                if not is_const_default(p[3]) {
+                    chk_err(st, p[4], "the default for parameter '" + p[1] + "' must be a constant (a literal number, string, bool, or null)");
+                }
+            }
+            let tyo = null;
+            if p[2] != null {
+                tyo = resolve_type(st, p[2]);
+            }
+            declare(st, p[1], p[4], [false, null, tyo, false, "param", true, null]);
+        }
+        let saved_ret = st[9];
+        st[9] = null;
+        if f[6] != null {
+            st[9] = resolve_type(st, f[6]);
+        }
+        let had = false;
+        try {
+            check_stmts(st, f[8][1]);
+        } catch (ex) {
+            st[9] = saved_ret;
+            pop_scope(st);
+            st[6] = was_async;
+            st[4] = was_loop_depth;
+            st[5] -= 1;
+            throw ex;
+        }
+        st[9] = saved_ret;
+        pop_scope(st);
+        st[6] = was_async;
+        st[4] = was_loop_depth;
+        st[5] -= 1;
+        return;
+    }
+    if tag == "Unary" {
+        check_expr(st, e[2]);
+        return;
+    }
+    if tag == "Binary" {
+        check_expr(st, e[2]);
+        check_expr(st, e[3]);
+        return;
+    }
+    if tag == "Logical" {
+        check_expr(st, e[2]);
+        check_expr(st, e[3]);
+        return;
+    }
+    if tag == "Assign" {
+        check_assign(st, e);
+        return;
+    }
+    if tag == "Super" {
+        chk_err(st, e[1], "super must be called: write super(...) or super.method(...)");
+    }
+    if tag == "SuperCall" {
+        check_super_in(st, e[1], e[4], e[2], e[3]);
+        for a in e[3] {
+            check_arg(st, a);
+        }
+        return;
+    }
+    if tag == "Call" {
+        check_call(st, e);
+        return;
+    }
+    if tag == "Method" {
+        check_method(st, e);
+        return;
+    }
+    if tag == "Index" {
+        check_expr(st, e[1]);
+        check_expr(st, e[2]);
+        return;
+    }
+    if tag == "FieldE" {
+        check_field(st, e);
+        return;
+    }
+    if tag == "New" {
+        check_new(st, e);
+        return;
+    }
+    if tag == "Spawn" {
+        check_expr(st, e[1]);
+        return;
+    }
+    if tag == "Await" {
+        if not st[6] {
+            chk_err(st, e[2], "await is only allowed inside an async function");
+        }
+        check_expr(st, e[1]);
+        return;
+    }
+    return;
+}
+
+fn check_assign(st, e) {
+    let sp = e[4];
+    let target = e[2];
+    let value = e[3];
+    let ttag = target[0];
+    if ttag == "Ident" {
+        let name = target[1];
+        let v = lookup(st, name);
+        if v != null {
+            if v[0] {
+                chk_err(st, sp, "cannot assign to const '" + name + "'");
+            }
+            if v[2] != null {
+                let got = type_of(st, value);
+                if not assignable(st, got, v[2]) {
+                    mismatch(sp, "type mismatch assigning to '" + name + "': expected " + ty_detail_name(v[2]) + ", got " + ty_detail_name(got));
+                }
+            }
+        } else if not known(st, name) {
+            unknown_name(st, sp, name);
+        }
+    } else if ttag == "Index" {
+        check_expr(st, target[1]);
+        check_expr(st, target[2]);
+        let consts = alias_const_exports(st, target[1]);
+        if consts != null {
+            let key = string_literal(target[2]);
+            if key != null {
+                for c in consts {
+                    if c == key {
+                        chk_err(st, sp, "cannot assign to constant '" + key + "' (it is a public const of the module)");
+                    }
+                }
+            }
+        }
+    } else if ttag == "FieldE" {
+        check_expr(st, target[2]);
+        let c = receiver_class(st, target[2]);
+        if c != null {
+            let fd = field_decl(st, c, target[1]);
+            if fd != null {
+                let vis = fd[0];
+                let decl_c = fd[1];
+                if vis == "private" and st[8] != decl_c {
+                    chk_err(st, sp, "field '" + target[1] + "' of class '" + decl_c + "' is private");
+                }
+            } else {
+                chk_err(st, sp, "class '" + c + "' has no field '" + target[1] + "'");
+            }
+        }
+        let recv = type_of(st, target[2]);
+        if recv[0] == "Class" {
+            if classes_of(st).has(recv[1]) {
+                let fields = classes_of(st)[recv[1]][3];
+                if fields.has(target[1]) {
+                    let ft = fields[target[1]][1];
+                    if ft != null {
+                        let want = resolve_type(st, ft);
+                        let got = type_of(st, value);
+                        if not assignable(st, got, want) {
+                            mismatch(sp, "type mismatch assigning to field '" + target[1] + "': expected " + ty_name(want) + ", got " + ty_name(got));
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        chk_err(st, nsp(target), "invalid assignment target");
+    }
+    check_expr(st, value);
+    return;
+}
+
+fn check_field(st, e) {
+    check_expr(st, e[2]);
+    let c = receiver_class(st, e[2]);
+    if c != null {
+        let fd = field_decl(st, c, e[1]);
+        if fd != null {
+            let vis = fd[0];
+            let decl_c = fd[1];
+            if vis == "private" and st[8] != decl_c {
+                chk_err(st, e[3], "field '" + e[1] + "' of class '" + decl_c + "' is private");
+            }
+        } else {
+            chk_err(st, e[3], "class '" + c + "' has no field '" + e[1] + "'");
+        }
+    }
+    return;
+}
+
+fn check_call(st, e) {
+    let sp = e[3];
+    let callee = e[1];
+    let args = e[2];
+    if callee[0] == "Super" {
+        check_super(st, sp, null, args);
+        for a in args {
+            check_arg(st, a);
+        }
+        return;
+    }
+    if callee[0] == "Ident" {
+        let name = callee[1];
+        mark_used(st, name);
+        if funcs_of(st).has(name) {
+            let fi = funcs_of(st)[name];
+            if has_named_args(args) {
+                check_named_args(st, args, fi[3], fi[1], name, sp);
+            } else if args.len() < fi[1] or args.len() > fi[0] {
+                let want = "";
+                if fi[1] == fi[0] {
+                    want = string(fi[0]) + " argument(s)";
+                } else {
+                    want = string(fi[1]) + " to " + string(fi[0]) + " argument(s)";
+                }
+                chk_err(st, sp, name + " expects " + want + ", got " + string(args.len()));
+            }
+            let i = 0;
+            while i < args.len() {
+                if i < fi[2].len() and fi[2][i] != null {
+                    let want = resolve_type(st, fi[2][i]);
+                    let got = type_of(st, args[i]);
+                    if not assignable(st, got, want) {
+                        chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of '" + name + "' expects " + ty_name(want) + ", got " + ty_name(got));
+                    }
+                }
+                i += 1;
+            }
+        } else {
+            let sig = null;
+            let v = lookup(st, name);
+            if v != null and v[2] != null and v[2][0] == "Fn" and v[2][1] != null {
+                sig = v[2][1];
+            }
+            if sig != null {
+                check_sig_args(st, name, sig, args, sp);
+            } else if has_named_args(args) {
+                chk_err(st, sp, "named arguments on a call to '" + name + "' are not supported: the callee is not a statically-known function");
+            } else if not known(st, name) {
+                unknown_name(st, sp, name);
+            }
+        }
+    } else {
+        check_expr(st, callee);
+        let ct = type_of(st, callee);
+        if ct[0] == "Fn" and ct[1] != null {
+            check_sig_args(st, "<expression>", ct[1], args, sp);
+        } else if has_named_args(args) {
+            chk_err(st, sp, "named arguments on a call through '<expression>' are not supported yet (call the declared function directly)");
+        }
+    }
+    for a in args {
+        check_arg(st, a);
+    }
+    return;
+}
+
+fn check_method(st, e) {
+    let sp = e[4];
+    let object = e[2];
+    let name = e[1];
+    let args = e[3];
+    if object[0] == "Super" {
+        check_super(st, sp, name, args);
+        for a in args {
+            check_arg(st, a);
+        }
+        return;
+    }
+    check_expr(st, object);
+    for a in args {
+        check_arg(st, a);
+    }
+    if name == "set" {
+        let consts = alias_const_exports(st, object);
+        if consts != null {
+            if args.len() > 0 {
+                let key = string_literal(args[0]);
+                if key != null {
+                    for c in consts {
+                        if c == key {
+                            chk_err(st, sp, "cannot assign to constant '" + key + "' (it is a public const of the module)");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if has_named_args(args) {
+        chk_err(st, sp, "named arguments on method calls are not supported yet (call " + name + " as a function, or pass arguments positionally)");
+    }
+    let cls = receiver_class(st, object);
+    if cls != null {
+        let r = method_decl(st, cls, name);
+        if r == null {
+            chk_err(st, sp, "class '" + cls + "' has no method '" + name + "'");
+        }
+        let m = r[0];
+        let decl_cls = r[1];
+        if m[1] == "private" and st[8] != decl_cls {
+            chk_err(st, sp, "method '" + name + "' of class '" + decl_cls + "' is private");
+        }
+        let arity = m[2].len();
+        let arity_min = m[5];
+        if args.len() + 1 < arity_min or args.len() + 1 > arity {
+            let want = "";
+            if arity_min == arity {
+                want = string(arity - 1) + " argument(s)";
+            } else {
+                want = string(arity_min - 1) + " to " + string(arity - 1) + " argument(s)";
+            }
+            chk_err(st, sp, "method '" + name + "' expects " + want + ", got " + string(args.len()));
+        }
+        let msig = method_sig(st, cls, name);
+        if msig != null {
+            let i = 0;
+            while i < args.len() {
+                if i + 1 < msig[2].len() and msig[2][i + 1] != null {
+                    let want = resolve_type(st, msig[2][i + 1]);
+                    let got = type_of(st, args[i]);
+                    if not assignable(st, got, want) {
+                        chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of method '" + name + "' expects " + ty_name(want) + ", got " + ty_name(got));
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+    return;
+}
+
+fn check_new(st, e) {
+    let sp = e[3];
+    let cls = e[1];
+    let args = e[2];
+    let known_cls = classes_of(st).has(cls) or cls == "Object" or lookup(st, cls) != null;
+    if not known_cls {
+        chk_err(st, sp, "unknown class '" + cls + "'");
+    }
+    if classes_of(st).has(cls) {
+        let ci = classes_of(st)[cls];
+        if ci[5] {
+            chk_err(st, sp, "cannot instantiate the abstract class '" + cls + "' (subclass it and implement its abstract methods)");
+        }
+        let mi = method_sig(st, cls, "new");
+        if mi != null {
+            if has_named_args(args) {
+                check_named_args(st, args, mi[3], mi[5], "new " + cls, sp);
+            } else if args.len() < mi[5] or args.len() > mi[2].len() {
+                let want = "";
+                if mi[5] == mi[2].len() {
+                    want = string(mi[2].len()) + " argument(s)";
+                } else {
+                    want = string(mi[5]) + " to " + string(mi[2].len()) + " argument(s)";
+                }
+                chk_err(st, sp, "new " + cls + " expects " + want + ", got " + string(args.len()));
+            }
+        } else if args.len() > 0 {
+            chk_err(st, sp, "new " + cls + " expects 0 argument(s), got " + string(args.len()));
+        }
+    } else if cls == "Object" and args.len() > 0 {
+        chk_err(st, sp, "new Object expects 0 argument(s), got " + string(args.len()));
+    } else if has_named_args(args) {
+        chk_err(st, sp, "named arguments on 'new " + cls + "' are not supported: the class is not declared in this file");
+    }
+    for a in args {
+        check_arg(st, a);
+    }
+    return;
+}
+
+// -------------------------------------------------------------- type_of
+
+fn branch_type(st, then, els) {
+    let a = block_value_type(st, then);
+    let b = ["Null"];
+    if els != null {
+        b = block_value_type(st, els);
+    }
+    return common_type(a, b);
+}
+
+fn type_of(st, e) {
+    let tag = e[0];
+    if tag == "NamedArg" {
+        return ["Any"];
+    }
+    if tag == "Int" { return ["Int"]; }
+    if tag == "Float" { return ["Float"]; }
+    if tag == "Str" { return ["Str"]; }
+    if tag == "Bool" { return ["Bool"]; }
+    if tag == "Null" { return ["Null"]; }
+    if tag == "IfE" {
+        return branch_type(st, e[2], e[3]);
+    }
+    if tag == "Match" {
+        let acc = ["Null"];
+        for a in e[2] {
+            acc = common_type(acc, block_value_type(st, a[3]));
+        }
+        return acc;
+    }
+    if tag == "OptField" { return ["Any"]; }
+    if tag == "Propagate" { return ["Any"]; }
+    if tag == "Coalesce" {
+        return common_type(type_of(st, e[1]), type_of(st, e[2]));
+    }
+    if tag == "Ident" {
+        let name = e[1];
+        if name == "self" {
+            if st[8] != null {
+                return ["Class", st[8]];
+            }
+            return ["Any"];
+        }
+        let v = lookup(st, name);
+        if v != null and v[2] != null {
+            return v[2];
+        }
+        return ["Any"];
+    }
+    if tag == "List" {
+        let elem = null;
+        for it in e[1] {
+            let t = type_of(st, it);
+            if elem == null {
+                elem = t;
+            } else if elem != t {
+                elem = ["Any"];
+                break;
+            }
+        }
+        return ["Coll", "list", elem];
+    }
+    if tag == "Fn" {
+        return fn_sig_type(st, e[1]);
+    }
+    if tag == "Unary" {
+        if e[1] == "Neg" {
+            let t = type_of(st, e[2]);
+            if t[0] == "Int" or t[0] == "Float" {
+                return t;
+            }
+            return ["Any"];
+        }
+        return ["Bool"];
+    }
+    if tag == "Binary" {
+        let op = e[1];
+        if op == "Add" {
+            let a = type_of(st, e[2]);
+            let b = type_of(st, e[3]);
+            if a[0] == "Str" and b[0] == "Str" {
+                return ["Str"];
+            }
+            if a[0] == "Coll" and b[0] == "Coll" {
+                if a[1] == "list" and b[1] == "list" {
+                    return ["Coll", "list", null];
+                }
+            }
+            if a[0] == "Int" and b[0] == "Int" {
+                return ["Int"];
+            }
+            if a[0] == "Float" or b[0] == "Float" {
+                return ["Float"];
+            }
+            return ["Any"];
+        }
+        if op == "Sub" or op == "Mul" or op == "Div" or op == "Mod" {
+            let a = type_of(st, e[2]);
+            let b = type_of(st, e[3]);
+            if a[0] == "Int" and b[0] == "Int" {
+                return ["Int"];
+            }
+            if a[0] == "Float" or b[0] == "Float" {
+                return ["Float"];
+            }
+            return ["Any"];
+        }
+        return ["Bool"];
+    }
+    if tag == "Logical" { return ["Bool"]; }
+    if tag == "Super" { return ["Any"]; }
+    if tag == "SuperCall" { return ["Any"]; }
+    if tag == "Call" {
+        let callee = e[1];
+        if callee[0] == "Ident" {
+            let name = callee[1];
+            if funcs_of(st).has(name) {
+                let fi = funcs_of(st)[name];
+                if fi[4] != null {
+                    return resolve_type(st, fi[4]);
+                }
+                return ["Any"];
+            }
+            if CONS_MAP.has(name) {
+                let elem = null;
+                for a in e[2] {
+                    let t = type_of(st, a);
+                    if elem == null {
+                        elem = t;
+                    } else if elem != t {
+                        elem = ["Any"];
+                        break;
+                    }
+                }
+                return ["Coll", coll_kind(name), elem];
+            }
+            let rt = builtin_return_type(name);
+            if rt != null {
+                return rt;
+            }
+            let v = lookup(st, name);
+            if v != null and v[2] != null and v[2][0] == "Fn" and v[2][1] != null {
+                if v[2][1][3] != null {
+                    return v[2][1][3];
+                }
+                return ["Any"];
+            }
+            return ["Any"];
+        }
+        let ct = type_of(st, callee);
+        if ct[0] == "Fn" and ct[1] != null {
+            if ct[1][3] != null {
+                return ct[1][3];
+            }
+        }
+        return ["Any"];
+    }
+    if tag == "Method" {
+        let c = receiver_class(st, e[2]);
+        if c != null {
+            let mi = method_sig(st, c, e[1]);
+            if mi != null {
+                if mi[4] != null {
+                    return resolve_type(st, mi[4]);
+                }
+            }
+        }
+        return ["Any"];
+    }
+    if tag == "Index" {
+        let t = type_of(st, e[1]);
+        if t[0] == "Coll" and t[2] != null {
+            return t[2];
+        }
+        return ["Any"];
+    }
+    if tag == "FieldE" {
+        let t = type_of(st, e[2]);
+        if t[0] == "Class" {
+            if classes_of(st).has(t[1]) {
+                let fields = classes_of(st)[t[1]][3];
+                if fields.has(e[1]) {
+                    let ft = fields[e[1]][1];
+                    if ft != null {
+                        return resolve_type(st, ft);
+                    }
+                }
+            }
+        }
+        return ["Any"];
+    }
+    if tag == "New" {
+        if classes_of(st).has(e[1]) {
+            return ["Class", e[1]];
+        }
+        return ["Any"];
+    }
+    if tag == "Assign" {
+        return type_of(st, e[3]);
+    }
+    if tag == "Await" {
+        return type_of(st, e[1]);
+    }
+    if tag == "Spawn" { return ["Any"]; }
+    return ["Any"];
+}
+
+// ----------------------------------------------------------- assignability
+
+fn assignable(st, from, to) {
+    if to[0] == "Any" {
+        return true;
+    }
+    if from[0] == "Any" {
+        return true;
+    }
+    if from[0] == "Union" {
+        for m in from[1] {
+            if not assignable(st, m, to) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if to[0] == "Union" {
+        for m in to[1] {
+            if assignable(st, from, m) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if to[0] == "Nullable" {
+        if from[0] == "Null" {
+            return true;
+        }
+        return assignable(st, from, to[1]);
+    }
+    if from[0] == "Nullable" {
+        return assignable(st, ["Null"], to) and assignable(st, from[1], to);
+    }
+    let f = from[0];
+    let t = to[0];
+    if f == "Int" and t == "Int" { return true; }
+    if f == "Float" and t == "Float" { return true; }
+    if f == "Bool" and t == "Bool" { return true; }
+    if f == "Str" and t == "Str" { return true; }
+    if f == "Null" and t == "Null" { return true; }
+    if f == "Int" and t == "Float" { return true; }
+    if f == "Null" and (t == "Class" or t == "Interface" or t == "Coll") { return true; }
+    if f == "Class" and t == "Class" {
+        return from[1] == to[1] or is_subclass(st, from[1], to[1]);
+    }
+    if f == "Class" and t == "Interface" {
+        return implements_iface(st, from[1], to[1]);
+    }
+    if f == "Coll" and t == "Coll" {
+        if from[1] != to[1] {
+            return false;
+        }
+        if from[1] == "result" {
+            return true;
+        }
+        if from[2] != null and to[2] != null {
+            return assignable(st, from[2], to[2]) or assignable(st, to[2], from[2]);
+        }
+        return true;
+    }
+    if f == "Fn" and t == "Fn" {
+        if from[1] == null or to[1] == null {
+            return true;
+        }
+        let a = from[1];
+        let b = to[1];
+        if a[0] != b[0] {
+            return false;
+        }
+        let i = 0;
+        while i < a[2].len() {
+            if a[2][i] != null and b[2][i] != null {
+                if not assignable(st, a[2][i], b[2][i]) and not assignable(st, b[2][i], a[2][i]) {
+                    return false;
+                }
+            }
+            i += 1;
+        }
+        if a[3] != null and b[3] != null {
+            return assignable(st, a[3], b[3]);
+        }
+        return true;
+    }
+    return false;
+}
+
+// ------------------------------------------------- the registry JSON dump
+
+// Byte-identical twin of src/semantic registry_json (SH-5, roadmap 3.1):
+// source-order classes, interfaces, enums, functions, imports.
+let REG = [];
+
+public fn registry_json(st, prog, source_file) {
+    REG = [];
+    REG.push("{\"file\":");
+    REG.push(jstr(source_file));
+    let class_nodes = gather(prog, "Class");
+    let iface_nodes = gather(prog, "Interface");
+    let enum_nodes = gather(prog, "Enum");
+    let fn_nodes = gather(prog, "Fn");
+    let import_nodes = gather(prog, "Import");
+
+    REG.push(",\"classes\":[");
+    emit_sep( class_nodes, 0, class_json);
+    REG.push("],\"interfaces\":[");
+    emit_sep( iface_nodes, 0, iface_json);
+    REG.push("],\"enums\":[");
+    emit_sep( enum_nodes, 0, enum_json);
+    REG.push("],\"functions\":[");
+    emit_sep( fn_nodes, 0, fn_reg_json);
+    REG.push("],\"imports\":[");
+    emit_sep( import_nodes, 0, import_json);
+    REG.push("]}
+");
+    return REG.join("");
+}
+
+fn gather(prog, tag) {
+    let nodes = [];
+    for s in prog[0] {
+        if s[0] == tag {
+            nodes.push(s);
+        }
+    }
+    return nodes;
+}
+
+// emit `fn(i, s)` for each node, comma-separated. Spid3r functions are
+// first-cls values, so the per-node emitter arrives as an argument.
+fn emit_sep(nodes, unused, f) {
+    let i = 0;
+    while i < nodes.len() {
+        if i > 0 {
+            REG.push(",");
+        }
+        f(i, nodes[i]);
+        i += 1;
+    }
+    return;
+}
+
+fn class_json(i, s) {
+    REG.push("{\"name\":");
+    REG.push(jstr(s[2]));
+    REG.push(",\"vis\":\"" + s[1] + "\"");
+    REG.push(",\"is_abstract\":" + string(s[3]));
+    REG.push(",\"abstracts\":");
+    REG.push(str_list_json(s[4]));
+    REG.push(",\"parent\":");
+    REG.push(jstr_null(s[5]));
+    REG.push(",\"interfaces\":");
+    REG.push(str_list_json(s[6]));
+    REG.push(",\"type_params\":");
+    REG.push(str_list_json(s[7]));
+    REG.push(",\"fields\":[");
+    let j = 0;
+    for f in s[8] {
+        if j > 0 {
+            REG.push(",");
+        }
+        REG.push("{\"name\":" + jstr(f[2]) + ",\"vis\":\"" + f[1] + "\"}");
+        j += 1;
+    }
+    REG.push("],\"methods\":[");
+    j = 0;
+    for m in s[9] {
+        if j > 0 {
+            REG.push(",");
+        }
+        let mname = m[4];
+        if mname == null {
+            mname = "";
+        }
+        REG.push("{\"name\":" + jstr(mname) + ",\"vis\":\"" + m[1] + "\",\"arity\":" + string(m[5].len()) + ",\"min_arity\":" + string(m[5].len() - count_defaults(m[5])) + ",\"is_async\":" + string(m[2]) + "}");
+        j += 1;
+    }
+    REG.push("]}");
+    return;
+}
+
+fn iface_json(i, s) {
+    REG.push("{\"name\":");
+    REG.push(jstr(s[2]));
+    REG.push(",\"vis\":\"" + s[1] + "\"");
+    REG.push(",\"methods\":[");
+    let j = 0;
+    for m in s[3] {
+        if j > 0 {
+            REG.push(",");
+        }
+        REG.push("{\"name\":" + jstr(m[1]) + ",\"arity\":" + string(m[2].len()) + "}");
+        j += 1;
+    }
+    REG.push("],\"defaults\":[");
+    j = 0;
+    for dm in s[4] {
+        if j > 0 {
+            REG.push(",");
+        }
+        let dn = dm[4];
+        if dn == null {
+            dn = "";
+        }
+        REG.push("{\"name\":" + jstr(dn) + ",\"arity\":" + string(dm[5].len()) + "}");
+        j += 1;
+    }
+    REG.push("]}");
+    return;
+}
+
+fn enum_json(i, s) {
+    REG.push("{\"name\":");
+    REG.push(jstr(s[2]));
+    REG.push(",\"vis\":\"" + s[1] + "\"");
+    REG.push(",\"variants\":[");
+    let j = 0;
+    for v in s[3] {
+        if j > 0 {
+            REG.push(",");
+        }
+        REG.push("{\"name\":" + jstr(v[1]) + ",\"nfields\":" + string(v[2].len()) + "}");
+        j += 1;
+    }
+    REG.push("]}");
+    return;
+}
+
+fn fn_reg_json(i, s) {
+    let f = s[1];
+    let name = f[4];
+    if name == null {
+        name = "";
+    }
+    REG.push("{\"name\":");
+    REG.push(jstr(name));
+    REG.push(",\"vis\":\"" + f[1] + "\"");
+    REG.push(",\"is_async\":" + string(f[2]));
+    REG.push(",\"is_extern\":" + string(f[3]));
+    REG.push(",\"arity\":" + string(f[5].len()));
+    REG.push(",\"min_arity\":" + string(f[5].len() - count_defaults(f[5])));
+    REG.push(",\"param_names\":");
+    let pnames = [];
+    for p in f[5] {
+        pnames.push(p[1]);
+    }
+    REG.push(str_list_json(pnames));
+    REG.push(",\"ret\":");
+    if f[6] != null {
+        REG.push(jstr(f[6][1]));
+    } else {
+        REG.push("null");
+    }
+    REG.push("}");
+    return;
+}
+
+fn import_json(i, s) {
+    REG.push("{\"path\":");
+    REG.push(jstr(s[1]));
+    REG.push(",\"alias\":");
+    REG.push(jstr_null(s[2]));
+    REG.push("}");
+    return;
+}
+
+
+fn str_list_json(xs) {
+    let frags = [];
+    frags.push("[");
+    let i = 0;
+    for x in xs {
+        if i > 0 {
+            frags.push(",");
+        }
+        frags.push(jstr(x));
+        i += 1;
+    }
+    frags.push("]");
+    return frags.join("");
+}
+
+fn jstr_null(v) {
+    if v == null {
+        return "null";
+    }
+    return jstr(v);
+}

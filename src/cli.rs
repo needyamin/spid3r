@@ -1491,6 +1491,7 @@ fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
     // identity lowering pass that is the same tree, but it is the only way to
     // see a desugaring rule's output without reading engine code.
     let mut dump = false;
+    let mut dump_registry = false;
     let mut deny_warnings = false;
     let mut allow: Vec<String> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
@@ -1498,6 +1499,7 @@ fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
     while i < args.len() {
         match args[i].as_str() {
             "--dump-lowered" => dump = true,
+            "--dump-registry-json" => dump_registry = true,
             "--deny-warnings" => deny_warnings = true,
             "--allow" => {
                 let name = args
@@ -1509,7 +1511,7 @@ fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
             other if other.starts_with("--") => {
                 return Err(usage(&format!(
                     "check: unknown flag '{}' (supported: --json, --dump-lowered, \
-                     --deny-warnings, --allow LINT)",
+                     --dump-registry-json, --deny-warnings, --allow LINT)",
                     other
                 )))
             }
@@ -1527,6 +1529,14 @@ fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
     });
     // `check` is the only command that surfaces lint warnings; every other
     // entry point keeps using the validity-only API.
+    if dump_registry {
+        // SH-5 oracle tooling (roadmap 3.1): the declaration registry as
+        // deterministic JSON, for the self-host checker's parity harness.
+        // The check runs first; a file that does not check errors out here.
+        let registry = semantic::registry_json(&program, has_main, &file)?;
+        print!("{}", registry);
+        return Ok(EXIT_OK);
+    }
     let warnings = semantic::check_file_with_warnings(&program, has_main, &file)?;
     let mut reported = 0usize;
     for w in &warnings {
