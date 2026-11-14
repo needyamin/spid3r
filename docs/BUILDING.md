@@ -441,6 +441,30 @@ linker — MSVC `link.exe` plus the CRT/SDK import libraries on Windows,
 has **no** `LLVM-C.dll` dependency — verified by running built binaries from
 an isolated directory).
 
+## The stage-0 oracle dumps (`tokens`, `parse`)
+
+Two small subcommands exist purely as **bootstrap tooling** for the self-hosting
+program (docs/SELFHOST.md SH-5): they dump the stage-0 front end's internal
+state as deterministic JSON so the Spid3r-written lexer and parser
+(`selfhost/`) can be diffed against the Rust oracle, corpus-wide. They never
+run the semantic checker or any engine, never change user-visible behavior,
+and follow the standard 0/1/2/4 exit codes (0 ok; 1 lex/parse diagnostic;
+2 usage).
+
+```console
+$ spid3r tokens app.matrix --json           # {"file":…,"count":N,"tokens":[…]}
+$ spid3r parse app.matrix --dump-ast-json   # {"file":…,"stmts":[…]}
+```
+
+Both are pure functions of the source text — two runs on the same input are
+byte-identical (a Phase-0 gate ran them twice over the whole runnable-example
+corpus and diffed). Token payloads are the lexer's model values (a `Str`
+carries the decoded string, a `Float` its f64); every AST node is
+`{"node":"<Variant>",…fields in declaration order…,"span":{"line","col","len"}}`
+with `file` named once at the top level. The AST JSON shape is the Phase-2
+parity contract: the Spid3r-written parser must reproduce it byte-for-byte on
+the frozen corpus. Implementation: `src/oracle.rs`.
+
 ## Building the VS Code extension
 
 The language server is part of the compiler, so building the compiler is all the

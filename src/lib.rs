@@ -26,6 +26,7 @@ pub mod logging;
 pub mod lower;
 pub mod lsp;
 pub mod modules;
+pub mod oracle;
 pub mod parser;
 pub mod pkg;
 pub mod plugin;

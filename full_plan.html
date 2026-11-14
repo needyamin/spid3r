@@ -175,7 +175,7 @@ the historical bootstrap and the reference oracle.</p>
   <p class="gate"><span class="lbl gate">GATE</span> the ADR is committed, links from README, and every later checkbox in this file references its decision IDs.</p>
 </div></div>
 
-<div class="step"><input type="checkbox" id="s0-2"><div class="body">
+<div class="step"><input type="checkbox" id="s0-2" checked><div class="body">
   <span class="st-title"><span class="id">0.2</span><span class="lbl dec">SH-7</span> FFI pointer support in the AOT backend — the LLVM-C enabler</span>
   <p class="deliv"><span class="lbl del">DELIV</span> extend <code>extern fn</code> boundary types with <code>ptr</code> (opaque pointer as <code>i64</code>-encoded handle or real pointer via trampoline) and <code>usize</code>: marshalling trampolines (<code>spid3r_to_ptr</code>/<code>spid3r_value_from_ptr</code>) in <code>src/native/rt.rs</code>, type mapping in <code>src/native/ir.rs</code> <code>c_type()</code>/<code>declare_externs</code>/<code>compile_extern_call</code>, docs/FFI.md update. Sandbox-aware: ptr FFI is behind the same capability gate.</p>
   <p class="gate"><span class="lbl gate">GATE</span> new FFI tests: a Spid3r program calls a C test library with pointer round-trips (write through a pointer, read back, free); <code>cargo test --features native</code> green; the 87-case engine matrix unchanged; docs/FFI.md documents the trust tier (T5-level) and the sandbox interaction.</p>
@@ -187,7 +187,7 @@ the historical bootstrap and the reference oracle.</p>
   <p class="gate"><span class="lbl gate">GATE</span> the manifest verifies; a CI step fails if corpus programs change without a ledger entry; the corpus count and checksums are recorded in the ledger.</p>
 </div></div>
 
-<div class="step"><input type="checkbox" id="s0-4"><div class="body">
+<div class="step"><input type="checkbox" id="s0-4" checked><div class="body">
   <span class="st-title"><span class="id">0.4</span><span class="lbl dec">SH-5</span> Stage-0 debug dump surface (oracle tooling)</span>
   <p class="deliv"><span class="lbl del">DELIV</span> small stage-0 additions used only as the parity oracle: <code>spid3r tokens --json</code> (Phase 1), <code>spid3r parse --dump-ast-json</code> (Phase 2), diagnostic dumps. These are bootstrap tooling, clearly marked, and never change user-visible behavior.</p>
   <p class="gate"><span class="lbl gate">GATE</span> each dump runs on the whole corpus without differences across two consecutive runs (deterministic); documented in docs/BUILDING.md; exit codes follow the 0/1/2/4 contract.</p>
@@ -513,6 +513,8 @@ dynamic values vs unboxed), the benchmark page says so — honestly, with the me
 <tr><td>2026-11-14</td><td class="mono">plan</td><td>this roadmap created; grounded in the 2026-11-14 audit</td><td>document committed, all checkboxes open</td></tr>
 <tr><td>2026-11-14</td><td class="mono">plan rev 2</td><td>performance-engineering program added (Phase 11 P-1…P-9, Tier A/B/C target discipline, inline PERF gates in Phases 1/2/5/7, Appendix B measured baselines); grounded in report-data.json 2026-11-14 and docs/PERF_TARGET_RETIREMENT.md</td><td>document committed, checkboxes still all open</td></tr>
 <tr><td>2026-11-14</td><td class="mono">0.1</td><td>docs/SELFHOST.md committed in the same change as this edit (ADR: stages SH-1, no-Rust milestones SH-2, layout SH-3, corpus SH-4, parity SH-5, runtime artifact SH-6, LLVM-C boundary SH-7, rollback SH-8); README Documentation table links it; every checkbox below now carries its decision chip</td><td>PASS — gate is “committed, linked, referenced”; checkbox 0.1 checked in the same commit</td></tr>
+<tr><td>2026-11-14</td><td class="mono">0.2</td><td>commit 5867e24 — ptr/usize FFI boundary (SH-7): opaque i64-handle pointers (spid3r_to_ptr / spid3r_value_from_ptr), declared-name marshalling (extern_sigs: string vs ptr are both LLVM pointers), checker accepts both names. Evidence: cargo test --test ffi --features native 7/7 (incl. the new pointer_and_usize_round_trip and expected-pointer throw); tests/engine_matrix 11/11 — the 87-case matrix + AOT subset unchanged; clippy --all-targets --features native clean; tools/difftest.sh ALL MATCH. docs/FFI.md: six-type table, T5 trust, --sandbox interaction.</td><td>PASS</td></tr>
+<tr><td>2026-11-14</td><td class="mono">0.4</td><td>spid3r tokens --json and spid3r parse --dump-ast-json (src/oracle.rs, SH-5): deterministic JSON dumps of the token stream and parse tree; pure functions of the source; exit codes verified 0/1/2 on the corpus. Determinism: tools/oracle_dump_check.sh — 240 dumps × 2 passes byte-identical over all 120 positive-corpus programs (negatives reject before any dump exists; their parity target is diagnostics, not dumps). Documented in docs/BUILDING.md. Gate catch recorded: tests/control_tests::every_cli_command_is_panel_decidable went RED until tokens/parse got a panel decision (src/control/lang.rs ALLOWED) — fixed and green.</td><td>PASS — full tools/gate.sh 9/9 + difftest ALL MATCH on this tree (one earlier run had test[default] flake in phase2_net_limits under parallel load; 13/13 isolated and green in this final run)</td></tr>
 <tr><td></td><td></td><td></td><td></td></tr>
 <tr><td></td><td></td><td></td><td></td></tr>
 </table>

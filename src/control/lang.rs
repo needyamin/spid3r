@@ -38,6 +38,9 @@ const ALLOWED: &[&str] = &[
     "add", "publish", "remove", "search", "verify", "tree",
     // Device-pairing and remote administration one-shots.
     "admin", "agent", "help",
+    // Stage-0 oracle dumps (SH-5): deterministic captured-output one-shots,
+    // same shape as `disasm`.
+    "tokens", "parse",
 ];
 
 /// Commands that run interactively in their own console / window instead of

@@ -71,6 +71,11 @@ COMMANDS:
                                            access)
     disasm <file.matrixc>                  Print the human-readable bytecode
                                            disassembly
+    tokens <file.matrix> [--json]          Stage-0 oracle dump: the token stream
+                                           as deterministic JSON (SH-5 bootstrap
+                                           tooling, docs/SELFHOST.md)
+    parse <file.matrix> [--dump-ast-json]  Stage-0 oracle dump: the parse tree
+                                           as deterministic JSON (same)
     repl                                   Interactive read-eval-print loop
     debug <file.matrix> [--break L[,L…]] [--commands FILE]
                                            Line-based debugger on the VM:
@@ -179,6 +184,8 @@ pub fn run(args: Vec<String>) -> i32 {
             | "build"
             | "bundle"
             | "disasm"
+            | "tokens"
+            | "parse"
             | "verify"
             | "tree"
             | "dist"
@@ -404,6 +411,8 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "bundle" => cmd_bundle(&rest),
         "exec" => cmd_exec(&rest),
         "disasm" => cmd_disasm(&rest),
+        "tokens" => cmd_tokens(&rest),
+        "parse" => cmd_parse(&rest),
         "repl" => {
             crate::repl::run();
             Ok(EXIT_OK)
@@ -1923,6 +1932,58 @@ fn test_selected(opts: &TestOpts, path: &Path) -> bool {
             .map(|s| s.to_string_lossy().contains(needle.as_str()))
             .unwrap_or(false),
     }
+}
+
+/// Shared flag parsing for the two oracle dumps: exactly one optional flag
+/// and exactly one file. An unknown flag is a usage error (exit 2).
+fn dump_args(args: &[String], cmd: &str, flag: &str) -> Result<(bool, String), Diagnostic> {
+    let mut set = false;
+    let mut file: Option<String> = None;
+    for a in args {
+        if a == flag {
+            set = true;
+        } else if a.starts_with("--") {
+            return Err(usage(&format!("unknown option '{}' for {}", a, cmd)));
+        } else if file.is_some() {
+            return Err(usage(&format!("{} takes exactly one file", cmd)));
+        } else {
+            file = Some(a.clone());
+        }
+    }
+    let file = file.ok_or_else(|| usage(&format!("{} needs a .matrix file", cmd)))?;
+    Ok((set, file))
+}
+
+/// `spid3r tokens <file.matrix> [--json]` — the stage-0 oracle dump (SH-5):
+/// the lexer's token stream. `--json` prints the deterministic JSON the
+/// self-host parity harness diffs against; without it, a one-line summary.
+/// Lex errors print in the standard diagnostic form and exit 1.
+fn cmd_tokens(args: &[String]) -> Result<i32, Diagnostic> {
+    let (json, file) = dump_args(args, "tokens", "--json")?;
+    let (src, file_name) = read_source(&file)?;
+    let toks = crate::lexer::Lexer::new(&src, file_name.clone()).tokenize()?;
+    if json {
+        print!("{}", crate::oracle::tokens_to_json(&file_name, &toks));
+    } else {
+        println!("{} tokens", toks.len());
+    }
+    Ok(EXIT_OK)
+}
+
+/// `spid3r parse <file.matrix> [--dump-ast-json]` — the stage-0 oracle dump
+/// (SH-5): the parse tree. `--dump-ast-json` prints the deterministic JSON
+/// the Phase-2 parity gates compare against. Parse errors exit 1; the dump
+/// never runs the semantic checker or any engine.
+fn cmd_parse(args: &[String]) -> Result<i32, Diagnostic> {
+    let (dump, file) = dump_args(args, "parse", "--dump-ast-json")?;
+    let (src, file_name) = read_source(&file)?;
+    let prog = parser::parse_file(&src, file_name.clone())?;
+    if dump {
+        print!("{}", crate::oracle::program_to_json(&file_name, &prog));
+    } else {
+        println!("ok: {} top-level statements", prog.stmts.len());
+    }
+    Ok(EXIT_OK)
 }
 
 fn cmd_test(args: &[String]) -> Result<i32, Diagnostic> {
