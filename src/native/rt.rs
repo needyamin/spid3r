@@ -1913,6 +1913,11 @@ pub extern "C" fn spid3r_eprintln(argc: usize, argv: *const *mut Value) {
 #[no_mangle]
 pub extern "C" fn spid3r_rt_start(entry: extern "C" fn() -> *mut Value) -> i32 {
     rt_init();
+    // Built executables get `args()` from the process argv, the same shape
+    // `spid3r run app.matrix one two` delivers to the script: everything after
+    // the program itself. (The script engines install this in the CLI before
+    // any engine runs; a built binary's argv IS the script's argv.)
+    crate::stdlib::set_script_args(std::env::args().skip(1).collect());
     ffi_guard("rt_start", |_| 70, || run_program(entry))
 }
 
