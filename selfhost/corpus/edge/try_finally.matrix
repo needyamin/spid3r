@@ -1,0 +1,32 @@
+// SH-4 edge corpus: try/catch/finally ordering, throw, result values.
+fn parse_age(s) {
+    let n = int(s);
+    if n < 0 {
+        return err("age cannot be negative");
+    }
+    return ok(n);
+}
+
+fn main() {
+    try {
+        print(10 / 0);
+    } catch (error) {
+        eprint("caught: " + error);
+    } finally {
+        println("finally-after-div-zero");
+    }
+
+    try {
+        throw "boom";
+    } catch (e) {
+        println("user error: " + e);
+    } finally {
+        println("finally-after-throw");
+    }
+
+    let r = parse_age("42");
+    println(r.is_ok());
+    let bad = parse_age("-1");
+    println(bad.is_err());
+    return 0;
+}

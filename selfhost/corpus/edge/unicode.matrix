@@ -1,0 +1,13 @@
+// SH-4 edge corpus: unicode — multi-byte text, emoji, combining marks.
+// Spans measure characters, not bytes, so error carets land on glyphs.
+fn main() {
+    let s = "héllo wörld";
+    println(s);
+    println(s.len());
+    println("日本語のテキスト");
+    println("🚀🎉");
+    println("café".upper());
+    println("ß".upper());
+    println("naïve-Ω".split("-").join("_"));
+    return 0;
+}

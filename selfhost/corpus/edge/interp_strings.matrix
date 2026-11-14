@@ -1,0 +1,10 @@
+// SH-4 edge corpus: string interpolation holes ({name}, {a.b}, {expr}) and
+// the escaped-literal forms that must stay text.
+fn main() {
+    let user = "Ada";
+    let n = 42;
+    println("hello, {user}!");
+    println("n={n} doubled={n * 2}");
+    println("literal braces stay: {{ user }}");
+    return 0;
+}

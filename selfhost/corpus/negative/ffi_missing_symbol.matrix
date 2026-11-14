@@ -1,0 +1,8 @@
+// SH-4 negative corpus: error[build] — an extern fn nothing defines fails at
+// link time (exercised by `spid3r build`, not by the script engines, which
+// reject extern fn with error[usage] before anything runs).
+extern fn no_such_symbol(a: int) -> int;
+fn main() {
+    println(no_such_symbol(1));
+    return 0;
+}

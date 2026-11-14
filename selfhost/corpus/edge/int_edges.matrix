@@ -1,0 +1,17 @@
+// SH-4 edge corpus: integer edges — i64::MIN magnitude literal (the lexer's
+// IntMinMagnitude token), i64::MAX arithmetic that stays in range, exact
+// division semantics. Every printed value is exact; nothing overflows.
+fn main() {
+    println(9223372036854775807);
+    println(-9223372036854775808);
+    println(9223372036854775807 - 1);
+    println(0 - 9223372036854775807);
+    println(4611686018427387904 + 4611686018427387903);
+    println(7 / 2);
+    println(-7 / 2);
+    println(7 % 2);
+    println(-7 % 2);
+    println(123n);
+    println(123456789012345678901234567890n);
+    return 0;
+}

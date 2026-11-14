@@ -1,0 +1,38 @@
+// SH-4 edge corpus: OOP — interfaces, inheritance, super, visibility.
+interface Named {
+    fn name(self) -> string;
+}
+
+class Animal implements Named {
+    public let kind;
+
+    fn new(kind) {
+        self.kind = kind;
+    }
+
+    public fn name(self) -> string {
+        return self.kind;
+    }
+}
+
+class Dog extends Animal implements Named {
+    public let callname;
+
+    fn new(callname) {
+        super("dog");
+        self.callname = callname;
+    }
+
+    public fn name(self) -> string {
+        return super.name() + ":" + self.callname;
+    }
+}
+
+fn main() {
+    let d = Dog("Rex");
+    println(d.name());
+    println(d.kind);
+    let a = Animal("cat");
+    println(a.name());
+    return 0;
+}

@@ -1,0 +1,5 @@
+// SH-4 negative corpus: error[lexer] — unterminated string literal.
+fn main() {
+    let s = "never closed;
+    return 0;
+}

@@ -1,0 +1,9 @@
+// SH-4 edge corpus: modules — plain, selective and aliased imports across
+// sibling files (the transitive no-leak shape is covered in engine_matrix).
+import "edge_lib";
+
+fn main() {
+    println(square(7));
+    println(edge_lib);
+    return 0;
+}

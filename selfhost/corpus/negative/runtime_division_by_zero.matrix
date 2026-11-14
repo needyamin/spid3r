@@ -1,0 +1,6 @@
+// SH-4 negative corpus: error[runtime] — integer division by zero (catchable
+// with try/catch; here it propagates uncaught).
+fn main() {
+    println(1 / 0);
+    return 0;
+}

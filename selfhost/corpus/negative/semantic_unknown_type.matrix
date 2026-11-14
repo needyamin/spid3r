@@ -1,0 +1,5 @@
+// SH-4 negative corpus: error[semantic] — an unknown type name.
+fn main() {
+    let x: nosuchtype = 1;
+    return 0;
+}

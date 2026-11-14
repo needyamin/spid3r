@@ -1,0 +1,29 @@
+// SH-4 edge corpus: concurrency with explicitly ordered handoffs (the engine
+// contract requires programs not to depend on spawn scheduling; every value
+// here crosses a channel, and every await joins deterministically).
+async fn join_two(a, b) {
+    return await a + await b;
+}
+
+fn main() {
+    let t1 = spawn fn() {
+        return 40;
+    };
+    let t2 = spawn fn() {
+        return 2;
+    };
+    println(join_two(t1, t2));
+
+    let ch = channel();
+    spawn fn() {
+        ch.send("first");
+        ch.send("second");
+    };
+    println(await_channel(ch));
+    println(await_channel(ch));
+    return 0;
+}
+
+async fn await_channel(ch) {
+    return await ch;
+}

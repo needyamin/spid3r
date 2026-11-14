@@ -1,0 +1,15 @@
+// SH-4 negative corpus: error[semantic] — a private field reached from
+// outside its class.
+class Box {
+    private let hidden;
+
+    fn new() {
+        self.hidden = "secret";
+    }
+}
+
+fn main() {
+    let b = new Box();
+    println(b.hidden);
+    return 0;
+}

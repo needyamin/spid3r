@@ -1,0 +1,6 @@
+// SH-4 negative corpus: error[semantic] — an annotation the value cannot
+// satisfy.
+fn main() {
+    let x: int = "not an int";
+    return 0;
+}

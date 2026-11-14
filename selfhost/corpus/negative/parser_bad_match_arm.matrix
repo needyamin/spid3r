@@ -1,0 +1,7 @@
+// SH-4 negative corpus: error[parser] — a match arm missing its '=>'.
+fn main() {
+    let r = match (1) {
+        1 { println("one"); }
+    };
+    return 0;
+}

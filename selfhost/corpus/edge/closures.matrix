@@ -1,0 +1,23 @@
+// SH-4 edge corpus: closures — separate capture cells, arrow forms,
+// higher-order callbacks. Runs identically on tree, vm and exec.
+fn counter() {
+    let n = 0;
+    return fn() {
+        n = n + 1;
+        return n;
+    };
+}
+
+fn main() {
+    let c = counter();
+    println(c());
+    println(c());
+    let d = counter();
+    println(d());
+
+    let xs = list(1, 2, 3, 4);
+    println(xs.map(x => x * 2));
+    println(xs.reduce(0, fn(acc, x) { return acc + x; }));
+    println(xs.filter(fn(x) { return x % 2 == 1; }));
+    return 0;
+}

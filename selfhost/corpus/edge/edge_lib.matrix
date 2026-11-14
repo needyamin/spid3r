@@ -1,0 +1,7 @@
+// SH-4 edge corpus: the sibling module of namespaces.matrix. Everything a
+// sibling file uses must be declared public (module-export visibility).
+public const edge_lib = "lib-loaded";
+
+public fn square(x) {
+    return x * x;
+}

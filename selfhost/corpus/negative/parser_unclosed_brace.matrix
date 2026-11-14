@@ -1,0 +1,4 @@
+// SH-4 negative corpus: error[parser] — a block that is never closed.
+fn main() {
+    let x = 1;
+    return 0;

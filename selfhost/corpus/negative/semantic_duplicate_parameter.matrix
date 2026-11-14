@@ -1,0 +1,7 @@
+// SH-4 negative corpus: error[semantic] — a duplicated parameter name.
+fn f(a: int, a: int) {
+    return a;
+}
+fn main() {
+    return 0;
+}

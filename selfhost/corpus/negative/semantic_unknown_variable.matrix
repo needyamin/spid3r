@@ -1,0 +1,5 @@
+// SH-4 negative corpus: error[semantic] — an unknown variable.
+fn main() {
+    println(no_such_name);
+    return 0;
+}

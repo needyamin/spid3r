@@ -1,0 +1,5 @@
+// SH-4 negative corpus: error[lexer] — unterminated block comment.
+/* this comment never ends
+fn main() {
+    return 0;
+}

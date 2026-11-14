@@ -1,0 +1,4 @@
+// SH-4 negative corpus: error[parser] — missing '(' after the fn name.
+fn main {
+    return 0;
+}
