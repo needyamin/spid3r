@@ -1,0 +1,667 @@
+// selfhost/flatten.matrix — AOT module flattening (roadmap Phase 6, step 6.2,
+// docs/SELFHOST.md SH-3).
+//
+// A port of src/native/modules.rs: resolve every `import` and inline the
+// module's top-level declarations into ONE self-contained program before
+// codegen. Three import shapes:
+//   * plain        `import "x";`       — inline recursively, unprefixed;
+//                                         deduped by resolved path; a cycle
+//                                         is a semantic diagnostic
+//   * aliased      `import "x" as a;`  — inline the module's OWN declarations
+//                                         with every own top-level name
+//                                         rewritten to `__mod_<alias>_<name>`,
+//                                         then bind `a` as a frozen namespace
+//                                         const of the public exports
+//   * selective    `import { b as c } from "x";` — `__sel_<idx>_` prefix and
+//                                         per-selection local bindings
+// The namespace's export set is the module's OWN top-level declarations
+// (collected BEFORE nested flattening): a module that plain-imports another
+// does not re-export that module's names — the no-leak rule the tree/VM
+// engines also enforce.
+//
+// Every imported module is parsed, semantically checked (is_main=false) and
+// LOWERED before its statements are flattened in — the same seam the other
+// backends use. The main program stays unlowered through the flatten (the
+// codegen pipeline lowers after flattening), so the rewrite walk must handle
+// surface-only shapes (IfE, Match, Coalesce, Propagate, NamedArg) as well as
+// lowered ones.
+//
+// Scope awareness: the rewrite prefixes a reference only when the name is one
+// of the module's own top-level names AND no local binding shadows it — so a
+// local `square` never captures a module-level call.
+
+import "token";
+import "lexer";
+import "ast";
+import "parser";
+import "semantic";
+import "lower";
+import "vmc";
+
+// ------------------------------------------------------------ resolution
+
+// The module's resolved source path (sibling of the importer, then the
+// stdlib/ root — the same roots semantic.matrix's resolver uses). Returns
+// null when nothing matches.
+fn fl_resolve(path, importer_file) {
+    return resolve_module_path(path, importer_file);
+}
+
+// The cycle-chain text: file NAMES of the in-progress chain (the seeded
+// program entry dropped when anything follows it), then the offending path.
+fn fl_basename(p) {
+    let cut = -1;
+    let i = 0;
+    let n = p.len();
+    while i < n {
+        let c = p[i];
+        if c == "/" or c == "\\" {
+            cut = i;
+        }
+        i += 1;
+    }
+    if cut >= 0 {
+        return p.slice(cut + 1, n);
+    }
+    return p;
+}
+
+fn fl_cycle_message(in_progress, path) {
+    let chain = [];
+    let start = 0;
+    if in_progress.len() > 1 {
+        start = 1;
+    }
+    let i = start;
+    while i < in_progress.len() {
+        chain.push(fl_basename(in_progress[i]));
+        i += 1;
+    }
+    chain.push(path);
+    return "circular import of '" + path + "' (chain: " + " -> ".join(chain) + ")";
+}
+
+// ---------------------------------------------------------- module loading
+
+// Read, parse, check (is_main=false) and lower one imported module. Returns
+// [lowered_prog, resolved_path]. The sub-parse runs inside lex_save/
+// lex_restore: the lexer's globals are state, and we are mid-walk of another
+// program's statements.
+fn fl_load_module(path, importer_file, sp) {
+    let resolved = fl_resolve(path, importer_file);
+    if resolved == null {
+        throw ["module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)", sp[0], sp[1], sp[2], "semantic"];
+    }
+    let r = read_file(resolved);
+    if r.is_err() {
+        throw ["cannot import '" + path + "': cannot read '" + resolved + "'", sp[0], sp[1], sp[2], "semantic"];
+    }
+    let src = r.unwrap();
+    let prog = null;
+    try {
+        let save = lex_save();
+        let toks = lex_all(src);
+        let pst = new_state(toks);
+        prog = parse_program(pst);
+        lex_restore(save);
+    } catch (e) {
+        let phase = "lexer";
+        if e.len() >= 5 {
+            phase = e[4];
+        }
+        throw [e[0], e[1], e[2], e[3], phase, resolved];
+    }
+    let cst = new_checker(false, resolved);
+    try {
+        check_program(cst, prog);
+    } catch (e2) {
+        let phase = "semantic";
+        if e2.len() >= 5 {
+            phase = e2[4];
+        }
+        throw [msg_of(e2), e2[1], e2[2], e2[3], phase, resolved];
+    }
+    let lst = new_lower();
+    let lowered = lower_program(lst, prog);
+    return [lowered, resolved];
+}
+
+// ------------------------------------------------------------- own decls
+
+// The module's OWN top-level declarations — the namespace's export set.
+// Transitively plain-imported names are deliberately absent (the no-leak
+// rule). Returns [names(map), public_exports(list), consts(map)].
+fn fl_own_top_decls(stmts) {
+    let names = map();
+    let public_exports = [];
+    let consts = map();
+    for s in stmts {
+        let t = s[0];
+        if t == "Fn" {
+            let name = s[1][4];
+            if name != null {
+                names[name] = 1;
+                if s[1][1] == "public" {
+                    public_exports.push(name);
+                }
+            }
+        } else if t == "Class" {
+            names[s[2]] = 1;
+            if s[1] == "public" {
+                public_exports.push(s[2]);
+            }
+        } else if t == "Let" {
+            names[s[2]] = 1;
+            if s[1] == "public" {
+                public_exports.push(s[2]);
+            }
+        } else if t == "Const" {
+            names[s[2]] = 1;
+            if s[1] == "public" {
+                public_exports.push(s[2]);
+                consts[s[2]] = 1;
+            }
+        }
+        // Nested imports are expanded elsewhere; they contribute nothing.
+    }
+    return [names, public_exports, consts];
+}
+
+// `import { a, b as c } from "m";` descriptor → [(export, local)] pairs.
+fn fl_parse_selections(alias) {
+    if alias.len() < 2 or alias[0] != "{" or alias[alias.len() - 1] != "}" {
+        return null;
+    }
+    let inner = alias.slice(1, alias.len() - 1);
+    let out = [];
+    for item in inner.split(",") {
+        if item == "" {
+            continue;
+        }
+        // `exp:loc` or a bare `exp`.
+        let cut = -1;
+        let i = 0;
+        while i < item.len() {
+            if item[i] == ":" {
+                cut = i;
+            }
+            i += 1;
+        }
+        if cut >= 0 {
+            out.push([item.slice(0, cut), item.slice(cut + 1, item.len())]);
+        } else {
+            out.push([item, item]);
+        }
+    }
+    return out;
+}
+
+// ------------------------------------------------------- the rewrite walk
+
+fn fl_shadowed(name, scopes) {
+    for s in scopes {
+        if s.has(name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn fl_rewrite_expr(e, prefix, top_names, scopes) {
+    let t = e[0];
+    if t == "Ident" {
+        if not fl_shadowed(e[1], scopes) and top_names.has(e[1]) {
+            return [t, prefix + e[1], e[2]];
+        }
+        return e;
+    }
+    if t == "List" {
+        let items = [];
+        for it in e[1] {
+            items.push(fl_rewrite_expr(it, prefix, top_names, scopes));
+        }
+        return [t, items, e[2]];
+    }
+    if t == "Fn" {
+        return [t, fl_rewrite_fn_proto(e[1], prefix, top_names, scopes), e[2]];
+    }
+    if t == "Unary" {
+        return [t, e[1], fl_rewrite_expr(e[2], prefix, top_names, scopes), e[3]];
+    }
+    if t == "Binary" {
+        return [t, e[1], fl_rewrite_expr(e[2], prefix, top_names, scopes), fl_rewrite_expr(e[3], prefix, top_names, scopes), e[4]];
+    }
+    if t == "Logical" {
+        return [t, e[1], fl_rewrite_expr(e[2], prefix, top_names, scopes), fl_rewrite_expr(e[3], prefix, top_names, scopes), e[4]];
+    }
+    if t == "Assign" {
+        return [t, e[1], fl_rewrite_expr(e[2], prefix, top_names, scopes), fl_rewrite_expr(e[3], prefix, top_names, scopes), e[4]];
+    }
+    if t == "Call" {
+        // A constructor call keeps its callee (list(...) is not a module name).
+        let callee = e[1];
+        if not (callee[0] == "Ident" and is_constructor_name(callee[1])) {
+            callee = fl_rewrite_expr(callee, prefix, top_names, scopes);
+        }
+        let args = [];
+        for a in e[2] {
+            args.push(fl_rewrite_expr(a, prefix, top_names, scopes));
+        }
+        return [t, callee, args, e[3]];
+    }
+    if t == "Method" {
+        let args = [];
+        for a in e[3] {
+            args.push(fl_rewrite_expr(a, prefix, top_names, scopes));
+        }
+        return [t, e[1], fl_rewrite_expr(e[2], prefix, top_names, scopes), args, e[4]];
+    }
+    if t == "Index" {
+        return [t, fl_rewrite_expr(e[1], prefix, top_names, scopes), fl_rewrite_expr(e[2], prefix, top_names, scopes), e[3]];
+    }
+    if t == "FieldE" {
+        return [t, e[1], fl_rewrite_expr(e[2], prefix, top_names, scopes), e[3]];
+    }
+    if t == "New" {
+        // New[1] is the class-name string: same shadow-aware prefixing as an
+        // Ident.
+        let cls = e[1];
+        if not fl_shadowed(cls, scopes) and top_names.has(cls) {
+            cls = prefix + cls;
+        }
+        let args = [];
+        for a in e[2] {
+            args.push(fl_rewrite_expr(a, prefix, top_names, scopes));
+        }
+        return [t, cls, args, e[3]];
+    }
+    if t == "Await" {
+        return [t, fl_rewrite_expr(e[1], prefix, top_names, scopes), e[2]];
+    }
+    if t == "Spawn" {
+        return [t, fl_rewrite_expr(e[1], prefix, top_names, scopes), e[2]];
+    }
+    if t == "SuperCall" {
+        // The parent class name prefixes unconditionally when it is an own
+        // top-level name (no shadowing: `super` resolves through the class).
+        let parent = e[1];
+        if top_names.has(parent) {
+            parent = prefix + parent;
+        }
+        let args = [];
+        for a in e[3] {
+            args.push(fl_rewrite_expr(a, prefix, top_names, scopes));
+        }
+        return [t, parent, e[2], args, e[4]];
+    }
+    if t == "OptField" {
+        return [t, e[1], fl_rewrite_expr(e[2], prefix, top_names, scopes), e[3]];
+    }
+    if t == "Coalesce" {
+        return [t, fl_rewrite_expr(e[1], prefix, top_names, scopes), fl_rewrite_expr(e[2], prefix, top_names, scopes), e[3]];
+    }
+    if t == "Propagate" {
+        return [t, fl_rewrite_expr(e[1], prefix, top_names, scopes), e[2]];
+    }
+    if t == "NamedArg" {
+        return [t, e[1], fl_rewrite_expr(e[2], prefix, top_names, scopes), e[3]];
+    }
+    if t == "IfE" {
+        let els = e[3];
+        if els != null {
+            els = fl_rewrite_block(els, prefix, top_names, scopes);
+        }
+        return [t, fl_rewrite_expr(e[1], prefix, top_names, scopes), fl_rewrite_block(e[2], prefix, top_names, scopes), els, e[4]];
+    }
+    if t == "Match" {
+        let arms = [];
+        for arm in e[2] {
+            let arm_scope = map();
+            fl_collect_pattern_bindings(arm[1], arm_scope);
+            scopes.push(arm_scope);
+            let guard = arm[2];
+            if guard != null {
+                guard = fl_rewrite_expr(guard, prefix, top_names, scopes);
+            }
+            let body = fl_rewrite_block(arm[3], prefix, top_names, scopes);
+            let _p = scopes.pop();
+            arms.push([arm[0], arm[1], guard, body, arm[4]]);
+        }
+        return [t, fl_rewrite_expr(e[1], prefix, top_names, scopes), arms, e[3]];
+    }
+    // Int / Float / Str / Bool / Null / Super: literals and bare keywords.
+    return e;
+}
+
+fn fl_collect_pattern_bindings(p, out) {
+    let t = p[0];
+    if t == "Bind" {
+        out[p[1]] = 1;
+        return;
+    }
+    if t == "Variant" {
+        for a in p[2] {
+            fl_collect_pattern_bindings(a, out);
+        }
+        return;
+    }
+    return;
+}
+
+fn fl_rewrite_block(b, prefix, top_names, scopes) {
+    scopes.push(map());
+    let stmts = [];
+    for s in b[1] {
+        stmts.push(fl_rewrite_stmt_in_scope(s, prefix, top_names, scopes));
+    }
+    let _p = scopes.pop();
+    return [b[0], stmts, b[2]];
+}
+
+fn fl_rewrite_fn_proto(p, prefix, top_names, scopes) {
+    let param_scope = map();
+    let params = [];
+    for param in p[5] {
+        let d = param[3];
+        if d != null {
+            d = fl_rewrite_expr(d, prefix, top_names, scopes);
+        }
+        param_scope[param[1]] = 1;
+        params.push([param[0], param[1], param[2], d, param[4]]);
+    }
+    scopes.push(param_scope);
+    let body = fl_rewrite_block(p[8], prefix, top_names, scopes);
+    let _ps = scopes.pop();
+    // [tag, vis, is_async, is_extern, name, params, ret, type_params, body, sp]
+    return [p[0], p[1], p[2], p[3], p[4], params, p[6], p[7], body, p[9]];
+}
+
+// Statements INSIDE a function/block: locals insert into the current scope
+// (they shadow, so their own names are never rewritten, but their initializers
+// may reference module-level names above them).
+fn fl_rewrite_stmt_in_scope(s, prefix, top_names, scopes) {
+    let t = s[0];
+    if t == "Fn" {
+        let p = s[1];
+        if p[4] != null {
+            scopes[scopes.len() - 1][p[4]] = 1;
+        }
+        return ["Fn", fl_rewrite_fn_proto(p, prefix, top_names, scopes), s[2]];
+    }
+    if t == "Let" {
+        let v = s[4];
+        if v != null {
+            v = fl_rewrite_expr(v, prefix, top_names, scopes);
+        }
+        scopes[scopes.len() - 1][s[2]] = 1;
+        return [t, s[1], s[2], s[3], v, s[5]];
+    }
+    if t == "Const" {
+        let v = fl_rewrite_expr(s[4], prefix, top_names, scopes);
+        scopes[scopes.len() - 1][s[2]] = 1;
+        return [t, s[1], s[2], s[3], v, s[5]];
+    }
+    if t == "If" {
+        let elifs = [];
+        for e in s[3] {
+            elifs.push(["Elif", fl_rewrite_expr(e[1], prefix, top_names, scopes), fl_rewrite_block(e[2], prefix, top_names, scopes)]);
+        }
+        let els = s[4];
+        if els != null {
+            els = fl_rewrite_block(els, prefix, top_names, scopes);
+        }
+        return [t, fl_rewrite_expr(s[1], prefix, top_names, scopes), fl_rewrite_block(s[2], prefix, top_names, scopes), elifs, els, s[5]];
+    }
+    if t == "While" {
+        return [t, fl_rewrite_expr(s[1], prefix, top_names, scopes), fl_rewrite_block(s[2], prefix, top_names, scopes), s[3]];
+    }
+    if t == "ForIn" {
+        let iter = fl_rewrite_expr(s[3], prefix, top_names, scopes);
+        let loop_scope = map();
+        loop_scope[s[1]] = 1;
+        if s[2] != null {
+            loop_scope[s[2]] = 1;
+        }
+        scopes.push(loop_scope);
+        let body = fl_rewrite_block(s[4], prefix, top_names, scopes);
+        let _ls = scopes.pop();
+        return [t, s[1], s[2], iter, body, s[5]];
+    }
+    if t == "ForC" {
+        scopes.push(map());
+        let init = fl_rewrite_stmt_in_scope(s[1], prefix, top_names, scopes);
+        let cond = fl_rewrite_expr(s[2], prefix, top_names, scopes);
+        let post = fl_rewrite_expr(s[3], prefix, top_names, scopes);
+        let body = fl_rewrite_block(s[4], prefix, top_names, scopes);
+        let _fs = scopes.pop();
+        return [t, init, cond, post, body, s[5]];
+    }
+    if t == "Return" {
+        let v = s[1];
+        if v != null {
+            v = fl_rewrite_expr(v, prefix, top_names, scopes);
+        }
+        return [t, v, s[2]];
+    }
+    if t == "BlockStmt" {
+        return [t, fl_rewrite_block(s[1], prefix, top_names, scopes), s[2]];
+    }
+    if t == "ExprStmt" {
+        return [t, fl_rewrite_expr(s[1], prefix, top_names, scopes), s[2]];
+    }
+    if t == "Spawn" {
+        return [t, fl_rewrite_expr(s[1], prefix, top_names, scopes), s[2]];
+    }
+    if t == "Try" {
+        let body = fl_rewrite_block(s[1], prefix, top_names, scopes);
+        let cx = s[2];
+        if cx != null {
+            let catch_scope = map();
+            catch_scope[cx[1]] = 1;
+            scopes.push(catch_scope);
+            let cbody = fl_rewrite_block(cx[2], prefix, top_names, scopes);
+            let _cs = scopes.pop();
+            cx = ["Catch", cx[1], cbody, cx[3]];
+        }
+        let fin = s[3];
+        if fin != null {
+            fin = fl_rewrite_block(fin, prefix, top_names, scopes);
+        }
+        return [t, body, cx, fin, s[4]];
+    }
+    if t == "Throw" {
+        return [t, fl_rewrite_expr(s[1], prefix, top_names, scopes), s[2]];
+    }
+    // Import (handled by the walker above), Interface, Enum, Yield, LetTuple:
+    // passthrough — the oracle's `other => other.clone()`.
+    return s;
+}
+
+// Top-level statements: Fn/Let/Const/Class names THEMSELVES get the prefix.
+fn fl_rewrite_top_stmt(s, prefix, top_names, scopes) {
+    let t = s[0];
+    if t == "Fn" {
+        let p = fl_rewrite_fn_proto(s[1], prefix, top_names, scopes);
+        let name = s[1][4];
+        if name != null {
+            p[4] = prefix + name;
+        }
+        return ["Fn", p, s[2]];
+    }
+    if t == "Let" {
+        let v = s[4];
+        if v != null {
+            v = fl_rewrite_expr(v, prefix, top_names, scopes);
+        }
+        return [t, s[1], prefix + s[2], s[3], v, s[5]];
+    }
+    if t == "Const" {
+        let v = fl_rewrite_expr(s[4], prefix, top_names, scopes);
+        return [t, s[1], prefix + s[2], s[3], v, s[5]];
+    }
+    if t == "Class" {
+        let parent = s[5];
+        if parent != null and top_names.has(parent) {
+            parent = prefix + parent;
+        }
+        let methods = [];
+        for m in s[9] {
+            methods.push(fl_rewrite_fn_proto(m, prefix, top_names, scopes));
+        }
+        // [vis, name, is_abstract, abstracts, parent, interfaces,
+        //  type_params, fields, methods, sp]
+        return [t, s[1], prefix + s[2], s[3], s[4], parent, s[6], s[7], s[8], methods, s[10]];
+    }
+    return fl_rewrite_stmt_in_scope(s, prefix, top_names, scopes);
+}
+
+// ------------------------------------------------------------- bindings
+
+// The `alias` binding: a frozen namespace map of the module's public exports
+// (module_namespace is the shared constructor the tree/VM paths use too),
+// bound as a private const so rebinding the alias is a const violation.
+fn fl_build_namespace_const(alias, own, sp) {
+    let args = [];
+    for exp in own[1] {
+        args.push(["Str", exp, sp]);
+        args.push(["Ident", "__mod_" + alias + "_" + exp, sp]);
+    }
+    return ["Const", "private", alias, null, ["Call", ["Ident", "module_namespace", sp], args, sp], sp];
+}
+
+// `import { a, b as c } from "m";`: bind each selected own export to its
+// local name. Consts bind as consts (frozen), everything else as lets.
+fn fl_append_selection_bindings(out, prefix, own, selections, sp) {
+    for sel in selections {
+        if not own[0].has(sel[0]) {
+            continue;
+        }
+        let target = ["Ident", prefix + sel[0], sp];
+        if own[2].has(sel[0]) {
+            out.push(["Const", "private", sel[1], null, target, sp]);
+        } else {
+            out.push(["Let", "private", sel[1], null, target, sp]);
+        }
+    }
+    return;
+}
+
+// ------------------------------------------------------------ the walk
+
+// Spid3r maps have no delete statement: removal is a rebuild that skips the
+// key (the in-progress set is strictly LIFO, so this is always the last add).
+fn fl_map_remove(m, key) {
+    let rebuilt = map();
+    for k in m {
+        if k != key {
+            rebuilt[k] = 1;
+        }
+    }
+    return rebuilt;
+}
+
+fn fl_flatten_stmts(stmts, importer_file, st) {
+    for s in stmts {
+        if s[0] != "Import" {
+            st["out"].push(s);
+            continue;
+        }
+        let path = s[1];
+        let alias = s[2];
+        let sp = s[3];
+        if alias != null {
+            let resolved_pair = fl_load_module(path, importer_file, sp);
+            let lowered = resolved_pair[0];
+            let resolved = resolved_pair[1];
+            let selections = fl_parse_selections(alias);
+            let sel_mode = selections != null;
+            let key = resolved;
+            if sel_mode {
+                key = resolved + "::sel::" + alias;
+            }
+            if sel_mode {
+                if st["done_sel"].has(key) {
+                    continue;
+                }
+            } else if st["done_alias"].has(key) {
+                continue;
+            }
+            if st["in_progress"].has(resolved) {
+                throw [fl_cycle_message(st["in_progress_chain"], path), sp[0], sp[1], sp[2], "semantic"];
+            }
+            let own = fl_own_top_decls(lowered[0]);
+            // The selection index is captured BEFORE the walk: nested aliased
+            // imports grow the counter during it, and the prefix baked into
+            // the mangled definitions must match the one the bindings below
+            // reference.
+            let sel_idx = st["sel_counter"];
+            st["sel_counter"] = st["sel_counter"] + 1;
+            let prefix = "";
+            if sel_mode {
+                prefix = "__sel_" + string(sel_idx) + "_";
+            } else {
+                prefix = "__mod_" + alias + "_";
+            }
+            st["in_progress"][resolved] = 1;
+            st["in_progress_chain"].push(resolved);
+            for ms in lowered[0] {
+                if ms[0] == "Import" {
+                    // A nested plain import flattens unprefixed into the
+                    // program: the module's own code resolves those names
+                    // globally, exactly like the tree/VM paths, and the dedup
+                    // sets make a later import of the same module a no-op.
+                    fl_flatten_stmts([ms], resolved, st);
+                } else {
+                    st["out"].push(fl_rewrite_top_stmt(ms, prefix, own[0], st["scopes"]));
+                }
+            }
+            st["in_progress"] = fl_map_remove(st["in_progress"], resolved);
+            st["in_progress_chain"].pop();
+            if sel_mode {
+                st["done_sel"][key] = 1;
+                fl_append_selection_bindings(st["out"], prefix, own, selections, sp);
+            } else {
+                st["done_alias"][key] = 1;
+                st["out"].push(fl_build_namespace_const(alias, own, sp));
+            }
+            continue;
+        }
+        // ---- plain import ----
+        let resolved_pair = fl_load_module(path, importer_file, sp);
+        let lowered = resolved_pair[0];
+        let resolved = resolved_pair[1];
+        if st["done_plain"].has(resolved) {
+            continue; // already inlined by another importer
+        }
+        if st["in_progress"].has(resolved) {
+            throw [fl_cycle_message(st["in_progress_chain"], path), sp[0], sp[1], sp[2], "semantic"];
+        }
+        st["in_progress"][resolved] = 1;
+        st["in_progress_chain"].push(resolved);
+        fl_flatten_stmts(lowered[0], resolved, st);
+        st["in_progress"] = fl_map_remove(st["in_progress"], resolved);
+        st["in_progress_chain"].pop();
+        st["done_plain"][resolved] = 1;
+    }
+    return;
+}
+
+// Flatten a whole program. Returns the flattened Program ([stmts]).
+public fn flatten_imports(prog, importer_file) {
+    let st = map();
+    st["out"] = [];
+    st["done_plain"] = map();
+    st["done_alias"] = map();
+    st["done_sel"] = map();
+    st["in_progress"] = map();
+    st["in_progress_chain"] = [];
+    st["sel_counter"] = 0;
+    st["scopes"] = [];
+    // Seeded with the program entry so element 0 is always the program: that
+    // is what the cycle-chain text relies on.
+    let entry = importer_file;
+    st["in_progress"][entry] = 1;
+    st["in_progress_chain"].push(entry);
+    fl_flatten_stmts(prog[0], importer_file, st);
+    return [st["out"]];
+}

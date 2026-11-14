@@ -31,6 +31,7 @@ import "vmc";
 import "bytecode_matrix";
 import "codegen";
 import "link";
+import "flatten";
 
 fn main() {
     set_hole_check(hole_check);
@@ -198,8 +199,41 @@ fn main() {
             }
             return 1;
         }
+        // Phase 6.2: flatten `import` into one self-contained program before
+        // lowering + codegen (the oracle's build flow: parse -> check ->
+        // flatten -> lower -> build_module).
+        let flat_prog = null;
+        try {
+            flat_prog = flatten_imports(prog, path);
+        } catch (e7) {
+            let is_list = false;
+            try {
+                let probe = e7[1] + 0;
+                is_list = true;
+            } catch (ignored) {
+                is_list = false;
+            }
+            if is_list {
+                let phase = "semantic";
+                if e7.len() >= 5 {
+                    phase = e7[4];
+                }
+                let pth = path;
+                if e7.len() >= 6 {
+                    pth = e7[5];
+                }
+                eprint("error[" + phase + "]: " + e7[0] + "
+");
+                eprint("  --> " + pth + ":" + string(e7[1]) + ":" + string(e7[2]) + "
+");
+            } else {
+                eprint("error[internal]: " + e7 + "
+");
+            }
+            return 1;
+        }
         let lst3 = new_lower();
-        let lowered3 = lower_program(lst3, prog);
+        let lowered3 = lower_program(lst3, flat_prog);
         let cgst = new_codegen();
         try {
             cg_build_module(cgst, lowered3, path);

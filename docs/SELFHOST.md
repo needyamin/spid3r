@@ -85,6 +85,9 @@ selfhost/
                        (parse → check → lower → LLVM-C codegen → verify →
                        emit → link.matrix)
   link.matrix          Phase 6.1 — the build driver's linking half (MSVC)
+  flatten.matrix       Phase 6.2 — AOT module flattening (plain/aliased/
+                       selective imports; __mod_/__sel_ mangling; the
+                       no-leak export rule)
   link_test.matrix     the 6.1 gate harness (exe-exits-42 proof)
   main.matrix          entry: parity surfaces + `compile` (bytecode) + `native`
   roundtrip_*.matrix   the model round-trip gate tools (2.1)
