@@ -32,6 +32,39 @@ instead of `Default`).
 Without the feature, `spid3r build` fails with a usage error pointing at
 BUILDING.md rather than a confusing linker error.
 
+## The self-hosted codegen
+
+The Rust backend has a complete twin written in Spid3r itself
+(`selfhost/`, see [SELFHOST.md](SELFHOST.md)): lexer, parser, semantic
+checker, lowering, bytecode compiler, LLVM-C codegen, and the build
+driver's link + module-flattening halves. Build the self-hosted compiler
+with the Rust one, then compile programs with its `native` mode:
+
+```
+cargo build --release --no-default-features   # stage-0 bootstrap compiler
+spid3r build selfhost/main.matrix -o selfhost/main_native.exe
+selfhost/main_native.exe native app.matrix app.exe
+./app.exe
+```
+
+The self-hosted codegen drives the same LLVM-C calls, emits the same
+trampolines, and links the same runtime staticlib, so its executables are
+held to the oracle's bar: `tools/selfhost_native_parity.sh` builds every
+frozen-corpus program with both pipelines and requires identical
+stdout/stderr/exit codes — positives (including module imports, classes,
+closures, try/catch/finally), the negative corpus (the runtime negatives
+division-by-zero and null-field reads byte-identical; the compile-time
+negatives at first-diagnostic-line parity; the link-time negative — an
+unresolved `extern fn` — with the same `error[usage]: linking failed`
+diagnostic and exit 2). Integer overflow and the call-depth limit were
+verified the same way ad hoc ("integer overflow: 9223372036854775807 + 1"
+and "stack overflow: call depth limit reached", both rc 1). Both codegens
+share one performance property: locals whose every write is pure-integer
+arithmetic live in unboxed i64 registers with overflow-guarded edges,
+and conditions that mix such locals with boxed parameters check-and-extract
+at the use site — so compiled programs run at parity speed with the Rust
+backend (Tier-B geomean 0.95× on the compute set, gate ≤ 1.25×).
+
 ## Architecture: shared-runtime IR
 
 The backend has two halves:

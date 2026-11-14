@@ -5549,6 +5549,18 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           three. <code>spid3r test</code> is what keeps them honest: it runs every example on the tree
           interpreter, the VM, and the compiled <code>.matrixc</code> artifact, and fails if the output differs.
         </p>
+        <div class="callout tip">
+          <div class="callout-header">🧬 Self-hosting status</div>
+          <p>
+            The compiler is also <strong>written in Spid3r</strong>: the lexer, parser, semantic checker,
+            lowering, bytecode compiler, LLVM-C codegen, and the build driver's link and module-flattening
+            halves all live in <code>selfhost/</code> and are compiled by the Rust toolchain into a working
+            second compiler (<code>spid3r build selfhost/main.matrix -o selfhost/main_native.exe</code>).
+            Its <code>native</code> mode builds every test-corpus program with byte-identical stdout, stderr
+            and exit codes to the Rust backend, at parity speed. See
+            <a href="../../docs/SELFHOST.md">the self-hosting ADR</a> and the roadmap's evidence ledger.
+          </p>
+        </div>
         <table>
           <thead>
             <tr>

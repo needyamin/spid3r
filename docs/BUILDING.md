@@ -465,6 +465,40 @@ with `file` named once at the top level. The AST JSON shape is the Phase-2
 parity contract: the Spid3r-written parser must reproduce it byte-for-byte on
 the frozen corpus. Implementation: `src/oracle.rs`.
 
+## Building the self-hosted compiler
+
+The self-hosting program (docs/SELFHOST.md) builds a Spid3r-written
+compiler from the sources in `selfhost/`. Stage 0 — the Rust compiler —
+is what compiles it; nothing else is required beyond the usual build:
+
+```console
+$ cargo build --release --no-default-features
+$ target/release/spid3r build selfhost/main.matrix -o selfhost/main_native.exe
+built selfhost/main_native.exe (x86_64-pc-windows-msvc 64 bit, debug)
+```
+
+The resulting binary speaks the same mode vocabulary plus one extra mode:
+
+```console
+$ selfhost/main_native.exe tokens app.matrix            # token-stream JSON
+$ selfhost/main_native.exe check app.matrix             # semantic verdict
+$ selfhost/main_native.exe compile app.matrix out.matrixc
+$ selfhost/main_native.exe native app.matrix app.exe    # LLVM-C AOT build
+```
+
+`native` is the Phase-5/6 pipeline: parse → check → lower → flatten the
+imports into one program → LLVM-C codegen → verify → object → the system
+linker (the same MSVC argument set `spid3r build` uses). The object name
+follows the oracle's `spid3r_<stem>.o` shape next to the output. Every
+gate the Rust backend passes is re-run against this binary by
+`tools/selfhost_native_parity.sh` (build both pipelines for every
+frozen-corpus program — positives, negative-runtime, and the link-time
+negative — and require identical stdout/stderr/exit codes) and the five
+front-end parity harnesses (`tools/selfhost_{lex,parse,semantic,lower,
+compile}_parity.sh`). The runtime staticlib must be discoverable:
+`SPID3R_RUNTIME_LIB`, the toolchain directory, or `target/{debug,release}/`
+work, exactly like `spid3r build` itself.
+
 ## Building the VS Code extension
 
 The language server is part of the compiler, so building the compiler is all the

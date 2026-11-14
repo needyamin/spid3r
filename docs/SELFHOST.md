@@ -7,6 +7,19 @@ roadmap (`full_plan.html`) uses: every roadmap checkbox cites one of the
 decision IDs below, and a change to any of them is a new ledger entry, not a
 silent edit.
 
+**Progress (2026-11-15, evidence in the roadmap ledger):** the Spid3r-written
+toolchain covers the lexer, parser, semantic checker, lowering, bytecode
+compiler + container writer, the LLVM-C codegen (with the unboxed-i64 locals
+system and hybrid compares), and the build driver's link + module-flattening
+halves — 23/51 roadmap steps. `spid3r build selfhost/main.matrix -o
+selfhost/main_native.exe` produces a compiler whose native mode
+(`main_native.exe native <file> <out>`) builds every frozen-corpus program —
+positives and negatives — with byte-identical stdout/stderr/exit codes to the
+Rust oracle (`tools/selfhost_native_parity.sh`: pass=124 fail=0 skip=10
+defer=0), at parity speed (Tier-B geomean 0.95× on the compute set). The
+remaining steps before the bootstrap (Phase 7) are the sandbox differential
+gate (6.3) and the runtime-artifact formalization (Phase 9).
+
 The ground rule that governs all of it lives in the roadmap and is repeated
 here because everything else depends on it: **a checkbox may be checked only
 when its Gate has actually run and passed on the real repository, with the

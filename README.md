@@ -112,6 +112,7 @@ Every commit and tag is gated through GitHub Actions workflows: a 3-platform dif
 | **Bytecode** | 60 opcodes · serialized `.matrixc` format |
 | **Standard library** | 29 modules, compiled into the binary |
 | **Tests** | 1,210 tests · three-engine differential |
+| **Self-hosting** | the compiler's front end, LLVM-C codegen and build driver ported to Spid3r (`selfhost/`) — builds the frozen corpus identically to the Rust oracle ([SELFHOST.md](docs/SELFHOST.md)) |
 | **Binary** | one ~13 MB file · static CRT · runs with no installed runtime |
 
 ## The language
