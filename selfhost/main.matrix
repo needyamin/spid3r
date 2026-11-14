@@ -29,18 +29,20 @@ import "semantic";
 import "lower";
 import "vmc";
 import "bytecode_matrix";
+import "codegen";
+import "link";
 
 fn main() {
     set_hole_check(hole_check);
     let a = args();
     if a.len() < 2 or a.len() > 3 {
-        eprint("usage: main tokens|parse|check|registry|lowered|compile <file.matrix> [out]\n");
+        eprint("usage: main tokens|parse|check|registry|lowered|compile|native <file.matrix> [out]\n");
         return 2;
     }
     let mode = a[0];
     let path = a[1];
-    if mode != "tokens" and mode != "parse" and mode != "check" and mode != "registry" and mode != "lowered" and mode != "compile" {
-        eprint("error[usage]: unknown mode '" + mode + "' (tokens|parse|check|registry)\n");
+    if mode != "tokens" and mode != "parse" and mode != "check" and mode != "registry" and mode != "lowered" and mode != "compile" and mode != "native" {
+        eprint("error[usage]: unknown mode '" + mode + "' (tokens|parse|check|registry|lowered|compile|native)\n");
         return 2;
     }
     if not file_exists(path) {
@@ -77,6 +79,20 @@ fn main() {
         let st = new_state(toks);
         prog = parse_program(st);
     } catch (e2) {
+        // Compiler errors are [msg, line, col, len(, phase(, path))] lists —
+        // an int line at [1] distinguishes them from bare-string runtime
+        // errors (a char + int add throws).
+        let is_list = false;
+        try {
+            let probe = e2[1] + 0;
+            is_list = true;
+        } catch (ignored) {
+            is_list = false;
+        }
+        if not is_list {
+            eprint("error[internal]: " + e2 + "\n");
+            return 1;
+        }
         let phase = "parser";
         if e2.len() >= 5 {
             phase = e2[4];
@@ -151,6 +167,81 @@ fn main() {
             return 1;
         }
         print("wrote " + out_path);
+        return 0;
+    }
+
+    if mode == "native" {
+        // Phase 5.2: the LLVM-C codegen. Oracle pipeline: parse -> check ->
+        // lower -> build_module -> LLVMTargetMachineEmitToFile -> link (the
+        // Phase-6.1 link.matrix argument set).
+        let has_main_n = false;
+        for s in prog[0] {
+            if s[0] == "Fn" and s[1][4] == "main" {
+                has_main_n = true;
+            }
+        }
+        let cst3 = new_checker(has_main_n, path);
+        try {
+            check_program(cst3, prog);
+        } catch (e5) {
+            let phase = "semantic";
+            if e5.len() >= 5 {
+                phase = e5[4];
+            }
+            eprint("error[" + phase + "]: " + msg_of(e5) + "\n");
+            if e5[1] >= 0 {
+                eprint("  --> " + path + ":" + string(e5[1]) + ":" + string(e5[2]) + "\n");
+            }
+            let h5 = help_of(e5);
+            if h5 != null {
+                eprint("  = help: " + h5 + "\n");
+            }
+            return 1;
+        }
+        let lst3 = new_lower();
+        let lowered3 = lower_program(lst3, prog);
+        let cgst = new_codegen();
+        try {
+            cg_build_module(cgst, lowered3, path);
+        } catch (e6) {
+            // Compiler errors are [msg, line, col, len, phase] lists; runtime
+            // errors are bare strings (an int line at [1] distinguishes them —
+            // a char + int add throws).
+            let is_list = false;
+            try {
+                let probe = e6[1] + 0;
+                is_list = true;
+            } catch (ignored) {
+                is_list = false;
+            }
+            if is_list {
+                eprint("error[" + e6[4] + "]: " + e6[0] + "\n");
+            } else {
+                eprint("error[internal]: " + e6 + "\n");
+            }
+            return 1;
+        }
+        let argv3 = args();
+        let out_path = "a.out";
+        if argv3.len() >= 3 {
+            out_path = argv3[2];
+        }
+        let obj_path = out_path + ".obj";
+        let rc = cg_emit_object(cgst, obj_path);
+        if rc != 0 {
+            eprint("error[build]: object emission failed (step " + string(rc) + ")\n");
+            return 1;
+        }
+        let sl = find_runtime_staticlib();
+        if sl == null {
+            eprint("error[build]: the runtime staticlib (spid3r_lang.lib) was not found\n");
+            return 1;
+        }
+        let lc = link_executable(obj_path, out_path, sl);
+        if lc != 0 {
+            return 1;
+        }
+        print("built " + out_path);
         return 0;
     }
 

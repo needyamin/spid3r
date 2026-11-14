@@ -45,10 +45,12 @@ public extern fn LLVMInt32TypeInContext(ctx: ptr) -> ptr;
 public extern fn LLVMInt64TypeInContext(ctx: ptr) -> ptr;
 public extern fn LLVMDoubleTypeInContext(ctx: ptr) -> ptr;
 public extern fn LLVMVoidTypeInContext(ctx: ptr) -> ptr;
-public extern fn LLVMPointerTypeInContext(ctx: ptr, elem: ptr, addrspace: int) -> ptr;
+// LLVM 23 opaque pointers: no element-type parameter.
+public extern fn LLVMPointerTypeInContext(ctx: ptr, addrspace: int) -> ptr;
 public extern fn LLVMFunctionType(ret: ptr, params: ptr, count: int, is_var_arg: int) -> ptr;
 public extern fn LLVMStructTypeInContext(ctx: ptr, elems: ptr, count: int, packed: int) -> ptr;
-public extern fn LLVMArrayType2(ctx: ptr, elem: ptr, count: int) -> ptr;
+// LLVM 23: no context parameter — the context derives from the element type.
+public extern fn LLVMArrayType2(elem: ptr, count: usize) -> ptr;
 
 // ------------------------------------------------------------ LLVM values
 
@@ -75,6 +77,8 @@ public extern fn LLVMGetInsertBlock(b: ptr) -> ptr;
 // --------------------------------------------------------------- builders
 
 public extern fn LLVMBuildAdd(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildAnd(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildOr(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
 public extern fn LLVMBuildSub(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
 public extern fn LLVMBuildMul(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
 public extern fn LLVMBuildSDiv(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
@@ -104,6 +108,32 @@ public extern fn LLVMBuildUnreachable(b: ptr) -> ptr;
 public extern fn LLVMBuildPhi(b: ptr, ty: ptr, name: string) -> ptr;
 public extern fn LLVMBuildSwitch(b: ptr, val: ptr, default_bb: ptr, case_count: int) -> ptr;
 public extern fn LLVMBuildExtractValue(b: ptr, agg: ptr, index: int, name: string) -> ptr;
+
+// ------------------------------------------------- 5.2 codegen extensions
+
+// Value/type queries: string-constant globals, parameter binding, and the
+// entry-block alloca placement (allocas must land in the entry block — a
+// loop-body alloca grows the stack every iteration).
+public extern fn LLVMTypeOf(val: ptr) -> ptr;
+public extern fn LLVMGetParam(fn_val: ptr, index: int) -> ptr;
+public extern fn LLVMGetBasicBlockParent(bb: ptr) -> ptr;
+public extern fn LLVMGetFirstInstruction(bb: ptr) -> ptr;
+public extern fn LLVMGetLastInstruction(bb: ptr) -> ptr;
+public extern fn LLVMPositionBuilderBefore(b: ptr, instr: ptr);
+public extern fn LLVMGetBasicBlockTerminator(bb: ptr) -> ptr;
+
+// Phi incoming pairs and switch cases (the short-circuit / OptField phis and
+// the finally dispatch).
+public extern fn LLVMAddIncoming(phi: ptr, vals: ptr, blocks: ptr, count: int);
+public extern fn LLVMAddCase(switch_val: ptr, on_val: ptr, dest: ptr);
+
+// The CRT memset: the codegen's C-array constructor. The LLVM-C array APIs
+// (function param types, call args, GEP indices, phi incomings) take
+// `T*` + count — raw contiguous memory the FFI cannot write through the
+// opaque ptr boundary. memset writes one byte per call, so an 8-byte slot is
+// 8 memsets with the address's bytes computed in Spid3r (a ptr handle is a
+// boxed Int, so address arithmetic is plain integer math).
+public extern fn memset(dst: ptr, c: int, n: usize) -> ptr;
 
 // ------------------------------------------------------ verify + targets
 
@@ -170,13 +200,13 @@ public fn llvm_emit_object(out_path, file_label) {
         want = "aarch64";
     }
     let target = LLVMGetFirstTarget();
-    while target != null {
+    while target != 0 {
         if LLVMGetTargetName(target) == want {
             break;
         }
         target = LLVMGetNextTarget(target);
     }
-    if target == null {
+    if target == 0 {
         return 3;
     }
     let cpu = LLVMGetHostCPUName();
@@ -193,6 +223,38 @@ public fn llvm_emit_object(out_path, file_label) {
 }
 
 public extern fn malloc(size: usize) -> ptr;
+
+// The Phase-5.2 emission path: the same target-machine pipeline as
+// llvm_emit_object, but on the codegen's module (which already holds the
+// program's IR). Verdict by return code: 0 emitted, 3 no matching target,
+// 2 emit failed.
+public fn emit_module_object(m, out_path) {
+    init_targets();
+    let triple = LLVMGetDefaultTargetTriple();
+    LLVMSetTarget(m, triple);
+    let want = "x86-64";
+    if triple.len() >= 6 and triple.slice(0, 6) == "aarch6" {
+        want = "aarch64";
+    }
+    let target = LLVMGetFirstTarget();
+    while target != 0 {
+        if LLVMGetTargetName(target) == want {
+            break;
+        }
+        target = LLVMGetNextTarget(target);
+    }
+    if target == 0 {
+        return 3;
+    }
+    let cpu = LLVMGetHostCPUName();
+    let tm = LLVMCreateTargetMachine(target, triple, cpu, "", OPT_DEFAULT, RELOC_DEFAULT, CODE_MODEL_DEFAULT);
+    let err_slot = malloc(8);
+    let rc = LLVMTargetMachineEmitToFile(tm, m, out_path, OBJECT_FILE, err_slot) & 4294967295;
+    if rc != 0 {
+        return 2;
+    }
+    return 0;
+}
 
 
 

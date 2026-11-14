@@ -1,0 +1,3032 @@
+// selfhost/codegen.matrix — the LLVM-C codegen (roadmap Phase 5, step 5.2,
+// docs/SELFHOST.md SH-7).
+//
+// A port of src/native/ir.rs's SLOW path over the Phase-2 AST model and the
+// Phase-5.1 LLVM-C extern surface. Every Spid3r value is a `*mut Value` (an
+// opaque pointer to the runtime's boxed value); every operation calls a
+// runtime trampoline; compiled functions carry the C ABI
+// `(env: ptr, argc: i64, argv: ptr) -> ptr`. The pipeline mirror of the
+// oracle's build_module: lower → spid3r_entry (classes, then top-level
+// statements) → main handing spid3r_entry to spid3r_rt_start.
+//
+// The inline fast paths (unboxed i64 locals, pure-int compares, hybrid
+// compares) are the perf program's scope — the SLOW path is the oracle's
+// fallback for every operation and is what this port matches.
+//
+// C ARRAYS THROUGH THE FFI: the LLVM-C array APIs (function param types,
+// call args, GEP indices, phi incomings, switch cases) take `T*` + count —
+// raw contiguous memory the opaque ptr boundary cannot write directly. The
+// constructor is the CRT's memset (linked into every built executable):
+// a ptr handle is a boxed Int, so address math is integer math, and an
+// 8-byte slot is 8 one-byte memsets with the value's bytes computed in
+// Spid3r. Wasteful and correct; a compiler build runs it thousands of
+// times, not millions.
+//
+// State (a map): ctx/module/builder, scopes (list of name->loc maps),
+// the six LLVM types, strings/tramps caches, the current function frame
+// (env/ret_slot/ret_bb/caps/boxed), is_entry, loops, exc (handler stack),
+// fstack (finally regions), tmp/fn/str counters, externs.
+
+import "llvm";
+import "vmc";
+
+// ------------------------------------------------------------ C arrays
+
+// ICmp predicate codes (LLVM-C LLVMIntPredicate).
+const ICMP_EQ = 32;
+const ICMP_NE = 33;
+const ICMP_UGE = 35;
+const ICMP_SGT = 38;
+const ICMP_LE = 41;
+const ICMP_SGE = 39;
+const ICMP_SLT = 40;
+const ICMP_SLE = 41;
+
+// Build a C array of 8-byte values (LLVM handles, type handles, i64 GEP
+// indices — in Spid3r space all are Ints). Returns the raw base address.
+// Negative i64s walk out as their two's-complement bytes: peel the low byte
+// with mod-256 arithmetic (truncating division would corrupt negatives).
+fn carr(vals) {
+    let n = vals.len();
+    let base = malloc(n * 8 + 8);
+    let i = 0;
+    while i < n {
+        let m = vals[i];
+        let slot = base + i * 8;
+        let j = 0;
+        while j < 8 {
+            let b = ((m % 256) + 256) % 256;
+            memset(slot + j, b, 1);
+            m = (m - b) / 256;
+            j += 1;
+        }
+        i += 1;
+    }
+    return base;
+}
+
+// ------------------------------------------------------------- the state
+
+public fn new_codegen() {
+    let st = map();
+    st["scopes"] = [];
+    st["strings"] = map();
+    st["tramps"] = map();
+    st["externs"] = map();
+    st["env"] = null;
+    st["ret_slot"] = null;
+    st["ret_bb"] = null;
+    st["caps"] = [];
+    st["boxed"] = map();
+    st["is_entry"] = false;
+    st["loops"] = [];
+    st["exc"] = [];
+    st["fstack"] = [];
+    st["tmp"] = 0;
+    st["fn_counter"] = 0;
+    st["str_counter"] = 0;
+    st["int_locals"] = null;
+    st["hybrid_off"] = false;
+    return st;
+}
+
+fn init_types(st) {
+    let ctx = st["ctx"];
+    st["i1"] = LLVMInt1TypeInContext(ctx);
+    st["i8"] = LLVMInt8TypeInContext(ctx);
+    st["i32"] = LLVMInt32TypeInContext(ctx);
+    st["i64"] = LLVMInt64TypeInContext(ctx);
+    st["f64"] = LLVMDoubleTypeInContext(ctx);
+    st["void"] = LLVMVoidTypeInContext(ctx);
+    st["ptr"] = LLVMPointerTypeInContext(ctx, 0);
+}
+
+fn i64c(st, v) {
+    return LLVMConstInt(st["i64"], v, 0);
+}
+
+fn i8c(st, v) {
+    return LLVMConstInt(st["i8"], v, 0);
+}
+
+fn i32c(st, v) {
+    return LLVMConstInt(st["i32"], v, 0);
+}
+
+fn null_ptr(st) {
+    return LLVMConstNull(st["ptr"]);
+}
+
+fn tmp_name(st, kind) {
+    st["tmp"] = st["tmp"] + 1;
+    return kind + "." + string(st["tmp"]);
+}
+
+// ----------------------------------------------------- trampolines
+
+// Declare (or fetch) a runtime trampoline: an external function in the
+// target module resolved against the runtime staticlib at link time.
+// Cached as [fn_val, fn_ty].
+fn tramp(st, name, param_tys, ret_ty) {
+    if st["tramps"].has(name) {
+        return st["tramps"][name];
+    }
+    let r = ret_ty;
+    if r == null {
+        r = st["void"];
+    }
+    let n = param_tys.len();
+    let ft = LLVMFunctionType(r, carr(param_tys), n, 0);
+    let f = LLVMAddFunction(st["module"], name, ft);
+    let pair = [f, ft];
+    st["tramps"][name] = pair;
+    return pair;
+}
+
+fn emit_call(st, fpair, args, name) {
+    return LLVMBuildCall2(st["builder"], fpair[1], fpair[0], carr(args), args.len(), name);
+}
+
+fn call0p(st, name) {
+    let f = tramp(st, name, [], st["ptr"]);
+    return emit_call(st, f, [], name);
+}
+
+fn call1p(st, name, a) {
+    let f = tramp(st, name, [st["ptr"]], st["ptr"]);
+    return emit_call(st, f, [a], name);
+}
+
+fn call1p_i64(st, name, a, n) {
+    let f = tramp(st, name, [st["ptr"], st["i64"]], st["ptr"]);
+    return emit_call(st, f, [a, i64c(st, n)], name);
+}
+
+fn call_i64_1p(st, name, n) {
+    let f = tramp(st, name, [st["i64"]], st["ptr"]);
+    return emit_call(st, f, [i64c(st, n)], name);
+}
+
+fn call2p(st, name, a, b) {
+    let f = tramp(st, name, [st["ptr"], st["ptr"]], st["ptr"]);
+    return emit_call(st, f, [a, b], name);
+}
+
+fn call_binop(st, a, b, opcode) {
+    let f = tramp(st, "spid3r_binop", [st["ptr"], st["ptr"], st["i64"]], st["ptr"]);
+    return emit_call(st, f, [a, b, i64c(st, opcode)], "bin");
+}
+
+fn call_void1p(st, name, a) {
+    let f = tramp(st, name, [st["ptr"]], null);
+    return emit_call(st, f, [a], "");
+}
+
+fn call_void2p(st, name, a, b) {
+    let f = tramp(st, name, [st["ptr"], st["ptr"]], null);
+    return emit_call(st, f, [a, b], "");
+}
+
+fn call_void2p_i64(st, name, a, n, b) {
+    let f = tramp(st, name, [st["ptr"], st["i64"], st["ptr"]], null);
+    return emit_call(st, f, [a, i64c(st, n), b], "");
+}
+
+fn call_void3p(st, name, a, b, c) {
+    let f = tramp(st, name, [st["ptr"], st["ptr"], st["ptr"]], null);
+    return emit_call(st, f, [a, b, c], "");
+}
+
+// ------------------------------------------------------ value constructors
+
+fn v_int(st, v) {
+    let f = tramp(st, "spid3r_value_int", [st["i64"]], st["ptr"]);
+    return emit_call(st, f, [i64c(st, v)], "vi");
+}
+
+fn v_float(st, v) {
+    let f = tramp(st, "spid3r_value_float", [st["f64"]], st["ptr"]);
+    return emit_call(st, f, [LLVMConstReal(st["f64"], v)], "vf");
+}
+
+fn v_bool(st, b) {
+    let f = tramp(st, "spid3r_value_bool", [st["i8"]], st["ptr"]);
+    let bit = 0;
+    if b {
+        bit = 1;
+    }
+    return emit_call(st, f, [i8c(st, bit)], "vb");
+}
+
+fn v_null(st) {
+    return call0p(st, "spid3r_value_null");
+}
+
+// Box a RUNTIME i64 (the int-locals fast path's exit).
+fn v_int_from_i64(st, iv) {
+    let f = tramp(st, "spid3r_value_int", [st["i64"]], st["ptr"]);
+    return emit_call(st, f, [iv], "vi");
+}
+
+// Box an i1 comparison result.
+fn v_bool_from_i1(st, b) {
+    let b8 = LLVMBuildZExt(st["builder"], b, st["i8"], "b8");
+    let f = tramp(st, "spid3r_value_bool", [st["i8"]], st["ptr"]);
+    return emit_call(st, f, [b8], "vb");
+}
+
+// An overflow-checking arithmetic intrinsic (llvm.sadd.with.overflow.i64 and
+// friends) — declared by hand; LLVM links the definition because the name is
+// reserved. Cached as [fn, fn_ty] in the tramps map.
+fn overflow_intrinsic(st, name) {
+    if st["tramps"].has(name) {
+        return st["tramps"][name];
+    }
+    let pair_ty = LLVMStructTypeInContext(st["ctx"], carr([st["i64"], st["i1"]]), 2, 0);
+    let ft = LLVMFunctionType(pair_ty, carr([st["i64"], st["i64"]]), 2, 0);
+    let f = LLVMAddFunction(st["module"], name, ft);
+    let pair = [f, ft];
+    st["tramps"][name] = pair;
+    return pair;
+}
+
+const I64_MIN = -9223372036854775808;
+
+// Inline i64 negation: only i64::MIN takes the trampoline.
+fn emit_i64_neg(st, a) {
+    let is_min = LLVMBuildICmp(st["builder"], ICMP_EQ, a, i64c(st, I64_MIN), "negchk");
+    let fast_bb = new_block(st, "neg.fast");
+    let slow_bb = new_block(st, "neg.slow");
+    let cont_bb = new_block(st, "neg.cont");
+    LLVMBuildCondBr(st["builder"], is_min, slow_bb, fast_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+    let fast = LLVMBuildSub(st["builder"], i64c(st, 0), a, "neg.res");
+    br_to(st, cont_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+    let f = tramp(st, "spid3r_i64_neg", [st["i64"]], st["i64"]);
+    let r = emit_call(st, f, [a], "i64neg");
+    throw_guard(st);
+    let slow = r;
+    let slow_def_bb = cur_block(st);
+    br_to(st, cont_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+    let merged = LLVMBuildPhi(st["builder"], st["i64"], "neg.phi");
+    add_incoming(st, merged, [fast, slow], [fast_bb, slow_def_bb]);
+    return merged;
+}
+
+// The trampoline edge of an i64 binop (overflow/div-zero/underflow).
+fn emit_i64_binop_slow(st, lhs, rhs, tramp_name) {
+    let f = tramp(st, tramp_name, [st["i64"], st["i64"]], st["i64"]);
+    let r = emit_call(st, f, [lhs, rhs], "i64op");
+    throw_guard(st);
+    return r;
+}
+
+// Inline i64 arithmetic with the exact trampoline semantics on every edge
+// that can raise: Add/Sub/Mul via the overflow intrinsics, Div guarded for
+// zero and MIN/-1, Mod guarded for zero with the -1 short-circuit to 0
+// (wrapping_rem parity — load-bearing three-engine semantics).
+fn emit_i64_binop(st, lhs, rhs, op) {
+    if op == "Add" or op == "Sub" or op == "Mul" {
+        let intrinsic = "llvm.sadd.with.overflow.i64";
+        let tramp_name = "spid3r_i64_add";
+        if op == "Sub" {
+            intrinsic = "llvm.ssub.with.overflow.i64";
+            tramp_name = "spid3r_i64_sub";
+        }
+        if op == "Mul" {
+            intrinsic = "llvm.smul.with.overflow.i64";
+            tramp_name = "spid3r_i64_mul";
+        }
+        let ovf_f = overflow_intrinsic(st, intrinsic);
+        let call = emit_call(st, ovf_f, [lhs, rhs], "ovf");
+        let fast = LLVMBuildExtractValue(st["builder"], call, 0, "ovf.res");
+        let overflowed = LLVMBuildExtractValue(st["builder"], call, 1, "ovf.bit");
+        let entry_bb = cur_block(st);
+        let slow_bb = new_block(st, "i64op.slow");
+        let cont_bb = new_block(st, "i64op.cont");
+        LLVMBuildCondBr(st["builder"], overflowed, slow_bb, cont_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+        let slow = emit_i64_binop_slow(st, lhs, rhs, tramp_name);
+        let slow_def_bb = cur_block(st);
+        br_to(st, cont_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+        let merged = LLVMBuildPhi(st["builder"], st["i64"], "i64op.phi");
+        add_incoming(st, merged, [fast, slow], [entry_bb, slow_def_bb]);
+        return merged;
+    }
+    if op == "Div" {
+        // b == 0 raises `division by zero`; MIN / -1 is the only checked_div
+        // overflow. Both route through the trampoline; the fast edge is a
+        // plain sdiv in its own block so the undefined machine op is never
+        // reached on the slow edge.
+        let is_zero = LLVMBuildICmp(st["builder"], ICMP_EQ, rhs, i64c(st, 0), "divz");
+        let lhs_is_min = LLVMBuildICmp(st["builder"], ICMP_EQ, lhs, i64c(st, I64_MIN), "divmin");
+        let rhs_is_m1 = LLVMBuildICmp(st["builder"], ICMP_EQ, rhs, i64c(st, -1), "divm1");
+        let both = LLVMBuildAnd(st["builder"], lhs_is_min, rhs_is_m1, "divovf");
+        let bad = LLVMBuildOr(st["builder"], is_zero, both, "divslow");
+        let fast_bb = new_block(st, "div.fast");
+        let slow_bb = new_block(st, "div.slow");
+        let cont_bb = new_block(st, "div.cont");
+        LLVMBuildCondBr(st["builder"], bad, slow_bb, fast_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+        let fast = LLVMBuildSDiv(st["builder"], lhs, rhs, "div.res");
+        br_to(st, cont_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+        let slow = emit_i64_binop_slow(st, lhs, rhs, "spid3r_i64_div");
+        let slow_def_bb = cur_block(st);
+        br_to(st, cont_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+        let merged = LLVMBuildPhi(st["builder"], st["i64"], "div.phi");
+        add_incoming(st, merged, [fast, slow], [fast_bb, slow_def_bb]);
+        return merged;
+    }
+    if op == "Mod" {
+        // b == 0 raises `modulo by zero`; divisor -1 is short-circuited to 0
+        // (Rust wrapping_rem's value, where LLVM srem would be undefined).
+        // Every edge lands in a FRESH merge block so the slow edge never
+        // re-enters the checks.
+        let is_zero = LLVMBuildICmp(st["builder"], ICMP_EQ, rhs, i64c(st, 0), "modz");
+        let slow_bb = new_block(st, "mod.slow");
+        let check_bb = new_block(st, "mod.chk");
+        let zero_bb = new_block(st, "mod.zero");
+        let srem_bb = new_block(st, "mod.srem");
+        let merge_bb = new_block(st, "mod.merge");
+        LLVMBuildCondBr(st["builder"], is_zero, slow_bb, check_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+        let slow = emit_i64_binop_slow(st, lhs, rhs, "spid3r_i64_mod");
+        let slow_def_bb = cur_block(st);
+        br_to(st, merge_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], check_bb);
+        let is_m1 = LLVMBuildICmp(st["builder"], ICMP_EQ, rhs, i64c(st, -1), "modm1");
+        LLVMBuildCondBr(st["builder"], is_m1, zero_bb, srem_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], zero_bb);
+        let zero = i64c(st, 0);
+        br_to(st, merge_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], srem_bb);
+        let rem = LLVMBuildSRem(st["builder"], lhs, rhs, "mod.res");
+        br_to(st, merge_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], merge_bb);
+        let merged = LLVMBuildPhi(st["builder"], st["i64"], "mod.phi");
+        add_incoming(st, merged, [slow, zero, rem], [slow_def_bb, zero_bb, srem_bb]);
+        return merged;
+    }
+    return null;
+}
+
+// The unboxed expression compiler: Int constants, LocalInt idents, Neg, and
+// the five arithmetic binops. Only reached on exprs the analysis proved
+// pure-int.
+fn cg_compile_expr_i64(st, e) {
+    let t = e[0];
+    if t == "Int" {
+        return i64c(st, e[1]);
+    }
+    if t == "Ident" {
+        let loc = cg_lookup(st, e[1]);
+        return LLVMBuildLoad2(st["builder"], st["i64"], loc[1], "iv");
+    }
+    if t == "Unary" and e[1] == "Neg" {
+        let inner = cg_compile_expr_i64(st, e[2]);
+        return emit_i64_neg(st, inner);
+    }
+    if t == "Binary" {
+        let a = cg_compile_expr_i64(st, e[2]);
+        let b = cg_compile_expr_i64(st, e[3]);
+        return emit_i64_binop(st, a, b, e[1]);
+    }
+    throw ["internal error: compile_expr_i64 on a non-int expression", 0, 0, 0, "native"];
+}
+
+// Ident-only form of is_int_expr (the oracle's self.is_int_expr at the
+// current scope state): Int literals, LocalInt idents, Neg, int binops.
+fn is_int_expr_now(st, e) {
+    let t = e[0];
+    if t == "Int" {
+        return true;
+    }
+    if t == "Ident" {
+        let loc = cg_lookup(st, e[1]);
+        return loc != null and loc[0] == "I";
+    }
+    if t == "Unary" and e[1] == "Neg" {
+        return is_int_expr_now(st, e[2]);
+    }
+    if t == "Binary" {
+        let op = e[1];
+        if op == "Add" or op == "Sub" or op == "Mul" or op == "Div" or op == "Mod" {
+            return is_int_expr_now(st, e[2]) and is_int_expr_now(st, e[3]);
+        }
+    }
+    return false;
+}
+
+// A comparison whose both sides are int-exprs (the emit_cond_branch fast
+// path): returns [op, l, r] or null.
+fn is_int_compare_now(st, e) {
+    if e[0] == "Binary" {
+        let op = e[1];
+        if op == "Lt" or op == "Le" or op == "Gt" or op == "Ge" or op == "Eq" or op == "Ne" {
+            if is_int_expr_now(st, e[2]) and is_int_expr_now(st, e[3]) {
+                return [op, e[2], e[3]];
+            }
+        }
+    }
+    return null;
+}
+
+// ------------------------------------------------- hybrid int compares
+//
+// Port of the oracle's Phase-3 hybrid path: a compare whose leaves may be
+// plain boxed Locals (typically params — analyze_int_locals deliberately
+// excludes them) checks each boxed leaf at run time with spid3r_is_int,
+// extracts it with spid3r_int_of, and compares in registers. Any non-Int
+// leaf falls back to the fully generic emission of the ORIGINAL expression,
+// so float promotion / overloads / error messages stay byte-identical.
+
+fn is_hybrid_int_expr_now(st, e) {
+    if st["hybrid_off"] {
+        return false;
+    }
+    let t = e[0];
+    if t == "Int" {
+        return true;
+    }
+    if t == "Ident" {
+        let loc = cg_lookup(st, e[1]);
+        return loc != null and (loc[0] == "L" or loc[0] == "I");
+    }
+    if t == "Unary" and e[1] == "Neg" {
+        return is_hybrid_int_expr_now(st, e[2]);
+    }
+    if t == "Binary" {
+        let op = e[1];
+        if op == "Add" or op == "Sub" or op == "Mul" or op == "Div" or op == "Mod" {
+            return is_hybrid_int_expr_now(st, e[2]) and is_hybrid_int_expr_now(st, e[3]);
+        }
+    }
+    return false;
+}
+
+// The boxed leaves (first-use order, deduplicated) of a hybrid expression.
+fn collect_hybrid_leaves(st, e, out) {
+    let t = e[0];
+    if t == "Int" {
+        return;
+    }
+    if t == "Ident" {
+        let loc = cg_lookup(st, e[1]);
+        if loc != null and loc[0] == "L" {
+            let seen = false;
+            for nm in out {
+                if nm == e[1] {
+                    seen = true;
+                }
+            }
+            if not seen {
+                out.push(e[1]);
+            }
+        }
+        return;
+    }
+    if t == "Unary" {
+        collect_hybrid_leaves(st, e[2], out);
+        return;
+    }
+    if t == "Binary" {
+        collect_hybrid_leaves(st, e[2], out);
+        collect_hybrid_leaves(st, e[3], out);
+        return;
+    }
+    return;
+}
+
+fn is_hybrid_int_compare_now(st, e) {
+    if st["hybrid_off"] {
+        return null;
+    }
+    if e[0] == "Binary" {
+        let op = e[1];
+        if op == "Lt" or op == "Le" or op == "Gt" or op == "Ge" or op == "Eq" or op == "Ne" {
+            if is_hybrid_int_expr_now(st, e[2]) and is_hybrid_int_expr_now(st, e[3]) {
+                return [op, e[2], e[3]];
+            }
+        }
+    }
+    return null;
+}
+
+// One hybrid operand to an i64 register; boxed leaves were extracted by the
+// caller into vals (name -> i64) after the runtime type check.
+fn hybrid_i64(st, e, vals) {
+    let t = e[0];
+    if t == "Int" {
+        return i64c(st, e[1]);
+    }
+    if t == "Ident" {
+        let loc = cg_lookup(st, e[1]);
+        if loc[0] == "I" {
+            return LLVMBuildLoad2(st["builder"], st["i64"], loc[1], "iv");
+        }
+        if vals.has(e[1]) {
+            return vals[e[1]];
+        }
+        throw ["internal: hybrid leaf was not extracted", 0, 0, 0, "native"];
+    }
+    if t == "Unary" and e[1] == "Neg" {
+        let a = hybrid_i64(st, e[2], vals);
+        return emit_i64_neg(st, a);
+    }
+    if t == "Binary" {
+        let a = hybrid_i64(st, e[2], vals);
+        let b = hybrid_i64(st, e[3], vals);
+        return emit_i64_binop(st, a, b, e[1]);
+    }
+    throw ["internal: non-int expr in hybrid arm", 0, 0, 0, "native"];
+}
+
+// The shared prologue: a check chain over the boxed leaves. On success
+// control enters fast_bb; any non-Int leaf branches to slow_bb. Returns the
+// extracted i64 leaves (aligned with the leaf list).
+fn emit_hybrid_leaf_checks(st, leaves, fast_bb, slow_bb) {
+    let vals = [];
+    let i = 0;
+    while i < leaves.len() {
+        let loc = cg_lookup(st, leaves[i]);
+        let slot = loc[1];
+        // THE BOX POINTER, not the slot address: slot is an alloca holding a
+        // *mut Value; the helpers expect the VALUE itself (the oracle's
+        // ledger-recorded loop-bound corruption lesson).
+        let box_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], slot, "box");
+        let f = tramp(st, "spid3r_is_int", [st["ptr"]], st["i8"]);
+        let r = emit_call(st, f, [box_ptr], "isint");
+        // Pure extraction emitted BEFORE the branch: spid3r_int_of never
+        // throws (0 for non-Int, superseded by the slow arm), so nothing
+        // here crosses a terminator.
+        let g = tramp(st, "spid3r_int_of", [st["ptr"]], st["i64"]);
+        let rv = emit_call(st, g, [box_ptr], "intof");
+        vals.push(rv);
+        let ok = LLVMBuildICmp(st["builder"], ICMP_EQ, r, i8c(st, 1), "isint.ok");
+        let on_ok = fast_bb;
+        if i + 1 < leaves.len() {
+            on_ok = new_block(st, "hyb.chk");
+        }
+        LLVMBuildCondBr(st["builder"], ok, on_ok, slow_bb);
+        if i + 1 < leaves.len() {
+            LLVMPositionBuilderAtEnd(st["builder"], on_ok);
+        }
+        i += 1;
+    }
+    if leaves.len() == 0 {
+        br_to(st, fast_bb);
+    }
+    return vals;
+}
+
+// CONDITION version: both arms end in a direct branch to then_bb/else_bb, so
+// no value crosses a merge. The slow arm recompiles the ORIGINAL compare
+// through the generic path (hybrid_off stops the re-dispatch).
+fn emit_hybrid_int_compare_cond(st, op, l, r, whole, then_bb, else_bb) {
+    let leaf_names = [];
+    collect_hybrid_leaves(st, l, leaf_names);
+    collect_hybrid_leaves(st, r, leaf_names);
+    let fast_bb = new_block(st, "hyb.fast");
+    let slow_bb = new_block(st, "hyb.slow");
+    let vals = emit_hybrid_leaf_checks(st, leaf_names, fast_bb, slow_bb);
+    // Fast arm: a pure register compare over the extracted leaves.
+    LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+    let by_name = map();
+    let i = 0;
+    while i < leaf_names.len() {
+        by_name[leaf_names[i]] = vals[i];
+        i += 1;
+    }
+    let lhs = hybrid_i64(st, l, by_name);
+    let rhs = hybrid_i64(st, r, by_name);
+    let c = LLVMBuildICmp(st["builder"], icmp_pred_for(op), lhs, rhs, "hyb.cmp");
+    LLVMBuildCondBr(st["builder"], c, then_bb, else_bb);
+    // Slow arm: the generic path, verbatim.
+    LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+    let saved = st["hybrid_off"];
+    st["hybrid_off"] = true;
+    let slow_v = cg_compile_expr(st, whole);
+    st["hybrid_off"] = saved;
+    let c2 = cond_i1(st, slow_v);
+    LLVMBuildCondBr(st["builder"], c2, then_bb, else_bb);
+    return;
+}
+
+// VALUE version: both arms produce a boxed bool (the fast arm uses the
+// shared singletons) merged by a phi; the slow arm recompiles generically.
+fn emit_hybrid_int_compare_value(st, op, l, r, whole) {
+    let leaf_names = [];
+    collect_hybrid_leaves(st, l, leaf_names);
+    collect_hybrid_leaves(st, r, leaf_names);
+    let fast_bb = new_block(st, "hyb.fast");
+    let slow_bb = new_block(st, "hyb.slow");
+    let merge_bb = new_block(st, "hyb.merge");
+    let vals = emit_hybrid_leaf_checks(st, leaf_names, fast_bb, slow_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+    let by_name = map();
+    let i = 0;
+    while i < leaf_names.len() {
+        by_name[leaf_names[i]] = vals[i];
+        i += 1;
+    }
+    let lhs = hybrid_i64(st, l, by_name);
+    let rhs = hybrid_i64(st, r, by_name);
+    let c = LLVMBuildICmp(st["builder"], icmp_pred_for(op), lhs, rhs, "hyb.cmp");
+    let fast_v = v_bool_from_i1(st, c);
+    // hybrid_i64 may have routed through an inline-binop merge block, so
+    // capture wherever the builder actually sits (same for the slow edge).
+    let fast_def_bb = cur_block(st);
+    br_to(st, merge_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+    let saved = st["hybrid_off"];
+    st["hybrid_off"] = true;
+    let slow_v = cg_compile_expr(st, whole);
+    st["hybrid_off"] = saved;
+    // cg_compile_expr ends with a pending-throw guard that may have
+    // continued into a fresh block — the phi's predecessor is wherever the
+    // builder actually sits now, not slow_bb.
+    let slow_def_bb = cur_block(st);
+    br_to(st, merge_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], merge_bb);
+    let merged = LLVMBuildPhi(st["builder"], st["ptr"], "hyb.phi");
+    add_incoming(st, merged, [fast_v, slow_v], [fast_def_bb, slow_def_bb]);
+    return merged;
+}
+
+fn icmp_pred_for(op) {
+    if op == "Lt" { return ICMP_SLT; }
+    if op == "Le" { return ICMP_SLE; }
+    if op == "Gt" { return ICMP_SGT; }
+    if op == "Ge" { return ICMP_SGE; }
+    if op == "Eq" { return ICMP_EQ; }
+    return ICMP_NE;
+}
+
+fn v_str(st, s) {
+    let g = str_global(st, s);
+    let f = tramp(st, "spid3r_value_str", [st["ptr"], st["i64"]], st["ptr"]);
+    return emit_call(st, f, [g, i64c(st, bytes(s).len())], "vs");
+}
+
+// Add (or reuse) a null-terminated string constant. Returns the global's
+// pointer (the byte address the runtime reads).
+fn str_global(st, s) {
+    if st["strings"].has(s) {
+        return st["strings"][s];
+    }
+    let n = bytes(s).len();
+    let c = LLVMConstStringInContext(st["ctx"], s, n, 0);
+    let g = LLVMAddGlobal(st["module"], LLVMTypeOf(c), ".str." + string(st["str_counter"]));
+    st["str_counter"] = st["str_counter"] + 1;
+    LLVMSetInitializer(g, c);
+    LLVMSetGlobalConstant(g, 1);
+    LLVMSetLinkage(g, 8); // LLVMPrivateLinkage
+    LLVMSetUnnamedAddress(g, 1);
+    st["strings"][s] = g;
+    return g;
+}
+
+// --------------------------------------------------------------- scopes
+
+fn cg_push_scope(st) {
+    st["scopes"].push(map());
+}
+
+fn cg_pop_scope(st) {
+    let _s = st["scopes"].pop();
+}
+
+// VarLoc: ["L", slot] local stack slot, ["C", slot] slot holding a cell,
+// ["U", i] enclosing-closure upvalue index.
+fn cg_declare(st, name, loc) {
+    st["scopes"][st["scopes"].len() - 1][name] = loc;
+}
+
+fn cg_lookup(st, name) {
+    let i = st["scopes"].len() - 1;
+    while i >= 0 {
+        if st["scopes"][i].has(name) {
+            return st["scopes"][i][name];
+        }
+        i -= 1;
+    }
+    return null;
+}
+
+// ------------------------------------------------------- entry allocas
+
+fn cur_fn(st) {
+    return LLVMGetBasicBlockParent(cur_block(st));
+}
+
+fn cur_block(st) {
+    return LLVMGetInsertBlock(st["builder"]);
+}
+
+// Allocate in the function's ENTRY block: a loop-body alloca would grow the
+// stack on every iteration. Inserted before the first instruction; the
+// caller's position is restored.
+fn alloca_entry_ty(st, ty, name) {
+    let entry = LLVMGetFirstBasicBlock(cur_fn(st));
+    let cur = cur_block(st);
+    let first = LLVMGetFirstInstruction(entry);
+    if first != 0 {
+        LLVMPositionBuilderBefore(st["builder"], first);
+    } else {
+        LLVMPositionBuilderAtEnd(st["builder"], entry);
+    }
+    let slot = LLVMBuildAlloca(st["builder"], ty, name);
+    if cur != 0 {
+        LLVMPositionBuilderAtEnd(st["builder"], cur);
+    }
+    return slot;
+}
+
+fn alloca_entry(st, name) {
+    return alloca_entry_ty(st, st["ptr"], name);
+}
+
+// Store into an entry-block slot exactly once (before its terminator) —
+// the loop-cancel counter's initialization.
+fn init_entry_slot(st, slot, val) {
+    let entry = LLVMGetFirstBasicBlock(cur_fn(st));
+    let cur = cur_block(st);
+    let term = LLVMGetLastInstruction(entry);
+    if term != 0 {
+        LLVMPositionBuilderBefore(st["builder"], term);
+    } else {
+        LLVMPositionBuilderAtEnd(st["builder"], entry);
+    }
+    LLVMBuildStore(st["builder"], val, slot);
+    if cur != 0 {
+        LLVMPositionBuilderAtEnd(st["builder"], cur);
+    }
+    return;
+}
+
+// --------------------------------------------------------- control flow
+
+fn new_block(st, name) {
+    return LLVMAppendBasicBlockInContext(st["ctx"], cur_fn(st), name);
+}
+
+fn br_to(st, bb) {
+    let b = cur_block(st);
+    if b != null {
+        if LLVMGetBasicBlockTerminator(b) == 0 {
+            LLVMBuildBr(st["builder"], bb);
+        }
+    }
+    return;
+}
+
+fn sealed(st) {
+    let b = cur_block(st);
+    if b == null {
+        return true;
+    }
+    return LLVMGetBasicBlockTerminator(b) != 0;
+}
+
+// After return/break/continue the current block is sealed; continue emission
+// in a fresh (dead) block — LLVM prunes unreachable code later.
+fn ensure_open(st) {
+    if sealed(st) {
+        let bb = new_block(st, "dead");
+        LLVMPositionBuilderAtEnd(st["builder"], bb);
+    }
+    return;
+}
+
+
+// A boxed value handle to an i1 condition.
+fn cond_i1(st, v) {
+    let f = tramp(st, "spid3r_truthy", [st["ptr"]], st["i8"]);
+    let b = emit_call(st, f, [v], "t");
+    return LLVMBuildICmp(st["builder"], ICMP_NE, b, i8c(st, 0), "c");
+}
+
+// ------------------------------------------------------- throw plumbing
+
+// After an operation that may have set the pending-throw flag: branch to the
+// current handler. The bottom of exc is the function's propagate block (or
+// the entry's uncaught handler), so a throw flows to the nearest try.
+fn throw_guard(st) {
+    if st["exc"].len() == 0 {
+        return;
+    }
+    let b = cur_block(st);
+    if b == 0 {
+        return;
+    }
+    if LLVMGetBasicBlockTerminator(b) != 0 {
+        return;
+    }
+    let handler = st["exc"][st["exc"].len() - 1];
+    let f = tramp(st, "spid3r_threw", [], st["i8"]);
+    let r = emit_call(st, f, [], "threw");
+    let is = LLVMBuildICmp(st["builder"], ICMP_NE, r, i8c(st, 0), "exc");
+    let cont = new_block(st, "ok");
+    LLVMBuildCondBr(st["builder"], is, handler, cont);
+    LLVMPositionBuilderAtEnd(st["builder"], cont);
+    return;
+}
+
+fn take_thrown(st) {
+    return call0p(st, "spid3r_take_thrown");
+}
+
+// Record the value in the pending-throw flag (returns normally; the guard
+// routes control).
+fn throw_value(st, v) {
+    let f = tramp(st, "spid3r_throw", [st["ptr"]], null);
+    emit_call(st, f, [v], "");
+    return;
+}
+
+// ------------------------------------------------- capture analysis
+//
+// Ports of collect_outer_uses / collect_declared / capture_list / boxing_set
+// over the selfhost AST model (the same two-phase structure: outer uses are
+// idents not shadowed by any enclosing parameter frame; block-level locals
+// are excluded afterwards via the declared-anywhere set).
+
+fn cg_map_keys(m) {
+    let ks = [];
+    for k in m {
+        ks.push(k);
+    }
+    return ks;
+}
+
+fn ou_block(stmts, declared, out) {
+    for s in stmts {
+        ou_stmt(s, declared, out);
+    }
+    return;
+}
+
+fn ou_stmt(s, declared, out) {
+    let t = s[0];
+    if t == "Let" or t == "Const" {
+        if s[4] != null {
+            ou_expr(s[4], declared, out);
+        }
+        return;
+    }
+    if t == "Fn" {
+        ou_fn(s[1], declared, out);
+        return;
+    }
+    if t == "ExprStmt" {
+        ou_expr(s[1], declared, out);
+        return;
+    }
+    if t == "Return" {
+        if s[1] != null {
+            ou_expr(s[1], declared, out);
+        }
+        return;
+    }
+    if t == "Throw" {
+        ou_expr(s[1], declared, out);
+        return;
+    }
+    if t == "Spawn" {
+        ou_expr(s[1], declared, out);
+        return;
+    }
+    if t == "If" {
+        ou_expr(s[1], declared, out);
+        ou_block(s[2][1], declared, out);
+        for e in s[3] {
+            ou_expr(e[1], declared, out);
+            ou_block(e[2][1], declared, out);
+        }
+        if s[4] != null {
+            ou_block(s[4][1], declared, out);
+        }
+        return;
+    }
+    if t == "While" {
+        ou_expr(s[1], declared, out);
+        ou_block(s[2][1], declared, out);
+        return;
+    }
+    if t == "ForIn" {
+        ou_expr(s[3], declared, out);
+        ou_block(s[4][1], declared, out);
+        return;
+    }
+    if t == "ForC" {
+        ou_stmt(s[1], declared, out);
+        ou_expr(s[2], declared, out);
+        ou_expr(s[3], declared, out);
+        ou_block(s[4][1], declared, out);
+        return;
+    }
+    if t == "Try" {
+        ou_block(s[1][1], declared, out);
+        if s[2] != null {
+            ou_block(s[2][2][1], declared, out);
+        }
+        if s[3] != null {
+            ou_block(s[3][1], declared, out);
+        }
+        return;
+    }
+    if t == "BlockStmt" {
+        ou_block(s[1][1], declared, out);
+        return;
+    }
+    return;
+}
+
+fn ou_fn(p, declared, out) {
+    let frame = [];
+    for pp in p[5] {
+        frame.push(pp[1]);
+    }
+    declared.push(frame);
+    ou_block(p[8][1], declared, out);
+    let _f = declared.pop();
+    return;
+}
+
+fn ou_expr(e, declared, out) {
+    let t = e[0];
+    if t == "Int" or t == "Float" or t == "Str" or t == "Bool" or t == "Null" {
+        return;
+    }
+    if t == "Ident" {
+        let local = false;
+        for f in declared {
+            for nm in f {
+                if nm == e[1] {
+                    local = true;
+                }
+            }
+        }
+        if not local {
+            out[e[1]] = 1;
+        }
+        return;
+    }
+    if t == "List" {
+        for it in e[1] {
+            ou_expr(it, declared, out);
+        }
+        return;
+    }
+    if t == "Fn" {
+        ou_fn(e[1], declared, out);
+        return;
+    }
+    if t == "Unary" {
+        ou_expr(e[2], declared, out);
+        return;
+    }
+    if t == "Binary" or t == "Logical" {
+        ou_expr(e[2], declared, out);
+        ou_expr(e[3], declared, out);
+        return;
+    }
+    if t == "Assign" {
+        ou_expr(e[2], declared, out);
+        ou_expr(e[3], declared, out);
+        return;
+    }
+    if t == "Call" {
+        ou_expr(e[1], declared, out);
+        for a in e[2] {
+            ou_expr(a, declared, out);
+        }
+        return;
+    }
+    if t == "Method" {
+        ou_expr(e[2], declared, out);
+        for a in e[3] {
+            ou_expr(a, declared, out);
+        }
+        return;
+    }
+    if t == "Index" {
+        ou_expr(e[1], declared, out);
+        ou_expr(e[2], declared, out);
+        return;
+    }
+    if t == "FieldE" or t == "OptField" {
+        ou_expr(e[2], declared, out);
+        return;
+    }
+    if t == "New" {
+        for a in e[2] {
+            ou_expr(a, declared, out);
+        }
+        return;
+    }
+    if t == "Await" or t == "Spawn" {
+        ou_expr(e[1], declared, out);
+        return;
+    }
+    if t == "SuperCall" {
+        let local = false;
+        for f in declared {
+            for nm in f {
+                if nm == "self" {
+                    local = true;
+                }
+            }
+        }
+        if not local {
+            out["self"] = 1;
+        }
+        for a in e[3] {
+            ou_expr(a, declared, out);
+        }
+        return;
+    }
+    if t == "NamedArg" {
+        ou_expr(e[2], declared, out);
+        return;
+    }
+    // Surface-only nodes are rewritten by lowering; walk defensively anyway.
+    if t == "IfE" {
+        ou_expr(e[1], declared, out);
+        ou_expr(e[2], declared, out);
+        ou_expr(e[3], declared, out);
+        return;
+    }
+    if t == "Coalesce" {
+        ou_expr(e[1], declared, out);
+        ou_expr(e[2], declared, out);
+        return;
+    }
+    if t == "Propagate" {
+        ou_expr(e[1], declared, out);
+        return;
+    }
+    return;
+}
+
+// Names declared anywhere inside `stmts` (any nesting depth).
+fn cd_stmts(stmts, out) {
+    for s in stmts {
+        cd_stmt(s, out);
+    }
+    return;
+}
+
+fn cd_stmt(s, out) {
+    let t = s[0];
+    if t == "Let" or t == "Const" {
+        if s[4] != null {
+            cd_expr(s[4], out);
+        }
+        out[s[2]] = 1;
+        return;
+    }
+    if t == "Fn" {
+        if s[1][4] != null {
+            out[s[1][4]] = 1;
+        }
+        cd_stmts(s[1][8][1], out);
+        return;
+    }
+    if t == "If" {
+        cd_stmts(s[2][1], out);
+        for e in s[3] {
+            cd_stmts(e[2][1], out);
+        }
+        if s[4] != null {
+            cd_stmts(s[4][1], out);
+        }
+        return;
+    }
+    if t == "While" {
+        cd_stmts(s[2][1], out);
+        return;
+    }
+    if t == "ForIn" {
+        out[s[1]] = 1;
+        cd_stmts(s[4][1], out);
+        return;
+    }
+    if t == "ForC" {
+        cd_stmt(s[1], out);
+        cd_stmts(s[4][1], out);
+        return;
+    }
+    if t == "Try" {
+        cd_stmts(s[1][1], out);
+        if s[2] != null {
+            out[s[2][1]] = 1;
+            cd_stmts(s[2][2][1], out);
+        }
+        if s[3] != null {
+            cd_stmts(s[3][1], out);
+        }
+        return;
+    }
+    if t == "BlockStmt" {
+        cd_stmts(s[1][1], out);
+        return;
+    }
+    return;
+}
+
+fn cd_expr(e, out) {
+    if e[0] == "Fn" {
+        if e[1][4] != null {
+            out[e[1][4]] = 1;
+        }
+        cd_stmts(e[1][8][1], out);
+    }
+    return;
+}
+
+// The names a function body captures from enclosing scopes: outer uses minus
+// everything declared inside, sorted for a stable environment layout.
+fn capture_list(p) {
+    let uses = map();
+    let declared = [];
+    let frame = [];
+    for pp in p[5] {
+        frame.push(pp[1]);
+    }
+    declared.push(frame);
+    ou_block(p[8][1], declared, uses);
+    let inner = map();
+    cd_stmts(p[8][1], inner);
+    let v = [];
+    for name in cg_map_keys(uses) {
+        if not inner.has(name) {
+            v.push(name);
+        }
+    }
+    v.sort();
+    return v;
+}
+
+// Every function literal nested anywhere inside `p` (at any depth).
+fn nf_stmts(stmts, out) {
+    for s in stmts {
+        nf_stmt(s, out);
+    }
+    return;
+}
+
+fn nf_stmt(s, out) {
+    let t = s[0];
+    if t == "Fn" {
+        out.push(s[1]);
+        nf_stmts(s[1][8][1], out);
+        return;
+    }
+    if t == "Let" or t == "Const" {
+        if s[4] != null {
+            nf_expr(s[4], out);
+        }
+        return;
+    }
+    if t == "ExprStmt" {
+        nf_expr(s[1], out);
+        return;
+    }
+    if t == "Return" {
+        if s[1] != null {
+            nf_expr(s[1], out);
+        }
+        return;
+    }
+    if t == "Throw" {
+        nf_expr(s[1], out);
+        return;
+    }
+    if t == "Spawn" {
+        nf_expr(s[1], out);
+        return;
+    }
+    if t == "If" {
+        nf_expr(s[1], out);
+        nf_stmts(s[2][1], out);
+        for e in s[3] {
+            nf_expr(e[1], out);
+            nf_stmts(e[2][1], out);
+        }
+        if s[4] != null {
+            nf_stmts(s[4][1], out);
+        }
+        return;
+    }
+    if t == "While" {
+        nf_expr(s[1], out);
+        nf_stmts(s[2][1], out);
+        return;
+    }
+    if t == "ForIn" {
+        nf_expr(s[3], out);
+        nf_stmts(s[4][1], out);
+        return;
+    }
+    if t == "ForC" {
+        nf_stmt(s[1], out);
+        nf_expr(s[2], out);
+        nf_expr(s[3], out);
+        nf_stmts(s[4][1], out);
+        return;
+    }
+    if t == "Try" {
+        nf_stmts(s[1][1], out);
+        if s[2] != null {
+            nf_stmts(s[2][2][1], out);
+        }
+        if s[3] != null {
+            nf_stmts(s[3][1], out);
+        }
+        return;
+    }
+    if t == "BlockStmt" {
+        nf_stmts(s[1][1], out);
+        return;
+    }
+    return;
+}
+
+fn nf_expr(e, out) {
+    let t = e[0];
+    if t == "Fn" {
+        out.push(e[1]);
+        nf_stmts(e[1][8][1], out);
+        return;
+    }
+    if t == "List" {
+        for it in e[1] {
+            nf_expr(it, out);
+        }
+        return;
+    }
+    if t == "Unary" {
+        nf_expr(e[2], out);
+        return;
+    }
+    if t == "Binary" or t == "Logical" {
+        nf_expr(e[2], out);
+        nf_expr(e[3], out);
+        return;
+    }
+    if t == "Assign" {
+        nf_expr(e[2], out);
+        nf_expr(e[3], out);
+        return;
+    }
+    if t == "Call" {
+        nf_expr(e[1], out);
+        for a in e[2] {
+            nf_expr(a, out);
+        }
+        return;
+    }
+    if t == "Method" {
+        nf_expr(e[2], out);
+        for a in e[3] {
+            nf_expr(a, out);
+        }
+        return;
+    }
+    if t == "Index" {
+        nf_expr(e[1], out);
+        nf_expr(e[2], out);
+        return;
+    }
+    if t == "FieldE" or t == "OptField" {
+        nf_expr(e[2], out);
+        return;
+    }
+    if t == "New" {
+        for a in e[2] {
+            nf_expr(a, out);
+        }
+        return;
+    }
+    if t == "Await" or t == "Spawn" {
+        nf_expr(e[1], out);
+        return;
+    }
+    if t == "NamedArg" {
+        nf_expr(e[2], out);
+        return;
+    }
+    if t == "Coalesce" {
+        nf_expr(e[1], out);
+        nf_expr(e[2], out);
+        return;
+    }
+    if t == "Propagate" {
+        nf_expr(e[1], out);
+        return;
+    }
+    return;
+}
+
+// Locals of `p` (params + declared) captured by any nested function: exactly
+// the variables that must live in upvalue cells instead of plain slots.
+fn boxing_set(p) {
+    let locals = map();
+    for pp in p[5] {
+        locals[pp[1]] = 1;
+    }
+    cd_stmts(p[8][1], locals);
+    let nested = [];
+    nf_stmts(p[8][1], nested);
+    let needed = map();
+    for g in nested {
+        for name in capture_list(g) {
+            if locals.has(name) {
+                needed[name] = 1;
+            }
+        }
+    }
+    return needed;
+}
+
+fn min_arity_of(proto) {
+    let n = proto[5].len();
+    let d = 0;
+    for pp in proto[5] {
+        if pp[3] != null {
+            d += 1;
+        }
+    }
+    return n - d;
+}
+
+// ------------------------------------------------------ ident + calls
+
+// A bare `none` reads the runtime global like any other name (the stdlib
+// installs it) — no special case.
+fn compile_ident(st, name) {
+    let loc = cg_lookup(st, name);
+    if loc != null {
+        if loc[0] == "I" {
+            let iv = LLVMBuildLoad2(st["builder"], st["i64"], loc[1], "iv");
+            return v_int_from_i64(st, iv);
+        }
+        if loc[0] == "L" {
+            return LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], tmp_name(st, "v"));
+        }
+        if loc[0] == "C" {
+            let cell = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], tmp_name(st, "c"));
+            return call1p(st, "spid3r_cell_get", cell);
+        }
+        if loc[0] == "U" {
+            return read_upvalue(st, loc[1]);
+        }
+    }
+    return global_value(st, name);
+}
+
+fn read_upvalue(st, index) {
+    let slot = call1p_i64(st, "spid3r_env_slot", st["env"], index);
+    return call1p(st, "spid3r_cell_get", slot);
+}
+
+fn global_value(st, name) {
+    let np = str_global(st, name);
+    return call1p(st, "spid3r_global_get", np);
+}
+
+fn build_call_value(st, callee, argc, argv) {
+    let f = tramp(st, "spid3r_call", [st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
+    return emit_call(st, f, [callee, i64c(st, argc), argv], "call");
+}
+
+// Materialize compiled arguments as an [N x ptr] stack array (entry block)
+// and return a pointer to element 0; empty argv is a null pointer.
+fn argv_array(st, argv) {
+    let n = argv.len();
+    if n == 0 {
+        return null_ptr(st);
+    }
+    let arr_ty = LLVMArrayType2(st["ptr"], n);
+    let slot = alloca_entry_ty(st, arr_ty, "argv");
+    let i = 0;
+    while i < n {
+        let gep = LLVMBuildInBoundsGEP2(st["builder"], arr_ty, slot, carr([i64c(st, 0), i64c(st, i)]), 2, "argv.elem");
+        LLVMBuildStore(st["builder"], argv[i], gep);
+        i += 1;
+    }
+    return LLVMBuildInBoundsGEP2(st["builder"], arr_ty, slot, carr([i64c(st, 0), i64c(st, 0)]), 2, "argv.p");
+}
+
+fn temp_slot(st, v) {
+    let slot = alloca_entry(st, "tmp");
+    LLVMBuildStore(st["builder"], v, slot);
+    return slot;
+}
+
+fn binop_code(op) {
+    if op == "Add" { return 0; }
+    if op == "Sub" { return 1; }
+    if op == "Mul" { return 2; }
+    if op == "Div" { return 3; }
+    if op == "Mod" { return 4; }
+    if op == "Eq" { return 5; }
+    if op == "Ne" { return 6; }
+    if op == "Lt" { return 7; }
+    if op == "Le" { return 8; }
+    if op == "Gt" { return 9; }
+    if op == "Ge" { return 10; }
+    return 0;
+}
+
+fn assign_binop_op(op) {
+    if op == "AddAssign" { return "Add"; }
+    if op == "SubAssign" { return "Sub"; }
+    if op == "MulAssign" { return "Mul"; }
+    if op == "DivAssign" { return "Div"; }
+    if op == "ModAssign" { return "Mod"; }
+    return "Add";
+}
+
+fn assign_binop_code(op) {
+    if op == "AddAssign" { return 0; }
+    if op == "SubAssign" { return 1; }
+    if op == "MulAssign" { return 2; }
+    if op == "DivAssign" { return 3; }
+    if op == "ModAssign" { return 4; }
+    return 0;
+}
+
+// ---------------------------------------------------------- expressions
+
+// cg_compile_expr = compile_expr_inner + throw_guard: any operation that threw
+// routes to the current handler instead of using the placeholder value.
+fn cg_compile_expr(st, e) {
+    let v = compile_expr_inner(st, e);
+    throw_guard(st);
+    return v;
+}
+
+fn compile_expr_inner(st, e) {
+    let tag = e[0];
+    if tag == "NamedArg" {
+        throw ["internal error: a named argument reached the codegen without lowering", 0, 0, 0, "native"];
+    }
+    if tag == "IfE" or tag == "Coalesce" or tag == "Match" or tag == "Propagate" {
+        throw ["internal error: a surface-only expression (" + tag + ") reached the codegen without lowering", 0, 0, 0, "native"];
+    }
+    if tag == "Int" {
+        return v_int(st, e[1]);
+    }
+    if tag == "Float" {
+        return v_float(st, e[1]);
+    }
+    if tag == "Str" {
+        return v_str(st, e[1]);
+    }
+    if tag == "Bool" {
+        return v_bool(st, e[1]);
+    }
+    if tag == "Null" {
+        return v_null(st);
+    }
+    if tag == "Ident" {
+        return compile_ident(st, e[1]);
+    }
+    if tag == "List" {
+        let vals = [];
+        for it in e[1] {
+            vals.push(cg_compile_expr(st, it));
+        }
+        let arr = argv_array(st, vals);
+        let f = tramp(st, "spid3r_construct", [st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
+        let np = str_global(st, "list");
+        return emit_call(st, f, [np, i64c(st, vals.len()), arr], "ctor");
+    }
+    if tag == "Fn" {
+        return compile_closure(st, e[1]);
+    }
+    if tag == "Unary" {
+        let inner = cg_compile_expr(st, e[2]);
+        let code = 0;
+        if e[1] == "Neg" {
+            code = 1;
+        }
+        return call1p_i64(st, "spid3r_unop", inner, code);
+    }
+    if tag == "Binary" {
+        // Unboxed i64 locals: inline register arithmetic / comparison.
+        let op = e[1];
+        if op == "Add" or op == "Sub" or op == "Mul" or op == "Div" or op == "Mod" {
+            if is_int_expr_now(st, e) {
+                let iv = cg_compile_expr_i64(st, e);
+                return v_int_from_i64(st, iv);
+            }
+        }
+        if op == "Lt" or op == "Le" or op == "Gt" or op == "Ge" or op == "Eq" or op == "Ne" {
+            if is_int_expr_now(st, e[2]) and is_int_expr_now(st, e[3]) {
+                let a = cg_compile_expr_i64(st, e[2]);
+                let b = cg_compile_expr_i64(st, e[3]);
+                let c = LLVMBuildICmp(st["builder"], icmp_pred_for(op), a, b, "cmp");
+                return v_bool_from_i1(st, c);
+            }
+            let hc = is_hybrid_int_compare_now(st, e);
+            if hc != null {
+                return emit_hybrid_int_compare_value(st, hc[0], hc[1], hc[2], e);
+            }
+        }
+        // The SLOW path: both operands boxed, one spid3r_binop call.
+        let a = cg_compile_expr(st, e[2]);
+        let b = cg_compile_expr(st, e[3]);
+        return call_binop(st, a, b, binop_code(op));
+    }
+    if tag == "Logical" {
+        return compile_logical(st, e);
+    }
+    if tag == "Assign" {
+        return cg_compile_assign(st, e[2], e[1], e[3]);
+    }
+    if tag == "SuperCall" {
+        let recv = compile_ident(st, "self");
+        let vals = [];
+        for a in e[3] {
+            vals.push(cg_compile_expr(st, a));
+        }
+        let arr = argv_array(st, vals);
+        let pp = str_global(st, e[1]);
+        let mp = null_ptr(st);
+        if e[2] != null {
+            mp = str_global(st, e[2]);
+        }
+        let f = tramp(st, "spid3r_super_call", [st["ptr"], st["ptr"], st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
+        return emit_call(st, f, [recv, pp, mp, i64c(st, vals.len()), arr], "superc");
+    }
+    if tag == "Super" {
+        throw ["internal error: a bare `super` reached the codegen (the checker rejects it first)", 0, 0, 0, "native"];
+    }
+    if tag == "Call" {
+        return compile_call(st, e);
+    }
+    if tag == "Method" {
+        let obj = cg_compile_expr(st, e[2]);
+        let vals = [];
+        for a in e[3] {
+            vals.push(cg_compile_expr(st, a));
+        }
+        let np = str_global(st, e[1]);
+        let arr = argv_array(st, vals);
+        let f = tramp(st, "spid3r_method", [st["ptr"], st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
+        return emit_call(st, f, [obj, np, i64c(st, vals.len()), arr], "m");
+    }
+    if tag == "Index" {
+        let obj = cg_compile_expr(st, e[1]);
+        let idx = cg_compile_expr(st, e[2]);
+        return call2p(st, "spid3r_index_get", obj, idx);
+    }
+    if tag == "FieldE" {
+        let obj = cg_compile_expr(st, e[2]);
+        let np = str_global(st, e[1]);
+        return call2p(st, "spid3r_field_get", obj, np);
+    }
+    if tag == "OptField" {
+        let obj = cg_compile_expr(st, e[2]);
+        let np = str_global(st, e[1]);
+        let is_null = LLVMBuildIsNull(st["builder"], obj, "opt.isnull");
+        let null_bb = new_block(st, "optnull");
+        let get_bb = new_block(st, "optget");
+        let cont_bb = new_block(st, "optcont");
+        LLVMBuildCondBr(st["builder"], is_null, null_bb, get_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], null_bb);
+        let n = v_null(st);
+        let null_from = cur_block(st);
+        br_to(st, cont_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], get_bb);
+        let r = call2p(st, "spid3r_field_get_soft", obj, np);
+        let r_from = cur_block(st);
+        br_to(st, cont_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+        let phi = LLVMBuildPhi(st["builder"], st["ptr"], "opt");
+        add_incoming(st, phi, [n, r], [null_from, r_from]);
+        return phi;
+    }
+    if tag == "New" {
+        // New[1] is the class-name string (resolved like any identifier).
+        let cls = compile_ident(st, e[1]);
+        let vals = [];
+        for a in e[2] {
+            vals.push(cg_compile_expr(st, a));
+        }
+        let arr = argv_array(st, vals);
+        return build_call_value(st, cls, vals.len(), arr);
+    }
+    if tag == "Spawn" {
+        let f = cg_compile_expr(st, e[1]);
+        return call1p(st, "spid3r_spawn", f);
+    }
+    if tag == "Await" {
+        let inner = cg_compile_expr(st, e[1]);
+        return call1p(st, "spid3r_await", inner);
+    }
+    throw ["internal error: unknown expression tag " + tag, 0, 0, 0, "native"];
+}
+
+fn add_incoming(st, phi, vals, blocks) {
+    LLVMAddIncoming(phi, carr(vals), carr(blocks), vals.len());
+    return;
+}
+
+// and/or: short-circuit through conditional branches; the short-circuit arm
+// contributes a CONSTANT (falsy for and, truthy for or), phi-merged with the
+// rhs's truthiness.
+fn compile_logical(st, e) {
+    let op = e[1];
+    let lhs = cg_compile_expr(st, e[2]);
+    let c = cond_i1(st, lhs);
+    let or_const = 0;
+    if op == "Or" {
+        or_const = 1;
+    }
+    let lhs_i8 = i8c(st, or_const);
+    let lhs_from = cur_block(st);
+    let rhs_bb = new_block(st, "logic.rhs");
+    let end_bb = new_block(st, "logic.end");
+    if op == "And" {
+        LLVMBuildCondBr(st["builder"], c, rhs_bb, end_bb);
+    } else {
+        LLVMBuildCondBr(st["builder"], c, end_bb, rhs_bb);
+    }
+    LLVMPositionBuilderAtEnd(st["builder"], rhs_bb);
+    let rhs = cg_compile_expr(st, e[3]);
+    let f_truthy = tramp(st, "spid3r_truthy", [st["ptr"]], st["i8"]);
+    let rhs_i8 = emit_call(st, f_truthy, [rhs], "rt");
+    let rhs_from = cur_block(st);
+    br_to(st, end_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], end_bb);
+    let phi = LLVMBuildPhi(st["builder"], st["i8"], "logic");
+    add_incoming(st, phi, [lhs_i8, rhs_i8], [lhs_from, rhs_from]);
+    let f_bool = tramp(st, "spid3r_value_bool", [st["i8"]], st["ptr"]);
+    return emit_call(st, f_bool, [phi], "b");
+}
+
+// RHS first, then the target's object/index reads — the interpreter's
+// evaluation order (see the oracle's cg_compile_assign comment).
+fn cg_compile_assign(st, target, op, value) {
+    let ttag = target[0];
+    if ttag == "Ident" {
+        let name = target[1];
+        let loc0 = cg_lookup(st, name);
+        if loc0 != null and loc0[0] == "I" {
+            let slot = loc0[1];
+            let rhs = cg_compile_expr_i64(st, value);
+            if op == "Assign" {
+                LLVMBuildStore(st["builder"], rhs, slot);
+                return v_int_from_i64(st, rhs);
+            }
+            let cur = LLVMBuildLoad2(st["builder"], st["i64"], slot, "cur");
+            let res = emit_i64_binop(st, cur, rhs, assign_binop_op(op));
+            LLVMBuildStore(st["builder"], res, slot);
+            return v_int_from_i64(st, res);
+        }
+        let v = cg_compile_expr(st, value);
+        if op != "Assign" {
+            let cur = compile_ident(st, name);
+            v = call_binop(st, cur, v, assign_binop_code(op));
+        }
+        let loc = cg_lookup(st, name);
+        if loc != null and loc[0] == "L" {
+            LLVMBuildStore(st["builder"], v, loc[1]);
+            return v;
+        }
+        if loc != null and loc[0] == "C" {
+            let cell = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "cell");
+            call_void2p(st, "spid3r_cell_set", cell, v);
+            return v;
+        }
+        if loc != null and loc[0] == "U" {
+            let cell = call1p_i64(st, "spid3r_env_slot", st["env"], loc[1]);
+            call_void2p(st, "spid3r_cell_set", cell, v);
+            return v;
+        }
+        let np = str_global(st, name);
+        call_void2p(st, "spid3r_global_set", np, v);
+        return v;
+    }
+    if ttag == "Index" {
+        let v = cg_compile_expr(st, value);
+        let obj = cg_compile_expr(st, target[1]);
+        let idx = cg_compile_expr(st, target[2]);
+        if op != "Assign" {
+            let cur = call2p(st, "spid3r_index_get", obj, idx);
+            v = call_binop(st, cur, v, assign_binop_code(op));
+        }
+        call_void3p(st, "spid3r_index_set", obj, idx, v);
+        return v;
+    }
+    if ttag == "FieldE" {
+        let v = cg_compile_expr(st, value);
+        let obj = cg_compile_expr(st, target[2]);
+        let np = str_global(st, target[1]);
+        if op != "Assign" {
+            let cur = call2p(st, "spid3r_field_get", obj, np);
+            v = call_binop(st, cur, v, assign_binop_code(op));
+        }
+        call_void3p(st, "spid3r_field_set", obj, np, v);
+        return v;
+    }
+    throw ["internal error: unsupported assignment target " + ttag, 0, 0, 0, "native"];
+}
+
+fn compile_call(st, e) {
+    let callee = e[1];
+    let args = e[2];
+    if callee[0] == "Ident" {
+        let n = callee[1];
+        if st["externs"].has(n) {
+            return compile_extern_call(st, n, args);
+        }
+        if is_constructor_name(n) {
+            let vals = [];
+            for a in args {
+                vals.push(cg_compile_expr(st, a));
+            }
+            let arr = argv_array(st, vals);
+            let np = str_global(st, n);
+            let f = tramp(st, "spid3r_construct", [st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
+            return emit_call(st, f, [np, i64c(st, vals.len()), arr], "ctor");
+        }
+    }
+    let cv = cg_compile_expr(st, callee);
+    let vals = [];
+    for a in args {
+        vals.push(cg_compile_expr(st, a));
+    }
+    let arr = argv_array(st, vals);
+    return build_call_value(st, cv, vals.len(), arr);
+}
+
+// The FFI type table (SH-7): the six shapes allowed across the boundary.
+fn c_type_handle(st, tname, who) {
+    if tname == "int" { return st["i64"]; }
+    if tname == "float" { return st["f64"]; }
+    if tname == "bool" { return st["i8"]; }
+    if tname == "string" { return st["ptr"]; }
+    if tname == "ptr" { return st["ptr"]; }
+    if tname == "usize" { return st["i64"]; }
+    throw ["extern fn '" + who + "': cannot pass '" + tname + "' to C (supported: int, float, bool, string, ptr, usize)", 0, 0, 0, "native"];
+}
+
+// Declare every top-level `extern fn` up front: a bad parameter type fails
+// at build time, not at the first call site deep in codegen.
+fn declare_externs(st, prog) {
+    for s in prog[0] {
+        if s[0] != "Fn" {
+            continue;
+        }
+        let p = s[1];
+        if not p[3] {
+            continue;
+        }
+        let name = p[4];
+        if name == null or name == "" {
+            throw ["extern fn needs a name", 0, 0, 0, "native"];
+        }
+        let tys = [];
+        let tnames = [];
+        for pp in p[5] {
+            if pp[2] == null {
+                throw ["extern fn '" + name + "': every parameter needs a type (int, float, bool, string, ptr, usize)", 0, 0, 0, "native"];
+            }
+            tys.push(c_type_handle(st, pp[2][1], name));
+            tnames.push(pp[2][1]);
+        }
+        let ret_name = null;
+        let ret_h = st["void"];
+        if p[6] != null {
+            ret_name = p[6][1];
+            ret_h = c_type_handle(st, ret_name, name);
+        }
+        let n = tys.len();
+        let ft = LLVMFunctionType(ret_h, carr(tys), n, 0);
+        let fv = LLVMAddFunction(st["module"], name, ft);
+        st["externs"][name] = [fv, ft, tys, tnames, ret_h, ret_name];
+    }
+    return;
+}
+
+// Marshal arguments per the declared boundary types, call the C symbol, free
+// the string temporaries, box the result (the oracle's compile_extern_call).
+fn compile_extern_call(st, name, args) {
+    let sig = st["externs"][name];
+    if args.len() != sig[3].len() {
+        throw ["extern fn '" + name + "' takes " + string(sig[3].len()) + " argument(s), got " + string(args.len()), 0, 0, 0, "native"];
+    }
+    let raw = [];
+    let free_after = [];
+    let i = 0;
+    while i < args.len() {
+        let v = cg_compile_expr(st, args[i]);
+        let lt = sig[2][i];
+        let tname = sig[3][i];
+        if lt == st["i64"] {
+            let f = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+            raw.push(emit_call(st, f, [v], "ffi.i"));
+        } else if lt == st["i8"] {
+            let f = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+            let iv = emit_call(st, f, [v], "ffi.b");
+            let b = LLVMBuildICmp(st["builder"], ICMP_NE, iv, i64c(st, 0), "ffi.nz");
+            raw.push(LLVMBuildZExt(st["builder"], b, st["i8"], "ffi.b8"));
+        } else if lt == st["f64"] {
+            let f = tramp(st, "spid3r_to_f64", [st["ptr"]], st["f64"]);
+            raw.push(emit_call(st, f, [v], "ffi.f"));
+        } else if tname == "ptr" {
+            let f = tramp(st, "spid3r_to_ptr", [st["ptr"]], st["ptr"]);
+            raw.push(emit_call(st, f, [v], "ffi.p"));
+        } else {
+            let f = tramp(st, "spid3r_cstr", [st["ptr"]], st["ptr"]);
+            let p = emit_call(st, f, [v], "ffi.s");
+            free_after.push(p);
+            raw.push(p);
+        }
+        i += 1;
+    }
+    let call = LLVMBuildCall2(st["builder"], sig[1], sig[0], carr(raw), raw.len(), "ffi.call");
+    for p in free_after {
+        let f = tramp(st, "spid3r_cstr_free", [st["ptr"]], null);
+        emit_call(st, f, [p], "ffi.free");
+    }
+    let ret_h = sig[4];
+    if ret_h == st["void"] {
+        return call0p(st, "spid3r_value_null");
+    }
+    if ret_h == st["i64"] {
+        let f = tramp(st, "spid3r_value_int", [st["i64"]], st["ptr"]);
+        return emit_call(st, f, [call], "ffi.box");
+    }
+    if ret_h == st["i8"] {
+        let f = tramp(st, "spid3r_value_bool", [st["i8"]], st["ptr"]);
+        return emit_call(st, f, [call], "ffi.boxb");
+    }
+    if ret_h == st["f64"] {
+        let f = tramp(st, "spid3r_value_float", [st["f64"]], st["ptr"]);
+        return emit_call(st, f, [call], "ffi.boxf");
+    }
+    if sig[5] == "ptr" {
+        let f = tramp(st, "spid3r_value_from_ptr", [st["ptr"]], st["ptr"]);
+        return emit_call(st, f, [call], "ffi.boxp");
+    }
+    let f = tramp(st, "spid3r_value_from_cstr", [st["ptr"]], st["ptr"]);
+    return emit_call(st, f, [call], "ffi.boxs");
+}
+
+// The constant handle for a checker-validated default expression.
+fn const_expr_value(st, e) {
+    let t = e[0];
+    if t == "Int" { return v_int(st, e[1]); }
+    if t == "Float" { return v_float(st, e[1]); }
+    if t == "Str" { return v_str(st, e[1]); }
+    if t == "Bool" { return v_bool(st, e[1]); }
+    if t == "Null" { return v_null(st); }
+    if t == "Unary" and e[1] == "Neg" {
+        let inner = e[2];
+        if inner[0] == "Int" { return v_int(st, -inner[1]); }
+        if inner[0] == "Float" { return v_float(st, -inner[1]); }
+    }
+    throw ["non-constant parameter default is not supported by the native backend", 0, 0, 0, "native"];
+}
+
+// ------------------------------------------------------------ statements
+
+fn cg_compile_block(st, stmts) {
+    cg_push_scope(st);
+    for s in stmts {
+        ensure_open(st);
+        cg_compile_stmt(st, s);
+    }
+    cg_pop_scope(st);
+    return;
+}
+
+fn cg_compile_stmt(st, s) {
+    let tag = s[0];
+    if tag == "Yield" or tag == "LetTuple" or tag == "Enum" {
+        throw ["internal error: a lowered-only node (" + tag + ") reached the codegen without lowering", 0, 0, 0, "native"];
+    }
+    if tag == "ExprStmt" {
+        // `x = ...` / `x += ...` on an int-local stores registers directly.
+        let e = s[1];
+        if e[0] == "Assign" and e[2][0] == "Ident" {
+            let loc = cg_lookup(st, e[2][1]);
+            if loc != null and loc[0] == "I" {
+                let slot = loc[1];
+                let rhs = cg_compile_expr_i64(st, e[3]);
+                if e[1] == "Assign" {
+                    LLVMBuildStore(st["builder"], rhs, slot);
+                    return;
+                }
+                let cur = LLVMBuildLoad2(st["builder"], st["i64"], slot, "cur");
+                let res = emit_i64_binop(st, cur, rhs, assign_binop_op(e[1]));
+                LLVMBuildStore(st["builder"], res, slot);
+                return;
+            }
+        }
+        cg_compile_expr(st, e);
+        return;
+    }
+    if tag == "Let" {
+        // An int-local candidate binds an unboxed i64 slot. Top-level lets
+        // stay globals; null inits stay boxed.
+        let in_entry_root = st["is_entry"] and st["scopes"].len() == 1;
+        if (not in_entry_root) and st["int_locals"] != null and st["int_locals"].has(s[2]) {
+            let iv = i64c(st, 0);
+            if s[4] != null {
+                iv = cg_compile_expr_i64(st, s[4]);
+            }
+            let slot = alloca_entry_ty(st, st["i64"], "li");
+            LLVMBuildStore(st["builder"], iv, slot);
+            cg_declare(st, s[2], ["I", slot]);
+            return;
+        }
+        let v = v_null(st);
+        if s[4] != null {
+            v = cg_compile_expr(st, s[4]);
+        }
+        bind_declaration(st, s[2], v);
+        return;
+    }
+    if tag == "Const" {
+        let in_entry_root = st["is_entry"] and st["scopes"].len() == 1;
+        if (not in_entry_root) and st["int_locals"] != null and st["int_locals"].has(s[2]) {
+            let iv = cg_compile_expr_i64(st, s[4]);
+            let slot = alloca_entry_ty(st, st["i64"], "ci");
+            LLVMBuildStore(st["builder"], iv, slot);
+            cg_declare(st, s[2], ["I", slot]);
+            return;
+        }
+        let v = cg_compile_expr(st, s[4]);
+        bind_declaration(st, s[2], v);
+        return;
+    }
+    if tag == "Fn" {
+        let v = compile_closure(st, s[1]);
+        if s[1][4] != null {
+            bind_declaration(st, s[1][4], v);
+        }
+        return;
+    }
+    if tag == "Class" or tag == "Interface" {
+        // Defensive: the parser rejects class/interface inside a function
+        // body; the entry registers top-level ones before this runs.
+        throw ["a " + tag.to_lower() + " declaration inside a function is not supported by the native backend", 0, 0, 0, "native"];
+    }
+    if tag == "Import" {
+        throw ["'import' is not supported by the native backend yet (module resolution is the build driver's Phase 6.2)", 0, 0, 0, "native"];
+    }
+    if tag == "If" {
+        cg_compile_if(st, s);
+        return;
+    }
+    if tag == "While" {
+        cg_compile_while(st, s);
+        return;
+    }
+    if tag == "ForIn" {
+        compile_forin(st, s);
+        return;
+    }
+    if tag == "ForC" {
+        compile_forc(st, s);
+        return;
+    }
+    if tag == "Try" {
+        cg_compile_try(st, s[1], s[2], s[3]);
+        return;
+    }
+    if tag == "Return" {
+        let v = v_null(st);
+        if s[1] != null {
+            v = cg_compile_expr(st, s[1]);
+        }
+        if st["fstack"].len() > 0 {
+            route_to_finally(st, 1, v);
+        } else {
+            store_return(st, v);
+        }
+        return;
+    }
+    if tag == "Break" {
+        if st["loops"].len() == 0 {
+            throw ["'break' outside of a loop", 0, 0, 0, "native"];
+        }
+        cg_emit_loop_exit(st, true);
+        return;
+    }
+    if tag == "Continue" {
+        if st["loops"].len() == 0 {
+            throw ["'continue' outside of a loop", 0, 0, 0, "native"];
+        }
+        cg_emit_loop_exit(st, false);
+        return;
+    }
+    if tag == "BlockStmt" {
+        cg_compile_block(st, s[1][1]);
+        return;
+    }
+    if tag == "Spawn" {
+        let f = cg_compile_expr(st, s[1]);
+        call1p(st, "spid3r_spawn", f);
+        throw_guard(st);
+        return;
+    }
+    if tag == "Throw" {
+        let v = cg_compile_expr(st, s[1]);
+        throw_value(st, v);
+        throw_guard(st);
+        return;
+    }
+    return;
+}
+
+// Bind a let/const: global at the entry root (top level = globals), a cell
+// when captured by a nested closure, a plain slot otherwise.
+fn bind_declaration(st, name, v) {
+    if st["is_entry"] and st["scopes"].len() == 1 {
+        let np = str_global(st, name);
+        call_void2p(st, "spid3r_global_set", np, v);
+        return;
+    }
+    if st["boxed"].has(name) {
+        let cell = call1p(st, "spid3r_cell_new", v);
+        let slot = alloca_entry(st, "cell");
+        LLVMBuildStore(st["builder"], cell, slot);
+        cg_declare(st, name, ["C", slot]);
+        return;
+    }
+    let slot = alloca_entry(st, "l");
+    LLVMBuildStore(st["builder"], v, slot);
+    cg_declare(st, name, ["L", slot]);
+    return;
+}
+
+fn store_return(st, v) {
+    LLVMBuildStore(st["builder"], v, st["ret_slot"]);
+    br_to(st, st["ret_bb"]);
+    return;
+}
+
+fn cg_compile_if(st, s) {
+    let then_bb = new_block(st, "if.then");
+    let else_bb = new_block(st, "if.else");
+    let end_bb = new_block(st, "if.end");
+    emit_cond_branch(st, s[1], then_bb, else_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], then_bb);
+    cg_compile_block(st, s[2][1]);
+    br_to(st, end_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], else_bb);
+    for e in s[3] {
+        // elif entries are ["Elif", cond, block]
+        let e_then = new_block(st, "elif.then");
+        let e_else = new_block(st, "elif.else");
+        emit_cond_branch(st, e[1], e_then, e_else);
+        LLVMPositionBuilderAtEnd(st["builder"], e_then);
+        cg_compile_block(st, e[2][1]);
+        br_to(st, end_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], e_else);
+    }
+    if s[4] != null {
+        cg_compile_block(st, s[4][1]);
+    }
+    br_to(st, end_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], end_bb);
+    return;
+}
+
+// Conditions take the generic route (compile + truthy): the int-compare and
+// hybrid fast paths are the perf program's scope.
+fn emit_cond_branch(st, cond, then_bb, else_bb) {
+    // Pure-int compares branch on the register icmp directly.
+    let ic = is_int_compare_now(st, cond);
+    if ic != null {
+        let a = cg_compile_expr_i64(st, ic[1]);
+        let b = cg_compile_expr_i64(st, ic[2]);
+        let c = LLVMBuildICmp(st["builder"], icmp_pred_for(ic[0]), a, b, "cmp");
+        LLVMBuildCondBr(st["builder"], c, then_bb, else_bb);
+        return;
+    }
+    // Hybrid compares: boxed leaves checked and extracted, registers on the
+    // fast arm, the generic recompile on the slow arm.
+    let hc = is_hybrid_int_compare_now(st, cond);
+    if hc != null {
+        return emit_hybrid_int_compare_cond(st, hc[0], hc[1], hc[2], cond, then_bb, else_bb);
+    }
+    let v = cg_compile_expr(st, cond);
+    let c = cond_i1(st, v);
+    LLVMBuildCondBr(st["builder"], c, then_bb, else_bb);
+    return;
+}
+
+const CANCEL_POLL_INTERVAL = 2048;
+
+fn cg_compile_while(st, s) {
+    let cond_bb = new_block(st, "while.cond");
+    let body_bb = new_block(st, "while.body");
+    let end_bb = new_block(st, "while.end");
+    br_to(st, cond_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], cond_bb);
+    emit_cond_branch(st, s[1], body_bb, end_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], body_bb);
+    // Cancellation point: the counter slot lives in the entry block.
+    let counter = alloca_entry_ty(st, st["i64"], "cancel.counter");
+    init_entry_slot(st, counter, i64c(st, 0));
+    emit_cancel_poll(st, counter);
+    st["loops"].push([end_bb, cond_bb]);
+    cg_compile_block(st, s[2][1]);
+    let _lf = st["loops"].pop();
+    br_to(st, cond_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], end_bb);
+    return;
+}
+
+fn emit_cancel_poll(st, counter) {
+    let cur = LLVMBuildLoad2(st["builder"], st["i64"], counter, "cancel.n");
+    let next = LLVMBuildAdd(st["builder"], cur, i64c(st, 1), "cancel.n1");
+    LLVMBuildStore(st["builder"], next, counter);
+    let hit = LLVMBuildICmp(st["builder"], ICMP_UGE, next, i64c(st, CANCEL_POLL_INTERVAL), "cancel.hit");
+    let cont = new_block(st, "cancel.cont");
+    let check = new_block(st, "cancel.check");
+    LLVMBuildCondBr(st["builder"], hit, check, cont);
+    LLVMPositionBuilderAtEnd(st["builder"], check);
+    LLVMBuildStore(st["builder"], i64c(st, 0), counter);
+    let f = tramp(st, "spid3r_cancel_check", [], st["i8"]);
+    emit_call(st, f, [], "cancel.chk");
+    throw_guard(st);
+    br_to(st, cont);
+    LLVMPositionBuilderAtEnd(st["builder"], cont);
+    return;
+}
+
+fn compile_forin(st, s) {
+    let var = s[1];
+    let obj = cg_compile_expr(st, s[3]);
+    let iter_slot = alloca_entry(st, "forin.iter");
+    let it = call1p(st, "spid3r_forin_start", obj);
+    throw_guard(st);
+    LLVMBuildStore(st["builder"], it, iter_slot);
+    let head_bb = new_block(st, "forin.head");
+    let body_bb = new_block(st, "forin.body");
+    let end_bb = new_block(st, "forin.end");
+    br_to(st, head_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], head_bb);
+    let it2 = LLVMBuildLoad2(st["builder"], st["ptr"], iter_slot, "forin.it");
+    let next = call1p(st, "spid3r_forin_next", it2);
+    let is_end = LLVMBuildIsNull(st["builder"], next, "forin.done");
+    LLVMBuildCondBr(st["builder"], is_end, end_bb, body_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], body_bb);
+    cg_push_scope(st);
+    if st["boxed"].has(var) {
+        let cell = call1p(st, "spid3r_cell_new", next);
+        let slot = alloca_entry(st, "forin.cell");
+        LLVMBuildStore(st["builder"], cell, slot);
+        cg_declare(st, var, ["C", slot]);
+    } else {
+        let slot = temp_slot(st, next);
+        cg_declare(st, var, ["L", slot]);
+    }
+    st["loops"].push([end_bb, head_bb]);
+    cg_compile_block(st, s[4][1]);
+    let _lf = st["loops"].pop();
+    cg_pop_scope(st);
+    br_to(st, head_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], end_bb);
+    let it3 = LLVMBuildLoad2(st["builder"], st["ptr"], iter_slot, "forin.it2");
+    call_void1p(st, "spid3r_forin_end", it3);
+    return;
+}
+
+fn compile_forc(st, s) {
+    cg_compile_stmt(st, s[1]);
+    let cond_bb = new_block(st, "forc.cond");
+    let body_bb = new_block(st, "forc.body");
+    let post_bb = new_block(st, "forc.post");
+    let end_bb = new_block(st, "forc.end");
+    br_to(st, cond_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], cond_bb);
+    emit_cond_branch(st, s[2], body_bb, end_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], body_bb);
+    st["loops"].push([end_bb, post_bb]);
+    cg_compile_block(st, s[4][1]);
+    let _lf = st["loops"].pop();
+    br_to(st, post_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], post_bb);
+    // `i = i + 1` / `i += 1` on an int-local: register arithmetic.
+    let post = s[3];
+    if post[0] == "Assign" and post[2][0] == "Ident" {
+        let loc = cg_lookup(st, post[2][1]);
+        if loc != null and loc[0] == "I" {
+            let slot = loc[1];
+            let rhs = cg_compile_expr_i64(st, post[3]);
+            if post[1] == "Assign" {
+                LLVMBuildStore(st["builder"], rhs, slot);
+            } else {
+                let cur = LLVMBuildLoad2(st["builder"], st["i64"], slot, "cur");
+                let res = emit_i64_binop(st, cur, rhs, assign_binop_op(post[1]));
+                LLVMBuildStore(st["builder"], res, slot);
+            }
+            br_to(st, cond_bb);
+            LLVMPositionBuilderAtEnd(st["builder"], end_bb);
+            return;
+        }
+    }
+    cg_compile_expr(st, post);
+    br_to(st, cond_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], end_bb);
+    return;
+}
+
+// break/continue: route through the active finally when the innermost
+// try/finally lies between here and the target loop; branch directly
+// otherwise.
+fn cg_emit_loop_exit(st, is_break) {
+    if st["fstack"].len() > 0 {
+        let top = st["fstack"][st["fstack"].len() - 1];
+        if st["loops"].len() <= top[4] {
+            if is_break {
+                route_to_finally(st, 2, null);
+            } else {
+                route_to_finally(st, 3, null);
+            }
+            return;
+        }
+    }
+    let frame = st["loops"][st["loops"].len() - 1];
+    if is_break {
+        br_to(st, frame[0]);
+    } else {
+        br_to(st, frame[1]);
+    }
+    return;
+}
+
+// Route a return/break/continue/re-throw through the active finally dispatch.
+fn route_to_finally(st, exit_code, value) {
+    let ctx = st["fstack"][st["fstack"].len() - 1];
+    if value != null {
+        let slot = ctx[2];
+        if exit_code != 1 {
+            slot = ctx[3];
+        }
+        LLVMBuildStore(st["builder"], value, slot);
+    }
+    LLVMBuildStore(st["builder"], i32c(st, exit_code), ctx[1]);
+    br_to(st, ctx[0]);
+    return;
+}
+
+// try { body } catch (name) { catch } finally { finally } — the compiled
+// unwinding: the body's throwing ops route to handler_bb via the guard; the
+// handler consumes the value; every exit path runs finally then dispatches
+// the pending exit (0=none, 1=return, 2=break, 3=continue, 4=rethrow).
+fn cg_compile_try(st, body, cx, fin) {
+    let has_finally = fin != null;
+    let has_catch = cx != null;
+    let outer_handler = st["exc"][st["exc"].len() - 1];
+    let after_bb = new_block(st, "try.after");
+
+    let finally_entry = null;
+    let dispatch_bb = null;
+    let pend_exit = null;
+    let pend_ret = null;
+    let pend_thrown = null;
+    if has_finally {
+        finally_entry = new_block(st, "try.finally");
+        dispatch_bb = new_block(st, "try.dispatch");
+        pend_exit = alloca_entry_ty(st, st["i32"], "pend_exit");
+        LLVMBuildStore(st["builder"], i32c(st, 0), pend_exit);
+        pend_ret = alloca_entry(st, "pend_ret");
+        pend_thrown = alloca_entry(st, "pend_thrown");
+    }
+
+    let body_bb = new_block(st, "try.body");
+    let handler_bb = new_block(st, "try.handler");
+    br_to(st, body_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], body_bb);
+    if has_finally {
+        st["fstack"].push([finally_entry, pend_exit, pend_ret, pend_thrown, st["loops"].len()]);
+    }
+    st["exc"].push(handler_bb);
+    cg_compile_block(st, body[1]);
+    let _e = st["exc"].pop();
+    if has_finally {
+        let _f = st["fstack"].pop();
+        br_to(st, finally_entry);
+    } else {
+        br_to(st, after_bb);
+    }
+
+    // exception handler: the throw flag is set by a guarded op
+    LLVMPositionBuilderAtEnd(st["builder"], handler_bb);
+    if has_catch {
+        let thrown = take_thrown(st);
+        if has_finally {
+            let catch_fh = new_block(st, "try.catchfh");
+            st["fstack"].push([finally_entry, pend_exit, pend_ret, pend_thrown, st["loops"].len()]);
+            st["exc"].push(catch_fh);
+            cg_push_scope(st);
+            let slot = alloca_entry(st, "catchvar");
+            LLVMBuildStore(st["builder"], thrown, slot);
+            cg_declare(st, cx[1], ["L", slot]);
+            cg_compile_block(st, cx[2][1]);
+            cg_pop_scope(st);
+            let _e2 = st["exc"].pop();
+            let _f2 = st["fstack"].pop();
+            br_to(st, finally_entry);
+            LLVMPositionBuilderAtEnd(st["builder"], catch_fh);
+            let nt = take_thrown(st);
+            LLVMBuildStore(st["builder"], nt, pend_thrown);
+            LLVMBuildStore(st["builder"], i32c(st, 4), pend_exit);
+            br_to(st, finally_entry);
+        } else {
+            cg_push_scope(st);
+            let slot = alloca_entry(st, "catchvar");
+            LLVMBuildStore(st["builder"], thrown, slot);
+            cg_declare(st, cx[1], ["L", slot]);
+            cg_compile_block(st, cx[2][1]);
+            cg_pop_scope(st);
+            br_to(st, after_bb);
+        }
+    } else if has_finally {
+        let thrown = take_thrown(st);
+        LLVMBuildStore(st["builder"], thrown, pend_thrown);
+        LLVMBuildStore(st["builder"], i32c(st, 4), pend_exit);
+        br_to(st, finally_entry);
+    } else {
+        br_to(st, outer_handler);
+    }
+
+    if has_finally {
+        LLVMPositionBuilderAtEnd(st["builder"], finally_entry);
+        cg_push_scope(st);
+        cg_compile_block(st, fin[1]);
+        cg_pop_scope(st);
+        br_to(st, dispatch_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], dispatch_bb);
+        let pe = LLVMBuildLoad2(st["builder"], st["i32"], pend_exit, "pe");
+        let bb_ret = new_block(st, "try.ret");
+        let bb_brk = new_block(st, "try.brk");
+        let bb_cont = new_block(st, "try.cont");
+        let bb_re = new_block(st, "try.rethrow");
+        let sw = LLVMBuildSwitch(st["builder"], pe, after_bb, 4);
+        LLVMAddCase(sw, i32c(st, 1), bb_ret);
+        LLVMAddCase(sw, i32c(st, 2), bb_brk);
+        LLVMAddCase(sw, i32c(st, 3), bb_cont);
+        LLVMAddCase(sw, i32c(st, 4), bb_re);
+        LLVMPositionBuilderAtEnd(st["builder"], bb_ret);
+        let rv = LLVMBuildLoad2(st["builder"], st["ptr"], pend_ret, "rv");
+        if st["fstack"].len() == 0 {
+            store_return(st, rv);
+        } else {
+            route_to_finally(st, 1, rv);
+        }
+        LLVMPositionBuilderAtEnd(st["builder"], bb_brk);
+        if st["loops"].len() == 0 {
+            LLVMBuildUnreachable(st["builder"]);
+        } else {
+            cg_emit_loop_exit(st, true);
+        }
+        LLVMPositionBuilderAtEnd(st["builder"], bb_cont);
+        if st["loops"].len() == 0 {
+            LLVMBuildUnreachable(st["builder"]);
+        } else {
+            cg_emit_loop_exit(st, false);
+        }
+        LLVMPositionBuilderAtEnd(st["builder"], bb_re);
+        let tv = LLVMBuildLoad2(st["builder"], st["ptr"], pend_thrown, "tv");
+        throw_value(st, tv);
+        br_to(st, outer_handler);
+    }
+    LLVMPositionBuilderAtEnd(st["builder"], after_bb);
+    return;
+}
+
+// ------------------------------------------------------------- functions
+
+// Compile one function: the (env, argc, argv) ABI, the ret slot + merge
+// block, the propagate handler, captures as upvalues, constructor self,
+// default-parameter phis, boxed params as cells.
+fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
+    let params = carr([st["ptr"], st["i64"], st["ptr"]]);
+    let fn_ty = LLVMFunctionType(st["ptr"], params, 3, 0);
+    st["fn_counter"] = st["fn_counter"] + 1;
+    let hint = name_hint;
+    if hint == null {
+        hint = "anon";
+    }
+    let f = LLVMAddFunction(st["module"], "spid3r_fn." + string(st["fn_counter"]) + "." + hint, fn_ty);
+    let saved_bb = cur_block(st);
+    let entry_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "entry");
+    LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
+
+    let env = LLVMGetParam(f, 0);
+    let argv = LLVMGetParam(f, 2);
+    let ret_slot = LLVMBuildAlloca(st["builder"], st["ptr"], "ret");
+    let ret_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "ret");
+    LLVMPositionBuilderAtEnd(st["builder"], ret_bb);
+    let rv0 = LLVMBuildLoad2(st["builder"], st["ptr"], ret_slot, "rv");
+    LLVMBuildRet(st["builder"], rv0);
+    LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
+
+    // Bottom handler: a throw with no enclosing try returns null to the
+    // caller with the flag set — it propagates to the nearest enclosing try.
+    let propagate_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "propagate");
+    LLVMPositionBuilderAtEnd(st["builder"], propagate_bb);
+    LLVMBuildStore(st["builder"], null_ptr(st), ret_slot);
+    LLVMBuildBr(st["builder"], ret_bb);
+    LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
+
+    let boxed = boxing_set(proto);
+    let int_locals = analyze_int_locals(proto, boxed);
+    // Save the enclosing frame.
+    let saved = [st["env"], st["ret_slot"], st["ret_bb"], st["caps"], st["boxed"],
+                 st["scopes"], st["loops"], st["exc"], st["fstack"], st["is_entry"],
+                 st["int_locals"]];
+    st["env"] = env;
+    st["ret_slot"] = ret_slot;
+    st["ret_bb"] = ret_bb;
+    st["caps"] = caps;
+    st["boxed"] = boxed;
+    st["scopes"] = [];
+    st["loops"] = [];
+    st["exc"] = [propagate_bb];
+    st["fstack"] = [];
+    st["int_locals"] = int_locals;
+
+    cg_push_scope(st);
+    let i = 0;
+    while i < caps.len() {
+        cg_declare(st, caps[i], ["U", i]);
+        i += 1;
+    }
+    // constructors receive the receiver implicitly at argv[0]
+    if self_offset == 1 {
+        let gep = LLVMBuildInBoundsGEP2(st["builder"], st["ptr"], argv, carr([i64c(st, 0)]), 1, "self");
+        let recv = LLVMBuildLoad2(st["builder"], st["ptr"], gep, "selfv");
+        let slot = alloca_entry(st, "selfslot");
+        LLVMBuildStore(st["builder"], recv, slot);
+        cg_declare(st, "self", ["L", slot]);
+    }
+    // bind parameters (argv[self_offset..]); captured params get a cell;
+    // defaulted parameters bind conditionally on argc (defaults are
+    // trailing-only, so omitted arguments are always a suffix).
+    let argc_v = LLVMGetParam(f, 1);
+    let ps = proto[5];
+    i = 0;
+    while i < ps.len() {
+        let p = ps[i];
+        let a = null;
+        if p[3] != null {
+            let has = LLVMBuildICmp(st["builder"], ICMP_SGT, argc_v, i64c(st, self_offset + i), "has_arg");
+            let then_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "arg_then");
+            let else_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "arg_else");
+            let merge_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "arg_merge");
+            LLVMBuildCondBr(st["builder"], has, then_bb, else_bb);
+            LLVMPositionBuilderAtEnd(st["builder"], then_bb);
+            let gep = LLVMBuildInBoundsGEP2(st["builder"], st["ptr"], argv, carr([i64c(st, self_offset + i)]), 1, "arg");
+            let from_argv = LLVMBuildLoad2(st["builder"], st["ptr"], gep, "argv");
+            LLVMBuildBr(st["builder"], merge_bb);
+            LLVMPositionBuilderAtEnd(st["builder"], else_bb);
+            let from_default = const_expr_value(st, p[3]);
+            LLVMBuildBr(st["builder"], merge_bb);
+            LLVMPositionBuilderAtEnd(st["builder"], merge_bb);
+            let phi = LLVMBuildPhi(st["builder"], st["ptr"], "arg");
+            add_incoming(st, phi, [from_argv, from_default], [then_bb, else_bb]);
+            a = phi;
+        } else {
+            let gep = LLVMBuildInBoundsGEP2(st["builder"], st["ptr"], argv, carr([i64c(st, self_offset + i)]), 1, "arg");
+            a = LLVMBuildLoad2(st["builder"], st["ptr"], gep, "argv");
+        }
+        if boxed.has(p[1]) {
+            let cell = call1p(st, "spid3r_cell_new", a);
+            let slot = alloca_entry(st, "pcell");
+            LLVMBuildStore(st["builder"], cell, slot);
+            cg_declare(st, p[1], ["C", slot]);
+        } else {
+            let slot = alloca_entry(st, "p");
+            LLVMBuildStore(st["builder"], a, slot);
+            cg_declare(st, p[1], ["L", slot]);
+        }
+        i += 1;
+    }
+    cg_compile_block(st, proto[8][1]);
+    cg_pop_scope(st);
+    ensure_open(st);
+    let nv = v_null(st);
+    LLVMBuildStore(st["builder"], nv, ret_slot);
+    LLVMBuildBr(st["builder"], ret_bb);
+
+    // restore the enclosing frame and emission position
+    st["env"] = saved[0];
+    st["ret_slot"] = saved[1];
+    st["ret_bb"] = saved[2];
+    st["caps"] = saved[3];
+    st["boxed"] = saved[4];
+    st["scopes"] = saved[5];
+    st["loops"] = saved[6];
+    st["exc"] = saved[7];
+    st["fstack"] = saved[8];
+    st["is_entry"] = saved[9];
+    st["int_locals"] = saved[10];
+    if saved_bb != 0 {
+        LLVMPositionBuilderAtEnd(st["builder"], saved_bb);
+    }
+    return f;
+}
+
+// Compile a function literal: emit the function, wire captured cells into a
+// fresh environment, register via spid3r_make_fn.
+fn compile_closure(st, proto) {
+    let all_uses = capture_list(proto);
+    let caps = [];
+    let env_sources = [];
+    for name in all_uses {
+        let loc = cg_lookup(st, name);
+        if loc != null {
+            caps.push(name);
+            env_sources.push(loc);
+        }
+        // null: a global — read via the global table, not captured
+    }
+    let f = cg_compile_function(st, proto, caps, proto[4], 0);
+    let arity = proto[5].len();
+    let ma = min_arity_of(proto);
+    let hint = proto[4];
+    if hint == null {
+        hint = "";
+    }
+    let name_ptr = str_global(st, hint);
+    let env = null_ptr(st);
+    if env_sources.len() > 0 {
+        env = call_i64_1p(st, "spid3r_env_alloc", env_sources.len());
+        let j = 0;
+        while j < env_sources.len() {
+            let src = env_sources[j];
+            let cell = null;
+            if src[0] == "C" {
+                cell = LLVMBuildLoad2(st["builder"], st["ptr"], src[1], "cap");
+            } else if src[0] == "L" {
+                // A non-boxed local here means the boxing analysis missed it;
+                // box defensively.
+                let v = LLVMBuildLoad2(st["builder"], st["ptr"], src[1], "capv");
+                cell = call1p(st, "spid3r_cell_new", v);
+            } else {
+                cell = call1p_i64(st, "spid3r_env_slot", st["env"], src[1]);
+            }
+            call_void2p_i64(st, "spid3r_env_set_slot", env, j, cell);
+            j += 1;
+        }
+    }
+    let f5 = tramp(st, "spid3r_make_fn", [st["ptr"], st["i64"], st["i64"], st["ptr"], st["ptr"]], st["ptr"]);
+    return emit_call(st, f5, [name_ptr, i64c(st, arity), i64c(st, ma), f, env], "mkfn");
+}
+
+// --------------------------------------------------------------- classes
+
+// Strip the module-flattening prefixes (__mod_N_/__sel_N_) for the runtime's
+// display name; the mangled name stays the global key.
+fn class_display_name(name) {
+    for pfx in ["__mod_", "__sel_"] {
+        if name.len() > pfx.len() and name.slice(0, pfx.len()) == pfx {
+            let rest = name.slice(pfx.len(), name.len());
+            let i = 0;
+            while i < rest.len() {
+                if rest[i] == "_" {
+                    return rest.slice(i + 1, rest.len());
+                }
+                i += 1;
+            }
+        }
+    }
+    return name;
+}
+
+fn register_class(st, c) {
+    let name = c[2];
+    let display_ptr = str_global(st, class_display_name(name));
+    let name_ptr = str_global(st, name);
+    let parent_ptr = null_ptr(st);
+    if c[5] != null {
+        parent_ptr = str_global(st, c[5]);
+    }
+    let cls = call2p(st, "spid3r_class_register", display_ptr, parent_ptr);
+    for field in c[8] {
+        let fp = str_global(st, field[2]);
+        let vis = 0;
+        if field[1] == "public" {
+            vis = 1;
+        }
+        let f = tramp(st, "spid3r_class_add_field", [st["ptr"], st["ptr"], st["i8"]], null);
+        emit_call(st, f, [cls, fp, i8c(st, vis)], "");
+    }
+    for m in c[9] {
+        let is_ctor = m[4] == "new";
+        let arity = m[5].len();
+        let ma = min_arity_of(m);
+        let self_offset = 0;
+        if is_ctor {
+            arity += 1; // synthetic self at argv[0]
+            ma += 1;
+            self_offset = 1;
+        }
+        let mh = m[4];
+        if mh == null {
+            mh = "m";
+        }
+        let code_ptr = cg_compile_function(st, m, [], name + "." + mh, self_offset);
+        if is_ctor {
+            let f = tramp(st, "spid3r_class_set_ctor", [st["ptr"], st["i64"], st["i64"], st["ptr"]], null);
+            emit_call(st, f, [cls, i64c(st, arity), i64c(st, ma), code_ptr], "");
+        } else {
+            let mp = str_global(st, mh);
+            let f = tramp(st, "spid3r_class_add_method", [st["ptr"], st["ptr"], st["i64"], st["i64"], st["ptr"]], null);
+            emit_call(st, f, [cls, mp, i64c(st, arity), i64c(st, ma), code_ptr], "");
+        }
+    }
+    // publish the fully built class under its mangled name
+    call_void2p(st, "spid3r_global_set", name_ptr, cls);
+    return;
+}
+
+// ----------------------------------------------------------------- entry
+
+// The module entry: register classes (parents before children, as declared),
+// alias class bindings, run top-level statements, return null. The runtime
+// then calls main from the globals.
+fn build_entry(st, prog) {
+    declare_externs(st, prog);
+    let ptr_ty = st["ptr"];
+    let fn_ty = LLVMFunctionType(ptr_ty, carr([]), 0, 0);
+    let entry = LLVMAddFunction(st["module"], "spid3r_entry", fn_ty);
+    let bb = LLVMAppendBasicBlockInContext(st["ctx"], entry, "entry");
+    LLVMPositionBuilderAtEnd(st["builder"], bb);
+    let saved_exc = st["exc"];
+    let saved_scopes = st["scopes"];
+    let saved_loops = st["loops"];
+    let saved_fstack = st["fstack"];
+    let saved_is_entry = st["is_entry"];
+    st["is_entry"] = true;
+    // Bottom handler for top-level statements: an uncaught throw is a
+    // program error.
+    let uncaught_bb = LLVMAppendBasicBlockInContext(st["ctx"], entry, "uncaught");
+    LLVMPositionBuilderAtEnd(st["builder"], uncaught_bb);
+    let f_uncaught = tramp(st, "spid3r_uncaught", [], null);
+    emit_call(st, f_uncaught, [], "");
+    LLVMBuildUnreachable(st["builder"]);
+    LLVMPositionBuilderAtEnd(st["builder"], bb);
+    st["exc"] = [uncaught_bb];
+    cg_push_scope(st);
+
+    // pass 1: classes, then class-alias bindings
+    let class_names = map();
+    for s in prog[0] {
+        if s[0] == "Class" {
+            class_names[s[2]] = 1;
+        }
+    }
+    for s in prog[0] {
+        if s[0] == "Class" {
+            register_class(st, s);
+        } else if (s[0] == "Const" or s[0] == "Let") and s[4] != null and s[4][0] == "Ident" and class_names.has(s[4][1]) {
+            let np = str_global(st, s[2]);
+            let cls = global_value(st, s[4][1]);
+            call_void2p(st, "spid3r_global_set", np, cls);
+        }
+    }
+    // pass 2: everything else
+    for s in prog[0] {
+        if s[0] == "Class" or s[0] == "Interface" {
+            continue;
+        }
+        ensure_open(st);
+        cg_compile_stmt(st, s);
+    }
+    cg_pop_scope(st);
+    ensure_open(st);
+    let nv = v_null(st);
+    LLVMBuildRet(st["builder"], nv);
+    st["exc"] = saved_exc;
+    st["scopes"] = saved_scopes;
+    st["loops"] = saved_loops;
+    st["fstack"] = saved_fstack;
+    st["is_entry"] = saved_is_entry;
+    return entry;
+}
+
+// The C main: hand the entry to the runtime, which installs the stdlib, runs
+// the top-level code, then calls main from the globals.
+fn build_cmain(st, entry) {
+    let fn_ty = LLVMFunctionType(st["i32"], carr([]), 0, 0);
+    let main_fn = LLVMAddFunction(st["module"], "main", fn_ty);
+    let bb = LLVMAppendBasicBlockInContext(st["ctx"], main_fn, "entry");
+    LLVMPositionBuilderAtEnd(st["builder"], bb);
+    let f = tramp(st, "spid3r_rt_start", [st["ptr"]], st["i32"]);
+    let r = emit_call(st, f, [entry], "code");
+    LLVMBuildRet(st["builder"], r);
+    return;
+}
+
+// -------------------------------------------------------------- pipeline
+
+// The full build_module pipeline over the lowered AST: context + module +
+// builder, entry, C main, verify. Throws with the IR dump on an invalid
+// module. Returns the state (the module rides in it for emission).
+public fn cg_build_module(st, prog, module_name) {
+    init_targets();
+    st["ctx"] = LLVMContextCreate();
+    st["module"] = LLVMModuleCreateWithNameInContext(module_name, st["ctx"]);
+    st["builder"] = LLVMCreateBuilderInContext(st["ctx"]);
+    init_types(st);
+    let entry = build_entry(st, prog);
+    build_cmain(st, entry);
+    let rc = LLVMVerifyModule(st["module"], RETURN_STATUS_ACTION, malloc(8)) & 4294967295;
+    if rc != 0 {
+        let dump = LLVMPrintModuleToString(st["module"]);
+        throw ["internal error: generated LLVM IR is invalid:\n" + dump, 0, 0, 0, "native"];
+    }
+    return st;
+}
+
+// Emit the module to a COFF object (the same target-machine pipeline as
+// gate 5.1). Returns the emit verdict (0 = ok).
+public fn cg_emit_object(st, out_path) {
+    return emit_module_object(st["module"], out_path);
+}
+
+// ------------------------------------------------- int-locals fast paths
+//
+// Port of src/native/ir.rs's unboxed-i64 local system (the perf program's
+// Phase 3): locals whose every init and assignment is a pure-int expression
+// live in i64 stack slots and the arithmetic between them lowers to inline
+// register code with overflow-guarded edges, instead of boxed values round-
+// tripping through runtime trampolines. Semantics are pinned to the
+// trampolines: every edge that can overflow/raise lands on the SAME runtime
+// call (spid3r_i64_add/...), so error messages and throw routing are
+// unchanged.
+
+fn ia_pure_int_expr(e, int_vars) {
+    let t = e[0];
+    if t == "Int" { return true; }
+    if t == "Ident" { return int_vars.has(e[1]); }
+    if t == "Unary" and e[1] == "Neg" { return ia_pure_int_expr(e[2], int_vars); }
+    if t == "Binary" {
+        let op = e[1];
+        if op == "Add" or op == "Sub" or op == "Mul" or op == "Div" or op == "Mod" {
+            return ia_pure_int_expr(e[2], int_vars) and ia_pure_int_expr(e[3], int_vars);
+        }
+    }
+    return false;
+}
+
+// The walkers: decl counts, candidates, invalids, inits and assignments.
+fn ia_stmt(s, boxed, decl_counts, candidates, invalid, inits, assignments) {
+    let t = s[0];
+    if t == "Let" or t == "Const" {
+        if decl_counts.has(s[2]) {
+            decl_counts[s[2]] = decl_counts[s[2]] + 1;
+        } else {
+            decl_counts[s[2]] = 1;
+        }
+        if boxed.has(s[2]) {
+            invalid[s[2]] = 1;
+        } else if (t == "Let" and s[4] != null) or t == "Const" {
+            candidates[s[2]] = 1;
+            inits.push([s[2], s[4]]);
+            ia_expr(s[4], assignments, invalid);
+        } else {
+            invalid[s[2]] = 1;
+        }
+        return;
+    }
+    if t == "LetTuple" {
+        for n in s[1] {
+            invalid[n] = 1;
+        }
+        ia_expr(s[2], assignments, invalid);
+        return;
+    }
+    if t == "If" {
+        ia_expr(s[1], assignments, invalid);
+        ia_stmts(s[2][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        for e in s[3] {
+            ia_expr(e[1], assignments, invalid);
+            ia_stmts(e[2][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        }
+        if s[4] != null {
+            ia_stmts(s[4][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        }
+        return;
+    }
+    if t == "While" {
+        ia_expr(s[1], assignments, invalid);
+        ia_stmts(s[2][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        return;
+    }
+    if t == "ForIn" {
+        invalid[s[1]] = 1;
+        if s[2] != null {
+            invalid[s[2]] = 1;
+        }
+        ia_expr(s[3], assignments, invalid);
+        ia_stmts(s[4][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        return;
+    }
+    if t == "ForC" {
+        ia_stmt(s[1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        ia_expr(s[2], assignments, invalid);
+        ia_expr(s[3], assignments, invalid);
+        ia_stmts(s[4][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        return;
+    }
+    if t == "Return" {
+        if s[1] != null {
+            ia_expr(s[1], assignments, invalid);
+        }
+        return;
+    }
+    if t == "BlockStmt" {
+        ia_stmts(s[1][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        return;
+    }
+    if t == "ExprStmt" {
+        ia_expr(s[1], assignments, invalid);
+        return;
+    }
+    if t == "Spawn" {
+        ia_expr(s[1], assignments, invalid);
+        return;
+    }
+    if t == "Try" {
+        ia_stmts(s[1][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        if s[2] != null {
+            invalid[s[2][1]] = 1;
+            ia_stmts(s[2][2][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        }
+        if s[3] != null {
+            ia_stmts(s[3][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+        }
+        return;
+    }
+    if t == "Throw" {
+        ia_expr(s[1], assignments, invalid);
+        return;
+    }
+    return;
+}
+
+fn ia_stmts(stmts, boxed, decl_counts, candidates, invalid, inits, assignments) {
+    for s in stmts {
+        ia_stmt(s, boxed, decl_counts, candidates, invalid, inits, assignments);
+    }
+    return;
+}
+
+fn ia_expr(e, assignments, invalid) {
+    let t = e[0];
+    if t == "Assign" {
+        if e[2][0] == "Ident" {
+            assignments.push([e[2][1], e[1], e[3]]);
+        } else {
+            // Field/Index/OptField targets invalidate the root object.
+            let cur = e[2];
+            while cur[0] == "FieldE" or cur[0] == "Index" or cur[0] == "OptField" {
+                if cur[0] == "FieldE" or cur[0] == "OptField" {
+                    cur = cur[2];
+                } else {
+                    cur = cur[1];
+                }
+            }
+            if cur[0] == "Ident" {
+                invalid[cur[1]] = 1;
+            }
+            ia_expr(e[2], assignments, invalid);
+        }
+        ia_expr(e[3], assignments, invalid);
+        return;
+    }
+    if t == "Unary" {
+        ia_expr(e[2], assignments, invalid);
+        return;
+    }
+    if t == "Binary" or t == "Logical" or t == "Coalesce" {
+        ia_expr(e[2], assignments, invalid);
+        ia_expr(e[3], assignments, invalid);
+        return;
+    }
+    if t == "Call" {
+        ia_expr(e[1], assignments, invalid);
+        for a in e[2] {
+            ia_expr(a, assignments, invalid);
+        }
+        return;
+    }
+    if t == "Method" {
+        ia_expr(e[2], assignments, invalid);
+        for a in e[3] {
+            ia_expr(a, assignments, invalid);
+        }
+        return;
+    }
+    if t == "Index" {
+        ia_expr(e[1], assignments, invalid);
+        ia_expr(e[2], assignments, invalid);
+        return;
+    }
+    if t == "FieldE" or t == "OptField" {
+        ia_expr(e[2], assignments, invalid);
+        return;
+    }
+    if t == "List" {
+        for i in e[1] {
+            ia_expr(i, assignments, invalid);
+        }
+        return;
+    }
+    if t == "New" {
+        for a in e[2] {
+            ia_expr(a, assignments, invalid);
+        }
+        return;
+    }
+    if t == "SuperCall" {
+        for a in e[3] {
+            ia_expr(a, assignments, invalid);
+        }
+        return;
+    }
+    if t == "NamedArg" or t == "Propagate" or t == "Await" or t == "Spawn" {
+        ia_expr(e[1], assignments, invalid);
+        return;
+    }
+    return;
+}
+
+// Locals that may live in unboxed i64 slots: declared exactly once, not
+// boxed/captured, never a param, every init and assignment pure-int — a
+// fixpoint (a var dropped from the set can invalidate another).
+fn analyze_int_locals(proto, boxed) {
+    let decl_counts = map();
+    let candidates = map();
+    let invalid = map();
+    let inits = [];
+    let assignments = [];
+    for pp in proto[5] {
+        invalid[pp[1]] = 1;
+    }
+    for b in boxed {
+        invalid[b] = 1;
+    }
+    ia_stmts(proto[8][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+    for name in decl_counts {
+        if decl_counts[name] > 1 {
+            invalid[name] = 1;
+        }
+    }
+    let int_vars = map();
+    for name in candidates {
+        if not invalid.has(name) {
+            int_vars[name] = 1;
+        }
+    }
+    let changed = true;
+    while changed {
+        changed = false;
+        // Rebuild the survivor set against the CURRENT int_vars (a dropped
+        // var can invalidate another, so iterate to a fixpoint).
+        let keep = map();
+        for name in int_vars {
+            let ok = true;
+            for entry in inits {
+                if entry[0] == name and not ia_pure_int_expr(entry[1], int_vars) {
+                    ok = false;
+                }
+            }
+            if ok {
+                for entry in assignments {
+                    if entry[0] == name and not ia_pure_int_expr(entry[2], int_vars) {
+                        ok = false;
+                    }
+                }
+            }
+            if ok {
+                keep[name] = 1;
+            } else {
+                changed = true;
+            }
+        }
+        int_vars = keep;
+    }
+    return int_vars;
+}

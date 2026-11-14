@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Self-host native parity (roadmap Phase 5, step 5.2, SH-5): the Spid3r-
+# written LLVM-C codegen (selfhost/codegen.matrix, driven by
+# `selfhost/main.matrix native`) vs the stage-0 oracle (`spid3r build`), over
+# the frozen corpus (SH-4). Both pipelines compile the same source to a
+# native executable; the gate is IDENTICAL EXECUTION: stdout, stderr and the
+# exit code must match byte-for-byte. (The object bytes are not compared: the
+# oracle's module name and symbol ordering make COFF bytes unstable, and the
+# contract is program behavior — SH-5's parity discipline applied to the AOT
+# surface.)
+#
+# Pipeline under test (all Spid3r): parse -> check -> lower -> LLVM-C codegen
+# -> LLVMTargetMachineEmitToFile -> link.matrix (the Phase-6.1 MSVC argument
+# set) -> run.
+#
+# Expected non-participants:
+#   * oracle-rejected files (negative corpus: diagnostics parity is the
+#     parse/semantic harnesses' surface);
+#   * library modules (no `main` — the oracle refuses to build an
+#     executable);
+#   * import-dependent files: the native pipeline refuses `import` with a
+#     pointer at Phase 6.2 (module resolution is the build driver's step).
+#
+# Usage: bash tools/selfhost_native_parity.sh [selfhost-compiler]
+# The selfhost compiler must have been built first:
+#   spid3r build selfhost/main.matrix -o selfhost/main_native.exe
+set -u
+cd "$(dirname "$0")/.."
+SH="${1:-selfhost/main_native}"
+[ -x "$SH" ] || SH="${SH}.exe"
+ORACLE="${ORACLE:-target/debug/spid3r}"
+[ -x "$ORACLE" ] || ORACLE="${ORACLE}.exe"
+
+OUT="$(mktemp -d)"
+trap 'rm -rf "$OUT"' EXIT
+
+pass=0
+fail=0
+skip=0
+defer=0
+for f in selfhost/corpus/examples/*.matrix \
+         selfhost/corpus/engine_matrix/*.matrix \
+         selfhost/corpus/edge/*.matrix; do
+  base=$(basename "$f" .matrix)
+  "$ORACLE" build "$f" -o "$OUT/o.exe" > /dev/null 2>&1
+  ocode=$?
+  if [ "$ocode" != 0 ]; then
+    # The oracle refuses this file (negative corpus or a library module
+    # without main): not an executable-parity target.
+    skip=$((skip + 1))
+    continue
+  fi
+  SPID3R_RUNTIME_LIB="$(pwd)/target/debug/spid3r_lang.lib" \
+    "$SH" native "$f" "$OUT/s.exe" > /dev/null 2> "$OUT/s.err"
+  scode=$?
+  if [ "$scode" != 0 ]; then
+    if grep -q "module resolution is the build driver's Phase 6.2" "$OUT/s.err"; then
+      # The native pipeline refuses imports BY DESIGN until Phase 6.2 (module
+      # resolution). Counted separately: a visible defer, not a hidden pass.
+      defer=$((defer + 1))
+      continue
+    fi
+    echo "FAIL(build) $base"
+    cat "$OUT/s.err"
+    fail=$((fail + 1))
+    continue
+  fi
+  "$OUT/o.exe" > "$OUT/o.stdout" 2> "$OUT/o.stderr"
+  ocode=$?
+  "$OUT/s.exe" > "$OUT/s.stdout" 2> "$OUT/s.stderr"
+  scode=$?
+  if [ "$ocode" = "$scode" ] \
+     && cmp -s "$OUT/o.stdout" "$OUT/s.stdout" \
+     && cmp -s "$OUT/o.stderr" "$OUT/s.stderr"; then
+    pass=$((pass + 1))
+  else
+    echo "FAIL(exec) $base (oracle rc=$ocode, selfhost rc=$scode)"
+    diff "$OUT/o.stdout" "$OUT/s.stdout" | head -10
+    fail=$((fail + 1))
+  fi
+done
+
+echo "native parity: pass=$pass fail=$fail skip=$skip defer=$defer (Phase-6.2 module resolution)"
+if [ "$fail" != 0 ]; then
+  exit 1
+fi
+exit 0

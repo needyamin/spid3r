@@ -118,7 +118,7 @@ public fn find_runtime_staticlib() {
         return null;
     }
     let exe = ep.unwrap();
-    let dir = dirname_of(exe);
+    let dir = link_dirname_of(exe);
     let cands = [dir + "/spid3r_lang.lib", dir + "/../../debug/spid3r_lang.lib",
                  dir + "/../../release/spid3r_lang.lib"];
     for c in cands {
@@ -194,7 +194,7 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
     return 0;
 }
 
-fn dirname_of(s) {
+fn link_dirname_of(s) {
     let cut = -1;
     let i = 0;
     let n = s.len();

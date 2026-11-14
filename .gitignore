@@ -11,6 +11,9 @@
 *.matrixc
 # NumPy serialization dumps (.npy)
 *.npy
+# The built self-host toolchain binaries (regenerable: spid3r build
+# selfhost/main.matrix -o selfhost/main_native.exe).
+selfhost/*.exe
 # Native AOT link intermediates and debug info next to built programs.
 *.obj
 *.o

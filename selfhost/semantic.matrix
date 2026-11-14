@@ -678,7 +678,7 @@ fn basename_of(s) {
     return s;
 }
 
-fn dirname_of(s) {
+fn chk_dirname_of(s) {
     let cut = -1;
     let i = 0;
     let n = s.len();
@@ -696,7 +696,7 @@ fn dirname_of(s) {
 }
 
 public fn resolve_module_path(path, source_file) {
-    let dir = dirname_of(source_file);
+    let dir = chk_dirname_of(source_file);
     let candidates = [dir + path + ".matrix", dir + path, "stdlib/" + path + ".matrix", "stdlib/" + path];
     for c in candidates {
         if file_exists(c) {
@@ -1198,7 +1198,7 @@ fn block_value_type(st, b) {
     let last = stmts[stmts.len() - 1];
     let tag = last[0];
     if tag == "ExprStmt" {
-        return type_of(st, last[1]);
+        return chk_type_of(st, last[1]);
     }
     if tag == "BlockStmt" {
         return block_value_type(st, last[1]);
@@ -1344,7 +1344,7 @@ fn check_stmt(st, s) {
             }
             if init[3] != null and init[4] != null {
                 let want = resolve_type(st, init[3]);
-                let got = type_of(st, init[4]);
+                let got = chk_type_of(st, init[4]);
                 if not assignable(st, got, want) {
                     mismatch(nsp(init[4]), "type mismatch in '" + init[2] + "': expected " + ty_name(want) + ", got " + ty_name(got));
                 }
@@ -1382,7 +1382,7 @@ fn check_stmt(st, s) {
         }
         if st[9] != null {
             if s[1] != null {
-                let got = type_of(st, s[1]);
+                let got = chk_type_of(st, s[1]);
                 if not assignable(st, got, st[9]) {
                     mismatch(s[2], "return type mismatch: expected " + ty_name(st[9]) + ", got " + ty_name(got));
                 }
@@ -1747,7 +1747,7 @@ fn check_let(st, s, is_const) {
     }
     if s[3] != null and s[4] != null {
         let want = resolve_type(st, s[3]);
-        let got = type_of(st, s[4]);
+        let got = chk_type_of(st, s[4]);
         if not assignable(st, got, want) {
             mismatch(nsp(s[4]), "type mismatch in '" + s[2] + "': expected " + ty_name(want) + ", got " + ty_name(got));
         }
@@ -1895,7 +1895,7 @@ fn receiver_class(st, e) {
         }
         return null;
     }
-    let t = type_of(st, e);
+    let t = chk_type_of(st, e);
     if t[0] == "Class" {
         if classes_of(st).has(t[1]) {
             return t[1];
@@ -1921,7 +1921,7 @@ fn check_sig_args(st, label, sig, args, sp) {
     while i < args.len() {
         if i < sig[2].len() and sig[2][i] != null {
             let want = sig[2][i];
-            let got = type_of(st, args[i]);
+            let got = chk_type_of(st, args[i]);
             if not assignable(st, got, want) {
                 chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of '" + label + "' expects " + ty_name(want) + ", got " + ty_name(got));
             }
@@ -2295,7 +2295,7 @@ fn check_assign(st, e) {
                 chk_err(st, sp, "cannot assign to const '" + name + "'");
             }
             if v[2] != null {
-                let got = type_of(st, value);
+                let got = chk_type_of(st, value);
                 if not assignable(st, got, v[2]) {
                     mismatch(sp, "type mismatch assigning to '" + name + "': expected " + ty_detail_name(v[2]) + ", got " + ty_detail_name(got));
                 }
@@ -2332,7 +2332,7 @@ fn check_assign(st, e) {
                 chk_err(st, sp, "class '" + c + "' has no field '" + target[1] + "'");
             }
         }
-        let recv = type_of(st, target[2]);
+        let recv = chk_type_of(st, target[2]);
         if recv[0] == "Class" {
             if classes_of(st).has(recv[1]) {
                 let fields = classes_of(st)[recv[1]][3];
@@ -2340,7 +2340,7 @@ fn check_assign(st, e) {
                     let ft = fields[target[1]][1];
                     if ft != null {
                         let want = resolve_type(st, ft);
-                        let got = type_of(st, value);
+                        let got = chk_type_of(st, value);
                         if not assignable(st, got, want) {
                             mismatch(sp, "type mismatch assigning to field '" + target[1] + "': expected " + ty_name(want) + ", got " + ty_name(got));
                         }
@@ -2404,7 +2404,7 @@ fn check_call(st, e) {
             while i < args.len() {
                 if i < fi[2].len() and fi[2][i] != null {
                     let want = resolve_type(st, fi[2][i]);
-                    let got = type_of(st, args[i]);
+                    let got = chk_type_of(st, args[i]);
                     if not assignable(st, got, want) {
                         chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of '" + name + "' expects " + ty_name(want) + ", got " + ty_name(got));
                     }
@@ -2427,7 +2427,7 @@ fn check_call(st, e) {
         }
     } else {
         check_expr(st, callee);
-        let ct = type_of(st, callee);
+        let ct = chk_type_of(st, callee);
         if ct[0] == "Fn" and ct[1] != null {
             check_sig_args(st, "<expression>", ct[1], args, sp);
         } else if has_named_args(args) {
@@ -2502,7 +2502,7 @@ fn check_method(st, e) {
             while i < args.len() {
                 if i + 1 < msig[2].len() and msig[2][i + 1] != null {
                     let want = resolve_type(st, msig[2][i + 1]);
-                    let got = type_of(st, args[i]);
+                    let got = chk_type_of(st, args[i]);
                     if not assignable(st, got, want) {
                         chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of method '" + name + "' expects " + ty_name(want) + ", got " + ty_name(got));
                     }
@@ -2554,7 +2554,7 @@ fn check_new(st, e) {
     return;
 }
 
-// -------------------------------------------------------------- type_of
+// -------------------------------------------------------------- chk_type_of
 
 fn branch_type(st, then, els) {
     let a = block_value_type(st, then);
@@ -2565,7 +2565,7 @@ fn branch_type(st, then, els) {
     return common_type(a, b);
 }
 
-fn type_of(st, e) {
+fn chk_type_of(st, e) {
     let tag = e[0];
     if tag == "NamedArg" {
         return ["Any"];
@@ -2588,7 +2588,7 @@ fn type_of(st, e) {
     if tag == "OptField" { return ["Any"]; }
     if tag == "Propagate" { return ["Any"]; }
     if tag == "Coalesce" {
-        return common_type(type_of(st, e[1]), type_of(st, e[2]));
+        return common_type(chk_type_of(st, e[1]), chk_type_of(st, e[2]));
     }
     if tag == "Ident" {
         let name = e[1];
@@ -2607,7 +2607,7 @@ fn type_of(st, e) {
     if tag == "List" {
         let elem = null;
         for it in e[1] {
-            let t = type_of(st, it);
+            let t = chk_type_of(st, it);
             if elem == null {
                 elem = t;
             } else if elem != t {
@@ -2622,7 +2622,7 @@ fn type_of(st, e) {
     }
     if tag == "Unary" {
         if e[1] == "Neg" {
-            let t = type_of(st, e[2]);
+            let t = chk_type_of(st, e[2]);
             if t[0] == "Int" or t[0] == "Float" {
                 return t;
             }
@@ -2633,8 +2633,8 @@ fn type_of(st, e) {
     if tag == "Binary" {
         let op = e[1];
         if op == "Add" {
-            let a = type_of(st, e[2]);
-            let b = type_of(st, e[3]);
+            let a = chk_type_of(st, e[2]);
+            let b = chk_type_of(st, e[3]);
             if a[0] == "Str" and b[0] == "Str" {
                 return ["Str"];
             }
@@ -2652,8 +2652,8 @@ fn type_of(st, e) {
             return ["Any"];
         }
         if op == "Sub" or op == "Mul" or op == "Div" or op == "Mod" {
-            let a = type_of(st, e[2]);
-            let b = type_of(st, e[3]);
+            let a = chk_type_of(st, e[2]);
+            let b = chk_type_of(st, e[3]);
             if a[0] == "Int" and b[0] == "Int" {
                 return ["Int"];
             }
@@ -2681,7 +2681,7 @@ fn type_of(st, e) {
             if CONS_MAP.has(name) {
                 let elem = null;
                 for a in e[2] {
-                    let t = type_of(st, a);
+                    let t = chk_type_of(st, a);
                     if elem == null {
                         elem = t;
                     } else if elem != t {
@@ -2704,7 +2704,7 @@ fn type_of(st, e) {
             }
             return ["Any"];
         }
-        let ct = type_of(st, callee);
+        let ct = chk_type_of(st, callee);
         if ct[0] == "Fn" and ct[1] != null {
             if ct[1][3] != null {
                 return ct[1][3];
@@ -2725,14 +2725,14 @@ fn type_of(st, e) {
         return ["Any"];
     }
     if tag == "Index" {
-        let t = type_of(st, e[1]);
+        let t = chk_type_of(st, e[1]);
         if t[0] == "Coll" and t[2] != null {
             return t[2];
         }
         return ["Any"];
     }
     if tag == "FieldE" {
-        let t = type_of(st, e[2]);
+        let t = chk_type_of(st, e[2]);
         if t[0] == "Class" {
             if classes_of(st).has(t[1]) {
                 let fields = classes_of(st)[t[1]][3];
@@ -2753,10 +2753,10 @@ fn type_of(st, e) {
         return ["Any"];
     }
     if tag == "Assign" {
-        return type_of(st, e[3]);
+        return chk_type_of(st, e[3]);
     }
     if tag == "Await" {
-        return type_of(st, e[1]);
+        return chk_type_of(st, e[1]);
     }
     if tag == "Spawn" { return ["Any"]; }
     return ["Any"];
@@ -2912,7 +2912,7 @@ fn class_json(i, s) {
     REG.push(",\"abstracts\":");
     REG.push(str_list_json(s[4]));
     REG.push(",\"parent\":");
-    REG.push(jstr_null(s[5]));
+    REG.push(chk_jstr_null(s[5]));
     REG.push(",\"interfaces\":");
     REG.push(str_list_json(s[6]));
     REG.push(",\"type_params\":");
@@ -3023,7 +3023,7 @@ fn import_json(i, s) {
     REG.push("{\"path\":");
     REG.push(jstr(s[1]));
     REG.push(",\"alias\":");
-    REG.push(jstr_null(s[2]));
+    REG.push(chk_jstr_null(s[2]));
     REG.push("}");
     return;
 }
@@ -3044,7 +3044,7 @@ fn str_list_json(xs) {
     return frags.join("");
 }
 
-fn jstr_null(v) {
+fn chk_jstr_null(v) {
     if v == null {
         return "null";
     }

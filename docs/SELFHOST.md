@@ -74,7 +74,19 @@ selfhost/
   lexer_json.matrix    Phase 1 — token-stream JSON (the parity surface)
   ast.matrix           Phase 2 — the AST model + dump serializer
   parser.matrix        Phase 2 — the grammar (port of src/parser; AST parity)
-  main.matrix          entry: `tokens` and `parse` parity surfaces
+  semantic.matrix      Phase 3 — the checker (port of src/semantic; registry parity)
+  lower.matrix         Phase 4 — the lowering pass (port of src/lower)
+  vmc.matrix           Phase 4 — the bytecode compiler (port of the VM's compiler)
+  bytecode_matrix      Phase 4 — the v3 checksummed container writer
+  llvm.matrix          Phase 5.1 — the LLVM-C extern surface (SH-7) + emission
+  codegen.matrix       Phase 5.2 — the codegen (port of src/native/ir.rs):
+                       the SLOW path plus the unboxed-i64 locals system and
+                       the hybrid compares; driven by `main.matrix native`
+                       (parse → check → lower → LLVM-C codegen → verify →
+                       emit → link.matrix)
+  link.matrix          Phase 6.1 — the build driver's linking half (MSVC)
+  link_test.matrix     the 6.1 gate harness (exe-exits-42 proof)
+  main.matrix          entry: parity surfaces + `compile` (bytecode) + `native`
   roundtrip_*.matrix   the model round-trip gate tools (2.1)
   corpus/              Phase 0 — the frozen differential corpus (SH-4)
 ```

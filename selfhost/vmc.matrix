@@ -51,7 +51,7 @@ public fn op(name) {
     return -1;
 }
 
-fn is_constructor_name(name) {
+public fn is_constructor_name(name) {
     // src/value/collections is_constructor — the Construct opcode targets.
     let cons = ["list", "vec", "stack", "queue", "deque", "linked_list",
         "singly_linked_list", "doubly_linked_list", "map", "module_namespace",
