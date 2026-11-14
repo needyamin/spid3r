@@ -1,0 +1,212 @@
+// selfhost/link.matrix — the build driver's linking half
+// (roadmap Phase 6, step 6.1, docs/SELFHOST.md SH-6).
+//
+// A port of src/native/link.rs's Windows path: MSVC/SDK/staticlib discovery
+// and the link.exe invocation. The oracle's argument set (link_windows) is
+// reproduced exactly — the driver links the emitted object with the runtime
+// staticlib, LLVM-C (delay-loaded), and the CRT into a standalone executable.
+//
+// The codegen half (parse → check → lower → LLVM-C codegen → object) is
+// Phase 5.2's scope; this module provides the linking that Phase 7's
+// bootstrap needs to produce a compiler executable from its own object.
+//
+// Process spawning uses the runtime's spawn_process native (a capability-
+// gated stdlib builtin — the same funnel the interpreter and VM install).
+
+// The MSVC CRT + Windows SDK + linker discovery, ported from vs_roots() +
+// winsdk_lib_root(). Both search the standard installation roots in the
+// oracle's order and take the newest version.
+
+public fn find_msvc_link_exe() {
+    // vs_roots: Program Files + Program Files (x86), BuildTools/VC/Tools/MSVC,
+    // newest version last. Then bin/HostX64/x64/link.exe.
+    let roots = [];
+    let bases = ["C:/Program Files/Microsoft Visual Studio",
+                 "C:/Program Files (x86)/Microsoft Visual Studio"];
+    for base in bases {
+        if not is_dir(base) {
+            continue;
+        }
+        let lr = list_dir(base);
+        if lr.is_err() {
+            continue;
+        }
+        let entries = lr.unwrap();
+        for e in entries {
+            let vc = base + "/" + e + "/BuildTools/VC/Tools/MSVC";
+            if not is_dir(vc) {
+                continue;
+            }
+            let vr = list_dir(vc);
+            if vr.is_err() {
+                continue;
+            }
+            let versions = vr.unwrap();
+            // newest last (lexicographic sort like the oracle's dirs.sort())
+            versions.sort();
+            if versions.len() > 0 {
+                roots.push(vc + "/" + versions[versions.len() - 1]);
+            }
+        }
+    }
+    // Search roots for bin/HostX64/x64/link.exe (newest MSVC first).
+    let i = roots.len() - 1;
+    while i >= 0 {
+        let cand = roots[i] + "/bin/HostX64/x64/link.exe";
+        if file_exists(cand) {
+            let libdir = roots[i] + "/lib/x64";
+            return [cand, libdir];
+        }
+        i -= 1;
+    }
+    return [null, null];
+}
+
+public fn find_winsdk_lib_root() {
+    // winsdk_lib_root: C:/Program Files (x86)/Windows Kits/10/Lib, newest last.
+    let base = "C:/Program Files (x86)/Windows Kits/10/Lib";
+    if not is_dir(base) {
+        return null;
+    }
+    let vr = list_dir(base);
+    if vr.is_err() {
+        return null;
+    }
+    let versions = vr.unwrap();
+    versions.sort();
+    if versions.len() > 0 {
+        return base + "/" + versions[versions.len() - 1];
+    }
+    return null;
+}
+
+// find_llvm_lib_dir: the LLVM-C import library directory, mirroring
+// build.rs's search order (SPID3R_LLVM_LIB_DIR → LLVM_SYS_231_PREFIX →
+// C:/LLVM-23/lib → C:/Program Files/LLVM/lib).
+public fn find_llvm_lib_dir() {
+    let env_opt = env("SPID3R_LLVM_LIB_DIR");
+    if env_opt.is_some() {
+        let dir = env_opt.unwrap();
+        if is_dir(dir) {
+            return dir;
+        }
+    }
+    let prefixes = ["C:/LLVM-23", "C:/Program Files/LLVM"];
+    for p in prefixes {
+        let lib = p + "/lib";
+        if is_file(lib + "/LLVM-C.lib") {
+            return lib;
+        }
+    }
+    return null;
+}
+
+// find_staticlib: the runtime staticlib, mirroring src/native/mod.rs's
+// search order (SPID3R_RUNTIME_LIB → SPID3R_LIB_DIR → exe dir → cwd →
+// target/{debug,release}).
+public fn find_runtime_staticlib() {
+    let env_opt = env("SPID3R_RUNTIME_LIB");
+    if env_opt.is_some() {
+        let dir = env_opt.unwrap();
+        if is_file(dir) {
+            return dir;
+        }
+    }
+    // The toolchain's own directory (developer layout: target/debug/spid3r.exe)
+    let ep = exe_path();
+    if ep.is_err() {
+        return null;
+    }
+    let exe = ep.unwrap();
+    let dir = dirname_of(exe);
+    let cands = [dir + "/spid3r_lang.lib", dir + "/../../debug/spid3r_lang.lib",
+                 dir + "/../../release/spid3r_lang.lib"];
+    for c in cands {
+        if is_file(c) {
+            return c;
+        }
+    }
+    // Cargo target directories
+    let profiles = ["debug", "release"];
+    for prof in profiles {
+        let c = "target/" + prof + "/spid3r_lang.lib";
+        if is_file(c) {
+            return c;
+        }
+    }
+    return null;
+}
+
+// link_executable: build the MSVC link.exe argument set (the oracle's
+// link_windows) and invoke it. The argument list is reproduced exactly:
+// -nologo, -out, -subsystem:console, -nodefaultlib, obj, staticlib,
+// LLVM-C libpath + delay-load, optimization flags, stack, CRT libs, system libs.
+public fn link_executable(obj_path, out_path, staticlib_path) {
+    let lr = find_msvc_link_exe();
+    if lr[0] == null {
+        eprint("error[build]: no MSVC linker (link.exe) found; install Visual Studio Build Tools\n");
+        return 1;
+    }
+    let link_exe = lr[0];
+    let msvc_lib = lr[1];
+    let sdk = find_winsdk_lib_root();
+    if sdk == null {
+        eprint("error[build]: no Windows SDK found; install the Windows 10/11 SDK\n");
+        return 1;
+    }
+    let llvm_dir = find_llvm_lib_dir();
+
+    let args = ["-nologo", "-out:" + out_path, "-subsystem:console",
+                "-nodefaultlib", obj_path, staticlib_path];
+    if msvc_lib != "" {
+        args.push("-libpath:" + msvc_lib);
+    }
+    args.push("-libpath:" + sdk + "/ucrt/x64");
+    args.push("-libpath:" + sdk + "/um/x64");
+    if llvm_dir != null {
+        args.push("-libpath:" + llvm_dir);
+    }
+    args.push("LLVM-C.lib");
+    args.push("/DELAYLOAD:LLVM-C.dll");
+    args.push("delayimp.lib");
+    args.push("-ignore:4199");
+    // Debug builds keep unreferenced symbols (-opt:noref); release strips.
+    args.push("-opt:noref,noicf");
+    args.push("-stack:4194304");
+    // Static CRT (matching the staticlib's build — .cargo/config.toml)
+    for l in ["libcmt.lib", "libvcruntime.lib", "libucrt.lib",
+              "kernel32.lib", "ntdll.lib", "userenv.lib",
+              "ws2_32.lib", "dbghelp.lib", "advapi32.lib"] {
+        args.push(l);
+    }
+    // spawn_process returns ok(exit_code) / err(msg) — the linker's verdict
+    // is the exit code (its output goes to the process's stderr directly).
+    let rc = spawn_process(link_exe, args);
+    if rc.is_err() {
+        eprint("error[build]: cannot run the linker '" + link_exe + "'\n");
+        return 1;
+    }
+    let exit_code = rc.unwrap();
+    if exit_code != 0 {
+        eprint("error[build]: linking failed (exit " + string(exit_code) + ")\n");
+        return 1;
+    }
+    return 0;
+}
+
+fn dirname_of(s) {
+    let cut = -1;
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let cp = ord(s[i]);
+        if cp == 47 or cp == 92 {
+            cut = i;
+        }
+        i += 1;
+    }
+    if cut >= 0 {
+        return s.slice(0, cut + 1);
+    }
+    return "";
+}
