@@ -295,7 +295,11 @@ fn a_non_handle_ptr_argument_throws_expected_pointer() {
     let program = "extern fn c_read(p: ptr) -> int;\nfn main() {\n    println(c_read(\"not a pointer\"));\n    return 0;\n}\n";
     let exe = build_with_lib(&cc, &dir, PTR_C_SOURCE, program);
     let run = Command::new(&exe).output().expect("run the built binary");
-    assert_ne!(run.status.code(), Some(0), "the throw must fail the process");
+    assert_ne!(
+        run.status.code(),
+        Some(0),
+        "the throw must fail the process"
+    );
     let err = String::from_utf8_lossy(&run.stderr);
     assert!(
         err.contains("expected pointer"),

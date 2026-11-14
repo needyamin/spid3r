@@ -44,7 +44,10 @@ fn jstr(s: &str) -> String {
 /// `"line":L,"col":C,"len":N` — the span fields, in this order, in every node.
 /// `file` is omitted: a dump is single-file, and the top level names it once.
 fn span_fields(s: &Span, out: &mut String) {
-    out.push_str(&format!("\"line\":{},\"col\":{},\"len\":{}", s.line, s.col, s.len));
+    out.push_str(&format!(
+        "\"line\":{},\"col\":{},\"len\":{}",
+        s.line, s.col, s.len
+    ));
 }
 
 fn vis_str(v: Vis) -> &'static str {
@@ -214,16 +217,17 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             span_out(&c.span, out);
         }
         Stmt::Interface(i) => {
-            out.push_str(&format!("\"Interface\",\"vis\":\"{}\",\"name\":{}", vis_str(i.vis), jstr(&i.name)));
+            out.push_str(&format!(
+                "\"Interface\",\"vis\":\"{}\",\"name\":{}",
+                vis_str(i.vis),
+                jstr(&i.name)
+            ));
             out.push_str(",\"methods\":[");
             for (n, (name, params, ret, span)) in i.methods.iter().enumerate() {
                 if n > 0 {
                     out.push(',');
                 }
-                out.push_str(&format!(
-                    "{{\"name\":{},\"params\":",
-                    jstr(name)
-                ));
+                out.push_str(&format!("{{\"name\":{},\"params\":", jstr(name)));
                 params_json(params, out);
                 out.push_str(",\"ret\":");
                 opt_type_json(ret.as_ref(), out);
@@ -243,7 +247,11 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             span_out(&i.span, out);
         }
         Stmt::Enum(e) => {
-            out.push_str(&format!("\"Enum\",\"vis\":\"{}\",\"name\":{},\"variants\":[", vis_str(e.vis), jstr(&e.name)));
+            out.push_str(&format!(
+                "\"Enum\",\"vis\":\"{}\",\"name\":{},\"variants\":[",
+                vis_str(e.vis),
+                jstr(&e.name)
+            ));
             for (n, v) in e.variants.iter().enumerate() {
                 if n > 0 {
                     out.push(',');
@@ -253,7 +261,13 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             out.push(']');
             span_out(&e.span, out);
         }
-        Stmt::Let { vis, name, ty, value, span } => {
+        Stmt::Let {
+            vis,
+            name,
+            ty,
+            value,
+            span,
+        } => {
             out.push_str(&format!(
                 "\"Let\",\"vis\":\"{}\",\"name\":{},\"ty\":",
                 vis_str(*vis),
@@ -264,7 +278,13 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             opt_expr_json(value.as_ref(), out);
             span_out(span, out);
         }
-        Stmt::Const { vis, name, ty, value, span } => {
+        Stmt::Const {
+            vis,
+            name,
+            ty,
+            value,
+            span,
+        } => {
             out.push_str(&format!(
                 "\"Const\",\"vis\":\"{}\",\"name\":{},\"ty\":",
                 vis_str(*vis),
@@ -275,8 +295,16 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             expr_json(value, out);
             span_out(span, out);
         }
-        Stmt::LetTuple { vis, names, value, span } => {
-            out.push_str(&format!("\"LetTuple\",\"vis\":\"{}\",\"names\":[", vis_str(*vis)));
+        Stmt::LetTuple {
+            vis,
+            names,
+            value,
+            span,
+        } => {
+            out.push_str(&format!(
+                "\"LetTuple\",\"vis\":\"{}\",\"names\":[",
+                vis_str(*vis)
+            ));
             for (n, name) in names.iter().enumerate() {
                 if n > 0 {
                     out.push(',');
@@ -287,7 +315,13 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             expr_json(value, out);
             span_out(span, out);
         }
-        Stmt::If { cond, then, elifs, els, span } => {
+        Stmt::If {
+            cond,
+            then,
+            elifs,
+            els,
+            span,
+        } => {
             out.push_str("\"If\",\"cond\":");
             expr_json(cond, out);
             out.push_str(",\"then\":");
@@ -314,7 +348,13 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             block_json(body, out);
             span_out(span, out);
         }
-        Stmt::ForIn { var, var2, iter, body, span } => {
+        Stmt::ForIn {
+            var,
+            var2,
+            iter,
+            body,
+            span,
+        } => {
             out.push_str(&format!(
                 "\"ForIn\",\"var\":{},\"var2\":{},\"iter\":",
                 jstr(var),
@@ -325,7 +365,13 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             block_json(body, out);
             span_out(span, out);
         }
-        Stmt::ForC { init, cond, post, body, span } => {
+        Stmt::ForC {
+            init,
+            cond,
+            post,
+            body,
+            span,
+        } => {
             out.push_str("\"ForC\",\"init\":");
             stmt_json(init, out);
             out.push_str(",\"cond\":");
@@ -369,7 +415,12 @@ fn stmt_json(s: &Stmt, out: &mut String) {
             expr_json(value, out);
             span_out(span, out);
         }
-        Stmt::Try { body, catch, finally, span } => {
+        Stmt::Try {
+            body,
+            catch,
+            finally,
+            span,
+        } => {
             out.push_str("\"Try\",\"body\":");
             block_json(body, out);
             out.push_str(",\"catch\":");
@@ -397,7 +448,10 @@ fn stmt_json(s: &Stmt, out: &mut String) {
 }
 
 fn variant_json(v: &VariantDecl, out: &mut String) {
-    out.push_str(&format!("{{\"node\":\"Variant\",\"name\":{},\"fields\":[", jstr(&v.name)));
+    out.push_str(&format!(
+        "{{\"node\":\"Variant\",\"name\":{},\"fields\":[",
+        jstr(&v.name)
+    ));
     for (n, f) in v.fields.iter().enumerate() {
         if n > 0 {
             out.push(',');
@@ -494,7 +548,10 @@ fn params_json(params: &[Param], out: &mut String) {
 }
 
 fn type_json(t: &TypeExpr, out: &mut String) {
-    out.push_str(&format!("{{\"node\":\"Type\",\"name\":{},\"arg\":", jstr(&t.name)));
+    out.push_str(&format!(
+        "{{\"node\":\"Type\",\"name\":{},\"arg\":",
+        jstr(&t.name)
+    ));
     match t.arg.as_ref() {
         None => out.push_str("null"),
         Some(a) => type_json(a, out),
@@ -625,7 +682,12 @@ fn expr_json(e: &Expr, out: &mut String) {
             expr_json(r, out);
             span_out(span, out);
         }
-        Expr::Assign { target, op, value, span } => {
+        Expr::Assign {
+            target,
+            op,
+            value,
+            span,
+        } => {
             out.push_str(&format!(
                 "\"Assign\",\"op\":\"{}\",\"target\":",
                 assignop_str(*op)
@@ -643,7 +705,12 @@ fn expr_json(e: &Expr, out: &mut String) {
             out.push(']');
             span_out(span, out);
         }
-        Expr::Method { object, name, args, span } => {
+        Expr::Method {
+            object,
+            name,
+            args,
+            span,
+        } => {
             out.push_str(&format!("\"Method\",\"name\":{},\"object\":", jstr(name)));
             expr_json(object, out);
             out.push_str(",\"args\":[");
@@ -651,7 +718,11 @@ fn expr_json(e: &Expr, out: &mut String) {
             out.push(']');
             span_out(span, out);
         }
-        Expr::Index { object, index, span } => {
+        Expr::Index {
+            object,
+            index,
+            span,
+        } => {
             out.push_str("\"Index\",\"object\":");
             expr_json(object, out);
             out.push_str(",\"index\":");
@@ -688,7 +759,12 @@ fn expr_json(e: &Expr, out: &mut String) {
             out.push_str("\"Super\"");
             span_out(span, out);
         }
-        Expr::SuperCall { parent, method, args, span } => {
+        Expr::SuperCall {
+            parent,
+            method,
+            args,
+            span,
+        } => {
             out.push_str(&format!(
                 "\"SuperCall\",\"parent\":{},\"method\":{},\"args\":[",
                 jstr(parent),
@@ -698,7 +774,12 @@ fn expr_json(e: &Expr, out: &mut String) {
             out.push(']');
             span_out(span, out);
         }
-        Expr::If { cond, then, els, span } => {
+        Expr::If {
+            cond,
+            then,
+            els,
+            span,
+        } => {
             out.push_str("\"If\",\"cond\":");
             expr_json(cond, out);
             out.push_str(",\"then\":");
@@ -724,7 +805,11 @@ fn expr_json(e: &Expr, out: &mut String) {
             expr_json(inner, out);
             span_out(s, out);
         }
-        Expr::Match { scrutinee, arms, span } => {
+        Expr::Match {
+            scrutinee,
+            arms,
+            span,
+        } => {
             out.push_str("\"Match\",\"scrutinee\":");
             expr_json(scrutinee, out);
             out.push_str(",\"arms\":[");
