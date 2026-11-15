@@ -1855,10 +1855,14 @@ fn compile_extern_call(st, name, args) {
         }
         i += 1;
     }
-    let call = LLVMBuildCall2(st["builder"], sig[1], sig[0], carr(raw), raw.len(), "ffi.call");
+    let call_name = "ffi.call";
+    if sig[4] == st["void"] {
+        call_name = "";
+    }
+    let call = LLVMBuildCall2(st["builder"], sig[1], sig[0], carr(raw), raw.len(), call_name);
     for p in free_after {
         let f = tramp(st, "spid3r_cstr_free", [st["ptr"]], null);
-        emit_call(st, f, [p], "ffi.free");
+        emit_call(st, f, [p], "");
     }
     let ret_h = sig[4];
     if ret_h == st["void"] {
@@ -2763,6 +2767,24 @@ public fn cg_build_module(st, prog, module_name) {
 // gate 5.1). Returns the emit verdict (0 = ok).
 public fn cg_emit_object(st, out_path) {
     return emit_module_object(st["module"], out_path);
+}
+
+// Dispose the LLVM C++ builder, module, and context held by a codegen state
+// so repeated in-process compiles do not retain native LLVM allocations.
+public fn cg_dispose(st) {
+    if st["builder"] != 0 {
+        LLVMDisposeBuilder(st["builder"]);
+        st["builder"] = 0;
+    }
+    if st["module"] != 0 {
+        LLVMDisposeModule(st["module"]);
+        st["module"] = 0;
+    }
+    if st["ctx"] != 0 {
+        LLVMContextDispose(st["ctx"]);
+        st["ctx"] = 0;
+    }
+    return;
 }
 
 // ------------------------------------------------- int-locals fast paths

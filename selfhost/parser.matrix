@@ -362,11 +362,17 @@ fn parse_declaration(st) {
         had_vis = true;
     }
     // `extern fn …;` — `extern` is not a keyword; two-token lookahead.
-    if not had_vis and kd(st) == K_IDENT and kv(st) == "extern" {
+    // Works with or without a visibility prefix (`public extern fn` exports
+    // the FFI symbol from its module).
+    if kd(st) == K_IDENT and kv(st) == "extern" {
         let save = st[1];
         p_adv(st);
         if at_kw(st, "fn") {
-            return n_fn_stmt(parse_fn(st, false, null, true));
+            let pre = null;
+            if had_vis {
+                pre = vis;
+            }
+            return n_fn_stmt(parse_fn(st, false, pre, true));
         }
         st[1] = save;
     }

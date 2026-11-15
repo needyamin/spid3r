@@ -571,10 +571,12 @@ fn in_list(xs, v) {
 // module_info_of_in: read + parse a module file, extract its exported names
 // and its unexported declarations. Resolution: the importing file's directory
 // first, then the stdlib/ root — the corpus's shapes.
-fn module_info(path, source_file, st, sp) {
-    let resolved = resolve_module_path(path, source_file);
-    if resolved == null {
-        chk_err(st, sp, "module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)");
+let MOD_INFO_CACHE = map();
+
+public fn sem_load_module_info(resolved) {
+    let key = resolved.replace("\\", "/");
+    if MOD_INFO_CACHE.has(key) {
+        return MOD_INFO_CACHE[key];
     }
     let src = "";
     if file_exists(resolved) {
@@ -658,7 +660,17 @@ fn module_info(path, source_file, st, sp) {
             }
         }
     }
-    return [prog, names, unexported, mod_display];
+    let info = [prog, names, unexported, mod_display];
+    MOD_INFO_CACHE[key] = info;
+    return info;
+}
+
+fn module_info(path, source_file, st, sp) {
+    let resolved = resolve_module_path(path, source_file);
+    if resolved == null {
+        chk_err(st, sp, "module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)");
+    }
+    return sem_load_module_info(resolved);
 }
 
 fn basename_of(s) {

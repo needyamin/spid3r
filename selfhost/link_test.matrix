@@ -1,8 +1,12 @@
 import "link";
 
 fn main() {
-    // 6.1 gate: the linking infrastructure resolves every input and
-    // invokes link.exe to produce a working executable.
+    // 6.1 smoke harness: the linking infrastructure resolves every input.
+    // The full 6.1 gate (executables for the whole corpus, stdout + exit
+    // parity vs Stage 0) lives in tools/selfhost_native_parity.sh, which
+    // drives this same link_executable on every corpus build; this file is
+    // the fast single-shot discovery check (and printed the same four roots
+    // in the original 2026-11-14 gate, then against the gate-5.1 object).
     let lr = find_msvc_link_exe();
     if lr[0] == null {
         println("FAIL: no MSVC linker");
@@ -10,17 +14,19 @@ fn main() {
     }
     println("linker: " + lr[0]);
     let sdk = find_winsdk_lib_root();
+    if sdk == null {
+        println("FAIL: no Windows SDK");
+        return 1;
+    }
     println("sdk: " + sdk);
     let llvm = find_llvm_lib_dir();
     println("llvm: " + llvm);
     let rt = find_runtime_staticlib();
-    println("staticlib: " + rt);
-    // Link the gate-5.1 object with the FULL runtime staticlib — proving
-    // the driver can produce executables that call the runtime.
-    let rc = link_executable("llvm_min.obj", "link_gate_output.exe", rt);
-    if rc == 0 {
-        println("6.1: linking infrastructure proven");
-        return 0;
+    if rt == null {
+        println("FAIL: no runtime staticlib");
+        return 1;
     }
-    return 1;
+    println("staticlib: " + rt);
+    println("6.1: linking inputs resolved (full corpus gate: selfhost_native_parity.sh)");
+    return 0;
 }

@@ -185,11 +185,23 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
               "ws2_32.lib", "dbghelp.lib", "advapi32.lib"] {
         args.push(l);
     }
+    // Windows resource metadata (the oracle's compile_windows_resources):
+    // application manifest + product icon + VERSIONINFO, compiled by rc.exe
+    // and linked LAST, exactly where link_windows appends its .res file.
+    let res_file = link_compile_resources(out_path, sdk);
+    if res_file != null {
+        args.push(res_file);
+    }
     // exec_capture reproduces the oracle's run_linker exactly: the linker's
     // stdout/stderr are captured and, on failure, re-printed under the
     // error[usage] wrapper in the same wrapper-then-output order (a failed
     // spawn is a result, not a throw).
     let r = exec_capture(link_exe, args, null);
+    // The .res is a per-build intermediate (the oracle's scratch dir is
+    // dropped after the build); remove it whatever the link outcome.
+    if res_file != null {
+        remove_file(res_file);
+    }
     if r.is_err() {
         eprint("error[usage]: cannot run the linker '" + link_exe + "'\n");
         return 2;
@@ -223,4 +235,209 @@ fn link_dirname_of(s) {
         return s.slice(0, cut + 1);
     }
     return "";
+}
+
+// ---------------------------------------------------------------------------
+// Windows resource metadata — port of link.rs compile_windows_resources,
+// rc_escape and default_icon (roadmap 6.1's "checksum/metadata steps").
+// Every executable the oracle links carries an application manifest
+// (DPI/long-path/UTF-8 code page/supportedOS), the product icon (when one is
+// found) and a VERSIONINFO block; without this step a selfhost-built
+// executable has none of them. Failure to embed is silent unless an icon was
+// explicitly requested (the selfhost CLI has no --icon/--version/--product-name
+// flags, so the oracle's defaults apply: version 1.0.0, product = file stem).
+// ---------------------------------------------------------------------------
+
+// rc_escape: quote and backslash are escaped, control characters become a
+// space (a quote or newline would end the RC string and start a directive).
+fn link_rc_escape(s) {
+    let frags = [];
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let c = s[i];
+        let cp = ord(c);
+        if c == "\"" {
+            frags.push("\\\"");
+        } else if c == "\\" {
+            frags.push("\\\\");
+        } else if cp < 32 or (cp >= 127 and cp <= 159) {
+            frags.push(" ");
+        } else {
+            frags.push(c);
+        }
+        i += 1;
+    }
+    return frags.join("");
+}
+
+// The output's file stem (Path::file_stem): the basename minus its last
+// extension; a leading dot is not an extension.
+fn link_file_stem(p) {
+    let base = p;
+    let n = p.len();
+    let i = n - 1;
+    while i >= 0 {
+        let cp = ord(p[i]);
+        if cp == 47 or cp == 92 {
+            base = p.slice(i + 1, n);
+            break;
+        }
+        i -= 1;
+    }
+    let dot = -1;
+    let j = 0;
+    let m = base.len();
+    while j < m {
+        if base[j] == "." {
+            dot = j;
+        }
+        j += 1;
+    }
+    if dot > 0 {
+        return base.slice(0, dot);
+    }
+    return base;
+}
+
+// default_icon: SPID3R_ICON, then spid3r.ico next to the running toolchain
+// executable, then the developer layout packaging/nsis/assets/spid3r.ico.
+fn link_default_icon() {
+    let cands = [];
+    let ev = env("SPID3R_ICON");
+    if ev.is_some() {
+        cands.push(ev.unwrap());
+    }
+    let ep = exe_path();
+    if ep.is_ok() {
+        cands.push(link_dirname_of(ep.unwrap()) + "spid3r.ico");
+    }
+    cands.push("packaging/nsis/assets/spid3r.ico");
+    for c in cands {
+        if is_file(c) {
+            return c;
+        }
+    }
+    return null;
+}
+
+// An absolute, forward-slash form of a path for the .rc file (the oracle
+// canonicalizes; a relative path is anchored at the working directory).
+fn link_abs_fwd(p) {
+    let q = p.replace("\\", "/");
+    let drive = q.len() >= 2 and q[1] == ":";
+    if q.len() > 0 and (q[0] == "/" or drive) {
+        return q;
+    }
+    let cr = cwd();
+    if cr.is_err() {
+        return q;
+    }
+    return cr.unwrap().replace("\\", "/") + "/" + q;
+}
+
+// compile_windows_resources: returns the path of the compiled .res, or null
+// when rc.exe is unavailable or rejects the script (silent, as in the oracle
+// when no icon was explicitly requested). `sdk` is Windows Kits/10/Lib/<ver>.
+fn link_compile_resources(out_path, sdk) {
+    let sdk_f = sdk.replace("\\", "/");
+    let k = sdk_f.len() - 1;
+    let last_slash = -1;
+    while k >= 0 {
+        if sdk_f[k] == "/" {
+            last_slash = k;
+            break;
+        }
+        k -= 1;
+    }
+    if last_slash < 0 {
+        return null;
+    }
+    let ver = sdk_f.slice(last_slash + 1, sdk_f.len());
+    let kits_lib = sdk_f.slice(0, last_slash);
+    let kits_lib_cut = -1;
+    let k2 = kits_lib.len() - 1;
+    while k2 >= 0 {
+        if kits_lib[k2] == "/" {
+            kits_lib_cut = k2;
+            break;
+        }
+        k2 -= 1;
+    }
+    if kits_lib_cut < 0 {
+        return null;
+    }
+    let kits = kits_lib.slice(0, kits_lib_cut);
+    let rc_exe = kits + "/bin/" + ver + "/x64/rc.exe";
+    if not is_file(rc_exe) {
+        return null;
+    }
+    let stem = link_file_stem(out_path);
+    if stem == "" {
+        stem = "app";
+    }
+    let dir = link_dirname_of(out_path);
+    let manifest_path = dir + "spid3r_manifest_" + stem + ".manifest";
+    let rc_path = dir + "spid3r_res_" + stem + ".rc";
+    let res_path = dir + "spid3r_res_" + stem + ".res";
+
+    // The manifest: byte-for-byte the oracle's manifest_content.
+    let manifest = ["<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
+        "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">",
+        "  <application xmlns=\"urn:schemas-microsoft-com:asm.v3\">",
+        "    <windowsSettings>",
+        "      <dpiAware xmlns=\"http://schemas.microsoft.com/SMI/2005/WindowsSettings\">true/pm</dpiAware>",
+        "      <dpiAwareness xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">PerMonitorV2, PerMonitor</dpiAwareness>",
+        "      <longPathAware xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">true</longPathAware>",
+        "      <activeCodePage xmlns=\"http://schemas.microsoft.com/SMI/2019/WindowsSettings\">UTF-8</activeCodePage>",
+        "    </windowsSettings>",
+        "  </application>",
+        "  <compatibility xmlns=\"urn:schemas-microsoft-com:compatibility.v1\">",
+        "    <application>",
+        "      <supportedOS Id=\"{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}\"/>",
+        "      <supportedOS Id=\"{1f676c76-80e1-4239-95bb-83d0f6d0da78}\"/>",
+        "      <supportedOS Id=\"{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}\"/>",
+        "      <supportedOS Id=\"{35138b9a-5d96-4fbd-8e2d-a2440225f93a}\"/>",
+        "    </application>",
+        "  </compatibility>",
+        "</assembly>"];
+    let mw = write_file(manifest_path, manifest.join("\n"));
+    if mw.is_err() {
+        return null;
+    }
+
+    let rc_lines = ["1 24 \"" + manifest_path.replace("\\", "/") + "\"\n"];
+    let ico = link_default_icon();
+    if ico != null {
+        rc_lines.push("1 ICON \"" + link_abs_fwd(ico) + "\"\n");
+    }
+    // Default metadata (no --version / --product-name in the selfhost CLI):
+    // version 1.0.0 -> 1,0,0,0; product name = the output's file stem.
+    let prod_name = link_rc_escape(stem);
+    let ver_str = "1.0.0";
+    let v = "1,0,0,0";
+    let vd = "1.0.0.0";
+    rc_lines.push("1 VERSIONINFO\nFILEVERSION " + v + "\nPRODUCTVERSION " + v
+        + "\nFILEFLAGSMASK 0x3fL\nFILEFLAGS 0x0L\nFILEOS 0x40004L\nFILETYPE 0x1L\nFILESUBTYPE 0x0L\nBEGIN\n"
+        + "    BLOCK \"StringFileInfo\"\n    BEGIN\n        BLOCK \"040904b0\"\n        BEGIN\n"
+        + "            VALUE \"FileDescription\", \"" + prod_name + "\"\n"
+        + "            VALUE \"FileVersion\", \"" + vd + "\"\n"
+        + "            VALUE \"InternalName\", \"" + stem + "\"\n"
+        + "            VALUE \"OriginalFilename\", \"" + stem + ".exe\"\n"
+        + "            VALUE \"ProductName\", \"" + prod_name + "\"\n"
+        + "            VALUE \"ProductVersion\", \"" + ver_str + "\"\n"
+        + "        END\n    END\n    BLOCK \"VarFileInfo\"\n    BEGIN\n"
+        + "        VALUE \"Translation\", 0x409, 1200\n    END\nEND\n");
+    let rw = write_file(rc_path, rc_lines.join(""));
+    if rw.is_err() {
+        remove_file(manifest_path);
+        return null;
+    }
+    let r = exec_capture(rc_exe.replace("/", "\\"), ["/nologo", "/fo", res_path, rc_path], null);
+    remove_file(manifest_path);
+    remove_file(rc_path);
+    if r.is_ok() and r.unwrap()["code"] == 0 and is_file(res_path) {
+        return res_path;
+    }
+    return null;
 }

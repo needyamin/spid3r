@@ -78,52 +78,50 @@ fn fl_cycle_message(in_progress, path) {
         i += 1;
     }
     chain.push(path);
-    return "circular import of '" + path + "' (chain: " + " -> ".join(chain) + ")";
+    return "circular import of '" + path + "' (chain: " + chain.join(" -> ") + ")";
 }
 
 // ---------------------------------------------------------- module loading
 
 // Read, parse, check (is_main=false) and lower one imported module. Returns
-// [lowered_prog, resolved_path]. The sub-parse runs inside lex_save/
-// lex_restore: the lexer's globals are state, and we are mid-walk of another
-// program's statements.
+// [lowered_prog, resolved_path]. Uses semantic.matrix's shared parse cache
+// (`sem_load_module_info`) plus per-module check/lower caches so a module DAG
+// never re-parses, re-checks or re-lowers shared modules.
+let FL_CHECKED_OK = map();
+let FL_LOWERED_CACHE = map();
+
+fn fl_load_resolved(resolved) {
+    let key = resolved.replace("\\", "/");
+    if FL_LOWERED_CACHE.has(key) {
+        return [FL_LOWERED_CACHE[key], resolved];
+    }
+    let info = sem_load_module_info(resolved);
+    let prog = info[0];
+    if not FL_CHECKED_OK.has(key) {
+        let cst = new_checker(false, resolved);
+        try {
+            check_program(cst, prog);
+        } catch (e2) {
+            let phase = "semantic";
+            if e2.len() >= 5 {
+                phase = e2[4];
+            }
+            throw [msg_of(e2), e2[1], e2[2], e2[3], phase, resolved];
+        }
+        FL_CHECKED_OK[key] = 1;
+    }
+    let lst = new_lower();
+    let lowered = lower_program(lst, prog);
+    FL_LOWERED_CACHE[key] = lowered;
+    return [lowered, resolved];
+}
+
 fn fl_load_module(path, importer_file, sp) {
     let resolved = fl_resolve(path, importer_file);
     if resolved == null {
         throw ["module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)", sp[0], sp[1], sp[2], "semantic"];
     }
-    let r = read_file(resolved);
-    if r.is_err() {
-        throw ["cannot import '" + path + "': cannot read '" + resolved + "'", sp[0], sp[1], sp[2], "semantic"];
-    }
-    let src = r.unwrap();
-    let prog = null;
-    try {
-        let save = lex_save();
-        let toks = lex_all(src);
-        let pst = new_state(toks);
-        prog = parse_program(pst);
-        lex_restore(save);
-    } catch (e) {
-        let phase = "lexer";
-        if e.len() >= 5 {
-            phase = e[4];
-        }
-        throw [e[0], e[1], e[2], e[3], phase, resolved];
-    }
-    let cst = new_checker(false, resolved);
-    try {
-        check_program(cst, prog);
-    } catch (e2) {
-        let phase = "semantic";
-        if e2.len() >= 5 {
-            phase = e2[4];
-        }
-        throw [msg_of(e2), e2[1], e2[2], e2[3], phase, resolved];
-    }
-    let lst = new_lower();
-    let lowered = lower_program(lst, prog);
-    return [lowered, resolved];
+    return fl_load_resolved(resolved);
 }
 
 // ------------------------------------------------------------- own decls
@@ -570,14 +568,16 @@ fn fl_flatten_stmts(stmts, importer_file, st) {
         let alias = s[2];
         let sp = s[3];
         if alias != null {
-            let resolved_pair = fl_load_module(path, importer_file, sp);
-            let lowered = resolved_pair[0];
-            let resolved = resolved_pair[1];
+            let resolved = fl_resolve(path, importer_file);
+            if resolved == null {
+                throw ["module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)", sp[0], sp[1], sp[2], "semantic"];
+            }
+            let rkey = resolved.replace("\\", "/");
             let selections = fl_parse_selections(alias);
             let sel_mode = selections != null;
-            let key = resolved;
+            let key = rkey;
             if sel_mode {
-                key = resolved + "::sel::" + alias;
+                key = rkey + "::sel::" + alias;
             }
             if sel_mode {
                 if st["done_sel"].has(key) {
@@ -586,9 +586,11 @@ fn fl_flatten_stmts(stmts, importer_file, st) {
             } else if st["done_alias"].has(key) {
                 continue;
             }
-            if st["in_progress"].has(resolved) {
+            if st["in_progress"].has(rkey) {
                 throw [fl_cycle_message(st["in_progress_chain"], path), sp[0], sp[1], sp[2], "semantic"];
             }
+            let resolved_pair = fl_load_resolved(resolved);
+            let lowered = resolved_pair[0];
             let own = fl_own_top_decls(lowered[0]);
             // The selection index is captured BEFORE the walk: nested aliased
             // imports grow the counter during it, and the prefix baked into
@@ -602,7 +604,7 @@ fn fl_flatten_stmts(stmts, importer_file, st) {
             } else {
                 prefix = "__mod_" + alias + "_";
             }
-            st["in_progress"][resolved] = 1;
+            st["in_progress"][rkey] = 1;
             st["in_progress_chain"].push(resolved);
             for ms in lowered[0] {
                 if ms[0] == "Import" {
@@ -615,7 +617,7 @@ fn fl_flatten_stmts(stmts, importer_file, st) {
                     st["out"].push(fl_rewrite_top_stmt(ms, prefix, own[0], st["scopes"]));
                 }
             }
-            st["in_progress"] = fl_map_remove(st["in_progress"], resolved);
+            st["in_progress"] = fl_map_remove(st["in_progress"], rkey);
             st["in_progress_chain"].pop();
             if sel_mode {
                 st["done_sel"][key] = 1;
@@ -627,21 +629,25 @@ fn fl_flatten_stmts(stmts, importer_file, st) {
             continue;
         }
         // ---- plain import ----
-        let resolved_pair = fl_load_module(path, importer_file, sp);
-        let lowered = resolved_pair[0];
-        let resolved = resolved_pair[1];
-        if st["done_plain"].has(resolved) {
-            continue; // already inlined by another importer
+        let resolved = fl_resolve(path, importer_file);
+        if resolved == null {
+            throw ["module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)", sp[0], sp[1], sp[2], "semantic"];
         }
-        if st["in_progress"].has(resolved) {
+        let rkey = resolved.replace("\\", "/");
+        if st["in_progress"].has(rkey) {
             throw [fl_cycle_message(st["in_progress_chain"], path), sp[0], sp[1], sp[2], "semantic"];
         }
-        st["in_progress"][resolved] = 1;
+        if st["done_plain"].has(rkey) {
+            continue; // already inlined by another importer
+        }
+        let resolved_pair = fl_load_resolved(resolved);
+        let lowered = resolved_pair[0];
+        st["in_progress"][rkey] = 1;
         st["in_progress_chain"].push(resolved);
         fl_flatten_stmts(lowered[0], resolved, st);
-        st["in_progress"] = fl_map_remove(st["in_progress"], resolved);
+        st["in_progress"] = fl_map_remove(st["in_progress"], rkey);
         st["in_progress_chain"].pop();
-        st["done_plain"][resolved] = 1;
+        st["done_plain"][rkey] = 1;
     }
     return;
 }
@@ -660,7 +666,7 @@ public fn flatten_imports(prog, importer_file) {
     // Seeded with the program entry so element 0 is always the program: that
     // is what the cycle-chain text relies on.
     let entry = importer_file;
-    st["in_progress"][entry] = 1;
+    st["in_progress"][entry.replace("\\", "/")] = 1;
     st["in_progress_chain"].push(entry);
     fl_flatten_stmts(prog[0], importer_file, st);
     return [st["out"]];

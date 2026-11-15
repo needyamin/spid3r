@@ -36,15 +36,55 @@ import "flatten";
 fn main() {
     set_hole_check(hole_check);
     let a = args();
-    if a.len() < 2 or a.len() > 3 {
-        eprint("usage: main tokens|parse|check|registry|lowered|compile|native <file.matrix> [out]\n");
+    if a.len() < 2 {
+        eprint("usage: main tokens|parse|check|registry|lowered|compile|native|build <file.matrix> [out|-o out]\n");
         return 2;
     }
     let mode = a[0];
-    let path = a[1];
-    if mode != "tokens" and mode != "parse" and mode != "check" and mode != "registry" and mode != "lowered" and mode != "compile" and mode != "native" {
-        eprint("error[usage]: unknown mode '" + mode + "' (tokens|parse|check|registry|lowered|compile|native)\n");
+    if mode != "tokens" and mode != "parse" and mode != "check" and mode != "registry" and mode != "lowered" and mode != "compile" and mode != "native" and mode != "build" {
+        eprint("error[usage]: unknown mode '" + mode + "' (tokens|parse|check|registry|lowered|compile|native|build)\n");
         return 2;
+    }
+    let path = null;
+    let build_out = null;
+    if mode == "build" {
+        let ai = 1;
+        while ai < a.len() {
+            let arg = a[ai];
+            if arg == "-o" {
+                ai += 1;
+                if ai >= a.len() {
+                    eprint("error[usage]: -o needs a path\n");
+                    return 2;
+                }
+                build_out = a[ai];
+            } else if arg == "--release" {
+                // Accepted for CLI compatibility with Stage 0 (`spid3r build --release`).
+            } else if arg.len() > 0 and arg[0] == "-" {
+                eprint("error[usage]: unknown option '" + arg + "'\n");
+                return 2;
+            } else {
+                if path != null {
+                    eprint("error[usage]: build takes exactly one source file\n");
+                    return 2;
+                }
+                path = arg;
+            }
+            ai += 1;
+        }
+        if path == null {
+            eprint("usage: main build <file.matrix> [-o <out>] [--release]\n");
+            return 2;
+        }
+    } else {
+        if a.len() > 3 {
+            eprint("usage: main tokens|parse|check|registry|lowered|compile|native <file.matrix> [out]\n");
+            return 2;
+        }
+        path = a[1];
+        if a.len() >= 3 {
+            build_out = a[2];
+        }
     }
     if not file_exists(path) {
         eprint("error[usage]: usage error: '" + path + "' is not a file\n");
@@ -171,7 +211,7 @@ fn main() {
         return 0;
     }
 
-    if mode == "native" {
+    if mode == "native" or mode == "build" {
         // Phase 5.2: the LLVM-C codegen. Oracle pipeline: parse -> check ->
         // lower -> build_module -> LLVMTargetMachineEmitToFile -> link (the
         // Phase-6.1 link.matrix argument set).
@@ -255,15 +295,6 @@ fn main() {
             }
             return 1;
         }
-        let argv3 = args();
-        let out_path = "a.out";
-        if argv3.len() >= 3 {
-            out_path = argv3[2];
-        }
-        // The oracle's object name: spid3r_<stem>.o (link.rs build dir).
-        // (stem from the input file, like the oracle's path.file_stem();
-        //  the object itself lives next to the output, not in a
-        //  private temp dir — one documented cosmetic divergence.)
         let pdir = "";
         let pstem = path;
         let ci2 = path.len() - 1;
@@ -279,6 +310,38 @@ fn main() {
         if pstem.len() > 7 and pstem.slice(pstem.len() - 7, pstem.len()) == ".matrix" {
             pstem = pstem.slice(0, pstem.len() - 7);
         }
+        let out_path = build_out;
+        if out_path == null {
+            if mode == "build" {
+                out_path = pstem + ".exe";
+            } else {
+                out_path = "a.out";
+            }
+        } else if mode == "build" {
+            // Match link.rs normalize_exe_path: extensionless -o gets .exe on Windows.
+            let base = out_path;
+            let bi = out_path.len() - 1;
+            while bi >= 0 {
+                let bc = out_path[bi];
+                if bc == "/" or bc == "\\" {
+                    base = out_path.slice(bi + 1, out_path.len());
+                    break;
+                }
+                bi -= 1;
+            }
+            let has_dot = false;
+            let di = 0;
+            while di < base.len() {
+                if base[di] == "." {
+                    has_dot = true;
+                    break;
+                }
+                di += 1;
+            }
+            if not has_dot {
+                out_path = out_path + ".exe";
+            }
+        }
         let odir = "";
         let ci3 = out_path.len() - 1;
         while ci3 >= 0 {
@@ -291,6 +354,7 @@ fn main() {
         }
         let obj_path = odir + "spid3r_" + pstem + ".o";
         let rc = cg_emit_object(cgst, obj_path);
+        cg_dispose(cgst);
         if rc != 0 {
             eprint("error[build]: object emission failed (step " + string(rc) + ")\n");
             return 1;
@@ -306,7 +370,7 @@ fn main() {
             // class for every build-driver failure).
             return lc;
         }
-        print("built " + out_path);
+        println("built " + out_path);
         return 0;
     }
 

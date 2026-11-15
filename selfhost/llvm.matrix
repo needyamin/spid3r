@@ -146,6 +146,7 @@ public extern fn LLVMGetFirstTarget() -> ptr;
 public extern fn LLVMGetTargetName(target: ptr) -> string;
 public extern fn LLVMGetNextTarget(target: ptr) -> ptr;
 public extern fn LLVMCreateTargetMachine(target: ptr, triple: string, cpu: string, features: string, opt_level: int, reloc: int, code_model: int) -> ptr;
+public extern fn LLVMDisposeTargetMachine(tm: ptr);
 public extern fn LLVMTargetMachineEmitToFile(tm: ptr, m: ptr, filename: string, codegen: int, err_out: ptr) -> int;
 public extern fn LLVMSetTarget(m: ptr, triple: string);
 public extern fn LLVMPrintModuleToString(m: ptr) -> string;
@@ -250,6 +251,7 @@ public fn emit_module_object(m, out_path) {
     let tm = LLVMCreateTargetMachine(target, triple, cpu, "", OPT_DEFAULT, RELOC_DEFAULT, CODE_MODEL_DEFAULT);
     let err_slot = malloc(8);
     let rc = LLVMTargetMachineEmitToFile(tm, m, out_path, OBJECT_FILE, err_slot) & 4294967295;
+    LLVMDisposeTargetMachine(tm);
     if rc != 0 {
         return 2;
     }

@@ -33,6 +33,31 @@ ORACLE="${ORACLE:-target/debug/spid3r}"
 
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
+mkdir -p "$OUT/o" "$OUT/s"
+
+# Phase 6.1 gate: every built artifact carries the Windows resource metadata
+# (manifest + icon + VERSIONINFO) and it is identical to the oracle's. Both
+# executables are named p.exe (in separate dirs) because the metadata embeds
+# the output's file stem. Skipped (and reported) off Windows / without
+# powershell, where the native pipeline itself does not run.
+meta_ok=0
+meta_fail=0
+meta_probe() {
+  # $1 = label
+  if ! command -v powershell > /dev/null 2>&1; then
+    return 0
+  fi
+  local verdict
+  verdict=$(powershell -NoProfile -ExecutionPolicy Bypass -File tools/pe_resource_probe.ps1 \
+    "$(cygpath -w "$OUT/o/p.exe")" "$(cygpath -w "$OUT/s/p.exe")" 2>&1)
+  if [ "$?" = 0 ]; then
+    meta_ok=$((meta_ok + 1))
+  else
+    echo "FAIL(metadata) $1: $verdict"
+    meta_fail=$((meta_fail + 1))
+    fail=$((fail + 1))
+  fi
+}
 
 pass=0
 fail=0
@@ -42,7 +67,7 @@ for f in selfhost/corpus/examples/*.matrix \
          selfhost/corpus/engine_matrix/*.matrix \
          selfhost/corpus/edge/*.matrix; do
   base=$(basename "$f" .matrix)
-  "$ORACLE" build "$f" -o "$OUT/o.exe" > /dev/null 2>&1
+  "$ORACLE" build "$f" -o "$OUT/o/p.exe" > /dev/null 2>&1
   ocode=$?
   if [ "$ocode" != 0 ]; then
     # The oracle refuses this file (negative corpus or a library module
@@ -51,7 +76,7 @@ for f in selfhost/corpus/examples/*.matrix \
     continue
   fi
   SPID3R_RUNTIME_LIB="$(pwd)/target/debug/spid3r_lang.lib" \
-    "$SH" native "$f" "$OUT/s.exe" > /dev/null 2> "$OUT/s.err"
+    "$SH" native "$f" "$OUT/s/p.exe" > /dev/null 2> "$OUT/s.err"
   scode=$?
   if [ "$scode" != 0 ]; then
     if grep -q "module resolution is the build driver's Phase 6.2" "$OUT/s.err"; then
@@ -65,14 +90,15 @@ for f in selfhost/corpus/examples/*.matrix \
     fail=$((fail + 1))
     continue
   fi
-  "$OUT/o.exe" > "$OUT/o.stdout" 2> "$OUT/o.stderr"
+  "$OUT/o/p.exe" > "$OUT/o.stdout" 2> "$OUT/o.stderr"
   ocode=$?
-  "$OUT/s.exe" > "$OUT/s.stdout" 2> "$OUT/s.stderr"
+  "$OUT/s/p.exe" > "$OUT/s.stdout" 2> "$OUT/s.stderr"
   scode=$?
   if [ "$ocode" = "$scode" ] \
      && cmp -s "$OUT/o.stdout" "$OUT/s.stdout" \
      && cmp -s "$OUT/o.stderr" "$OUT/s.stderr"; then
     pass=$((pass + 1))
+    meta_probe "$base"
   else
     echo "FAIL(exec) $base (oracle rc=$ocode, selfhost rc=$scode)"
     diff "$OUT/o.stdout" "$OUT/s.stdout" | head -10
@@ -88,10 +114,10 @@ done
 # error[runtime] first lines and the rc are pinned end to end).
 for f in selfhost/corpus/negative/*.matrix; do
   base=$(basename "$f" .matrix)
-  rm -f "$OUT/o.exe" "$OUT/s.exe"
-  "$ORACLE" build "$f" -o "$OUT/o.exe" > "$OUT/ob.txt" 2>&1
+  rm -f "$OUT/o/p.exe" "$OUT/s/p.exe"
+  "$ORACLE" build "$f" -o "$OUT/o/p.exe" > "$OUT/ob.txt" 2>&1
   ocode=$?
-  SPID3R_RUNTIME_LIB="$(pwd)/target/debug/spid3r_lang.lib"     "$SH" native "$f" "$OUT/s.exe" > "$OUT/sb.txt" 2>&1
+  SPID3R_RUNTIME_LIB="$(pwd)/target/debug/spid3r_lang.lib"     "$SH" native "$f" "$OUT/s/p.exe" > "$OUT/sb.txt" 2>&1
   scode=$?
   if [ "$ocode" != 0 ] || [ "$scode" != 0 ]; then
     # A build failure on either side: first diagnostic line + exit code —
@@ -105,12 +131,13 @@ for f in selfhost/corpus/negative/*.matrix; do
     fi
     continue
   fi
-  "$OUT/o.exe" > "$OUT/o.stdout" 2> "$OUT/o.stderr"
+  "$OUT/o/p.exe" > "$OUT/o.stdout" 2> "$OUT/o.stderr"
   ocode=$?
-  "$OUT/s.exe" > "$OUT/s.stdout" 2> "$OUT/s.stderr"
+  "$OUT/s/p.exe" > "$OUT/s.stdout" 2> "$OUT/s.stderr"
   scode=$?
   if [ "$ocode" = "$scode" ]      && cmp -s "$OUT/o.stdout" "$OUT/s.stdout"      && cmp -s "$OUT/o.stderr" "$OUT/s.stderr"; then
     pass=$((pass + 1))
+    meta_probe "$base"
   else
     echo "FAIL(exec-diag) $base (oracle rc=$ocode, selfhost rc=$scode)"
     diff "$OUT/o.stderr" "$OUT/s.stderr" | head -6
@@ -119,6 +146,7 @@ for f in selfhost/corpus/negative/*.matrix; do
 done
 
 echo "native parity: pass=$pass fail=$fail skip=$skip defer=$defer (Phase-6.2 module resolution)"
+echo "artifact metadata (6.1: manifest+icon+VERSIONINFO identical to oracle): ok=$meta_ok fail=$meta_fail"
 if [ "$fail" != 0 ]; then
   exit 1
 fi

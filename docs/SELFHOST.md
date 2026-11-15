@@ -10,19 +10,23 @@ silent edit.
 **Progress (2026-11-15, evidence in the roadmap ledger):** the Spid3r-written
 toolchain covers the lexer, parser, semantic checker, lowering, bytecode
 compiler + container writer, the LLVM-C codegen (with the unboxed-i64 locals
-system and hybrid compares), and the build driver's link + module-flattening
-halves — 23/51 roadmap steps. `spid3r build selfhost/main.matrix -o
-selfhost/main_native.exe` produces a compiler whose native mode
-(`main_native.exe native <file> <out>`) builds every frozen-corpus program —
-positives and negatives — with byte-identical stdout/stderr/exit codes to the
-Rust oracle (`tools/selfhost_native_parity.sh`: pass=124 fail=0 skip=10
-defer=0), at parity speed (Tier-B geomean 0.95× on the compute set), and the
-sandbox/capability posture matches too (`tools/selfhost_sandbox_parity.sh`:
-per-class funnel parity in built executables per the AOT contract in
-docs/FFI.md, script-engine deny parity, and the extern-fn rejection). Phase 6
-(the build driver: link, module flattening, security posture) is fully closed;
-the bootstrap (Phase 7) is next, with the runtime-artifact formalization
-(Phase 9) the remaining decision point for full no-Rust toolchain builds.
+system, hybrid compares, and clean C++ resource disposal), the build driver's
+link + module-flattening halves, and the **Stage-1 / Stage-2 self-hosting
+bootstrap** — 27/51 roadmap steps (Phases 0–7 closed). `spid3r build
+selfhost/main.matrix -o selfhost/main_native.exe` builds Stage 1
+(`selfhost/main_native.exe`), `selfhost/main_native.exe build
+selfhost/main.matrix` builds Stage 2 with zero Rust compiler invocation, and
+Stage 2 compiles Stage 3 emitting a byte-identical COFF `spid3r_main.o`
+(`2,653,106` B, SHA-256 `09F692C2...16B37`). Three-way frozen-corpus parity
+across Stage 0, Stage 1, and Stage 2 (`tools/selfhost_bootstrap_parity.sh`:
+`pass=124 fail=0 skip=10 obj_match=111 obj_mismatch=0`, PE metadata
+`ok=226 fail=0`) and Tier-B performance (`0.996×` Stage-2 compute geomean vs
+Stage 0) both pass; Phase 7.3 measures Stage-1 self-compile at `35.47 s`,
+`3898.0 MB` peak RSS, `0.0135 MB/s` (vs Stage 0 `2.00 s`, `162.6 MB`,
+`0.2387 MB/s`) with constant per-pass arena retention across repeated
+in-process compiles. Phase 8 (Spid3r-written dev tools: `fmt`/`test`) is next,
+with the runtime-artifact formalization (Phase 9) remaining for full no-Rust
+release builds.
 
 The ground rule that governs all of it lives in the roadmap and is repeated
 here because everything else depends on it: **a checkbox may be checked only
