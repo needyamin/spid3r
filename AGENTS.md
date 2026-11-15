@@ -6,13 +6,13 @@ Read both before changing anything. If this file and `full_plan.html` disagree, 
 
 ## 1. Current state (update when a phase moves)
 
-As of 2026-11-15 (last commit seen: `3497b89`):
+As of 2026-11-15 (last commit seen: `090ed19`):
 
-- Phases 0–7 closed (6.1 re-gated + Phase 7 bootstrap completed locally, **not yet committed/pushed or CI-verified**).
+- Phases 0–7 closed (6.1 re-gated + Phase 7 bootstrap committed in `090ed19` and verified green on GitHub CI run `#115`, `5m 19s`, all jobs passing + Pages `#116`).
 - Phase 7 highlights: fixed `public extern fn` in `selfhost/parser.matrix`, void extern call naming in `selfhost/codegen.matrix`, exponential DAG re-parse (`MOD_INFO_CACHE` + `FL_CHECKED_OK`/`FL_LOWERED_CACHE`) in `selfhost/semantic.matrix` & `selfhost/flatten.matrix`, `build` CLI mode in `selfhost/main.matrix`, and LLVM C++ disposal (`LLVMDisposeTargetMachine`, `cg_dispose`) in `selfhost/llvm.matrix` & `selfhost/codegen.matrix`. Stage 1 -> Stage 2 -> Stage 3 COFF `spid3r_main.o` is bit-identical (`09F692C2834286098C4D6D4875187592D578C72BF5699317364C60F125816B37`); 3-way bootstrap parity `pass=124 fail=0 skip=10 obj_match=111`, PE metadata `ok=226 fail=0`; Tier-B compute geomean `0.994x` (Stage 1) / `0.996x` (Stage 2); 7.3 self-compile envelope `35.47s / 3898.0 MB / 0.0135 MB/s` (vs Stage 0 `2.00s / 162.6 MB / 0.2387 MB/s`).
 - Roadmap progress: 27/51 checkboxes. **Next real work: Phase 8** (`8.1` `spid3r fmt`, `8.2` `spid3r test`, `8.3` CLI/packaging tools). Phases 9–11 follow.
 - Stale ledger row: the 2026-11-14 `5.3 OPEN` row is superseded by the 2026-11-15 `5.3` PASS row (a correction note row exists). The ledger is append-only, so never delete rows. Add a note instead.
-- Uncommitted at handover: Phase 6.1 work (`selfhost/link_test.matrix`, `selfhost/link.matrix`, `selfhost/flatten.matrix`, `tools/pe_resource_probe.ps1`, `tools/selfhost_native_parity.sh`) plus Phase 7 work (`selfhost/parser.matrix`, `selfhost/semantic.matrix`, `selfhost/llvm.matrix`, `selfhost/codegen.matrix`, `selfhost/main.matrix`, `tools/selfhost_bootstrap_parity.sh`, `full_plan.html`, `docs/SELFHOST.md`, `AGENTS.md`). `CHANGELOG.md` showed as deleted in the working tree mid-session (not by the agent). Ask the owner before restoring it.
+- Local working-tree note: `CHANGELOG.md` showed as deleted in the working tree mid-session (not by the agent, left unstaged). Ask the owner before restoring it.
 - Known gap: the cycle-diagnostic case (a↔b import) is not in the frozen corpus; adding it needs its own SH-4 ledger entry.
 - Untracked or ignored build artifacts live in `selfhost/` (`main_native.exe`, `llvm_min.exe`, `spid3r_main.o` if emitted alongside `main_native.exe`). Do not commit them.
 
