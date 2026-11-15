@@ -193,8 +193,16 @@ public fn new_checker(is_main, source_file) {
     builtin_maps();
     return [
         map(), map(), map(), [map()], 0, 0, false, false, null, null,
-        is_main, source_file, map(), map(), map(), map(), [], 0,
+        is_main, source_file, map(), map(), map(), map(), [], 0, [],
     ];
+}
+
+public fn warnings_of(st) {
+    return st[18];
+}
+
+fn chk_warn(st, lint, sp, msg) {
+    st[18].push([lint, sp, msg]);
 }
 
 fn classes_of(st) { return st[0]; }
@@ -395,8 +403,44 @@ fn push_scope(st) {
 }
 
 fn pop_scope(st) {
-    // Lint warnings are not ported (ledger, Phase 3): the scope just pops.
-    let _ = st[3].pop();
+    if st[3].len() == 0 {
+        return;
+    }
+    let scope = st[3].pop();
+    let top_level = st[3].len() == 0;
+    for name in keys_of(scope) {
+        let info = scope[name];
+        if info[5] {
+            continue;
+        }
+        if name.len() > 0 and name[0] == "_" {
+            continue;
+        }
+        let kind = info[4];
+        if kind == "import" and not top_level {
+            continue;
+        }
+        let sp = info[6];
+        if kind == "import" and info.len() >= 8 {
+            sp = info[7];
+        }
+        if sp == null {
+            continue;
+        }
+        if top_level and kind != "import" {
+            continue;
+        }
+        let lint = "unused-variable";
+        let what = "variable";
+        if kind == "param" {
+            lint = "unused-parameter";
+            what = "parameter";
+        } else if kind == "import" {
+            lint = "unused-import";
+            what = "import";
+        }
+        chk_warn(st, lint, sp, "unused " + what + " '" + name + "'");
+    }
 }
 
 // Field visibility + declaring cls through the inheritance chain.
@@ -713,6 +757,39 @@ public fn resolve_module_path(path, source_file) {
     for c in candidates {
         if file_exists(c) {
             return c;
+        }
+    }
+    let sd = env("SPID3R_STDLIB");
+    if sd.is_some() {
+        let base = sd.unwrap();
+        if base != "" {
+            let sep = "/";
+            if base[base.len() - 1] == "/" or base[base.len() - 1] == "\\" {
+                sep = "";
+            }
+            for ext in [".matrix", ""] {
+                let p = base + sep + path + ext;
+                if file_exists(p) {
+                    return p;
+                }
+            }
+        }
+    }
+    let ex = exe_path();
+    if ex.is_ok() {
+        let up1 = chk_dirname_of(ex.unwrap());
+        let i = 0;
+        let cur = up1;
+        while i < 4 and cur != "" {
+            for ext in [".matrix", ""] {
+                let p = cur + "stdlib/" + path + ext;
+                if file_exists(p) {
+                    return p;
+                }
+            }
+            let trimmed = cur.slice(0, cur.len() - 1);
+            cur = chk_dirname_of(trimmed);
+            i += 1;
         }
     }
     return null;
@@ -1084,6 +1161,11 @@ public fn check_program(st, prog) {
     }
     // pass 2: walk bodies
     for s in stmts {
+        if st[10] {
+            if s[0] == "ExprStmt" and s[1][0] == "Call" and s[1][1][0] == "Ident" and s[1][1][1] == "main" {
+                chk_warn(st, "unreachable-code", s[1][3], "explicit call to 'main': main() is invoked automatically; remove this call");
+            }
+        }
         check_stmt(st, s);
     }
     pop_scope(st);
@@ -1246,8 +1328,16 @@ fn check_block(st, b) {
 }
 
 fn check_stmts(st, stmts) {
+    let terminated = false;
+    let dead_reported = false;
     for s in stmts {
+        if terminated and not dead_reported {
+            chk_warn(st, "unreachable-code", stmt_span(s), "unreachable code: this statement follows a `return`, `throw`, `break`, or `continue`");
+            dead_reported = true;
+        }
         check_stmt(st, s);
+        let tag = s[0];
+        terminated = tag == "Return" or tag == "Throw" or tag == "Break" or tag == "Continue";
     }
 }
 

@@ -6,11 +6,11 @@ Read both before changing anything. If this file and `full_plan.html` disagree, 
 
 ## 1. Current state (update when a phase moves)
 
-As of 2026-11-15 (last commit seen: `090ed19`):
+As of 2026-11-15 (last commit seen: `ebe7cc0`, Phase 8 complete locally):
 
-- Phases 0–7 closed (6.1 re-gated + Phase 7 bootstrap committed in `090ed19` and verified green on GitHub CI run `#115`, `5m 19s`, all jobs passing + Pages `#116`).
-- Phase 7 highlights: fixed `public extern fn` in `selfhost/parser.matrix`, void extern call naming in `selfhost/codegen.matrix`, exponential DAG re-parse (`MOD_INFO_CACHE` + `FL_CHECKED_OK`/`FL_LOWERED_CACHE`) in `selfhost/semantic.matrix` & `selfhost/flatten.matrix`, `build` CLI mode in `selfhost/main.matrix`, and LLVM C++ disposal (`LLVMDisposeTargetMachine`, `cg_dispose`) in `selfhost/llvm.matrix` & `selfhost/codegen.matrix`. Stage 1 -> Stage 2 -> Stage 3 COFF `spid3r_main.o` is bit-identical (`09F692C2834286098C4D6D4875187592D578C72BF5699317364C60F125816B37`); 3-way bootstrap parity `pass=124 fail=0 skip=10 obj_match=111`, PE metadata `ok=226 fail=0`; Tier-B compute geomean `0.994x` (Stage 1) / `0.996x` (Stage 2); 7.3 self-compile envelope `35.47s / 3898.0 MB / 0.0135 MB/s` (vs Stage 0 `2.00s / 162.6 MB / 0.2387 MB/s`).
-- Roadmap progress: 27/51 checkboxes. **Next real work: Phase 8** (`8.1` `spid3r fmt`, `8.2` `spid3r test`, `8.3` CLI/packaging tools). Phases 9–11 follow.
+- Phases 0–8 closed (Phases 0–7 verified green on GitHub CI run `#115` / Pages `#116`; Phase 8 implemented and verified locally, uncommitted awaiting owner).
+- Phase 8 highlights: `selfhost/test_runner.matrix` (`test` 3-engine differential + project/workspace + filters), `selfhost/fmt.matrix` + `lexer.matrix::lex_all_with_comments` + semantic lints/check flags (`fmt` `--check` + `check` `--json`/`--deny-warnings`/`--allow`/`--dump-registry-json`/`--dump-lowered`), `selfhost/pkg.matrix` (`pack`/`unpack`/`verify`/`dist` with deterministic ustar tar + `@LongLink` + `spider.lock` SHA-256 verification). Stage 1 -> Stage 2 -> Stage 3 COFF `spid3r_main.o` fixed point remains bit-identical (`eca0f32055f1c066e94c36409ed751df5025dadf6aaaa06ca5033b2ce3d33b93`).
+- Roadmap progress: 30/51 checkboxes. **Next real work: Phase 9** (`9.1` runtime artifact formalization, `9.2` optional runtime port decision). Phases 10–11 follow.
 - Stale ledger row: the 2026-11-14 `5.3 OPEN` row is superseded by the 2026-11-15 `5.3` PASS row (a correction note row exists). The ledger is append-only, so never delete rows. Add a note instead.
 - Local working-tree note: `CHANGELOG.md` showed as deleted in the working tree mid-session (not by the agent, left unstaged). Ask the owner before restoring it.
 - Known gap: the cycle-diagnostic case (a↔b import) is not in the frozen corpus; adding it needs its own SH-4 ledger entry.
@@ -44,7 +44,7 @@ Stage 2  spid3r-self-2 = Stage 1 compiling selfhost/main.matrix; must behave ide
 ```
 
 - Self-host pipeline in `selfhost/main.matrix` (`native` mode): `parse → check → flatten → lower → codegen (LLVM-C) → verify → emit object → link.matrix`.
-- Modules: `token`, `lexer`, `lexer_json`, `ast`, `parser`, `semantic`, `lower`, `vmc`, `bytecode_matrix`, `llvm`, `codegen`, `link`, `flatten`.
+- Modules: `token`, `lexer`, `lexer_json`, `ast`, `parser`, `semantic`, `lower`, `vmc`, `bytecode_matrix`, `llvm`, `codegen`, `link`, `flatten`, `test_runner`, `fmt`, `pkg`.
 - Runtime = prebuilt staticlib `spid3r_lang.lib` (AOT trampolines + 230 stdlib natives). Rebuilding the runtime is Phase 9. It may stay a pinned binary artifact (SH-6).
 - Meaning of "no Rust" (SH-2): Phase 7 means building a compiler needs no cargo. Phase 10 means the release artifacts are produced by selfhost. LSP, GUI, agent, debugger, REPL and the `tools/` harness scripts stay Rust or script side.
 - Oracle dump surface (bootstrap tooling only): `spid3r tokens --json`, `parse --dump-ast-json`, `parse --dump-lowered-json`, `check --dump-registry-json`, `compile --no-opt`.
@@ -56,7 +56,7 @@ Stage 2  spid3r-self-2 = Stage 1 compiling selfhost/main.matrix; must behave ide
 - Toolchain: MSVC BuildTools `VC/Tools/MSVC/14.51.36231`, Windows SDK `10.0.26100.0`, **LLVM-C at `C:/LLVM-23`**, staticlib at `target/debug/spid3r_lang.lib`.
 - Build Stage 0 with the native feature: `cargo build --features native`. Run the native tests with `cargo test --features native` (CI uses release, `--no-default-features`).
 - Stage-1 build: `spid3r build selfhost/main.matrix -o selfhost/main_native.exe`. Use it as `main_native.exe native <file.matrix> <out.exe>`.
-- Parity harnesses (all in `tools/`): `selfhost_lex_parity.sh`, `selfhost_parse_parity.sh`, `selfhost_semantic_parity.sh`, `selfhost_lower_parity.sh`, `selfhost_compile_parity.sh`, `selfhost_native_parity.sh` (Windows-local only, expect pass=124 fail=0 skip=10 defer=0), `selfhost_bootstrap_parity.sh` (3-way Stage 0/1/2, expect pass=124 fail=0 skip=10 obj_match=111 ok=226), `selfhost_sandbox_parity.sh` (13 checks). Fuzzers: `fuzz_lex_parity.py`, `fuzz_parse_parity.py`. Bench guards: `lex_bench.py`, `parse_bench.py`, `check_bench.py`.
+- Parity harnesses (all in `tools/`): `selfhost_lex_parity.sh`, `selfhost_parse_parity.sh`, `selfhost_semantic_parity.sh`, `selfhost_lower_parity.sh`, `selfhost_compile_parity.sh`, `selfhost_native_parity.sh` (Windows-local only, expect pass=124 fail=0 skip=10 defer=0), `selfhost_bootstrap_parity.sh` (3-way Stage 0/1/2, expect pass=124 fail=0 skip=10 obj_match=111 ok=226), `selfhost_sandbox_parity.sh` (13 checks), `selfhost_test_parity.sh` (10 checks), `selfhost_fmt_check_parity.sh` (17 checks + 134/134 corpus), `selfhost_pkg_parity.sh` (11 checks). Fuzzers: `fuzz_lex_parity.py`, `fuzz_parse_parity.py`. Bench guards: `lex_bench.py`, `parse_bench.py`, `check_bench.py`.
 - Never run two cargo builds with different feature sets at once. They all write `target/debug/spid3r`.
 - Known CI flake: `tests/phase2_net_limits.rs` (connection reset under parallel load). Prove it in isolation, re-run, and record it. Don't "fix" unrelated code.
 

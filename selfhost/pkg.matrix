@@ -1,0 +1,1169 @@
+// selfhost/pkg.matrix — package tooling (`pack`, `unpack`, `verify`, `dist`, Phase 8.3).
+//
+// 1:1 port of src/pkg/mod.rs (Manifest, tar, tree/content sha256, pack, pack_workspace,
+// unpack), src/pkg/ops.rs (read_lock, verify), and src/cli.rs (`cmd_pack`, `cmd_unpack`,
+// `cmd_verify`, `cmd_project_build`/`dist`).
+
+import "bytecode_matrix";
+
+fn pkg_path_sep() {
+    let r = cwd();
+    if r.is_ok() and r.unwrap().contains("\\") {
+        return "\\";
+    }
+    return "/";
+}
+
+fn pkg_join(dir, name) {
+    let sep = pkg_path_sep();
+    if dir == "" or dir == "." {
+        return name;
+    }
+    let last = dir[dir.len() - 1];
+    if last == "/" or last == "\\" {
+        return dir + name;
+    }
+    return dir + sep + name;
+}
+
+fn pkg_parent_dir(p) {
+    let bs = bytes(p);
+    let i = bs.len() - 1;
+    let char_idx = p.len();
+    // Walk characters backward to find last '/' or '\\'.
+    let last_sep = -1;
+    let k = 0;
+    while k < p.len() {
+        let ch = p[k];
+        if ch == "/" or ch == "\\" {
+            last_sep = k;
+        }
+        k += 1;
+    }
+    if last_sep < 0 {
+        return "";
+    }
+    if last_sep == 0 {
+        return p.slice(0, 1);
+    }
+    return p.slice(0, last_sep);
+}
+
+fn pkg_stem(p) {
+    let last_sep = -1;
+    let k = 0;
+    while k < p.len() {
+        let ch = p[k];
+        if ch == "/" or ch == "\\" {
+            last_sep = k;
+        }
+        k += 1;
+    }
+    let base = p;
+    if last_sep >= 0 {
+        base = p.slice(last_sep + 1, p.len());
+    }
+    let last_dot = -1;
+    k = 0;
+    while k < base.len() {
+        if base[k] == "." {
+            last_dot = k;
+        }
+        k += 1;
+    }
+    if last_dot > 0 {
+        return base.slice(0, last_dot);
+    }
+    return base;
+}
+
+fn pkg_starts_with(s, pref) {
+    if s.len() < pref.len() {
+        return false;
+    }
+    return s.slice(0, pref.len()) == pref;
+}
+
+fn pkg_ends_with(s, suf) {
+    if s.len() < suf.len() {
+        return false;
+    }
+    return s.slice(s.len() - suf.len(), s.len()) == suf;
+}
+
+fn pkg_has_ext(p) {
+    let last_sep = -1;
+    let last_dot = -1;
+    let k = 0;
+    while k < p.len() {
+        let ch = p[k];
+        if ch == "/" or ch == "\\" {
+            last_sep = k;
+        } else if ch == "." {
+            last_dot = k;
+        }
+        k += 1;
+    }
+    return last_dot > last_sep + 1;
+}
+
+// ---------------------------------------------------------------- spider.toml
+
+fn pkg_strip_comment(line) {
+    let in_str = false;
+    let k = 0;
+    while k < line.len() {
+        let ch = line[k];
+        if ch == "\"" {
+            in_str = not in_str;
+        } else if ch == "#" and not in_str {
+            return line.slice(0, k);
+        }
+        k += 1;
+    }
+    return line;
+}
+
+fn pkg_parse_string(v) {
+    let s = v.trim();
+    if s.len() < 2 or s[0] != "\"" or s[s.len() - 1] != "\"" {
+        return null;
+    }
+    let inner = s.slice(1, s.len() - 1);
+    let frags = [];
+    let i = 0;
+    while i < inner.len() {
+        let ch = inner[i];
+        if ch == "\\" {
+            i += 1;
+            if i >= inner.len() {
+                return null;
+            }
+            let esc = inner[i];
+            if esc == "\"" {
+                frags.push("\"");
+            } else if esc == "\\" {
+                frags.push("\\");
+            } else if esc == "n" {
+                frags.push("\n");
+            } else if esc == "t" {
+                frags.push("\t");
+            } else {
+                return null;
+            }
+        } else {
+            frags.push(ch);
+        }
+        i += 1;
+    }
+    return frags.join("");
+}
+
+fn pkg_split_once_eq(s) {
+    let k = 0;
+    while k < s.len() {
+        if s[k] == "=" {
+            return [s.slice(0, k), s.slice(k + 1, s.len())];
+        }
+        k += 1;
+    }
+    return null;
+}
+
+fn pkg_parse_string_array(v) {
+    let s = v.trim();
+    if s.len() < 2 or s[0] != "[" or s[s.len() - 1] != "]" {
+        return null;
+    }
+    let inner = s.slice(1, s.len() - 1);
+    let out = [];
+    let parts = inner.split(",");
+    for raw in parts {
+        let part = raw.trim();
+        if part == "" {
+            continue;
+        }
+        let item = pkg_parse_string(part);
+        if item == null {
+            return null;
+        }
+        out.push(item);
+    }
+    return out;
+}
+
+fn pkg_parse_inline_table(v) {
+    let s = v.trim();
+    if s.len() < 2 or s[0] != "{" or s[s.len() - 1] != "}" {
+        return null;
+    }
+    let inner = s.slice(1, s.len() - 1);
+    let out = map();
+    let parts = inner.split(",");
+    for raw in parts {
+        let part = raw.trim();
+        if part == "" {
+            continue;
+        }
+        let kv = pkg_split_once_eq(part);
+        if kv == null {
+            return null;
+        }
+        let val = pkg_parse_string(kv[1]);
+        if val == null {
+            return null;
+        }
+        out[kv[0].trim()] = val;
+    }
+    return out;
+}
+
+fn pkg_parse_manifest(text) {
+    let section = "";
+    let name = null;
+    let version = null;
+    let entry = null;
+    let deps = [];
+    let dep_names = map();
+    let members = [];
+
+    let norm = text;
+    if norm.contains("\r") {
+        norm = norm.replace("\r\n", "\n").replace("\r", "\n");
+    }
+    let lines = norm.split("\n");
+    let lineno = 0;
+    for raw in lines {
+        lineno += 1;
+        let line = pkg_strip_comment(raw).trim();
+        if line == "" {
+            continue;
+        }
+        let where_ = "line " + string(lineno);
+        if pkg_starts_with(line, "[") {
+            if not pkg_ends_with(line, "]") {
+                throw where_ + ": unterminated section header";
+            }
+            section = line.slice(1, line.len() - 1).trim();
+            continue;
+        }
+        let kv = pkg_split_once_eq(line);
+        if kv == null {
+            throw where_ + ": expected `key = value`";
+        }
+        let key = kv[0].trim();
+        let value = kv[1].trim();
+        if section == "package" {
+            let v = pkg_parse_string(value);
+            if v == null {
+                throw where_ + ": package." + key + " expects a quoted string";
+            }
+            if key == "name" {
+                name = v;
+            } else if key == "version" {
+                version = v;
+            } else if key == "entry" {
+                entry = v;
+            } else {
+                throw where_ + ": unknown package key '" + key + "'";
+            }
+        } else if section == "dependencies" {
+            if pkg_starts_with(value, "{") {
+                let table = pkg_parse_inline_table(value);
+                if table == null {
+                    throw where_ + ": dependency '" + key + "' has a malformed table";
+                }
+                if table.has("path") and table.has("git") {
+                    throw where_ + ": dependency '" + key + "' cannot have both `path` and `git`";
+                }
+                if not table.has("path") and not table.has("git") and not table.has("version") {
+                    throw where_ + ": dependency '" + key + "' needs `path`, `git`, or `version`";
+                }
+            } else {
+                let sv = pkg_parse_string(value);
+                if sv == null {
+                    throw where_ + ": dependency '" + key + "' expects a path string";
+                }
+            }
+            if dep_names.has(key) {
+                throw where_ + ": duplicate dependency '" + key + "'";
+            }
+            dep_names[key] = 1;
+            deps.push(key);
+        } else if section == "workspace" {
+            if key == "members" {
+                let arr = pkg_parse_string_array(value);
+                if arr == null {
+                    throw where_ + ": workspace.members expects [\"a\", \"b\"]";
+                }
+                members = arr;
+            } else {
+                throw where_ + ": unknown workspace key '" + key + "'";
+            }
+        } else if section == "" {
+            throw where_ + ": value outside of a section";
+        } else {
+            throw where_ + ": unknown section '" + section + "'";
+        }
+    }
+
+    let pkg = null;
+    if name != null {
+        let ver = version;
+        if ver == null {
+            ver = "0.0.0";
+        }
+        let ent = entry;
+        if ent == null {
+            ent = "src/main.matrix";
+        }
+        pkg = { "name": name, "version": ver, "entry": ent };
+    } else if members.len() == 0 {
+        throw "[package] name is required";
+    }
+    return { "package": pkg, "members": members, "deps": deps };
+}
+
+fn pkg_load_manifest(dir) {
+    let p = pkg_join(dir, "spider.toml");
+    if not is_file(p) {
+        return null;
+    }
+    let rr = read_file(p);
+    if rr.is_err() {
+        throw "cannot read " + p + ": " + string(rr.unwrap_err());
+    }
+    try {
+        return pkg_parse_manifest(rr.unwrap());
+    } catch (e) {
+        throw p + ": " + string(e);
+    }
+}
+
+fn pkg_valid_name(name) {
+    if name == "" or name == "." or name == ".." or name[0] == "." {
+        throw "invalid package name '" + name + "' (letters, digits, '_', '-', '.'; no path separators)";
+    }
+    let bs = bytes(name);
+    for b in bs {
+        let ok = (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57) or b == 95 or b == 45 or b == 46;
+        if not ok {
+            throw "invalid package name '" + name + "' (letters, digits, '_', '-', '.'; no path separators)";
+        }
+    }
+}
+
+// ---------------------------------------------------------------- tar (ustar)
+
+fn pkg_put_octal(hdr, off, value, width) {
+    let digits = width - 1;
+    let v = value;
+    let i = digits - 1;
+    while i >= 0 {
+        hdr[off + i] = 48 + (v & 7);
+        v = v >> 3;
+        i -= 1;
+    }
+    hdr[off + digits] = 0;
+}
+
+fn pkg_parse_octal(bs, off, width) {
+    let end = 0;
+    while end < width {
+        if bs[off + end] == 0 {
+            break;
+        }
+        end += 1;
+    }
+    // trim leading/trailing ASCII whitespace
+    let start = 0;
+    while start < end {
+        let b = bs[off + start];
+        if b == 32 or b == 9 or b == 10 or b == 13 {
+            start += 1;
+        } else {
+            break;
+        }
+    }
+    while end > start {
+        let b = bs[off + end - 1];
+        if b == 32 or b == 9 or b == 10 or b == 13 or b == 0 {
+            end -= 1;
+        } else {
+            break;
+        }
+    }
+    if start >= end {
+        return 0;
+    }
+    let acc = 0;
+    let i = start;
+    while i < end {
+        let d = bs[off + i] - 48;
+        if d < 0 or d > 7 {
+            return null;
+        }
+        acc = (acc * 8) + d;
+        i += 1;
+    }
+    return acc;
+}
+
+fn pkg_append_tar_block(chunks, name_bs, prefix_bs, typeflag, data_bs) {
+    let hdr = [];
+    let k = 0;
+    while k < 512 {
+        hdr.push(0);
+        k += 1;
+    }
+    let nlen = name_bs.len();
+    if nlen > 100 {
+        nlen = 100;
+    }
+    k = 0;
+    while k < nlen {
+        hdr[k] = name_bs[k];
+        k += 1;
+    }
+    let plen = prefix_bs.len();
+    if plen > 0 {
+        if plen > 155 {
+            plen = 155;
+        }
+        k = 0;
+        while k < plen {
+            hdr[345 + k] = prefix_bs[k];
+            k += 1;
+        }
+    }
+    pkg_put_octal(hdr, 100, 420, 8); // 0o644
+    pkg_put_octal(hdr, 108, 0, 8);
+    pkg_put_octal(hdr, 116, 0, 8);
+    pkg_put_octal(hdr, 124, data_bs.len(), 12);
+    pkg_put_octal(hdr, 136, 0, 12);
+    hdr[156] = typeflag;
+    // "ustar\0" + "00"
+    let magic = [117, 115, 116, 97, 114, 0, 48, 48];
+    k = 0;
+    while k < 8 {
+        hdr[257 + k] = magic[k];
+        k += 1;
+    }
+    k = 148;
+    while k < 156 {
+        hdr[k] = 32;
+        k += 1;
+    }
+    let sum = 0;
+    k = 0;
+    while k < 512 {
+        sum += hdr[k];
+        k += 1;
+    }
+    pkg_put_octal(hdr, 148, sum, 8);
+    hdr[155] = 32;
+
+    chunks.push(bytes_from_ints(hdr));
+    if data_bs.len() > 0 {
+        chunks.push(data_bs);
+        let rem = data_bs.len() % 512;
+        if rem != 0 {
+            let pad = 512 - rem;
+            chunks.push(bytes(pad));
+        }
+    }
+}
+
+fn pkg_split_ustar(name_bs) {
+    let n = name_bs.len();
+    let i = 0;
+    while i < n {
+        if name_bs[i] == 47 {
+            let plen = i;
+            let nlen = n - i - 1;
+            if plen > 0 and plen <= 155 and nlen > 0 and nlen <= 100 {
+                return [name_bs.slice(0, i), name_bs.slice(i + 1, n)];
+            }
+        }
+        i += 1;
+    }
+    return null;
+}
+
+fn pkg_write_tar(entries) {
+    let chunks = [];
+    for ent in entries {
+        let name_str = ent[0];
+        let data_bs = ent[1];
+        let name_bs = bytes(name_str);
+        if name_bs.len() <= 100 {
+            pkg_append_tar_block(chunks, name_bs, bytes(0), 48, data_bs);
+        } else {
+            let sp = pkg_split_ustar(name_bs);
+            if sp != null {
+                pkg_append_tar_block(chunks, sp[1], sp[0], 48, data_bs);
+            } else {
+                let long_ints = [];
+                let k = 0;
+                while k < name_bs.len() {
+                    long_ints.push(name_bs[k]);
+                    k += 1;
+                }
+                long_ints.push(0);
+                pkg_append_tar_block(chunks, bytes("././@LongLink"), bytes(0), 76, bytes_from_ints(long_ints));
+                pkg_append_tar_block(chunks, name_bs.slice(0, 100), bytes(0), 48, data_bs);
+            }
+        }
+    }
+    chunks.push(bytes(1024));
+    return bytes_concat(chunks);
+}
+
+fn pkg_bytes_cstr(bs, off, max_len) {
+    let end = 0;
+    while end < max_len {
+        if bs[off + end] == 0 {
+            break;
+        }
+        end += 1;
+    }
+    if end == 0 {
+        return "";
+    }
+    // Decode UTF-8 (ASCII path names fast path + lossy fallback via msgpack or str).
+    let frags = [];
+    let i = 0;
+    while i < end {
+        let b = bs[off + i];
+        if b < 128 {
+            frags.push(chr(b));
+            i += 1;
+        } else {
+            // Decode UTF-8 multi-byte codepoint cleanly.
+            let cp = 65533;
+            let step = 1;
+            if (b & 224) == 192 and i + 1 < end {
+                let b1 = bs[off + i + 1];
+                if (b1 & 192) == 128 {
+                    cp = ((b & 31) * 64) + (b1 & 63);
+                    step = 2;
+                }
+            } else if (b & 240) == 224 and i + 2 < end {
+                let b1 = bs[off + i + 1];
+                let b2 = bs[off + i + 2];
+                if (b1 & 192) == 128 and (b2 & 192) == 128 {
+                    cp = ((b & 15) * 4096) + ((b1 & 63) * 64) + (b2 & 63);
+                    step = 3;
+                }
+            } else if (b & 248) == 240 and i + 3 < end {
+                let b1 = bs[off + i + 1];
+                let b2 = bs[off + i + 2];
+                let b3 = bs[off + i + 3];
+                if (b1 & 192) == 128 and (b2 & 192) == 128 and (b3 & 192) == 128 {
+                    cp = ((b & 7) * 262144) + ((b1 & 63) * 4096) + ((b2 & 63) * 64) + (b3 & 63);
+                    step = 4;
+                }
+            }
+            frags.push(chr(cp));
+            i += step;
+        }
+    }
+    return frags.join("");
+}
+
+fn pkg_read_tar(data) {
+    let out = [];
+    let pos = 0;
+    let dlen = data.len();
+    let pending_long = null;
+    while pos + 512 <= dlen {
+        let all_zero = true;
+        let k = 0;
+        while k < 512 {
+            if data[pos + k] != 0 {
+                all_zero = false;
+                break;
+            }
+            k += 1;
+        }
+        if all_zero {
+            break;
+        }
+        let expected_cksum = pkg_parse_octal(data, pos + 148, 8);
+        if expected_cksum == null {
+            throw "tar: malformed header checksum";
+        }
+        let actual_cksum = 0;
+        k = 0;
+        while k < 512 {
+            if k >= 148 and k < 156 {
+                actual_cksum += 32;
+            } else {
+                actual_cksum += data[pos + k];
+            }
+            k += 1;
+        }
+        if expected_cksum != actual_cksum {
+            throw "tar: header checksum mismatch (expected " + string(expected_cksum) + ", got " + string(actual_cksum) + ")";
+        }
+        let raw_name = pkg_bytes_cstr(data, pos, 100);
+        let prefix = pkg_bytes_cstr(data, pos + 345, 155);
+        let size = pkg_parse_octal(data, pos + 124, 12);
+        if size == null {
+            throw "tar: malformed size field for '" + raw_name + "'";
+        }
+        let typeflag = data[pos + 156];
+        pos += 512;
+        if pos + size > dlen {
+            throw "tar: entry '" + raw_name + "' is truncated";
+        }
+        let payload = data.slice(pos, pos + size);
+        let rem = size % 512;
+        let pad = 0;
+        if rem != 0 {
+            pad = 512 - rem;
+        }
+        pos = pos + size + pad;
+
+        if typeflag == 76 {
+            pending_long = pkg_bytes_cstr(payload, 0, payload.len());
+            continue;
+        }
+        if typeflag == 48 or typeflag == 0 {
+            // regular file
+        } else if typeflag == 53 or typeflag == 120 or typeflag == 103 {
+            pending_long = null;
+            continue;
+        } else {
+            throw "tar: entry '" + raw_name + "' has unsupported type (only regular files and directories are accepted)";
+        }
+
+        let full_name = raw_name;
+        if pending_long != null {
+            full_name = pending_long;
+            pending_long = null;
+        } else if prefix != "" {
+            full_name = prefix + "/" + raw_name;
+        }
+        out.push([full_name, payload]);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- hashing & walk
+
+fn pkg_collect_rel_dfs(dir, rel_pref, out) {
+    let lr = list_dir(dir);
+    if lr.is_err() {
+        throw "cannot read " + dir + ": " + string(lr.unwrap_err());
+    }
+    let names = lr.unwrap();
+    names.sort();
+    for name in names {
+        let full = pkg_join(dir, name);
+        let rel = name;
+        if rel_pref != "" {
+            rel = rel_pref + "/" + name;
+        }
+        if is_dir(full) {
+            pkg_collect_rel_dfs(full, rel, out);
+        } else {
+            out.push([rel, full]);
+        }
+    }
+}
+
+fn pkg_content_hash_and_count(dir) {
+    let files = [];
+    pkg_collect_rel_dfs(dir, "", files);
+    let chunks = [];
+    let nul = bytes_from_ints([0]);
+    for f in files {
+        let rel = f[0];
+        let full = f[1];
+        let rr = read_bytes(full);
+        if rr.is_err() {
+            throw "cannot read " + full + ": " + string(rr.unwrap_err());
+        }
+        chunks.push(bytes(rel));
+        chunks.push(nul);
+        chunks.push(rr.unwrap());
+        chunks.push(nul);
+    }
+    return [sha256(bytes_concat(chunks)), files.len()];
+}
+
+fn pkg_tree_hash(root) {
+    let src_dir = pkg_join(root, "src");
+    if not is_dir(src_dir) {
+        throw "no src/ directory in " + root;
+    }
+    let res = pkg_content_hash_and_count(src_dir);
+    return res[0];
+}
+
+fn pkg_pack_entries(root) {
+    let manifest = pkg_load_manifest(root);
+    if manifest == null {
+        throw "no spider.toml in " + root + " — run `spid3r init` first";
+    }
+    let entries = [];
+    let mpath = pkg_join(root, "spider.toml");
+    let mr = read_bytes(mpath);
+    if mr.is_err() {
+        throw "cannot read spider.toml: " + string(mr.unwrap_err());
+    }
+    entries.push(["spider.toml", mr.unwrap()]);
+    let src_dir = pkg_join(root, "src");
+    if is_dir(src_dir) {
+        let files = [];
+        pkg_collect_rel_dfs(src_dir, "src", files);
+        for f in files {
+            let rr = read_bytes(f[1]);
+            if rr.is_err() {
+                throw "cannot read " + f[1] + ": " + string(rr.unwrap_err());
+            }
+            entries.push([f[0], rr.unwrap()]);
+        }
+    }
+    return [manifest, entries];
+}
+
+// ---------------------------------------------------------------- pack / unpack
+
+public fn pkg_run_pack(argv) {
+    let out_override = null;
+    let i = 0;
+    while i < argv.len() {
+        let a = argv[i];
+        if a == "-o" {
+            i += 1;
+            if i >= argv.len() {
+                eprint("error[usage]: -o needs a path\n");
+                return 2;
+            }
+            out_override = argv[i];
+        } else {
+            eprint("error[usage]: unknown argument '" + a + "'\n");
+            return 2;
+        }
+        i += 1;
+    }
+
+    let cr = cwd();
+    if cr.is_err() {
+        eprint("error[usage]: cannot read cwd: " + string(cr.unwrap_err()) + "\n");
+        return 2;
+    }
+    let root = cr.unwrap();
+    let manifest = null;
+    try {
+        manifest = pkg_load_manifest(root);
+    } catch (e) {
+        eprint("error[usage]: " + string(e) + "\n");
+        return 2;
+    }
+    if manifest == null {
+        eprint("error[usage]: no spider.toml in this directory — run `spid3r init` first\n");
+        return 2;
+    }
+
+    let members = manifest["members"];
+    if members.len() == 0 {
+        try {
+            let pe = pkg_pack_entries(root);
+            let m = pe[0];
+            let entries = pe[1];
+            let data = pkg_write_tar(entries);
+            let hash = sha256(data);
+            if is_dir(pkg_join(root, "src")) {
+                let th = pkg_tree_hash(root);
+                print("sha256(tree): " + th + "\n");
+            }
+            let out_path = out_override;
+            if out_path == null {
+                let dir = pkg_join(root, "dist");
+                let dr = dir_create(dir);
+                if dr.is_err() {
+                    throw string(dr.unwrap_err());
+                }
+                let pinfo = m["package"];
+                out_path = pkg_join(dir, pinfo["name"] + "-" + pinfo["version"] + ".tar");
+            }
+            let par = pkg_parent_dir(out_path);
+            if par != "" and not is_dir(par) {
+                let pr = dir_create(par);
+                if pr.is_err() {
+                    throw "cannot create " + par + ": " + string(pr.unwrap_err());
+                }
+            }
+            let wr = write_bytes(out_path, data);
+            if wr.is_err() {
+                throw "cannot write " + out_path + ": " + string(wr.unwrap_err());
+            }
+            print("packed " + string(entries.len()) + " file(s) into " + out_path + "\n");
+            print("sha256: " + hash + "\n");
+            return 0;
+        } catch (e) {
+            eprint("error[usage]: " + string(e) + "\n");
+            return 2;
+        }
+    }
+
+    if out_override != null {
+        eprint("error[usage]: -o is not supported for a workspace pack\n");
+        return 2;
+    }
+    try {
+        let dist = pkg_join(root, "dist");
+        let dr = dir_create(dist);
+        if dr.is_err() {
+            throw string(dr.unwrap_err());
+        }
+        let count = 0;
+        for member in members {
+            let member_dir = pkg_join(root, member);
+            if not is_dir(member_dir) {
+                throw "workspace member '" + member + "': cannot resolve";
+            }
+            let mm = pkg_load_manifest(member_dir);
+            if mm == null {
+                throw "workspace member '" + member + "' has no spider.toml";
+            }
+            let pe = pkg_pack_entries(member_dir);
+            let entries = pe[1];
+            let data = pkg_write_tar(entries);
+            let hash = sha256(data);
+            let pinfo = mm["package"];
+            let fname = pinfo["name"] + "-" + pinfo["version"] + ".tar";
+            let out_path = pkg_join(dist, fname);
+            let wr = write_bytes(out_path, data);
+            if wr.is_err() {
+                throw "cannot write " + out_path + ": " + string(wr.unwrap_err());
+            }
+            print("packed " + string(entries.len()) + " file(s) into " + out_path + "\n");
+            print("sha256: " + hash + "\n");
+            count += 1;
+        }
+        print(string(count) + " archive(s)\n");
+        return 0;
+    } catch (e) {
+        eprint("error[usage]: " + string(e) + "\n");
+        return 2;
+    }
+}
+
+public fn pkg_run_unpack(argv) {
+    if argv.len() == 0 or argv.len() > 2 {
+        eprint("error[usage]: unpack takes an archive and an optional directory\n");
+        return 2;
+    }
+    let archive = argv[0];
+    let dest = "";
+    if argv.len() >= 2 {
+        dest = argv[1];
+    } else {
+        dest = pkg_stem(archive);
+        if dest == "" {
+            dest = "unpacked";
+        }
+    }
+    if file_exists(dest) or is_dir(dest) {
+        eprint("error[usage]: refusing to unpack: " + dest + " already exists\n");
+        return 2;
+    }
+    let rr = read_bytes(archive);
+    if rr.is_err() {
+        eprint("error[usage]: cannot read " + archive + ": " + string(rr.unwrap_err()) + "\n");
+        return 2;
+    }
+    let extracted = [];
+    try {
+        let entries = pkg_read_tar(rr.unwrap());
+        for ent in entries {
+            let name = ent[0];
+            let payload = ent[1];
+            if name.contains("..") or name.contains(":") or pkg_starts_with(name, "/") or pkg_starts_with(name, "\\") {
+                throw "tar: refusing unsafe path '" + name + "'";
+            }
+            let rel_os = name;
+            if pkg_path_sep() == "\\" {
+                rel_os = name.replace("/", "\\");
+            }
+            let target = pkg_join(dest, rel_os);
+            let par = pkg_parent_dir(target);
+            if par != "" {
+                let dr = dir_create(par);
+                if dr.is_err() {
+                    throw "cannot create " + par + ": " + string(dr.unwrap_err());
+                }
+            }
+            let wr = write_bytes(target, payload);
+            if wr.is_err() {
+                throw "cannot write " + target + ": " + string(wr.unwrap_err());
+            }
+            extracted.push(name);
+        }
+    } catch (e) {
+        eprint("error[usage]: " + string(e) + "\n");
+        return 2;
+    }
+    print("unpacked " + string(extracted.len()) + " file(s) into " + dest + "\n");
+    for f in extracted {
+        print("  " + f + "\n");
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------- spider.lock & verify
+
+fn pkg_read_lock(root) {
+    let p = pkg_join(root, "spider.lock");
+    if not is_file(p) {
+        return [];
+    }
+    let rr = read_file(p);
+    if rr.is_err() {
+        return [];
+    }
+    let text = rr.unwrap();
+    if text.contains("\r") {
+        text = text.replace("\r\n", "\n").replace("\r", "\n");
+    }
+    let out = [];
+    let cur = null;
+    for raw in text.split("\n") {
+        let line = raw.trim();
+        if pkg_starts_with(line, "[[package]]") {
+            if cur != null and cur["name"] != "" {
+                out.push(cur);
+            }
+            cur = { "name": "", "version": "", "source": "", "files": null, "sha256": null, "used_by": null };
+            continue;
+        }
+        if pkg_starts_with(line, "[") {
+            if cur != null and cur["name"] != "" {
+                out.push(cur);
+            }
+            cur = null;
+            continue;
+        }
+        if cur == null {
+            continue;
+        }
+        let kv = pkg_split_once_eq(line);
+        if kv == null {
+            continue;
+        }
+        let k = kv[0].trim();
+        let v = kv[1].trim();
+        if v.len() >= 2 and v[0] == "\"" and v[v.len() - 1] == "\"" {
+            v = v.slice(1, v.len() - 1);
+        }
+        if k == "name" {
+            cur["name"] = v;
+        } else if k == "version" {
+            cur["version"] = v;
+        } else if k == "source" {
+            cur["source"] = v;
+        } else if k == "used-by" {
+            cur["used_by"] = v;
+        } else if k == "sha256" {
+            cur["sha256"] = v;
+        } else if k == "files" {
+            try {
+                cur["files"] = int(v);
+            } catch (ignored) {
+                cur["files"] = null;
+            }
+        }
+    }
+    if cur != null and cur["name"] != "" {
+        out.push(cur);
+    }
+    return out;
+}
+
+public fn pkg_run_verify(argv) {
+    if argv.len() > 0 {
+        eprint("error[usage]: unknown argument '" + argv[0] + "'\n");
+        return 2;
+    }
+    let cr = cwd();
+    if cr.is_err() {
+        eprint("error[usage]: cannot read cwd: " + string(cr.unwrap_err()) + "\n");
+        return 2;
+    }
+    let root = cr.unwrap();
+    if not is_file(pkg_join(root, "spider.toml")) {
+        eprint("error[usage]: no spider.toml in this directory — run `spidr init` first\n");
+        return 2;
+    }
+
+    let checked = 0;
+    let issues = [];
+    try {
+        let entries = pkg_read_lock(root);
+        let vendor = pkg_join(root, "vendor");
+        for entry in entries {
+            let ename = entry["name"];
+            pkg_valid_name(ename);
+            let dir = pkg_join(vendor, ename);
+            let expected = entry["sha256"];
+            if expected == null {
+                if pkg_starts_with(entry["source"], "registry+") {
+                    issues.push([ename, "a registry dependency must record a sha256 in spider.lock — run `spid3r install` to re-vendor it"]);
+                }
+                continue;
+            }
+            checked += 1;
+            if not is_dir(dir) {
+                issues.push([ename, "vendored at vendor/" + ename + " but the directory is missing — run `spidr install`"]);
+                continue;
+            }
+            let hc = pkg_content_hash_and_count(dir);
+            let actual = hc[0];
+            let fcount = hc[1];
+            if actual != expected {
+                issues.push([ename, "vendor/" + ename + " does not match spider.lock\n  expected " + expected + "\n  actual   " + actual]);
+                continue;
+            }
+            if entry["files"] != null and fcount != entry["files"] {
+                issues.push([ename, "vendor/" + ename + " has " + string(fcount) + " file(s), spider.lock records " + string(entry["files"])]);
+            }
+        }
+        if is_dir(vendor) {
+            let lr = list_dir(vendor);
+            if lr.is_err() {
+                throw "cannot read vendor/: " + string(lr.unwrap_err());
+            }
+            let names = lr.unwrap();
+            names.sort();
+            for name in names {
+                if is_dir(pkg_join(vendor, name)) {
+                    let found = false;
+                    for entry in entries {
+                        if entry["name"] == name {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if not found {
+                        issues.push([name, "present in vendor/ but absent from spider.lock"]);
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        eprint("error[usage]: " + string(e) + "\n");
+        return 2;
+    }
+
+    if issues.len() == 0 {
+        print("ok: " + string(checked) + " vendored package(s) match spider.lock\n");
+        return 0;
+    }
+    for iss in issues {
+        eprint("error[verify]: " + iss[0] + ": " + iss[1] + "\n");
+    }
+    eprint(string(issues.len()) + " problem(s) across " + string(checked) + " checked package(s)\n");
+    return 1;
+}
+
+// ---------------------------------------------------------------- dist
+
+fn pkg_find_vendor_dir(start) {
+    let cur = start;
+    while true {
+        if is_dir(pkg_join(cur, "vendor")) {
+            return true;
+        }
+        let par = pkg_parent_dir(cur);
+        if par == "" or par == cur {
+            return false;
+        }
+        cur = par;
+    }
+}
+
+public fn pkg_prepare_dist(argv) {
+    let out = null;
+    let i = 0;
+    while i < argv.len() {
+        let a = argv[i];
+        if a == "-o" {
+            i += 1;
+            if i >= argv.len() {
+                eprint("error[usage]: -o needs a path\n");
+                return null;
+            }
+            out = argv[i];
+        } else if a == "--no-opt" {
+            // Accepted for CLI compatibility (selfhost emits unoptimized bytecode directly).
+        } else {
+            eprint("error[usage]: unknown argument '" + a + "'\n");
+            return null;
+        }
+        i += 1;
+    }
+
+    let cr = cwd();
+    if cr.is_err() {
+        eprint("error[usage]: cannot read cwd: " + string(cr.unwrap_err()) + "\n");
+        return null;
+    }
+    let root = cr.unwrap();
+    let manifest = null;
+    try {
+        manifest = pkg_load_manifest(root);
+    } catch (e) {
+        eprint("error[usage]: " + string(e) + "\n");
+        return null;
+    }
+    if manifest == null {
+        eprint("error[usage]: no spider.toml in this directory — run `spid3r init` first\n");
+        return null;
+    }
+    let pinfo = manifest["package"];
+    let entry_rel = "src/main.matrix";
+    let pkg_name = "";
+    if pinfo != null {
+        entry_rel = pinfo["entry"];
+        pkg_name = pinfo["name"];
+    }
+    let entry_rel_os = entry_rel;
+    if pkg_path_sep() == "\\" {
+        entry_rel_os = entry_rel.replace("/", "\\");
+    }
+    let entry_abs = pkg_join(root, entry_rel_os);
+    if not is_file(entry_abs) {
+        eprint("error[usage]: entry '" + entry_rel + "' does not exist\n");
+        return null;
+    }
+    if manifest["deps"].len() > 0 and not pkg_find_vendor_dir(root) {
+        eprint("error[usage]: dependencies are declared but not installed — run `spid3r install` first\n");
+        return null;
+    }
+    let out_path = out;
+    if out_path != null {
+        if not pkg_has_ext(out_path) {
+            out_path = out_path + ".matrixc";
+        }
+    } else {
+        let dr = dir_create("target");
+        if dr.is_err() {
+            eprint("error[usage]: cannot create target/: " + string(dr.unwrap_err()) + "\n");
+            return null;
+        }
+        out_path = pkg_join("target", pkg_name + ".matrixc");
+    }
+    let par = pkg_parent_dir(out_path);
+    if par != "" and not is_dir(par) {
+        let pr = dir_create(par);
+        if pr.is_err() {
+            eprint("error[usage]: cannot create '" + par + "': " + string(pr.unwrap_err()) + "\n");
+            return null;
+        }
+    }
+    return [entry_abs, out_path];
+}

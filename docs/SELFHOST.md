@@ -8,25 +8,25 @@ decision IDs below, and a change to any of them is a new ledger entry, not a
 silent edit.
 
 **Progress (2026-11-15, evidence in the roadmap ledger):** the Spid3r-written
-toolchain covers the lexer, parser, semantic checker, lowering, bytecode
-compiler + container writer, the LLVM-C codegen (with the unboxed-i64 locals
-system, hybrid compares, and clean C++ resource disposal), the build driver's
-link + module-flattening halves, and the **Stage-1 / Stage-2 self-hosting
-bootstrap** — 27/51 roadmap steps (Phases 0–7 closed). `spid3r build
-selfhost/main.matrix -o selfhost/main_native.exe` builds Stage 1
-(`selfhost/main_native.exe`), `selfhost/main_native.exe build
+toolchain covers the lexer, parser, semantic checker (with lint warnings),
+lowering, bytecode compiler + container writer, the LLVM-C codegen (with the
+unboxed-i64 locals system, hybrid compares, and clean C++ resource disposal),
+the build driver's link + module-flattening halves, the **Stage-1 / Stage-2
+self-hosting bootstrap**, and the core dev tools (`test`, `fmt`, extended
+`check`, `pack`/`unpack`/`verify`/`dist`) — 30/51 roadmap steps (Phases 0–8
+closed). `spid3r build selfhost/main.matrix -o selfhost/main_native.exe` builds
+Stage 1 (`selfhost/main_native.exe`), `selfhost/main_native.exe build
 selfhost/main.matrix` builds Stage 2 with zero Rust compiler invocation, and
 Stage 2 compiles Stage 3 emitting a byte-identical COFF `spid3r_main.o`
-(`2,653,106` B, SHA-256 `09F692C2...16B37`). Three-way frozen-corpus parity
-across Stage 0, Stage 1, and Stage 2 (`tools/selfhost_bootstrap_parity.sh`:
-`pass=124 fail=0 skip=10 obj_match=111 obj_mismatch=0`, PE metadata
-`ok=226 fail=0`) and Tier-B performance (`0.996×` Stage-2 compute geomean vs
-Stage 0) both pass; Phase 7.3 measures Stage-1 self-compile at `35.47 s`,
-`3898.0 MB` peak RSS, `0.0135 MB/s` (vs Stage 0 `2.00 s`, `162.6 MB`,
-`0.2387 MB/s`) with constant per-pass arena retention across repeated
-in-process compiles. Phase 8 (Spid3r-written dev tools: `fmt`/`test`) is next,
-with the runtime-artifact formalization (Phase 9) remaining for full no-Rust
-release builds.
+(SHA-256 `09F692C2...16B37` at Phase 7.2 baseline; `eca0f320...33b93` on the
+expanded Phase 8 17-file closure). Three-way frozen-corpus parity across Stage
+0, Stage 1, and Stage 2 (`tools/selfhost_bootstrap_parity.sh`: `pass=124
+fail=0 skip=10 obj_match=111 obj_mismatch=0`, PE metadata `ok=226 fail=0`) and
+Tier-B performance (`0.996×` Stage-2 compute geomean vs Stage 0) pass at Phase
+7; Phase 8 parity harnesses (`selfhost_test_parity.sh` 10/10,
+`selfhost_fmt_check_parity.sh` 17/17 + 134/134 corpus byte-identical,
+`selfhost_pkg_parity.sh` 11/11 byte-identical tarballs + lockfile verification)
+all pass. Next real work is Phase 9 (runtime artifact formalization).
 
 The ground rule that governs all of it lives in the roadmap and is repeated
 here because everything else depends on it: **a checkbox may be checked only

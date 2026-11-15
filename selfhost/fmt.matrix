@@ -1,0 +1,752 @@
+// selfhost/fmt.matrix — canonical source formatter (`spid3r fmt`, Phase 8.2).
+//
+// 1:1 port of src/fmt.rs and src/cli.rs::cmd_fmt (SH-3).
+
+import "token";
+import "lexer";
+import "parser";
+
+const FMT_MAX_WIDTH = 100;
+const FMT_MAX_INDENT_DEPTH = 64;
+
+fn fmt_path_sep() {
+    let r = cwd();
+    if r.is_ok() and r.unwrap().contains("\\") {
+        return "\\";
+    }
+    return "/";
+}
+
+fn fmt_join_path(dir, name) {
+    let sep = fmt_path_sep();
+    if dir == "" or dir == "." {
+        return name;
+    }
+    let last = dir[dir.len() - 1];
+    if last == "/" or last == "\\" {
+        return dir + name;
+    }
+    return dir + sep + name;
+}
+
+fn fmt_starts_with(s, pref) {
+    if s.len() < pref.len() {
+        return false;
+    }
+    return s.slice(0, pref.len()) == pref;
+}
+
+fn fmt_ends_with(s, suf) {
+    if s.len() < suf.len() {
+        return false;
+    }
+    return s.slice(s.len() - suf.len(), s.len()) == suf;
+}
+
+fn fmt_trim_end(s) {
+    let bs = bytes(s);
+    let end = bs.len();
+    let drop = 0;
+    while end > 0 {
+        let b = bs[end - 1];
+        if b == 32 or b == 9 or b == 13 or b == 10 {
+            end -= 1;
+            drop += 1;
+        } else {
+            break;
+        }
+    }
+    if drop == 0 {
+        return s;
+    }
+    return s.slice(0, s.len() - drop);
+}
+
+fn fmt_is_join_kw(tok) {
+    if tok[0] != K_KW {
+        return false;
+    }
+    let k = tok[1];
+    return k == "else" or k == "elif" or k == "catch" or k == "finally";
+}
+
+fn fmt_ends_value(tok) {
+    let k = tok[0];
+    if k == K_INT or k == K_FLOAT or k == K_STR or k == K_IDENT or k == K_RPAREN or k == K_RBRACKET {
+        return true;
+    }
+    if k == K_KW {
+        let w = tok[1];
+        return w == "true" or w == "false" or w == "null" or w == "self";
+    }
+    return false;
+}
+
+fn fmt_tok_text_len(tok, range) {
+    let k = tok[0];
+    if k == K_INT or k == K_FLOAT or k == K_STR or k == K_IDENT {
+        return range[1] - range[0];
+    }
+    if k == K_KW {
+        return tok[1].len();
+    }
+    if k == K_EQEQ or k == K_BANGEQ or k == K_LE or k == K_GE or k == K_PLUSEQ or k == K_MINUSEQ or k == K_STAREQ or k == K_SLASHEQ or k == K_PERCENTEQ or k == K_ARROW or k == K_AMPAMP or k == K_PIPEPIPE {
+        return 2;
+    }
+    if k == K_EOF {
+        return 0;
+    }
+    return 1;
+}
+
+fn fmt_needs_space(prev, next) {
+    let nk = next[0];
+    if nk == K_COMMA or nk == K_SEMI or nk == K_COLON or nk == K_DOT or nk == K_RPAREN or nk == K_RBRACKET {
+        return false;
+    }
+    let pk = prev[0];
+    if nk == K_LPAREN {
+        if fmt_ends_value(prev) or pk == K_LPAREN or pk == K_LBRACKET {
+            return false;
+        }
+        if pk == K_KW and (prev[1] == "fn" or prev[1] == "super") {
+            return false;
+        }
+        return true;
+    }
+    if nk == K_LBRACKET {
+        if fmt_ends_value(prev) or pk == K_LPAREN or pk == K_LBRACKET {
+            return false;
+        }
+        return true;
+    }
+    if nk == K_MINUS or nk == K_PLUS {
+        return not (pk == K_LPAREN or pk == K_LBRACKET or pk == K_DOT);
+    }
+    if pk == K_LPAREN or pk == K_LBRACKET or pk == K_DOT {
+        return false;
+    }
+    return true;
+}
+
+fn fmt_indent(st) {
+    let d = st["depth"];
+    if d > FMT_MAX_INDENT_DEPTH {
+        d = FMT_MAX_INDENT_DEPTH;
+    }
+    let i = 0;
+    while i < d {
+        st["frags"].push("    ");
+        st["col"] += 4;
+        i += 1;
+    }
+}
+
+fn fmt_nl(st) {
+    st["frags"].push("\n");
+    st["col"] = 0;
+}
+
+fn fmt_put_ascii(st, s) {
+    if not st["line_open"] {
+        fmt_indent(st);
+        st["line_open"] = true;
+    }
+    st["frags"].push(s);
+    st["col"] += s.len();
+}
+
+fn fmt_put_raw(st, s) {
+    if not st["line_open"] {
+        fmt_indent(st);
+        st["line_open"] = true;
+    }
+    st["frags"].push(s);
+    let bs = bytes(s);
+    let i = bs.len() - 1;
+    let after_nl = 0;
+    let found_nl = false;
+    while i >= 0 {
+        if bs[i] == 10 {
+            found_nl = true;
+            break;
+        }
+        after_nl += 1;
+        i -= 1;
+    }
+    if found_nl {
+        st["col"] = after_nl;
+    } else {
+        st["col"] += bs.len();
+    }
+}
+
+fn fmt_put_comment_text(st, s) {
+    st["frags"].push(s);
+    let bs = bytes(s);
+    let i = bs.len() - 1;
+    let after_nl = 0;
+    let found_nl = false;
+    while i >= 0 {
+        if bs[i] == 10 {
+            found_nl = true;
+            break;
+        }
+        after_nl += 1;
+        i -= 1;
+    }
+    if found_nl {
+        st["col"] = after_nl;
+    } else {
+        st["col"] += bs.len();
+    }
+}
+
+fn fmt_flat_width(tokens, ranges, open, close) {
+    let w = 0;
+    let i = open + 1;
+    while i < close {
+        w += fmt_tok_text_len(tokens[i], ranges[i]) + 1;
+        i += 1;
+    }
+    return w;
+}
+
+fn fmt_group_mode(st, open) {
+    let matching = st["matching"];
+    let close = matching[open];
+    if close < 0 or close <= open + 1 {
+        return [false, false, false];
+    }
+    let tokens = st["tokens"];
+    let l0 = tokens[open][2];
+    let l1 = tokens[close][2];
+    let src_multiline = l0 != l1;
+    let j = open + 1;
+    while j < close {
+        if tokens[j][0] == K_LBRACE {
+            return [false, false, true];
+        }
+        j += 1;
+    }
+    let comments = st["comments"];
+    let ci = 0;
+    while ci < comments.len() {
+        let cl = comments[ci][0];
+        if cl > l0 and cl < l1 {
+            return [src_multiline, false, false];
+        }
+        if cl >= l1 {
+            break;
+        }
+        ci += 1;
+    }
+    if src_multiline {
+        return [true, true, false];
+    }
+    let flat = fmt_flat_width(tokens, st["ranges"], open, close);
+    let wrap = flat >= (FMT_MAX_WIDTH / 2) and (st["col"] + flat) > FMT_MAX_WIDTH;
+    return [wrap, wrap, false];
+}
+
+fn fmt_normalize_lf(src) {
+    if src.contains("\r") {
+        return src.replace("\r\n", "\n").replace("\r", "\n");
+    }
+    return src;
+}
+
+public fn fmt_format_source(src, path) {
+    let norm = fmt_normalize_lf(src);
+    try {
+        let ptoks = lex_all(norm);
+        let pst = new_state(ptoks);
+        parse_program(pst);
+    } catch (e) {
+        if not fmt_starts_with(e[0], "nesting deeper than") {
+            let phase = "parser";
+            if e.len() >= 5 {
+                phase = e[4];
+            }
+            let pth = path;
+            if e.len() >= 6 {
+                pth = e[5];
+            }
+            throw [e[0], e[1], e[2], e[3], phase, pth];
+        }
+    }
+
+    let lexed = null;
+    try {
+        lexed = lex_all_with_comments(norm);
+    } catch (e2) {
+        let pth = path;
+        if e2.len() >= 6 {
+            pth = e2[5];
+        }
+        throw ["fmt: " + e2[0], e2[1], e2[2], e2[3], "lexer", pth];
+    }
+
+    let tokens = lexed[0];
+    let ranges = lexed[1];
+    let comments = lexed[2];
+    let raws = lexed[3];
+
+    // Merge non-EOF tokens and comments in source (line, col) order cleanly.
+    // Tokens precede equal-position comments to match Rust sort_by_key stability.
+    let stream = [];
+    let ti = 0;
+    let ci = 0;
+    let tn = tokens.len();
+    let cn = comments.len();
+    while ti < tn and ci < cn {
+        let tok = tokens[ti];
+        if tok[0] == K_EOF {
+            ti += 1;
+            continue;
+        }
+        let com = comments[ci];
+        if tok[2] < com[0] or (tok[2] == com[0] and tok[3] <= com[1]) {
+            stream.push([0, tok, ti]);
+            ti += 1;
+        } else {
+            stream.push([1, com, 0]);
+            ci += 1;
+        }
+    }
+    while ti < tn {
+        let tok = tokens[ti];
+        if tok[0] != K_EOF {
+            stream.push([0, tok, ti]);
+        }
+        ti += 1;
+    }
+    while ci < cn {
+        stream.push([1, comments[ci], 0]);
+        ci += 1;
+    }
+
+    let matching = [];
+    let k = 0;
+    while k < tn {
+        matching.push(-1);
+        k += 1;
+    }
+    let stack = [];
+    k = 0;
+    while k < tn {
+        let tk = tokens[k][0];
+        if tk == K_LPAREN or tk == K_LBRACKET {
+            stack.push(k);
+        } else if tk == K_RPAREN or tk == K_RBRACKET {
+            if stack.len() > 0 {
+                let open = stack.pop();
+                matching[open] = k;
+            }
+        }
+        k += 1;
+    }
+
+    let st = {
+        "tokens": tokens,
+        "ranges": ranges,
+        "matching": matching,
+        "comments": comments,
+        "frags": [],
+        "col": 0,
+        "depth": 0,
+        "paren": 0,
+        "brace": 0,
+        "for_header": [],
+        "wrap_stack": [],
+        "pending_break": false,
+        "line_open": false,
+        "after_unary": false,
+        "last_src_line": 0,
+        "cur_out_src_line": 0,
+        "first": true,
+    };
+
+    let prev_tok = null;
+    let idx = 0;
+    let sn = stream.len();
+    while idx < sn {
+        let item = stream[idx];
+        if item[0] == 1 {
+            let com = item[1];
+            let text = fmt_trim_end(com[2]);
+            let cline = com[0];
+            if st["line_open"] and cline == st["cur_out_src_line"] {
+                st["frags"].push("  ");
+                st["col"] += 2;
+                fmt_put_comment_text(st, text);
+            } else {
+                if st["line_open"] or st["pending_break"] {
+                    fmt_nl(st);
+                }
+                if not st["first"] and cline > st["last_src_line"] + 1 and st["paren"] == 0 {
+                    fmt_nl(st);
+                }
+                fmt_indent(st);
+                fmt_put_comment_text(st, text);
+                fmt_nl(st);
+                st["line_open"] = false;
+                st["pending_break"] = false;
+            }
+            if cline > st["last_src_line"] {
+                st["last_src_line"] = cline;
+            }
+            st["first"] = false;
+        } else {
+            let tok = item[1];
+            let tok_i = item[2];
+            let tkind = tok[0];
+            let tline = tok[2];
+
+            let join_after_brace = false;
+            if tkind == K_RBRACE and idx + 1 < sn {
+                let nxt = stream[idx + 1];
+                if nxt[0] == 0 and fmt_is_join_kw(nxt[1]) {
+                    join_after_brace = true;
+                }
+            }
+
+            let forced = tkind == K_RBRACE and not join_after_brace;
+            let semi_joins_brace = tkind == K_SEMI and prev_tok != null and prev_tok[0] == K_RBRACE;
+            let must_break = forced or (st["pending_break"] and not semi_joins_brace);
+
+            let transparent_level = false;
+            let wlen = st["wrap_stack"].len();
+            if wlen > 0 {
+                let topg = st["wrap_stack"][wlen - 1];
+                if topg[2] and topg[5] == st["paren"] and topg[3] == st["brace"] {
+                    transparent_level = true;
+                }
+            }
+
+            if not must_break and not transparent_level and not st["first"] and tline > st["last_src_line"] {
+                must_break = true;
+            }
+            if transparent_level and (tkind == K_RPAREN or tkind == K_COMMA) {
+                must_break = false;
+                st["pending_break"] = false;
+            }
+
+            let prev_is_lbrace = prev_tok != null and prev_tok[0] == K_LBRACE;
+            let blank = must_break
+                and st["paren"] == 0
+                and not st["first"]
+                and tline > st["last_src_line"] + 1
+                and tkind != K_RBRACE
+                and not prev_is_lbrace
+                and not fmt_is_join_kw(tok);
+
+            if must_break {
+                if blank {
+                    fmt_nl(st);
+                }
+                if st["line_open"] {
+                    fmt_nl(st);
+                }
+                st["line_open"] = false;
+                st["pending_break"] = false;
+            }
+
+            let spaced = false;
+            if prev_tok != null {
+                spaced = fmt_needs_space(prev_tok, tok);
+            }
+            if st["line_open"] and spaced and st["cur_out_src_line"] == tline and not st["after_unary"] {
+                st["frags"].push(" ");
+                st["col"] += 1;
+            }
+            st["after_unary"] = false;
+
+            if tkind == K_LBRACE {
+                fmt_put_ascii(st, "{");
+                let fh = st["for_header"];
+                if fh.len() > 0 and fh[fh.len() - 1] {
+                    fh.pop();
+                }
+                st["depth"] += 1;
+                st["brace"] += 1;
+                st["pending_break"] = true;
+            } else if tkind == K_RBRACE {
+                if st["depth"] > 0 {
+                    st["depth"] -= 1;
+                }
+                if st["brace"] > 0 {
+                    st["brace"] -= 1;
+                }
+                fmt_put_ascii(st, "}");
+                if not join_after_brace {
+                    st["pending_break"] = true;
+                }
+            } else if tkind == K_LPAREN {
+                let gm = fmt_group_mode(st, tok_i);
+                fmt_put_ascii(st, "(");
+                st["paren"] += 1;
+                st["wrap_stack"].push([gm[0], gm[1], gm[2], st["brace"], st["depth"], st["paren"]]);
+                if gm[0] {
+                    st["depth"] += 1;
+                    if gm[1] {
+                        fmt_nl(st);
+                        st["line_open"] = false;
+                    }
+                }
+            } else if tkind == K_RPAREN {
+                if st["paren"] > 0 {
+                    st["paren"] -= 1;
+                }
+                let ws = st["wrap_stack"];
+                if ws.len() > 0 {
+                    let g = ws.pop();
+                    if g[0] {
+                        st["depth"] = g[4];
+                        if g[1] and st["line_open"] {
+                            fmt_nl(st);
+                            st["line_open"] = false;
+                        }
+                    }
+                }
+                fmt_put_ascii(st, ")");
+            } else if tkind == K_LBRACKET {
+                fmt_put_ascii(st, "[");
+            } else if tkind == K_RBRACKET {
+                fmt_put_ascii(st, "]");
+            } else if tkind == K_COMMA {
+                fmt_put_ascii(st, ",");
+                let ws = st["wrap_stack"];
+                if ws.len() > 0 {
+                    let g = ws[ws.len() - 1];
+                    if g[1] and st["paren"] == g[5] {
+                        fmt_nl(st);
+                        st["line_open"] = false;
+                    }
+                }
+            } else if tkind == K_COLON {
+                fmt_put_ascii(st, ":");
+            } else if tkind == K_SEMI {
+                fmt_put_ascii(st, ";");
+                let fh = st["for_header"];
+                let in_for = fh.len() > 0 and fh[fh.len() - 1] and st["paren"] == 0;
+                if not in_for and st["paren"] == 0 {
+                    st["pending_break"] = true;
+                }
+            } else if tkind == K_DOT {
+                fmt_put_ascii(st, ".");
+            } else if tkind == K_ARROW {
+                fmt_put_ascii(st, "->");
+            } else if tkind == K_KW {
+                if tok[1] == "for" {
+                    st["for_header"].push(true);
+                }
+                fmt_put_ascii(st, tok[1]);
+            } else if tkind == K_MINUS or tkind == K_PLUS {
+                let unary = prev_tok == null or not fmt_ends_value(prev_tok);
+                if tkind == K_MINUS {
+                    fmt_put_ascii(st, "-");
+                } else {
+                    fmt_put_ascii(st, "+");
+                }
+                st["after_unary"] = unary;
+            } else {
+                fmt_put_raw(st, raws[tok_i]);
+            }
+
+            st["cur_out_src_line"] = tline;
+            st["last_src_line"] = tline;
+            st["first"] = false;
+            prev_tok = tok;
+        }
+        idx += 1;
+    }
+
+    let out = st["frags"].join("");
+    let obs = bytes(out);
+    let end = obs.len();
+    let drop = 0;
+    while end > 0 and obs[end - 1] == 10 {
+        end -= 1;
+        drop += 1;
+    }
+    if end >= 4 and obs[end - 1] == 32 and obs[end - 2] == 32 and obs[end - 3] == 32 and obs[end - 4] == 32 {
+        while end > 0 and obs[end - 1] == 32 {
+            end -= 1;
+            drop += 1;
+        }
+    }
+    if drop > 0 {
+        out = out.slice(0, out.len() - drop);
+    }
+    out = out + "\n";
+
+    // Token preservation guarantee.
+    let relex = null;
+    try {
+        relex = lex_all(out);
+    } catch (e3) {
+        let pth = path;
+        if e3.len() >= 6 {
+            pth = e3[5];
+        }
+        throw ["fmt: internal: output does not lex: " + e3[0], e3[1], e3[2], e3[3], "lexer", pth];
+    }
+    if relex.len() != tokens.len() {
+        throw ["fmt: internal error: formatted output changed the token stream; file left untouched", 1, 1, 1, "parser", path];
+    }
+    let ri = 0;
+    while ri < tokens.len() {
+        if relex[ri][0] != tokens[ri][0] or relex[ri][1] != tokens[ri][1] {
+            throw ["fmt: internal error: formatted output changed the token stream; file left untouched", 1, 1, 1, "parser", path];
+        }
+        ri += 1;
+    }
+    return out;
+}
+
+fn fmt_collect_matrix_files(dir) {
+    let r = list_dir(dir);
+    if not r.is_ok() {
+        throw "cannot read '" + dir + "': " + string(r.unwrap_err());
+    }
+    let names = r.unwrap();
+    let out = [];
+    for name in names {
+        if fmt_ends_with(name, ".matrix") {
+            let full = fmt_join_path(dir, name);
+            if is_file(full) {
+                out.push(full);
+            }
+        }
+    }
+    out.sort();
+    return out;
+}
+
+public fn fmt_run_cli(argv) {
+    let check = false;
+    let files = [];
+    for a in argv {
+        if a == "--check" {
+            check = true;
+        } else if fmt_starts_with(a, "--") {
+            eprint("error[usage]: unknown option '" + a + "'\n");
+            return 2;
+        } else {
+            files.push(a);
+        }
+    }
+
+    if files.len() == 0 {
+        for dir in ["examples", "benchmarks"] {
+            if is_dir(dir) {
+                let r = list_dir(dir);
+                if not r.is_ok() {
+                    eprint("error[usage]: cannot read " + dir + "/: " + string(r.unwrap_err()) + "\n");
+                    return 2;
+                }
+                let found = [];
+                for name in r.unwrap() {
+                    if fmt_ends_with(name, ".matrix") {
+                        found.push(fmt_join_path(dir, name));
+                    }
+                }
+                found.sort();
+                for f in found {
+                    files.push(f);
+                }
+            }
+        }
+    }
+
+    if files.len() == 0 {
+        eprint("error[usage]: fmt needs at least one file\n");
+        return 2;
+    }
+
+    let expanded = [];
+    for arg in files {
+        if is_dir(arg) {
+            let found = [];
+            try {
+                found = fmt_collect_matrix_files(arg);
+            } catch (e) {
+                eprint("error[usage]: " + string(e) + "\n");
+                return 2;
+            }
+            if found.len() == 0 {
+                eprint("error[usage]: no .matrix files found in directory '" + arg + "'\n");
+                return 2;
+            }
+            for f in found {
+                expanded.push(f);
+            }
+        } else {
+            expanded.push(arg);
+        }
+    }
+
+    let changed = 0;
+    let errors = 0;
+    for f in expanded {
+        let rr = read_file(f);
+        if not rr.is_ok() {
+            eprint("error[usage]: cannot read '" + f + "': " + string(rr.unwrap_err()) + "\n");
+            return 2;
+        }
+        let src = rr.unwrap();
+        let formatted = null;
+        try {
+            formatted = fmt_format_source(src, f);
+        } catch (d) {
+            let is_list = false;
+            try {
+                let probe = d[1] + 0;
+                is_list = true;
+            } catch (ig) {
+                is_list = false;
+            }
+            if is_list {
+                let phase = "parser";
+                if d.len() >= 5 {
+                    phase = d[4];
+                }
+                let pth = f;
+                if d.len() >= 6 {
+                    pth = d[5];
+                }
+                eprint("error[" + phase + "]: " + d[0] + "\n");
+                eprint("  --> " + pth + ":" + string(d[1]) + ":" + string(d[2]) + "\n");
+            } else {
+                eprint("error[internal]: " + string(d) + "\n");
+            }
+            errors += 1;
+            continue;
+        }
+        let src_lf = fmt_normalize_lf(src);
+        if formatted == src_lf {
+            print("unchanged " + f + "\n");
+            continue;
+        }
+        changed += 1;
+        if check {
+            print("would reformat " + f + "\n");
+        } else {
+            let wr = write_file(f, formatted);
+            if not wr.is_ok() {
+                eprint("error[usage]: cannot write '" + f + "': " + string(wr.unwrap_err()) + "\n");
+                return 2;
+            }
+            print("formatted " + f + "\n");
+        }
+    }
+
+    if errors > 0 {
+        return 1;
+    }
+    if check and changed > 0 {
+        return 1;
+    }
+    return 0;
+}

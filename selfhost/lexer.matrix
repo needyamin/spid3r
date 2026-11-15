@@ -28,6 +28,9 @@ let POS = 0;
 let LINE = 1;
 let COL = 1;
 let DEPTH = 0;
+let RECORD_COMMENTS = false;
+let COMMENTS = [];
+let LAST_TOK_START = 0;
 
 // The lex-time `{expr}` capture validator (parser::hole_is_expression in the
 // oracle), injected by the entry point to avoid an import cycle: the parser
@@ -201,17 +204,36 @@ fn skip_trivia() {
             adv();
         } else if c == 35 and LINE == 1 and COL == 1 and pkat(1) == 33 {
             // shebang: `#!` on the very first line, kept as a comment
+            let (bl, bc) = (LINE, COL);
+            let begin = POS;
             while pk() != -1 and pk() != 10 {
                 adv();
             }
+            if RECORD_COMMENTS {
+                let end = POS;
+                while end > begin and BS[end - 1] == 13 {
+                    end -= 1;
+                }
+                COMMENTS.push([bl, bc, text_between(begin, end)]);
+            }
         } else if c == 47 and pkat(1) == 47 {
             // line comment
+            let (bl, bc) = (LINE, COL);
+            let begin = POS;
             while pk() != -1 and pk() != 10 {
                 adv();
+            }
+            if RECORD_COMMENTS {
+                let end = POS;
+                while end > begin and BS[end - 1] == 13 {
+                    end -= 1;
+                }
+                COMMENTS.push([bl, bc, text_between(begin, end)]);
             }
         } else if c == 47 and pkat(1) == 42 {
             // block comment — the error span points at the opener
             let (bl, bc) = (LINE, COL);
+            let begin = POS;
             adv();
             adv();
             let closed = false;
@@ -229,6 +251,9 @@ fn skip_trivia() {
             if not closed {
                 throw ["unterminated block comment", bl, bc, 2];
             }
+            if RECORD_COMMENTS {
+                COMMENTS.push([bl, bc, text_between(begin, POS)]);
+            }
         } else {
             return;
         }
@@ -241,6 +266,7 @@ fn next_token() {
     skip_trivia();
     let (sl, sc) = (LINE, COL);
     let start = POS;
+    LAST_TOK_START = start;
 
     let c = pk();
     if c == -1 {
@@ -982,6 +1008,9 @@ public fn lex_all_depth(src, depth) {
     LINE = 1;
     COL = 1;
     DEPTH = depth;
+    RECORD_COMMENTS = false;
+    COMMENTS = [];
+    LAST_TOK_START = 0;
     // The oracle skips a UTF-8 BOM without moving line/col.
     if N >= 3 and BS[0] == 239 and BS[1] == 187 and BS[2] == 191 {
         POS = 3;
@@ -996,11 +1025,44 @@ public fn lex_all_depth(src, depth) {
     }
 }
 
+// Lex `src` while recording comments in source order and exact raw token text.
+// Returns [tokens, ranges, comments, raws] matching Rust Lexer::tokenize_with_comments.
+public fn lex_all_with_comments(src) {
+    BS = bytes(src);
+    N = BS.len();
+    POS = 0;
+    LINE = 1;
+    COL = 1;
+    DEPTH = 0;
+    RECORD_COMMENTS = true;
+    COMMENTS = [];
+    LAST_TOK_START = 0;
+    if N >= 3 and BS[0] == 239 and BS[1] == 187 and BS[2] == 191 {
+        POS = 3;
+    }
+    let toks = [];
+    let ranges = [];
+    let raws = [];
+    while true {
+        let t = next_token();
+        let is_eof = t[0] == K_EOF;
+        ranges.push([LAST_TOK_START, POS]);
+        raws.push(text_between(LAST_TOK_START, POS));
+        toks.push(t);
+        if is_eof {
+            RECORD_COMMENTS = false;
+            let saved_comments = COMMENTS;
+            COMMENTS = [];
+            return [toks, ranges, saved_comments, raws];
+        }
+    }
+}
+
 // Save/restore of the scanner state, for the hole validator's re-entrant
 // sub-lex: the check runs DURING a lex (inside try_interp_expr) on the same
 // globals. The parser's hole_check wraps its sub-lex with these.
 public fn lex_save() {
-    return [BS, N, POS, LINE, COL, DEPTH, ESC];
+    return [BS, N, POS, LINE, COL, DEPTH, ESC, RECORD_COMMENTS, COMMENTS, LAST_TOK_START];
 }
 
 public fn lex_restore(save) {
@@ -1011,4 +1073,7 @@ public fn lex_restore(save) {
     COL = save[4];
     DEPTH = save[5];
     ESC = save[6];
+    RECORD_COMMENTS = save[7];
+    COMMENTS = save[8];
+    LAST_TOK_START = save[9];
 }

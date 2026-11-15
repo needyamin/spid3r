@@ -1,0 +1,537 @@
+// selfhost/test_runner.matrix — self-hosted `spid3r test` driver (Phase 8.1, SH-3).
+//
+// Port of src/cli.rs::cmd_test / project_test_in / parse_test_args:
+//   * `--filter SUBSTR` / `-f SUBSTR`, `--list`
+//   * In repo root (`examples/`): checks library modules (no `fn main` in AST)
+//     via `semantic` + runs runnable programs across `tree`, `vm`, and `exec`
+//     (compiling `.matrixc` with `selfhost/vmc` + `bytecode_matrix` and invoking
+//     the Stage-0 oracle for engine execution).
+//   * In a package/workspace (`spider.toml` when `examples/` is absent): runs
+//     `tests/*.matrix` in each directory (`tree == vm`, or library check).
+
+import "token";
+import "lexer";
+import "ast";
+import "parser";
+import "semantic";
+import "lower";
+import "vmc";
+import "bytecode_matrix";
+
+fn tst_str_contains(hay, needle) {
+    if needle == "" {
+        return true;
+    }
+    let hl = hay.len();
+    let nl = needle.len();
+    if nl > hl {
+        return false;
+    }
+    let i = 0;
+    while i <= hl - nl {
+        if hay.slice(i, i + nl) == needle {
+            return true;
+        }
+        i += 1;
+    }
+    return false;
+}
+
+fn tst_cwd() {
+    let r = cwd();
+    if r.is_ok() {
+        return r.unwrap();
+    }
+    return ".";
+}
+
+fn tst_path_sep() {
+    let c = tst_cwd();
+    if tst_str_contains(c, "\\") {
+        return "\\";
+    }
+    return "/";
+}
+
+fn tst_is_abs(p) {
+    if p.len() >= 1 and (p[0] == "/" or p[0] == "\\") {
+        return true;
+    }
+    if p.len() >= 3 and p[1] == ":" and (p[2] == "/" or p[2] == "\\") {
+        return true;
+    }
+    return false;
+}
+
+fn tst_abs_path(p) {
+    if tst_is_abs(p) {
+        return p;
+    }
+    let cur = tst_cwd();
+    let sep = tst_path_sep();
+    if cur.len() > 0 and (cur[cur.len() - 1] == "/" or cur[cur.len() - 1] == "\\") {
+        return cur + p;
+    }
+    return cur + sep + p;
+}
+
+fn tst_temp_dir() {
+    let vars = ["TMPDIR", "TEMP", "TMP"];
+    for v in vars {
+        let e = env(v);
+        if e.is_some() {
+            let val = e.unwrap();
+            if val != "" {
+                return val;
+            }
+        }
+    }
+    if tst_path_sep() == "\\" {
+        return ".";
+    }
+    return "/tmp";
+}
+
+fn tst_join_path(dir, name) {
+    let sep = tst_path_sep();
+    if dir == "" or dir == "." {
+        return name;
+    }
+    let last = dir[dir.len() - 1];
+    if last == "/" or last == "\\" {
+        return dir + name;
+    }
+    return dir + sep + name;
+}
+
+fn tst_find_oracle() {
+    let env_keys = ["SPID3R_ORACLE", "SPID3R_BIN"];
+    for k in env_keys {
+        let v = env(k);
+        if v.is_some() {
+            let p = v.unwrap();
+            if p != "" and is_file(p) {
+                return tst_abs_path(p);
+            }
+        }
+    }
+    let candidates = [
+        "target/debug/spid3r.exe",
+        "target/release/spid3r.exe",
+        "target/debug/spid3r",
+        "target/release/spid3r"
+    ];
+    for c in candidates {
+        if is_file(c) {
+            return tst_abs_path(c);
+        }
+    }
+    return "spid3r";
+}
+
+fn tst_ends_with_matrix(name) {
+    if name.len() <= 7 {
+        return false;
+    }
+    return name.slice(name.len() - 7, name.len()) == ".matrix";
+}
+
+fn tst_stem(name) {
+    if tst_ends_with_matrix(name) {
+        return name.slice(0, name.len() - 7);
+    }
+    return name;
+}
+
+fn tst_selected(filter, file_name) {
+    if filter == null {
+        return true;
+    }
+    return tst_str_contains(tst_stem(file_name), filter);
+}
+
+fn tst_sanitize_name(name) {
+    let parts = [];
+    let i = 0;
+    while i < name.len() {
+        let ch = name[i];
+        if ch == "." or ch == "/" or ch == "\\" or ch == ":" {
+            parts.push("_");
+        } else {
+            parts.push(ch);
+        }
+        i += 1;
+    }
+    return parts.join("");
+}
+
+fn tst_err_msg(e) {
+    try {
+        let _ = e[1] + 0;
+        return msg_of(e);
+    } catch (ignored) {
+        return string(e);
+    }
+}
+
+fn tst_has_main_fn(path) {
+    let r = read_file(path);
+    if r.is_err() {
+        return false;
+    }
+    try {
+        let toks = lex_all(r.unwrap());
+        let st = new_state(toks);
+        let prog = parse_program(st);
+        for s in prog[0] {
+            if s[0] == "Fn" and s[1][4] == "main" {
+                return true;
+            }
+        }
+        return false;
+    } catch (ignored) {
+        return false;
+    }
+}
+
+fn tst_check_library(path) {
+    let r = read_file(path);
+    if r.is_err() {
+        return [false, "cannot read '" + path + "'"];
+    }
+    try {
+        let toks = lex_all(r.unwrap());
+        let st = new_state(toks);
+        let prog = parse_program(st);
+        let cst = new_checker(false, path);
+        check_program(cst, prog);
+        println(path + ": ok");
+        return [true, ""];
+    } catch (e) {
+        return [false, tst_err_msg(e)];
+    }
+}
+
+fn tst_compile_matrixc(path, out_tc) {
+    let r = read_file(path);
+    if r.is_err() {
+        return [false, "cannot read '" + path + "'"];
+    }
+    try {
+        let toks = lex_all(r.unwrap());
+        let st = new_state(toks);
+        let prog = parse_program(st);
+        let has_main_c = false;
+        for s in prog[0] {
+            if s[0] == "Fn" and s[1][4] == "main" {
+                has_main_c = true;
+            }
+        }
+        let cst = new_checker(has_main_c, path);
+        check_program(cst, prog);
+        let lst = new_lower();
+        let lowered = lower_program(lst, prog);
+        let embedded = [];
+        let keys = map();
+        let in_progress = [path];
+        let fr = compile_one(cst, lowered, path, embedded, keys, in_progress, true);
+        let func = make_vmfunc(fr);
+        let bytes_out = serialize_vmfunc(func);
+        let wb = write_bytes(out_tc, bytes_from_ints(bytes_out));
+        if wb.is_err() {
+            return [false, "cannot write '" + out_tc + "'"];
+        }
+        return [true, ""];
+    } catch (e) {
+        return [false, tst_err_msg(e)];
+    }
+}
+
+fn tst_run_engine(oracle, argv) {
+    let res = exec_capture(oracle, argv, null);
+    if res.is_err() {
+        return [false, string(res)];
+    }
+    let m = res.unwrap();
+    if m["code"] == 0 {
+        return [true, m["stdout"]];
+    }
+    return [false, m["stderr"]];
+}
+
+// Parse top-level or [workspace] `members = ["a", "b"]` from spider.toml.
+fn tst_parse_members(toml_src) {
+    let lines = toml_src.split("\n");
+    let collecting = false;
+    let buf = [];
+    for raw in lines {
+        let ln = raw.trim();
+        if not collecting {
+            if ln.len() >= 7 and ln.slice(0, 7) == "members" {
+                let eq = -1;
+                let k = 0;
+                while k < ln.len() {
+                    if ln[k] == "=" {
+                        eq = k;
+                        break;
+                    }
+                    k += 1;
+                }
+                if eq >= 0 {
+                    let rhs = ln.slice(eq + 1, ln.len()).trim();
+                    buf.push(rhs);
+                    if tst_str_contains(rhs, "]") {
+                        break;
+                    }
+                    collecting = true;
+                }
+            }
+        } else {
+            buf.push(ln);
+            if tst_str_contains(ln, "]") {
+                break;
+            }
+        }
+    }
+    if buf.len() == 0 {
+        return [];
+    }
+    let joined = buf.join(" ");
+    let members = [];
+    let i = 0;
+    while i < joined.len() {
+        if joined[i] == "\"" or joined[i] == "'" {
+            let q = joined[i];
+            i += 1;
+            let start = i;
+            while i < joined.len() and joined[i] != q {
+                i += 1;
+            }
+            if i > start {
+                members.push(joined.slice(start, i));
+            }
+        }
+        i += 1;
+    }
+    return members;
+}
+
+fn tst_run_project_dir(dir, oracle, filter, list_only) {
+    let tests_dir = tst_join_path(dir, "tests");
+    if not is_dir(tests_dir) {
+        println("no tests/ directory in this project — nothing to run");
+        return [0, 0, true];
+    }
+    let rd = list_dir(tests_dir);
+    if rd.is_err() {
+        eprint("error[usage]: cannot read tests/\n");
+        return [0, 0, false];
+    }
+    let files = [];
+    for name in rd.unwrap() {
+        let p = tst_join_path(tests_dir, name);
+        if tst_ends_with_matrix(name) and tst_selected(filter, name) {
+            files.push([name, p]);
+        }
+    }
+    if list_only {
+        for pair in files {
+            println(pair[1]);
+        }
+        return [0, 0, true];
+    }
+    let saved = tst_cwd();
+    let ok = 0;
+    let failed = 0;
+    for pair in files {
+        let name = pair[0];
+        let p = pair[1];
+        let abs_p = tst_abs_path(p);
+        let is_prog = tst_has_main_fn(p);
+        let passed = false;
+        let err_msg = "";
+        if is_prog {
+            let ch = chdir(dir);
+            if ch.is_err() {
+                err_msg = "cannot enter " + dir;
+            } else {
+                let tr = tst_run_engine(oracle, ["run", "--engine", "tree", abs_p]);
+                let vm = tst_run_engine(oracle, ["run", "--engine", "vm", abs_p]);
+                let _ = chdir(saved);
+                if tr[0] and vm[0] {
+                    if tr[1] == vm[1] {
+                        passed = true;
+                    } else {
+                        err_msg = "outputs differ:\n--- tree ---\n" + tr[1] + "\n--- vm ---\n" + vm[1];
+                    }
+                } else if (not tr[0]) and (not vm[0]) {
+                    err_msg = "both engines failed:\n--- tree ---\n" + tr[1] + "\n--- vm ---\n" + vm[1];
+                } else {
+                    err_msg = "an engine failed: tree_ok=" + string(tr[0]) + ", vm_ok=" + string(vm[0]);
+                }
+            }
+        } else {
+            let ch = chdir(dir);
+            let chk = tst_check_library(abs_p);
+            let _ = chdir(saved);
+            passed = chk[0];
+            err_msg = chk[1];
+        }
+        if passed {
+            if is_prog {
+                println("ok   tests/" + name + " (tree==vm)");
+            } else {
+                println("ok   tests/" + name + " (library: checked)");
+            }
+            ok += 1;
+        } else {
+            println("FAIL tests/" + name + ": " + err_msg);
+            failed += 1;
+        }
+    }
+    return [ok, failed, true];
+}
+
+public fn run_test_cli(argv) {
+    let filter = null;
+    let list_only = false;
+    let i = 0;
+    while i < argv.len() {
+        let arg = argv[i];
+        if arg == "--filter" or arg == "-f" {
+            i += 1;
+            if i >= argv.len() {
+                eprint("error[usage]: usage error: --filter needs a substring to match\n");
+                return 2;
+            }
+            filter = argv[i];
+        } else if arg == "--list" {
+            list_only = true;
+        } else {
+            eprint("error[usage]: usage error: test: unknown argument '" + arg + "' (supported: --filter SUBSTR, --list)\n");
+            return 2;
+        }
+        i += 1;
+    }
+
+    let oracle = tst_find_oracle();
+
+    if not is_dir("examples") {
+        if is_file("spider.toml") {
+            let rt = read_file("spider.toml");
+            if rt.is_err() {
+                eprint("error[usage]: cannot read spider.toml\n");
+                return 2;
+            }
+            let members = tst_parse_members(rt.unwrap());
+            let total_ok = 0;
+            let total_failed = 0;
+            if members.len() == 0 {
+                let res = tst_run_project_dir(".", oracle, filter, list_only);
+                if not res[2] {
+                    return 2;
+                }
+                if list_only {
+                    return 0;
+                }
+                total_ok = res[0];
+                total_failed = res[1];
+            } else {
+                for m in members {
+                    if not list_only {
+                        println("== member " + m + " ==");
+                    }
+                    let res = tst_run_project_dir(m, oracle, filter, list_only);
+                    if not res[2] {
+                        return 2;
+                    }
+                    if not list_only {
+                        println("member " + m + ": " + string(res[0]) + " ok, " + string(res[1]) + " failed");
+                        total_ok += res[0];
+                        total_failed += res[1];
+                    }
+                }
+                if list_only {
+                    return 0;
+                }
+            }
+            println(string(total_ok) + " ok, " + string(total_failed) + " failed");
+            if total_failed == 0 {
+                return 0;
+            }
+            return 1;
+        }
+        eprint("error[parser]: no examples/ directory here; run spid3r test from the project root\n");
+        return 1;
+    }
+
+    let rd = list_dir("examples");
+    if rd.is_err() {
+        eprint("error[usage]: cannot read examples/\n");
+        return 2;
+    }
+    let sep = tst_path_sep();
+    let files = [];
+    for name in rd.unwrap() {
+        if tst_ends_with_matrix(name) and tst_selected(filter, name) {
+            files.push([name, "examples" + sep + name]);
+        }
+    }
+    if list_only {
+        for pair in files {
+            println(pair[1]);
+        }
+        return 0;
+    }
+
+    let tmp_dir = tst_temp_dir();
+    let ok = 0;
+    let failed = 0;
+    for pair in files {
+        let name = pair[0];
+        let path = pair[1];
+        let is_prog = tst_has_main_fn(path);
+        let passed = false;
+        let err_msg = "";
+        if is_prog {
+            let tr = tst_run_engine(oracle, ["run", "--engine", "tree", path]);
+            let vm = tst_run_engine(oracle, ["run", "--engine", "vm", path]);
+            let tc = tst_join_path(tmp_dir, "spid3r_test_" + tst_sanitize_name(name) + ".matrixc");
+            let comp = tst_compile_matrixc(path, tc);
+            let ex = [false, comp[1]];
+            if comp[0] {
+                ex = tst_run_engine(oracle, ["exec", tc]);
+            }
+            let _ = file_delete(tc);
+            if tr[0] and vm[0] and ex[0] {
+                if tr[1] == vm[1] and vm[1] == ex[1] {
+                    passed = true;
+                } else {
+                    err_msg = "outputs differ:\n--- tree ---\n" + tr[1] + "\n--- vm ---\n" + vm[1] + "\n--- exec ---\n" + ex[1];
+                }
+            } else {
+                err_msg = "an engine failed: tree_ok=" + string(tr[0]) + ", vm_ok=" + string(vm[0]) + ", exec_ok=" + string(ex[0]);
+            }
+        } else {
+            let chk = tst_check_library(path);
+            passed = chk[0];
+            err_msg = chk[1];
+        }
+        if passed {
+            if is_prog {
+                println("ok   " + name + " (tree==vm==exec)");
+            } else {
+                println("ok   " + name + " (library: checked)");
+            }
+            ok += 1;
+        } else {
+            println("FAIL " + name + ": " + err_msg);
+            failed += 1;
+        }
+    }
+    println(string(ok) + " ok, " + string(failed) + " failed");
+    if failed == 0 {
+        return 0;
+    }
+    return 1;
+}
