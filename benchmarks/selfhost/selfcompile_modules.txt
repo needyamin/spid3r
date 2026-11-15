@@ -1,0 +1,17 @@
+selfhost/ast.matrix
+selfhost/bytecode_matrix.matrix
+selfhost/codegen.matrix
+selfhost/flatten.matrix
+selfhost/fmt.matrix
+selfhost/lexer.matrix
+selfhost/lexer_json.matrix
+selfhost/link.matrix
+selfhost/llvm.matrix
+selfhost/lower.matrix
+selfhost/main.matrix
+selfhost/parser.matrix
+selfhost/pkg.matrix
+selfhost/semantic.matrix
+selfhost/test_runner.matrix
+selfhost/token.matrix
+selfhost/vmc.matrix

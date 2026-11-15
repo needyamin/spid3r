@@ -309,7 +309,324 @@ CSS = """
 """
 
 
-def render(data, names, desc, iters, floors):
+def _p1_metric(entry):
+    if not entry:
+        return None
+    if entry.get("low_confidence") and entry.get("internal_compute_median_ms") is not None:
+        return {
+            "ms": entry["internal_compute_median_ms"],
+            "mad_pct": entry["internal_mad_over_median_pct"],
+            "agree_pct": entry["median_agreement_pct"],
+            "basis": "internal hr",
+            "ext_ms": entry["passes"][0]["compute"]["median"],
+            "share_pct": (entry.get("startup_share") or 0.0) * 100.0,
+            "verdict": entry.get("verdict", ""),
+        }
+    p0 = entry["passes"][0]
+    return {
+        "ms": p0["compute"]["median"],
+        "mad_pct": p0["compute"]["mad_over_median"] * 100.0,
+        "agree_pct": entry["median_agreement_pct"],
+        "basis": "external",
+        "ext_ms": p0["compute"]["median"],
+        "share_pct": (entry.get("startup_share") or 0.0) * 100.0,
+        "verdict": entry.get("verdict", ""),
+    }
+
+
+def _render_p1_section(ref_p1, sec_num="04"):
+    if not ref_p1 or not ref_p1.get("workloads"):
+        return ""
+    wl = ref_p1["workloads"]
+    st = ref_p1.get("startup_engine_ms") or {}
+    tc = ref_p1.get("toolchain") or {}
+    host = ref_p1.get("host") or {}
+    verdict = ref_p1.get("verdict") or {}
+    rows_summary = []
+    rows_stats = []
+    engine_labels = [
+        ("vm", "Spid3r VM"),
+        ("native", "Spid3r native (AOT)"),
+        ("node", f"Node.js ({esc(str(tc.get('node') or 'node'))})"),
+        ("rust", f"Rust -O ({esc(str((tc.get('rustc') or 'rustc').split('(')[0].strip()))})"),
+    ]
+    for w in ("prime", "json", "map"):
+        if w not in wl:
+            continue
+        metrics = {k: _p1_metric(wl[w].get(k)) for k, _ in engine_labels}
+        def cell(m):
+            if not m:
+                return '<td class="dim">&mdash;</td>'
+            return f'<td class="mono">{m["ms"]:.2f}&nbsp;ms<small class="dim">{m["mad_pct"]:.2f}% MAD / {m["agree_pct"]:.2f}% ag</small></td>'
+        nat = metrics.get("native")
+        vm_m = metrics.get("vm")
+        nd = metrics.get("node")
+        nat_vm = f'{(vm_m["ms"] / nat["ms"]):.2f}&times;' if (nat and vm_m and nat["ms"] > 0) else "&mdash;"
+        nat_node = f'{(nat["ms"] / nd["ms"]):.2f}&times; slower' if (nat and nd and nd["ms"] > 0) else "&mdash;"
+        rows_summary.append(
+            f"""<tr>
+          <td class="name"><code>{esc(w)}</code></td>
+          {cell(vm_m)}
+          {cell(nat)}
+          {cell(nd)}
+          {cell(metrics.get("rust"))}
+          <td class="mono">{nat_vm}</td>
+          <td class="mono">{nat_node}</td>
+        </tr>"""
+        )
+        for key, label in engine_labels:
+            m = metrics.get(key)
+            if not m:
+                continue
+            badge_cls = "pass" if m["verdict"] == "PASS" else "fail"
+            rows_stats.append(
+                f"""<tr>
+          <td class="mono">{esc(w)}</td>
+          <td class="name">{label}</td>
+          <td class="mono">{esc(m["basis"])}</td>
+          <td class="mono">{m["ms"]:.3f}&nbsp;ms</td>
+          <td class="mono">{m["share_pct"]:.1f}%</td>
+          <td class="mono">{m["mad_pct"]:.2f}%</td>
+          <td class="mono">{m["agree_pct"]:.2f}%</td>
+          <td><span class="badge {badge_cls}">{esc(m["verdict"])}</span></td>
+        </tr>"""
+            )
+
+    return f"""
+    <h2><span class="num">{sec_num}</span>Phase 11 P-1: Native AOT &amp; Node.js / Rust reference</h2>
+    <p class="section-lead">
+      Cross-language compute comparison on identical checksum-pinned workloads (<code>benchmarks/compare/{{prime,json,map}}</code>)
+      under the Phase 0 protocol (9 warmups, 21 measured repeats, 2 passes, MAD&divide;median &le; 5%, two-pass agreement &le; 3%,
+      blocking 5% sensitivity self-test <code>{'PASS' if verdict.get('selftest_pass') else 'FAIL'}</code>). Raw artifact:
+      <code>benchmarks/reference.p1.json</code> ({esc(str(verdict.get('status', '')))}).
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Workload</th>
+            <th>Spid3r VM</th>
+            <th>Spid3r native</th>
+            <th>Node.js</th>
+            <th>Rust (-O)</th>
+            <th>Native vs VM</th>
+            <th>Native vs Node</th>
+          </tr>
+        </thead>
+        <tbody>
+        {''.join(rows_summary)}
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <b>Startup calibration &amp; metric basis:</b> measured empty-program startups on {esc(str(host.get('cpu', '')))}:
+      Spid3r VM {st.get('vm', 0):.2f}&nbsp;ms, Spid3r native-exe {st.get('native-exe', 0):.2f}&nbsp;ms,
+      Node.js {st.get('node', 0):.2f}&nbsp;ms, Rust-exe {st.get('rust-exe', 0):.2f}&nbsp;ms.
+      Spid3r variants use external <code>wall_ms &minus; startup_baseline_ms</code> exclusively.
+      Where process spawn is &gt;50% of wall time for fast reference runs ({_p1_share_note(wl)}),
+      the table reports high-resolution internal timers (<code>process.hrtime.bigint()</code> / <code>Instant::now()</code>)
+      as the stable compute metric while retaining external subtraction in the JSON log.
+      {_p1_ratio_note(wl)}
+    </div>
+    <details>
+      <summary>Per-engine dispersion and two-pass agreement ledger (Phase 11 P-1)</summary>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th>Workload</th>
+              <th>Engine</th>
+              <th>Metric basis</th>
+              <th>Median</th>
+              <th>Ext startup share</th>
+              <th>MAD/med (&le;5%)</th>
+              <th>2-pass (&le;3%)</th>
+              <th>Gate</th>
+            </tr>
+          </thead>
+          <tbody>
+          {''.join(rows_stats)}
+          </tbody>
+        </table>
+      </div>
+    </details>
+"""
+
+
+def _p1_ratio_note(wl):
+    try:
+        pr = wl["prime"]
+        nat_m = _p1_metric(pr.get("native"))
+        nd_m = _p1_metric(pr.get("node"))
+        rs_m = _p1_metric(pr.get("rust"))
+        nat_ms = f'{nat_m["ms"]:.2f}&nbsp;ms' if nat_m else "n/a"
+        parts = []
+        if nat_m and nd_m and nd_m["ms"] > 0:
+            parts.append(f'{nat_m["ms"] / nd_m["ms"]:.2f}&times; slower than Node')
+        if nat_m and rs_m and rs_m["ms"] > 0:
+            parts.append(f'{nat_m["ms"] / rs_m["ms"]:.2f}&times; slower than Rust')
+        return f'On <code>prime</code>, Spid3r native ({nat_ms}) is {" and ".join(parts)} &mdash; Phase 11 P-2..P-9 targets this gap.'
+    except Exception:
+        return "Phase 11 P-2..P-9 targets the remaining native loop and allocation gap."
+
+
+def _p1_share_note(wl):
+    node_shares = [
+        (wl[w]["node"].get("startup_share") or 0.0) * 100.0
+        for w in ("prime", "json", "map") if w in wl and "node" in wl[w]
+    ]
+    rust_shares = [
+        (wl[w]["rust"].get("startup_share") or 0.0) * 100.0
+        for w in ("prime", "json", "map") if w in wl and "rust" in wl[w]
+    ]
+    n_txt = f"{min(node_shares):.1f}&ndash;{max(node_shares):.1f}%" if node_shares else "n/a"
+    r_txt = f"{rust_shares[0]:.1f}%" if len(rust_shares) == 1 else (
+        f"{min(rust_shares):.1f}&ndash;{max(rust_shares):.1f}%" if rust_shares else "n/a"
+    )
+    return f"Node {n_txt}, Rust {r_txt}"
+
+
+def _p2_rate(name, info, stage_dict):
+    if not stage_dict:
+        return "&mdash;"
+    if name in ("lex", "self_compile"):
+        val = stage_dict.get("compute_mb_s")
+        return f"{val:.3f}&nbsp;MB/s" if val is not None else "&mdash;"
+    if name in ("parse", "check"):
+        val = stage_dict.get("programs_per_s")
+        return f"{val:.1f}&nbsp;prog/s" if val is not None else "&mdash;"
+    if name == "corpus_build":
+        val = stage_dict.get("median_ms")
+        pps = stage_dict.get("programs_per_s")
+        if val is not None and pps is not None:
+            return f"{val:.1f}&nbsp;ms ({pps:.2f}/s)"
+        return f"{val:.1f}&nbsp;ms" if val is not None else "&mdash;"
+    return "&mdash;"
+
+
+def _p2_floor(name, t):
+    if not t:
+        return "&mdash;"
+    if "tier_a_floor_mb_s" in t:
+        return f"&ge;&nbsp;{t['tier_a_floor_mb_s']:.3f}&nbsp;MB/s"
+    if "tier_a_floor_programs_s" in t:
+        return f"&ge;&nbsp;{t['tier_a_floor_programs_s']:.1f}&nbsp;prog/s"
+    if "tier_a_max_batch_ms" in t:
+        return f"&le;&nbsp;{t['tier_a_max_batch_ms']:.1f}&nbsp;ms"
+    return "&mdash;"
+
+
+def _render_p2_section(ref_p2, sec_num="05"):
+    if not ref_p2 or "workloads" not in ref_p2:
+        return ""
+    wl = ref_p2["workloads"]
+    tg = ref_p2.get("targets", {})
+    verdict = ref_p2.get("verdict", {})
+    pin = ref_p2.get("fairness", {}).get("cpu_pinning", {})
+    labels = {
+        "lex": ("Lexer", "1.02 MB positive corpus"),
+        "parse": ("Parser", "121 corpus files"),
+        "check": ("Semantic checker", "121 corpus files"),
+        "self_compile": ("Self-compile", "17 modules / 585 KB"),
+        "corpus_build": ("Corpus build", "6 standalone examples"),
+    }
+    rows_summary = []
+    rows_stats = []
+    for w in ("lex", "parse", "check", "self_compile", "corpus_build"):
+        entry = wl.get(w)
+        if not entry:
+            continue
+        title, sub = labels.get(w, (w, ""))
+        s0 = entry.get("stage0", {})
+        s1 = entry.get("selfhost", {})
+        if w == "corpus_build":
+            ratio = entry.get("selfhost_vs_stage0_time")
+            ratio_txt = f"{ratio:.2f}&times; slower" if ratio else "&mdash;"
+        else:
+            ratio = entry.get("selfhost_vs_stage0")
+            ratio_txt = (
+                f"{ratio:.3f}&times; Stage 0" if ratio else "&mdash;"
+            )
+        rows_summary.append(
+            f"""<tr>
+          <td class="name">{esc(title)}<small>{esc(sub)}</small></td>
+          <td class="mono">{_p2_rate(w, entry, s0)}<small>{s0.get('median_ms', 0):.1f}&nbsp;ms</small></td>
+          <td class="mono">{_p2_rate(w, entry, s1)}<small>{s1.get('median_ms', 0):.1f}&nbsp;ms</small></td>
+          <td class="mono">{ratio_txt}</td>
+          <td class="mono">{_p2_floor(w, tg.get(w))}</td>
+        </tr>"""
+        )
+        for st_key, st_label in (("stage0", "Stage 0 (Rust)"), ("selfhost", "Selfhost (AOT)")):
+            sd = entry.get(st_key, {})
+            if not sd:
+                continue
+            v_str = sd.get("verdict", "")
+            badge_cls = "pass" if v_str == "PASS" else "fail"
+            rows_stats.append(
+                f"""<tr>
+          <td class="mono">{esc(w)}</td>
+          <td class="name">{st_label}</td>
+          <td class="mono">{sd.get('median_ms', 0):.2f}&nbsp;ms</td>
+          <td class="mono">{sd.get('mad_over_median_pct', 0):.2f}%</td>
+          <td class="mono">{sd.get('median_agreement_pct', 0):.2f}%</td>
+          <td><span class="badge {badge_cls}">{esc(v_str)}</span></td>
+        </tr>"""
+            )
+    if not rows_summary:
+        return ""
+    core_id = pin.get("requested_core", pin.get("core"))
+    core_note = f", core {core_id}" if pin.get("pinned") and core_id is not None else ""
+    return f"""
+    <h2><span class="num">{sec_num}</span>Phase 11 P-2: Selfhost toolchain throughput baselines</h2>
+    <p class="section-lead">
+      Frozen Stage-0 (Rust) vs selfhost (Stage-1 AOT <code>--release</code>) compiler throughput across checksummed
+      workloads in <code>benchmarks/selfhost/</code> under the Phase 0 protocol (9 warmups, 21 measured repeats, 2 passes,
+      MAD&divide;median &le; 5%, two-pass agreement &le; 3%{esc(core_note)}; blocking 5% sensitivity self-test
+      <code>{'PASS' if verdict.get('selftest_pass') else 'FAIL'}</code>, numeric band
+      <code>{esc(str(verdict.get('numeric_band', '')))}</code>). Raw artifact:
+      <code>benchmarks/selfhost/baseline.json</code> ({esc(str(verdict.get('status', '')))}).
+      Phase 1&ndash;7 gates read their Tier-A floors directly from this table.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Stage</th>
+            <th>Stage 0 (Rust)</th>
+            <th>Selfhost (AOT)</th>
+            <th>Selfhost vs Stage 0</th>
+            <th>Tier-A floor (&minus;20%)</th>
+          </tr>
+        </thead>
+        <tbody>
+        {''.join(rows_summary)}
+        </tbody>
+      </table>
+    </div>
+    <details>
+      <summary>Per-stage dispersion and two-pass agreement ledger (Phase 11 P-2)</summary>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th>Workload</th>
+              <th>Compiler</th>
+              <th>Median compute</th>
+              <th>MAD/med (&le;5%)</th>
+              <th>2-pass (&le;3%)</th>
+              <th>Gate</th>
+            </tr>
+          </thead>
+          <tbody>
+          {''.join(rows_stats)}
+          </tbody>
+        </table>
+      </div>
+    </details>
+"""
+
+
+def render(data, names, desc, iters, floors, ref_p1=None, ref_p2=None):
     vm = data["vm"]
     tree = data["tree"]
     php = data["php"]
@@ -394,6 +711,12 @@ def render(data, names, desc, iters, floors):
             f"these workloads takes to run &mdash; so its wall-clock column is essentially a measurement of "
             f"startup. See the startup-adjusted table below."
         )
+
+    p1_section = _render_p1_section(ref_p1, sec_num="04")
+    p2_sec_num = "05" if p1_section else "04"
+    p2_section = _render_p2_section(ref_p2, sec_num=p2_sec_num)
+    sec_idx = 4 + (1 if p1_section else 0) + (1 if p2_section else 0)
+    method_sec = f"{sec_idx:02d}"
 
     chart = lang_bars(chart_rows, [("spid3r", "Spid3r", "spid3r"), ("php", "PHP", "php"), ("python", "Python", "python")])
 
@@ -590,8 +913,9 @@ def render(data, names, desc, iters, floors):
     </div>
     {chart}
     <p class="dim" style="text-align:center">Startup-adjusted compute time, log scale &mdash; shorter is faster.</p>
-
-    <h2><span class="num">04</span>Method and caveats</h2>
+    {p1_section}
+    {p2_section}
+    <h2><span class="num">{method_sec}</span>Method and caveats</h2>
     <ul>
       <li><b>One process per run.</b> Each sample is a fresh OS process; the harness takes the best of N.
         Nothing is warmed up across runs, so JIT-less runtimes are not penalised by a cold-start handicap

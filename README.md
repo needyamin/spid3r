@@ -101,19 +101,20 @@ By default a program runs with the full authority of the user who started it. `s
 
 ![Automated CI, multi-platform release, and libfuzzer workflows](docs/diagrams/workflows.svg)
 
-Every commit and tag is gated through GitHub Actions workflows: a 3-platform differential CI matrix (core, webview GUI, WebAssembly runtime, and LLVM 23 native AOT), automated multi-architecture releases (Linux glibc/ARM64, macOS Apple Silicon/Intel, and the full Windows NSIS installer), and nightly continuous libfuzzer regression testing.
+Every commit and tag is gated through GitHub Actions workflows: a 6-job differential CI matrix (core, webview GUI, WebAssembly runtime & docs, LLVM 23 native AOT + Linux self-host bootstrap, Phase 0 measurement gates, and the 134-program frozen-corpus self-host parity gate), automated self-hosted multi-architecture releases (Linux glibc/ARM64 tarballs, macOS Apple Silicon/Intel tarballs, SHA-256-pinned runtime archives, and the Windows NSIS installer packaging `spid3r-self`), and scheduled/PR libfuzzer regression testing.
 
 ## What's inside
 
 | Aspect | Detail |
 |---|---|
-| **Implementation** | 88,054 lines of Rust · zero dependencies in the core (`--no-default-features`) |
-| **Engines** | tree · bytecode VM · LLVM AOT · WebAssembly |
+| **Implementation** | 100,099 lines of Rust (`src/`) · zero dependencies in the core (`--no-default-features`) |
+| **Engines** | tree · bytecode VM · LLVM 23 AOT · WebAssembly |
 | **Bytecode** | 60 opcodes · serialized `.matrixc` format |
-| **Standard library** | 29 modules, compiled into the binary |
-| **Tests** | 1,210 tests · three-engine differential |
-| **Self-hosting** | the compiler's front end, LLVM-C codegen and build driver ported to Spid3r (`selfhost/`) — builds the frozen corpus identically to the Rust oracle ([SELFHOST.md](docs/SELFHOST.md)) |
-| **Binary** | one ~13 MB file · static CRT · runs with no installed runtime |
+| **Standard library** | 29 `.matrix` modules + built-in natives, compiled into the binary |
+| **Tests** | 1,354 tests (`1,329` core · `13` GUI · `12` native AOT) · three-engine differential |
+| **Self-hosting** | 17-module Spid3r compiler & dev tools (`selfhost/` — front end, `.matrixc`, LLVM-C codegen, linker, `test`, `fmt`, `pack`/`verify`/`dist`) with Stage 1 → Stage 2 → Stage 3 COFF fixed point, pinned runtime ABI, and frozen-corpus parity ([SELFHOST.md](docs/SELFHOST.md) · [SELFHOST_RETIREMENT.md](docs/SELFHOST_RETIREMENT.md)) |
+| **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput baselines ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
+| **Binary** | one ~13 MB core file (or self-hosted `spid3r-self` + `spid3r`) · static CRT · runs with no installed runtime |
 
 ## The language
 
@@ -149,7 +150,7 @@ curl -fsSL https://raw.githubusercontent.com/needyamin/spid3r/main/install.sh | 
 cargo install --path . --no-default-features
 ```
 
-**Windows:** run `Spid3r-Setup-<version>.exe` from the latest release.
+**Windows:** run `Spid3r-Setup-<version>.exe` from the latest release (installs `spid3r-self`, `spid3r`, `spid3r-control`, bundled LLVM, and the SHA-256-pinned runtime; `install.sh` installs `spid3r-self` alongside `spid3r` on Linux/macOS).
 
 ## Toolchain
 
@@ -170,7 +171,7 @@ cargo install --path . --no-default-features
 | `spid3r magic <cmd>` | run project-root `magic` framework CLI from any subdirectory |
 | `spid3r compile` · `gui` · `exec` · `bench` | bytecode file, windowed app, script runner, benchmarks |
 | `spid3r disasm app.matrixc` | human-readable bytecode disassembly (exit 4 on a corrupt file) |
-| `spid3r plugin` · `pack` · `unpack` | plugin inspection, tar+sha256 archive, extract |
+| `spid3r plugin` · `pack` · `unpack` · `verify-runtime` | plugin inspection, tar+sha256 archive, extract, runtime ABI/hash check |
 | `spid3r info` · `config` · `agent` · `admin` | build info, settings, management agent |
 | `spid3r config validate` | validate `spid3r.ini`; reports value problems and an explicitly broken `SPID3R_INI` pin (exit 1); unknown flags are usage errors (exit 2) |
 | `spid3r config init [PATH] [--force]` | write a commented default ini; refuses to overwrite an existing file without `--force` (`--help` prints usage instead of writing a file) |
@@ -196,6 +197,7 @@ cargo install --path . --no-default-features
 | Guide | What's in it |
 |---|---|
 | [Developer guide](docs/html/doc.html) | 15-chapter tutorial, API reference, runnable samples |
+| [Benchmarks](docs/html/benchmark.html) · [Selfhost baselines](benchmarks/selfhost/README.md) | gated VM/tree/PHP/Python tables, Phase 11 `P-1` (`VM`, `native`, `Node`, `Rust`) & `P-2` Stage-0 vs selfhost throughput |
 | [Plugin guide](docs/html/plugin.html) · [ABI v1](docs/PLUGIN_ABI.md) | how to write a plugin · the contract, and what forces a v2 |
 | [Playground](docs/html/playground.html) | run Spid3r in the browser |
 | [Grammar](docs/GRAMMAR.md) | EBNF and precedence |
@@ -204,7 +206,7 @@ cargo install --path . --no-default-features
 | [Data structures](docs/DATA_STRUCTURES.md) | all 20+ containers |
 | [Bytecode & VM](docs/BYTECODE.md) | `.matrixc` format, opcodes, scheduler |
 | [Garbage collection](docs/GC.md) | cycle collector design |
-| [Native backend](docs/NATIVE.md) · [FFI](docs/FFI.md) | LLVM AOT · calling C with `extern fn` |
+| [Native backend](docs/NATIVE.md) · [Runtime ABI](docs/RUNTIME_ABI.md) · [FFI](docs/FFI.md) | LLVM AOT · SHA-256 runtime staticlib contract · calling C with `extern fn` |
 | [GUI](docs/GUI.md) · [Embedding](docs/EMBEDDING.md) | desktop apps · Rust host |
 | [Environment](docs/ENVIRONMENT.md) | every `SPID3R_*` knob |
 | [Runtime management](docs/AGENT.md) | `spid3r.ini`, `spid3rinfo()`, the encrypted remote agent |

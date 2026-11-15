@@ -31,6 +31,8 @@ ROOT = Path(__file__).resolve().parent.parent
 BENCH = ROOT / "benchmarks"
 OUT_HTML = ROOT / "docs" / "html" / "benchmark.html"
 OUT_JSON = BENCH / "report-data.json"
+REF_P1_JSON = BENCH / "reference.p1.json"
+REF_P2_JSON = BENCH / "selfhost" / "baseline.json"
 
 # Outer-iteration counts, mirrored from BENCH_ITERS in src/cli.rs so the report
 # can turn a wall time into iters/sec without re-deriving it from the table.
@@ -450,7 +452,9 @@ def main():
     if do_render:
         from bench_report_render import render  # local module, same directory
 
-        html = render(data, BENCH_NAMES, BENCH_DESC, ITERS, FLOORS)
+        ref_p1 = json.loads(REF_P1_JSON.read_text(encoding="utf-8")) if REF_P1_JSON.is_file() else None
+        ref_p2 = json.loads(REF_P2_JSON.read_text(encoding="utf-8")) if REF_P2_JSON.is_file() else None
+        html = render(data, BENCH_NAMES, BENCH_DESC, ITERS, FLOORS, ref_p1=ref_p1, ref_p2=ref_p2)
         OUT_HTML.write_text(html, encoding="utf-8")
         print(f"wrote {OUT_HTML.relative_to(ROOT)} ({len(html):,} bytes)")
 

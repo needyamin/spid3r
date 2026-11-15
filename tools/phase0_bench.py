@@ -67,6 +67,9 @@ ROOT = Path(__file__).resolve().parent.parent
 COMPARE = ROOT / "benchmarks" / "compare"
 RESULTS = ROOT / "benchmarks" / "results.phase0.json"
 CI_RESULTS = ROOT / "benchmarks" / "results.phase0.ci-advisory.json"
+SELFHOST_DIR = ROOT / "benchmarks" / "selfhost"
+SELFHOST_MANIFEST = SELFHOST_DIR / "MANIFEST.sha256"
+SELFHOST_BASELINE = SELFHOST_DIR / "baseline.json"
 
 PINS = {
     "prime": "RESULT 5133 121013308",
@@ -82,6 +85,8 @@ TIME_RE = re.compile(r"^TIME_US [0-9]+$")
 CALIBRATION_ALLOWLIST = {
     "phase0_calibration.matrix": "calibration",
     "phase0_calibration.exe": "calibration",
+    "phase0_calibration.js": "calibration",
+    "phase0_calibration_rs.exe": "calibration",
 }
 
 MAD_GATE = 0.05
@@ -333,10 +338,13 @@ class Session:
         self.cal_path.write_text(committed, encoding="utf-8")
         self.cal_cmd = [binp, "run", "--engine", "vm", str(self.cal_path)]
         self.calibration: list[float] = []
+        self.calibration_by_engine: dict[str, list[float]] = {}
         # Phase 3: the native variant runs a COMPILED calibration program (a
         # native exe of the same zero-work calibration source), so the startup
         # baseline matches the measured binary shape. Built lazily, once.
         self._native_cal: list[str] | None = None
+        self._js_cal: list[str] | None = None
+        self._rust_cal: list[str] | None = None
 
     def native_cal_cmd(self) -> list[str]:
         if self._native_cal is None:
@@ -353,13 +361,47 @@ class Session:
             self._native_cal = [str(exe)]
         return self._native_cal
 
+    def js_cal_cmd(self) -> list[str]:
+        if self._js_cal is None:
+            js_cal = self.tmp / "phase0_calibration.js"
+            js_cal.write_text("", encoding="utf-8")
+            node = shutil.which("node")
+            if not node:
+                raise GateError("node executable not found on PATH")
+            self._js_cal = [node, str(js_cal)]
+        return self._js_cal
+
+    def rust_cal_cmd(self) -> list[str]:
+        if self._rust_cal is None:
+            rs_src = self.tmp / "phase0_calibration_rs.rs"
+            rs_exe = self.tmp / "phase0_calibration_rs.exe"
+            rs_src.write_text("fn main() {}\n", encoding="utf-8")
+            rustc = shutil.which("rustc")
+            if not rustc:
+                raise GateError("rustc executable not found on PATH")
+            b = subprocess.run(
+                [rustc, "-O", str(rs_src), "-o", str(rs_exe)],
+                cwd=ROOT, capture_output=True, text=True, timeout=600,
+            )
+            if b.returncode != 0:
+                raise GateError(
+                    f"rust calibration build failed: {b.stderr.strip()[:200]}"
+                )
+            self._rust_cal = [str(rs_exe)]
+        return self._rust_cal
+
     def calibrate_once(self, engine: str = "vm") -> float:
         if engine == "native-exe":
             cmd = self.native_cal_cmd()
+        elif engine == "node":
+            cmd = self.js_cal_cmd()
+        elif engine == "rust-exe":
+            cmd = self.rust_cal_cmd()
         else:
             cmd = [self.binp, "run", "--engine", engine, str(self.cal_path)]
         r = run_timed(cmd, None, self.timeout, role="calibration")
         self.calibration.append(r["wall_ms"])
+        self.calibration_by_engine.setdefault(engine, []).append(r["wall_ms"])
         return r["wall_ms"]
 
     @property
@@ -454,6 +496,32 @@ def build_commands(session: Session, binp: Path, workloads: list[str],
                 notes.append(f"{w}: native build failed: {built.stderr.strip()[:160]}")
             else:
                 all_v["native"] = [str(exe)]
+        if "node" in variants:
+            js_src = COMPARE / f"{w}.js"
+            node_exe = shutil.which("node")
+            if not js_src.is_file():
+                notes.append(f"{w}: JS reference not found ({js_src.name})")
+            elif not node_exe:
+                notes.append(f"{w}: node not found on PATH")
+            else:
+                all_v["node"] = [node_exe, str(js_src)]
+        if "rust" in variants:
+            rs_src = COMPARE / f"{w}.rs"
+            rustc_exe = shutil.which("rustc")
+            if not rs_src.is_file():
+                notes.append(f"{w}: Rust reference absent ({rs_src.name})")
+            elif not rustc_exe:
+                notes.append(f"{w}: rustc not found on PATH")
+            else:
+                rs_exe = session.tmp / f"{w}_rs.exe"
+                built = subprocess.run(
+                    [rustc_exe, "-O", str(rs_src), "-o", str(rs_exe)],
+                    cwd=ROOT, capture_output=True, text=True, timeout=600,
+                )
+                if built.returncode != 0:
+                    notes.append(f"{w}: rust build failed: {built.stderr.strip()[:160]}")
+                else:
+                    all_v["rust"] = [str(rs_exe)]
         cmds[w] = {v: all_v[v] for v in variants if v in all_v}
     return cmds, notes
 
@@ -474,18 +542,20 @@ def measure_baseline(args) -> dict:
 
     binp = find_binary(args.bin)
     pin = pin_core(args.pin_core)
+
+    # Blocking sensitivity self-test before heavy compiler spawns (builds of
+    # native binaries trigger AV scanning and thermal ramp on Windows).
+    try:
+        import phase0_selftest
+    except ImportError as exc:
+        raise GateError(f"sensitivity self-test module missing: {exc}") from exc
+    selftest = phase0_selftest.run_all(binp, quiet=True)
+
     session = Session(binp, args.timeout)
     try:
         workloads = [w.strip() for w in args.workloads.split(",") if w.strip()]
         variants = [v.strip() for v in args.variants.split(",") if v.strip()]
         cmds, notes = build_commands(session, binp, workloads, variants)
-
-        # Blocking sensitivity self-test, through the SAME stats()/measure path.
-        try:
-            import phase0_selftest
-        except ImportError as exc:
-            raise GateError(f"sensitivity self-test module missing: {exc}") from exc
-        selftest = phase0_selftest.run_all(binp, quiet=True)
 
         data: dict = {
             "schema": "spid3r.phase0/1",
@@ -552,6 +622,10 @@ def measure_baseline(args) -> dict:
                     # binary shape: a compiled calibration exe, not
                     # `spid3r run`.
                     engine = "native-exe"
+                elif v == "node":
+                    engine = "node"
+                elif v == "rust":
+                    engine = "rust-exe"
                 else:
                     engine = "tree" if v == "tree" else "vm"
                 passes = []
@@ -565,35 +639,78 @@ def measure_baseline(args) -> dict:
                                            passes[-1]["compute"]["median"]) if len(passes) > 1 else (0.0, "SINGLE_PASS")
                 mad_ok = all(p["compute"]["mad_over_median"] <= MAD_GATE for p in passes)
                 startup_ok = all(p["startup_mad_ms"] <= STARTUP_MAD_GATE_MS for p in passes)
-                if band == "BLOCK" or not mad_ok or not startup_ok:
+
+                extra_fields = {}
+                eff_rel, eff_band, eff_mad_ok = rel, band, mad_ok
+                if v in ("node", "rust"):
+                    int_passes = [stats([u / 1000.0 for u in p["self_reported_time_us"]]) for p in passes]
+                    int_rel, int_band = agreement_band(
+                        int_passes[0]["median"], int_passes[-1]["median"]
+                    ) if len(int_passes) > 1 else (0.0, "SINGLE_PASS")
+                    int_mad_ok = all(ip["mad_over_median"] <= MAD_GATE for ip in int_passes)
+                    for idx, p in enumerate(passes):
+                        p["internal_compute_ms"] = int_passes[idx]
+                    extra_fields["internal_compute_median_ms"] = round(int_passes[0]["median"], 4)
+                    extra_fields["internal_mad_over_median_pct"] = round(int_passes[0]["mad_over_median"] * 100, 4)
+                    extra_fields["internal_agreement_pct"] = round(int_rel * 100, 4)
+                    extra_fields["internal_numeric_band"] = int_band
+                    extra_fields["internal_mad_ok"] = int_mad_ok
+                    if passes[0]["low_confidence"]:
+                        extra_fields["metric_basis"] = "internal_hr_time_us (external startup_share > 50%)"
+                        eff_rel, eff_band, eff_mad_ok = int_rel, int_band, int_mad_ok
+                    else:
+                        extra_fields["metric_basis"] = "external_compute_ms"
+
+                # When external startup_share > 50% on node/rust, internal
+                # hrtime/Instant metrics do not subtract external startup_ms.
+                eff_startup_ok = True if (v in ("node", "rust") and passes[0]["low_confidence"]) else startup_ok
+                if eff_band == "BLOCK" or not eff_mad_ok or not eff_startup_ok:
                     worst_band = "BLOCK"
-                elif band == "INVALID_RERUN" and worst_band == "PASS":
+                elif eff_band == "INVALID_RERUN" and worst_band == "PASS":
                     worst_band = "INVALID_RERUN"
-                data["workloads"][w][v] = {
+                entry = {
                     "passes": passes,
-                    "median_agreement_pct": round(rel * 100, 4),
-                    "numeric_band": band,
-                    "mad_ok": mad_ok,
+                    "median_agreement_pct": round(eff_rel * 100, 4),
+                    "external_median_agreement_pct": round(rel * 100, 4),
+                    "numeric_band": eff_band,
+                    "external_numeric_band": band,
+                    "mad_ok": eff_mad_ok,
+                    "external_mad_ok": mad_ok,
                     "startup_mad_ok": startup_ok,
-                    "startup_baseline_ms": round(session.startup_baseline_ms, 4),
+                    "startup_baseline_ms": round(passes[0]["startup_baseline_ms"], 4),
                     "startup_share": passes[0]["startup_share"],
                     "low_confidence": passes[0]["low_confidence"],
-                    "verdict": "PASS" if (band in ("PASS", "SINGLE_PASS") and mad_ok and startup_ok)
-                               else ("BLOCK" if band == "BLOCK" or not startup_ok else "INVALID_RERUN"),
+                    "verdict": "PASS" if (eff_band in ("PASS", "SINGLE_PASS") and eff_mad_ok and eff_startup_ok)
+                               else ("BLOCK" if eff_band == "BLOCK" or not eff_startup_ok else "INVALID_RERUN"),
                 }
+                entry.update(extra_fields)
+                data["workloads"][w][v] = entry
                 if not args.quiet:
                     p0 = passes[0]
+                    int_note = (
+                        f"  int {entry['internal_compute_median_ms']:7.3f} ms"
+                        if v in ("node", "rust") else ""
+                    )
+                    shown_mad = (
+                        entry["internal_mad_over_median_pct"]
+                        if (v in ("node", "rust") and p0["low_confidence"])
+                        else p0["compute"]["mad_over_median"] * 100
+                    )
                     print(f"{w:<6} {v:<7} compute median {p0['compute']['median']:8.3f} ms  "
-                          f"wall {p0['wall']['median']:8.3f} ms  "
-                          f"MAD/med {p0['compute']['mad_over_median']*100:5.2f}%  "
-                          f"agree {rel*100:5.2f}%  {data['workloads'][w][v]['verdict']}")
+                          f"wall {p0['wall']['median']:8.3f} ms{int_note}  "
+                          f"MAD/med {shown_mad:5.2f}%  "
+                          f"agree {eff_rel*100:5.2f}%  {entry['verdict']}")
 
         data["startup_baseline_ms"] = round(session.startup_baseline_ms, 4)
         data["startup_mad_ms"] = round(session.startup_mad_ms, 4)
-        data["startup_engine_ms"] = {
-            "vm": round(session.startup_baseline_ms, 4),
-            "note": "calibration runs use the same binary/engine/argument shape as the measured variant",
+        startup_engines = {
+            eng: round(statistics.median(vals), 4)
+            for eng, vals in session.calibration_by_engine.items()
+            if vals
         }
+        startup_engines.setdefault("vm", round(session.startup_baseline_ms, 4))
+        startup_engines["note"] = "calibration runs use the same binary/engine/argument shape as the measured variant"
+        data["startup_engine_ms"] = startup_engines
 
         if not pin["pinned"]:
             status, frozen = "ADVISORY_ONLY", False
@@ -628,7 +745,7 @@ def measure_baseline(args) -> dict:
 
 
 def write_artifacts(data: dict, args) -> list[Path]:
-    out = Path(args.out) if args.out else (CI_RESULTS if args.advisory else RESULTS)
+    out = (ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)) if args.out else (CI_RESULTS if args.advisory else RESULTS)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     written = [out]
@@ -666,11 +783,451 @@ def write_artifacts(data: dict, args) -> list[Path]:
     return written
 
 
+def verify_selfhost_manifest(verbose: bool = False) -> dict:
+    """Fail-closed SHA-256 verification of benchmarks/selfhost/MANIFEST.sha256."""
+    errors: list[str] = []
+    if not SELFHOST_MANIFEST.is_file():
+        return {"errors": [f"missing manifest: {SELFHOST_MANIFEST}"], "files": []}
+    checked: list[dict] = []
+    for raw in SELFHOST_MANIFEST.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            errors.append(f"malformed manifest line: {raw!r}")
+            continue
+        expected_sha, rel = parts[0], parts[1].strip()
+        p = ROOT / rel
+        if not p.is_file():
+            errors.append(f"missing pinned workload: {rel}")
+            continue
+        actual_sha = sha256_file(p)
+        if actual_sha != expected_sha:
+            errors.append(f"sha256 mismatch for {rel}: expected {expected_sha}, got {actual_sha}")
+            continue
+        checked.append({"path": rel, "sha256": actual_sha, "bytes": p.stat().st_size})
+        if verbose:
+            print(f"OK   {rel} ({p.stat().st_size} B) {actual_sha[:12]}...")
+    for list_name in ("parse_check_list.txt", "corpus_build_list.txt", "selfcompile_modules.txt"):
+        lp = SELFHOST_DIR / list_name
+        if lp.is_file():
+            for entry in lp.read_text(encoding="utf-8").splitlines():
+                rel = entry.strip()
+                if rel and not (ROOT / rel).is_file():
+                    errors.append(f"{list_name} references missing file: {rel}")
+    return {"errors": errors, "files": checked}
+
+
+def _run_sh_timed(cmd: list[str], cwd: Path, timeout: float) -> tuple[float, int, str]:
+    t0 = time.perf_counter_ns()
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
+    ms = (time.perf_counter_ns() - t0) / 1e6
+    return ms, p.returncode, p.stdout
+
+
+def _sh_two_pass(label: str, warmup: int, repeats: int, passes: int,
+                 step_fn, cal_fn=None, quiet: bool = False, max_attempts: int = 3) -> dict:
+    """Run one 2-pass measurement, discarding and retrying up to max_attempts on INVALID_RERUN."""
+    metric_key = "compute" if cal_fn is not None else "wall"
+    best: dict | None = None
+    for attempt in range(1, max_attempts + 1):
+        for _ in range(warmup):
+            step_fn()
+        pass_entries: list[dict] = []
+        for pno in range(1, passes + 1):
+            walls: list[float] = []
+            cals: list[float] = []
+            for _ in range(repeats):
+                if cal_fn is not None:
+                    cals.append(cal_fn())
+                walls.append(step_fn())
+            w_st = stats(walls)
+            c_base = statistics.median(cals) if cals else 0.0
+            c_mad = stats(cals)["mad"] if cals else 0.0
+            comp = [max(w - c_base, 1e-6) for w in walls] if cals else list(walls)
+            c_st = stats(comp)
+            share = (c_base / w_st["median"]) if (cals and w_st["median"] > 0) else 0.0
+            pass_entries.append({
+                "pass": pno,
+                "wall_ms": [round(x, 4) for x in walls],
+                "wall": w_st,
+                "compute": c_st,
+                "startup_baseline_ms": round(c_base, 4),
+                "startup_mad_ms": round(c_mad, 4),
+                "startup_share": share,
+            })
+        p0, p1 = pass_entries[0], pass_entries[-1]
+        rel, band = agreement_band(p0[metric_key]["median"], p1[metric_key]["median"]) if passes > 1 else (0.0, "SINGLE_PASS")
+        mad_ok = all(pe[metric_key]["mad_over_median"] <= MAD_GATE for pe in pass_entries)
+        startup_ok = all(pe["startup_mad_ms"] <= STARTUP_MAD_GATE_MS for pe in pass_entries) if cal_fn is not None else True
+        verdict = "PASS" if (band in ("PASS", "SINGLE_PASS") and mad_ok and startup_ok) else (
+            "BLOCK" if band == "BLOCK" or not startup_ok else "INVALID_RERUN"
+        )
+        mad_pct = max(pe[metric_key]["mad_over_median"] for pe in pass_entries) * 100.0
+        best = {
+            "passes": pass_entries,
+            "attempts_used": attempt,
+            "median_ms": round(p0[metric_key]["median"], 4),
+            "wall_median_ms": round(p0["wall"]["median"], 4),
+            "startup_baseline_ms": round(p0["startup_baseline_ms"], 4),
+            "startup_share": round(p0["startup_share"], 4),
+            "mad_over_median_pct": round(mad_pct, 4),
+            "median_agreement_pct": round(rel * 100.0, 4),
+            "mad_ok": mad_ok,
+            "startup_mad_ok": startup_ok,
+            "verdict": verdict,
+        }
+        if verdict != "INVALID_RERUN":
+            break
+        if not quiet:
+            print(f"  {label:<28} attempt {attempt}/{max_attempts} INVALID_RERUN "
+                  f"(MAD/med {mad_pct:.2f}%, agree {rel*100:.2f}%), discarding & retrying")
+    assert best is not None
+    if not quiet:
+        p0_s = best["passes"][0][metric_key]["median"]
+        print(f"  {label:<28} med {p0_s:8.2f} ms  MAD/med {best['mad_over_median_pct']:5.2f}%  "
+              f"agree {best['median_agreement_pct']:5.2f}%  {best['verdict']}")
+    return best
+
+
+def measure_selfhost_suite(args) -> dict:
+    """Measure Stage-0 vs selfhost toolchain throughput on checksummed benchmarks/selfhost/."""
+    manifest_res = phase0_manifest.verify(verbose=False)
+    if manifest_res["errors"]:
+        raise GateError(f"phase0 manifest FAILED: {manifest_res['errors']}")
+    sh_man = verify_selfhost_manifest(verbose=False)
+    if sh_man["errors"]:
+        raise GateError(f"selfhost benchmark manifest FAILED: {sh_man['errors']}")
+
+    binp = find_binary(args.bin)
+    pin = pin_core(args.pin_core)
+
+    try:
+        import phase0_selftest
+    except ImportError as exc:
+        raise GateError(f"sensitivity self-test module missing: {exc}") from exc
+    selftest = phase0_selftest.run_all(binp, quiet=True)
+    if not args.quiet:
+        print(f"[selftest] {'PASS' if selftest.get('pass') else 'FAIL'}")
+    if not selftest.get("pass", False) and not args.advisory:
+        raise GateError("Sensitivity self-test FAILED; aborting before 25-min suite")
+
+    td_obj = tempfile.TemporaryDirectory(prefix="spid3r_shbench_")
+    td = Path(td_obj.name)
+    try:
+        if args.self:
+            selfp = Path(args.self)
+            if not selfp.is_absolute():
+                selfp = ROOT / selfp
+            if not selfp.is_file():
+                raise GateError(f"--self binary not found: {selfp}")
+            self_build_mode = "explicit --self"
+        else:
+            selfp = td / ("spid3r-self.exe" if platform.system() == "Windows" else "spid3r-self")
+            built = subprocess.run(
+                [str(binp), "build", str(ROOT / "selfhost" / "main.matrix"), "-o", str(selfp), "--release"],
+                cwd=ROOT, capture_output=True, text=True, timeout=600,
+            )
+            if built.returncode != 0 or not selfp.is_file():
+                raise GateError(f"building release spid3r-self failed: {(built.stderr or built.stdout)[:240]}")
+            self_build_mode = "stage0 build --release"
+
+        empty = td / "empty.matrix"
+        empty.write_text("", encoding="utf-8")
+
+        lex_wl = SELFHOST_DIR / "lex_workload.matrix"
+        lex_bytes = lex_wl.stat().st_size
+        pos_files = [ROOT / ln.strip() for ln in (SELFHOST_DIR / "parse_check_list.txt").read_text(encoding="utf-8").splitlines() if ln.strip()]
+        build_files = [ROOT / ln.strip() for ln in (SELFHOST_DIR / "corpus_build_list.txt").read_text(encoding="utf-8").splitlines() if ln.strip()]
+        sc_mods = [ln.strip() for ln in (SELFHOST_DIR / "selfcompile_modules.txt").read_text(encoding="utf-8").splitlines() if ln.strip()]
+        sc_bytes = sum((ROOT / r).stat().st_size for r in sc_mods)
+        sc_sha = {r: sha256_file(ROOT / r) for r in sc_mods}
+
+        requested = (
+            ["lex", "parse", "check", "self_compile", "corpus_build"]
+            if args.workloads == "prime,json,map"
+            else [w.strip() for w in args.workloads.split(",") if w.strip()]
+        )
+        timeout = max(float(args.timeout), 300.0)
+
+        def cal_file(prefix: list[str]) -> float:
+            ms, rc, _ = _run_sh_timed(prefix + [str(empty)], ROOT, timeout)
+            if rc != 0:
+                raise GateError(f"calibration exited {rc}: {prefix}")
+            return ms
+
+        def cal_ver(exe: Path) -> float:
+            ms, rc, _ = _run_sh_timed([str(exe), "--version"], ROOT, timeout)
+            if rc != 0:
+                raise GateError(f"--version calibration exited {rc}: {exe}")
+            return ms
+
+        results: dict[str, dict] = {}
+        worst_verdict = "PASS"
+
+        def track_verdict(entry: dict):
+            nonlocal worst_verdict
+            v = entry["verdict"]
+            if v == "BLOCK":
+                worst_verdict = "BLOCK"
+            elif v == "INVALID_RERUN" and worst_verdict == "PASS":
+                worst_verdict = "INVALID_RERUN"
+
+        if "lex" in requested:
+            if not args.quiet:
+                print(f"[lex] {lex_wl.relative_to(ROOT)} ({lex_bytes:,} B)")
+            _, rc0, out0 = _run_sh_timed([str(binp), "tokens", "--json", str(lex_wl)], ROOT, timeout)
+            _, rc1, out1 = _run_sh_timed([str(selfp), "tokens", str(lex_wl)], ROOT, timeout)
+            if rc0 != 0 or rc1 != 0 or out0 != out1:
+                raise GateError(f"lex parity/exit failed before measurement (rc0={rc0}, rc1={rc1}, match={out0 == out1})")
+
+            def lex_step(cmd):
+                ms, rc, _ = _run_sh_timed(cmd, ROOT, timeout)
+                if rc != 0:
+                    raise GateError(f"lex cmd exited {rc}")
+                return ms
+
+            s0_e = _sh_two_pass("lex / stage0", args.warmup, args.repeats, args.passes,
+                                lambda: lex_step([str(binp), "tokens", "--json", str(lex_wl)]),
+                                lambda: cal_file([str(binp), "tokens", "--json"]), quiet=args.quiet)
+            s1_e = _sh_two_pass("lex / selfhost", args.warmup, args.repeats, args.passes,
+                                lambda: lex_step([str(selfp), "tokens", str(lex_wl)]),
+                                lambda: cal_file([str(selfp), "tokens"]), quiet=args.quiet)
+            for e in (s0_e, s1_e):
+                e["compute_mb_s"] = round(lex_bytes / (e["median_ms"] / 1000.0) / 1e6, 4)
+                e["raw_mb_s"] = round(lex_bytes / (e["wall_median_ms"] / 1000.0) / 1e6, 4)
+                track_verdict(e)
+            results["lex"] = {
+                "workload": str(lex_wl.relative_to(ROOT)).replace("\\", "/"),
+                "bytes": lex_bytes, "metric": "compute_mb_s",
+                "parity_verified": True, "stage0": s0_e, "selfhost": s1_e,
+                "selfhost_vs_stage0": round(s1_e["compute_mb_s"] / s0_e["compute_mb_s"], 4),
+            }
+
+        if "parse" in requested:
+            if not args.quiet:
+                print(f"[parse] {len(pos_files)} positive corpus programs")
+            for f in pos_files[:10]:
+                _, rc0, out0 = _run_sh_timed([str(binp), "parse", "--dump-ast-json", str(f)], ROOT, timeout)
+                _, rc1, out1 = _run_sh_timed([str(selfp), "parse", str(f)], ROOT, timeout)
+                if rc0 != 0 or rc1 != 0 or out0 != out1:
+                    raise GateError(f"parse precheck mismatch on {f.name}")
+
+            def parse_batch(prefix):
+                t0 = time.perf_counter_ns()
+                for f in pos_files:
+                    p = subprocess.run(prefix + [str(f)], cwd=ROOT, capture_output=True,
+                                       stdin=subprocess.DEVNULL, timeout=timeout)
+                    if p.returncode != 0:
+                        raise GateError(f"parse failed rc={p.returncode} on {f.name}")
+                return (time.perf_counter_ns() - t0) / 1e6
+
+            s0_e = _sh_two_pass("parse / stage0", args.warmup, args.repeats, args.passes,
+                                lambda: parse_batch([str(binp), "parse", "--dump-ast-json"]), quiet=args.quiet)
+            s1_e = _sh_two_pass("parse / selfhost", args.warmup, args.repeats, args.passes,
+                                lambda: parse_batch([str(selfp), "parse"]), quiet=args.quiet)
+            for e in (s0_e, s1_e):
+                e["programs_per_s"] = round(len(pos_files) / (e["median_ms"] / 1000.0), 3)
+                track_verdict(e)
+            results["parse"] = {
+                "workload": "benchmarks/selfhost/parse_check_list.txt",
+                "programs": len(pos_files), "metric": "programs_per_s",
+                "stage0": s0_e, "selfhost": s1_e,
+                "selfhost_vs_stage0": round(s1_e["programs_per_s"] / s0_e["programs_per_s"], 4),
+            }
+
+        if "check" in requested:
+            if not args.quiet:
+                print(f"[check] {len(pos_files)} corpus programs")
+
+            def check_batch(prefix):
+                t0 = time.perf_counter_ns()
+                for f in pos_files:
+                    subprocess.run(prefix + [str(f)], cwd=ROOT, capture_output=True,
+                                   stdin=subprocess.DEVNULL, timeout=timeout)
+                return (time.perf_counter_ns() - t0) / 1e6
+
+            s0_e = _sh_two_pass("check / stage0", args.warmup, args.repeats, args.passes,
+                                lambda: check_batch([str(binp), "check", "--dump-registry-json"]), quiet=args.quiet)
+            s1_e = _sh_two_pass("check / selfhost", args.warmup, args.repeats, args.passes,
+                                lambda: check_batch([str(selfp), "registry"]), quiet=args.quiet)
+            for e in (s0_e, s1_e):
+                e["programs_per_s"] = round(len(pos_files) / (e["median_ms"] / 1000.0), 3)
+                track_verdict(e)
+            results["check"] = {
+                "workload": "benchmarks/selfhost/parse_check_list.txt",
+                "programs": len(pos_files), "metric": "programs_per_s",
+                "stage0": s0_e, "selfhost": s1_e,
+                "selfhost_vs_stage0": round(s1_e["programs_per_s"] / s0_e["programs_per_s"], 4),
+            }
+
+        if "self_compile" in requested:
+            if not args.quiet:
+                print(f"[self_compile] selfhost/main.matrix ({len(sc_mods)} modules, {sc_bytes:,} B)")
+            sc_main = str(ROOT / "selfhost" / "main.matrix")
+            out_s0 = td / ("sc_s0.exe" if platform.system() == "Windows" else "sc_s0")
+            out_s1 = td / ("sc_s1.exe" if platform.system() == "Windows" else "sc_s1")
+
+            def sc_step(compiler: Path, out_exe: Path) -> float:
+                ms, rc, _ = _run_sh_timed([str(compiler), "build", sc_main, "-o", str(out_exe)], ROOT, timeout)
+                if rc != 0 or not out_exe.is_file() or out_exe.stat().st_size < 100_000:
+                    raise GateError(f"self_compile failed rc={rc} for {compiler}")
+                return ms
+
+            s0_e = _sh_two_pass("self_compile / stage0", args.warmup, args.repeats, args.passes,
+                                lambda: sc_step(binp, out_s0), lambda: cal_ver(binp), quiet=args.quiet)
+            s1_e = _sh_two_pass("self_compile / selfhost", args.warmup, args.repeats, args.passes,
+                                lambda: sc_step(selfp, out_s1), lambda: cal_ver(selfp), quiet=args.quiet)
+            _, rc_chk0, v0 = _run_sh_timed([str(out_s0), "--version"], ROOT, timeout)
+            _, rc_chk1, v1 = _run_sh_timed([str(out_s1), "--version"], ROOT, timeout)
+            if rc_chk0 != 0 or rc_chk1 != 0 or v0.strip() != v1.strip():
+                raise GateError(f"built selfhost --version check failed: rc0={rc_chk0} rc1={rc_chk1}")
+            for e in (s0_e, s1_e):
+                e["compute_mb_s"] = round(sc_bytes / (e["median_ms"] / 1000.0) / 1e6, 5)
+                e["raw_mb_s"] = round(sc_bytes / (e["wall_median_ms"] / 1000.0) / 1e6, 5)
+                track_verdict(e)
+            results["self_compile"] = {
+                "workload": "selfhost/main.matrix", "modules": len(sc_mods), "bytes": sc_bytes,
+                "metric": "compute_mb_s", "stage0": s0_e, "selfhost": s1_e,
+                "selfhost_vs_stage0": round(s1_e["compute_mb_s"] / s0_e["compute_mb_s"], 4),
+            }
+
+        if "corpus_build" in requested:
+            if not args.quiet:
+                print(f"[corpus_build] {len(build_files)} standalone examples")
+
+            def build_batch(compiler: Path, tag: str, verify_exec: bool = False) -> dict | float:
+                outs = {}
+                exe_ext = ".exe" if platform.system() == "Windows" else ""
+                t0 = time.perf_counter_ns()
+                for f in build_files:
+                    out_p = td / f"cb_{tag}_{f.stem}{exe_ext}"
+                    p = subprocess.run([str(compiler), "build", str(f), "-o", str(out_p)],
+                                       cwd=ROOT, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout)
+                    if p.returncode != 0 or not out_p.is_file():
+                        raise GateError(f"corpus_build failed rc={p.returncode} for {compiler} on {f.name}")
+                    if verify_exec:
+                        rp = subprocess.run([str(out_p)], cwd=ROOT, capture_output=True, text=True,
+                                            encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=timeout)
+                        if rp.returncode != 0:
+                            raise GateError(f"built {f.name} exited {rp.returncode}")
+                        outs[f.name] = rp.stdout
+                ms = (time.perf_counter_ns() - t0) / 1e6
+                return outs if verify_exec else ms
+
+            o0 = build_batch(binp, "s0", verify_exec=True)
+            o1 = build_batch(selfp, "s1", verify_exec=True)
+            if o0 != o1:
+                raise GateError("corpus_build execution output mismatch between stage0 and selfhost")
+
+            s0_e = _sh_two_pass("corpus_build / stage0", args.warmup, args.repeats, args.passes,
+                                lambda: build_batch(binp, "s0"), quiet=args.quiet)
+            s1_e = _sh_two_pass("corpus_build / selfhost", args.warmup, args.repeats, args.passes,
+                                lambda: build_batch(selfp, "s1"), quiet=args.quiet)
+            for e in (s0_e, s1_e):
+                e["programs_per_s"] = round(len(build_files) / (e["median_ms"] / 1000.0), 3)
+                track_verdict(e)
+            results["corpus_build"] = {
+                "workload": "benchmarks/selfhost/corpus_build_list.txt",
+                "programs": len(build_files), "metric": "batch_ms",
+                "parity_verified": True, "stage0": s0_e, "selfhost": s1_e,
+                "selfhost_vs_stage0_time": round(s1_e["median_ms"] / s0_e["median_ms"], 4),
+            }
+
+        targets = {}
+        if "lex" in results:
+            r = results["lex"]
+            targets["lex"] = {
+                "metric": "compute_mb_s",
+                "stage0_baseline": r["stage0"]["compute_mb_s"],
+                "selfhost_baseline": r["selfhost"]["compute_mb_s"],
+                "selfhost_vs_stage0": r["selfhost_vs_stage0"],
+                "tier_a_floor_mb_s": round(r["selfhost"]["compute_mb_s"] * 0.8, 3),
+            }
+        if "parse" in results:
+            r = results["parse"]
+            targets["parse"] = {
+                "metric": "programs_per_s",
+                "stage0_baseline": r["stage0"]["programs_per_s"],
+                "selfhost_baseline": r["selfhost"]["programs_per_s"],
+                "selfhost_vs_stage0": r["selfhost_vs_stage0"],
+                "tier_a_floor_programs_s": round(r["selfhost"]["programs_per_s"] * 0.8, 1),
+            }
+        if "check" in results:
+            r = results["check"]
+            targets["check"] = {
+                "metric": "programs_per_s",
+                "stage0_baseline": r["stage0"]["programs_per_s"],
+                "selfhost_baseline": r["selfhost"]["programs_per_s"],
+                "selfhost_vs_stage0": r["selfhost_vs_stage0"],
+                "tier_a_floor_programs_s": round(r["selfhost"]["programs_per_s"] * 0.8, 1),
+            }
+        if "self_compile" in results:
+            r = results["self_compile"]
+            targets["self_compile"] = {
+                "metric": "compute_mb_s",
+                "stage0_baseline": r["stage0"]["compute_mb_s"],
+                "selfhost_baseline": r["selfhost"]["compute_mb_s"],
+                "selfhost_vs_stage0": r["selfhost_vs_stage0"],
+                "tier_a_floor_mb_s": round(r["selfhost"]["compute_mb_s"] * 0.8, 4),
+            }
+        if "corpus_build" in results:
+            r = results["corpus_build"]
+            targets["corpus_build"] = {
+                "metric": "batch_ms",
+                "stage0_baseline_ms": r["stage0"]["median_ms"],
+                "selfhost_baseline_ms": r["selfhost"]["median_ms"],
+                "selfhost_vs_stage0_time": r["selfhost_vs_stage0_time"],
+                "tier_a_max_batch_ms": round(r["selfhost"]["median_ms"] * 1.25, 1),
+            }
+
+        status = "ADVISORY_ONLY" if not (pin["pinned"] and args.dedicated_pinned_host) else worst_verdict
+        if not selftest.get("pass", False):
+            status = "BLOCK"
+        return {
+            "schema": "spid3r.selfhost.bench/1",
+            "generated_utc": utcnow(),
+            "plan": {"file": "full_plan.html", "phase": "11.P-2", "commit_sha": git_sha()},
+            "protocol": {
+                "warmup": args.warmup, "repeats": args.repeats, "passes": args.passes,
+                "mad_gate": MAD_GATE, "agreement_band_pass": PASS_BAND,
+                "startup_mad_gate_ms": STARTUP_MAD_GATE_MS,
+            },
+            "host": host_info(),
+            "toolchain": {
+                **toolchain_info(binp),
+                "selfhost_build_mode": self_build_mode,
+                "selfhost_bin_sha256": sha256_file(selfp),
+            },
+            "fairness": {"cpu_pinning": pin},
+            "manifest": sh_man["files"],
+            "selfhost_source_sha256": sc_sha,
+            "selftest": selftest,
+            "workloads": results,
+            "targets": targets,
+            "verdict": {
+                "status": status,
+                "frozen": status == "PASS",
+                "numeric_band": worst_verdict,
+                "selftest_pass": selftest.get("pass", False),
+            },
+        }
+    finally:
+        td_obj.cleanup()
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--measure", action="store_true", help="run the full measurement (default)")
     ap.add_argument("--verify", action="store_true", help="read-only fixture verification")
+    ap.add_argument("--verify-selfhost", action="store_true",
+                    help="read-only SHA-256 verification of benchmarks/selfhost/MANIFEST.sha256")
+    ap.add_argument("--selfhost-bench", action="store_true",
+                    help="measure Stage-0 vs selfhost toolchain throughput on benchmarks/selfhost/")
+    ap.add_argument("--self", help="path to selfhost compiler binary (defaults to building stage0 --release)")
     ap.add_argument("--self-test", action="store_true", help="sensitivity self-test only")
     ap.add_argument("--advisory", action="store_true",
                     help="write results.phase0.ci-advisory.json, never overwrite the frozen snapshot")
@@ -710,6 +1267,7 @@ def main(argv=None) -> int:
             return 1
         try:
             binp = find_binary(args.bin)
+            pin_core(args.pin_core)
             result = phase0_selftest.run_all(binp, quiet=args.quiet)
         except (GateError, RuntimeError, subprocess.TimeoutExpired, OSError, ImportError) as exc:
             print(f"PHASE0 SELFTEST: FAIL ({exc})")
@@ -717,8 +1275,32 @@ def main(argv=None) -> int:
         print("PHASE0 SELFTEST: " + ("PASS" if result["pass"] else "FAIL"))
         return 0 if result["pass"] else 1
 
+    if args.verify_selfhost:
+        res = verify_selfhost_manifest(verbose=not args.quiet)
+        for e in res["errors"]:
+            print(f"FAIL {e}")
+        print("SELFHOST BENCH VERIFY: PASS" if not res["errors"] else "SELFHOST BENCH VERIFY: FAIL")
+        return 0 if not res["errors"] else 1
+
     if args.quick:
         args.warmup, args.repeats, args.passes = 2, 5, 1
+
+    if args.selfhost_bench:
+        try:
+            data = measure_selfhost_suite(args)
+        except (GateError, RuntimeError, subprocess.TimeoutExpired, OSError, ImportError) as e:
+            print(f"SELFHOST BENCH: FAIL ({e})")
+            return 1
+        out = (ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)) if args.out else SELFHOST_BASELINE
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        v = data["verdict"]
+        if not args.quiet:
+            print(f"verdict: {v['status']} (frozen={v['frozen']}, band={v['numeric_band']}, selftest={v['selftest_pass']})")
+            print(f"wrote {out.relative_to(ROOT)}")
+        ok = bool(v["selftest_pass"] and v["numeric_band"] == "PASS")
+        print("SELFHOST BENCH: PASS" if ok else f"SELFHOST BENCH: FAIL ({v['status']} / {v['numeric_band']})")
+        return 0 if (ok or args.advisory) else 1
 
     try:
         data = measure_baseline(args)

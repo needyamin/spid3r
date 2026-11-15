@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 620" width="960" height="620" role="img">
-<title>Spid3r GitHub Actions Workflows: CI, Release, and Fuzz automation</title>
-<desc>Detailed architecture and execution graph of Spid3r GitHub Actions workflows: CI matrix covering Core, GUI, WASM, and LLVM Native AOT; Release pipeline building Linux, macOS tarballs and the Windows NSIS installer with full engines; and weekly scheduled cargo-fuzz regression suite.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 760" width="960" height="760" role="img">
+<title>Spid3r GitHub Actions Workflows: CI, Self-Hosted Release, and Fuzz automation</title>
+<desc>Detailed architecture and execution graph of Spid3r GitHub Actions workflows: 6-job CI matrix covering Core, GUI, WASM, LLVM 23 Native AOT with Linux self-host bootstrap, Phase 0 measurement gates, and Self-host Parity Gate over the 134-program frozen corpus; Self-hosted Release pipeline building 4 Linux and macOS tarballs plus Windows NSIS installer packaging spid3r-self, spid3r, and SHA-256-pinned runtime staticlib artifacts; and scheduled/PR cargo-fuzz regression suite.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
 <path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -8,158 +8,175 @@
 <marker id="arrow-green" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
 <path d="M2 1L8 5L2 9" fill="none" stroke="#10B981" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 </marker>
-<marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-<path d="M2 1L8 5L2 9" fill="none" stroke="#3B82F6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-</marker>
-<marker id="arrow-amber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-<path d="M2 1L8 5L2 9" fill="none" stroke="#F59E0B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-</marker>
 </defs>
-<rect x="0" y="0" width="960" height="620" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="0" y="0" width="960" height="760" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 
 <!-- Header Title -->
 <text x="480" y="32" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700" fill="#0F172A">Spid3r GitHub Actions Automated Workflows</text>
-<text x="480" y="50" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#64748B">Continuous Integration (ci.yml) · Multi-Platform Releases (release.yml) · Nightly LibFuzzer (fuzz.yml)</text>
+<text x="480" y="50" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#64748B">Continuous Integration (ci.yml) · Self-Hosted Releases (release.yml) · Scheduled &amp; PR LibFuzzer (fuzz.yml)</text>
 
 <!-- ==================== COLUMN 1: CI WORKFLOW ==================== -->
-<rect x="24" y="70" width="370" height="526" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<!-- Header Badge -->
+<rect x="24" y="70" width="370" height="666" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
 <rect x="36" y="82" width="346" height="34" rx="6" fill="#EFF6FF" stroke="#BFDBFE" stroke-width="1"/>
 <text x="209" y="99" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="600" fill="#1E40AF">.github/workflows/ci.yml</text>
 <text x="209" y="128" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">Trigger: push (main, master) | pull_request</text>
 
 <!-- CI Job 1: Core -->
-<rect x="36" y="142" width="346" height="96" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-<rect x="46" y="152" width="12" height="12" rx="3" fill="#3B82F6"/>
-<text x="66" y="162" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Core Toolchain &amp; Differential</text>
-<text x="364" y="162" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#2563EB">Linux · Win · macOS</text>
-<text x="46" y="184" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• clippy --no-default-features --all-targets (-D warnings)</text>
-<text x="46" y="200" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• rustfmt check · cargo test suite (116+ test crates)</text>
-<text x="46" y="216" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• 3-engine differential: tree == vm == exec verification</text>
+<rect x="36" y="140" width="346" height="84" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="46" y="150" width="12" height="12" rx="3" fill="#3B82F6"/>
+<text x="66" y="160" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Core Toolchain &amp; Differential</text>
+<text x="372" y="160" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#2563EB">Linux · Win · macOS</text>
+<text x="46" y="180" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• clippy --no-default-features (-D warnings) · rustfmt</text>
+<text x="46" y="196" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• cargo test suite (1,329 core tests)</text>
+<text x="46" y="212" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• 3-engine differential: tree == vm == exec verification</text>
 
 <!-- CI Job 2: GUI Feature -->
-<rect x="36" y="248" width="346" height="82" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-<rect x="46" y="258" width="12" height="12" rx="3" fill="#8B5CF6"/>
-<text x="66" y="268" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">GUI Feature &amp; Desktop Panel</text>
-<text x="364" y="268" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#7C3AED">Linux · Win · macOS</text>
-<text x="46" y="290" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• wry + tao webview integration with zero-dependency core</text>
-<text x="46" y="306" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• xvfb-run (Linux) &amp; native desktop test harness</text>
-<text x="46" y="320" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• spid3r-control desktop panel ops &amp; safety validation</text>
+<rect x="36" y="232" width="346" height="72" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="46" y="242" width="12" height="12" rx="3" fill="#8B5CF6"/>
+<text x="66" y="252" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">GUI Feature &amp; Desktop Panel</text>
+<text x="372" y="252" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#7C3AED">Linux · Win · macOS</text>
+<text x="46" y="272" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• wry + tao webview integration (13 gui tests + xvfb-run)</text>
+<text x="46" y="288" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• spid3r-control desktop panel ops &amp; safety checks</text>
 
 <!-- CI Job 3: WASM Runtime -->
-<rect x="36" y="340" width="346" height="96" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-<rect x="46" y="350" width="12" height="12" rx="3" fill="#06B6D4"/>
-<text x="66" y="360" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">WebAssembly Runtime &amp; Docs</text>
-<text x="364" y="360" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#0891B2">wasm32-unknown-unknown</text>
-<text x="46" y="382" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• cargo build/clippy wasm32 cdylib &amp; test wasm runtime</text>
-<text x="46" y="398" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• 25 interactive playground presets tested on both engines</text>
-<text x="46" y="414" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• dev snippets evaluate cleanly · prose doc claims verified</text>
-<text x="46" y="428" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• Embedded spid3r_wasm_data.js byte-level synchronization</text>
+<rect x="36" y="312" width="346" height="84" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="46" y="322" width="12" height="12" rx="3" fill="#06B6D4"/>
+<text x="66" y="332" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">WebAssembly Runtime &amp; Docs</text>
+<text x="372" y="332" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#0891B2">wasm32-unknown-unknown</text>
+<text x="46" y="352" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• wasm32 cdylib build · 25 playground presets tested</text>
+<text x="46" y="368" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• dev snippets &amp; prose doc claims verified (doc.html)</text>
+<text x="46" y="384" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Embedded spid3r_wasm_data.js byte-level sync</text>
 
 <!-- CI Job 4: AOT LLVM Native -->
-<rect x="36" y="446" width="346" height="82" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-<rect x="46" y="456" width="12" height="12" rx="3" fill="#EC4899"/>
-<text x="66" y="466" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Native AOT Differential (LLVM 18)</text>
-<text x="364" y="466" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#DB2777">ubuntu-latest</text>
-<text x="46" y="488" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• LLVM 18 AOT code generator &amp; runtime staticlib linkage</text>
-<text x="46" y="504" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• native_diff.sh: tree vs native over all shipped examples</text>
-<text x="46" y="520" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• Generates standalone machine code ELF binaries</text>
+<rect x="36" y="404" width="346" height="90" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="46" y="414" width="12" height="12" rx="3" fill="#EC4899"/>
+<text x="66" y="424" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Native AOT Differential (LLVM 23)</text>
+<text x="372" y="424" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#DB2777">ubuntu-latest</text>
+<text x="46" y="444" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• LLVM 23 AOT compiler + 12 native tests · native_diff.sh</text>
+<text x="46" y="460" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• runtime_artifact.sh SHA-256 package &amp; verify (SH-6)</text>
+<text x="46" y="476" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Linux release_selfhost.sh Stage-0→1→2→3 bootstrap</text>
+
+<!-- CI Job 5: Phase 0 Measurement Gates -->
+<rect x="36" y="502" width="346" height="74" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="46" y="512" width="12" height="12" rx="3" fill="#F59E0B"/>
+<text x="66" y="522" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Phase 0 Measurement Gates</text>
+<text x="372" y="522" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#D97706">ubuntu-latest</text>
+<text x="46" y="542" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Vendored HLC SHA-256 digests &amp; golden rows (blocking)</text>
+<text x="46" y="558" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• 5% sensitivity self-test (blocking) + advisory bench run</text>
+
+<!-- CI Job 6: Self-host Parity Gate -->
+<rect x="36" y="584" width="346" height="86" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="46" y="594" width="12" height="12" rx="3" fill="#10B981"/>
+<text x="66" y="604" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Self-host Parity Gate (Frozen Corpus)</text>
+<text x="372" y="604" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#059669">ubuntu-latest</text>
+<text x="46" y="624" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• corpus_manifest.py verify (134 programs, 135 files, SH-4)</text>
+<text x="46" y="640" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• oracle_dump_check.sh determinism check (SH-5)</text>
+<text x="46" y="656" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Self-host lexer, parser &amp; semantic parity vs Stage 0</text>
 
 <!-- CI Outcome Badge -->
-<rect x="36" y="538" width="346" height="46" rx="6" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1"/>
-<text x="209" y="556" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="600" fill="#166534">CI PASS: Zero warnings · 100% Differential Conformance</text>
-<text x="209" y="572" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#15803D">Canonical test count pinned via tools/count_tests.sh</text>
+<rect x="36" y="678" width="346" height="46" rx="6" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1"/>
+<text x="209" y="696" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="600" fill="#166534">CI PASS: 6/6 Jobs Green · 100% Differential Conformance</text>
+<text x="209" y="712" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#15803D">Canonical test counts (1,354 total) pinned via tools/count_tests.sh</text>
 
 <!-- ==================== COLUMN 2: RELEASE WORKFLOW ==================== -->
-<rect x="410" y="70" width="346" height="526" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<!-- Header Badge -->
+<rect x="410" y="70" width="346" height="666" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
 <rect x="422" y="82" width="322" height="34" rx="6" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
 <text x="583" y="99" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" font-weight="600" fill="#065F46">.github/workflows/release.yml</text>
-<text x="583" y="128" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">Trigger: git push tags v* | workflow_dispatch</text>
+<text x="583" y="128" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">Trigger: git push tags v* | workflow_dispatch (dry-run)</text>
 
 <!-- Tarball Matrix -->
-<rect x="422" y="142" width="322" height="154" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-<text x="434" y="162" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">1. Multi-Arch Tarballs Matrix</text>
-<text x="732" y="162" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#059669">4 Targets</text>
+<rect x="422" y="140" width="322" height="202" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<text x="434" y="160" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">1. Self-Hosted Multi-Arch Tarballs</text>
+<text x="732" y="160" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#059669">4 Targets</text>
 
-<rect x="434" y="174" width="298" height="26" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
-<text x="444" y="191" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">x86_64-unknown-linux-gnu.tar.gz</text>
-<text x="722" y="191" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#64748B">glibc</text>
+<rect x="434" y="172" width="298" height="24" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
+<text x="444" y="188" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">spid3r-x86_64-unknown-linux-gnu.tar.gz</text>
+<text x="724" y="188" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9.5" fill="#64748B">glibc</text>
 
-<rect x="434" y="204" width="298" height="26" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
-<text x="444" y="221" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">aarch64-unknown-linux-gnu.tar.gz</text>
-<text x="722" y="221" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#64748B">ARM64</text>
+<rect x="434" y="200" width="298" height="24" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
+<text x="444" y="216" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">spid3r-aarch64-unknown-linux-gnu.tar.gz</text>
+<text x="724" y="216" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9.5" fill="#64748B">ARM64</text>
 
-<rect x="434" y="234" width="298" height="26" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
-<text x="444" y="251" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">aarch64-apple-darwin.tar.gz</text>
-<text x="722" y="251" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#64748B">M1/M2/M3/M4</text>
+<rect x="434" y="228" width="298" height="24" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
+<text x="444" y="244" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">spid3r-aarch64-apple-darwin.tar.gz</text>
+<text x="724" y="244" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9.5" fill="#64748B">Apple Si</text>
 
-<rect x="434" y="264" width="298" height="26" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
-<text x="444" y="281" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">x86_64-apple-darwin.tar.gz</text>
-<text x="722" y="281" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#64748B">Intel Mac</text>
+<rect x="434" y="256" width="298" height="24" rx="4" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="1"/>
+<text x="444" y="272" font-family="ui-monospace, monospace" font-size="10" fill="#0F172A">spid3r-x86_64-apple-darwin.tar.gz</text>
+<text x="724" y="272" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9.5" fill="#64748B">Intel Mac</text>
+
+<text x="434" y="298" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• release_selfhost.sh builds Stage 1→2→3 fixed point</text>
+<text x="434" y="314" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Ships spid3r-self + spid3r + spid3r-runtime-*.tar.gz</text>
+<text x="434" y="330" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#047857">• SHA-256 staticlib pin (docs/RUNTIME_ABI.md)</text>
 
 <!-- NSIS Installer -->
-<rect x="422" y="306" width="322" height="154" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-<text x="434" y="326" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">2. Windows NSIS Full Installer</text>
-<text x="732" y="326" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#059669">windows-latest</text>
-<text x="434" y="348" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• Installs NSIS 3.x + LLVM 18.1.8 compiler libraries</text>
-<text x="434" y="364" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• Full build: gui + native + plugins-wasm + tls</text>
-<text x="434" y="380" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• Packages spid3r.exe + spid3r-control.exe</text>
-<text x="434" y="396" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• Bundles LLVM-C.dll, LLVM-C.lib, spid3r_lang.lib</text>
-<rect x="434" y="410" width="298" height="38" rx="4" fill="#FEF3C7" stroke="#FDE68A" stroke-width="1"/>
-<text x="583" y="425" text-anchor="middle" font-family="ui-monospace, monospace" font-size="11" font-weight="600" fill="#92400E">Spid3r-Setup-1.0.0.exe</text>
-<text x="583" y="440" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#B45309">Full engines &amp; Control Panel bundled (~34 MB)</text>
+<rect x="422" y="352" width="322" height="178" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<text x="434" y="372" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">2. Windows NSIS Full Installer</text>
+<text x="732" y="372" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#059669">windows-latest</text>
+<text x="434" y="394" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Installs NSIS 3.x + LLVM 23.1.0 compiler libraries</text>
+<text x="434" y="410" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Stage 0 full build (gui + native + wasm + tls)</text>
+<text x="434" y="426" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Stage 1→2→3 COFF spid3r_main.o bit-identical</text>
+<text x="434" y="442" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Packages spid3r-self.exe + spid3r.exe + spid3r-control</text>
+<text x="434" y="458" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Bundles LLVM-C.dll, spid3r_lang.lib.sha256, manifest</text>
+<rect x="434" y="472" width="298" height="44" rx="4" fill="#FEF3C7" stroke="#FDE68A" stroke-width="1"/>
+<text x="583" y="490" text-anchor="middle" font-family="ui-monospace, monospace" font-size="11" font-weight="600" fill="#92400E">Spid3r-Setup-1.1.0.exe</text>
+<text x="583" y="506" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#B45309">Self-hosted compiler + full engines · silent smoke test</text>
 
 <!-- Flow arrows down to publish -->
-<path d="M583 460 L583 478" fill="none" stroke="#10B981" stroke-width="2" marker-end="url(#arrow-green)"/>
+<path d="M583 530 L583 552" fill="none" stroke="#10B981" stroke-width="2" marker-end="url(#arrow-green)"/>
 
 <!-- Publish Step -->
-<rect x="422" y="480" width="322" height="104" rx="8" fill="#FFFFFF" stroke="#10B981" stroke-width="1.5"/>
-<text x="434" y="500" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" fill="#065F46">3. Publish GitHub Release (v*)</text>
-<text x="434" y="520" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• Gathers 4 tarballs + 4 sha256 + Windows installer</text>
-<text x="434" y="536" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• Verifies sha256sums.txt checksums across all assets</text>
-<text x="434" y="552" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#475569">• softprops/action-gh-release attaches all binary assets</text>
-<text x="434" y="568" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="600" fill="#047857">✓ Ready for curl -fsSL install.sh on Linux &amp; macOS</text>
+<rect x="422" y="556" width="322" height="168" rx="8" fill="#FFFFFF" stroke="#10B981" stroke-width="1.5"/>
+<text x="434" y="578" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" fill="#065F46">3. Verify &amp; Publish GitHub Release</text>
+<text x="434" y="600" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Checks all 4 tarballs contain spid3r-self</text>
+<text x="434" y="618" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Verifies combined sha256sums.txt across all assets</text>
+<text x="434" y="636" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Uploads release-bundle-verified workflow artifact</text>
+<text x="434" y="654" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• On v* tag: attaches tarballs, runtimes &amp; installer</text>
+<rect x="434" y="672" width="298" height="38" rx="6" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
+<text x="583" y="695" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" font-weight="600" fill="#047857">✓ install.sh installs spid3r-self alongside spid3r</text>
 
 <!-- ==================== COLUMN 3: FUZZ WORKFLOW ==================== -->
-<rect x="770" y="70" width="166" height="526" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<!-- Header Badge -->
+<rect x="770" y="70" width="166" height="666" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
 <rect x="778" y="82" width="150" height="34" rx="6" fill="#FFFBEB" stroke="#FDE68A" stroke-width="1"/>
 <text x="853" y="99" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, monospace" font-size="11" font-weight="600" fill="#92400E">fuzz.yml</text>
-<text x="853" y="128" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">Cron / Nightly</text>
+<text x="853" y="128" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">Weekly · PR · Dispatch</text>
 
-<rect x="778" y="142" width="150" height="442" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
-<text x="853" y="162" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="600" fill="#0F172A">Nightly LibFuzzer</text>
-<text x="853" y="178" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#64748B">rust-src + -Z build-std</text>
+<rect x="778" y="140" width="150" height="584" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<text x="853" y="164" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="600" fill="#0F172A">cargo-fuzz LibFuzzer</text>
+<text x="853" y="180" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#64748B">rust-src + -Z build-std</text>
 
 <!-- Fuzz targets -->
-<rect x="786" y="194" width="134" height="42" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
-<text x="853" y="210" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_lexer</text>
-<text x="853" y="226" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">Token boundaries</text>
+<rect x="786" y="200" width="134" height="46" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
+<text x="853" y="218" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_lexer</text>
+<text x="853" y="235" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">Token boundaries</text>
 
-<rect x="786" y="244" width="134" height="42" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
-<text x="853" y="260" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_parser</text>
-<text x="853" y="276" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">Recursive AST descent</text>
+<rect x="786" y="256" width="134" height="46" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
+<text x="853" y="274" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_parser</text>
+<text x="853" y="291" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">Recursive AST descent</text>
 
-<rect x="786" y="294" width="134" height="42" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
-<text x="853" y="310" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_bytecode</text>
-<text x="853" y="326" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">Deserializer &amp; chunk</text>
+<rect x="786" y="312" width="134" height="46" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
+<text x="853" y="330" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_bytecode</text>
+<text x="853" y="347" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">Deserializer &amp; chunk</text>
 
-<rect x="786" y="344" width="134" height="42" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
-<text x="853" y="360" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_agent_frame</text>
-<text x="853" y="376" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">Encrypted protocol</text>
+<rect x="786" y="368" width="134" height="46" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
+<text x="853" y="386" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_agent_frame</text>
+<text x="853" y="403" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">Encrypted protocol</text>
 
-<rect x="786" y="394" width="134" height="42" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
-<text x="853" y="410" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_ini_parser</text>
-<text x="853" y="426" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">spid3r.ini config grammar</text>
+<rect x="786" y="424" width="134" height="46" rx="4" fill="#FEF2F2" stroke="#FECACA" stroke-width="1"/>
+<text x="853" y="442" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="600" fill="#991B1B">fuzz_ini_parser</text>
+<text x="853" y="459" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#7F1D1D">spid3r.ini config grammar</text>
 
-<rect x="786" y="450" width="134" height="76" rx="4" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
-<text x="853" y="468" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="600" fill="#0F172A">Crash Artifacts</text>
-<text x="853" y="484" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#64748B">30-day retention</text>
-<text x="853" y="498" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#64748B">Uploaded to CI on</text>
-<text x="853" y="512" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#DC2626">failure condition</text>
+<rect x="786" y="492" width="134" height="84" rx="4" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1"/>
+<text x="853" y="512" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="600" fill="#0F172A">Crash Artifacts</text>
+<text x="853" y="530" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#64748B">30-day retention</text>
+<text x="853" y="546" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#64748B">Uploaded to CI on</text>
+<text x="853" y="562" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#DC2626">failure condition</text>
 
-<text x="853" y="550" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="600" fill="#059669">Memory Bounded</text>
-<text x="853" y="566" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#64748B">2048 MB RSS limit</text>
+<rect x="786" y="592" width="134" height="58" rx="4" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1"/>
+<text x="853" y="614" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="600" fill="#059669">Memory Bounded</text>
+<text x="853" y="632" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#475569">2048 MB RSS limit</text>
+<text x="853" y="644" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9" fill="#475569">Mon 04:00 UTC schedule</text>
 
+<text x="853" y="688" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9.5" fill="#64748B">+ selfhost lex/parse</text>
+<text x="853" y="702" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="9.5" fill="#64748B">differential fuzzers</text>
 </svg>

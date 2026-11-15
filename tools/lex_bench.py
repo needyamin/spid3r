@@ -16,6 +16,7 @@ Usage: python tools/lex_bench.py [--spid3r BIN] [--self BIN]
 """
 
 import argparse
+import json
 import statistics
 import subprocess
 import sys
@@ -24,6 +25,17 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+BASELINE_JSON = ROOT / "benchmarks" / "selfhost" / "baseline.json"
+PINNED_WORKLOAD = ROOT / "benchmarks" / "selfhost" / "lex_workload.matrix"
+
+
+def load_lex_target() -> tuple[float, float | None, str]:
+    if BASELINE_JSON.is_file():
+        data = json.loads(BASELINE_JSON.read_text(encoding="utf-8"))
+        t = (data.get("targets") or {}).get("lex")
+        if t and "tier_a_floor_mb_s" in t:
+            return float(t["tier_a_floor_mb_s"]), float(t["selfhost_baseline"]), "benchmarks/selfhost/baseline.json"
+    return 0.19, None, "fallback constant (baseline.json missing)"
 
 
 def build_workload(td: Path) -> Path:
@@ -79,9 +91,10 @@ def measure(name, cmd, path, empty, warmups, repeats):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--spid3r", default="target/release/spid3r")
-    ap.add_argument("--self", default="target/lexer-self.exe")
+    ap.add_argument("--self", default="selfhost/main_native.exe")
     ap.add_argument("--warmups", type=int, default=9)
     ap.add_argument("--repeats", type=int, default=21)
+    ap.add_argument("--advisory", action="store_true", help="do not fail exit code on floor miss")
     args = ap.parse_args()
 
     def resolve(p):
@@ -92,34 +105,32 @@ def main() -> int:
 
     spid3r = resolve(args.spid3r)
     selfhost = resolve(args.self)
+    self_cmd = [str(selfhost)] if "lexer" in selfhost.stem.lower() else [str(selfhost), "tokens"]
 
     with tempfile.TemporaryDirectory() as td:
-        workload = build_workload(Path(td))
+        workload = PINNED_WORKLOAD if PINNED_WORKLOAD.is_file() else build_workload(Path(td))
         empty = Path(td) / "empty.matrix"
         empty.write_text("", encoding="utf-8")
         print(f"workload: {workload.stat().st_size} bytes, one invocation per repeat")
 
         oracle = measure(
             "oracle  (stage-0 tokens --json)",
-            [str(spid3r), "tokens"], workload, empty, args.warmups, args.repeats,
+            [str(spid3r), "tokens", "--json"], workload, empty, args.warmups, args.repeats,
         )
         self = measure(
-            "selfhost (AOT lexer-self)",
-            [str(selfhost)], workload, empty, args.warmups, args.repeats,
+            f"selfhost ({selfhost.name})",
+            self_cmd, workload, empty, args.warmups, args.repeats,
         )
         ratio = self / oracle
         print(f"\nTier-B (selfhost >= 1/2 stage-0, startup-subtracted): ratio {ratio:.3f}x — "
               f"{'PASS' if ratio >= 0.5 else 'MEASURED UNREACHABLE'}")
-        # Tier-A no-regression floor (ledger 2026-11-14): the retired >=1/2
-        # target's replacement. 0.8x of the measured Phase-1 baseline
-        # (0.24 MB/s on the pinned host), blocking locally; advisory on
-        # shared CI runners where absolute MB/s cannot be pinned.
-        floor = 0.19
+        floor, frozen_base, src_note = load_lex_target()
+        base_txt = f", baseline {frozen_base:.2f} MB/s" if frozen_base is not None else ""
         if self < floor:
-            print(f"Tier-A FLOOR FAIL: selfhost {self:.2f} MB/s < {floor} MB/s "
-                  f"(0.8x of the frozen Phase-1 baseline)")
-            return 1
-        print(f"Tier-A floor ({floor} MB/s): PASS ({self:.2f} MB/s)")
+            print(f"Tier-A FLOOR {'ADVISORY' if args.advisory else 'FAIL'}: "
+                  f"selfhost {self:.2f} MB/s < {floor} MB/s (from {src_note}{base_txt})")
+            return 0 if args.advisory else 1
+        print(f"Tier-A floor ({floor} MB/s from {src_note}{base_txt}): PASS ({self:.2f} MB/s)")
         return 0
 
 

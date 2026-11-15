@@ -1,0 +1,1691 @@
+{
+  "schema": "spid3r.selfhost.bench/1",
+  "generated_utc": "2026-11-15T20:55:07+00:00",
+  "plan": {
+    "file": "full_plan.html",
+    "phase": "11.P-2",
+    "commit_sha": "cef1a36"
+  },
+  "protocol": {
+    "warmup": 9,
+    "repeats": 21,
+    "passes": 2,
+    "mad_gate": 0.05,
+    "agreement_band_pass": 0.03,
+    "startup_mad_gate_ms": 2.0
+  },
+  "host": {
+    "os": "Windows-11-10.0.26300-SP0",
+    "system": "Windows",
+    "machine": "AMD64",
+    "cpu": "Intel(R) Core(TM) Ultra 7 265K",
+    "cores": 20,
+    "python": "3.15.0"
+  },
+  "toolchain": {
+    "spid3r": "spid3r 1.1.0 (language 1.0)",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "python": "3.15.0",
+    "php": "8.3.33",
+    "php_opcache_enable_cli": null,
+    "php_opcache_jit": null,
+    "node": "v26.11.1",
+    "selfhost_build_mode": "stage0 build --release",
+    "selfhost_bin_sha256": "3e7e61e1ae95edbda7d735e9afc27b006943eca32e576f07814cbde58b71ee2c"
+  },
+  "fairness": {
+    "cpu_pinning": {
+      "pinned": true,
+      "requested_core": 6,
+      "method": "SetProcessAffinityMask",
+      "cpuset": [
+        6
+      ],
+      "host_isolation": "best-effort process-affinity pin on a shared host",
+      "disclosure": "Process affinity pinned (children inherit), but the HOST is still shared: other processes may run on the same physical core. CPU pinning plus idle-baseline subtraction, not isolation, is what these numbers have."
+    }
+  },
+  "manifest": [
+    {
+      "path": "benchmarks/selfhost/lex_workload.matrix",
+      "sha256": "5bf8459cbced9ec13dc91f75e1dacc8c989c37a6612d77d29578b6d769800f80",
+      "bytes": 1016880
+    },
+    {
+      "path": "benchmarks/selfhost/parse_check_list.txt",
+      "sha256": "290b762dea2109daf541ac616b177e25f1c94ecde3784b93145b2b124ae543e0",
+      "bytes": 6129
+    },
+    {
+      "path": "benchmarks/selfhost/corpus_build_list.txt",
+      "sha256": "c2b62b25d7c6356a994c6c77e9bec70b55776ad2282dab9fe1660ec9211ca44d",
+      "bytes": 237
+    },
+    {
+      "path": "benchmarks/selfhost/selfcompile_modules.txt",
+      "sha256": "fe0b6844ff22e9422c85af9342ecbdf7c369148f5b065ed98b8ebf4994019717",
+      "bytes": 392
+    }
+  ],
+  "selfhost_source_sha256": {
+    "selfhost/ast.matrix": "a1b59dd05ab6ea021e0c48261a49f27e635c7dfc8fb6dbefb40351c8a51ef706",
+    "selfhost/bytecode_matrix.matrix": "9ae989c50b1881ad1e80639850a7378f88d8ce53282fae35d4cc8d6899936c23",
+    "selfhost/codegen.matrix": "ad2f05393895090ff0a0cf7286ea30b3f7a40fb126fb4e04241bb62e85152da5",
+    "selfhost/flatten.matrix": "e52727984f0643a8a00e54b71532a91a9204532fb603f62a76ba47f4e087a714",
+    "selfhost/fmt.matrix": "50d3635123c5955d705f90ff0e0ae859099980391e419134ab24c1a4680ba95f",
+    "selfhost/lexer.matrix": "4f1c2f117bf02a81fb002d493ac71b898435e04bd26caefb933ca3d64d9f6738",
+    "selfhost/lexer_json.matrix": "cef0ce4256427f8944e4ab68c8ce5b9a006c7e8596b41fbbd97802ee9329408f",
+    "selfhost/link.matrix": "7343ddfb1f90a27d62a5de760d5ca6db3e5ef197d09a3d7681e433b0b41c380c",
+    "selfhost/llvm.matrix": "2bf4b0fef23dc5d2a5116bb439029283898cd5a07dfbf914e12a7ad92dd5c216",
+    "selfhost/lower.matrix": "697910bd887e98ab332b5e1f02430c101bbbf84bc1e45f3aad5360106738ab49",
+    "selfhost/main.matrix": "69e31979b9b6416b61309b92a1193c2038f9d5c9f0203447330487fc0749af68",
+    "selfhost/parser.matrix": "97dcc0270a35afeb7390f488e14ce1fe48dce92afcf89384f731014d8988ccad",
+    "selfhost/pkg.matrix": "d11712df972ec412af725ae3682813be82f31b84a5ad87aee35f5461818e5d96",
+    "selfhost/semantic.matrix": "bc1850180aac1a4c0dbb361ff0a1e819c3873272a22b3aeef2efc681a2c06864",
+    "selfhost/test_runner.matrix": "1f4d4090dd9212dbde2141af1f8389e393931388c83a47e159207b4df313d341",
+    "selfhost/token.matrix": "9781cea2154befaadad1c260eb2658db5a4e4e69a7f306654dc45b715a5069cb",
+    "selfhost/vmc.matrix": "de6ee7093d81bb8a7047a4c98c9bd2c9e71450a3671d6208e73e7c7b0edfcb52"
+  },
+  "selftest": {
+    "schema": "spid3r.phase0.selftest/1",
+    "blocking": true,
+    "runs": 2,
+    "max_attempts": 3,
+    "attempts_used": 1,
+    "invalidate_rerun_policy": "An attempt invalidated by host noise is discarded and rerun (plan.html sections 10-11). No threshold is loosened; after max_attempts the verdict is FAIL (blocking).",
+    "logic": {
+      "pass": true,
+      "method": "seeded deterministic mock-clock series through phase0_bench.stats()",
+      "baseline_median_ms": 30.05,
+      "plus5_median_ms": 31.5699,
+      "baseline": {
+        "n": 21,
+        "min": 29.850303804817464,
+        "median": 30.050029223673015,
+        "p95": 30.24584775358094,
+        "mad": 0.13610111792494095,
+        "mad_over_median": 0.004529150933993844
+      },
+      "plus5": {
+        "n": 21,
+        "min": 31.18571997616809,
+        "median": 31.569858793269596,
+        "p95": 31.760196963539876,
+        "mad": 0.12230873774861095,
+        "mad_over_median": 0.0038742250495807113
+      },
+      "delta_detected": true,
+      "delta_ms": 1.5198,
+      "delta_rel": 0.049329,
+      "noise_floor_ms": 0.3876,
+      "control_detected": false,
+      "control_delta_ms": 0.0
+    },
+    "pipeline": {
+      "runs": [
+        {
+          "pass": true,
+          "arm_binary": "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.exe",
+          "arm_command": [
+            "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.exe",
+            "run",
+            "--engine",
+            "vm",
+            "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\benchmarks\\compare\\map.matrix"
+          ],
+          "arm_workload": "benchmarks/compare/map.matrix (verbatim, pinned RESULT 44432313 100000)",
+          "warmup": 9,
+          "measured": 5,
+          "injected_ns": 1087055,
+          "injection_basis": "5% of pilot COMPUTE median (wall - startup)",
+          "pilot_compute_median_ms": 21.7411,
+          "startup_baseline_ms": 12.3448,
+          "startup_mad_ms": 0.2654,
+          "startup_mad_ok": true,
+          "medians_compute_ms": {
+            "B": 22.9986,
+            "P": 24.033,
+            "C": 22.2057
+          },
+          "mad_ms": {
+            "B": 0.9288,
+            "P": 0.6971,
+            "C": 0.4703
+          },
+          "mad_over_median": {
+            "B": 0.040385,
+            "P": 0.029006,
+            "C": 0.021179
+          },
+          "mad_ok": true,
+          "detection_method": "paired per-iteration differences (P_i - B_i); rel > 3% AND median(diff) > 3*MAD(diff)/2",
+          "paired": {
+            "bp_diff_median_ms": 0.9645,
+            "bp_diff_mad_ms": 0.6276,
+            "bc_diff_median_ms": -0.7929,
+            "bc_diff_mad_ms": 0.9032,
+            "bp_diffs_ms": [
+              1.6756,
+              0.3369,
+              1.1459,
+              0.9645,
+              -14.1781
+            ]
+          },
+          "achieved_delta_pct": 4.1937,
+          "delta_ms": 0.9645,
+          "delta_rel": 0.041937,
+          "noise_floor_ms": 0.9414,
+          "delta_detected": true,
+          "control_detected": false,
+          "control_delta_ms": -0.7929,
+          "achieved_in_band": true,
+          "band_pct": [
+            3.5,
+            6.5
+          ]
+        },
+        {
+          "pass": true,
+          "arm_binary": "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.exe",
+          "arm_command": [
+            "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.exe",
+            "run",
+            "--engine",
+            "vm",
+            "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\benchmarks\\compare\\map.matrix"
+          ],
+          "arm_workload": "benchmarks/compare/map.matrix (verbatim, pinned RESULT 44432313 100000)",
+          "warmup": 9,
+          "measured": 5,
+          "injected_ns": 1094215,
+          "injection_basis": "5% of pilot COMPUTE median (wall - startup)",
+          "pilot_compute_median_ms": 21.8843,
+          "startup_baseline_ms": 12.0336,
+          "startup_mad_ms": 0.379,
+          "startup_mad_ok": true,
+          "medians_compute_ms": {
+            "B": 21.6536,
+            "P": 22.9184,
+            "C": 22.5894
+          },
+          "mad_ms": {
+            "B": 0.158,
+            "P": 0.2764,
+            "C": 0.6312
+          },
+          "mad_over_median": {
+            "B": 0.007297,
+            "P": 0.01206,
+            "C": 0.027942
+          },
+          "mad_ok": true,
+          "detection_method": "paired per-iteration differences (P_i - B_i); rel > 3% AND median(diff) > 3*MAD(diff)/2",
+          "paired": {
+            "bp_diff_median_ms": 1.4057,
+            "bp_diff_mad_ms": 0.3016,
+            "bc_diff_median_ms": 0.7301,
+            "bc_diff_mad_ms": 0.8369,
+            "bp_diffs_ms": [
+              1.1041,
+              1.4057,
+              0.6355,
+              2.2337,
+              1.4083
+            ]
+          },
+          "achieved_delta_pct": 6.4918,
+          "delta_ms": 1.4057,
+          "delta_rel": 0.064918,
+          "noise_floor_ms": 0.4524,
+          "delta_detected": true,
+          "control_detected": false,
+          "control_delta_ms": 0.7301,
+          "achieved_in_band": true,
+          "band_pct": [
+            3.5,
+            6.5
+          ]
+        }
+      ],
+      "attempts": [
+        {
+          "attempt": 1,
+          "consistent": true,
+          "achieved_delta_pct": [
+            4.1937,
+            6.4918
+          ],
+          "delta_detected": [
+            true,
+            true
+          ],
+          "control_detected": [
+            false,
+            false
+          ],
+          "runs": [
+            {
+              "pass": true,
+              "arm_binary": "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.exe",
+              "arm_command": [
+                "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.exe",
+                "run",
+                "--engine",
+                "vm",
+                "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\benchmarks\\compare\\map.matrix"
+              ],
+              "arm_workload": "benchmarks/compare/map.matrix (verbatim, pinned RESULT 44432313 100000)",
+              "warmup": 9,
+              "measured": 5,
+              "injected_ns": 1087055,
+              "injection_basis": "5% of pilot COMPUTE median (wall - startup)",
+              "pilot_compute_median_ms": 21.7411,
+              "startup_baseline_ms": 12.3448,
+              "startup_mad_ms": 0.2654,
+              "startup_mad_ok": true,
+              "medians_compute_ms": {
+                "B": 22.9986,
+                "P": 24.033,
+                "C": 22.2057
+              },
+              "mad_ms": {
+                "B": 0.9288,
+                "P": 0.6971,
+                "C": 0.4703
+              },
+              "mad_over_median": {
+                "B": 0.040385,
+                "P": 0.029006,
+                "C": 0.021179
+              },
+              "mad_ok": true,
+              "detection_method": "paired per-iteration differences (P_i - B_i); rel > 3% AND median(diff) > 3*MAD(diff)/2",
+              "paired": {
+                "bp_diff_median_ms": 0.9645,
+                "bp_diff_mad_ms": 0.6276,
+                "bc_diff_median_ms": -0.7929,
+                "bc_diff_mad_ms": 0.9032,
+                "bp_diffs_ms": [
+                  1.6756,
+                  0.3369,
+                  1.1459,
+                  0.9645,
+                  -14.1781
+                ]
+              },
+              "achieved_delta_pct": 4.1937,
+              "delta_ms": 0.9645,
+              "delta_rel": 0.041937,
+              "noise_floor_ms": 0.9414,
+              "delta_detected": true,
+              "control_detected": false,
+              "control_delta_ms": -0.7929,
+              "achieved_in_band": true,
+              "band_pct": [
+                3.5,
+                6.5
+              ]
+            },
+            {
+              "pass": true,
+              "arm_binary": "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.exe",
+              "arm_command": [
+                "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\target\\release\\spid3r.exe",
+                "run",
+                "--engine",
+                "vm",
+                "C:\\Users\\needyamin\\OneDrive\\Desktop\\spid3r\\benchmarks\\compare\\map.matrix"
+              ],
+              "arm_workload": "benchmarks/compare/map.matrix (verbatim, pinned RESULT 44432313 100000)",
+              "warmup": 9,
+              "measured": 5,
+              "injected_ns": 1094215,
+              "injection_basis": "5% of pilot COMPUTE median (wall - startup)",
+              "pilot_compute_median_ms": 21.8843,
+              "startup_baseline_ms": 12.0336,
+              "startup_mad_ms": 0.379,
+              "startup_mad_ok": true,
+              "medians_compute_ms": {
+                "B": 21.6536,
+                "P": 22.9184,
+                "C": 22.5894
+              },
+              "mad_ms": {
+                "B": 0.158,
+                "P": 0.2764,
+                "C": 0.6312
+              },
+              "mad_over_median": {
+                "B": 0.007297,
+                "P": 0.01206,
+                "C": 0.027942
+              },
+              "mad_ok": true,
+              "detection_method": "paired per-iteration differences (P_i - B_i); rel > 3% AND median(diff) > 3*MAD(diff)/2",
+              "paired": {
+                "bp_diff_median_ms": 1.4057,
+                "bp_diff_mad_ms": 0.3016,
+                "bc_diff_median_ms": 0.7301,
+                "bc_diff_mad_ms": 0.8369,
+                "bp_diffs_ms": [
+                  1.1041,
+                  1.4057,
+                  0.6355,
+                  2.2337,
+                  1.4083
+                ]
+              },
+              "achieved_delta_pct": 6.4918,
+              "delta_ms": 1.4057,
+              "delta_rel": 0.064918,
+              "noise_floor_ms": 0.4524,
+              "delta_detected": true,
+              "control_detected": false,
+              "control_delta_ms": 0.7301,
+              "achieved_in_band": true,
+              "band_pct": [
+                3.5,
+                6.5
+              ]
+            }
+          ]
+        }
+      ],
+      "consistent": true
+    },
+    "pass": true
+  },
+  "workloads": {
+    "lex": {
+      "workload": "benchmarks/selfhost/lex_workload.matrix",
+      "bytes": 1016880,
+      "metric": "compute_mb_s",
+      "parity_verified": true,
+      "stage0": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              72.2323,
+              75.4193,
+              72.1308,
+              73.1948,
+              73.1954,
+              73.5776,
+              72.5069,
+              72.7113,
+              72.7054,
+              73.1403,
+              73.2026,
+              72.6075,
+              72.2977,
+              75.3959,
+              72.5104,
+              72.9256,
+              76.8372,
+              71.3455,
+              72.3004,
+              72.0264,
+              71.8116
+            ],
+            "wall": {
+              "n": 21,
+              "min": 71.3455,
+              "max": 76.8372,
+              "median": 72.7054,
+              "p95": 75.4193,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 0.4894000000000034,
+              "stdev": 1.2904520766680456,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.006731274430785105
+            },
+            "compute": {
+              "n": 21,
+              "min": 60.0808,
+              "max": 65.57249999999999,
+              "median": 61.4407,
+              "p95": 64.1546,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 0.4894000000000034,
+              "stdev": 1.2904520766680434,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.00796540403999309
+            },
+            "startup_baseline_ms": 11.2647,
+            "startup_mad_ms": 0.3477,
+            "startup_share": 0.15493622206878718
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              72.3917,
+              72.8094,
+              72.0642,
+              78.457,
+              72.7309,
+              74.2188,
+              71.4777,
+              74.5483,
+              72.3661,
+              72.5201,
+              72.8223,
+              72.9635,
+              72.6209,
+              72.913,
+              80.4921,
+              71.4586,
+              73.0853,
+              72.0216,
+              76.6884,
+              72.3454,
+              73.0268
+            ],
+            "wall": {
+              "n": 21,
+              "min": 71.4586,
+              "max": 80.4921,
+              "median": 72.8094,
+              "p95": 78.457,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 0.4432999999999936,
+              "stdev": 2.245314989775521,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.00608849956186967
+            },
+            "compute": {
+              "n": 21,
+              "min": 60.5548,
+              "max": 69.58829999999999,
+              "median": 61.90559999999999,
+              "p95": 67.55319999999999,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 0.4432999999999936,
+              "stdev": 2.245314989775521,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.007160903052389342
+            },
+            "startup_baseline_ms": 10.9038,
+            "startup_mad_ms": 0.2441,
+            "startup_share": 0.1497581356253451
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 61.4407,
+        "wall_median_ms": 72.7054,
+        "startup_baseline_ms": 11.2647,
+        "startup_share": 0.1549,
+        "mad_over_median_pct": 0.7965,
+        "median_agreement_pct": 0.7538,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "compute_mb_s": 16.5506,
+        "raw_mb_s": 13.9863
+      },
+      "selfhost": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              4305.5969,
+              4325.7479,
+              4253.0912,
+              4326.4672,
+              4250.1012,
+              4246.4202,
+              4247.4421,
+              4239.9072,
+              4228.1192,
+              4229.415,
+              4262.9935,
+              4211.1955,
+              4223.0281,
+              4265.9051,
+              4245.0271,
+              4375.7277,
+              4462.1154,
+              4596.13,
+              4338.0206,
+              4344.2339,
+              4245.9935
+            ],
+            "wall": {
+              "n": 21,
+              "min": 4211.1955,
+              "max": 4596.13,
+              "median": 4253.0912,
+              "p95": 4462.1154,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 24.971999999999753,
+              "stdev": 90.12864672113814,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.005871494126436732
+            },
+            "compute": {
+              "n": 21,
+              "min": 4199.922,
+              "max": 4584.8565,
+              "median": 4241.8177,
+              "p95": 4450.841899999999,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 24.971999999999753,
+              "stdev": 90.12864672113814,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.005887098825581249
+            },
+            "startup_baseline_ms": 11.2735,
+            "startup_mad_ms": 0.4779,
+            "startup_share": 0.002650660300912428
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              4414.208,
+              4965.1203,
+              4267.436,
+              4273.3491,
+              4254.8243,
+              4243.964,
+              4212.7144,
+              4226.1941,
+              4255.2432,
+              4292.7021,
+              4378.7879,
+              4258.6445,
+              4276.608,
+              4256.7565,
+              4264.7532,
+              4237.8438,
+              4247.5581,
+              4264.6587,
+              4250.6382,
+              4258.9907,
+              4229.7589
+            ],
+            "wall": {
+              "n": 21,
+              "min": 4212.7144,
+              "max": 4965.1203,
+              "median": 4258.6445,
+              "p95": 4414.208,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 14.680500000000393,
+              "stdev": 155.21867376754665,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.0034472236412314743
+            },
+            "compute": {
+              "n": 21,
+              "min": 4201.4149,
+              "max": 4953.8207999999995,
+              "median": 4247.345,
+              "p95": 4402.9085,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 14.680500000000393,
+              "stdev": 155.21867376754665,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.0034563945241086825
+            },
+            "startup_baseline_ms": 11.2995,
+            "startup_mad_ms": 0.3384,
+            "startup_share": 0.0026533090517416986
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 4241.8177,
+        "wall_median_ms": 4253.0912,
+        "startup_baseline_ms": 11.2735,
+        "startup_share": 0.0027,
+        "mad_over_median_pct": 0.5887,
+        "median_agreement_pct": 0.1302,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "compute_mb_s": 0.2397,
+        "raw_mb_s": 0.2391
+      },
+      "selfhost_vs_stage0": 0.0145
+    },
+    "parse": {
+      "workload": "benchmarks/selfhost/parse_check_list.txt",
+      "programs": 121,
+      "metric": "programs_per_s",
+      "stage0": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              1363.6885,
+              1363.8589,
+              1367.2149,
+              1360.2054,
+              1391.4932,
+              1374.1802,
+              1395.9217,
+              1386.3437,
+              1385.8854,
+              1367.214,
+              1403.9104,
+              1385.0029,
+              1402.6247,
+              1391.1785,
+              1415.3561,
+              1394.5217,
+              1382.5641,
+              1386.9036,
+              1373.9685,
+              1380.0678,
+              1375.9581
+            ],
+            "wall": {
+              "n": 21,
+              "min": 1360.2054,
+              "max": 1415.3561,
+              "median": 1385.0029,
+              "p95": 1403.9104,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 10.82269999999994,
+              "stdev": 14.3437028931888,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.007814207464836312
+            },
+            "compute": {
+              "n": 21,
+              "min": 1360.2054,
+              "max": 1415.3561,
+              "median": 1385.0029,
+              "p95": 1403.9104,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 10.82269999999994,
+              "stdev": 14.3437028931888,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.007814207464836312
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              1385.2923,
+              1382.349,
+              1376.8745,
+              1383.8609,
+              1376.842,
+              1392.0451,
+              1376.6703,
+              1389.0417,
+              1379.0508,
+              1372.6205,
+              1380.9938,
+              1364.058,
+              1358.0051,
+              1366.7958,
+              1420.8589,
+              1372.1,
+              1373.5924,
+              1374.6499,
+              1352.3258,
+              1376.3766,
+              1362.0239
+            ],
+            "wall": {
+              "n": 21,
+              "min": 1352.3258,
+              "max": 1420.8589,
+              "median": 1376.6703,
+              "p95": 1392.0451,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 5.678699999999935,
+              "stdev": 13.777028929073081,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.004124952793708076
+            },
+            "compute": {
+              "n": 21,
+              "min": 1352.3258,
+              "max": 1420.8589,
+              "median": 1376.6703,
+              "p95": 1392.0451,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 5.678699999999935,
+              "stdev": 13.777028929073081,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.004124952793708076
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 1385.0029,
+        "wall_median_ms": 1385.0029,
+        "startup_baseline_ms": 0.0,
+        "startup_share": 0.0,
+        "mad_over_median_pct": 0.7814,
+        "median_agreement_pct": 0.6034,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "programs_per_s": 87.364
+      },
+      "selfhost": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              1624.712,
+              1640.499,
+              1619.5757,
+              1649.3516,
+              1638.4177,
+              1651.1498,
+              1685.313,
+              1670.1039,
+              1710.8768,
+              1702.1351,
+              1725.5602,
+              1679.6525,
+              1770.1036,
+              1909.6065,
+              1657.873,
+              1785.3412,
+              1898.6093,
+              1964.4134,
+              1960.8981,
+              1643.0795,
+              1681.5226
+            ],
+            "wall": {
+              "n": 21,
+              "min": 1619.5757,
+              "max": 1964.4134,
+              "median": 1681.5226,
+              "p95": 1960.8981,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 41.02359999999999,
+              "stdev": 109.1593023377504,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.02439669856355186
+            },
+            "compute": {
+              "n": 21,
+              "min": 1619.5757,
+              "max": 1964.4134,
+              "median": 1681.5226,
+              "p95": 1960.8981,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 41.02359999999999,
+              "stdev": 109.1593023377504,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.02439669856355186
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              1605.6876,
+              1731.0663,
+              1689.6036,
+              1643.9269,
+              1627.521,
+              1635.4526,
+              1672.9588,
+              1668.7094,
+              1661.1388,
+              1660.7275,
+              1641.8389,
+              1662.0858,
+              1632.9601,
+              1665.563,
+              1653.1834,
+              1740.5188,
+              1673.4984,
+              1622.8726,
+              1625.8198,
+              1619.8487,
+              1619.9964
+            ],
+            "wall": {
+              "n": 21,
+              "min": 1605.6876,
+              "max": 1740.5188,
+              "median": 1653.1834,
+              "p95": 1731.0663,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 20.22329999999988,
+              "stdev": 33.86260901399097,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.012232944027867617
+            },
+            "compute": {
+              "n": 21,
+              "min": 1605.6876,
+              "max": 1740.5188,
+              "median": 1653.1834,
+              "p95": 1731.0663,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 20.22329999999988,
+              "stdev": 33.86260901399097,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.012232944027867617
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 1681.5226,
+        "wall_median_ms": 1681.5226,
+        "startup_baseline_ms": 0.0,
+        "startup_share": 0.0,
+        "mad_over_median_pct": 2.4397,
+        "median_agreement_pct": 1.6997,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "programs_per_s": 71.959
+      },
+      "selfhost_vs_stage0": 0.8237
+    },
+    "check": {
+      "workload": "benchmarks/selfhost/parse_check_list.txt",
+      "programs": 121,
+      "metric": "programs_per_s",
+      "stage0": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              1323.5399,
+              1284.4538,
+              1317.8106,
+              1335.6602,
+              1298.2234,
+              1302.6037,
+              1332.8158,
+              1307.7225,
+              1324.9416,
+              1318.0651,
+              1303.649,
+              1324.1643,
+              1305.7417,
+              1321.3262,
+              1297.8308,
+              1323.0315,
+              1339.2455,
+              1315.188,
+              1316.2901,
+              1340.2728,
+              1297.964
+            ],
+            "wall": {
+              "n": 21,
+              "min": 1284.4538,
+              "max": 1340.2728,
+              "median": 1317.8106,
+              "p95": 1339.2455,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 12.068899999999985,
+              "stdev": 14.734632670067292,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.009158296343951084
+            },
+            "compute": {
+              "n": 21,
+              "min": 1284.4538,
+              "max": 1340.2728,
+              "median": 1317.8106,
+              "p95": 1339.2455,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 12.068899999999985,
+              "stdev": 14.734632670067292,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.009158296343951084
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              1316.8014,
+              1319.5439,
+              1300.4924,
+              1313.2674,
+              1306.5199,
+              1322.1743,
+              1300.8916,
+              1297.0203,
+              1321.2837,
+              1331.3997,
+              1294.0724,
+              1319.0027,
+              1293.61,
+              1327.9908,
+              1313.0541,
+              1304.014,
+              1301.3805,
+              1322.8427,
+              1322.3309,
+              1319.0416,
+              1307.1184
+            ],
+            "wall": {
+              "n": 21,
+              "min": 1293.61,
+              "max": 1331.3997,
+              "median": 1313.2674,
+              "p95": 1327.9908,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 9.063499999999976,
+              "stdev": 11.121416889728904,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.006901488607727548
+            },
+            "compute": {
+              "n": 21,
+              "min": 1293.61,
+              "max": 1331.3997,
+              "median": 1313.2674,
+              "p95": 1327.9908,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 9.063499999999976,
+              "stdev": 11.121416889728904,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.006901488607727548
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          }
+        ],
+        "attempts_used": 2,
+        "median_ms": 1317.8106,
+        "wall_median_ms": 1317.8106,
+        "startup_baseline_ms": 0.0,
+        "startup_share": 0.0,
+        "mad_over_median_pct": 0.9158,
+        "median_agreement_pct": 0.3453,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "programs_per_s": 91.819
+      },
+      "selfhost": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              2083.5482,
+              2048.195,
+              2114.1365,
+              2241.7005,
+              2188.4593,
+              2489.209,
+              2197.2539,
+              2185.6319,
+              2141.1584,
+              2105.6183,
+              2380.5253,
+              2388.9571,
+              2295.9591,
+              2271.3787,
+              2281.8911,
+              2322.3826,
+              2207.4277,
+              2260.6888,
+              2268.697,
+              2316.6137,
+              2242.2105
+            ],
+            "wall": {
+              "n": 21,
+              "min": 2048.195,
+              "max": 2489.209,
+              "median": 2242.2105,
+              "p95": 2388.9571,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 56.57860000000028,
+              "stdev": 106.29266083357791,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.025233402483843634
+            },
+            "compute": {
+              "n": 21,
+              "min": 2048.195,
+              "max": 2489.209,
+              "median": 2242.2105,
+              "p95": 2388.9571,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 56.57860000000028,
+              "stdev": 106.29266083357791,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.025233402483843634
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              2200.3986,
+              2168.4974,
+              2174.52,
+              2195.2709,
+              2180.7408,
+              2240.5922,
+              2166.6934,
+              2161.5336,
+              2187.7733,
+              2146.837,
+              2148.0539,
+              2197.7678,
+              2372.0914,
+              2301.3058,
+              2203.4657,
+              2165.1943,
+              2196.3572,
+              2218.779,
+              2219.3691,
+              2185.4911,
+              2196.734
+            ],
+            "wall": {
+              "n": 21,
+              "min": 2146.837,
+              "max": 2372.0914,
+              "median": 2195.2709,
+              "p95": 2301.3058,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 23.508100000000013,
+              "stdev": 50.699430708179214,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.010708518934952407
+            },
+            "compute": {
+              "n": 21,
+              "min": 2146.837,
+              "max": 2372.0914,
+              "median": 2195.2709,
+              "p95": 2301.3058,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 23.508100000000013,
+              "stdev": 50.699430708179214,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.010708518934952407
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 2242.2105,
+        "wall_median_ms": 2242.2105,
+        "startup_baseline_ms": 0.0,
+        "startup_share": 0.0,
+        "mad_over_median_pct": 2.5233,
+        "median_agreement_pct": 2.1156,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "programs_per_s": 53.965
+      },
+      "selfhost_vs_stage0": 0.5877
+    },
+    "self_compile": {
+      "workload": "selfhost/main.matrix",
+      "modules": 17,
+      "bytes": 584703,
+      "metric": "compute_mb_s",
+      "stage0": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              1301.5708,
+              1285.6771,
+              1276.2227,
+              1294.0345,
+              1306.4752,
+              1315.4948,
+              1288.3206,
+              1290.4738,
+              1279.4867,
+              1291.4971,
+              1291.9947,
+              1285.982,
+              1297.1878,
+              1285.3102,
+              1282.3128,
+              1286.8179,
+              1292.1955,
+              1285.0103,
+              1287.5965,
+              1300.6162,
+              1291.8045
+            ],
+            "wall": {
+              "n": 21,
+              "min": 1276.2227,
+              "max": 1315.4948,
+              "median": 1290.4738,
+              "p95": 1306.4752,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 4.796699999999873,
+              "stdev": 8.938830147347538,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.00371700688537797
+            },
+            "compute": {
+              "n": 21,
+              "min": 1266.0995,
+              "max": 1305.3716,
+              "median": 1280.3506,
+              "p95": 1296.352,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 4.796699999999873,
+              "stdev": 8.938830147347538,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.0037463957137989184
+            },
+            "startup_baseline_ms": 10.1232,
+            "startup_mad_ms": 0.1557,
+            "startup_share": 0.007844560656713837
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              1298.8729,
+              1279.3206,
+              1287.8878,
+              1298.178,
+              1276.0618,
+              1311.9048,
+              1311.0408,
+              1303.8726,
+              1342.8201,
+              1322.3418,
+              1312.9869,
+              1290.8712,
+              1298.4837,
+              1295.6459,
+              1279.6998,
+              1284.8084,
+              1293.2408,
+              1291.7897,
+              1298.3437,
+              1326.8762,
+              1357.139
+            ],
+            "wall": {
+              "n": 21,
+              "min": 1276.0618,
+              "max": 1357.139,
+              "median": 1298.3437,
+              "p95": 1342.8201,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 12.697100000000091,
+              "stdev": 20.234725925767528,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.009779459784031063
+            },
+            "compute": {
+              "n": 21,
+              "min": 1265.9466,
+              "max": 1347.0238,
+              "median": 1288.2285,
+              "p95": 1332.7049,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 12.697100000000091,
+              "stdev": 20.234725925767528,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.009856248328615686
+            },
+            "startup_baseline_ms": 10.1152,
+            "startup_mad_ms": 0.229,
+            "startup_share": 0.007790849218123059
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 1280.3506,
+        "wall_median_ms": 1290.4738,
+        "startup_baseline_ms": 10.1232,
+        "startup_share": 0.0078,
+        "mad_over_median_pct": 0.9856,
+        "median_agreement_pct": 0.6134,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "compute_mb_s": 0.45667,
+        "raw_mb_s": 0.45309
+      },
+      "selfhost": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              12119.2937,
+              12153.1041,
+              12129.5476,
+              12020.366,
+              12278.8581,
+              12271.9104,
+              12122.087,
+              12180.4269,
+              12136.9874,
+              12033.0743,
+              11975.561,
+              12060.7496,
+              12317.0116,
+              12179.3254,
+              12063.3869,
+              12211.9564,
+              12233.9474,
+              12071.2452,
+              12140.5338,
+              12013.1879,
+              12173.4834
+            ],
+            "wall": {
+              "n": 21,
+              "min": 11975.561,
+              "max": 12317.0116,
+              "median": 12136.9874,
+              "p95": 12278.8581,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 73.60050000000047,
+              "stdev": 90.75515569405164,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.006064148999610931
+            },
+            "compute": {
+              "n": 21,
+              "min": 11961.8352,
+              "max": 12303.2858,
+              "median": 12123.2616,
+              "p95": 12265.1323,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 73.60050000000047,
+              "stdev": 90.75515569405164,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.006071014750683963
+            },
+            "startup_baseline_ms": 13.7258,
+            "startup_mad_ms": 1.1712,
+            "startup_share": 0.0011309066696402765
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              12133.0659,
+              12012.7726,
+              12216.7592,
+              12176.821,
+              12000.9818,
+              12218.2237,
+              12166.1917,
+              12227.3461,
+              12223.9567,
+              12332.5822,
+              12195.9905,
+              12160.1617,
+              12210.4958,
+              12130.6275,
+              12101.3826,
+              12157.7503,
+              12113.1781,
+              12234.8793,
+              12197.2431,
+              12207.5688,
+              12251.3365
+            ],
+            "wall": {
+              "n": 21,
+              "min": 12000.9818,
+              "max": 12332.5822,
+              "median": 12195.9905,
+              "p95": 12251.3365,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 35.82879999999932,
+              "stdev": 74.45547680666951,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.0029377523703383764
+            },
+            "compute": {
+              "n": 21,
+              "min": 11989.3248,
+              "max": 12320.925200000001,
+              "median": 12184.3335,
+              "p95": 12239.6795,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 35.82879999999932,
+              "stdev": 74.45547680666951,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.002940562977859997
+            },
+            "startup_baseline_ms": 11.657,
+            "startup_mad_ms": 0.6983,
+            "startup_share": 0.0009558059265461055
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 12123.2616,
+        "wall_median_ms": 12136.9874,
+        "startup_baseline_ms": 13.7258,
+        "startup_share": 0.0011,
+        "mad_over_median_pct": 0.6071,
+        "median_agreement_pct": 0.5025,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "compute_mb_s": 0.04823,
+        "raw_mb_s": 0.04818
+      },
+      "selfhost_vs_stage0": 0.1056
+    },
+    "corpus_build": {
+      "workload": "benchmarks/selfhost/corpus_build_list.txt",
+      "programs": 6,
+      "metric": "batch_ms",
+      "parity_verified": true,
+      "stage0": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              956.8652,
+              962.3898,
+              964.9321,
+              977.2995,
+              1025.1517,
+              965.9372,
+              961.4027,
+              1031.4092,
+              975.6578,
+              1001.527,
+              1005.6473,
+              966.5496,
+              1000.4296,
+              972.3565,
+              988.8351,
+              1018.3275,
+              948.5252,
+              1003.2555,
+              959.0353,
+              974.3458,
+              1010.1427
+            ],
+            "wall": {
+              "n": 21,
+              "min": 948.5252,
+              "max": 1031.4092,
+              "median": 975.6578,
+              "p95": 1025.1517,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 16.622499999999945,
+              "stdev": 24.07758751205904,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.017037223501928593
+            },
+            "compute": {
+              "n": 21,
+              "min": 948.5252,
+              "max": 1031.4092,
+              "median": 975.6578,
+              "p95": 1025.1517,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 16.622499999999945,
+              "stdev": 24.07758751205904,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.017037223501928593
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              950.2938,
+              969.3107,
+              975.9719,
+              976.1139,
+              999.2539,
+              1006.9056,
+              995.1301,
+              962.9969,
+              945.283,
+              987.9439,
+              1022.4257,
+              963.5953,
+              954.1906,
+              1020.511,
+              986.3148,
+              1044.3748,
+              973.734,
+              971.7493,
+              996.521,
+              977.6036,
+              972.1589
+            ],
+            "wall": {
+              "n": 21,
+              "min": 945.283,
+              "max": 1044.3748,
+              "median": 976.1139,
+              "p95": 1022.4257,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 13.116999999999962,
+              "stdev": 24.560325414849675,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.013437980956935418
+            },
+            "compute": {
+              "n": 21,
+              "min": 945.283,
+              "max": 1044.3748,
+              "median": 976.1139,
+              "p95": 1022.4257,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 13.116999999999962,
+              "stdev": 24.560325414849675,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.013437980956935418
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 975.6578,
+        "wall_median_ms": 975.6578,
+        "startup_baseline_ms": 0.0,
+        "startup_share": 0.0,
+        "mad_over_median_pct": 1.7037,
+        "median_agreement_pct": 0.0467,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "programs_per_s": 6.15
+      },
+      "selfhost": {
+        "passes": [
+          {
+            "pass": 1,
+            "wall_ms": [
+              2221.8184,
+              2262.9354,
+              2178.5916,
+              2215.2126,
+              2178.0666,
+              2194.2442,
+              2208.9354,
+              2251.1569,
+              2205.8892,
+              2199.0725,
+              2206.0498,
+              2213.6311,
+              2284.6889,
+              2153.7335,
+              2149.7769,
+              2163.9078,
+              2156.0042,
+              2253.1484,
+              2182.917,
+              2168.1008,
+              2207.0806
+            ],
+            "wall": {
+              "n": 21,
+              "min": 2149.7769,
+              "max": 2284.6889,
+              "median": 2205.8892,
+              "p95": 2262.9354,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 27.297599999999875,
+              "stdev": 36.32494641556227,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.012374873588392324
+            },
+            "compute": {
+              "n": 21,
+              "min": 2149.7769,
+              "max": 2284.6889,
+              "median": 2205.8892,
+              "p95": 2262.9354,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 27.297599999999875,
+              "stdev": 36.32494641556227,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.012374873588392324
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          },
+          {
+            "pass": 2,
+            "wall_ms": [
+              2173.0115,
+              2186.5971,
+              2199.4505,
+              2156.5586,
+              2173.5549,
+              2165.6453,
+              2206.4032,
+              2208.8282,
+              2160.4239,
+              2178.6861,
+              2183.3328,
+              2213.1069,
+              2222.7424,
+              2178.3946,
+              2162.9656,
+              2170.4896,
+              2164.1814,
+              2201.9268,
+              2184.5731,
+              2163.7876,
+              2175.9519
+            ],
+            "wall": {
+              "n": 21,
+              "min": 2156.5586,
+              "max": 2222.7424,
+              "median": 2178.3946,
+              "p95": 2213.1069,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 14.213200000000143,
+              "stdev": 18.7811722056065,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.006524621388613497
+            },
+            "compute": {
+              "n": 21,
+              "min": 2156.5586,
+              "max": 2222.7424,
+              "median": 2178.3946,
+              "p95": 2213.1069,
+              "p95_method": "nearest-rank ceil(0.95*n)",
+              "mad": 14.213200000000143,
+              "stdev": 18.7811722056065,
+              "stdev_method": "population (statistics.pstdev)",
+              "mad_over_median": 0.006524621388613497
+            },
+            "startup_baseline_ms": 0.0,
+            "startup_mad_ms": 0.0,
+            "startup_share": 0.0
+          }
+        ],
+        "attempts_used": 1,
+        "median_ms": 2205.8892,
+        "wall_median_ms": 2205.8892,
+        "startup_baseline_ms": 0.0,
+        "startup_share": 0.0,
+        "mad_over_median_pct": 1.2375,
+        "median_agreement_pct": 1.2542,
+        "mad_ok": true,
+        "startup_mad_ok": true,
+        "verdict": "PASS",
+        "programs_per_s": 2.72
+      },
+      "selfhost_vs_stage0_time": 2.2609
+    }
+  },
+  "targets": {
+    "lex": {
+      "metric": "compute_mb_s",
+      "stage0_baseline": 16.5506,
+      "selfhost_baseline": 0.2397,
+      "selfhost_vs_stage0": 0.0145,
+      "tier_a_floor_mb_s": 99.0
+    },
+    "parse": {
+      "metric": "programs_per_s",
+      "stage0_baseline": 87.364,
+      "selfhost_baseline": 71.959,
+      "selfhost_vs_stage0": 0.8237,
+      "tier_a_floor_programs_s": 57.6
+    },
+    "check": {
+      "metric": "programs_per_s",
+      "stage0_baseline": 91.819,
+      "selfhost_baseline": 53.965,
+      "selfhost_vs_stage0": 0.5877,
+      "tier_a_floor_programs_s": 43.2
+    },
+    "self_compile": {
+      "metric": "compute_mb_s",
+      "stage0_baseline": 0.45667,
+      "selfhost_baseline": 0.04823,
+      "selfhost_vs_stage0": 0.1056,
+      "tier_a_floor_mb_s": 0.0386
+    },
+    "corpus_build": {
+      "metric": "batch_ms",
+      "stage0_baseline_ms": 975.6578,
+      "selfhost_baseline_ms": 2205.8892,
+      "selfhost_vs_stage0_time": 2.2609,
+      "tier_a_max_batch_ms": 2757.4
+    }
+  },
+  "verdict": {
+    "status": "ADVISORY_ONLY",
+    "frozen": false,
+    "numeric_band": "PASS",
+    "selftest_pass": true
+  }
+}

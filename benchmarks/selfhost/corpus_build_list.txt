@@ -1,0 +1,6 @@
+selfhost/corpus/examples/class.matrix
+selfhost/corpus/examples/functions.matrix
+selfhost/corpus/examples/hello.matrix
+selfhost/corpus/examples/higher_order.matrix
+selfhost/corpus/examples/loops.matrix
+selfhost/corpus/examples/map.matrix

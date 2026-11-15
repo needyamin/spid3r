@@ -2048,8 +2048,8 @@
 
         <figure class="diagram">
           <img src="../diagrams/workflows.svg"
-            alt="Spid3r GitHub Actions workflows: CI matrix covering Core, GUI, WASM, and LLVM Native AOT; Release pipeline building Linux, macOS tarballs and the Windows NSIS installer with full engines; and weekly scheduled cargo-fuzz regression suite.">
-          <figcaption>Spid3r automated workflow architecture: Continuous Integration (<code>ci.yml</code>), multi-architecture releases (<code>release.yml</code>), and continuous nightly libfuzzer (<code>fuzz.yml</code>).</figcaption>
+            alt="Spid3r GitHub Actions workflows: 6-job CI matrix covering Core, GUI, WASM, LLVM 23 Native AOT with Linux self-host bootstrap, Phase 0 measurement gates, and Self-host Parity Gate over the frozen corpus; Self-hosted Release pipeline building 4 tarballs and the Windows NSIS installer packaging spid3r-self, spid3r, and pinned runtime artifacts; and scheduled/PR cargo-fuzz regression suite.">
+          <figcaption>Spid3r automated workflow architecture: Continuous Integration (<code>ci.yml</code>), self-hosted multi-architecture releases (<code>release.yml</code>), and scheduled/PR libfuzzer (<code>fuzz.yml</code>).</figcaption>
         </figure>
 
         <h3 class="section-h3" id="module-resolution">Module Resolution</h3>
@@ -5552,13 +5552,18 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
         <div class="callout tip">
           <div class="callout-header">🧬 Self-hosting status</div>
           <p>
-            The compiler is also <strong>written in Spid3r</strong>: the lexer, parser, semantic checker,
-            lowering, bytecode compiler, LLVM-C codegen, and the build driver's link and module-flattening
-            halves all live in <code>selfhost/</code> and are compiled by the Rust toolchain into a working
-            second compiler (<code>spid3r build selfhost/main.matrix -o selfhost/main_native.exe</code>).
-            Its <code>native</code> mode builds every test-corpus program with byte-identical stdout, stderr
-            and exit codes to the Rust backend, at parity speed. See
-            <a href="../../docs/SELFHOST.md">the self-hosting ADR</a> and the roadmap's evidence ledger.
+            The compiler and core developer tools are <strong>written in Spid3r</strong> across 17 modules in
+            <code>selfhost/</code>: lexer, parser, semantic checker &amp; lints, lowering, bytecode compiler
+            (<code>.matrixc</code>), LLVM-C codegen, cross-OS linker/driver, and the <code>test</code>,
+            <code>fmt</code>, and package tools (<code>pack</code>/<code>unpack</code>/<code>verify</code>/<code>dist</code>).
+            Compiled via Stage 0 (<code>spid3r build selfhost/main.matrix -o selfhost/main_native.exe</code>),
+            <code>spid3r-self</code> reaches a bit-identical <strong>Stage 1 &rarr; Stage 2 &rarr; Stage 3</strong>
+            object fixed point across the 134-program frozen corpus, verifies a SHA-256-pinned runtime staticlib
+            (<code>spid3r verify-runtime</code>, <a href="../../docs/RUNTIME_ABI.md">RUNTIME_ABI.md</a>), and records
+            frozen Stage-0 vs selfhost throughput baselines in <a href="benchmark.html">Benchmarks</a>. See
+            <a href="../../docs/SELFHOST.md">the self-hosting ADR</a>,
+            <a href="../../docs/SELFHOST_RETIREMENT.md">retirement review</a>, and
+            <a href="../../full_plan.html">the roadmap ledger</a>.
           </p>
         </div>
         <table>

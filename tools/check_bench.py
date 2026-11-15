@@ -18,6 +18,7 @@ Usage: python tools/check_bench.py [--spid3r BIN] [--self BIN]
 """
 
 import argparse
+import json
 import statistics
 import subprocess
 import sys
@@ -26,13 +27,26 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+BASELINE_JSON = ROOT / "benchmarks" / "selfhost" / "baseline.json"
+PINNED_LIST = ROOT / "benchmarks" / "selfhost" / "parse_check_list.txt"
 
 
 def corpus_files() -> list:
+    if PINNED_LIST.is_file():
+        return [ROOT / ln.strip() for ln in PINNED_LIST.read_text(encoding="utf-8").splitlines() if ln.strip()]
     files = []
     for d in ["examples", "engine_matrix", "edge"]:
         files += sorted((ROOT / "selfhost" / "corpus" / d).glob("*.matrix"))
     return files
+
+
+def load_check_target() -> tuple[float | None, float | None, str]:
+    if BASELINE_JSON.is_file():
+        data = json.loads(BASELINE_JSON.read_text(encoding="utf-8"))
+        t = (data.get("targets") or {}).get("check")
+        if t and "tier_a_floor_programs_s" in t:
+            return float(t["tier_a_floor_programs_s"]), float(t["selfhost_baseline"]), "benchmarks/selfhost/baseline.json"
+    return None, None, "fallback 0.8x live (baseline.json missing)"
 
 
 def timed_batch(cmd_prefix, files, cwd):
@@ -85,9 +99,10 @@ def measure(name, cmd_prefix, files, empty, warmups, repeats):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--spid3r", default="target/release/spid3r")
-    ap.add_argument("--self", default="target/selfhost-main.exe")
+    ap.add_argument("--self", default="selfhost/main_native.exe")
     ap.add_argument("--warmups", type=int, default=9)
     ap.add_argument("--repeats", type=int, default=21)
+    ap.add_argument("--advisory", action="store_true", help="do not fail exit code on floor miss")
     args = ap.parse_args()
 
     def resolve(p):
@@ -121,13 +136,15 @@ def main() -> int:
         ratio = self / oracle
         print(f"\nTier-B (selfhost >= 1/2 stage-0 check programs/s, raw): ratio {ratio:.4f}x — "
               f"{'PASS' if ratio >= 0.5 else 'MEASURED UNREACHABLE'}")
-        # Tier-A no-regression floor on the same metric: 0.8x of the measured
-        # baseline, blocking locally, advisory on shared CI runners.
-        floor = round(self * 0.8, 1)  # same raw metric as the gate
-        verdict = "PASS" if self >= floor else "FAIL"
-        print(f"Tier-A floor ({floor} programs/s = 0.8x of the measured baseline): "
+        # Tier-A no-regression floor read from frozen benchmarks/selfhost/baseline.json.
+        floor, frozen_base, src_note = load_check_target()
+        if floor is None:
+            floor = round(self * 0.8, 1)
+        base_txt = f", baseline {frozen_base:.1f}/s" if frozen_base is not None else ""
+        verdict = "PASS" if self >= floor else ("ADVISORY" if args.advisory else "FAIL")
+        print(f"Tier-A floor ({floor} programs/s from {src_note}{base_txt}): "
               f"{self:.1f} — {verdict}")
-        return 0
+        return 0 if (self >= floor or args.advisory) else 1
 
 
 if __name__ == "__main__":
