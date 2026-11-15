@@ -240,8 +240,8 @@ public fn find_runtime_staticlib() {
             }
         }
     }
-    // Cargo target directories
-    for prof in ["debug", "release"] {
+    // Cargo target directories (release before debug, matching src/native/mod.rs)
+    for prof in ["release", "debug"] {
         for rname in names {
             let c = "target/" + prof + "/" + rname;
             if is_file(c) {

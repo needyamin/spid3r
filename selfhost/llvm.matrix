@@ -187,6 +187,10 @@ public extern fn LLVMCreateTargetDataLayout(tm: ptr) -> ptr;
 public extern fn LLVMSetModuleDataLayout(m: ptr, dl: ptr);
 public extern fn LLVMGetTargetMachineTriple(tm: ptr) -> string;
 public extern fn LLVMDisposeMessage(msg: ptr);
+public extern fn LLVMCreatePassBuilderOptions() -> ptr;
+public extern fn LLVMDisposePassBuilderOptions(opts: ptr);
+public extern fn LLVMRunPasses(m: ptr, passes: string, tm: ptr, opts: ptr) -> ptr;
+public extern fn LLVMConsumeError(err: ptr);
 
 // -------------------------------------------------- gate-5.1 verification
 
@@ -194,9 +198,11 @@ public extern fn LLVMDisposeMessage(msg: ptr);
 public const OBJECT_FILE = 1;
 // LLVMVerifierFailureAction: LLVMReturnStatusAction = 1.
 public const RETURN_STATUS_ACTION = 1;
-// LLVMCodeGenOptLevel::Default = 2; LLVMRelocMode::Default = 0, PIC = 2;
-// LLVMCodeModel::Default = 0.
+// LLVMCodeGenOptLevel: None = 0, Less = 1, Default = 2, Aggressive = 3;
+// LLVMRelocMode::Default = 0, PIC = 2; LLVMCodeModel::Default = 0.
+public const OPT_NONE = 0;
 public const OPT_DEFAULT = 2;
+public const OPT_AGGRESSIVE = 3;
 public const RELOC_DEFAULT = 0;
 public const RELOC_PIC = 2;
 public const CODE_MODEL_DEFAULT = 0;
@@ -281,12 +287,13 @@ fn llvm_cpu_for_triple(triple) {
     return "generic";
 }
 
-// The Phase-5.2 / Phase-10.1 emission path: the same target-machine pipeline
-// as llvm_emit_object, optionally targeting an explicit triple (`--target`).
-// Uses RelocMode::PIC (`RELOC_PIC = 2`) and `llvm_cpu_for_triple` matching
-// src/native/llvm.rs::emit_object so Linux PIE and macOS/Windows links match.
-// Verdict by return code: 0 emitted, 3 no matching target, 2 emit failed.
-public fn emit_module_object_for_target(m, out_path, target_triple) {
+// The Phase-5.2 / Phase-10.1 / Phase-11.3 (P-3) emission path: mirrors
+// src/native/llvm.rs::emit_object 1:1 — sets target & RelocMode::PIC, picks
+// OPT_AGGRESSIVE (3) and runs `default<O3>` via LLVMRunPasses when `opt` is
+// true, or OPT_NONE (0) without optimization passes when `opt` is false.
+// Verdict by return code: 0 emitted, 3 no matching target, 2 emit failed,
+// 4 optimization pass pipeline failed.
+public fn emit_module_object_opts(m, out_path, target_triple, opt) {
     init_targets();
     let host_triple = LLVMGetDefaultTargetTriple();
     let triple = host_triple;
@@ -311,15 +318,29 @@ public fn emit_module_object_for_target(m, out_path, target_triple) {
         return 3;
     }
     let cpu = llvm_cpu_for_triple(triple);
+    let level = OPT_NONE;
+    if opt {
+        level = OPT_AGGRESSIVE;
+    }
     let tm = LLVMCreateTargetMachine(
         target,
         triple,
         cpu,
         "",
-        OPT_DEFAULT,
+        level,
         RELOC_PIC,
         CODE_MODEL_DEFAULT
     );
+    if opt {
+        let pb_opts = LLVMCreatePassBuilderOptions();
+        let pass_err = LLVMRunPasses(m, "default<O3>", tm, pb_opts);
+        LLVMDisposePassBuilderOptions(pb_opts);
+        if pass_err != 0 {
+            LLVMConsumeError(pass_err);
+            LLVMDisposeTargetMachine(tm);
+            return 4;
+        }
+    }
     let err_slot = malloc(8);
     let rc = LLVMTargetMachineEmitToFile(tm, m, out_path, OBJECT_FILE, err_slot) & 4294967295;
     LLVMDisposeTargetMachine(tm);
@@ -329,8 +350,12 @@ public fn emit_module_object_for_target(m, out_path, target_triple) {
     return 0;
 }
 
+public fn emit_module_object_for_target(m, out_path, target_triple) {
+    return emit_module_object_opts(m, out_path, target_triple, false);
+}
+
 public fn emit_module_object(m, out_path) {
-    return emit_module_object_for_target(m, out_path, null);
+    return emit_module_object_opts(m, out_path, null, false);
 }
 
 // The RUNTIME TRAMPOLINES (spid3r_binop, spid3r_value_int, spid3r_call, ...)

@@ -2773,6 +2773,10 @@ public fn cg_emit_object_for_target(st, out_path, target_triple) {
     return emit_module_object_for_target(st["module"], out_path, target_triple);
 }
 
+public fn cg_emit_object_opts(st, out_path, target_triple, opt) {
+    return emit_module_object_opts(st["module"], out_path, target_triple, opt);
+}
+
 // Dispose the LLVM C++ builder, module, and context held by a codegen state
 // so repeated in-process compiles do not retain native LLVM allocations.
 public fn cg_dispose(st) {

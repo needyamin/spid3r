@@ -585,12 +585,7 @@ fn main() {
             ci3 -= 1;
         }
         let obj_path = odir + "spid3r_" + pstem + ".o";
-        let rc = 0;
-        if build_target != null and build_target != "" {
-            rc = cg_emit_object_for_target(cgst, obj_path, build_target);
-        } else {
-            rc = cg_emit_object(cgst, obj_path);
-        }
+        let rc = cg_emit_object_opts(cgst, obj_path, build_target, build_opt);
         cg_dispose(cgst);
         if rc != 0 {
             eprint("error[build]: object emission failed (step " + string(rc) + ")\n");
