@@ -6,9 +6,9 @@ Read both before changing anything. If this file and `full_plan.html` disagree, 
 
 ## 1. Current state (update when a phase moves)
 
-As of 2026-11-15 (last commit seen: `1c7cf79`, Phase 8 CI green; Phase 9 verified locally, uncommitted):
+As of 2026-11-15 (last commit seen: `9a39c3f`, Phase 9 CI green):
 
-- Phases 0–9 closed locally (Phases 0–7 verified green on GitHub CI run `#115` / Pages `#116`; Phase 8 committed in `9e4f5d3` and verified green on GitHub CI run `#117`, `6m 11s` / Pages `#118`, CI ledger pushed in `1c7cf79`).
+- Phases 0–9 closed (Phases 0–7 verified green on GitHub CI run `#115` / Pages `#116`; Phase 8 committed in `9e4f5d3` and verified green on GitHub CI run `#117`, `6m 11s` / Pages `#118`, CI ledger pushed in `1c7cf79`; Phase 9 committed in `9a39c3f` and verified green on GitHub CI run `#119`, `5m 10s` / Pages `#120`, `28s`).
 - Phase 9 highlights: `docs/RUNTIME_ABI.md` (formal C ABI for all 66 `spid3r_*` trampolines in `src/native/rt.rs` + 229 stdlib native entries), `tools/runtime_artifact.sh` (versioned `spid3r-runtime-<version>-<target>.tar.gz` + `.sha256` + `runtime-manifest.json` provenance), `selfhost/link.matrix` + `selfhost/main.matrix` (SHA-256 pin enforcement via `SPID3R_RUNTIME_MANIFEST`/`SPID3R_RUNTIME_SHA256`/`SPID3R_RUNTIME_REQUIRE_PIN`/sidecars with clean exit `4` on tamper + `verify-runtime` CLI), release/CI workflow integration (`.github/workflows/release.yml`, `.github/workflows/ci.yml`), and owner-confirmed Phase 9.2 ADR in `docs/SELFHOST.md` keeping `rt.rs` in the pinned staticlib. Stage 1 -> Stage 2 -> Stage 3 COFF `spid3r_main.o` fixed point is bit-identical (`621b988ca067e3bf96a40513e0e3e580dfcc62b97b20f2d1d20bb1ac52b8ee58`).
 - Roadmap progress: 32/51 checkboxes. **Next real work: Phase 10** (`10.1` release pipeline switch, `10.2` retirement review). Phase 11 follows.
 - Stale ledger row: the 2026-11-14 `5.3 OPEN` row is superseded by the 2026-11-15 `5.3` PASS row (a correction note row exists). The ledger is append-only, so never delete rows. Add a note instead.
