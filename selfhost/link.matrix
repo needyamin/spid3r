@@ -22,7 +22,7 @@ public fn find_msvc_link_exe() {
     // newest version last. Then bin/HostX64/x64/link.exe.
     let roots = [];
     let bases = ["C:/Program Files/Microsoft Visual Studio",
-                 "C:/Program Files (x86)/Microsoft Visual Studio"];
+    "C:/Program Files (x86)/Microsoft Visual Studio"];
     for base in bases {
         if not is_dir(base) {
             continue;
@@ -111,6 +111,14 @@ public fn find_runtime_staticlib() {
         if is_file(dir) {
             return dir;
         }
+        if is_dir(dir) {
+            for rname in ["spid3r_lang.lib", "libspid3r_lang.a", "spid3r.lib", "libspid3r.a"] {
+                let rc = dir + "/" + rname;
+                if is_file(rc) {
+                    return rc;
+                }
+            }
+        }
     }
     // The toolchain's own directory (developer layout: target/debug/spid3r.exe)
     let ep = exe_path();
@@ -120,7 +128,7 @@ public fn find_runtime_staticlib() {
     let exe = ep.unwrap();
     let dir = link_dirname_of(exe);
     let cands = [dir + "/spid3r_lang.lib", dir + "/../../debug/spid3r_lang.lib",
-                 dir + "/../../release/spid3r_lang.lib"];
+    dir + "/../../release/spid3r_lang.lib"];
     for c in cands {
         if is_file(c) {
             return c;
@@ -144,7 +152,9 @@ public fn find_runtime_staticlib() {
 public fn link_executable(obj_path, out_path, staticlib_path) {
     let lr = find_msvc_link_exe();
     if lr[0] == null {
-        eprint("error[usage]: no MSVC linker (link.exe) found; install Visual Studio Build Tools (see docs/BUILDING.md)\n");
+        eprint(
+            "error[usage]: no MSVC linker (link.exe) found; install Visual Studio Build Tools (see docs/BUILDING.md)\n"
+        );
         return 2;
     }
     // The oracle's diagnostics carry PathBuf-style backslash paths —
@@ -153,7 +163,9 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
     let msvc_lib = lr[1].replace("/", "\\");
     let sdk = find_winsdk_lib_root();
     if sdk == null {
-        eprint("error[usage]: no Windows SDK found; install the Windows 10/11 SDK (see docs/BUILDING.md)\n");
+        eprint(
+            "error[usage]: no Windows SDK found; install the Windows 10/11 SDK (see docs/BUILDING.md)\n"
+        );
         return 2;
     }
     sdk = sdk.replace("/", "\\");
@@ -163,7 +175,7 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
     }
 
     let args = ["-nologo", "-out:" + out_path, "-subsystem:console",
-                "-nodefaultlib", obj_path, staticlib_path];
+    "-nodefaultlib", obj_path, staticlib_path];
     if msvc_lib != "" {
         args.push("-libpath:" + msvc_lib);
     }
@@ -181,8 +193,8 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
     args.push("-stack:4194304");
     // Static CRT (matching the staticlib's build — .cargo/config.toml)
     for l in ["libcmt.lib", "libvcruntime.lib", "libucrt.lib",
-              "kernel32.lib", "ntdll.lib", "userenv.lib",
-              "ws2_32.lib", "dbghelp.lib", "advapi32.lib"] {
+    "kernel32.lib", "ntdll.lib", "userenv.lib",
+    "ws2_32.lib", "dbghelp.lib", "advapi32.lib"] {
         args.push(l);
     }
     // Windows resource metadata (the oracle's compile_windows_resources):
@@ -383,24 +395,24 @@ fn link_compile_resources(out_path, sdk) {
 
     // The manifest: byte-for-byte the oracle's manifest_content.
     let manifest = ["<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
-        "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">",
-        "  <application xmlns=\"urn:schemas-microsoft-com:asm.v3\">",
-        "    <windowsSettings>",
-        "      <dpiAware xmlns=\"http://schemas.microsoft.com/SMI/2005/WindowsSettings\">true/pm</dpiAware>",
-        "      <dpiAwareness xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">PerMonitorV2, PerMonitor</dpiAwareness>",
-        "      <longPathAware xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">true</longPathAware>",
-        "      <activeCodePage xmlns=\"http://schemas.microsoft.com/SMI/2019/WindowsSettings\">UTF-8</activeCodePage>",
-        "    </windowsSettings>",
-        "  </application>",
-        "  <compatibility xmlns=\"urn:schemas-microsoft-com:compatibility.v1\">",
-        "    <application>",
-        "      <supportedOS Id=\"{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}\"/>",
-        "      <supportedOS Id=\"{1f676c76-80e1-4239-95bb-83d0f6d0da78}\"/>",
-        "      <supportedOS Id=\"{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}\"/>",
-        "      <supportedOS Id=\"{35138b9a-5d96-4fbd-8e2d-a2440225f93a}\"/>",
-        "    </application>",
-        "  </compatibility>",
-        "</assembly>"];
+    "<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">",
+    "  <application xmlns=\"urn:schemas-microsoft-com:asm.v3\">",
+    "    <windowsSettings>",
+    "      <dpiAware xmlns=\"http://schemas.microsoft.com/SMI/2005/WindowsSettings\">true/pm</dpiAware>",
+    "      <dpiAwareness xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">PerMonitorV2, PerMonitor</dpiAwareness>",
+    "      <longPathAware xmlns=\"http://schemas.microsoft.com/SMI/2016/WindowsSettings\">true</longPathAware>",
+    "      <activeCodePage xmlns=\"http://schemas.microsoft.com/SMI/2019/WindowsSettings\">UTF-8</activeCodePage>",
+    "    </windowsSettings>",
+    "  </application>",
+    "  <compatibility xmlns=\"urn:schemas-microsoft-com:compatibility.v1\">",
+    "    <application>",
+    "      <supportedOS Id=\"{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}\"/>",
+    "      <supportedOS Id=\"{1f676c76-80e1-4239-95bb-83d0f6d0da78}\"/>",
+    "      <supportedOS Id=\"{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}\"/>",
+    "      <supportedOS Id=\"{35138b9a-5d96-4fbd-8e2d-a2440225f93a}\"/>",
+    "    </application>",
+    "  </compatibility>",
+    "</assembly>"];
     let mw = write_file(manifest_path, manifest.join("\n"));
     if mw.is_err() {
         return null;
@@ -417,7 +429,8 @@ fn link_compile_resources(out_path, sdk) {
     let ver_str = "1.0.0";
     let v = "1,0,0,0";
     let vd = "1.0.0.0";
-    rc_lines.push("1 VERSIONINFO\nFILEVERSION " + v + "\nPRODUCTVERSION " + v
+    rc_lines.push(
+        "1 VERSIONINFO\nFILEVERSION " + v + "\nPRODUCTVERSION " + v
         + "\nFILEFLAGSMASK 0x3fL\nFILEFLAGS 0x0L\nFILEOS 0x40004L\nFILETYPE 0x1L\nFILESUBTYPE 0x0L\nBEGIN\n"
         + "    BLOCK \"StringFileInfo\"\n    BEGIN\n        BLOCK \"040904b0\"\n        BEGIN\n"
         + "            VALUE \"FileDescription\", \"" + prod_name + "\"\n"
@@ -427,17 +440,417 @@ fn link_compile_resources(out_path, sdk) {
         + "            VALUE \"ProductName\", \"" + prod_name + "\"\n"
         + "            VALUE \"ProductVersion\", \"" + ver_str + "\"\n"
         + "        END\n    END\n    BLOCK \"VarFileInfo\"\n    BEGIN\n"
-        + "        VALUE \"Translation\", 0x409, 1200\n    END\nEND\n");
+        + "        VALUE \"Translation\", 0x409, 1200\n    END\nEND\n"
+    );
     let rw = write_file(rc_path, rc_lines.join(""));
     if rw.is_err() {
         remove_file(manifest_path);
         return null;
     }
-    let r = exec_capture(rc_exe.replace("/", "\\"), ["/nologo", "/fo", res_path, rc_path], null);
+    let r = exec_capture(
+        rc_exe.replace("/", "\\"),
+        ["/nologo",
+        "/fo",
+        res_path,
+        rc_path],
+        null
+    );
     remove_file(manifest_path);
     remove_file(rc_path);
     if r.is_ok() and r.unwrap()["code"] == 0 and is_file(res_path) {
         return res_path;
     }
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime artifact formalization & SHA-256 pin verification (Phase 9.1, SH-6)
+// Consumes runtime-manifest.json / <lib>.manifest.json / <lib>.sha256 /
+// SPID3R_RUNTIME_MANIFEST / SPID3R_RUNTIME_SHA256 / SPID3R_RUNTIME_REQUIRE_PIN
+// and verifies SHA-256 integrity before invoking the system linker (SEC-B:
+// exit 4 on tampered/corrupt/conflicting pins; never links tampered code).
+// ---------------------------------------------------------------------------
+
+fn link_ends_with(s, suf) {
+    let n = s.len();
+    let m = suf.len();
+    if m > n {
+        return false;
+    }
+    return s.slice(n - m, n) == suf;
+}
+
+fn link_lower_ascii(s) {
+    let frags = [];
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let c = s[i];
+        let cp = ord(c);
+        if cp >= 65 and cp <= 90 {
+            frags.push(chr(cp + 32));
+        } else {
+            frags.push(c);
+        }
+        i += 1;
+    }
+    return frags.join("");
+}
+
+fn link_norm_hex64(s) {
+    if type_of(s) != "string" {
+        return null;
+    }
+    let t = s.trim();
+    if t.len() != 64 {
+        return null;
+    }
+    let frags = [];
+    let i = 0;
+    while i < 64 {
+        let c = t[i];
+        let cp = ord(c);
+        if cp >= 48 and cp <= 57 {
+            frags.push(c);
+        } else if cp >= 97 and cp <= 102 {
+            frags.push(c);
+        } else if cp >= 65 and cp <= 70 {
+            frags.push(chr(cp + 32));
+        } else {
+            return null;
+        }
+        i += 1;
+    }
+    return frags.join("");
+}
+
+fn link_basename(p) {
+    let n = p.len();
+    let i = n - 1;
+    while i >= 0 {
+        let cp = ord(p[i]);
+        if cp == 47 or cp == 92 {
+            return p.slice(i + 1, n);
+        }
+        i -= 1;
+    }
+    return p;
+}
+
+fn link_safe_filename(name) {
+    if type_of(name) != "string" or name == "" {
+        return false;
+    }
+    if name.contains("..") or name.contains("/") or name.contains("\\") or name.contains(":") {
+        return false;
+    }
+    return true;
+}
+
+fn link_env_truthy(name) {
+    let v = env(name);
+    if v.is_none() {
+        return false;
+    }
+    let s = link_lower_ascii(v.unwrap().trim());
+    return s == "1" or s == "true" or s == "yes";
+}
+
+// Parse `<64-hex>  <filename>` / `<64-hex> *<filename>` / `<64-hex>`.
+// Returns [rc, hex_lower, filename_or_null] where rc == 0 (ok) or 4 (corrupt).
+fn link_parse_sha256_file(path, expected_base) {
+    let r = read_file(path);
+    if r.is_err() {
+        eprint("error[corrupt]: cannot read runtime checksum file '" + path + "'\n");
+        return [4, null, null];
+    }
+    let raw = r.unwrap();
+    let lines = raw.split("\n");
+    let first = "";
+    for ln in lines {
+        let t = ln.trim();
+        if t != "" {
+            first = t;
+            break;
+        }
+    }
+    if first == "" or first.len() < 64 {
+        eprint("error[corrupt]: malformed runtime checksum file '" + path + "'\n");
+        return [4, null, null];
+    }
+    let hex_part = link_norm_hex64(first.slice(0, 64));
+    if hex_part == null {
+        eprint("error[corrupt]: malformed SHA-256 digest in '" + path + "'\n");
+        return [4, null, null];
+    }
+    let fname = null;
+    if first.len() > 64 {
+        let sep = first[64];
+        if sep != " " and sep != "\t" {
+            eprint("error[corrupt]: malformed runtime checksum entry in '" + path + "'\n");
+            return [4, null, null];
+        }
+        let rest = first.slice(64, first.len()).trim();
+        if rest.len() > 0 and rest[0] == "*" {
+            rest = rest.slice(1, rest.len()).trim();
+        }
+        if rest != "" {
+            fname = link_basename(rest);
+            if expected_base != null and fname != expected_base {
+                eprint(
+                    "error[corrupt]: runtime checksum file '" + path + "' names '" + fname + "' instead of '" + expected_base + "'\n"
+                );
+                return [4, null, null];
+            }
+        }
+    }
+    return [0, hex_part, fname];
+}
+
+// Load and validate schema-1 runtime-manifest.json.
+// Returns [rc, manifest_map, hex_lower] where rc == 0 (ok) or 4 (corrupt).
+fn link_load_runtime_manifest(mpath) {
+    if not file_exists(mpath) {
+        eprint("error[corrupt]: runtime manifest not found: '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    let r = read_file(mpath);
+    if r.is_err() {
+        eprint("error[corrupt]: cannot read runtime manifest '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    let m = null;
+    try {
+        m = json_parse(r.unwrap());
+    } catch (e) {
+        eprint("error[corrupt]: malformed runtime manifest JSON in '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    if type_of(m) != "map" {
+        eprint("error[corrupt]: runtime manifest must be a JSON object: '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    if not m.has("schema") or m["schema"] != 1 {
+        eprint("error[corrupt]: unsupported or missing runtime manifest schema in '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    if not m.has("version") or type_of(m["version"]) != "string" or m["version"].trim() == "" {
+        eprint("error[corrupt]: runtime manifest missing version in '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    if not m.has("staticlib_name") or not link_safe_filename(m["staticlib_name"]) {
+        eprint("error[corrupt]: runtime manifest has invalid staticlib_name in '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    if not m.has("staticlib_sha256") {
+        eprint("error[corrupt]: runtime manifest missing staticlib_sha256 in '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    let hex_pin = link_norm_hex64(m["staticlib_sha256"]);
+    if hex_pin == null {
+        eprint("error[corrupt]: runtime manifest has invalid staticlib_sha256 in '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    if not m.has("provenance") or type_of(m["provenance"]) != "map" {
+        eprint("error[corrupt]: runtime manifest missing provenance in '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    let prov = m["provenance"];
+    if not prov.has("git_commit") or type_of(prov["git_commit"]) != "string" or prov["git_commit"].trim() == "" {
+        eprint("error[corrupt]: runtime manifest missing provenance.git_commit in '" + mpath + "'\n");
+        return [4, null, null];
+    }
+    if not prov.has("llvm_version") or type_of(prov["llvm_version"]) != "string" or prov["llvm_version"].trim() == "" {
+        eprint(
+            "error[corrupt]: runtime manifest missing provenance.llvm_version in '" + mpath + "'\n"
+        );
+        return [4, null, null];
+    }
+    return [0, m, hex_pin];
+}
+
+// Core verifier given optional explicit manifest path and optional explicit lib path.
+// Returns [rc, sl_path, expected_hex, manifest_map].
+fn link_verify_runtime_internal(explicit_manifest, explicit_lib) {
+    let manifest_map = null;
+    let expected_hex = null;
+    let sl = explicit_lib;
+
+    let env_manifest = env("SPID3R_RUNTIME_MANIFEST");
+    if explicit_manifest == null and env_manifest.is_some() {
+        let em = env_manifest.unwrap().trim();
+        if em != "" {
+            explicit_manifest = em;
+        }
+    }
+
+    if explicit_manifest != null {
+        let mr = link_load_runtime_manifest(explicit_manifest);
+        if mr[0] != 0 {
+            return [mr[0], null, null, null];
+        }
+        manifest_map = mr[1];
+        expected_hex = mr[2];
+        if sl == null {
+            let env_lib = env("SPID3R_RUNTIME_LIB");
+            if env_lib.is_some() and env_lib.unwrap().trim() != "" {
+                sl = env_lib.unwrap().trim();
+            } else {
+                sl = link_dirname_of(explicit_manifest) + manifest_map["staticlib_name"];
+            }
+        }
+        if not is_file(sl) {
+            eprint("error[usage]: pinned runtime staticlib '" + sl + "' was not found\n");
+            return [2, null, null, manifest_map];
+        }
+        if link_basename(sl) != manifest_map["staticlib_name"] {
+            eprint(
+                "error[corrupt]: runtime staticlib filename '" + link_basename(sl) + "' does not match manifest '" + manifest_map["staticlib_name"] + "'\n"
+            );
+            return [4, null, null, manifest_map];
+        }
+    } else {
+        if sl == null {
+            sl = find_runtime_staticlib();
+        }
+        if sl == null or not is_file(sl) {
+            eprint("error[build]: the runtime staticlib (spid3r_lang.lib) was not found\n");
+            return [1, null, null, null];
+        }
+        let sdir = link_dirname_of(sl);
+        let sbase = link_basename(sl);
+        let sidecar_m = sl + ".manifest.json";
+        let dir_m = sdir + "runtime-manifest.json";
+        if is_file(sidecar_m) {
+            let mr2 = link_load_runtime_manifest(sidecar_m);
+            if mr2[0] != 0 {
+                return [mr2[0], null, null, null];
+            }
+            if mr2[1]["staticlib_name"] != sbase {
+                eprint(
+                    "error[corrupt]: sidecar manifest '" + sidecar_m + "' names '" + mr2[1]["staticlib_name"] + "' instead of '" + sbase + "'\n"
+                );
+                return [4, null, null, null];
+            }
+            manifest_map = mr2[1];
+            expected_hex = mr2[2];
+        } else if is_file(dir_m) {
+            let mr3 = link_load_runtime_manifest(dir_m);
+            if mr3[0] != 0 {
+                return [mr3[0], null, null, null];
+            }
+            if mr3[1]["staticlib_name"] == sbase {
+                manifest_map = mr3[1];
+                expected_hex = mr3[2];
+            }
+        }
+    }
+
+    // Check sidecar <sl>.sha256 if present.
+    let sha_sidecar = sl + ".sha256";
+    if is_file(sha_sidecar) {
+        let sr = link_parse_sha256_file(sha_sidecar, link_basename(sl));
+        if sr[0] != 0 {
+            return [sr[0], null, null, manifest_map];
+        }
+        if expected_hex != null and expected_hex != sr[1] {
+            eprint(
+                "error[corrupt]: runtime checksum pin conflict between manifest and '" + sha_sidecar + "'\n"
+            );
+            return [4, null, null, manifest_map];
+        }
+        expected_hex = sr[1];
+    }
+
+    // Check explicit SPID3R_RUNTIME_SHA256 pin if set.
+    let env_sha = env("SPID3R_RUNTIME_SHA256");
+    if env_sha.is_some() {
+        let es = env_sha.unwrap().trim();
+        if es != "" {
+            let norm_env = link_norm_hex64(es);
+            if norm_env == null {
+                eprint("error[corrupt]: invalid SPID3R_RUNTIME_SHA256 (expected 64 hex chars)\n");
+                return [4, null, null, manifest_map];
+            }
+            if expected_hex != null and expected_hex != norm_env {
+                eprint("error[corrupt]: runtime checksum pin conflict with SPID3R_RUNTIME_SHA256\n");
+                return [4, null, null, manifest_map];
+            }
+            expected_hex = norm_env;
+        }
+    }
+
+    if expected_hex == null {
+        if link_env_truthy("SPID3R_RUNTIME_REQUIRE_PIN") {
+            eprint(
+                "error[corrupt]: runtime staticlib '" + sl + "' has no SHA-256 pin (SPID3R_RUNTIME_REQUIRE_PIN)\n"
+            );
+            return [4, null, null, manifest_map];
+        }
+        return [0, sl, null, manifest_map];
+    }
+
+    let br = read_bytes(sl);
+    if br.is_err() {
+        eprint("error[corrupt]: cannot read runtime staticlib '" + sl + "' for integrity check\n");
+        return [4, null, null, manifest_map];
+    }
+    let actual_hex = link_lower_ascii(sha256(br.unwrap()));
+    if actual_hex != expected_hex {
+        eprint(
+            "error[corrupt]: runtime staticlib integrity check failed for '" + sl + "': expected " + expected_hex + ", got " + actual_hex + "\n"
+        );
+        return [4, null, null, manifest_map];
+    }
+    return [0, sl, actual_hex, manifest_map];
+}
+
+// Resolve the runtime staticlib and enforce any SHA-256 pin/manifest before linking.
+// Returns [rc, staticlib_path].
+public fn resolve_and_verify_runtime_staticlib() {
+    let r = link_verify_runtime_internal(null, null);
+    return [r[0], r[1]];
+}
+
+// CLI subcommand: `verify-runtime [<dir_or_manifest_or_staticlib>]`
+public fn link_cli_verify_runtime(cli_args) {
+    if cli_args.len() > 1 {
+        eprint("usage: main verify-runtime [<dir_or_manifest_or_staticlib>]\n");
+        return 2;
+    }
+    let em = null;
+    let el = null;
+    if cli_args.len() == 1 {
+        let target = cli_args[0];
+        if is_dir(target) {
+            em = target + "/runtime-manifest.json";
+        } else if link_ends_with(target, ".json") {
+            em = target;
+        } else if is_file(target) {
+            el = target;
+        } else {
+            eprint("error[usage]: runtime artifact path not found: '" + target + "'\n");
+            return 2;
+        }
+    }
+    let r = link_verify_runtime_internal(em, el);
+    if r[0] != 0 {
+        return r[0];
+    }
+    let sl = r[1];
+    let hex_ok = r[2];
+    let m = r[3];
+    if hex_ok == null {
+        eprint("error[corrupt]: runtime staticlib '" + sl + "' has no SHA-256 pin to verify\n");
+        return 4;
+    }
+    if m != null {
+        let p = m["provenance"];
+        println(
+            "verified runtime staticlib: " + sl + " (sha256=" + hex_ok + ", version=" + m["version"] + ", commit=" + p["git_commit"] + ", llvm=" + p["llvm_version"] + ")"
+        );
+    } else {
+        println("verified runtime staticlib: " + sl + " (sha256=" + hex_ok + ")");
+    }
+    return 0;
 }

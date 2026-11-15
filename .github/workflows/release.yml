@@ -113,6 +113,12 @@ jobs:
           else
             shasum -a 256 "spid3r-${{ matrix.target }}.tar.gz" > "spid3r-${{ matrix.target }}.tar.gz.sha256"
           fi
+          mkdir -p runtime-dist
+          bash tools/runtime_artifact.sh package \
+            "target/${{ matrix.target }}/release/libspid3r_lang.a" \
+            runtime-dist --profile release --target "${{ matrix.target }}"
+          bash tools/runtime_artifact.sh verify runtime-dist
+          cp runtime-dist/spid3r-runtime-*.tar.gz runtime-dist/spid3r-runtime-*.tar.gz.sha256 .
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
@@ -121,6 +127,8 @@ jobs:
           path: |
             spid3r-${{ matrix.target }}.tar.gz
             spid3r-${{ matrix.target }}.tar.gz.sha256
+            spid3r-runtime-*.tar.gz
+            spid3r-runtime-*.tar.gz.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -182,11 +190,25 @@ jobs:
           if ($exe.Length -lt 15MB) { Write-Error "::error::installer is $($exe.Length) bytes — the native/LLVM payload is missing"; exit 1 }
           Write-Host "Installer: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB)"
 
+      - name: Package versioned runtime staticlib artifact (Windows MSVC)
+        shell: bash
+        run: |
+          LIB="target/release/spid3r_lang.lib"
+          [ -f "$LIB" ] || LIB="$(find target -name spid3r_lang.lib | head -n 1)"
+          test -s "$LIB"
+          mkdir -p runtime-dist
+          bash tools/runtime_artifact.sh package "$LIB" runtime-dist --profile release --target x86_64-pc-windows-msvc --llvm-version 23.1.0
+          bash tools/runtime_artifact.sh verify runtime-dist
+          cp runtime-dist/spid3r-runtime-*.tar.gz runtime-dist/spid3r-runtime-*.tar.gz.sha256 .
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
         with:
           name: release-windows-installer
-          path: Spid3r-Setup-*.exe
+          path: |
+            Spid3r-Setup-*.exe
+            spid3r-runtime-*.tar.gz
+            spid3r-runtime-*.tar.gz.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -231,6 +253,7 @@ jobs:
         with:
           files: |
             dist/spid3r-*.tar.gz
+            dist/spid3r-runtime-*.tar.gz
             dist/Spid3r-Setup-*.exe
             dist/sha256sums.txt
           clobber: false

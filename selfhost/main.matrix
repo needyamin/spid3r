@@ -61,7 +61,9 @@ fn main() {
         a = rest;
     }
     if a.len() < 1 {
-        eprint("usage: main tokens|parse|check|registry|lowered|compile|native|build|test|fmt <file.matrix> [out|-o out]\n");
+        eprint(
+            "usage: main tokens|parse|check|registry|lowered|compile|native|build|test|fmt <file.matrix> [out|-o out]\n"
+        );
         return 2;
     }
     let mode = a[0];
@@ -80,12 +82,19 @@ fn main() {
     if mode == "verify" {
         return pkg_run_verify(a.slice(1, a.len()));
     }
+    if mode == "verify-runtime" {
+        return link_cli_verify_runtime(a.slice(1, a.len()));
+    }
     if a.len() < 2 and mode != "dist" {
-        eprint("usage: main tokens|parse|check|registry|lowered|compile|native|build|test|fmt|pack|unpack|verify|dist <file.matrix> [out|-o out]\n");
+        eprint(
+            "usage: main tokens|parse|check|registry|lowered|compile|native|build|test|fmt|pack|unpack|verify|verify-runtime|dist <file.matrix> [out|-o out]\n"
+        );
         return 2;
     }
     if mode != "tokens" and mode != "parse" and mode != "check" and mode != "registry" and mode != "lowered" and mode != "compile" and mode != "native" and mode != "build" and mode != "dist" {
-        eprint("error[usage]: unknown mode '" + mode + "' (tokens|parse|check|registry|lowered|compile|native|build|test|fmt|pack|unpack|verify|dist)\n");
+        eprint(
+            "error[usage]: unknown mode '" + mode + "' (tokens|parse|check|registry|lowered|compile|native|build|test|fmt|pack|unpack|verify|verify-runtime|dist)\n"
+        );
         return 2;
     }
     let path = null;
@@ -148,7 +157,9 @@ fn main() {
                 if ai >= a.len() {
                     let msg = "--allow needs a lint name (e.g. unused-variable)";
                     if chk_json {
-                        print(diag_to_json("error", "usage", null, msg, "", null, null) + "\n");
+                        print(
+                            diag_to_json("error", "usage", null, msg, "", null, null) + "\n"
+                        );
                     } else {
                         eprint("error[usage]: " + msg + "\n");
                     }
@@ -167,7 +178,9 @@ fn main() {
                 if path != null {
                     let msg = "check takes exactly one file";
                     if chk_json {
-                        print(diag_to_json("error", "usage", null, msg, "", null, null) + "\n");
+                        print(
+                            diag_to_json("error", "usage", null, msg, "", null, null) + "\n"
+                        );
                     } else {
                         eprint("error[usage]: " + msg + "\n");
                     }
@@ -188,7 +201,9 @@ fn main() {
         }
     } else {
         if a.len() > 3 {
-            eprint("usage: main tokens|parse|check|registry|lowered|compile|native <file.matrix> [out]\n");
+            eprint(
+                "usage: main tokens|parse|check|registry|lowered|compile|native <file.matrix> [out]\n"
+            );
             return 2;
         }
         path = a[1];
@@ -216,7 +231,19 @@ fn main() {
             pth = e[5];
         }
         if chk_json {
-            print(diag_to_json("error", "lexer", null, e[0], pth, [e[1], e[2], e[3]], null) + "\n");
+            print(
+                diag_to_json(
+                    "error",
+                    "lexer",
+                    null,
+                    e[0],
+                    pth,
+                    [e[1],
+                    e[2],
+                    e[3]],
+                    null
+                ) + "\n"
+            );
         } else {
             eprint("error[lexer]: " + e[0] + "\n");
             eprint("  --> " + pth + ":" + string(e[1]) + ":" + string(e[2]) + "\n");
@@ -261,7 +288,19 @@ fn main() {
             pth = e2[5];
         }
         if chk_json {
-            print(diag_to_json("error", phase, null, e2[0], pth, [e2[1], e2[2], e2[3]], null) + "\n");
+            print(
+                diag_to_json(
+                    "error",
+                    phase,
+                    null,
+                    e2[0],
+                    pth,
+                    [e2[1],
+                    e2[2],
+                    e2[3]],
+                    null
+                ) + "\n"
+            );
         } else {
             eprint("error[" + phase + "]: " + e2[0] + "\n");
             eprint("  --> " + pth + ":" + string(e2[1]) + ":" + string(e2[2]) + "\n");
@@ -304,7 +343,9 @@ fn main() {
             }
             eprint("error[" + phase + "]: " + msg_of(e4) + "\n");
             if e4[1] >= 0 {
-                eprint("  --> " + path + ":" + string(e4[1]) + ":" + string(e4[2]) + "\n");
+                eprint(
+                    "  --> " + path + ":" + string(e4[1]) + ":" + string(e4[2]) + "\n"
+                );
             }
             return 1;
         }
@@ -374,7 +415,9 @@ fn main() {
             }
             eprint("error[" + phase + "]: " + msg_of(e5) + "\n");
             if e5[1] >= 0 {
-                eprint("  --> " + path + ":" + string(e5[1]) + ":" + string(e5[2]) + "\n");
+                eprint(
+                    "  --> " + path + ":" + string(e5[1]) + ":" + string(e5[2]) + "\n"
+                );
             }
             let h5 = help_of(e5);
             if h5 != null {
@@ -405,13 +448,19 @@ fn main() {
                 if e7.len() >= 6 {
                     pth = e7[5];
                 }
-                eprint("error[" + phase + "]: " + e7[0] + "
-");
-                eprint("  --> " + pth + ":" + string(e7[1]) + ":" + string(e7[2]) + "
-");
+                eprint(
+                    "error[" + phase + "]: " + e7[0] + "
+"
+                );
+                eprint(
+                    "  --> " + pth + ":" + string(e7[1]) + ":" + string(e7[2]) + "
+"
+                );
             } else {
-                eprint("error[internal]: " + e7 + "
-");
+                eprint(
+                    "error[internal]: " + e7 + "
+"
+                );
             }
             return 1;
         }
@@ -502,11 +551,11 @@ fn main() {
             eprint("error[build]: object emission failed (step " + string(rc) + ")\n");
             return 1;
         }
-        let sl = find_runtime_staticlib();
-        if sl == null {
-            eprint("error[build]: the runtime staticlib (spid3r_lang.lib) was not found\n");
-            return 1;
+        let rt_res = resolve_and_verify_runtime_staticlib();
+        if rt_res[0] != 0 {
+            return rt_res[0];
         }
+        let sl = rt_res[1];
         let lc = link_executable(obj_path, out_path, sl);
         if lc != 0 {
             // Propagate the driver's own exit code (2 = usage, the oracle's
@@ -544,7 +593,9 @@ fn main() {
             sp = [e3[1], e3[2], e3[3]];
         }
         if chk_json {
-            print(diag_to_json("error", phase, null, msg_of(e3), pth, sp, help_of(e3)) + "\n");
+            print(
+                diag_to_json("error", phase, null, msg_of(e3), pth, sp, help_of(e3)) + "\n"
+            );
         } else {
             eprint("error[" + phase + "]: " + msg_of(e3) + "\n");
             if e3[1] >= 0 {
@@ -576,10 +627,14 @@ fn main() {
             }
             reported += 1;
             if chk_json {
-                print(diag_to_json("warning", "semantic", w[0], w[2], path, w[1], null) + "\n");
+                print(
+                    diag_to_json("warning", "semantic", w[0], w[2], path, w[1], null) + "\n"
+                );
             } else {
                 eprint("warning[semantic]: " + w[2] + "\n");
-                eprint("  --> " + path + ":" + string(w[1][0]) + ":" + string(w[1][1]) + "\n");
+                eprint(
+                    "  --> " + path + ":" + string(w[1][0]) + ":" + string(w[1][1]) + "\n"
+                );
             }
         }
         if chk_dump {

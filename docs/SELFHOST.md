@@ -164,13 +164,35 @@ parity harness is teeth-proven: deliberately broken once, shown RED, restored.
 ## The runtime artifact (SH-6)
 
 Self-hosted compilers link the existing runtime as a **prebuilt, versioned,
-SHA-256-pinned staticlib artifact** (`spid3r.lib` / `libspid3r.a`: the AOT
-trampolines plus the 230 stdlib natives). This is what makes "compilers need
-no Rust" reachable in one program: rebuilding a compiler never rebuilds the
-runtime it links. The artifact's provenance (commit, LLVM version) is
-recorded with its checksum. Whether the runtime is eventually ported to
-Spid3r is Phase 9's explicit decision point (SH-2, third row); the artifact
-pinning is the accepted mechanism either way.
+SHA-256-pinned staticlib artifact** (`spid3r_lang.lib` / `libspid3r_lang.a`,
+with legacy fallback names `spid3r.lib` / `libspid3r.a`: the 66 AOT trampolines
+plus the 229 stdlib natives). This is what makes "compilers need no Rust"
+reachable in one program: rebuilding a compiler never rebuilds the runtime it
+links. The full C ABI and native table specification live in
+`docs/RUNTIME_ABI.md`; `tools/runtime_artifact.sh` packages the versioned
+release tarball (`spid3r-runtime-<version>-<target>.tar.gz`) together with its
+`.sha256` and `runtime-manifest.json` provenance (`version`, `git_commit`,
+`llvm_version`, `rustc_version`), and `selfhost/link.matrix` verifies the
+SHA-256 pin before invoking the linker (exiting `4` cleanly on any mismatch
+or malformed pin, SEC-B).
+
+### Phase 9.2 ADR decision — keep trampolines in Rust (do not port `rt.rs`)
+
+Phase 9.2 evaluated porting the ~2.2k-line trampoline layer (`src/native/rt.rs`)
+into Spid3r while keeping the scheduler and stdlib in the shared staticlib, and
+**explicitly decided against porting** (owner-confirmed 2026-11-15):
+
+- Every trampoline in `src/native/rt.rs` directly manipulates Rust internal
+  types that remain in `spid3r_lang` (`Value`, `Box::into_raw`,
+  `vm_eval_binary`, `vm_eval_unary`, `value::collections`,
+  `stdlib::builtin_defs()`, `Scheduler`, and thread-local `THROWN`).
+- Porting `rt.rs` into Spid3r would force inventing and maintaining a second
+  low-level C ABI just to wrap those Rust internals, still linking the same
+  staticlib artifact while adding indirection and risking semantic drift from
+  the VM/tree engines (`docs/ENGINE_CONTRACT.md`).
+- Keeping `src/native/rt.rs` inside the versioned, SHA-256-pinned runtime
+  staticlib satisfies "no Rust to build compilers" with one semantic source of
+  truth and verified checksum pinning (`docs/RUNTIME_ABI.md`).
 
 ## The LLVM-C boundary (SH-7)
 
@@ -208,6 +230,7 @@ release by tag before the pipeline switches.
 ## Governing documents
 
 docs/ENGINE_CONTRACT.md (the three-engine bar) · docs/NATIVE.md (AOT subset,
-memory model, exit codes) · docs/FFI.md (extended by SH-7) · docs/GC.md ·
+memory model, exit codes) · docs/RUNTIME_ABI.md (pinned staticlib ABI,
+provenance & native table) · docs/FFI.md (extended by SH-7) · docs/GC.md ·
 docs/SECURITY.md · docs/PERF_TARGET_RETIREMENT.md (target discipline) ·
 full_plan.html (the roadmap and the append-only evidence ledger).
