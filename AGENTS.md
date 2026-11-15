@@ -6,9 +6,9 @@ Read both before changing anything. If this file and `full_plan.html` disagree, 
 
 ## 1. Current state (update when a phase moves)
 
-As of 2026-11-15 (last commit seen: `ebe7cc0`, Phase 8 complete locally):
+As of 2026-11-15 (last commit seen: `9e4f5d3`, Phase 8 CI green):
 
-- Phases 0–8 closed (Phases 0–7 verified green on GitHub CI run `#115` / Pages `#116`; Phase 8 implemented and verified locally, uncommitted awaiting owner).
+- Phases 0–8 closed (Phases 0–7 verified green on GitHub CI run `#115` / Pages `#116`; Phase 8 committed in `9e4f5d3` and verified green on GitHub CI run `#117`, `6m 11s` / Pages `#118`).
 - Phase 8 highlights: `selfhost/test_runner.matrix` (`test` 3-engine differential + project/workspace + filters), `selfhost/fmt.matrix` + `lexer.matrix::lex_all_with_comments` + semantic lints/check flags (`fmt` `--check` + `check` `--json`/`--deny-warnings`/`--allow`/`--dump-registry-json`/`--dump-lowered`), `selfhost/pkg.matrix` (`pack`/`unpack`/`verify`/`dist` with deterministic ustar tar + `@LongLink` + `spider.lock` SHA-256 verification). Stage 1 -> Stage 2 -> Stage 3 COFF `spid3r_main.o` fixed point remains bit-identical (`eca0f32055f1c066e94c36409ed751df5025dadf6aaaa06ca5033b2ce3d33b93`).
 - Roadmap progress: 30/51 checkboxes. **Next real work: Phase 9** (`9.1` runtime artifact formalization, `9.2` optional runtime port decision). Phases 10–11 follow.
 - Stale ledger row: the 2026-11-14 `5.3 OPEN` row is superseded by the 2026-11-15 `5.3` PASS row (a correction note row exists). The ledger is append-only, so never delete rows. Add a note instead.
