@@ -16,9 +16,13 @@ selfhost/main_native.exe` produces a compiler whose native mode
 (`main_native.exe native <file> <out>`) builds every frozen-corpus program —
 positives and negatives — with byte-identical stdout/stderr/exit codes to the
 Rust oracle (`tools/selfhost_native_parity.sh`: pass=124 fail=0 skip=10
-defer=0), at parity speed (Tier-B geomean 0.95× on the compute set). The
-remaining steps before the bootstrap (Phase 7) are the sandbox differential
-gate (6.3) and the runtime-artifact formalization (Phase 9).
+defer=0), at parity speed (Tier-B geomean 0.95× on the compute set), and the
+sandbox/capability posture matches too (`tools/selfhost_sandbox_parity.sh`:
+per-class funnel parity in built executables per the AOT contract in
+docs/FFI.md, script-engine deny parity, and the extern-fn rejection). Phase 6
+(the build driver: link, module flattening, security posture) is fully closed;
+the bootstrap (Phase 7) is next, with the runtime-artifact formalization
+(Phase 9) the remaining decision point for full no-Rust toolchain builds.
 
 The ground rule that governs all of it lives in the roadmap and is repeated
 here because everything else depends on it: **a checkbox may be checked only
