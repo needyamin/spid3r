@@ -268,12 +268,19 @@ cmd_build() {
       ;;
   esac
 
+  if [ -n "$stage1" ] && [ ! -f "$stage1" ]; then
+    echo "error[usage]: Stage-1 spid3r-self not found: $stage1" >&2
+    exit 2
+  fi
+
+  rm -rf "$out_dir"
+  mkdir -p "$out_dir/runtime" "$out_dir/_work/s1" "$out_dir/_work/s2" "$out_dir/_work/s3" "$out_dir/_work/tar"
+
   if [ -z "$stage1" ]; then
     if [ -x "$ROOT/selfhost/main_native${exe_suf}" ]; then
       stage1="$ROOT/selfhost/main_native${exe_suf}"
     elif [ -n "$stage0" ] && [ -x "$stage0" ]; then
-      stage1="$out_dir/_work/spid3r-self-stage1${exe_suf}"
-      mkdir -p "$(dirname "$stage1")"
+      stage1="$out_dir/_work/s1/spid3r-self${exe_suf}"
       echo "[release_selfhost] bootstrapping Stage 1 via Stage 0 ($stage0)"
       "$stage0" build "$ROOT/selfhost/main.matrix" -o "$stage1"
     else
@@ -286,9 +293,6 @@ cmd_build() {
     echo "error[usage]: Stage-1 spid3r-self not found: $stage1" >&2
     exit 2
   fi
-
-  rm -rf "$out_dir"
-  mkdir -p "$out_dir/runtime" "$out_dir/_work/s2" "$out_dir/_work/s3" "$out_dir/_work/tar"
 
   echo "[release_selfhost] 1. Packaging & verifying pinned runtime staticlib..."
   local rt_args=(bash "$ROOT/tools/runtime_artifact.sh" package "$staticlib" "$out_dir/runtime" --target "$target" --version "$version")
@@ -501,9 +505,11 @@ cmd_verify() {
       exit 1
     fi
     chmod +x "$self_bin"
-    TARGET="${t##*spid3r-}"
+    local base_tar
+    base_tar="$(basename "$t")"
+    TARGET="${base_tar#spid3r-}"
     TARGET="${TARGET%.tar.gz}"
-    smoke_test_compiler_binary "$self_bin" "$out_dir/runtime" "unpacked $(basename "$t")"
+    smoke_test_compiler_binary "$self_bin" "$out_dir/runtime" "unpacked $base_tar"
     rm -rf "$ext_tmp"
   done
 
