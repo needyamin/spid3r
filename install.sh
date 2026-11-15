@@ -230,11 +230,16 @@ tar -xzf "${TMPDIR_DL}/spid3r.tar.gz" -C "$TMPDIR_DL" \
 # Locate the binary inside the extracted tree (tolerates a wrapping dir).
 BIN_SRC="$(find "$TMPDIR_DL" -type f -name spid3r | head -n 1)"
 [ -n "$BIN_SRC" ] || die "tarball did not contain a 'spid3r' binary"
+SELF_SRC="$(find "$TMPDIR_DL" -type f -name spid3r-self | head -n 1 || true)"
 
 # ----------------------------------------------------------------- install ---
 mkdir -p "$INSTALL_DIR"
 chmod +x "$BIN_SRC"
 mv -f "$BIN_SRC" "${INSTALL_DIR}/spid3r"
+if [ -n "$SELF_SRC" ] && [ -f "$SELF_SRC" ]; then
+    chmod +x "$SELF_SRC"
+    mv -f "$SELF_SRC" "${INSTALL_DIR}/spid3r-self"
+fi
 
 # ---------------------------------------------------------- stdlib cleanup ---
 # The tarball carries the binary only; any `stdlib/` it happens to contain is

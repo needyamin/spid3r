@@ -62,11 +62,28 @@ fn main() {
     }
     if a.len() < 1 {
         eprint(
-            "usage: main tokens|parse|check|registry|lowered|compile|native|build|test|fmt <file.matrix> [out|-o out]\n"
+            "usage: main tokens|parse|check|registry|lowered|compile|native|build|test|fmt|pack|unpack|verify|verify-runtime|dist|version <file.matrix> [out|-o out]\n"
         );
         return 2;
     }
     let mode = a[0];
+    if mode == "--version" or mode == "-V" or mode == "version" {
+        println("spid3r-self 1.1.0");
+        return 0;
+    }
+    if mode == "--help" or mode == "-h" or mode == "help" {
+        println("spid3r-self 1.1.0 — Spid3r self-hosted compiler & dev tools");
+        println("Commands:");
+        println("  build <file.matrix> [-o <out>] [--release] [--target <triple>]");
+        println("  compile <file.matrix> [out]      (write .matrixc bytecode)");
+        println("  native <file.matrix> [out]       (compile & link native binary)");
+        println("  check <file.matrix> [--json] [--deny-warnings] [--allow LINT]");
+        println("  test [--filter SUBSTR] [--list]");
+        println("  fmt [--check] [files...]");
+        println("  pack | unpack | verify | verify-runtime | dist");
+        println("  tokens | parse | registry | lowered");
+        return 0;
+    }
     if mode == "test" {
         return run_test_cli(a.slice(1, a.len()));
     }
@@ -99,6 +116,8 @@ fn main() {
     }
     let path = null;
     let build_out = null;
+    let build_opt = false;
+    let build_target = null;
     let chk_dump = false;
     let chk_dump_registry = false;
     let chk_deny_warnings = false;
@@ -122,8 +141,15 @@ fn main() {
                     return 2;
                 }
                 build_out = a[ai];
+            } else if arg == "--target" {
+                ai += 1;
+                if ai >= a.len() {
+                    eprint("error[usage]: --target needs a target triple\n");
+                    return 2;
+                }
+                build_target = a[ai];
             } else if arg == "--release" {
-                // Accepted for CLI compatibility with Stage 0 (`spid3r build --release`).
+                build_opt = true;
             } else if arg.len() > 0 and arg[0] == "-" {
                 eprint("error[usage]: unknown option '" + arg + "'\n");
                 return 2;
@@ -137,8 +163,14 @@ fn main() {
             ai += 1;
         }
         if path == null {
-            eprint("usage: main build <file.matrix> [-o <out>] [--release]\n");
+            eprint("usage: main build <file.matrix> [-o <out>] [--release] [--target <triple>]\n");
             return 2;
+        }
+        if build_target == null {
+            let tev = env("SPID3R_TARGET");
+            if tev.is_some() and tev.unwrap().trim() != "" {
+                build_target = tev.unwrap().trim();
+            }
         }
     } else if mode == "check" {
         let ai = 1;
@@ -502,14 +534,22 @@ fn main() {
         if pstem.len() > 7 and pstem.slice(pstem.len() - 7, pstem.len()) == ".matrix" {
             pstem = pstem.slice(0, pstem.len() - 7);
         }
+        let is_win_target = link_is_windows_host();
+        if build_target != null and build_target != "" {
+            is_win_target = build_target.contains("windows");
+        }
         let out_path = build_out;
         if out_path == null {
             if mode == "build" {
-                out_path = pstem + ".exe";
+                if is_win_target {
+                    out_path = pstem + ".exe";
+                } else {
+                    out_path = pstem;
+                }
             } else {
                 out_path = "a.out";
             }
-        } else if mode == "build" {
+        } else if mode == "build" and is_win_target {
             // Match link.rs normalize_exe_path: extensionless -o gets .exe on Windows.
             let base = out_path;
             let bi = out_path.len() - 1;
@@ -545,7 +585,12 @@ fn main() {
             ci3 -= 1;
         }
         let obj_path = odir + "spid3r_" + pstem + ".o";
-        let rc = cg_emit_object(cgst, obj_path);
+        let rc = 0;
+        if build_target != null and build_target != "" {
+            rc = cg_emit_object_for_target(cgst, obj_path, build_target);
+        } else {
+            rc = cg_emit_object(cgst, obj_path);
+        }
         cg_dispose(cgst);
         if rc != 0 {
             eprint("error[build]: object emission failed (step " + string(rc) + ")\n");
@@ -556,7 +601,7 @@ fn main() {
             return rt_res[0];
         }
         let sl = rt_res[1];
-        let lc = link_executable(obj_path, out_path, sl);
+        let lc = link_executable_for_target(obj_path, out_path, sl, build_target, build_opt);
         if lc != 0 {
             // Propagate the driver's own exit code (2 = usage, the oracle's
             // class for every build-driver failure).

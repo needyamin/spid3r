@@ -12,21 +12,26 @@ toolchain covers the lexer, parser, semantic checker (with lint warnings),
 lowering, bytecode compiler + container writer, the LLVM-C codegen (with the
 unboxed-i64 locals system, hybrid compares, and clean C++ resource disposal),
 the build driver's link + module-flattening halves, the **Stage-1 / Stage-2
-self-hosting bootstrap**, and the core dev tools (`test`, `fmt`, extended
-`check`, `pack`/`unpack`/`verify`/`dist`) — 30/51 roadmap steps (Phases 0–8
-closed). `spid3r build selfhost/main.matrix -o selfhost/main_native.exe` builds
-Stage 1 (`selfhost/main_native.exe`), `selfhost/main_native.exe build
+self-hosting bootstrap**, the core dev tools (`test`, `fmt`, extended
+`check`, `pack`/`unpack`/`verify`/`dist`), SHA-256 runtime pinning
+(`verify-runtime`, `docs/RUNTIME_ABI.md`, `tools/runtime_artifact.sh`), and the
+**Phase 10.2 retirement review** (`docs/SELFHOST_RETIREMENT.md`) — 33/51 roadmap
+steps (Phases 0–9 + 10.2 closed; 10.1 verified locally on Windows via
+`tools/release_selfhost.sh`, with GitHub CI Linux `aot` + 4-tarball
+`release.yml` verification awaiting push and `workflow_dispatch`/tag run).
+`spid3r build selfhost/main.matrix -o selfhost/main_native.exe` builds Stage 1
+(`selfhost/main_native.exe`), `selfhost/main_native.exe build
 selfhost/main.matrix` builds Stage 2 with zero Rust compiler invocation, and
 Stage 2 compiles Stage 3 emitting a byte-identical COFF `spid3r_main.o`
-(SHA-256 `09F692C2...16B37` at Phase 7.2 baseline; `eca0f320...33b93` on the
-expanded Phase 8 17-file closure). Three-way frozen-corpus parity across Stage
-0, Stage 1, and Stage 2 (`tools/selfhost_bootstrap_parity.sh`: `pass=124
-fail=0 skip=10 obj_match=111 obj_mismatch=0`, PE metadata `ok=226 fail=0`) and
-Tier-B performance (`0.996×` Stage-2 compute geomean vs Stage 0) pass at Phase
-7; Phase 8 parity harnesses (`selfhost_test_parity.sh` 10/10,
-`selfhost_fmt_check_parity.sh` 17/17 + 134/134 corpus byte-identical,
-`selfhost_pkg_parity.sh` 11/11 byte-identical tarballs + lockfile verification)
-all pass. Next real work is Phase 9 (runtime artifact formalization).
+(SHA-256 `03e10595...ce4d2fc` on the Phase 10 17-file closure). Three-way
+frozen-corpus parity across Stage 0, Stage 1, and Stage 2
+(`tools/selfhost_bootstrap_parity.sh`: `pass=124 fail=0 skip=10 obj_match=111
+obj_mismatch=0`, PE metadata `ok=226 fail=0`) and Tier-B performance (`0.996×`
+Stage-2 compute geomean vs Stage 0) pass alongside all Phase 8/9 parity
+harnesses (`selfhost_test_parity.sh` 10/10, `selfhost_fmt_check_parity.sh` 17/17
++ 134/134 corpus byte-identical, `selfhost_pkg_parity.sh` 11/11,
+`selfhost_runtime_parity.sh` 16/16). Next real work: push Phase 10 to verify
+`ci.yml` + `release.yml` (closing `10.1`), then Phase 11.
 
 The ground rule that governs all of it lives in the roadmap and is repeated
 here because everything else depends on it: **a checkbox may be checked only
@@ -231,6 +236,8 @@ release by tag before the pipeline switches.
 
 docs/ENGINE_CONTRACT.md (the three-engine bar) · docs/NATIVE.md (AOT subset,
 memory model, exit codes) · docs/RUNTIME_ABI.md (pinned staticlib ABI,
-provenance & native table) · docs/FFI.md (extended by SH-7) · docs/GC.md ·
-docs/SECURITY.md · docs/PERF_TARGET_RETIREMENT.md (target discipline) ·
-full_plan.html (the roadmap and the append-only evidence ledger).
+provenance & native table) · docs/SELFHOST_RETIREMENT.md (Phase 10.2
+retirement boundary, rollback tags & maintenance rules) · docs/FFI.md
+(extended by SH-7) · docs/GC.md · docs/SECURITY.md ·
+docs/PERF_TARGET_RETIREMENT.md (target discipline) · full_plan.html (the
+roadmap and the append-only evidence ledger).

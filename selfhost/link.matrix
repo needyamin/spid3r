@@ -80,76 +80,179 @@ public fn find_winsdk_lib_root() {
     return null;
 }
 
-// find_llvm_lib_dir: the LLVM-C import library directory, mirroring
-// build.rs's search order (SPID3R_LLVM_LIB_DIR → LLVM_SYS_231_PREFIX →
-// C:/LLVM-23/lib → C:/Program Files/LLVM/lib).
+public fn link_is_windows_host() {
+    let os_ev = env("OS");
+    if os_ev.is_some() and os_ev.unwrap().contains("Windows") {
+        return true;
+    }
+    return is_dir("C:/Windows");
+}
+
+fn link_which_unix(prog) {
+    let r = exec_capture("which", [prog], null);
+    if r.is_ok() {
+        let out = r.unwrap();
+        if out["code"] == 0 and out["stdout"].trim() != "" {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn link_split_ws(s) {
+    let res = [];
+    let frags = [];
+    let i = 0;
+    let n = s.len();
+    while i < n {
+        let c = s[i];
+        let cp = ord(c);
+        if cp == 32 or cp == 9 or cp == 10 or cp == 13 {
+            if frags.len() > 0 {
+                res.push(frags.join(""));
+                frags = [];
+            }
+        } else {
+            frags.push(c);
+        }
+        i += 1;
+    }
+    if frags.len() > 0 {
+        res.push(frags.join(""));
+    }
+    return res;
+}
+
+fn link_contains_str(arr, val) {
+    for x in arr {
+        if x == val {
+            return true;
+        }
+    }
+    return false;
+}
+
+// find_llvm_lib_dir: the LLVM-C / libLLVM library directory, mirroring
+// src/native/link.rs's search order across Windows and Unix.
 public fn find_llvm_lib_dir() {
     let env_opt = env("SPID3R_LLVM_LIB_DIR");
     if env_opt.is_some() {
         let dir = env_opt.unwrap();
-        if is_dir(dir) {
+        if dir != "" and is_dir(dir) {
             return dir;
         }
     }
-    let prefixes = ["C:/LLVM-23", "C:/Program Files/LLVM"];
-    for p in prefixes {
-        let lib = p + "/lib";
-        if is_file(lib + "/LLVM-C.lib") {
-            return lib;
+    let pfx_opt = env("LLVM_SYS_231_PREFIX");
+    if pfx_opt.is_some() {
+        let pdir = pfx_opt.unwrap() + "/lib";
+        if is_dir(pdir) {
+            return pdir;
+        }
+    }
+    if link_is_windows_host() {
+        let prefixes = ["C:/LLVM-23", "C:/Program Files/LLVM"];
+        for p in prefixes {
+            let lib = p + "/lib";
+            if is_file(lib + "/LLVM-C.lib") {
+                return lib;
+            }
+        }
+        return null;
+    }
+    for cmd in ["llvm-config-23", "llvm-config", "llvm-config-24"] {
+        let r = exec_capture(cmd, ["--libdir"], null);
+        if r.is_ok() {
+            let out = r.unwrap();
+            if out["code"] == 0 {
+                let d = out["stdout"].trim();
+                if d != "" and is_dir(d) {
+                    return d;
+                }
+            }
+        }
+    }
+    for d in ["/usr/lib/llvm-23/lib",
+    "/opt/homebrew/opt/llvm/lib",
+    "/usr/local/opt/llvm/lib",
+    "/usr/lib/x86_64-linux-gnu",
+    "/usr/lib/aarch64-linux-gnu"] {
+        if is_dir(d) {
+            return d;
         }
     }
     return null;
 }
 
 // find_staticlib: the runtime staticlib, mirroring src/native/mod.rs's
-// search order (SPID3R_RUNTIME_LIB → SPID3R_LIB_DIR → exe dir → cwd →
-// target/{debug,release}).
+// search order (SPID3R_RUNTIME_LIB → SPID3R_LIB_DIR / MATRIX_RLIB_DIR →
+// exe dir & ancestors → target/{release,debug}).
 public fn find_runtime_staticlib() {
+    let names = ["libspid3r_lang.a", "libspid3r.a", "spid3r_lang.lib", "spid3r.lib"];
+    if link_is_windows_host() {
+        names = ["spid3r_lang.lib", "spid3r.lib", "libspid3r_lang.a", "libspid3r.a"];
+    }
     let env_opt = env("SPID3R_RUNTIME_LIB");
     if env_opt.is_some() {
-        let dir = env_opt.unwrap();
-        if is_file(dir) {
-            return dir;
-        }
-        if is_dir(dir) {
-            for rname in ["spid3r_lang.lib", "libspid3r_lang.a", "spid3r.lib", "libspid3r.a"] {
-                let rc = dir + "/" + rname;
-                if is_file(rc) {
-                    return rc;
+        let dir = env_opt.unwrap().trim();
+        if dir != "" {
+            if is_file(dir) {
+                return dir;
+            }
+            if is_dir(dir) {
+                for rname in names {
+                    let rc = dir + "/" + rname;
+                    if is_file(rc) {
+                        return rc;
+                    }
                 }
             }
         }
     }
-    // The toolchain's own directory (developer layout: target/debug/spid3r.exe)
-    let ep = exe_path();
-    if ep.is_err() {
-        return null;
+    for env_key in ["SPID3R_LIB_DIR", "MATRIX_RLIB_DIR"] {
+        let dv = env(env_key);
+        if dv.is_some() {
+            let d = dv.unwrap().trim();
+            if d != "" {
+                for sub in ["", "/deps", "/lib"] {
+                    for rname in names {
+                        let rc = d + sub + "/" + rname;
+                        if is_file(rc) {
+                            return rc;
+                        }
+                    }
+                }
+            }
+        }
     }
-    let exe = ep.unwrap();
-    let dir = link_dirname_of(exe);
-    let cands = [dir + "/spid3r_lang.lib", dir + "/../../debug/spid3r_lang.lib",
-    dir + "/../../release/spid3r_lang.lib"];
-    for c in cands {
-        if is_file(c) {
-            return c;
+    // The toolchain's own directory (installed layout or developer target/{debug,release})
+    let ep = exe_path();
+    if ep.is_ok() {
+        let dir = link_dirname_of(ep.unwrap());
+        let exe_roots = [dir, dir + "../", dir + "../../debug/", dir + "../../release/"];
+        for er in exe_roots {
+            for rname in names {
+                for sub in ["", "deps/", "lib/", "lib/spid3r/"] {
+                    let c = er + sub + rname;
+                    if is_file(c) {
+                        return c;
+                    }
+                }
+            }
         }
     }
     // Cargo target directories
-    let profiles = ["debug", "release"];
-    for prof in profiles {
-        let c = "target/" + prof + "/spid3r_lang.lib";
-        if is_file(c) {
-            return c;
+    for prof in ["debug", "release"] {
+        for rname in names {
+            let c = "target/" + prof + "/" + rname;
+            if is_file(c) {
+                return c;
+            }
         }
     }
     return null;
 }
 
-// link_executable: build the MSVC link.exe argument set (the oracle's
-// link_windows) and invoke it. The argument list is reproduced exactly:
-// -nologo, -out, -subsystem:console, -nodefaultlib, obj, staticlib,
-// LLVM-C libpath + delay-load, optimization flags, stack, CRT libs, system libs.
-public fn link_executable(obj_path, out_path, staticlib_path) {
+fn link_windows(obj_path, out_path, staticlib_path, opt) {
     let lr = find_msvc_link_exe();
     if lr[0] == null {
         eprint(
@@ -188,8 +291,11 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
     args.push("/DELAYLOAD:LLVM-C.dll");
     args.push("delayimp.lib");
     args.push("-ignore:4199");
-    // Debug builds keep unreferenced symbols (-opt:noref); release strips.
-    args.push("-opt:noref,noicf");
+    if opt {
+        args.push("-opt:ref,icf");
+    } else {
+        args.push("-opt:noref,noicf");
+    }
     args.push("-stack:4194304");
     // Static CRT (matching the staticlib's build — .cargo/config.toml)
     for l in ["libcmt.lib", "libvcruntime.lib", "libucrt.lib",
@@ -204,13 +310,7 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
     if res_file != null {
         args.push(res_file);
     }
-    // exec_capture reproduces the oracle's run_linker exactly: the linker's
-    // stdout/stderr are captured and, on failure, re-printed under the
-    // error[usage] wrapper in the same wrapper-then-output order (a failed
-    // spawn is a result, not a throw).
     let r = exec_capture(link_exe, args, null);
-    // The .res is a per-build intermediate (the oracle's scratch dir is
-    // dropped after the build); remove it whatever the link outcome.
     if res_file != null {
         remove_file(res_file);
     }
@@ -230,6 +330,182 @@ public fn link_executable(obj_path, out_path, staticlib_path) {
         return 2;
     }
     return 0;
+}
+
+fn link_llvm_library_absent(msg) {
+    if not msg.contains("-lLLVM") {
+        return false;
+    }
+    return msg.contains("cannot find") or msg.contains("unable to find library") or msg.contains("library not found");
+}
+
+// macOS / Linux linking — port of src/native/link.rs::link_plain.
+fn link_unix(obj_path, out_path, staticlib_path, triple, opt) {
+    let is_macos = triple != null and (
+        triple.contains("apple") or triple.contains("darwin")
+    );
+    let cc = "clang";
+    if is_macos {
+        if not link_which_unix("clang") {
+            eprint(
+                "error[usage]: no 'clang' linker found; install Xcode Command Line Tools (see docs/BUILDING.md)\n"
+            );
+            return 2;
+        }
+    } else {
+        if not link_which_unix("clang") {
+            if link_which_unix("cc") {
+                cc = "cc";
+            } else {
+                eprint(
+                    "error[usage]: no 'cc' linker found; install a C toolchain (see docs/BUILDING.md)\n"
+                );
+                return 2;
+            }
+        }
+    }
+
+    let args = [obj_path];
+    if is_macos and triple != null {
+        if triple.len() >= 6 and triple.slice(0, 6) == "x86_64" {
+            args.push("-arch");
+            args.push("x86_64");
+        } else if (triple.len() >= 7 and triple.slice(0, 7) == "aarch64") or (
+            triple.len() >= 5 and triple.slice(0, 5) == "arm64"
+        ) {
+            args.push("-arch");
+            args.push("arm64");
+        }
+    }
+    if not is_macos {
+        args.push("-Wl,--start-group");
+        args.push(staticlib_path);
+        args.push("-Wl,--end-group");
+        args.push("-lstdc++");
+    } else {
+        args.push(staticlib_path);
+    }
+    args.push("-o");
+    args.push(out_path);
+    args.push("-lpthread");
+    args.push("-ldl");
+    args.push("-lm");
+    if is_macos {
+        args.push("-Wl,-dead_strip");
+    } else {
+        args.push("-Wl,--gc-sections");
+        if opt {
+            args.push("-Wl,--strip-all");
+        }
+    }
+    for cmd in ["llvm-config-23", "llvm-config", "llvm-config-24"] {
+        let lr = exec_capture(cmd, ["--ldflags", "--system-libs"], null);
+        if lr.is_ok() {
+            let lo = lr.unwrap();
+            if lo["code"] == 0 {
+                for w in link_split_ws(lo["stdout"]) {
+                    if not link_contains_str(args, w) {
+                        args.push(w);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    let llvm_dir = find_llvm_lib_dir();
+    if llvm_dir != null {
+        let lflag = "-L" + llvm_dir;
+        if not link_contains_str(args, lflag) {
+            args.push(lflag);
+        }
+        if not is_macos {
+            let rflag = "-Wl,-rpath," + llvm_dir;
+            if not link_contains_str(args, rflag) {
+                args.push(rflag);
+            }
+        }
+    }
+
+    let llvm_candidates = [];
+    for cmd in ["llvm-config-23", "llvm-config", "llvm-config-24"] {
+        let lr2 = exec_capture(cmd, ["--libs"], null);
+        if lr2.is_ok() {
+            let lo2 = lr2.unwrap();
+            if lo2["code"] == 0 {
+                let flags = link_split_ws(lo2["stdout"]);
+                if flags.len() > 0 {
+                    llvm_candidates.push(flags);
+                }
+                break;
+            }
+        }
+    }
+    if is_macos {
+        llvm_candidates.push(["-lLLVM"]);
+    } else {
+        llvm_candidates.push(["-lLLVM-23"]);
+        llvm_candidates.push(["-lLLVM-24"]);
+        llvm_candidates.push(["-lLLVM"]);
+    }
+
+    let genuine_err = null;
+    let absent_err = null;
+    for lgroup in llvm_candidates {
+        let attempt = [];
+        for a in args {
+            attempt.push(a);
+        }
+        for lname in lgroup {
+            attempt.push(lname);
+        }
+        let r = exec_capture(cc, attempt, null);
+        if r.is_err() {
+            eprint("error[usage]: cannot run the linker '" + cc + "'\n");
+            return 2;
+        }
+        let out = r.unwrap();
+        if out["code"] == 0 {
+            return 0;
+        }
+        let so = out["stdout"].trim();
+        let se = out["stderr"].trim();
+        let combined = "error[usage]: linking failed (" + cc + "):\n" + so;
+        if se != "" {
+            combined = combined + "\n" + se;
+        }
+        if link_llvm_library_absent(combined) {
+            absent_err = combined;
+        } else if genuine_err == null {
+            genuine_err = combined;
+        }
+    }
+    if genuine_err != null {
+        eprint(genuine_err + "\n");
+        return 2;
+    }
+    let detail = "";
+    if absent_err != null {
+        detail = "\n  " + absent_err;
+    }
+    eprint(
+        "error[usage]: cannot locate the LLVM shared library (libLLVM-23.so / libLLVM.dylib); set SPID3R_LLVM_LIB_DIR to the directory that holds it" + detail + "\n"
+    );
+    return 2;
+}
+
+public fn link_executable_for_target(obj_path, out_path, staticlib_path, triple, opt) {
+    let is_win = link_is_windows_host();
+    if triple != null and triple != "" {
+        is_win = triple.contains("windows");
+    }
+    if is_win {
+        return link_windows(obj_path, out_path, staticlib_path, opt);
+    }
+    return link_unix(obj_path, out_path, staticlib_path, triple, opt);
+}
+
+public fn link_executable(obj_path, out_path, staticlib_path) {
+    return link_executable_for_target(obj_path, out_path, staticlib_path, null, false);
 }
 
 fn link_dirname_of(s) {

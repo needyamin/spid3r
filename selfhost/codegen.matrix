@@ -2763,10 +2763,14 @@ public fn cg_build_module(st, prog, module_name) {
     return st;
 }
 
-// Emit the module to a COFF object (the same target-machine pipeline as
-// gate 5.1). Returns the emit verdict (0 = ok).
+// Emit the module to a COFF/ELF/Mach-O object (the same target-machine
+// pipeline as gate 5.1). Returns the emit verdict (0 = ok).
 public fn cg_emit_object(st, out_path) {
     return emit_module_object(st["module"], out_path);
+}
+
+public fn cg_emit_object_for_target(st, out_path, target_triple) {
+    return emit_module_object_for_target(st["module"], out_path, target_triple);
 }
 
 // Dispose the LLVM C++ builder, module, and context held by a codegen state

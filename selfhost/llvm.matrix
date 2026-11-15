@@ -57,7 +57,12 @@ public extern fn LLVMArrayType2(elem: ptr, count: usize) -> ptr;
 public extern fn LLVMConstInt(ty: ptr, val: usize, sign_extend: int) -> ptr;
 public extern fn LLVMConstReal(ty: ptr, val: float) -> ptr;
 public extern fn LLVMConstNull(ty: ptr) -> ptr;
-public extern fn LLVMConstStringInContext(ctx: ptr, s: string, len: usize, dont_null_terminate: int) -> ptr;
+public extern fn LLVMConstStringInContext(
+    ctx: ptr,
+    s: string,
+    len: usize,
+    dont_null_terminate: int
+) -> ptr;
 public extern fn LLVMAddGlobal(m: ptr, ty: ptr, name: string) -> ptr;
 public extern fn LLVMSetInitializer(g: ptr, val: ptr);
 public extern fn LLVMSetGlobalConstant(g: ptr, is_const: int);
@@ -96,12 +101,26 @@ public extern fn LLVMBuildCondBr(b: ptr, cond: ptr, then_bb: ptr, else_bb: ptr) 
 public extern fn LLVMBuildAlloca(b: ptr, ty: ptr, name: string) -> ptr;
 public extern fn LLVMBuildLoad2(b: ptr, ty: ptr, ptr_val: ptr, name: string) -> ptr;
 public extern fn LLVMBuildStore(b: ptr, val: ptr, ptr_val: ptr) -> ptr;
-public extern fn LLVMBuildCall2(b: ptr, fn_ty: ptr, fn_val: ptr, args: ptr, argc: int, name: string) -> ptr;
+public extern fn LLVMBuildCall2(
+    b: ptr,
+    fn_ty: ptr,
+    fn_val: ptr,
+    args: ptr,
+    argc: int,
+    name: string
+) -> ptr;
 public extern fn LLVMBuildZExt(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
 public extern fn LLVMBuildSExt(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
 public extern fn LLVMBuildTrunc(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
 public extern fn LLVMBuildBitCast(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
-public extern fn LLVMBuildInBoundsGEP2(b: ptr, ty: ptr, ptr_val: ptr, indices: ptr, count: int, name: string) -> ptr;
+public extern fn LLVMBuildInBoundsGEP2(
+    b: ptr,
+    ty: ptr,
+    ptr_val: ptr,
+    indices: ptr,
+    count: int,
+    name: string
+) -> ptr;
 public extern fn LLVMBuildIsNotNull(b: ptr, val: ptr, name: string) -> ptr;
 public extern fn LLVMBuildIsNull(b: ptr, val: ptr, name: string) -> ptr;
 public extern fn LLVMBuildUnreachable(b: ptr) -> ptr;
@@ -145,9 +164,23 @@ public extern fn LLVMGetHostCPUName() -> string;
 public extern fn LLVMGetFirstTarget() -> ptr;
 public extern fn LLVMGetTargetName(target: ptr) -> string;
 public extern fn LLVMGetNextTarget(target: ptr) -> ptr;
-public extern fn LLVMCreateTargetMachine(target: ptr, triple: string, cpu: string, features: string, opt_level: int, reloc: int, code_model: int) -> ptr;
+public extern fn LLVMCreateTargetMachine(
+    target: ptr,
+    triple: string,
+    cpu: string,
+    features: string,
+    opt_level: int,
+    reloc: int,
+    code_model: int
+) -> ptr;
 public extern fn LLVMDisposeTargetMachine(tm: ptr);
-public extern fn LLVMTargetMachineEmitToFile(tm: ptr, m: ptr, filename: string, codegen: int, err_out: ptr) -> int;
+public extern fn LLVMTargetMachineEmitToFile(
+    tm: ptr,
+    m: ptr,
+    filename: string,
+    codegen: int,
+    err_out: ptr
+) -> int;
 public extern fn LLVMSetTarget(m: ptr, triple: string);
 public extern fn LLVMPrintModuleToString(m: ptr) -> string;
 public extern fn LLVMCreateTargetDataLayout(tm: ptr) -> ptr;
@@ -211,7 +244,15 @@ public fn llvm_emit_object(out_path, file_label) {
         return 3;
     }
     let cpu = LLVMGetHostCPUName();
-    let tm = LLVMCreateTargetMachine(target, triple, cpu, "", OPT_DEFAULT, RELOC_DEFAULT, CODE_MODEL_DEFAULT);
+    let tm = LLVMCreateTargetMachine(
+        target,
+        triple,
+        cpu,
+        "",
+        OPT_DEFAULT,
+        RELOC_DEFAULT,
+        CODE_MODEL_DEFAULT
+    );
     // The error slot: malloc'd storage LLVM writes on failure. The port does
     // not read it (the return code carries the verdict; the leaked slot and
     // message die with the compiler process — the documented arena model).
@@ -225,16 +266,25 @@ public fn llvm_emit_object(out_path, file_label) {
 
 public extern fn malloc(size: usize) -> ptr;
 
-// The Phase-5.2 emission path: the same target-machine pipeline as
-// llvm_emit_object, but on the codegen's module (which already holds the
-// program's IR). Verdict by return code: 0 emitted, 3 no matching target,
-// 2 emit failed.
-public fn emit_module_object(m, out_path) {
+public fn default_target_triple() {
+    return LLVMGetDefaultTargetTriple();
+}
+
+// The Phase-5.2 / Phase-10.1 emission path: the same target-machine pipeline
+// as llvm_emit_object, optionally targeting an explicit triple (`--target`).
+// Verdict by return code: 0 emitted, 3 no matching target, 2 emit failed.
+public fn emit_module_object_for_target(m, out_path, target_triple) {
     init_targets();
-    let triple = LLVMGetDefaultTargetTriple();
+    let host_triple = LLVMGetDefaultTargetTriple();
+    let triple = host_triple;
+    if target_triple != null and target_triple != "" {
+        triple = target_triple;
+    }
     LLVMSetTarget(m, triple);
     let want = "x86-64";
-    if triple.len() >= 6 and triple.slice(0, 6) == "aarch6" {
+    if (triple.len() >= 6 and triple.slice(0, 6) == "aarch6") or (
+        triple.len() >= 5 and triple.slice(0, 5) == "arm64"
+    ) {
         want = "aarch64";
     }
     let target = LLVMGetFirstTarget();
@@ -247,8 +297,19 @@ public fn emit_module_object(m, out_path) {
     if target == 0 {
         return 3;
     }
-    let cpu = LLVMGetHostCPUName();
-    let tm = LLVMCreateTargetMachine(target, triple, cpu, "", OPT_DEFAULT, RELOC_DEFAULT, CODE_MODEL_DEFAULT);
+    let cpu = "";
+    if triple == host_triple {
+        cpu = LLVMGetHostCPUName();
+    }
+    let tm = LLVMCreateTargetMachine(
+        target,
+        triple,
+        cpu,
+        "",
+        OPT_DEFAULT,
+        RELOC_DEFAULT,
+        CODE_MODEL_DEFAULT
+    );
     let err_slot = malloc(8);
     let rc = LLVMTargetMachineEmitToFile(tm, m, out_path, OBJECT_FILE, err_slot) & 4294967295;
     LLVMDisposeTargetMachine(tm);
@@ -258,7 +319,9 @@ public fn emit_module_object(m, out_path) {
     return 0;
 }
 
-
+public fn emit_module_object(m, out_path) {
+    return emit_module_object_for_target(m, out_path, null);
+}
 
 // The RUNTIME TRAMPOLINES (spid3r_binop, spid3r_value_int, spid3r_call, ...)
 // are deliberately NOT declared here: they are the AOT backend's internal

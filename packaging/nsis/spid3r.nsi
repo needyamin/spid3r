@@ -54,6 +54,11 @@ Unicode true
 ; The desktop control panel (spid3r-control.exe). Passed by build.rs when the
 ; gui payload built it; absent in core-only installers.
 ;!ifdef CONTROL_EXE — defined on the makensis command line
+; The Stage-2 self-hosted compiler (spid3r-self.exe) and its runtime pin
+; metadata (Phase 10.1, SH-2 / SH-6), passed by tools/release_selfhost.sh:
+;!ifdef SPID3R_SELF_EXE
+;!ifdef RUNTIME_SHA256
+;!ifdef RUNTIME_MANIFEST
 
 !define APPNAME        "Spid3r"
 !define PUBLISHER      "ANSNEW TECH."
@@ -128,6 +133,9 @@ Section "Spid3r compiler & runtime (required)" SecCore
   SectionIn RO
   SetOutPath "$INSTDIR"
   File "${SPID3R_EXE}"
+!ifdef SPID3R_SELF_EXE
+  File "/oname=spid3r-self.exe" "${SPID3R_SELF_EXE}"
+!endif
 !ifdef CONTROL_EXE
   File "${CONTROL_EXE}"
 !endif
@@ -135,6 +143,12 @@ Section "Spid3r compiler & runtime (required)" SecCore
   File "${LLVM_DLL}"
   File "${LLVM_LIB}"
   File "${RUNTIME_LIB}"
+!ifdef RUNTIME_SHA256
+  File "/oname=spid3r_lang.lib.sha256" "${RUNTIME_SHA256}"
+!endif
+!ifdef RUNTIME_MANIFEST
+  File "/oname=runtime-manifest.json" "${RUNTIME_MANIFEST}"
+!endif
 !endif
 !if ${WITH_GUI} == 1
 !if /FileExists "${CALCULATOR_EXE}"
@@ -390,11 +404,14 @@ Section "Uninstall"
 
   ; --- files ---
   Delete "$INSTDIR\spid3r.exe"
+  Delete "$INSTDIR\spid3r-self.exe"
   Delete "$INSTDIR\spid3r-control.exe"
   Delete "$INSTDIR\calculator.exe"
   Delete "$INSTDIR\LLVM-C.dll"
   Delete "$INSTDIR\LLVM-C.lib"
   Delete "$INSTDIR\spid3r_lang.lib"
+  Delete "$INSTDIR\spid3r_lang.lib.sha256"
+  Delete "$INSTDIR\runtime-manifest.json"
   Delete "$INSTDIR\spid3r.lib"
   Delete "$INSTDIR\spid3r.ico"
   Delete "$INSTDIR\README.md"

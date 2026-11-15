@@ -308,14 +308,21 @@ jobs:
         run: cargo test --no-default-features --features native 2>&1 | tee cargo_test_native.txt
         shell: bash
 
-      - name: Verify runtime staticlib artifact formalization (Phase 9.1, SH-6)
-        timeout-minutes: 5
+      - name: Verify runtime staticlib artifact & Linux selfhost release pipeline (Phases 9.1 & 10.1, SH-6 / SH-2)
+        timeout-minutes: 20
         shell: bash
         run: |
           mkdir -p /tmp/spid3r-rt
           bash tools/runtime_artifact.sh package target/debug/libspid3r_lang.a /tmp/spid3r-rt --profile debug
           bash tools/runtime_artifact.sh verify /tmp/spid3r-rt
           rm -rf /tmp/spid3r-rt
+          bash tools/release_selfhost.sh build \
+            --target x86_64-unknown-linux-gnu \
+            --stage0 target/debug/spid3r \
+            --staticlib target/debug/libspid3r_lang.a \
+            --out-dir /tmp/spid3r-rel \
+            --skip-installer
+          rm -rf /tmp/spid3r-rel
 
       - name: Report native test failures to the step summary
         if: failure()
