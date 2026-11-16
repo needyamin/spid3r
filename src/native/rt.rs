@@ -276,7 +276,7 @@ pub fn rt_init() {
     if !g.is_empty() {
         return; // already initialized
     }
-    for (name, func) in crate::stdlib::native_defs() {
+    for (name, func) in crate::stdlib::plugin_native_defs() {
         let native = NativeFn { name, func };
         g.insert(name.to_string(), Value::Native(std::sync::Arc::new(native)));
     }
@@ -864,10 +864,14 @@ pub extern "C" fn spid3r_cstr_free(p: *mut c_char) {
 #[no_mangle]
 pub extern "C" fn spid3r_global_get(name: *const c_char) -> *mut Value {
     let key = cstr(name);
-    let g = globals().lock().unwrap();
-    match g.get(&key) {
-        Some(v) => leak(v.clone()),
-        None => leak(Value::Null),
+    let hit = globals().lock().unwrap().get(&key).cloned();
+    match hit {
+        Some(v) => leak(v),
+        None => leak(
+            crate::stdlib::resolve_builtin_native(&key)
+                .map(Value::Native)
+                .unwrap_or(Value::Null),
+        ),
     }
 }
 
@@ -893,7 +897,8 @@ pub extern "C" fn spid3r_global_exists(name: *const c_char) -> u8 {
         |_| 0,
         || {
             let key = cstr(name);
-            globals().lock().unwrap().contains_key(&key) as u8
+            (globals().lock().unwrap().contains_key(&key)
+                || crate::stdlib::resolve_builtin_native(&key).is_some()) as u8
         },
     )
 }

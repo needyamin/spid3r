@@ -220,9 +220,16 @@ fn parse() -> Db {
     }
 }
 
+static DB: OnceLock<Db> = OnceLock::new();
+
 fn db() -> &'static Db {
-    static DB: OnceLock<Db> = OnceLock::new();
     DB.get_or_init(parse)
+}
+
+/// Whether the embedded `tzdata.bin` table has been parsed in this process.
+/// Plain runs that never touch time zones keep this `false` (P-5 lazy init).
+pub fn is_initialized() -> bool {
+    DB.get().is_some()
 }
 
 fn find(name: &str) -> Option<&'static Zone> {

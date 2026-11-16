@@ -167,6 +167,19 @@ pub fn run(args: Vec<String>) -> i32 {
         }
     };
     let mut rest: Vec<String> = it.collect();
+    if rest.is_empty() {
+        match cmd.as_str() {
+            "version" | "--version" | "-V" => {
+                println!("{}", version_text());
+                return EXIT_OK;
+            }
+            "help" | "--help" | "-h" => {
+                print!("{}", HELP);
+                return EXIT_OK;
+            }
+            _ => {}
+        }
+    }
     // An explicit but broken SPID3R_INI must never silently run code under
     // compiled defaults. Keep diagnostics and repair commands available.
     if matches!(
@@ -877,9 +890,12 @@ fn read_source(path: &str) -> Result<(String, Arc<str>), Diagnostic> {
     Ok((src, file))
 }
 
-fn front_end(path: &str) -> Result<(crate::ast::Program, Arc<str>), Diagnostic> {
-    let (src, file) = read_source(path)?;
-    let program = parser::parse_file(&src, file.clone())?;
+fn front_end_source(
+    path: &str,
+    src: &str,
+    file: Arc<str>,
+) -> Result<(crate::ast::Program, Arc<str>), Diagnostic> {
+    let program = parser::parse_file(src, file.clone())?;
     let warnings = semantic::check_file_with_warnings(&program, true, path)?;
     for w in &warnings {
         if w.message.contains("explicit call to 'main'") {
@@ -903,8 +919,9 @@ fn front_end(path: &str) -> Result<(crate::ast::Program, Arc<str>), Diagnostic> 
 /// `limits` carries the ini-driven run-time limits (`runtime.
 /// wall_clock_limit_ms` / `runtime.memory_limit_mb`); the native AOT backend
 /// is not wired to them, matching `--max-call-depth`.
-fn run_tree(
-    path: &str,
+fn run_tree_loaded(
+    program: &crate::ast::Program,
+    file: Arc<str>,
     budget: Option<u64>,
     max_call_depth: Option<usize>,
     limits: &(
@@ -912,7 +929,6 @@ fn run_tree(
         Option<crate::budget::MemLimit>,
     ),
 ) -> Result<i32, Diagnostic> {
-    let (program, file) = front_end(path)?;
     let dirs = modules::default_module_dirs();
     let mut interp = Interp::new(file, dirs);
     interp.set_budget(budget.map(crate::budget::Budget::new));
@@ -921,7 +937,7 @@ fn run_tree(
     }
     interp.set_wall_clock(limits.0.clone());
     interp.set_mem_limit(limits.1.clone());
-    interp.run_program(&program)
+    interp.run_program(program)
 }
 
 /// `spid3r run` has no webview, so a program that calls the `gui_*`
@@ -929,7 +945,10 @@ fn run_tree(
 /// the tree engine, `null is not callable` on the VM). Detect it up front from
 /// the token stream (comments and string literals are ignored) and point the
 /// user at `spid3r gui` instead.
-fn reject_gui_program(path: &str) -> Result<(), Diagnostic> {
+fn reject_gui_source(path: &str, src: &str, file: Arc<str>) -> Result<(), Diagnostic> {
+    if !src.contains("gui_") {
+        return Ok(());
+    }
     const GUI_FUNCTIONS: &[&str] = &[
         "gui_eval",
         "gui_set_html",
@@ -937,8 +956,7 @@ fn reject_gui_program(path: &str) -> Result<(), Diagnostic> {
         "gui_emit",
         "gui_title",
     ];
-    let (src, file) = read_source(path)?;
-    let Ok(tokens) = crate::lexer::Lexer::new(&src, file).tokenize() else {
+    let Ok(tokens) = crate::lexer::Lexer::new(src, file).tokenize() else {
         return Ok(()); // lex errors are reported by the normal front end
     };
     for t in &tokens {
@@ -1259,7 +1277,8 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             manifest.entry().to_string()
         }
     };
-    reject_gui_program(&file)?;
+    let (src, file_arc) = read_source(&file)?;
+    reject_gui_source(&file, &src, file_arc.clone())?;
     // `args()` must see the program's arguments, not the interpreter's argv.
     crate::stdlib::set_script_args(script_args);
     // `--max-steps` is a documented alias of `--budget`: one feature, two
@@ -1322,12 +1341,13 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                     "--coverage is a VM-engine feature; rerun with --engine vm",
                 ));
             }
-            run_tree(&file, budget, max_call_depth, &run_limits)
+            let (program, file) = front_end_source(&file, &src, file_arc)?;
+            run_tree_loaded(&program, file, budget, max_call_depth, &run_limits)
         }
         "vm" => {
             let dirs = modules::default_module_dirs();
             let (result, report, cov) = if no_opt {
-                let (program, file_name) = front_end(&file)?;
+                let (program, file_name) = front_end_source(&file, &src, file_arc)?;
                 let (script, _public) =
                     crate::vm::compile_program_unoptimized(&program, &file, &dirs)?;
                 let mut vm = Vm::new(file_name, dirs);
@@ -1364,12 +1384,12 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
                 // source hash, so a stale entry is impossible by
                 // construction. `--no-opt` bypasses the cache (different
                 // compiler output for the same source).
-                let (file_name, script) = match bytecode_cache_lookup(&file) {
+                let (file_name, script) = match bytecode_cache_lookup_bytes(&file, src.as_bytes()) {
                     Some(hit) => hit,
                     None => {
-                        let (program, file_name) = front_end(&file)?;
+                        let (program, file_name) = front_end_source(&file, &src, file_arc)?;
                         let (script, _public) = crate::vm::compile_program(&program, &file, &dirs)?;
-                        bytecode_cache_store(&file, &script);
+                        bytecode_cache_store_bytes(src.as_bytes(), &script);
                         (file_name, script)
                     }
                 };
@@ -1453,10 +1473,9 @@ fn bytecode_cache_key(src: &[u8]) -> String {
 /// the source or the compiler invalidates the entry). A corrupt container
 /// fails `deserialize_vmfunc`'s v3 checksum and is treated as a miss; the
 /// caller compiles fresh and writes the entry back.
-fn bytecode_cache_lookup(file: &str) -> Option<(Arc<str>, crate::value::VmFunc)> {
+fn bytecode_cache_lookup_bytes(file: &str, src: &[u8]) -> Option<(Arc<str>, crate::value::VmFunc)> {
     let dir = bytecode_cache_dir()?;
-    let src = std::fs::read(file).ok()?;
-    let key = bytecode_cache_key(&src);
+    let key = bytecode_cache_key(src);
     let bytes = std::fs::read(dir.join(format!("{}.matrixc", key))).ok()?;
     let script = deserialize_vmfunc(&bytes).ok()?;
     Some((Arc::from(file), script))
@@ -1465,14 +1484,11 @@ fn bytecode_cache_lookup(file: &str) -> Option<(Arc<str>, crate::value::VmFunc)>
 /// Store the compiled container for `file`, keyed by the source hash
 /// (write-back mode). Best effort: any failure simply means the next run
 /// recompiles, which is the correct behavior for a cache.
-fn bytecode_cache_store(file: &str, script: &crate::value::VmFunc) {
+fn bytecode_cache_store_bytes(src: &[u8], script: &crate::value::VmFunc) {
     let Some(dir) = bytecode_cache_dir() else {
         return;
     };
-    let Ok(src) = std::fs::read(file) else {
-        return;
-    };
-    let key = bytecode_cache_key(&src);
+    let key = bytecode_cache_key(src);
     let path = dir.join(format!("{}.matrixc", key));
     if let Some(parent) = path.parent() {
         if std::fs::create_dir_all(parent).is_err() {

@@ -1,0 +1,104 @@
+{
+  "schema": "spid3r.p5.budgets/1",
+  "recorded_utc": "2026-11-16T14:10:00Z",
+  "plan": {
+    "file": "full_plan.html",
+    "phase": "11.P-5",
+    "base_commit": "3e9aae8"
+  },
+  "host": {
+    "os": "Windows-11-10.0.26300-SP0",
+    "arch": "x86_64-pc-windows-msvc",
+    "cpu": "Intel(R) Core(TM) Ultra 7 265K",
+    "affinity_core": 6
+  },
+  "lazy_init": {
+    "native_table": "lazy OnceLock policy-baked HashMap in src/stdlib/mod.rs (resolved on demand in Tree, VM, and AOT rt_init)",
+    "tzdata": "lazy OnceLock<Db> in src/stdlib/tz.rs (verified uninitialized on plain runs)",
+    "unicode_tables": "zero-runtime-init static binary-search slices in src/stdlib/unicode_tables.rs",
+    "verified_by": "tests/p5_lazy_init.rs"
+  },
+  "startup_tier_a": {
+    "metric": "spid3r --version (matching benchmarks/report-data.json startup.spid3r)",
+    "baseline_ms": 8.2416,
+    "tier_a_floor_max_ms": 8.5,
+    "measured_pass1_ms": 8.183,
+    "measured_pass1_mad_pct": 2.28,
+    "measured_pass2_ms": 8.014,
+    "measured_pass2_mad_pct": 1.92,
+    "measured_2pass_avg_ms": 8.099,
+    "two_pass_agreement_pct": 2.1,
+    "status": "PASS",
+    "companion_benchmarks_ms": {
+      "aot_empty_2pass_avg_ms": 6.519,
+      "spid3r_vm_calibration_2pass_avg_ms": 10.049,
+      "spid3r_tree_calibration_2pass_avg_ms": 9.891
+    }
+  },
+  "memory_envelope_plain_run": {
+    "method": "Windows GetProcessMemoryInfo over 9 invocations (benchmarks/compare/phase0_calibration.matrix)",
+    "aot_empty": {
+      "peak_working_set_med_bytes": 5263360,
+      "peak_commit_med_bytes": 937984,
+      "budget_max_ws_bytes": 8388608,
+      "budget_max_commit_bytes": 2097152
+    },
+    "spid3r_version": {
+      "peak_working_set_med_bytes": 9531392,
+      "peak_commit_med_bytes": 1765376,
+      "budget_max_ws_bytes": 14680064,
+      "budget_max_commit_bytes": 4194304
+    },
+    "spid3r_vm": {
+      "peak_working_set_med_bytes": 10768384,
+      "peak_working_set_max_mib": 10.33,
+      "peak_commit_med_bytes": 2887680,
+      "peak_commit_max_mib": 2.88,
+      "budget_max_ws_bytes": 16777216,
+      "budget_max_commit_bytes": 6291456
+    },
+    "spid3r_tree": {
+      "peak_working_set_med_bytes": 10612736,
+      "peak_working_set_max_mib": 10.16,
+      "peak_commit_med_bytes": 2977792,
+      "peak_commit_max_mib": 2.85,
+      "budget_max_ws_bytes": 16777216,
+      "budget_max_commit_bytes": 6291456
+    }
+  },
+  "size_budgets_windows_x86_64": {
+    "stage0_spid3r_exe": {
+      "measured_bytes": 12328448,
+      "budget_max_bytes": 16000000
+    },
+    "runtime_spid3r_lang_lib": {
+      "measured_bytes": 51995674,
+      "budget_max_bytes": 64000000
+    },
+    "stage1_main_native_exe": {
+      "measured_bytes": 5081600,
+      "budget_max_bytes": 7500000
+    },
+    "stage2_spid3r_self_exe": {
+      "measured_bytes": 5096960,
+      "budget_max_bytes": 7500000
+    },
+    "aot_empty_exe": {
+      "measured_bytes": 2823680,
+      "budget_max_bytes": 4500000
+    },
+    "release_tarball_gz": {
+      "measured_bytes": 6277668,
+      "budget_max_bytes": 10000000
+    },
+    "runtime_tarball_gz": {
+      "measured_bytes": 17164435,
+      "budget_max_bytes": 24000000
+    },
+    "windows_nsis_installer_exe": {
+      "measured_bytes": 36704372,
+      "budget_min_bytes": 15000000,
+      "budget_max_bytes": 48000000
+    }
+  }
+}

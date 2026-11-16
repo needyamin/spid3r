@@ -59,6 +59,9 @@ FLOORS = {
     "tasks": 6_000,
 }
 
+# Frozen Tier-A startup floor (Phase 11 P-5: 8.24 ms baseline + margin).
+STARTUP_FLOOR_MS = 8.5
+
 # Display order, mirroring the table in the plan (optimize_plan.html section 2).
 # report-data.json keeps whatever order `spid3r bench` emits; only the printed
 # summary and the ratio column follow this one.
@@ -426,6 +429,8 @@ def main():
                     help="report = legacy wall-clock page (default); compute = Phase 0 external protocol")
     ap.add_argument("--measure", action="store_true")
     ap.add_argument("--render", action="store_true")
+    ap.add_argument("--check-startup-floor", action="store_true",
+                    help="Fail non-zero if spid3r startup exceeds STARTUP_FLOOR_MS (8.5 ms).")
     ap.add_argument("--runs", type=int, default=5, help="spid3r runs (best of N)")
     # 21 is the sample count tools/phase0_bench.py uses. It is not decoration:
     # the reference side of the ratio is a difference of two independently
@@ -448,6 +453,14 @@ def main():
 
     if do_measure or not do_render:
         print_ratios(data)
+
+    if args.check_startup_floor:
+        sp_startup = (data.get("startup") or {}).get("spid3r")
+        if sp_startup is None or sp_startup > STARTUP_FLOOR_MS:
+            sys.exit(
+                f"FAIL: spid3r startup {sp_startup} ms exceeds Tier-A floor {STARTUP_FLOOR_MS} ms"
+            )
+        print(f"STARTUP FLOOR PASS: {sp_startup:.3f} ms <= {STARTUP_FLOOR_MS:.1f} ms")
 
     if do_render:
         from bench_report_render import render  # local module, same directory

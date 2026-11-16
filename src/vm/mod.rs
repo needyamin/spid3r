@@ -577,7 +577,7 @@ impl Vm {
     }
 
     fn install_stdlib(&mut self) {
-        for (name, func) in crate::stdlib::native_defs() {
+        for (name, func) in crate::stdlib::plugin_native_defs() {
             let native = NativeFn { name, func };
             self.globals
                 .lock()
@@ -1671,13 +1671,20 @@ impl Vm {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
                     let v = match self.frames[nf].func.chunk.constants.get(idx) {
-                        Some(Value::Str(name)) => self.frames[nf]
-                            .globals
-                            .lock()
-                            .unwrap()
-                            .get(name.as_ref())
-                            .cloned()
-                            .unwrap_or(Value::Null),
+                        Some(Value::Str(name)) => {
+                            let hit = self.frames[nf]
+                                .globals
+                                .lock()
+                                .unwrap()
+                                .get(name.as_ref())
+                                .cloned();
+                            match hit {
+                                Some(v) => v,
+                                None => crate::stdlib::resolve_builtin_native(name.as_ref())
+                                    .map(Value::Native)
+                                    .unwrap_or(Value::Null),
+                            }
+                        }
                         _ => {
                             self.fail("global name is not a string");
                             continue;
@@ -3457,11 +3464,15 @@ impl Vm {
         };
         let is_string_native = {
             let globals = frame.globals.lock().ok()?;
-            matches!(
-                globals.get(name.as_ref()),
-                Some(Value::Native(n))
-                    if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
-            )
+            match globals.get(name.as_ref()) {
+                Some(Value::Native(n)) => {
+                    std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
+                }
+                Some(_) => false,
+                None => crate::stdlib::resolve_builtin_native(name.as_ref()).is_some_and(|n| {
+                    std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
+                }),
+            }
         };
         if !is_string_native {
             return None;

@@ -476,6 +476,19 @@ cmd_build() {
   echo "[release_selfhost] COMPLETE: $out_dir"
 }
 
+check_size_budget() {
+  local label="$1"
+  local file="$2"
+  local max_bytes="$3"
+  local sz
+  sz="$(wc -c < "$file")"
+  echo "  size budget: $label = ${sz} B (ceiling ${max_bytes} B)"
+  if [ "$sz" -gt "$max_bytes" ]; then
+    echo "FAIL: $label (${sz} B) exceeds P-5 size budget (${max_bytes} B)" >&2
+    exit 1
+  fi
+}
+
 cmd_verify() {
   local out_dir="${1:?usage: release_selfhost.sh verify <out_dir>}"
   [ -d "$out_dir" ] || {
@@ -527,6 +540,8 @@ cmd_verify() {
     TARGET="${base_tar#spid3r-}"
     TARGET="${TARGET%.tar.gz}"
     smoke_test_compiler_binary "$self_bin" "$out_dir/runtime" "unpacked $base_tar"
+    check_size_budget "spid3r-self ($base_tar)" "$self_bin" "${SPID3R_MAX_SELF_BYTES:-7500000}"
+    check_size_budget "$base_tar" "$t" "${SPID3R_MAX_TAR_BYTES:-10000000}"
     rm -rf "$ext_tmp"
   done
 
@@ -534,6 +549,16 @@ cmd_verify() {
     echo "FAIL: no platform spid3r-<target>.tar.gz found in $out_dir" >&2
     exit 1
   fi
+
+  local rt_tar inst_exe
+  for rt_tar in "$out_dir"/spid3r-runtime-*.tar.gz; do
+    [ -f "$rt_tar" ] || continue
+    check_size_budget "$(basename "$rt_tar")" "$rt_tar" "${SPID3R_MAX_RT_TAR_BYTES:-24000000}"
+  done
+  for inst_exe in "$out_dir"/Spid3r-Setup-*.exe; do
+    [ -f "$inst_exe" ] || continue
+    check_size_budget "$(basename "$inst_exe")" "$inst_exe" "${SPID3R_MAX_INSTALLER_BYTES:-48000000}"
+  done
 
   echo "[release_selfhost] VERIFY PASS: $out_dir"
 }

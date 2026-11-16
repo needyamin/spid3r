@@ -63,7 +63,7 @@ pub(crate) fn inline_len_impl() -> crate::vm::NativeImpl {
 ///
 /// Separate from [`native_defs`] so the plugin registry can check a plugin's
 /// function names against the builtins without recursing into itself.
-pub fn builtin_defs() -> Vec<NativeDef> {
+fn build_builtin_defs() -> Vec<NativeDef> {
     let mut defs: Vec<NativeDef> = vec![
         ("print", n_print),
         ("println", n_println),
@@ -218,6 +218,89 @@ pub fn builtin_defs() -> Vec<NativeDef> {
     defs
 }
 
+static BUILTIN_DEFS: OnceLock<Vec<NativeDef>> = OnceLock::new();
+
+fn builtin_defs_slice() -> &'static [NativeDef] {
+    BUILTIN_DEFS.get_or_init(build_builtin_defs).as_slice()
+}
+
+/// The builtin natives only — no plugin functions.
+///
+/// Separate from [`native_defs`] so the plugin registry can check a plugin's
+/// function names against the builtins without recursing into itself.
+pub fn builtin_defs() -> Vec<NativeDef> {
+    builtin_defs_slice().to_vec()
+}
+
+/// Apply the per-process Phase-3 security policy (`security.basedir`,
+/// `security.disable_natives`, pin refusal) and `--sandbox` stubs in one
+/// shared funnel.
+fn apply_policy_to_defs(defs: &mut [NativeDef], sandboxed: bool) {
+    // Phase-3 security policy, baked once per process from the resolved
+    // config: `security.basedir` wraps every path-taking native with the
+    // allowlist guard, and `security.disable_natives` replaces named natives
+    // with the configuration stub.
+    let pol = fs_policy::policy();
+    if pol.pin_failed_at_initialization {
+        for (_, func) in defs.iter_mut() {
+            *func = fs_policy::pin_failure_stub;
+        }
+    }
+    if fs_policy::basedir_active(pol) {
+        for (name, func) in defs.iter_mut() {
+            if let Some(guarded) = fs_policy::guarded(name) {
+                *func = guarded;
+            }
+        }
+    }
+    if !pol.disabled_natives.is_empty() {
+        for (name, func) in defs.iter_mut() {
+            if pol.disabled_natives.iter().any(|d| d == name) {
+                *func = fs_policy::disabled_stub_fn();
+            }
+        }
+    }
+    if sandboxed {
+        for (name, func) in defs.iter_mut() {
+            if let Some(stub) = sandbox_stub(name) {
+                *func = stub;
+            }
+        }
+    }
+}
+
+fn build_native_map(sandboxed: bool) -> std::collections::HashMap<&'static str, Arc<NativeFn>> {
+    let mut defs = builtin_defs();
+    apply_policy_to_defs(&mut defs, sandboxed);
+    let mut map = std::collections::HashMap::with_capacity(defs.len());
+    for (name, func) in defs {
+        map.insert(name, Arc::new(NativeFn { name, func }));
+    }
+    map
+}
+
+static NORMAL_NATIVE_MAP: OnceLock<std::collections::HashMap<&'static str, Arc<NativeFn>>> =
+    OnceLock::new();
+static SANDBOX_NATIVE_MAP: OnceLock<std::collections::HashMap<&'static str, Arc<NativeFn>>> =
+    OnceLock::new();
+
+/// Lazily resolve a policy-checked builtin native on first access. Plain
+/// programs that call no builtins never construct or insert these entries
+/// into engine global maps (P-5 startup & lightness budget).
+pub(crate) fn resolve_builtin_native(name: &str) -> Option<Arc<NativeFn>> {
+    let table = if sandbox_armed() {
+        SANDBOX_NATIVE_MAP.get_or_init(|| build_native_map(true))
+    } else {
+        NORMAL_NATIVE_MAP.get_or_init(|| build_native_map(false))
+    };
+    table.get(name).cloned()
+}
+
+/// Whether the lazy builtin-native lookup map has been initialized yet.
+pub fn builtin_table_initialized() -> bool {
+    NORMAL_NATIVE_MAP.get().is_some() || SANDBOX_NATIVE_MAP.get().is_some()
+}
+
 /// Every native a script can call: the builtins, plus whatever a host plugin
 /// registered at startup.
 ///
@@ -227,51 +310,26 @@ pub fn builtin_defs() -> Vec<NativeDef> {
 pub fn native_defs() -> Vec<NativeDef> {
     let mut defs = builtin_defs();
     defs.extend(crate::plugin::registered());
-    // Phase-3 security policy, baked once per process from the resolved
-    // config: `security.basedir` wraps every path-taking native with the
-    // allowlist guard, and `security.disable_natives` replaces named natives
-    // with the configuration stub. Both run here — the single funnel the
-    // tree interpreter, the bytecode VM and every imported module install
-    // from — so a module cannot re-arm anything its importer restricted
-    // (the same property the sandbox arming below relies on). Baked, not
-    // re-read per call, so a script's own config_set cannot widen its
-    // permissions mid-run.
-    let pol = fs_policy::policy();
-    if pol.pin_failed_at_initialization {
-        for (_, func) in &mut defs {
-            *func = fs_policy::pin_failure_stub;
-        }
-    }
-    if fs_policy::basedir_active(pol) {
-        for (name, func) in &mut defs {
-            if let Some(guarded) = fs_policy::guarded(name) {
-                *func = guarded;
-            }
-        }
-    }
-    if !pol.disabled_natives.is_empty() {
-        for (name, func) in &mut defs {
-            if pol.disabled_natives.iter().any(|d| d == name) {
-                *func = fs_policy::disabled_stub_fn();
-            }
-        }
-    }
-    // `spid3r run --sandbox`: swap every capability native for a stub. The
-    // gate lives here — the single funnel the tree interpreter, the bytecode
-    // VM and every imported module install from — so a module cannot re-arm
-    // the functions its importer had sandboxed away.
-    if sandbox_armed() {
-        for (name, func) in &mut defs {
-            if let Some(stub) = sandbox_stub(name) {
-                *func = stub;
-            }
-        }
+    apply_policy_to_defs(&mut defs, sandbox_armed());
+    defs
+}
+
+/// Host-plugin native definitions (empty when no host plugins are registered),
+/// wrapped with the same security policy funnel as builtin natives.
+pub(crate) fn plugin_native_defs() -> Vec<NativeDef> {
+    let mut defs = crate::plugin::registered();
+    if !defs.is_empty() {
+        apply_policy_to_defs(&mut defs, sandbox_armed());
     }
     defs
 }
 
+/// Install host-plugin and capability-override natives into a tree-engine
+/// environment. Builtin natives resolve lazily on demand via
+/// [`resolve_builtin_native`] so plain runs do not eagerly allocate ~230
+/// environment slots.
 pub fn install(globals: &Env, sched: Arc<Scheduler>) {
-    for (name, func) in native_defs() {
+    for (name, func) in plugin_native_defs() {
         let native = NativeFn { name, func };
         environment::define(globals, name, Value::Native(Arc::new(native)));
     }

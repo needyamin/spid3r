@@ -16,6 +16,9 @@ pub struct EnvironmentData {
     /// this set is the defense for dynamically imported bindings).
     pub consts: HashSet<String>,
     pub parent: Option<Env>,
+    /// True only on root environments created via [`new_global`], enabling
+    /// lazy fallback to builtin natives without duplicating ~230 entries upfront.
+    pub is_global: bool,
 }
 
 pub type Env = Arc<Mutex<EnvironmentData>>;
@@ -28,6 +31,7 @@ pub fn new_global() -> Env {
         vars: HashMap::new(),
         consts: HashSet::new(),
         parent: None,
+        is_global: true,
     })))
 }
 
@@ -36,6 +40,7 @@ pub fn child(parent: &Env) -> Env {
         vars: HashMap::new(),
         consts: HashSet::new(),
         parent: Some(parent.clone()),
+        is_global: false,
     })))
 }
 
@@ -44,6 +49,7 @@ pub fn child_with_vars(parent: &Env, vars: HashMap<String, Value>) -> Env {
         vars,
         consts: HashSet::new(),
         parent: Some(parent.clone()),
+        is_global: false,
     })))
 }
 
@@ -70,7 +76,13 @@ impl EnvironmentData {
         if let Some(v) = self.vars.get(name) {
             return Some(v.clone());
         }
-        self.parent.as_ref()?.lock().unwrap().get(name)
+        match &self.parent {
+            Some(p) => p.lock().unwrap().get(name),
+            None if self.is_global => {
+                crate::stdlib::resolve_builtin_native(name).map(Value::Native)
+            }
+            None => None,
+        }
     }
 
     /// Assign to an existing binding, walking the parent chain.
@@ -86,6 +98,10 @@ impl EnvironmentData {
         }
         match &self.parent {
             Some(p) => p.lock().unwrap().assign(name, value),
+            None if self.is_global && crate::stdlib::resolve_builtin_native(name).is_some() => {
+                self.vars.insert(name.to_string(), value);
+                Ok(())
+            }
             None => Err(AssignError::Unbound(name.to_string())),
         }
     }
