@@ -484,6 +484,155 @@ fn capture_list(p: &FnProto) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// top-level scalar constant folding (W4.3)
+// ---------------------------------------------------------------------------
+
+fn top_const_scalar(e: &Expr) -> Option<Expr> {
+    match e {
+        Expr::Int(v, sp) => Some(Expr::Int(*v, sp.clone())),
+        Expr::Float(v, sp) => Some(Expr::Float(*v, sp.clone())),
+        Expr::Str(s, sp) => Some(Expr::Str(s.clone(), sp.clone())),
+        Expr::Bool(b, sp) => Some(Expr::Bool(*b, sp.clone())),
+        Expr::Null(sp) => Some(Expr::Null(sp.clone())),
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+            span,
+        } => match &**expr {
+            Expr::Int(v, isp) if *v != i64::MIN => Some(Expr::Unary {
+                op: UnOp::Neg,
+                expr: Box::new(Expr::Int(*v, isp.clone())),
+                span: span.clone(),
+            }),
+            Expr::Float(v, fsp) => Some(Expr::Unary {
+                op: UnOp::Neg,
+                expr: Box::new(Expr::Float(*v, fsp.clone())),
+                span: span.clone(),
+            }),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn top_const_int(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Int(v, _) => Some(*v),
+        Expr::Unary {
+            op: UnOp::Neg,
+            expr,
+            ..
+        } => match &**expr {
+            Expr::Int(v, _) => v.checked_neg(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn is_pure_top_expr(
+    e: &Expr,
+    shadowed: &HashSet<String>,
+    known_consts: &HashMap<String, Expr>,
+) -> bool {
+    if top_const_scalar(e).is_some() {
+        return true;
+    }
+    match e {
+        Expr::Ident(n, _) => known_consts.contains_key(n),
+        Expr::List(items, _) => items
+            .iter()
+            .all(|it| is_pure_top_expr(it, shadowed, known_consts)),
+        Expr::Call { callee, args, .. } => {
+            if let Expr::Ident(fn_name, _) = &**callee {
+                if !shadowed.contains(fn_name) {
+                    return match fn_name.as_str() {
+                        "map" => args
+                            .iter()
+                            .all(|a| is_pure_top_expr(a, shadowed, known_consts)),
+                        "bytes" => args.len() == 1 && matches!(args[0], Expr::Int(n, _) if n >= 0),
+                        "float" => {
+                            args.len() == 1
+                                && matches!(&args[0], Expr::Str(s, _) if s == "inf" || s == "-inf" || s == "nan")
+                        }
+                        _ => false,
+                    };
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn collect_top_const_maps(program: &Program) -> (HashMap<String, Expr>, HashMap<String, i64>) {
+    let mut decl_counts: HashMap<String, usize> = HashMap::new();
+    let mut declared: HashSet<String> = HashSet::new();
+    for s in &program.stmts {
+        match s {
+            Stmt::Let { name, .. } | Stmt::Const { name, .. } => {
+                *decl_counts.entry(name.clone()).or_insert(0) += 1;
+                declared.insert(name.clone());
+            }
+            Stmt::Fn(p) => {
+                if let Some(n) = &p.name {
+                    *decl_counts.entry(n.clone()).or_insert(0) += 1;
+                    declared.insert(n.clone());
+                }
+            }
+            Stmt::Class(c) => {
+                *decl_counts.entry(c.name.clone()).or_insert(0) += 1;
+                declared.insert(c.name.clone());
+            }
+            Stmt::Interface(i) => {
+                *decl_counts.entry(i.name.clone()).or_insert(0) += 1;
+                declared.insert(i.name.clone());
+            }
+            Stmt::Enum(e) => {
+                *decl_counts.entry(e.name.clone()).or_insert(0) += 1;
+                declared.insert(e.name.clone());
+            }
+            Stmt::LetTuple { names, .. } => {
+                for n in names {
+                    *decl_counts.entry(n.clone()).or_insert(0) += 1;
+                    declared.insert(n.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut consts: HashMap<String, Expr> = HashMap::new();
+    let mut ints: HashMap<String, i64> = HashMap::new();
+    for s in &program.stmts {
+        match s {
+            Stmt::Fn(_) | Stmt::Class(_) | Stmt::Interface(_) => {}
+            Stmt::Let { value, .. } => {
+                if let Some(v) = value {
+                    if !is_pure_top_expr(v, &declared, &consts) {
+                        break;
+                    }
+                }
+            }
+            Stmt::Const { name, value, .. } => {
+                if let Some(scalar) = top_const_scalar(value) {
+                    if decl_counts.get(name).copied() == Some(1) {
+                        if let Some(iv) = top_const_int(&scalar) {
+                            ints.insert(name.clone(), iv);
+                        }
+                        consts.insert(name.clone(), scalar);
+                    }
+                } else if !is_pure_top_expr(value, &declared, &consts) {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    (consts, ints)
+}
+
+// ---------------------------------------------------------------------------
 // code generator
 // ---------------------------------------------------------------------------
 
@@ -527,6 +676,9 @@ pub struct Ir<'ctx> {
     /// slow arm must emit the fully generic lowering — re-entering the hybrid
     /// path would recurse forever).
     hybrid_off: bool,
+    /// W4.3: top-level unambiguous scalar `const` values safe to inline at use sites.
+    top_consts: HashMap<String, Expr>,
+    top_ints: HashMap<String, i64>,
 }
 
 /// Declared boundary types of one `extern fn` (SH-7). Marshalling dispatches
@@ -563,6 +715,8 @@ impl<'ctx> Ir<'ctx> {
             boxed: None,
             int_locals: None,
             hybrid_off: false,
+            top_consts: HashMap::new(),
+            top_ints: HashMap::new(),
             is_entry: false,
             strings: HashMap::new(),
             tramps: HashMap::new(),
@@ -1708,9 +1862,11 @@ impl<'ctx> Ir<'ctx> {
     fn is_int_expr(&self, e: &Expr) -> bool {
         match e {
             Expr::Int(..) => true,
-            Expr::Ident(name, _) => {
-                matches!(self.lookup(name), Some(VarLoc::LocalInt(_)))
-            }
+            Expr::Ident(name, _) => match self.lookup(name) {
+                Some(VarLoc::LocalInt(_)) => true,
+                Some(_) => false,
+                None => self.top_ints.contains_key(name),
+            },
             Expr::Unary {
                 op: UnOp::Neg,
                 expr,
@@ -1784,10 +1940,11 @@ impl<'ctx> Ir<'ctx> {
     fn is_hybrid_int_expr(&self, e: &Expr) -> bool {
         match e {
             Expr::Int(..) => true,
-            Expr::Ident(name, _) => matches!(
-                self.lookup(name),
-                Some(VarLoc::Local(_)) | Some(VarLoc::LocalInt(_))
-            ),
+            Expr::Ident(name, _) => match self.lookup(name) {
+                Some(VarLoc::Local(_)) | Some(VarLoc::LocalInt(_)) => true,
+                Some(_) => false,
+                None => self.top_ints.contains_key(name),
+            },
             Expr::Unary {
                 op: UnOp::Neg,
                 expr,
@@ -1866,6 +2023,12 @@ impl<'ctx> Ir<'ctx> {
                     .get(name.as_str())
                     .copied()
                     .ok_or_else(|| self.err("internal: hybrid leaf was not extracted")),
+                None => self
+                    .top_ints
+                    .get(name)
+                    .copied()
+                    .map(|v| self.i64c(v))
+                    .ok_or_else(|| self.err("internal: non-local ident in hybrid arm")),
                 _ => Err(self.err("internal: non-local ident in hybrid arm")),
             },
             Expr::Unary {
@@ -2330,6 +2493,13 @@ impl<'ctx> Ir<'ctx> {
                         .unwrap()
                         .into_int_value();
                     Ok(v)
+                }
+                None => {
+                    if let Some(&v) = self.top_ints.get(name) {
+                        Ok(self.i64c(v))
+                    } else {
+                        panic!("compile_expr_i64 called on non-int ident {}", name)
+                    }
                 }
                 _ => panic!("compile_expr_i64 called on non-int ident {}", name),
             },
@@ -3490,7 +3660,13 @@ impl<'ctx> Ir<'ctx> {
                 Ok(self.call1p("spid3r_cell_get", cell))
             }
             Some(VarLoc::Upvalue(i)) => Ok(self.read_upvalue(i)),
-            None => Ok(self.global_value(name)),
+            None => {
+                if let Some(c) = self.top_consts.get(name).cloned() {
+                    self.const_expr_value(&c)
+                } else {
+                    Ok(self.global_value(name))
+                }
+            }
         }
     }
 
@@ -4330,7 +4506,12 @@ impl<'ctx> Ir<'ctx> {
             std::mem::take(&mut self.finally_stack),
             self.is_entry,
             self.int_locals.take(),
+            std::mem::take(&mut self.top_consts),
+            std::mem::take(&mut self.top_ints),
         );
+        let (tc, ti) = collect_top_const_maps(program);
+        self.top_consts = tc;
+        self.top_ints = ti;
         self.is_entry = true;
         // Bottom exception-handler frame for top-level statements: a `throw`
         // outside any `try` is an uncaught program error.
@@ -4392,6 +4573,8 @@ impl<'ctx> Ir<'ctx> {
         let null = self.v_null();
         self.builder.build_return(Some(&null)).unwrap();
 
+        self.top_ints = saved.12;
+        self.top_consts = saved.11;
         self.int_locals = saved.10;
         self.is_entry = saved.9;
         self.finally_stack = saved.8;

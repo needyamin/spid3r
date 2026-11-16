@@ -87,6 +87,8 @@ public fn new_codegen() {
     st["str_counter"] = 0;
     st["int_locals"] = null;
     st["hybrid_off"] = false;
+    st["top_consts"] = map();
+    st["top_ints"] = map();
     return st;
 }
 
@@ -385,7 +387,13 @@ fn cg_compile_expr_i64(st, e) {
     }
     if t == "Ident" {
         let loc = cg_lookup(st, e[1]);
-        return LLVMBuildLoad2(st["builder"], st["i64"], loc[1], "iv");
+        if loc != null and loc[0] == "I" {
+            return LLVMBuildLoad2(st["builder"], st["i64"], loc[1], "iv");
+        }
+        if loc == null and st["top_ints"].has(e[1]) {
+            return i64c(st, st["top_ints"][e[1]]);
+        }
+        throw ["internal error: compile_expr_i64 on a non-int ident", 0, 0, 0, "native"];
     }
     if t == "Unary" and e[1] == "Neg" {
         let inner = cg_compile_expr_i64(st, e[2]);
@@ -408,7 +416,10 @@ fn is_int_expr_now(st, e) {
     }
     if t == "Ident" {
         let loc = cg_lookup(st, e[1]);
-        return loc != null and loc[0] == "I";
+        if loc != null {
+            return loc[0] == "I";
+        }
+        return st["top_ints"].has(e[1]);
     }
     if t == "Unary" and e[1] == "Neg" {
         return is_int_expr_now(st, e[2]);
@@ -455,7 +466,10 @@ fn is_hybrid_int_expr_now(st, e) {
     }
     if t == "Ident" {
         let loc = cg_lookup(st, e[1]);
-        return loc != null and (loc[0] == "L" or loc[0] == "I");
+        if loc != null {
+            return loc[0] == "L" or loc[0] == "I";
+        }
+        return st["top_ints"].has(e[1]);
     }
     if t == "Unary" and e[1] == "Neg" {
         return is_hybrid_int_expr_now(st, e[2]);
@@ -526,6 +540,12 @@ fn hybrid_i64(st, e, vals) {
     }
     if t == "Ident" {
         let loc = cg_lookup(st, e[1]);
+        if loc == null {
+            if st["top_ints"].has(e[1]) {
+                return i64c(st, st["top_ints"][e[1]]);
+            }
+            throw ["internal: hybrid leaf was not extracted", 0, 0, 0, "native"];
+        }
         if loc[0] == "I" {
             return LLVMBuildLoad2(st["builder"], st["i64"], loc[1], "iv");
         }
@@ -1387,6 +1407,9 @@ fn compile_ident(st, name) {
         if loc[0] == "U" {
             return read_upvalue(st, loc[1]);
         }
+    }
+    if st["top_consts"].has(name) {
+        return const_expr_value(st, st["top_consts"][name]);
     }
     return global_value(st, name);
 }
@@ -2664,6 +2687,147 @@ fn register_class(st, c) {
     return;
 }
 
+// ----------------------------------------------------------------- top-level scalar constant folding (W4.3)
+
+fn cg_top_const_scalar(e) {
+    let t = e[0];
+    if t == "Int" or t == "Float" or t == "Str" or t == "Bool" or t == "Null" {
+        return e;
+    }
+    if t == "Unary" and e[1] == "Neg" {
+        let inner = e[2];
+        if inner[0] == "Int" and inner[1] != I64_MIN {
+            return e;
+        }
+        if inner[0] == "Float" {
+            return e;
+        }
+    }
+    return null;
+}
+
+fn cg_top_const_int(e) {
+    let t = e[0];
+    if t == "Int" {
+        return e[1];
+    }
+    if t == "Unary" and e[1] == "Neg" {
+        let inner = e[2];
+        if inner[0] == "Int" and inner[1] != I64_MIN {
+            return -inner[1];
+        }
+    }
+    return null;
+}
+
+fn cg_is_pure_top_expr(e, declared, known_consts) {
+    if cg_top_const_scalar(e) != null {
+        return true;
+    }
+    let t = e[0];
+    if t == "Ident" {
+        return known_consts.has(e[1]);
+    }
+    if t == "List" {
+        for it in e[1] {
+            if not cg_is_pure_top_expr(it, declared, known_consts) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if t == "Call" and e[1][0] == "Ident" {
+        let fn_name = e[1][1];
+        if not declared.has(fn_name) {
+            let args = e[2];
+            if fn_name == "map" {
+                for a in args {
+                    if not cg_is_pure_top_expr(a, declared, known_consts) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            if fn_name == "bytes" and args.len() == 1 and args[0][0] == "Int" and args[0][1] >= 0 {
+                return true;
+            }
+            if fn_name == "float" and args.len() == 1 and args[0][0] == "Str" {
+                let s = args[0][1];
+                return s == "inf" or s == "-inf" or s == "nan";
+            }
+        }
+    }
+    return false;
+}
+
+fn cg_collect_top_consts(stmts) {
+    let counts = map();
+    let declared = map();
+    for s in stmts {
+        let tag = s[0];
+        if tag == "Let" or tag == "Const" or tag == "Class" or tag == "Interface" or tag == "Enum" {
+            let nm = s[2];
+            if counts.has(nm) {
+                counts[nm] = counts[nm] + 1;
+            } else {
+                counts[nm] = 1;
+            }
+            declared[nm] = true;
+        } else if tag == "Fn" and s[1][4] != null {
+            let nm = s[1][4];
+            if counts.has(nm) {
+                counts[nm] = counts[nm] + 1;
+            } else {
+                counts[nm] = 1;
+            }
+            declared[nm] = true;
+        } else if tag == "LetTuple" {
+            for nm in s[2] {
+                if counts.has(nm) {
+                    counts[nm] = counts[nm] + 1;
+                } else {
+                    counts[nm] = 1;
+                }
+                declared[nm] = true;
+            }
+        }
+    }
+    let consts = map();
+    let ints = map();
+    for s in stmts {
+        let tag = s[0];
+        if tag == "Fn" or tag == "Class" or tag == "Interface" {
+            continue;
+        }
+        if tag == "Let" {
+            if s[4] != null and (not cg_is_pure_top_expr(s[4], declared, consts)) {
+                break;
+            }
+            continue;
+        }
+        if tag == "Const" {
+            let scalar = cg_top_const_scalar(s[4]);
+            if scalar != null {
+                let nm = s[2];
+                if counts.has(nm) and counts[nm] == 1 {
+                    let iv = cg_top_const_int(scalar);
+                    if iv != null {
+                        ints[nm] = iv;
+                    }
+                    consts[nm] = scalar;
+                }
+                continue;
+            }
+            if not cg_is_pure_top_expr(s[4], declared, consts) {
+                break;
+            }
+            continue;
+        }
+        break;
+    }
+    return [consts, ints];
+}
+
 // ----------------------------------------------------------------- entry
 
 // The module entry: register classes (parents before children, as declared),
@@ -2681,6 +2845,11 @@ fn build_entry(st, prog) {
     let saved_loops = st["loops"];
     let saved_fstack = st["fstack"];
     let saved_is_entry = st["is_entry"];
+    let saved_top_consts = st["top_consts"];
+    let saved_top_ints = st["top_ints"];
+    let top_pair = cg_collect_top_consts(prog[0]);
+    st["top_consts"] = top_pair[0];
+    st["top_ints"] = top_pair[1];
     st["is_entry"] = true;
     // Bottom handler for top-level statements: an uncaught throw is a
     // program error.
@@ -2726,6 +2895,8 @@ fn build_entry(st, prog) {
     st["loops"] = saved_loops;
     st["fstack"] = saved_fstack;
     st["is_entry"] = saved_is_entry;
+    st["top_consts"] = saved_top_consts;
+    st["top_ints"] = saved_top_ints;
     return entry;
 }
 

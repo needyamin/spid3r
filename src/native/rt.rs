@@ -74,9 +74,117 @@ fn to_owned(p: *const Value) -> Value {
     deref(p).clone()
 }
 
-/// Box a value and hand out the raw pointer (the box lives for the process).
+/// Bump-allocate a `Value` slot in a leaked thread-local slab (the slot lives
+/// for the process lifetime, matching `Box::into_raw`).
+///
+/// Safety invariants:
+/// - Backing slabs come from `Box::leak(Box<[MaybeUninit<Value>]>)`, so every
+///   returned `*mut Value` is aligned, valid for `'static`, and safe to pass
+///   between threads or store in globals until process exit.
+/// - `SLAB` is thread-local, so only the owning thread advances `cur` (`cur < end`).
+/// - Unallocated trailing slots stay `MaybeUninit<Value>` forever (never read or
+///   dropped as `Value`).
+const ARENA_SLAB_LEN: usize = 4096;
+
+struct SlabCursor {
+    cur: std::cell::Cell<*mut std::mem::MaybeUninit<Value>>,
+    end: std::cell::Cell<*mut std::mem::MaybeUninit<Value>>,
+}
+
+impl SlabCursor {
+    const fn empty() -> Self {
+        Self {
+            cur: std::cell::Cell::new(std::ptr::null_mut()),
+            end: std::cell::Cell::new(std::ptr::null_mut()),
+        }
+    }
+
+    #[cold]
+    fn alloc_slow(&self, v: Value) -> *mut Value {
+        let mut vec: Vec<std::mem::MaybeUninit<Value>> = Vec::with_capacity(ARENA_SLAB_LEN);
+        // SAFETY: `MaybeUninit<Value>` does not require initialization; setting len
+        // to capacity exposes valid uninitialized storage for bumping.
+        unsafe { vec.set_len(ARENA_SLAB_LEN) };
+        let slab: &'static mut [std::mem::MaybeUninit<Value>] = Box::leak(vec.into_boxed_slice());
+        let ptr = slab.as_mut_ptr();
+        // SAFETY: `ARENA_SLAB_LEN >= 1`, so `ptr` is valid for write and
+        // `ptr.add(ARENA_SLAB_LEN)` is the exact one-past-end bound of `slab`.
+        unsafe {
+            ptr.write(std::mem::MaybeUninit::new(v));
+            self.cur.set(ptr.add(1));
+            self.end.set(ptr.add(ARENA_SLAB_LEN));
+        }
+        ptr as *mut Value
+    }
+
+    #[inline(always)]
+    fn alloc(&self, v: Value) -> *mut Value {
+        let cur = self.cur.get();
+        let end = self.end.get();
+        if cur < end {
+            // SAFETY: `cur < end` guarantees `cur` lies within the currently
+            // active leaked `MaybeUninit<Value>` slab, aligned and uninitialized.
+            unsafe {
+                cur.write(std::mem::MaybeUninit::new(v));
+                self.cur.set(cur.add(1));
+            }
+            cur as *mut Value
+        } else {
+            self.alloc_slow(v)
+        }
+    }
+}
+
+thread_local! {
+    static VALUE_SLAB: SlabCursor = const { SlabCursor::empty() };
+}
+
+/// Box a value and hand out the raw pointer (the slot lives for the process).
+#[inline]
 fn leak(v: Value) -> *mut Value {
-    Box::into_raw(Box::new(v))
+    VALUE_SLAB.with(|s| s.alloc(v))
+}
+
+const SMALL_INT_MIN: i64 = -1;
+const SMALL_INT_MAX: i64 = 1023;
+
+/// Cached `'static` pointers for small integers `-1..=1023`, `Bool`, and `Null`.
+/// Never mutated via `*mut Value` (only `Value::CClass` is mutated during init).
+#[inline]
+fn small_int_ptr(v: i64) -> Option<*mut Value> {
+    if (SMALL_INT_MIN..=SMALL_INT_MAX).contains(&v) {
+        static TABLE: OnceLock<usize> = OnceLock::new();
+        let base = *TABLE.get_or_init(|| {
+            let boxed: Box<[Value]> = (SMALL_INT_MIN..=SMALL_INT_MAX)
+                .map(Value::Int)
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            Box::into_raw(boxed) as *mut Value as usize
+        });
+        // SAFETY: `v - SMALL_INT_MIN` is within `0..=1024`, in-bounds of the leaked slice.
+        let p = unsafe { (base as *mut Value).offset((v - SMALL_INT_MIN) as isize) };
+        Some(p)
+    } else {
+        None
+    }
+}
+
+#[inline]
+fn leak_int(v: i64) -> *mut Value {
+    match small_int_ptr(v) {
+        Some(p) => p,
+        None => leak(Value::Int(v)),
+    }
+}
+
+#[inline]
+fn leak_fast(v: Value) -> *mut Value {
+    match v {
+        Value::Int(n) => leak_int(n),
+        Value::Bool(b) => spid3r_value_bool(b as u8),
+        Value::Null => spid3r_value_null(),
+        other => leak(other),
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -254,14 +362,21 @@ fn ffi_value(what: &str, f: impl FnOnce() -> *mut Value) -> *mut Value {
     )
 }
 
-/// Copy a C string from generated code.
-fn cstr(p: *const c_char) -> String {
+/// Borrow a C string from generated code without allocating when valid UTF-8.
+#[inline]
+fn cstr_ref<'a>(p: *const c_char) -> std::borrow::Cow<'a, str> {
+    // SAFETY: generated code passes NUL-terminated string constants; null aborts cleanly.
     unsafe {
         if p.is_null() {
             abort("native runtime: null string pointer");
         }
-        CStr::from_ptr(p).to_string_lossy().into_owned()
+        CStr::from_ptr(p).to_string_lossy()
     }
+}
+
+/// Copy a C string from generated code.
+fn cstr(p: *const c_char) -> String {
+    cstr_ref(p).into_owned()
 }
 
 // ----------------------------------------------------------------------------
@@ -300,7 +415,7 @@ pub fn rt_init() {
 
 #[no_mangle]
 pub extern "C" fn spid3r_value_int(v: i64) -> *mut Value {
-    leak(Value::Int(v))
+    leak_int(v)
 }
 
 #[no_mangle]
@@ -705,15 +820,15 @@ pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mu
         let b = *b;
         return match op {
             BinOp::Add => match a.checked_add(b) {
-                Some(v) => leak(Value::Int(v)),
+                Some(v) => leak_int(v),
                 None => rt_throw(&format!("integer overflow: {} + {}", a, b)),
             },
             BinOp::Sub => match a.checked_sub(b) {
-                Some(v) => leak(Value::Int(v)),
+                Some(v) => leak_int(v),
                 None => rt_throw(&format!("integer overflow: {} - {}", a, b)),
             },
             BinOp::Mul => match a.checked_mul(b) {
-                Some(v) => leak(Value::Int(v)),
+                Some(v) => leak_int(v),
                 None => rt_throw(&format!("integer overflow: {} * {}", a, b)),
             },
             BinOp::Div => {
@@ -721,7 +836,7 @@ pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mu
                     rt_throw("division by zero")
                 } else {
                     match a.checked_div(b) {
-                        Some(v) => leak(Value::Int(v)),
+                        Some(v) => leak_int(v),
                         None => rt_throw(&format!("integer overflow: {} / {}", a, b)),
                     }
                 }
@@ -730,7 +845,7 @@ pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mu
                 if b == 0 {
                     rt_throw("modulo by zero")
                 } else {
-                    leak(Value::Int(a.wrapping_rem(b)))
+                    leak_int(a.wrapping_rem(b))
                 }
             }
             BinOp::Eq => spid3r_value_bool((a == b) as u8),
@@ -863,12 +978,12 @@ pub extern "C" fn spid3r_cstr_free(p: *mut c_char) {
 
 #[no_mangle]
 pub extern "C" fn spid3r_global_get(name: *const c_char) -> *mut Value {
-    let key = cstr(name);
-    let hit = globals().lock().unwrap().get(&key).cloned();
+    let key = cstr_ref(name);
+    let hit = globals().lock().unwrap().get(key.as_ref()).cloned();
     match hit {
-        Some(v) => leak(v),
-        None => leak(
-            crate::stdlib::resolve_builtin_native(&key)
+        Some(v) => leak_fast(v),
+        None => leak_fast(
+            crate::stdlib::resolve_builtin_native(key.as_ref())
                 .map(Value::Native)
                 .unwrap_or(Value::Null),
         ),
@@ -877,17 +992,25 @@ pub extern "C" fn spid3r_global_get(name: *const c_char) -> *mut Value {
 
 #[no_mangle]
 pub extern "C" fn spid3r_global_set(name: *const c_char, v: *mut Value) {
-    let key = cstr(name);
+    let key = cstr_ref(name);
     let val = to_owned(v);
-    globals().lock().unwrap().insert(key, val);
+    let mut g = globals().lock().unwrap();
+    if let Some(slot) = g.get_mut(key.as_ref()) {
+        *slot = val;
+    } else {
+        g.insert(key.into_owned(), val);
+    }
 }
 
 /// Define a global if it does not exist yet (used for top-level `let`).
 #[no_mangle]
 pub extern "C" fn spid3r_global_def(name: *const c_char, v: *mut Value) {
-    let key = cstr(name);
+    let key = cstr_ref(name);
     let val = to_owned(v);
-    globals().lock().unwrap().entry(key).or_insert(val);
+    let mut g = globals().lock().unwrap();
+    if !g.contains_key(key.as_ref()) {
+        g.insert(key.into_owned(), val);
+    }
 }
 
 #[no_mangle]
@@ -896,9 +1019,9 @@ pub extern "C" fn spid3r_global_exists(name: *const c_char) -> u8 {
         "global_exists",
         |_| 0,
         || {
-            let key = cstr(name);
-            (globals().lock().unwrap().contains_key(&key)
-                || crate::stdlib::resolve_builtin_native(&key).is_some()) as u8
+            let key = cstr_ref(name);
+            (globals().lock().unwrap().contains_key(key.as_ref())
+                || crate::stdlib::resolve_builtin_native(key.as_ref()).is_some()) as u8
         },
     )
 }
@@ -944,8 +1067,7 @@ fn spid3r_call_inner(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mu
 }
 
 fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mut Value {
-    let callee = to_owned(f);
-    match callee {
+    match deref(f) {
         Value::Cfn(c) => {
             // Arity-check BEFORE entering generated code. The prologue loads
             // `argv[offset + i]` for every declared parameter, so a short
@@ -970,31 +1092,33 @@ fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Valu
             r
         }
         Value::Native(n) => {
+            let func = n.func;
             let args = unsafe { args_vec(argc, argv) };
             let ctx = NativeCtx {
                 sched: Scheduler::shared(),
             };
-            match (n.func)(&ctx, args) {
-                Ok(v) => leak(v),
+            match func(&ctx, args) {
+                Ok(v) => leak_fast(v),
                 Err(msg) => rt_throw(&msg),
             }
         }
         Value::NativeClosure(n) => {
+            let func = n.func.clone();
             let args = unsafe { args_vec(argc, argv) };
             let ctx = NativeCtx {
                 sched: Scheduler::shared(),
             };
-            match (n.func)(&ctx, args) {
-                Ok(v) => leak(v),
+            match func(&ctx, args) {
+                Ok(v) => leak_fast(v),
                 Err(msg) => rt_throw(&msg),
             }
         }
-        Value::CClass(c) => construct_cinstance(c, unsafe { args_vec(argc, argv) }),
+        Value::CClass(c) => construct_cinstance(c.clone(), unsafe { args_vec(argc, argv) }),
         // Catchable like the tree/VM call dispatch (F-9): calling a
         // non-callable value is a script-level runtime error there.
         other => rt_throw(&format!(
             "{} is not callable",
-            crate::value::type_name(&other)
+            crate::value::type_name(other)
         )),
     }
 }
@@ -1126,16 +1250,16 @@ fn spid3r_method_inner(
     argc: usize,
     argv: *const *mut Value,
 ) -> *mut Value {
-    let object = to_owned(obj);
-    let name = cstr(name);
+    let object = deref(obj);
+    let name = cstr_ref(name);
     let args = unsafe { args_vec(argc, argv) };
-    let maybe_class = match &object {
+    let maybe_class = match object {
         Value::CInstance(inst) => Some(inst.lock().unwrap().class.clone()),
         Value::CClass(c) => Some(c.clone()),
         _ => None,
     };
     if let Some(class) = maybe_class {
-        if let Some((_, cfn)) = find_method_cclass(&class, &name) {
+        if let Some((_, cfn)) = find_method_cclass(&class, name.as_ref()) {
             // Same wording as the VM/tree runtime dispatch (PAR-04): the
             // message counts the *declared* parameters and the *passed*
             // arguments, neither of which includes `self`.
@@ -1150,9 +1274,9 @@ fn spid3r_method_inner(
             let env = cfn.env;
             let code = cfn.code;
             let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
-            call_args.push(leak(object.clone()));
+            call_args.push(obj);
             for a in &args {
-                call_args.push(leak(a.clone()));
+                call_args.push(leak_fast(a.clone()));
             }
             if !enter_call() {
                 return rt_throw("stack overflow: call depth limit reached");
@@ -1166,8 +1290,8 @@ fn spid3r_method_inner(
         // any method name (found by tests/engine_matrix.rs).
         return rt_throw(&format!("class {} has no method '{}'", class.name, name));
     }
-    match collections::call_method_host(&mut NativeCallbackHost, &object, &name, args) {
-        Ok(v) => leak(v),
+    match collections::call_method_host(&mut NativeCallbackHost, object, name.as_ref(), args) {
+        Ok(v) => leak_fast(v),
         Err(msg) => match crate::sched::take_error_thrown() {
             // `task.join()` (and callback hosts) report a String error but
             // stash the user-thrown value; rethrow the value so an enclosing
@@ -1435,10 +1559,20 @@ pub extern "C" fn spid3r_index_get(obj: *const Value, idx: *const Value) -> *mut
             crate::value::collections::seq::resolve_index(idx, guard.items.len(), "index")
                 .map(|i| guard.items[i].clone())
         }
+        (Value::Bytes(b), Value::Int(i)) => {
+            let guard = b.lock().unwrap();
+            let len = guard.len();
+            let resolved = if *i < 0 { len as i64 + *i } else { *i };
+            if resolved >= 0 && (resolved as usize) < len {
+                return leak_int(guard[resolved as usize] as i64);
+            }
+            drop(guard);
+            collections::index_get(object, idx)
+        }
         _ => collections::index_get(object, idx),
     };
     match res {
-        Ok(v) => leak(v),
+        Ok(v) => leak_fast(v),
         Err(msg) => rt_throw(&msg),
     }
 }
@@ -1456,7 +1590,7 @@ pub extern "C" fn spid3r_index_set(obj: *const Value, idx: *const Value, v: *mut
 #[no_mangle]
 pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *mut Value {
     let object = deref(obj);
-    let name = cstr(name);
+    let name = cstr_ref(name);
     // Every failure here is a script-level runtime error on the tree/VM
     // engines (interpreter `field_get` raises a catchable `Flow::Error`),
     // so each arm throws through the catchable channel instead of `abort`
@@ -1465,8 +1599,8 @@ pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *m
     match object {
         Value::CInstance(inst) => {
             let inst = inst.lock().unwrap();
-            match inst.fields.get(&name) {
-                Some(v) => leak(v.clone()),
+            match inst.fields.get(name.as_ref()) {
+                Some(v) => leak_fast(v.clone()),
                 None => rt_throw(&format!(
                     "instance of {} has no field '{}'",
                     inst.class.name, name
@@ -1480,11 +1614,11 @@ pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *m
             match inst
                 .class
                 .slot_index
-                .get(&name)
+                .get(name.as_ref())
                 .copied()
                 .and_then(|i| inst.slots.get(i))
             {
-                Some(v) => leak(v.clone()),
+                Some(v) => leak_fast(v.clone()),
                 None => rt_throw(&format!(
                     "instance of {} has no field '{}'",
                     inst.class.name, name
@@ -1496,28 +1630,28 @@ pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *m
         // here with "cannot read field 'k' of map" (found by
         // tests/engine_matrix.rs).
         Value::Map(m) => {
-            let key = crate::value::MapKey::Str(name.clone().into());
+            let key = crate::value::MapKey::Str(name.as_ref().into());
             let guard = m.lock().unwrap();
             match guard.find(&key) {
-                Some(i) => leak(guard.entries[i].1.clone()),
+                Some(i) => leak_fast(guard.entries[i].1.clone()),
                 None => rt_throw(&format!("missing key '{}'", name)),
             }
         }
-        other => rt_throw(&crate::value::no_field_error(other, &name)),
+        other => rt_throw(&crate::value::no_field_error(other, name.as_ref())),
     }
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_field_set(obj: *const Value, name: *const c_char, v: *mut Value) {
     let object = deref(obj);
-    let name = cstr(name);
+    let name = cstr_ref(name);
     let val = to_owned(v);
     // Catchable like the interpreter's `field_set` (`Flow::Error`), not an
     // abort (F-9).
     match object {
         Value::CInstance(inst) => {
             let mut inst = inst.lock().unwrap();
-            if let Some(slot) = inst.fields.get_mut(&name) {
+            if let Some(slot) = inst.fields.get_mut(name.as_ref()) {
                 *slot = val;
             } else {
                 rt_throw(&format!(
@@ -1527,7 +1661,7 @@ pub extern "C" fn spid3r_field_set(obj: *const Value, name: *const c_char, v: *m
             }
         }
         other => {
-            rt_throw(&crate::value::no_field_error(other, &name));
+            rt_throw(&crate::value::no_field_error(other, name.as_ref()));
         }
     }
 }
