@@ -262,6 +262,8 @@ CSS = """
     }
     .badge.pass { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid var(--w3-green-border); }
     .badge.fail { background: rgba(251, 113, 133, 0.14); color: var(--rose); border: 1px solid rgba(251, 113, 133, 0.4); }
+    .badge.info { background: rgba(56, 189, 248, 0.14); color: var(--cyan); border: 1px solid rgba(56, 189, 248, 0.4); }
+    .badge.warn { background: rgba(251, 191, 36, 0.14); color: var(--amber); border: 1px solid rgba(251, 191, 36, 0.4); }
     .badge.muted { background: var(--bg-card-alt); color: var(--fg-muted); border: 1px solid var(--border-line); }
 
     .track { position: relative; height: 8px; width: 100%; min-width: 110px; background: var(--bg-card-alt); border-radius: 999px; overflow: hidden; }
@@ -626,6 +628,254 @@ def _render_p2_section(ref_p2, sec_num="05"):
 """
 
 
+def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
+    wl1 = (ref_p1 or {}).get("workloads", {})
+    p_node = _p1_metric((wl1.get("prime") or {}).get("node"))
+    p_rust = _p1_metric((wl1.get("prime") or {}).get("rust"))
+    j_node = _p1_metric((wl1.get("json") or {}).get("node"))
+    m_node = _p1_metric((wl1.get("map") or {}).get("node"))
+
+    # Ledger-recorded Phase 11 P-6 final combined numbers (full_plan.html, 2026-11-16, commit 4d1238e).
+    p6_prime, p6_json, p6_map = 5.760, 148.823, 28.001
+    prime_node_x = f"{p6_prime / p_node['ms']:.2f}&times; slower" if p_node and p_node["ms"] > 0 else "n/a"
+    prime_rust_x = f"{p6_prime / p_rust['ms']:.2f}&times; slower" if p_rust and p_rust["ms"] > 0 else "n/a"
+    json_node_x = f"{p6_json / j_node['ms']:.2f}&times; slower" if j_node and j_node["ms"] > 0 else "n/a"
+    map_node_x = f"{p6_map / m_node['ms']:.2f}&times; slower" if m_node and m_node["ms"] > 0 else "n/a"
+
+    tg2 = (ref_p2 or {}).get("targets", {})
+    lex_floor = tg2.get("lex", {}).get("tier_a_floor_mb_s", 0.192)
+    parse_floor = tg2.get("parse", {}).get("tier_a_floor_programs_s", 57.6)
+    check_floor = tg2.get("check", {}).get("tier_a_floor_programs_s", 43.2)
+    sc_floor = tg2.get("self_compile", {}).get("tier_a_floor_mb_s", 0.0386)
+    cb_max = tg2.get("corpus_build", {}).get("tier_a_max_batch_ms", 2757.4)
+
+    rows = [
+        (
+            "HLC <code>prime</code><small>50k primes checksum loop</small>",
+            '<span class="badge info">Tier B</span> <span class="badge warn">Tier C</span>',
+            "<b>5.76&nbsp;ms</b> compute<small>12.85&nbsp;ms wall; &minus;39.0% vs 9.44&nbsp;ms (P-6)</small>",
+            f"<b>{p_node['ms']:.2f}&nbsp;ms</b> int<small>V8 JIT ({prime_node_x})</small>" if p_node else "n/a",
+            f"<b>{p_rust['ms']:.2f}&nbsp;ms</b> int<small>rustc -O ({prime_rust_x})</small>" if p_rust else "n/a",
+            "11.6 (P-6) + 11.1 (P-1)",
+            '<span class="badge pass">Tier B MET</span><small>Sub-4&times; vs JIT/rustc retired to Tier C (overflow checks + cancel poll)</small>',
+        ),
+        (
+            "HLC <code>json</code><small>encode/decode workload</small>",
+            '<span class="badge info">Tier B</span> <span class="badge warn">Tier C</span>',
+            "<b>148.82&nbsp;ms</b> compute<small>156.62&nbsp;ms wall; &minus;21.3% vs 189.06&nbsp;ms (P-6)</small>",
+            f"<b>{j_node['ms']:.2f}&nbsp;ms</b> int<small>V8 C++/CSA ({json_node_x})</small>" if j_node else "n/a",
+            'n/a (absent)<small>not in vendored HLC suite</small>',
+            "11.6 (P-6) + 11.1 (P-1)",
+            '<span class="badge muted">RETIRED (R1)</span><small>Collection-bound: <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> + FFI boxing vs V8 hidden classes</small>',
+        ),
+        (
+            "HLC <code>map</code><small>100k lookup/insert loop</small>",
+            '<span class="badge info">Tier B</span> <span class="badge warn">Tier C</span>',
+            "<b>28.00&nbsp;ms</b> compute<small>35.70&nbsp;ms wall; &minus;37.3% vs 44.67&nbsp;ms (P-6)</small>",
+            f"<b>{m_node['ms']:.2f}&nbsp;ms</b> int<small>V8 IC/SMI ({map_node_x})</small>" if m_node else "n/a",
+            'n/a (absent)<small>not in vendored HLC suite</small>',
+            "11.6 (P-6) + 11.1 (P-1)",
+            '<span class="badge muted">RETIRED (R1/R3)</span><small>Dynamic index locks <code>Arc&lt;Mutex&gt;</code> per lookup vs inline V8 cache</small>',
+        ),
+        (
+            "Selfhost <code>lex</code><small>1.02 MB corpus</small>",
+            '<span class="badge pass">Tier A</span> <span class="badge warn">Tier B ret.</span>',
+            f"<b>1387.53&nbsp;ms</b> (0.733&nbsp;MB/s)<small>2.97&times; vs P-2; floor &ge; {lex_floor:.3f}&nbsp;MB/s</small>",
+            "&mdash;",
+            "<b>61.18&nbsp;ms</b> (16.62&nbsp;MB/s)<small>Stage-0 Rust (22.7&times; faster)</small>",
+            "11.6 (P-6) + 1.4",
+            '<span class="badge pass">Tier A PASS</span><small>&ge;1/2 Stage-0 retired (1.4 ledger): raw <code>&amp;[u8]</code> vs dynamic <code>bytes</code> FFI</small>',
+        ),
+        (
+            "Selfhost <code>parse</code> &amp; <code>check</code><small>121 corpus files</small>",
+            '<span class="badge pass">Tier A</span> <span class="badge info">Tier B</span>',
+            f"<b>928.75 / 1081.87&nbsp;ms</b><small>130.3/s &amp; 111.8/s (floors &ge; {parse_floor:.1f} / {check_floor:.1f})</small>",
+            "&mdash;",
+            "1137.04 / 1213.28&nbsp;ms<small>Selfhost is <b>1.22&times; / 1.12&times; faster</b></small>",
+            "11.6 (P-6) + 11.2 (P-2)",
+            '<span class="badge pass">MET</span><small>Selfhost front-end outpaces Stage-0 Rust CLI batches</small>',
+        ),
+        (
+            "Selfhost <code>self_compile</code><small>17 modules / 592 KB</small>",
+            '<span class="badge pass">Tier A</span> <span class="badge info">Tier B</span>',
+            f"<b>5932.15&nbsp;ms</b> (0.0998&nbsp;MB/s)<small>1.46&times; vs 8674&nbsp;ms; floor &ge; {sc_floor:.4f}&nbsp;MB/s</small>",
+            "&mdash;",
+            "<b>1134.79&nbsp;ms</b> (0.522&nbsp;MB/s)<small>Stage-0 Rust (5.23&times; faster)</small>",
+            "11.6 (P-6) + 11.2 (P-2)",
+            '<span class="badge pass">Tier A/B PASS</span><small>Boxed AST traversal + LLVM-C call marshalling vs Rust native passes</small>',
+        ),
+        (
+            "Selfhost <code>corpus_build</code><small>6 standalone examples</small>",
+            '<span class="badge pass">Tier A</span>',
+            f"<b>673.84&nbsp;ms</b> (8.90/s)<small>floor &le; {cb_max:.1f}&nbsp;ms</small>",
+            "&mdash;",
+            "678.19&nbsp;ms (8.85/s)<small>Stage-0 Rust (1.01&times; parity)</small>",
+            "11.6 (P-6) + 11.2 (P-2)",
+            '<span class="badge pass">MET</span><small>Stage 1 matches Stage 0 end-to-end build latency</small>',
+        ),
+        (
+            "Codegen quality &amp; CLI lightness<small>S1/S0 parity + startup + envelope</small>",
+            '<span class="badge pass">Tier A</span>',
+            "<b>1.0007&times;</b> corpus med (max 1.0435&times;)<small>startup <b>8.099&nbsp;ms</b> (&le;8.5); VM 10.27&nbsp;MiB</small>",
+            "&mdash;",
+            "Stage-0 <code>default&lt;O3&gt;</code><small>HLC S1/S0 0.995&times;&ndash;1.007&times;</small>",
+            "11.3 (P-3) + 11.5 (P-5)",
+            '<span class="badge pass">MET</span><small>Bit-identical Stage 2&harr;3 object; release budgets enforced in CI/local</small>',
+        ),
+    ]
+
+    tr_html = "\n".join(
+        f"""<tr>
+          <td class="name">{wl}</td>
+          <td>{tier}</td>
+          <td class="mono">{aot}</td>
+          <td class="mono">{nd}</td>
+          <td class="mono">{rs}</td>
+          <td class="mono">{esc(src)}</td>
+          <td>{disp}</td>
+        </tr>"""
+        for wl, tier, aot, nd, rs, src, disp in rows
+    )
+
+    return f"""
+    <h2><span class="num">{sec_num}</span>Phase 11 P-8: Honest three-way target table (Spid3r-AOT vs Node vs Rust)</h2>
+    <p class="section-lead">
+      Every published figure traces directly to a ledger run in <code>full_plan.html</code> (<code>P-1</code>,
+      <code>P-2</code>, <code>P-3</code>, <code>P-5</code>, and <code>P-6</code>; Core-6 affinity, 9w/21r&times;2,
+      blocking 5% sensitivity selftest <code>PASS</code>, <code>ADVISORY_ONLY</code> shared Windows host).
+      No target is presented as a promise without its Tier label and recorded measurement:
+      <span class="badge pass">Tier A</span> blocking floor &middot;
+      <span class="badge info">Tier B</span> measured delta vs frozen baseline &middot;
+      <span class="badge warn">Tier C</span> stretch / structurally gapped (never blocking; retired via <code>docs/PERF_TARGET_RETIREMENT.md</code>).
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Workload / Gate</th>
+            <th>Tier</th>
+            <th>Spid3r (AOT)</th>
+            <th>Node.js (V8)</th>
+            <th>Rust (<code>rustc -O</code>)</th>
+            <th>Ledger ref</th>
+            <th>Disposition &amp; structural gap</th>
+          </tr>
+        </thead>
+        <tbody>
+        {tr_html}
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <b>Why structural gaps exist (JIT vs AOT, boxed vs unboxed):</b>
+      (1) Node&rsquo;s V8 JIT speculatively compiles monomorphic loops into unboxed machine registers with hidden-class inline caches, whereas Spid3r-AOT preserves overflow-checked <code>i64</code> arithmetic, periodic cancellation polling (<code>CANCEL_POLL_INTERVAL=2048</code>), and <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> runtime containers across FFI trampolines.
+      (2) Rust compiles directly to unboxed stack/SSA values with zero runtime type-tag overhead. Targets shown as unreachable under Spid3r&rsquo;s safety/no-new-dependency/engine-contract invariants are retired openly in <code>docs/PERF_TARGET_RETIREMENT.md</code> (&sect;4 &amp; &sect;8, pending owner confirmation) rather than relaxed silently.
+    </div>
+"""
+
+
+def _render_p9_section(sec_num="07"):
+    timeline = [
+        (
+            "Phase 1.2 / 1.4",
+            "2026-11-14",
+            "Selfhost lexer quadratic fix &amp; baseline",
+            "Fragment joins + <code>bytes</code> O(1) indexing cut 1 MB lex from 300s+ OOM to 5.4s (<code>0.24 MB/s</code>); Tier-B <code>&ge;1/2 Stage-0</code> (<code>0.005&times;</code>) retired openly to Tier-A floor <code>&ge; 0.19 MB/s</code>.",
+            "1.2 / 1.4 ledger",
+        ),
+        (
+            "Phase 11 P-1",
+            "2026-11-15",
+            "Three-way HLC reference locked",
+            "<code>prime</code>: VM 31.15, AOT 8.74, Node 1.70, Rust 1.36 ms; <code>json</code>: VM 167.92, AOT 199.05, Node 17.60 ms; <code>map</code>: VM 21.21, AOT 45.17, Node 1.56 ms (<code>benchmarks/reference.p1.json</code>).",
+            "11.1 (P-1)",
+        ),
+        (
+            "Phase 11 P-2",
+            "2026-11-16",
+            "Selfhost toolchain baseline frozen",
+            "Stage-1 AOT: <code>lex</code> 4241.82 ms (0.240 MB/s), <code>parse</code> 1681.52 ms (72.0/s), <code>check</code> 2242.21 ms (54.0/s), <code>self_compile</code> 12123.26 ms (0.0482 MB/s), <code>corpus_build</code> 2205.89 ms (<code>benchmarks/selfhost/baseline.json</code>).",
+            "11.2 (P-2)",
+        ),
+        (
+            "Phase 11 P-3",
+            "2026-11-16",
+            "Stage-1 release <code>&lt;O3&gt;</code> &amp; runtime alignment",
+            "Fixed debug staticlib lookup + wired LLVM PassBuilder <code>default&lt;O3&gt;</code>: HLC S1/S0 parity 0.995&times;&ndash;1.007&times; (<code>prime</code> 1.237&times; vs unopt IR); 111-corpus median 1.0007&times; (max 1.0435&times; &le; 1.25&times;); <code>self_compile</code> ~16.3 s vs 35.5 s.",
+            "11.3 (P-3)",
+        ),
+        (
+            "Phase 11 P-4",
+            "2026-11-16",
+            "ThinLTO + split PGO hardening",
+            "Replaced <code>process::exit</code> with <code>ExitCode</code> so CRT flushes <code>.profraw</code>: <code>self_compile</code> S0 1313.41 &rarr; 1144.20 ms (&minus;12.88%), S1 9637.79 &rarr; 8901.70 ms (&minus;7.64%, &minus;26.57% vs P-2); binaries &minus;8.6% to &minus;9.6%.",
+            "11.4 (P-4)",
+        ),
+        (
+            "Phase 11 P-5",
+            "2026-11-16",
+            "Lazy init &amp; lightness budgets",
+            "Lazy stdlib/tzdata resolution + single-read CLI: <code>spid3r --version</code> <code>8.099 ms &le; 8.5 ms</code> Tier-A floor; VM 10.27 MiB WS / 2.75 MiB commit; release size ceilings in <code>benchmarks/budgets.p5.json</code>.",
+            "11.5 (P-5)",
+        ),
+        (
+            "Phase 11 P-6",
+            "2026-11-16",
+            "W4.1&ndash;W4.3 hot-path backlog",
+            "W4.1 bump-slab + small-int cache + zero-alloc dispatch, W4.2 lexer <code>BS.slice().to_string()</code> + &lt;18-digit int fast path, W4.3 top-level scalar <code>const</code> propagation: HLC AOT <code>prime</code> 5.76 ms (&minus;39.0%), <code>json</code> 148.82 ms (&minus;21.3%), <code>map</code> 28.00 ms (&minus;37.3%); selfhost <code>lex</code> 1387.53 ms (2.97&times;), <code>parse</code> 928.75 ms (1.22&times; Stage 0), <code>check</code> 1081.87 ms (1.12&times; Stage 0), <code>self_compile</code> 5932.15 ms (1.46&times;).",
+            "11.6 (P-6)",
+        ),
+        (
+            "Phase 11 P-7",
+            "2026-11-17",
+            "CI advisory perf tracking",
+            "Extended Tier-A floors to all 5 selfhost workloads and wired the 2-consecutive-run <code>&gt;1.05&times; &amp;&amp; &gt;3&times; pooled MAD</code> rule + <code>actions/cache@v4</code> deltas into <code>phase0</code> and <code>aot</code> CI jobs; teeth verified red (exit 1) on regressed lex runs.",
+            "11.7 (P-7)",
+        ),
+        (
+            "Phase 11 P-8 / P-9",
+            "2026-11-17",
+            "Honest target table &amp; doc sync",
+            "Published Section 06 three-way Tier A/B/C table, structural-gap notes, <code>docs/PERF_TARGET_RETIREMENT.md</code> &sect;8, and this continuous log synced between <code>benchmark.html</code> and <code>full_plan.html</code> Appendix B.",
+            "11.8 &ndash; 11.9",
+        ),
+    ]
+    rows_html = "\n".join(
+        f"""<tr>
+          <td class="mono">{phase}</td>
+          <td class="mono">{dt}</td>
+          <td class="name">{area}</td>
+          <td>{delta}</td>
+          <td class="mono">{ref}</td>
+        </tr>"""
+        for phase, dt, area, delta, ref in timeline
+    )
+    return f"""
+    <h2><span class="num">{sec_num}</span>Phase 11 P-9: Continuous performance log (W-program trajectory)</h2>
+    <p class="section-lead">
+      End-to-end record from the first selfhost lexer measurement (Phase 1) through compiler hardening and
+      hot-path engineering (P-1&ndash;P-8), mirrored in <code>full_plan.html</code> Appendix B and checked by
+      <code>tools/bench_report.py --verify-sync</code>.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Milestone</th>
+            <th>Date</th>
+            <th>Focus</th>
+            <th>Measured Outcome (baseline &rarr; after)</th>
+            <th>Ledger ref</th>
+          </tr>
+        </thead>
+        <tbody>
+        {rows_html}
+        </tbody>
+      </table>
+    </div>
+"""
+
+
 def render(data, names, desc, iters, floors, ref_p1=None, ref_p2=None):
     vm = data["vm"]
     tree = data["tree"]
@@ -713,10 +963,16 @@ def render(data, names, desc, iters, floors, ref_p1=None, ref_p2=None):
         )
 
     p1_section = _render_p1_section(ref_p1, sec_num="04")
-    p2_sec_num = "05" if p1_section else "04"
-    p2_section = _render_p2_section(ref_p2, sec_num=p2_sec_num)
-    sec_idx = 4 + (1 if p1_section else 0) + (1 if p2_section else 0)
-    method_sec = f"{sec_idx:02d}"
+    sec_num = 5 if p1_section else 4
+    p2_section = _render_p2_section(ref_p2, sec_num=f"{sec_num:02d}")
+    if p2_section:
+        sec_num += 1
+    p8_section = _render_p8_section(ref_p1, ref_p2, sec_num=f"{sec_num:02d}") if (ref_p1 or ref_p2) else ""
+    if p8_section:
+        sec_num += 1
+    p9_section = _render_p9_section(sec_num=f"{sec_num:02d}")
+    sec_num += 1
+    method_sec = f"{sec_num:02d}"
 
     chart = lang_bars(chart_rows, [("spid3r", "Spid3r", "spid3r"), ("php", "PHP", "php"), ("python", "Python", "python")])
 
@@ -915,6 +1171,8 @@ def render(data, names, desc, iters, floors, ref_p1=None, ref_p2=None):
     <p class="dim" style="text-align:center">Startup-adjusted compute time, log scale &mdash; shorter is faster.</p>
     {p1_section}
     {p2_section}
+    {p8_section}
+    {p9_section}
     <h2><span class="num">{method_sec}</span>Method and caveats</h2>
     <ul>
       <li><b>One process per run.</b> Each sample is a fresh OS process; the harness takes the best of N.

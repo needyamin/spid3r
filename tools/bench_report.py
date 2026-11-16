@@ -403,6 +403,57 @@ def cpu_name():
     return platform.processor() or "unknown CPU"
 
 
+def verify_doc_sync() -> int:
+    """Verify docs/html/benchmark.html and full_plan.html agree on every published figure."""
+    plan_path = ROOT / "full_plan.html"
+    if not OUT_HTML.is_file() or not plan_path.is_file():
+        print("SYNC FAIL: missing benchmark.html or full_plan.html", file=sys.stderr)
+        return 1
+    bench_txt = OUT_HTML.read_text(encoding="utf-8")
+    plan_txt = plan_path.read_text(encoding="utf-8")
+    ref_p1 = json.loads(REF_P1_JSON.read_text(encoding="utf-8")) if REF_P1_JSON.is_file() else {}
+    ref_p2 = json.loads(REF_P2_JSON.read_text(encoding="utf-8")) if REF_P2_JSON.is_file() else {}
+
+    for label, txt in (("docs/html/benchmark.html", bench_txt), ("full_plan.html", plan_txt)):
+        for tidx, tbl in enumerate(re.findall(r"<table\b[^>]*>.*?</table>", txt, re.S), 1):
+            rows = re.findall(r"<tr\b[^>]*>.*?</tr>", tbl, re.S)
+            counts = [len(re.findall(r"<(?:th|td)\b", r)) for r in rows]
+            if not counts or len(set(counts)) != 1:
+                print(f"SYNC FAIL: {label} table {tidx} column-count drift {counts}", file=sys.stderr)
+                return 1
+
+    wl1 = ref_p1.get("workloads") or {}
+    tg2 = ref_p2.get("targets") or {}
+    pins = [
+        ("P-1 prime VM", f"{wl1['prime']['vm']['passes'][0]['compute']['median']:.2f}"),
+        ("P-1 prime native", f"{wl1['prime']['native']['passes'][0]['compute']['median']:.2f}"),
+        ("P-1 prime Node", f"{wl1['prime']['node']['internal_compute_median_ms']:.2f}"),
+        ("P-1 prime Rust", f"{wl1['prime']['rust']['internal_compute_median_ms']:.2f}"),
+        ("P-1 json Node", f"{wl1['json']['node']['internal_compute_median_ms']:.2f}"),
+        ("P-1 map Node", f"{wl1['map']['node']['internal_compute_median_ms']:.2f}"),
+        ("P-2 lex floor", f"{tg2['lex']['tier_a_floor_mb_s']:.3f}"),
+        ("P-2 parse floor", f"{tg2['parse']['tier_a_floor_programs_s']:.1f}"),
+        ("P-2 check floor", f"{tg2['check']['tier_a_floor_programs_s']:.1f}"),
+        ("P-2 self_compile floor", f"{tg2['self_compile']['tier_a_floor_mb_s']:.4f}"),
+        ("P-2 corpus_build max", f"{tg2['corpus_build']['tier_a_max_batch_ms']:.1f}"),
+        ("P-5 startup", "8.099"),
+        ("P-6 prime", "5.76"),
+        ("P-6 json", "148.82"),
+        ("P-6 map", "28.00"),
+        ("P-6 lex sh", "1387.53"),
+        ("P-6 parse sh", "928.75"),
+        ("P-6 check sh", "1081.87"),
+        ("P-6 self_compile sh", "5932.15"),
+        ("P-6 corpus_build sh", "673.84"),
+    ]
+    for name, val in pins:
+        if val not in bench_txt or val not in plan_txt:
+            print(f"SYNC FAIL: {name} ({val}) missing in benchmark.html or full_plan.html", file=sys.stderr)
+            return 1
+    print(f"BENCH DOC SYNC PASS: {len(pins)} figures verified across benchmark.html, full_plan.html, and frozen JSONs")
+    return 0
+
+
 def main():
     # Phase 0: `--mode compute` is a JSON-ONLY measurement entry point. It
     # delegates to tools/phase0_bench.py and NEVER renders docs/html/benchmark.html
@@ -431,6 +482,8 @@ def main():
     ap.add_argument("--render", action="store_true")
     ap.add_argument("--check-startup-floor", action="store_true",
                     help="Fail non-zero if spid3r startup exceeds STARTUP_FLOOR_MS (8.5 ms).")
+    ap.add_argument("--verify-sync", action="store_true",
+                    help="Verify benchmark.html, full_plan.html, and frozen JSON baselines agree on every figure.")
     ap.add_argument("--runs", type=int, default=5, help="spid3r runs (best of N)")
     # 21 is the sample count tools/phase0_bench.py uses. It is not decoration:
     # the reference side of the ratio is a difference of two independently
@@ -439,6 +492,9 @@ def main():
     # half these workloads. Best-of-21 pulls the large rows to within ~10%.
     ap.add_argument("--other-runs", type=int, default=21, help="php/python runs (best of N)")
     args = ap.parse_args(argv)
+
+    if args.verify_sync:
+        sys.exit(verify_doc_sync())
 
     do_measure = args.measure or not args.render
     do_render = args.render or not args.measure

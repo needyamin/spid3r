@@ -459,7 +459,16 @@ jobs:
         run: python3 tools/phase0_fixtures.py --verify
 
       - name: Phase 0 sensitivity self-test (BLOCKING)
-        run: python3 tools/phase0_selftest.py
+        shell: bash
+        run: |
+          if ! python3 tools/phase0_selftest.py > /tmp/p0_selftest.out 2>&1; then
+            cat /tmp/p0_selftest.out
+            tail -n 15 /tmp/p0_selftest.out | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
+          tail -n 5 /tmp/p0_selftest.out
 
       # ADVISORY ONLY - shared runner, never frozen. Distinct output filename.
       - name: Restore previous Phase 0 perf snapshot

@@ -186,6 +186,8 @@
     }
     .badge.pass { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid var(--w3-green-border); }
     .badge.fail { background: rgba(251, 113, 133, 0.14); color: var(--rose); border: 1px solid rgba(251, 113, 133, 0.4); }
+    .badge.info { background: rgba(56, 189, 248, 0.14); color: var(--cyan); border: 1px solid rgba(56, 189, 248, 0.4); }
+    .badge.warn { background: rgba(251, 191, 36, 0.14); color: var(--amber); border: 1px solid rgba(251, 191, 36, 0.4); }
     .badge.muted { background: var(--bg-card-alt); color: var(--fg-muted); border: 1px solid var(--border-line); }
 
     .track { position: relative; height: 8px; width: 100%; min-width: 110px; background: var(--bg-card-alt); border-radius: 999px; overflow: hidden; }
@@ -882,7 +884,199 @@
       </div>
     </details>
 
-    <h2><span class="num">06</span>Method and caveats</h2>
+    
+    <h2><span class="num">06</span>Phase 11 P-8: Honest three-way target table (Spid3r-AOT vs Node vs Rust)</h2>
+    <p class="section-lead">
+      Every published figure traces directly to a ledger run in <code>full_plan.html</code> (<code>P-1</code>,
+      <code>P-2</code>, <code>P-3</code>, <code>P-5</code>, and <code>P-6</code>; Core-6 affinity, 9w/21r&times;2,
+      blocking 5% sensitivity selftest <code>PASS</code>, <code>ADVISORY_ONLY</code> shared Windows host).
+      No target is presented as a promise without its Tier label and recorded measurement:
+      <span class="badge pass">Tier A</span> blocking floor &middot;
+      <span class="badge info">Tier B</span> measured delta vs frozen baseline &middot;
+      <span class="badge warn">Tier C</span> stretch / structurally gapped (never blocking; retired via <code>docs/PERF_TARGET_RETIREMENT.md</code>).
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Workload / Gate</th>
+            <th>Tier</th>
+            <th>Spid3r (AOT)</th>
+            <th>Node.js (V8)</th>
+            <th>Rust (<code>rustc -O</code>)</th>
+            <th>Ledger ref</th>
+            <th>Disposition &amp; structural gap</th>
+          </tr>
+        </thead>
+        <tbody>
+        <tr>
+          <td class="name">HLC <code>prime</code><small>50k primes checksum loop</small></td>
+          <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
+          <td class="mono"><b>5.76&nbsp;ms</b> compute<small>12.85&nbsp;ms wall; &minus;39.0% vs 9.44&nbsp;ms (P-6)</small></td>
+          <td class="mono"><b>1.70&nbsp;ms</b> int<small>V8 JIT (3.38&times; slower)</small></td>
+          <td class="mono"><b>1.36&nbsp;ms</b> int<small>rustc -O (4.23&times; slower)</small></td>
+          <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
+          <td><span class="badge pass">Tier B MET</span><small>Sub-4&times; vs JIT/rustc retired to Tier C (overflow checks + cancel poll)</small></td>
+        </tr>
+<tr>
+          <td class="name">HLC <code>json</code><small>encode/decode workload</small></td>
+          <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
+          <td class="mono"><b>148.82&nbsp;ms</b> compute<small>156.62&nbsp;ms wall; &minus;21.3% vs 189.06&nbsp;ms (P-6)</small></td>
+          <td class="mono"><b>17.60&nbsp;ms</b> int<small>V8 C++/CSA (8.46&times; slower)</small></td>
+          <td class="mono">n/a (absent)<small>not in vendored HLC suite</small></td>
+          <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
+          <td><span class="badge muted">RETIRED (R1)</span><small>Collection-bound: <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> + FFI boxing vs V8 hidden classes</small></td>
+        </tr>
+<tr>
+          <td class="name">HLC <code>map</code><small>100k lookup/insert loop</small></td>
+          <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
+          <td class="mono"><b>28.00&nbsp;ms</b> compute<small>35.70&nbsp;ms wall; &minus;37.3% vs 44.67&nbsp;ms (P-6)</small></td>
+          <td class="mono"><b>1.56&nbsp;ms</b> int<small>V8 IC/SMI (17.93&times; slower)</small></td>
+          <td class="mono">n/a (absent)<small>not in vendored HLC suite</small></td>
+          <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
+          <td><span class="badge muted">RETIRED (R1/R3)</span><small>Dynamic index locks <code>Arc&lt;Mutex&gt;</code> per lookup vs inline V8 cache</small></td>
+        </tr>
+<tr>
+          <td class="name">Selfhost <code>lex</code><small>1.02 MB corpus</small></td>
+          <td><span class="badge pass">Tier A</span> <span class="badge warn">Tier B ret.</span></td>
+          <td class="mono"><b>1387.53&nbsp;ms</b> (0.733&nbsp;MB/s)<small>2.97&times; vs P-2; floor &ge; 0.192&nbsp;MB/s</small></td>
+          <td class="mono">&mdash;</td>
+          <td class="mono"><b>61.18&nbsp;ms</b> (16.62&nbsp;MB/s)<small>Stage-0 Rust (22.7&times; faster)</small></td>
+          <td class="mono">11.6 (P-6) + 1.4</td>
+          <td><span class="badge pass">Tier A PASS</span><small>&ge;1/2 Stage-0 retired (1.4 ledger): raw <code>&amp;[u8]</code> vs dynamic <code>bytes</code> FFI</small></td>
+        </tr>
+<tr>
+          <td class="name">Selfhost <code>parse</code> &amp; <code>check</code><small>121 corpus files</small></td>
+          <td><span class="badge pass">Tier A</span> <span class="badge info">Tier B</span></td>
+          <td class="mono"><b>928.75 / 1081.87&nbsp;ms</b><small>130.3/s &amp; 111.8/s (floors &ge; 57.6 / 43.2)</small></td>
+          <td class="mono">&mdash;</td>
+          <td class="mono">1137.04 / 1213.28&nbsp;ms<small>Selfhost is <b>1.22&times; / 1.12&times; faster</b></small></td>
+          <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
+          <td><span class="badge pass">MET</span><small>Selfhost front-end outpaces Stage-0 Rust CLI batches</small></td>
+        </tr>
+<tr>
+          <td class="name">Selfhost <code>self_compile</code><small>17 modules / 592 KB</small></td>
+          <td><span class="badge pass">Tier A</span> <span class="badge info">Tier B</span></td>
+          <td class="mono"><b>5932.15&nbsp;ms</b> (0.0998&nbsp;MB/s)<small>1.46&times; vs 8674&nbsp;ms; floor &ge; 0.0386&nbsp;MB/s</small></td>
+          <td class="mono">&mdash;</td>
+          <td class="mono"><b>1134.79&nbsp;ms</b> (0.522&nbsp;MB/s)<small>Stage-0 Rust (5.23&times; faster)</small></td>
+          <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
+          <td><span class="badge pass">Tier A/B PASS</span><small>Boxed AST traversal + LLVM-C call marshalling vs Rust native passes</small></td>
+        </tr>
+<tr>
+          <td class="name">Selfhost <code>corpus_build</code><small>6 standalone examples</small></td>
+          <td><span class="badge pass">Tier A</span></td>
+          <td class="mono"><b>673.84&nbsp;ms</b> (8.90/s)<small>floor &le; 2757.4&nbsp;ms</small></td>
+          <td class="mono">&mdash;</td>
+          <td class="mono">678.19&nbsp;ms (8.85/s)<small>Stage-0 Rust (1.01&times; parity)</small></td>
+          <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
+          <td><span class="badge pass">MET</span><small>Stage 1 matches Stage 0 end-to-end build latency</small></td>
+        </tr>
+<tr>
+          <td class="name">Codegen quality &amp; CLI lightness<small>S1/S0 parity + startup + envelope</small></td>
+          <td><span class="badge pass">Tier A</span></td>
+          <td class="mono"><b>1.0007&times;</b> corpus med (max 1.0435&times;)<small>startup <b>8.099&nbsp;ms</b> (&le;8.5); VM 10.27&nbsp;MiB</small></td>
+          <td class="mono">&mdash;</td>
+          <td class="mono">Stage-0 <code>default&lt;O3&gt;</code><small>HLC S1/S0 0.995&times;&ndash;1.007&times;</small></td>
+          <td class="mono">11.3 (P-3) + 11.5 (P-5)</td>
+          <td><span class="badge pass">MET</span><small>Bit-identical Stage 2&harr;3 object; release budgets enforced in CI/local</small></td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <b>Why structural gaps exist (JIT vs AOT, boxed vs unboxed):</b>
+      (1) Node&rsquo;s V8 JIT speculatively compiles monomorphic loops into unboxed machine registers with hidden-class inline caches, whereas Spid3r-AOT preserves overflow-checked <code>i64</code> arithmetic, periodic cancellation polling (<code>CANCEL_POLL_INTERVAL=2048</code>), and <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> runtime containers across FFI trampolines.
+      (2) Rust compiles directly to unboxed stack/SSA values with zero runtime type-tag overhead. Targets shown as unreachable under Spid3r&rsquo;s safety/no-new-dependency/engine-contract invariants are retired openly in <code>docs/PERF_TARGET_RETIREMENT.md</code> (&sect;4 &amp; &sect;8, pending owner confirmation) rather than relaxed silently.
+    </div>
+
+    
+    <h2><span class="num">07</span>Phase 11 P-9: Continuous performance log (W-program trajectory)</h2>
+    <p class="section-lead">
+      End-to-end record from the first selfhost lexer measurement (Phase 1) through compiler hardening and
+      hot-path engineering (P-1&ndash;P-8), mirrored in <code>full_plan.html</code> Appendix B and checked by
+      <code>tools/bench_report.py --verify-sync</code>.
+    </p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Milestone</th>
+            <th>Date</th>
+            <th>Focus</th>
+            <th>Measured Outcome (baseline &rarr; after)</th>
+            <th>Ledger ref</th>
+          </tr>
+        </thead>
+        <tbody>
+        <tr>
+          <td class="mono">Phase 1.2 / 1.4</td>
+          <td class="mono">2026-11-14</td>
+          <td class="name">Selfhost lexer quadratic fix &amp; baseline</td>
+          <td>Fragment joins + <code>bytes</code> O(1) indexing cut 1 MB lex from 300s+ OOM to 5.4s (<code>0.24 MB/s</code>); Tier-B <code>&ge;1/2 Stage-0</code> (<code>0.005&times;</code>) retired openly to Tier-A floor <code>&ge; 0.19 MB/s</code>.</td>
+          <td class="mono">1.2 / 1.4 ledger</td>
+        </tr>
+<tr>
+          <td class="mono">Phase 11 P-1</td>
+          <td class="mono">2026-11-15</td>
+          <td class="name">Three-way HLC reference locked</td>
+          <td><code>prime</code>: VM 31.15, AOT 8.74, Node 1.70, Rust 1.36 ms; <code>json</code>: VM 167.92, AOT 199.05, Node 17.60 ms; <code>map</code>: VM 21.21, AOT 45.17, Node 1.56 ms (<code>benchmarks/reference.p1.json</code>).</td>
+          <td class="mono">11.1 (P-1)</td>
+        </tr>
+<tr>
+          <td class="mono">Phase 11 P-2</td>
+          <td class="mono">2026-11-16</td>
+          <td class="name">Selfhost toolchain baseline frozen</td>
+          <td>Stage-1 AOT: <code>lex</code> 4241.82 ms (0.240 MB/s), <code>parse</code> 1681.52 ms (72.0/s), <code>check</code> 2242.21 ms (54.0/s), <code>self_compile</code> 12123.26 ms (0.0482 MB/s), <code>corpus_build</code> 2205.89 ms (<code>benchmarks/selfhost/baseline.json</code>).</td>
+          <td class="mono">11.2 (P-2)</td>
+        </tr>
+<tr>
+          <td class="mono">Phase 11 P-3</td>
+          <td class="mono">2026-11-16</td>
+          <td class="name">Stage-1 release <code>&lt;O3&gt;</code> &amp; runtime alignment</td>
+          <td>Fixed debug staticlib lookup + wired LLVM PassBuilder <code>default&lt;O3&gt;</code>: HLC S1/S0 parity 0.995&times;&ndash;1.007&times; (<code>prime</code> 1.237&times; vs unopt IR); 111-corpus median 1.0007&times; (max 1.0435&times; &le; 1.25&times;); <code>self_compile</code> ~16.3 s vs 35.5 s.</td>
+          <td class="mono">11.3 (P-3)</td>
+        </tr>
+<tr>
+          <td class="mono">Phase 11 P-4</td>
+          <td class="mono">2026-11-16</td>
+          <td class="name">ThinLTO + split PGO hardening</td>
+          <td>Replaced <code>process::exit</code> with <code>ExitCode</code> so CRT flushes <code>.profraw</code>: <code>self_compile</code> S0 1313.41 &rarr; 1144.20 ms (&minus;12.88%), S1 9637.79 &rarr; 8901.70 ms (&minus;7.64%, &minus;26.57% vs P-2); binaries &minus;8.6% to &minus;9.6%.</td>
+          <td class="mono">11.4 (P-4)</td>
+        </tr>
+<tr>
+          <td class="mono">Phase 11 P-5</td>
+          <td class="mono">2026-11-16</td>
+          <td class="name">Lazy init &amp; lightness budgets</td>
+          <td>Lazy stdlib/tzdata resolution + single-read CLI: <code>spid3r --version</code> <code>8.099 ms &le; 8.5 ms</code> Tier-A floor; VM 10.27 MiB WS / 2.75 MiB commit; release size ceilings in <code>benchmarks/budgets.p5.json</code>.</td>
+          <td class="mono">11.5 (P-5)</td>
+        </tr>
+<tr>
+          <td class="mono">Phase 11 P-6</td>
+          <td class="mono">2026-11-16</td>
+          <td class="name">W4.1&ndash;W4.3 hot-path backlog</td>
+          <td>W4.1 bump-slab + small-int cache + zero-alloc dispatch, W4.2 lexer <code>BS.slice().to_string()</code> + &lt;18-digit int fast path, W4.3 top-level scalar <code>const</code> propagation: HLC AOT <code>prime</code> 5.76 ms (&minus;39.0%), <code>json</code> 148.82 ms (&minus;21.3%), <code>map</code> 28.00 ms (&minus;37.3%); selfhost <code>lex</code> 1387.53 ms (2.97&times;), <code>parse</code> 928.75 ms (1.22&times; Stage 0), <code>check</code> 1081.87 ms (1.12&times; Stage 0), <code>self_compile</code> 5932.15 ms (1.46&times;).</td>
+          <td class="mono">11.6 (P-6)</td>
+        </tr>
+<tr>
+          <td class="mono">Phase 11 P-7</td>
+          <td class="mono">2026-11-17</td>
+          <td class="name">CI advisory perf tracking</td>
+          <td>Extended Tier-A floors to all 5 selfhost workloads and wired the 2-consecutive-run <code>&gt;1.05&times; &amp;&amp; &gt;3&times; pooled MAD</code> rule + <code>actions/cache@v4</code> deltas into <code>phase0</code> and <code>aot</code> CI jobs; teeth verified red (exit 1) on regressed lex runs.</td>
+          <td class="mono">11.7 (P-7)</td>
+        </tr>
+<tr>
+          <td class="mono">Phase 11 P-8 / P-9</td>
+          <td class="mono">2026-11-17</td>
+          <td class="name">Honest target table &amp; doc sync</td>
+          <td>Published Section 06 three-way Tier A/B/C table, structural-gap notes, <code>docs/PERF_TARGET_RETIREMENT.md</code> &sect;8, and this continuous log synced between <code>benchmark.html</code> and <code>full_plan.html</code> Appendix B.</td>
+          <td class="mono">11.8 &ndash; 11.9</td>
+        </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2><span class="num">08</span>Method and caveats</h2>
     <ul>
       <li><b>One process per run.</b> Each sample is a fresh OS process; the harness takes the best of N.
         Nothing is warmed up across runs, so JIT-less runtimes are not penalised by a cold-start handicap

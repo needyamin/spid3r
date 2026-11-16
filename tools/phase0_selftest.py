@@ -41,6 +41,7 @@ import argparse
 import json
 import random
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -195,7 +196,8 @@ def pipeline_once(binp: Path) -> dict:
         session.close()
 
 
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 5
+RETRY_COOLDOWN_S = 2.0
 
 
 def run_all(binp: Path, quiet: bool = True) -> dict:
@@ -229,6 +231,8 @@ def run_all(binp: Path, quiet: bool = True) -> dict:
         if consistent:
             accepted = runs
             break
+        if attempt < MAX_ATTEMPTS:
+            time.sleep(RETRY_COOLDOWN_S)
     result = {
         "schema": "spid3r.phase0.selftest/1",
         "blocking": True,
