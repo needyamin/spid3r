@@ -506,6 +506,14 @@ cmd_verify() {
   echo "[release_selfhost] verifying runtime bundle..."
   bash "$ROOT/tools/runtime_artifact.sh" verify "$out_dir/runtime"
 
+  local skip_budgets="${SPID3R_SKIP_SIZE_BUDGETS:-0}"
+  if [ "$skip_budgets" -eq 0 ] && [ -f "$out_dir/runtime/runtime-manifest.json" ]; then
+    if grep -qE '"profile"[[:space:]]*:[[:space:]]*"debug"' "$out_dir/runtime/runtime-manifest.json"; then
+      skip_budgets=1
+      echo "  size budget: skipped release ceilings (runtime profile=debug)"
+    fi
+  fi
+
   local found_tar=0
   local t
   for t in "$out_dir"/spid3r-*.tar.gz; do
@@ -540,8 +548,10 @@ cmd_verify() {
     TARGET="${base_tar#spid3r-}"
     TARGET="${TARGET%.tar.gz}"
     smoke_test_compiler_binary "$self_bin" "$out_dir/runtime" "unpacked $base_tar"
-    check_size_budget "spid3r-self ($base_tar)" "$self_bin" "${SPID3R_MAX_SELF_BYTES:-7500000}"
-    check_size_budget "$base_tar" "$t" "${SPID3R_MAX_TAR_BYTES:-10000000}"
+    if [ "$skip_budgets" -eq 0 ]; then
+      check_size_budget "spid3r-self ($base_tar)" "$self_bin" "${SPID3R_MAX_SELF_BYTES:-7500000}"
+      check_size_budget "$base_tar" "$t" "${SPID3R_MAX_TAR_BYTES:-10000000}"
+    fi
     rm -rf "$ext_tmp"
   done
 
@@ -550,15 +560,17 @@ cmd_verify() {
     exit 1
   fi
 
-  local rt_tar inst_exe
-  for rt_tar in "$out_dir"/spid3r-runtime-*.tar.gz; do
-    [ -f "$rt_tar" ] || continue
-    check_size_budget "$(basename "$rt_tar")" "$rt_tar" "${SPID3R_MAX_RT_TAR_BYTES:-24000000}"
-  done
-  for inst_exe in "$out_dir"/Spid3r-Setup-*.exe; do
-    [ -f "$inst_exe" ] || continue
-    check_size_budget "$(basename "$inst_exe")" "$inst_exe" "${SPID3R_MAX_INSTALLER_BYTES:-48000000}"
-  done
+  if [ "$skip_budgets" -eq 0 ]; then
+    local rt_tar inst_exe
+    for rt_tar in "$out_dir"/spid3r-runtime-*.tar.gz; do
+      [ -f "$rt_tar" ] || continue
+      check_size_budget "$(basename "$rt_tar")" "$rt_tar" "${SPID3R_MAX_RT_TAR_BYTES:-24000000}"
+    done
+    for inst_exe in "$out_dir"/Spid3r-Setup-*.exe; do
+      [ -f "$inst_exe" ] || continue
+      check_size_budget "$(basename "$inst_exe")" "$inst_exe" "${SPID3R_MAX_INSTALLER_BYTES:-48000000}"
+    done
+  fi
 
   echo "[release_selfhost] VERIFY PASS: $out_dir"
 }

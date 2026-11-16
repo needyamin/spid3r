@@ -323,7 +323,7 @@ jobs:
             --staticlib target/debug/libspid3r_lang.a \
             --out-dir /tmp/spid3r-rel \
             --skip-installer 2>&1 | tee /tmp/selfhost_rel_ci.log; then
-            tail -n 40 /tmp/selfhost_rel_ci.log | while IFS= read -r line; do
+            (grep -E '^(FAIL|error\[)|exceeds|differ' /tmp/selfhost_rel_ci.log || true; tail -n 10 /tmp/selfhost_rel_ci.log) | head -10 | while IFS= read -r line; do
               echo "::error::${line}"
             done
             exit 1
