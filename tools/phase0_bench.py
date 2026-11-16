@@ -70,6 +70,7 @@ CI_RESULTS = ROOT / "benchmarks" / "results.phase0.ci-advisory.json"
 SELFHOST_DIR = ROOT / "benchmarks" / "selfhost"
 SELFHOST_MANIFEST = SELFHOST_DIR / "MANIFEST.sha256"
 SELFHOST_BASELINE = SELFHOST_DIR / "baseline.json"
+SELFHOST_CI_RESULTS = SELFHOST_DIR / "results.selfhost.ci-advisory.json"
 
 PINS = {
     "prime": "RESULT 5133 121013308",
@@ -1291,7 +1292,8 @@ def main(argv=None) -> int:
         except (GateError, RuntimeError, subprocess.TimeoutExpired, OSError, ImportError) as e:
             print(f"SELFHOST BENCH: FAIL ({e})")
             return 1
-        out = (ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)) if args.out else SELFHOST_BASELINE
+        default_out = SELFHOST_CI_RESULTS if args.advisory else SELFHOST_BASELINE
+        out = (ROOT / args.out if not Path(args.out).is_absolute() else Path(args.out)) if args.out else default_out
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         v = data["verdict"]

@@ -353,6 +353,62 @@ jobs:
         timeout-minutes: 30
         run: bash tools/native_diff.sh examples/*.matrix
 
+      # Phase 11 P-7: advisory selfhost toolchain + HLC native perf tracking.
+      - name: Restore previous AOT perf snapshot
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: /tmp/perf-aot-cache
+          key: perf-aot-${{ github.run_id }}
+          restore-keys: |
+            perf-aot-
+
+      - name: Advisory selfhost & native perf tracking (Phase 11 P-7)
+        continue-on-error: true
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          mkdir -p /tmp/perf-aot-cache
+          python3 tools/phase0_bench.py --verify-selfhost
+          cargo build --release --no-default-features --features native
+          python3 tools/phase0_bench.py --selfhost-bench --bin target/release/spid3r --advisory --quick --out /tmp/sh-run1.json
+          python3 tools/phase0_bench.py --measure --variants native --bin target/release/spid3r --advisory --quick --out /tmp/hlc-run1.json
+
+          SH_BASE="benchmarks/selfhost/baseline.json"
+          if [ -f /tmp/perf-aot-cache/sh-prev.json ]; then
+            SH_BASE="/tmp/perf-aot-cache/sh-prev.json"
+          fi
+          python3 tools/phase0_compare.py \
+            --baseline "$SH_BASE" \
+            --current /tmp/sh-run1.json \
+            --floors benchmarks/selfhost/baseline.json \
+            --state /tmp/perf-aot-cache/sh-state.json \
+            --title "Selfhost Toolchain Perf (Phase 11 P-7)" \
+            --github-summary --advisory --out /tmp/sh-cmp.json
+          if grep -q '"status": "WATCH"' /tmp/sh-cmp.json && [ -f /tmp/perf-aot-cache/sh-prev.json ]; then
+            python3 tools/phase0_bench.py --selfhost-bench --bin target/release/spid3r --advisory --quick --out /tmp/sh-run2.json
+            python3 tools/phase0_compare.py \
+              --baseline "$SH_BASE" \
+              --current /tmp/sh-run1.json /tmp/sh-run2.json \
+              --floors benchmarks/selfhost/baseline.json \
+              --title "Selfhost Toolchain Perf Confirmation (2nd Run)" \
+              --github-summary --advisory
+          fi
+
+          HLC_BASE="benchmarks/reference.p1.json"
+          if [ -f /tmp/perf-aot-cache/hlc-prev.json ]; then
+            HLC_BASE="/tmp/perf-aot-cache/hlc-prev.json"
+          fi
+          python3 tools/phase0_compare.py \
+            --baseline "$HLC_BASE" \
+            --current /tmp/hlc-run1.json \
+            --state /tmp/perf-aot-cache/hlc-state.json \
+            --title "HLC Native Perf (Phase 11 P-7)" \
+            --github-summary --advisory
+
+          cp -f /tmp/sh-run1.json /tmp/perf-aot-cache/sh-prev.json
+          cp -f /tmp/hlc-run1.json /tmp/perf-aot-cache/hlc-prev.json
+
   # ---------------------------------------------------------------- Phase 0
   # plan.html section 8: measurement, instrumentation, baseline lock.
   # Pure tooling - no src/, Cargo.toml, wasm or language-doc surface change.
@@ -406,9 +462,41 @@ jobs:
         run: python3 tools/phase0_selftest.py
 
       # ADVISORY ONLY - shared runner, never frozen. Distinct output filename.
-      - name: Advisory Phase 0 measurement (shared runner, never frozen)
+      - name: Restore previous Phase 0 perf snapshot
         continue-on-error: true
-        run: python3 tools/bench_report.py --mode compute --measure --advisory --quick
+        uses: actions/cache@v4
+        with:
+          path: /tmp/perf-phase0-cache
+          key: perf-phase0-${{ github.run_id }}
+          restore-keys: |
+            perf-phase0-
+
+      - name: Advisory Phase 0 measurement & delta tracking (shared runner)
+        continue-on-error: true
+        shell: bash
+        run: |
+          mkdir -p /tmp/perf-phase0-cache
+          python3 tools/bench_report.py --mode compute --measure --advisory --quick
+          cp -f benchmarks/results.phase0.ci-advisory.json /tmp/p0-run1.json
+          P0_BASE="benchmarks/reference.p1.json"
+          if [ -f /tmp/perf-phase0-cache/p0-prev.json ]; then
+            P0_BASE="/tmp/perf-phase0-cache/p0-prev.json"
+          fi
+          python3 tools/phase0_compare.py \
+            --baseline "$P0_BASE" \
+            --current /tmp/p0-run1.json \
+            --state /tmp/perf-phase0-cache/p0-state.json \
+            --title "Phase 0 Core VM Perf (Phase 11 P-7)" \
+            --github-summary --advisory --out /tmp/p0-cmp.json
+          if grep -q '"status": "WATCH"' /tmp/p0-cmp.json && [ -f /tmp/perf-phase0-cache/p0-prev.json ]; then
+            python3 tools/bench_report.py --mode compute --measure --advisory --quick
+            python3 tools/phase0_compare.py \
+              --baseline "$P0_BASE" \
+              --current /tmp/p0-run1.json benchmarks/results.phase0.ci-advisory.json \
+              --title "Phase 0 Core VM Perf Confirmation (2nd Run)" \
+              --github-summary --advisory
+          fi
+          cp -f /tmp/p0-run1.json /tmp/perf-phase0-cache/p0-prev.json
 
   # ---------------------------------------------------------------- selfhost
   # Roadmap step 0.5 (full_plan.html): the self-host parity gate. From Phase 1
