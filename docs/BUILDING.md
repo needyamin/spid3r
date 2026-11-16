@@ -286,8 +286,8 @@ first-time compilation takes noticeably longer than the core toolchain; use
 
 ### Windows installer
 
-On Windows, `cargo build --release` also writes `Spid3r-Setup-<version>.exe`
-(version from `Cargo.toml`) to the repository root. A build script runs before
+On Windows, `cargo build --release` also writes `dist/Spid3r-Setup-<version>.exe`
+(version from `Cargo.toml`). A build script runs before
 its own crate is compiled, so `build.rs` first builds release binaries
 (`spid3r.exe` and, when `gui` is enabled, `calculator.exe`) into `target/installer/`,
 then runs NSIS on `packaging/nsis/spid3r.nsi`.

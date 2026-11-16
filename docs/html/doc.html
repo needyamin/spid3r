@@ -1484,6 +1484,7 @@
         </div>
         <div class="sb-links">
           <a href="#internals" class="sb-link"><span>Execution Pipeline</span></a>
+          <a href="#selfhost-arch" class="sb-link"><span>Self-Hosted Compiler</span><span class="sb-tag">SH</span></a>
           <a href="#gc" class="sb-link"><span>Garbage Collector</span></a>
           <a href="#wasm-arch" class="sb-link"><span>WebAssembly Integration</span></a>
         </div>
@@ -1585,7 +1586,8 @@
             </h4>
             <p style="font-size: 13.5px; margin-bottom: 8px;">
               Run this single command in your terminal. It detects your operating system and CPU architecture, downloads
-              the pre-built binary, installs it into <code>~/.spid3r/bin</code> (override with
+              the release tarball, installs both <code>spid3r</code> and the self-hosted compiler
+              <code>spid3r-self</code> into <code>~/.spid3r/bin</code> (override with
               <code>--dir &lt;path&gt;</code> or <code>SPID3R_INSTALL_DIR</code>), deletes any <code>stdlib/</code>
               folder
               left by an older install (the standard library is compiled into the binary), adds that directory to your
@@ -1606,11 +1608,9 @@
               automated installer configures:
             </p>
             <ul style="font-size: 13px; margin-bottom: 18px; color: var(--fg-secondary);">
-              <li>Adds the <code>spid3r.exe</code> compiler and VM toolchain to your system <code>PATH</code>.</li>
-              <li>Registers <code>.matrix</code> source files so double-clicking executes them.</li>
-              <li>Installs no separate standard-library folder: every <code>stdlib</code> module is compiled into
-                <code>spid3r.exe</code>, so <code>import "json"</code> works with nothing else on disk.
-              </li>
+              <li>Adds <code>spid3r-self.exe</code> (self-hosted native AOT compiler &amp; dev CLI), <code>spid3r.exe</code> (VM/interpreter/REPL/LSP), and <code>spid3r-control.exe</code> to your system <code>PATH</code>.</li>
+              <li>Bundles <code>LLVM-C.dll</code>, <code>LLVM-C.lib</code>, and the SHA-256-pinned runtime staticlib (<code>spid3r_lang.lib</code> + <code>spid3r_lang.lib.sha256</code> + <code>runtime-manifest.json</code>) for out-of-the-box AOT compilation.</li>
+              <li>Registers <code>.matrix</code> source files so double-clicking executes them, with all 29 stdlib modules compiled directly into the binaries.</li>
             </ul>
 
             <!-- Option 3: Cargo Source Build -->
@@ -5552,20 +5552,55 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
         <div class="callout tip">
           <div class="callout-header">🧬 Self-hosting status</div>
           <p>
-            The compiler and core developer tools are <strong>written in Spid3r</strong> across 17 modules in
-            <code>selfhost/</code>: lexer, parser, semantic checker &amp; lints, lowering, bytecode compiler
-            (<code>.matrixc</code>), LLVM-C codegen, cross-OS linker/driver, and the <code>test</code>,
-            <code>fmt</code>, and package tools (<code>pack</code>/<code>unpack</code>/<code>verify</code>/<code>dist</code>).
-            Compiled via Stage 0 (<code>spid3r build selfhost/main.matrix -o selfhost/main_native.exe</code>),
-            <code>spid3r-self</code> reaches a bit-identical <strong>Stage 1 &rarr; Stage 2 &rarr; Stage 3</strong>
-            object fixed point across the 134-program frozen corpus, verifies a SHA-256-pinned runtime staticlib
-            (<code>spid3r verify-runtime</code>, <a href="../selfhost/RUNTIME_ABI.md">RUNTIME_ABI.md</a>), and records
-            frozen Stage-0 vs selfhost throughput baselines in <a href="benchmark.html">Benchmarks</a>. See
-            <a href="../selfhost/SELFHOST.md">the self-hosting ADR</a>,
+            The compiler and core developer tools are <strong>written in Spid3r</strong> across 17 compiler/CLI modules
+            (21 <code>.matrix</code> files) in <code>selfhost/</code>: lexer, parser, semantic checker &amp; lints,
+            lowering, bytecode compiler (<code>.matrixc</code>), LLVM-C codegen (with <code>default&lt;O3&gt;</code>
+            PassBuilder optimizations), cross-OS linker/driver, and the <code>test</code>, <code>fmt</code>, and package
+            tools (<code>pack</code>/<code>unpack</code>/<code>verify</code>/<code>dist</code>). Compiled via Stage 0
+            (<code>spid3r build selfhost/main.matrix -o selfhost/main_native.exe</code>), <code>spid3r-self</code>
+            reaches a bit-identical <strong>Stage 1 &rarr; Stage 2 &rarr; Stage 3</strong> object fixed point across the
+            134-program frozen corpus, verifies a SHA-256-pinned runtime staticlib
+            (<code>spid3r-self verify-runtime</code>, <a href="../selfhost/RUNTIME_ABI.md">RUNTIME_ABI.md</a>), and
+            records frozen Stage-0 vs selfhost throughput baselines in <a href="benchmark.html">Benchmarks</a>. See
+            <a href="../selfhost/README.md">the self-hosting hub</a>,
+            <a href="../selfhost/SELFHOST.md">ADR</a>,
             <a href="../selfhost/SELFHOST_RETIREMENT.md">retirement review</a>, and
             <a href="../../full_plan.html">the roadmap ledger</a>.
           </p>
         </div>
+
+        <h3 class="section-h3" id="selfhost-arch">Self-Hosted Compiler Architecture &amp; Bootstrap Boundary</h3>
+        <p>
+          Rebuilding <code>selfhost/</code> or running compiler and dev-CLI commands with <code>spid3r-self</code>
+          requires zero <code>cargo</code> or <code>rustc</code> calls. Rust Stage 0 (<code>src/</code>) stays in
+          place permanently as the cold bootstrap seed, differential oracle (<code>src/oracle.rs</code>), pinned
+          runtime staticlib (66 <code>spid3r_*</code> trampolines + 229 stdlib natives), and host for non-AOT
+          engines/tools (<code>tree</code>, <code>vm</code>, <code>repl</code>, <code>debug</code>, <code>lsp</code>,
+          <code>agent</code>, <code>gui</code>, <code>wasm32</code>, <code>plugin</code>).
+        </p>
+
+        <figure class="diagram">
+          <img src="../selfhost/diagrams/bootstrap-stages.svg"
+            alt="Stage 0 Rust compiles Stage 1 spid3r-self, Stage 1 compiles Stage 2, and Stage 2 compiles Stage 3 with bit-identical spid3r_main.o fixed point across the 134-program frozen corpus.">
+          <figcaption>Bootstrap chain (SH-1 · SH-5 · SH-8): Stage 2 and Stage 3 emit bit-identical
+            <code>spid3r_main.o</code> objects and pass 124/124 runnable corpus parity (111/111 object match).</figcaption>
+        </figure>
+
+        <figure class="diagram">
+          <img src="../selfhost/diagrams/selfhost-pipeline.svg"
+            alt="17-module compiler and dev-CLI architecture under selfhost/ driven by main.matrix across front end, bytecode, LLVM-C AOT, and test/fmt/pkg tools.">
+          <figcaption>Internal architecture of <code>selfhost/</code> (SH-3 · SH-7): one flat module root
+            dispatching front-end parity, <code>.matrixc</code> emission, LLVM-C native AOT codegen, SHA-256-pinned
+            linking, and <code>test</code> / <code>fmt</code> / <code>pkg</code> commands.</figcaption>
+        </figure>
+
+        <figure class="diagram">
+          <img src="../selfhost/diagrams/rust-vs-selfhost-boundary.svg"
+            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned runtime staticlib ABI (66 trampolines, 229 natives), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
+          <figcaption>Pure self-hosted compiler work vs permanently retained Rust Stage 0 (SH-2 · SH-6 · SH-8),
+            coupled only through the SHA-256-verified <code>spid3r_lang</code> runtime staticlib ABI.</figcaption>
+        </figure>
+
         <table>
           <thead>
             <tr>
@@ -5591,9 +5626,10 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
             </tr>
             <tr>
               <td>Native (AOT)</td>
-              <td><code>spid3r build</code></td>
-              <td>LLVM compiles to machine code. Two documented trades: the GUI bridge is not linked, and the
-                execution budget is not enforced (a counter in generated code is not free).</td>
+              <td><code>spid3r build</code> (Stage 0) / <code>spid3r-self build</code> (selfhost)</td>
+              <td>LLVM 23 compiles to machine code (linked against SHA-256-pinned <code>spid3r_lang</code>). Two
+                documented trades: the GUI bridge is not linked, and the execution budget is not enforced (a counter
+                in generated code is not free).</td>
             </tr>
           </tbody>
         </table>
@@ -5697,10 +5733,11 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
 
         <figure class="diagram">
           <img src="../diagrams/security.svg"
-            alt="A script reaches the operating system only through built-in natives, which the embedding host can filter with Engine::deny. On the command line no such gate exists, so a script has the same authority as a shell.">
-          <figcaption>The gate exists only when a host installs it; it replaces builtin natives and blocks plugin
-            functions whose declared <code>permission</code> matches a denied capability (enforced at call time) — for
-            real isolation, run untrusted code as a separate user or in a container.</figcaption>
+            alt="A script reaches the operating system only through built-in natives, which can be filtered opt-in via --sandbox on script engines or Engine::deny when embedding.">
+          <figcaption>By default a program runs with user authority; opt-in capability gates filter built-in natives
+            and matching plugin permissions via <code>spid3r run --sandbox</code>, <code>spid3r exec --sandbox</code>,
+            or <code>Engine::deny</code> (not applied to Native AOT binaries). For OS isolation, run untrusted code as a
+            separate user or in a container.</figcaption>
         </figure>
 
         <h3 class="section-h3" id="gc">Garbage Collection: Cycles</h3>

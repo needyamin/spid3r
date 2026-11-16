@@ -39,10 +39,11 @@ Values are reference counted, so ordinary garbage dies the moment it is dropped.
 
 ![Five deployment targets](docs/diagrams/targets.svg)
 
-The prebuilt release binaries are the **core toolchain only** (interpreter, VM, WASM) — no runtime dependencies, no dev tools required. Two backends have platform caveats when built from source:
+Prebuilt releases bundle **`spid3r-self`** (the self-hosted native compiler & dev CLI) alongside **`spid3r`** (the core interpreter, bytecode VM, REPL, LSP, debugger, agent, and host-plugin runtime) plus the versioned, SHA-256-pinned runtime archive (`spid3r-runtime-<ver>-<target>.tar.gz`). Backend caveats:
 
-- **GUI** needs the OS webview: WebView2 (preinstalled on Windows 10/11; the installer bundles its bootstrapper), or WebKit2GTK + GTK3 on Linux (install `libwebkit2gtk-4.1-dev` at build time and the `webkit2gtk` runtime package to run).
-- **Native AOT** needs LLVM 23.1+ **at build time only**. Built executables are standalone — on Windows the toolchain delay-loads the bundled `LLVM-C.dll`; on Linux/macOS a source build with the `native` feature needs `libLLVM-23` present at runtime.
+- **Core CLI (`spid3r` VM / interpreter / REPL):** zero external runtime dependencies.
+- **GUI:** needs the OS webview — WebView2 (preinstalled on Windows 10/11; the installer can bundle its bootstrapper) or WebKit2GTK + GTK3 on Linux (`libwebkit2gtk-4.1-dev` at build time, `webkit2gtk` runtime package to run).
+- **Native AOT (`spid3r build` / `spid3r-self`):** needs LLVM 23.1+ — built executables are standalone (`static CRT` on Windows). On Windows the toolchain & NSIS installer bundle `LLVM-C.dll` + `LLVM-C.lib` + `spid3r_lang.lib`; on Linux/macOS native AOT builds link `libLLVM-23` at compiler runtime.
 
 ## Ecosystem
 
@@ -87,7 +88,7 @@ Both samples are in the repository: [`hello-host`](examples/plugins/hello-host) 
 | FFI (`extern fn`) | trusted code, AOT only | shipped |
 
 ```bash
-$ spid3r modules src/main.matrix --tree   # which file does each import name?
+$ spid3r modules app.matrix --tree        # which file does each import name?
 $ spid3r verify                           # is the vendored tree the one the lock describes?
 ```
 
@@ -103,18 +104,32 @@ By default a program runs with the full authority of the user who started it. `s
 
 Every commit and tag is gated through GitHub Actions workflows: a 6-job differential CI matrix (core, webview GUI, WebAssembly runtime & docs, LLVM 23 native AOT + Linux self-host bootstrap, Phase 0 measurement gates, and the 134-program frozen-corpus self-host parity gate), automated self-hosted multi-architecture releases (Linux glibc/ARM64 tarballs, macOS Apple Silicon/Intel tarballs, SHA-256-pinned runtime archives, and the Windows NSIS installer packaging `spid3r-self`), and scheduled/PR libfuzzer regression testing.
 
+## Self-hosted compiler architecture
+
+Spid3r compiles its own compiler and core CLI developer tools (`selfhost/`, 17 compiler/tool modules across 21 `.matrix` files) to native machine code via LLVM 23:
+
+![Stage 0 to Stage 1, Stage 2, and Stage 3 bit-identical fixed point](docs/selfhost/diagrams/bootstrap-stages.svg)
+
+![Self-hosted compiler pipeline and 17 modules inside selfhost/](docs/selfhost/diagrams/selfhost-pipeline.svg)
+
+Rebuilding `selfhost/` or running compiler/dev CLI workflows (`tokens`, `parse`, `check`, `compile`, `build`, `test`, `fmt`, `pack`/`unpack`/`verify`/`dist`, `verify-runtime`) uses `spid3r-self` with zero `cargo` or `rustc` calls. Rust Stage 0 (`src/`) stays permanently as the cold bootstrap seed, differential parity oracle, SHA-256-pinned runtime staticlib (`spid3r_lang`), and host for the retained runtime/tooling surfaces (`tree`, `vm`, `repl`, `debug`, `lsp`, `agent`, `gui`, `wasm32`, `plugin`):
+
+![Permanent ownership boundary between pure self-hosted Spid3r and retained Rust Stage 0](docs/selfhost/diagrams/rust-vs-selfhost-boundary.svg)
+
+See [docs/selfhost/](docs/selfhost/README.md) for the full ADR, retirement boundary, and runtime ABI docs.
+
 ## What's inside
 
 | Aspect | Detail |
 |---|---|
-| **Implementation** | 100,099 lines of Rust (`src/`) · zero dependencies in the core (`--no-default-features`) |
+| **Implementation** | `100,538` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `19,862` lines) |
 | **Engines** | tree · bytecode VM · LLVM 23 AOT · WebAssembly |
-| **Bytecode** | 60 opcodes · serialized `.matrixc` format |
-| **Standard library** | 29 `.matrix` modules + built-in natives, compiled into the binary |
-| **Tests** | 1,354 tests (`1,329` core · `13` GUI · `12` native AOT) · three-engine differential |
-| **Self-hosting** | 17-module Spid3r compiler & dev tools (`selfhost/` — front end, `.matrixc`, LLVM-C codegen, linker, `test`, `fmt`, `pack`/`verify`/`dist`) with Stage 1 → Stage 2 → Stage 3 COFF fixed point, pinned runtime ABI, and frozen-corpus parity ([docs/selfhost/](docs/selfhost/README.md) · [SELFHOST.md](docs/selfhost/SELFHOST.md) · [SELFHOST_RETIREMENT.md](docs/selfhost/SELFHOST_RETIREMENT.md)) |
+| **Bytecode** | 60 opcodes · serialized `.matrixc` container with SHA-256 integrity |
+| **Standard library** | `29` `.matrix` modules + `229` built-in native entries (linked via `66` AOT C-ABI trampolines) |
+| **Tests** | `1,357` Rust/integration tests (`1,330` core · `13` GUI · `14` native AOT) · three-engine differential + `134`-program frozen selfhost corpus |
+| **Self-hosting** | Stage 1 → Stage 2 → Stage 3 COFF/ELF `spid3r_main.o` bit-identical fixed point, SHA-256 runtime pinning, and frozen-corpus parity ([docs/selfhost/](docs/selfhost/README.md) · [SELFHOST.md](docs/selfhost/SELFHOST.md) · [SELFHOST_RETIREMENT.md](docs/selfhost/SELFHOST_RETIREMENT.md)) |
 | **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput baselines ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
-| **Binary** | one ~13 MB core file (or self-hosted `spid3r-self` + `spid3r`) · static CRT · runs with no installed runtime |
+| **Binary** | `spid3r` (`~12.4 MB`) + self-hosted `spid3r-self` (`~5.1 MB`) · static CRT on Windows · runs with no installed runtime |
 
 ## The language
 

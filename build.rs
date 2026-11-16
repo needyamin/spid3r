@@ -3,7 +3,7 @@
 //! Two jobs:
 //!
 //! 1. **Windows installer** (`cargo build --release` on Windows): writes
-//!    `Spid3r-Setup-<version>.exe` to the repository root with NSIS. See
+//!    `dist/Spid3r-Setup-<version>.exe` with NSIS. See
 //!    [`windows_installer`]. Set `SPID3R_NO_INSTALLER=1` to skip it.
 //! 2. **LLVM linking** for the `native` (AOT backend) feature, below.
 //!
@@ -175,8 +175,10 @@ fn windows_installer() {
     }
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let installer_dir = root.join("dist");
+    let _ = fs::create_dir_all(&installer_dir);
     let installer_name = format!("Spid3r-Setup-{version}.exe");
-    let installer_path = root.join(&installer_name);
+    let installer_path = installer_dir.join(&installer_name);
     // Only inputs the installer actually reads. Documentation, examples and
     // benchmarks used to be packaged, so they were watched here too; now that
     // the payload is the toolchain only, watching them just forced a

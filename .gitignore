@@ -14,9 +14,9 @@
 # The built self-host toolchain binaries (regenerable: spid3r build
 # selfhost/main.matrix -o selfhost/main_native.exe).
 selfhost/*.exe
-# Session tooling state (scanner/agent caches) — not project content.
+# Session tooling state (scanner/agent caches in any directory) — not project content.
 .zcode/
-selfhost/.mimosa/
+.mimosa/
 # Native AOT link intermediates and debug info next to built programs.
 *.obj
 *.o
@@ -112,4 +112,3 @@ __pycache__/
 # file is ADVISORY ONLY and must never be committed. The frozen, pinned-host
 # snapshot is benchmarks/results.phase0.json (which IS committed).
 /benchmarks/results.phase0.ci-advisory.json
-/.mimosa/

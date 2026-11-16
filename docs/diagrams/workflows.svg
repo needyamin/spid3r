@@ -27,7 +27,7 @@
 <text x="66" y="160" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Core Toolchain &amp; Differential</text>
 <text x="372" y="160" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#2563EB">Linux · Win · macOS</text>
 <text x="46" y="180" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• clippy --no-default-features (-D warnings) · rustfmt</text>
-<text x="46" y="196" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• cargo test suite (1,329 core tests)</text>
+<text x="46" y="196" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• cargo test suite (1,330 core tests)</text>
 <text x="46" y="212" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• 3-engine differential: tree == vm == exec verification</text>
 
 <!-- CI Job 2: GUI Feature -->
@@ -52,7 +52,7 @@
 <rect x="46" y="414" width="12" height="12" rx="3" fill="#EC4899"/>
 <text x="66" y="424" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Native AOT Differential (LLVM 23)</text>
 <text x="372" y="424" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#DB2777">ubuntu-latest</text>
-<text x="46" y="444" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• LLVM 23 AOT compiler + 12 native tests · native_diff.sh</text>
+<text x="46" y="444" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• LLVM 23 AOT compiler + 14 native tests · native_diff.sh</text>
 <text x="46" y="460" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• runtime_artifact.sh SHA-256 package &amp; verify (SH-6)</text>
 <text x="46" y="476" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Linux release_selfhost.sh Stage-0→1→2→3 bootstrap</text>
 

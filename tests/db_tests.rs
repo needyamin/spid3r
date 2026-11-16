@@ -203,20 +203,26 @@ fn missing_library_is_a_catchable_error() {
     // With the library path pointing at a file that cannot load, db_open
     // must produce a catchable runtime error (not a crash, not a panic).
     let bogus = std::env::temp_dir().join("spid3r_no_such_sqlite.dll");
-    let src = r#"fn main() {
-    try {
-        db_open("x.db");
+    let db_path = std::env::temp_dir().join("spid3r_db_missing_lib.db");
+    let _ = std::fs::remove_file(&db_path);
+    let db_escaped = db_path.to_string_lossy().replace('\\', "/");
+    let src = format!(
+        r#"fn main() {{
+    try {{
+        db_open("{db_escaped}");
         println("opened?");
-    } catch (e) {
+    }} catch (e) {{
         println("caught");
-    }
+    }}
     return 0;
-}
-"#;
+}}
+"#
+    );
     for engine in ["tree", "vm"] {
         // Only meaningful when the loader would actually consult the bogus
         // path — set it and expect the catch.
-        let out = run_src(engine, "missing_lib", src, Some(&bogus));
+        let out = run_src(engine, "missing_lib", &src, Some(&bogus));
+        let _ = std::fs::remove_file(&db_path);
         match out {
             Ok(text) => {
                 assert!(

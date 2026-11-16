@@ -75,7 +75,7 @@ Unicode true
 
 Name "${APPNAME} ${APPVERSION}"
 !ifndef OUTFILE
-!define OUTFILE "..\..\Spid3r-Setup-${APPVERSION}.exe"
+!define OUTFILE "..\..\dist\Spid3r-Setup-${APPVERSION}.exe"
 !endif
 OutFile "${OUTFILE}"
 InstallDir "$LOCALAPPDATA\Programs\Spid3r"
