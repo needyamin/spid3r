@@ -2,7 +2,9 @@
 
 Status: **Adopted** (2026-11-15).
 
-This document is the Phase 10.2 (`SH-8`) architectural retirement review for Spid3r's self-hosting program ([full_plan.html](../full_plan.html), [SELFHOST.md](SELFHOST.md)). It states honestly what compiler and developer-tool work no longer requires a Rust toolchain, what still requires Rust and why, how rollback works via Stage-0 release tags, and the maintenance rules for the self-hosted compiler going forward.
+This document is the Phase 10.2 (`SH-8`) architectural retirement review for Spid3r's self-hosting program ([full_plan.html](../../full_plan.html), [SELFHOST.md](SELFHOST.md)). It states honestly what compiler and developer-tool work no longer requires a Rust toolchain, what still requires Rust and why, how rollback works via Stage-0 release tags, and the maintenance rules for the self-hosted compiler going forward.
+
+![Permanent ownership boundary between pure self-hosted Spid3r and retained Rust Stage 0](diagrams/rust-vs-selfhost-boundary.svg)
 
 ---
 
@@ -11,9 +13,9 @@ This document is the Phase 10.2 (`SH-8`) architectural retirement review for Spi
 The **“no Rust for future compiler builds”** milestone (`SH-2`) is **met within the documented boundary**:
 
 - Given a compiled `spid3r-self` binary, the prebuilt SHA-256-pinned runtime staticlib (`spid3r_lang.lib` on Windows; `libspid3r_lang.a` on Linux/macOS), LLVM 23, and the platform linker (`link.exe` on Windows, `clang`/`cc` on Unix), modifying and rebuilding the Spid3r compiler (`selfhost/*.matrix`) and its CLI dev tools invokes **zero `cargo`/`rustc` processes**.
-- The Stage-1 → Stage-2 → Stage-3 bootstrap reaches a **bit-identical** target object fixed point (`spid3r_main.o`), and [`tools/release_selfhost.sh`](../tools/release_selfhost.sh) produces versioned runtime archives, platform release bundles, `sha256sums.txt`, and the Windows NSIS installer (`Spid3r-Setup-<version>.exe`) using `spid3r-self` as the compiler builder.
+- The Stage-1 → Stage-2 → Stage-3 bootstrap reaches a **bit-identical** target object fixed point (`spid3r_main.o`), and [`tools/release_selfhost.sh`](../../tools/release_selfhost.sh) produces versioned runtime archives, platform release bundles, `sha256sums.txt`, and the Windows NSIS installer (`Spid3r-Setup-<version>.exe`) using `spid3r-self` as the compiler builder.
 
-At the same time, Stage 0 (`src/`, Rust) is **not deleted** (`SH-8`): it stays permanently in the repository as the clean-bootstrap seed, semantic/differential oracle (`docs/ENGINE_CONTRACT.md`), runtime staticlib producer (`SH-6`), and host for the retained developer/runtime tools (`SH-2`).
+At the same time, Stage 0 (`src/`, Rust) is **not deleted** (`SH-8`): it stays permanently in the repository as the clean-bootstrap seed, semantic/differential oracle ([ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md)), runtime staticlib producer (`SH-6`), and host for the retained developer/runtime tools (`SH-2`).
 
 ---
 
@@ -40,7 +42,7 @@ Trying to pretend Rust is completely absent would misstate the system architectu
 
 ### 3.1 Rebuilding the runtime staticlib (`SH-6`, Phase 9.2 ADR)
 - **Files:** `src/native/rt.rs` (66 `spid3r_*` C-ABI trampolines), `src/stdlib/` (229 native entries), `src/value.rs`, `src/gc/`, `src/scheduler.rs` (`crate-type = ["staticlib"]` → `spid3r_lang.lib` / `libspid3r_lang.a`).
-- **Why:** By explicit owner-confirmed Phase 9.2 ADR (`docs/SELFHOST.md`), `rt.rs` remains in Rust inside the versioned, SHA-256-pinned runtime archive (`docs/RUNTIME_ABI.md`) to avoid duplicating low-level runtime internals across a second C ABI and to preserve a single semantic source of truth across tree/VM/AOT.
+- **Why:** By explicit owner-confirmed Phase 9.2 ADR ([SELFHOST.md](SELFHOST.md)), `rt.rs` remains in Rust inside the versioned, SHA-256-pinned runtime archive ([RUNTIME_ABI.md](RUNTIME_ABI.md)) to avoid duplicating low-level runtime internals across a second C ABI and to preserve a single semantic source of truth across tree/VM/AOT.
 - **Impact on compiler work:** Normal compiler edits (`selfhost/*.matrix`) **never** rebuild the runtime staticlib. Rust is only needed when adding/changing stdlib builtins, GC/value internals, or `spid3r_*` trampolines.
 
 ### 3.2 Stage-0 bootstrap & semantic oracle (`SH-1`, `SH-5`)
@@ -48,7 +50,7 @@ Trying to pretend Rust is completely absent would misstate the system architectu
 - **Why:** Cold bootstrap on a fresh environment without a trusted `spid3r-self` executable starts from Stage 0 (`cargo build --features native`), and every parity harness compares `selfhost/` dumps and outputs against Stage 0 as the oracle.
 
 ### 3.3 Retained Rust-side runtime & optional developer tools (`SH-2`)
-Explicitly excluded from the self-hosting compiler target in `docs/SELFHOST.md`:
+Explicitly excluded from the self-hosting compiler target in [SELFHOST.md](SELFHOST.md):
 - Script engines & runtime commands (`spid3r run` tree/VM interpreters, `exec`, `disasm`)
 - Interactive tools (`repl`, VM line `debug`, `lsp`, `agent`, `control`, `plugin` host, `bench`, `modules`, `init`/`add`/`remove`/`install`/`publish`/`search`)
 - GUI host (`gui` feature via `wry`/`tao`, `spid3r-control.exe`) and WASM browser bundle (`wasm32-unknown-unknown` `cdylib` powering `web/`)
@@ -71,7 +73,7 @@ Every commit keeps `src/` buildable and differential-tested (`tools/gate.sh` 9/9
   2. Rebuild Stage 0 directly with Cargo:
      - Core: `cargo build --release --locked --no-default-features`
      - Native + GUI (Windows): `cargo build --release --locked --no-default-features --features gui,native,plugins-wasm,tls`
-  3. On an emergency release tag, CI can fall back directly to Stage 0 `spid3r` without changing `.matrix` user programs or `.matrixc`/runtime contracts (`docs/RUNTIME_ABI.md` guarantees backward compatibility for pinned runtime staticlibs).
+  3. On an emergency release tag, CI can fall back directly to Stage 0 `spid3r` without changing `.matrix` user programs or `.matrixc`/runtime contracts ([RUNTIME_ABI.md](RUNTIME_ABI.md) guarantees backward compatibility for pinned runtime staticlibs).
 
 ---
 
@@ -91,4 +93,4 @@ All future compiler changes under `selfhost/` MUST obey the following rules befo
    - `selfhost/` forms one flattened top-level function namespace: prefix every module-private helper (`lex_`, `chk_`, `cg_`, `fl_`, `link_`, `fmt_`, `pkg_`) to prevent cross-module name collisions.
 4. **Rust oracle & engine contract (`SH-8`):**
    - Changes touching Rust `src/` must additionally pass `tools/gate.sh` (9/9), `tools/difftest.sh` (`ALL MATCH`), `cargo fmt --all -- --check`, and `cargo clippy --all-targets --features native -- -D warnings`.
-   - Changes touching `src/native/rt.rs` or `src/stdlib/` must update `docs/RUNTIME_ABI.md` trampoline/native counts (`tools/runtime_artifact.sh`) and re-verify `spid3r-self verify-runtime`.
+   - Changes touching `src/native/rt.rs` or `src/stdlib/` must update [RUNTIME_ABI.md](RUNTIME_ABI.md) trampoline/native counts (`tools/runtime_artifact.sh`) and re-verify `spid3r-self verify-runtime`.

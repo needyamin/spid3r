@@ -107,7 +107,7 @@
 
 <text x="434" y="298" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• release_selfhost.sh builds Stage 1→2→3 fixed point</text>
 <text x="434" y="314" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• Ships spid3r-self + spid3r + spid3r-runtime-*.tar.gz</text>
-<text x="434" y="330" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#047857">• SHA-256 staticlib pin (docs/RUNTIME_ABI.md)</text>
+<text x="434" y="330" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#047857">• SHA-256 staticlib pin (docs/selfhost/RUNTIME_ABI.md)</text>
 
 <!-- NSIS Installer -->
 <rect x="422" y="352" width="322" height="178" rx="8" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>

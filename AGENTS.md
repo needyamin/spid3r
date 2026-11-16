@@ -1,7 +1,7 @@
 # Spid3r — agent rules (self-hosting program)
 
 Project: **Spid3r**, a programming language (`.matrix` sources) with a Rust implementation (v1.1.0, LLVM 23.1.0 AOT backend).
-Active program: **make Spid3r compile its own compiler** (self-hosting). Single source of truth: `full_plan.html` (roadmap + append-only evidence ledger). Architecture decisions: `docs/SELFHOST.md` (SH-1…SH-8).
+Active program: **make Spid3r compile its own compiler** (self-hosting). Single source of truth: `full_plan.html` (roadmap + append-only evidence ledger). Architecture decisions: `docs/selfhost/SELFHOST.md` (SH-1…SH-8).
 Read both before changing anything. If this file and `full_plan.html` disagree, `full_plan.html` wins; tell the user and fix this file.
 
 ## 1. Current state (update when a phase moves)
@@ -87,7 +87,7 @@ Stage 2  spid3r-self-2 = Stage 1 compiling selfhost/main.matrix; must behave ide
 2. Survey the relevant Rust source and `docs/` first. Write the port against it.
 3. Implement, then run the step's parity harness plus the earlier harnesses (no regressions). Then `tools/gate.sh` and `tools/difftest.sh`.
 4. Teeth-prove any new harness. Run the Tier-B perf gate under the phase0 protocol where the step has one.
-5. In **one commit**: code + `docs/SELFHOST.md` progress text if it changed + `full_plan.html` (tick the checkbox, append the ledger row, update progress counts).
+5. In **one commit**: code + `docs/selfhost/SELFHOST.md` progress text if it changed + `full_plan.html` (tick the checkbox, append the ledger row, update progress counts).
 6. Push, then check GitHub CI (public Actions). Append a separate "CI evidence" ledger row once green. If red, record the cause honestly. If it's a flake, prove it and re-run.
 7. Do not push, force-push or rewrite history unless the user asks. Ask before committing if the user hasn't said to.
 

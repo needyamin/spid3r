@@ -112,7 +112,7 @@ Every commit and tag is gated through GitHub Actions workflows: a 6-job differen
 | **Bytecode** | 60 opcodes · serialized `.matrixc` format |
 | **Standard library** | 29 `.matrix` modules + built-in natives, compiled into the binary |
 | **Tests** | 1,354 tests (`1,329` core · `13` GUI · `12` native AOT) · three-engine differential |
-| **Self-hosting** | 17-module Spid3r compiler & dev tools (`selfhost/` — front end, `.matrixc`, LLVM-C codegen, linker, `test`, `fmt`, `pack`/`verify`/`dist`) with Stage 1 → Stage 2 → Stage 3 COFF fixed point, pinned runtime ABI, and frozen-corpus parity ([SELFHOST.md](docs/SELFHOST.md) · [SELFHOST_RETIREMENT.md](docs/SELFHOST_RETIREMENT.md)) |
+| **Self-hosting** | 17-module Spid3r compiler & dev tools (`selfhost/` — front end, `.matrixc`, LLVM-C codegen, linker, `test`, `fmt`, `pack`/`verify`/`dist`) with Stage 1 → Stage 2 → Stage 3 COFF fixed point, pinned runtime ABI, and frozen-corpus parity ([docs/selfhost/](docs/selfhost/README.md) · [SELFHOST.md](docs/selfhost/SELFHOST.md) · [SELFHOST_RETIREMENT.md](docs/selfhost/SELFHOST_RETIREMENT.md)) |
 | **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput baselines ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
 | **Binary** | one ~13 MB core file (or self-hosted `spid3r-self` + `spid3r`) · static CRT · runs with no installed runtime |
 
@@ -206,13 +206,13 @@ cargo install --path . --no-default-features
 | [Data structures](docs/DATA_STRUCTURES.md) | all 20+ containers |
 | [Bytecode & VM](docs/BYTECODE.md) | `.matrixc` format, opcodes, scheduler |
 | [Garbage collection](docs/GC.md) | cycle collector design |
-| [Native backend](docs/NATIVE.md) · [Runtime ABI](docs/RUNTIME_ABI.md) · [FFI](docs/FFI.md) | LLVM AOT · SHA-256 runtime staticlib contract · calling C with `extern fn` |
+| [Native backend](docs/NATIVE.md) · [Runtime ABI](docs/selfhost/RUNTIME_ABI.md) · [FFI](docs/FFI.md) | LLVM AOT · SHA-256 runtime staticlib contract · calling C with `extern fn` |
 | [GUI](docs/GUI.md) · [Embedding](docs/EMBEDDING.md) | desktop apps · Rust host |
 | [Environment](docs/ENVIRONMENT.md) | every `SPID3R_*` knob |
 | [Runtime management](docs/AGENT.md) | `spid3r.ini`, `spid3rinfo()`, the encrypted remote agent |
 | [Security policy](SECURITY.md) | trust model, reporting, known gaps |
 | [Audit status](docs/AUDIT_STATUS.md) | known issues and their state |
-| [Self-hosting ADR](docs/SELFHOST.md) · [Retirement review](docs/SELFHOST_RETIREMENT.md) | bootstrap stages, frozen corpus, rollback & compiler maintenance boundary — behind [full_plan.html](full_plan.html) |
+| [Self-hosting docs & diagrams](docs/selfhost/README.md) · [ADR](docs/selfhost/SELFHOST.md) · [Retirement review](docs/selfhost/SELFHOST_RETIREMENT.md) | bootstrap stages, architecture diagrams, frozen corpus & compiler maintenance boundary — behind [full_plan.html](full_plan.html) |
 
 ## License
 

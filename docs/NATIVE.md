@@ -35,7 +35,7 @@ BUILDING.md rather than a confusing linker error.
 ## The self-hosted codegen
 
 The Rust backend has a complete twin written in Spid3r itself
-(`selfhost/`, see [SELFHOST.md](SELFHOST.md)): lexer, parser, semantic
+(`selfhost/`, see [selfhost/SELFHOST.md](selfhost/SELFHOST.md)): lexer, parser, semantic
 checker, lowering, bytecode compiler, LLVM-C codegen, and the build
 driver's link + module-flattening halves. Build the self-hosted compiler
 with the Rust one, then compile programs with its `native` mode:

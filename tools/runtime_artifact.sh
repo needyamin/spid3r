@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Formalize and verify Spid3r's prebuilt runtime staticlib artifact
-# (roadmap Phase 9.1, docs/SELFHOST.md SH-6, docs/RUNTIME_ABI.md).
+# (roadmap Phase 9.1, docs/selfhost/SELFHOST.md SH-6, docs/selfhost/RUNTIME_ABI.md).
 #
 # Usage:
 #   bash tools/runtime_artifact.sh package <staticlib_path> <out_dir> [options]
@@ -198,8 +198,8 @@ cmd_package() {
 }
 EOF
   cp -f "$manifest" "$out_dir/${lib_name}.manifest.json"
-  if [ -f "$ROOT/docs/RUNTIME_ABI.md" ]; then
-    cp -f "$ROOT/docs/RUNTIME_ABI.md" "$out_dir/RUNTIME_ABI.md"
+  if [ -f "$ROOT/docs/selfhost/RUNTIME_ABI.md" ]; then
+    cp -f "$ROOT/docs/selfhost/RUNTIME_ABI.md" "$out_dir/RUNTIME_ABI.md"
   fi
 
   if [ "$make_tar" -eq 1 ]; then

@@ -3,7 +3,7 @@ name: Release
 # Builds the prebuilt Linux/macOS tarballs, the Windows NSIS installer, and
 # the versioned SHA-256-pinned runtime staticlib artifacts.
 #
-# Phase 10.1 (SH-2, docs/SELFHOST.md): all release compiler binaries
+# Phase 10.1 (SH-2, docs/selfhost/SELFHOST.md): all release compiler binaries
 # (`spid3r-self`) are compiled by `spid3r-self` itself (Stage 1 -> Stage 2 with
 # Stage-3 fixed-point proof) against the SHA-256-pinned runtime staticlib,
 # via `tools/release_selfhost.sh`. Stage 0 (`spid3r`) remains as the bootstrap

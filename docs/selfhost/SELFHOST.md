@@ -14,8 +14,8 @@ unboxed-i64 locals system, hybrid compares, and clean C++ resource disposal),
 the build driver's link + module-flattening halves, the **Stage-1 / Stage-2
 self-hosting bootstrap**, the core dev tools (`test`, `fmt`, extended
 `check`, `pack`/`unpack`/`verify`/`dist`), SHA-256 runtime pinning
-(`verify-runtime`, `docs/RUNTIME_ABI.md`, `tools/runtime_artifact.sh`), and the
-**Phase 10.2 retirement review** (`docs/SELFHOST_RETIREMENT.md`) — 33/51 roadmap
+(`verify-runtime`, `docs/selfhost/RUNTIME_ABI.md`, `tools/runtime_artifact.sh`), and the
+**Phase 10.2 retirement review** (`docs/selfhost/SELFHOST_RETIREMENT.md`) — 33/51 roadmap
 steps (Phases 0–9 + 10.2 closed; 10.1 verified locally on Windows via
 `tools/release_selfhost.sh`, with GitHub CI Linux `aot` + 4-tarball
 `release.yml` verification awaiting push and `workflow_dispatch`/tag run).
@@ -41,6 +41,8 @@ No fake implementations, no fake results, no speed claim without a benchmark
 under the phase0 protocol.
 
 ## The bootstrap chain (SH-1)
+
+![Stage 0 to Stage 1, Stage 2, and Stage 3 bit-identical fixed point](diagrams/bootstrap-stages.svg)
 
 Three stages, exactly as in GCC / Go / Rust's own histories:
 
@@ -174,7 +176,7 @@ with legacy fallback names `spid3r.lib` / `libspid3r.a`: the 66 AOT trampolines
 plus the 229 stdlib natives). This is what makes "compilers need no Rust"
 reachable in one program: rebuilding a compiler never rebuilds the runtime it
 links. The full C ABI and native table specification live in
-`docs/RUNTIME_ABI.md`; `tools/runtime_artifact.sh` packages the versioned
+[RUNTIME_ABI.md](RUNTIME_ABI.md); `tools/runtime_artifact.sh` packages the versioned
 release tarball (`spid3r-runtime-<version>-<target>.tar.gz`) together with its
 `.sha256` and `runtime-manifest.json` provenance (`version`, `git_commit`,
 `llvm_version`, `rustc_version`), and `selfhost/link.matrix` verifies the
@@ -194,10 +196,10 @@ into Spid3r while keeping the scheduler and stdlib in the shared staticlib, and
 - Porting `rt.rs` into Spid3r would force inventing and maintaining a second
   low-level C ABI just to wrap those Rust internals, still linking the same
   staticlib artifact while adding indirection and risking semantic drift from
-  the VM/tree engines (`docs/ENGINE_CONTRACT.md`).
+  the VM/tree engines ([ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md)).
 - Keeping `src/native/rt.rs` inside the versioned, SHA-256-pinned runtime
   staticlib satisfies "no Rust to build compilers" with one semantic source of
-  truth and verified checksum pinning (`docs/RUNTIME_ABI.md`).
+  truth and verified checksum pinning ([RUNTIME_ABI.md](RUNTIME_ABI.md)).
 
 ## The LLVM-C boundary (SH-7)
 
@@ -234,10 +236,7 @@ release by tag before the pipeline switches.
 
 ## Governing documents
 
-docs/ENGINE_CONTRACT.md (the three-engine bar) · docs/NATIVE.md (AOT subset,
-memory model, exit codes) · docs/RUNTIME_ABI.md (pinned staticlib ABI,
-provenance & native table) · docs/SELFHOST_RETIREMENT.md (Phase 10.2
-retirement boundary, rollback tags & maintenance rules) · docs/FFI.md
-(extended by SH-7) · docs/GC.md · docs/SECURITY.md ·
-docs/PERF_TARGET_RETIREMENT.md (target discipline) · full_plan.html (the
-roadmap and the append-only evidence ledger).
+- [README.md](README.md) & `diagrams/` (self-hosting index + architecture diagrams)
+- [RUNTIME_ABI.md](RUNTIME_ABI.md) (pinned staticlib ABI, provenance & native table)
+- [SELFHOST_RETIREMENT.md](SELFHOST_RETIREMENT.md) (Phase 10.2 retirement boundary, rollback tags & maintenance rules)
+- [ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md) (the three-engine bar) · [NATIVE.md](../NATIVE.md) (AOT subset, memory model, exit codes) · [FFI.md](../FFI.md) (extended by SH-7) · [GC.md](../GC.md) · [SECURITY.md](../SECURITY.md) · [PERF_TARGET_RETIREMENT.md](../PERF_TARGET_RETIREMENT.md) (target discipline) · [full_plan.html](../../full_plan.html) (the roadmap and append-only evidence ledger).

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Self-host runtime artifact formalization & checksum-pinning parity
-# (roadmap Phase 9.1, docs/SELFHOST.md SH-6, docs/RUNTIME_ABI.md, SEC-B).
+# (roadmap Phase 9.1, docs/selfhost/SELFHOST.md SH-6, docs/selfhost/RUNTIME_ABI.md, SEC-B).
 #
 # Usage: bash tools/selfhost_runtime_parity.sh [selfhost-compiler] [staticlib]
 set -u

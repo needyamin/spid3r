@@ -444,7 +444,7 @@ an isolated directory).
 ## The stage-0 oracle dumps (`tokens`, `parse`)
 
 Two small subcommands exist purely as **bootstrap tooling** for the self-hosting
-program (docs/SELFHOST.md SH-5): they dump the stage-0 front end's internal
+program (`docs/selfhost/SELFHOST.md` SH-5): they dump the stage-0 front end's internal
 state as deterministic JSON so the Spid3r-written lexer and parser
 (`selfhost/`) can be diffed against the Rust oracle, corpus-wide. They never
 run the semantic checker or any engine, never change user-visible behavior,
@@ -467,7 +467,7 @@ the frozen corpus. Implementation: `src/oracle.rs`.
 
 ## Building the self-hosted compiler
 
-The self-hosting program (docs/SELFHOST.md) builds a Spid3r-written
+The self-hosting program ([docs/selfhost/SELFHOST.md](selfhost/SELFHOST.md)) builds a Spid3r-written
 compiler from the sources in `selfhost/`. Stage 0 — the Rust compiler —
 is what compiles it; nothing else is required beyond the usual build:
 

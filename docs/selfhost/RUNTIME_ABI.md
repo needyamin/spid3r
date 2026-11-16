@@ -4,13 +4,13 @@ This document specifies the formal interface, packaging, provenance, and
 checksum-pinning contract for Spid3r's native AOT runtime static library
 (`spid3r_lang.lib` on Windows MSVC; `libspid3r_lang.a` on Linux/macOS).
 
-It satisfies **Phase 9.1** of the self-hosting program (`full_plan.html`) and
-implements architecture decision **SH-6** (`docs/SELFHOST.md`):
+It satisfies **Phase 9.1** of the self-hosting program (`../../full_plan.html`) and
+implements architecture decision **SH-6** ([SELFHOST.md](SELFHOST.md)):
 
 - Compilers built by Stage 1/Stage 2 (`selfhost/main.matrix`) never invoke
   `cargo` or `rustc` — they emit native machine code via LLVM-C (`selfhost/codegen.matrix`)
   and link the prebuilt, versioned, SHA-256-pinned runtime staticlib (`selfhost/link.matrix`).
-- Per **Phase 9.2 (ADR in `docs/SELFHOST.md`)**, the ~2.2k-line trampoline layer
+- Per **Phase 9.2 (ADR in [SELFHOST.md](SELFHOST.md))**, the ~2.2k-line trampoline layer
   (`src/native/rt.rs`) stays in Rust inside the pinned runtime staticlib rather
   than being ported to Spid3r, keeping `Value`, `vm_eval_binary`, `value::collections`,
   `stdlib::builtin_defs()`, and `Scheduler` behind a single semantic source of truth.
