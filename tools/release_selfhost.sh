@@ -21,6 +21,7 @@
 #     --staticlib <path>      Prebuilt runtime staticlib (auto-detected if omitted)
 #     --target <triple>       Target triple (default: host triple)
 #     --llvm-version <ver>    LLVM version override
+#     --pgo                   Build ThinLTO + split-PGO Stage 0, runtime, and Stage 1 via tools/pgo_build.sh
 #     --skip-installer        Do not build Windows NSIS installer
 #     --smoke-install         On Windows (CI / disposable host), run silent NSIS /S /D= test
 #
@@ -230,6 +231,7 @@ cmd_build() {
   local llvm_ver=""
   local skip_installer=0
   local smoke_install=0
+  local use_pgo=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -240,6 +242,7 @@ cmd_build() {
       --staticlib)      staticlib="${2:?--staticlib requires a value}"; shift 2 ;;
       --target)         target="${2:?--target requires a value}"; shift 2 ;;
       --llvm-version)   llvm_ver="${2:?--llvm-version requires a value}"; shift 2 ;;
+      --pgo)            use_pgo=1; shift ;;
       --skip-installer) skip_installer=1; shift ;;
       --smoke-install)  smoke_install=1; shift ;;
       *)
@@ -251,13 +254,6 @@ cmd_build() {
   [ -n "$target" ] || target="$(detect_target_triple)"
   TARGET="$target"
   [ -n "$out_dir" ] || out_dir="$ROOT/dist/release-${version}"
-  [ -n "$staticlib" ] || staticlib="$(find_default_staticlib || true)"
-  [ -n "$stage0" ] || stage0="$(find_default_stage0 || true)"
-
-  if [ -z "$staticlib" ] || [ ! -f "$staticlib" ]; then
-    echo "error[usage]: runtime staticlib not found; pass --staticlib" >&2
-    exit 2
-  fi
 
   local is_win=0
   local exe_suf=""
@@ -268,13 +264,34 @@ cmd_build() {
       ;;
   esac
 
+  rm -rf "$out_dir"
+  mkdir -p "$out_dir/runtime" "$out_dir/_work/s1" "$out_dir/_work/s2" "$out_dir/_work/s3" "$out_dir/_work/tar"
+
+  if [ "$use_pgo" -eq 1 ]; then
+    local lib_name="libspid3r_lang.a"
+    [ "$is_win" -eq 1 ] && lib_name="spid3r_lang.lib"
+    local pgo_dir="$out_dir/_work/pgo"
+    echo "[release_selfhost] 0. Running LTO + split-PGO toolchain build (tools/pgo_build.sh)..."
+    bash "$ROOT/tools/pgo_build.sh" \
+      --out-dir "$pgo_dir" \
+      --build-selfhost "$pgo_dir/spid3r-self${exe_suf}"
+    stage0="$pgo_dir/spid3r${exe_suf}"
+    staticlib="$pgo_dir/$lib_name"
+    stage1="$pgo_dir/spid3r-self${exe_suf}"
+  else
+    [ -n "$staticlib" ] || staticlib="$(find_default_staticlib || true)"
+    [ -n "$stage0" ] || stage0="$(find_default_stage0 || true)"
+  fi
+
+  if [ -z "$staticlib" ] || [ ! -f "$staticlib" ]; then
+    echo "error[usage]: runtime staticlib not found; pass --staticlib" >&2
+    exit 2
+  fi
+
   if [ -n "$stage1" ] && [ ! -f "$stage1" ]; then
     echo "error[usage]: Stage-1 spid3r-self not found: $stage1" >&2
     exit 2
   fi
-
-  rm -rf "$out_dir"
-  mkdir -p "$out_dir/runtime" "$out_dir/_work/s1" "$out_dir/_work/s2" "$out_dir/_work/s3" "$out_dir/_work/tar"
 
   if [ -z "$stage1" ]; then
     if [ -x "$ROOT/selfhost/main_native${exe_suf}" ]; then
@@ -282,7 +299,7 @@ cmd_build() {
     elif [ -n "$stage0" ] && [ -x "$stage0" ]; then
       stage1="$out_dir/_work/s1/spid3r-self${exe_suf}"
       echo "[release_selfhost] bootstrapping Stage 1 via Stage 0 ($stage0)"
-      "$stage0" build "$ROOT/selfhost/main.matrix" -o "$stage1"
+      "$stage0" build --release "$ROOT/selfhost/main.matrix" -o "$stage1"
     else
       echo "error[usage]: neither --stage1 nor --stage0 found to run release build" >&2
       exit 2

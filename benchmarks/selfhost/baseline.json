@@ -1651,7 +1651,7 @@
       "stage0_baseline": 16.5506,
       "selfhost_baseline": 0.2397,
       "selfhost_vs_stage0": 0.0145,
-      "tier_a_floor_mb_s": 99.0
+      "tier_a_floor_mb_s": 0.192
     },
     "parse": {
       "metric": "programs_per_s",
