@@ -12,9 +12,12 @@
 //!   quiescence and the deadlock watchdog are never obstructed.
 
 use std::cell::RefCell;
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -60,6 +63,7 @@ fn current_invoker() -> Result<CallbackInvoker, String> {
         .ok_or_else(|| "event loop callback invoker is not active".to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct Handler {
     cb: Value,
@@ -67,6 +71,7 @@ struct Handler {
     in_flight: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct Watchers {
     read: HashMap<i64, Handler>,
@@ -74,6 +79,7 @@ struct Watchers {
     timers: HashMap<i64, (Value, CallbackInvoker)>,
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 enum LoopCmd {
     WatchReadable {
         id: i64,
@@ -292,7 +298,6 @@ mod unix_sys {
         pub fn pipe(fds: *mut i32) -> i32;
         pub fn read(fd: i32, buf: *mut c_void, count: usize) -> isize;
         pub fn write(fd: i32, buf: *const c_void, count: usize) -> isize;
-        pub fn close(fd: i32) -> i32;
     }
 }
 
