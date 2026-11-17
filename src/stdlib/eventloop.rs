@@ -304,7 +304,7 @@ mod unix_sys {
 #[cfg(target_os = "linux")]
 mod epoll_sys {
     // Hand-declared Linux epoll ABI (no libc crate dependency).
-    #[repr(packed)]
+    #[repr(C, packed)]
     #[derive(Clone, Copy)]
     pub struct EpollEvent {
         pub events: u32,
