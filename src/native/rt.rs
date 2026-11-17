@@ -84,7 +84,40 @@ fn to_owned(p: *const Value) -> Value {
 /// - `SLAB` is thread-local, so only the owning thread advances `cur` (`cur < end`).
 /// - Unallocated trailing slots stay `MaybeUninit<Value>` forever (never read or
 ///   dropped as `Value`).
-const ARENA_SLAB_LEN: usize = 4096;
+pub const ARENA_SLAB_LEN: usize = 4096;
+
+/// Per-call and process-wide slab allocation accounting (R4.0).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SlabAllocStats {
+    pub slabs_allocated: u64,
+    pub current_call_allocs: u64,
+    pub last_call_allocs: u64,
+    pub max_call_allocs: u64,
+    pub completed_call_allocs: u64,
+}
+
+static SLAB_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LAST_CALL_SLAB_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static MAX_CALL_SLAB_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static COMPLETED_CALL_SLAB_ALLOCS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    static CALL_SLAB_ALLOCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static CALL_ALLOC_STACK: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Snapshot of slab allocation accounting counters (current thread + process-wide).
+pub fn slab_alloc_stats() -> SlabAllocStats {
+    SlabAllocStats {
+        slabs_allocated: SLAB_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+        current_call_allocs: CALL_SLAB_ALLOCS.with(|c| c.get()),
+        last_call_allocs: LAST_CALL_SLAB_ALLOCS.load(std::sync::atomic::Ordering::Relaxed),
+        max_call_allocs: MAX_CALL_SLAB_ALLOCS.load(std::sync::atomic::Ordering::Relaxed),
+        completed_call_allocs: COMPLETED_CALL_SLAB_ALLOCS
+            .load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
 
 struct SlabCursor {
     cur: std::cell::Cell<*mut std::mem::MaybeUninit<Value>>,
@@ -101,6 +134,7 @@ impl SlabCursor {
 
     #[cold]
     fn alloc_slow(&self, v: Value) -> *mut Value {
+        SLAB_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut vec: Vec<std::mem::MaybeUninit<Value>> = Vec::with_capacity(ARENA_SLAB_LEN);
         // SAFETY: `MaybeUninit<Value>` does not require initialization; setting len
         // to capacity exposes valid uninitialized storage for bumping.
@@ -119,6 +153,7 @@ impl SlabCursor {
 
     #[inline(always)]
     fn alloc(&self, v: Value) -> *mut Value {
+        CALL_SLAB_ALLOCS.with(|c| c.set(c.get() + 1));
         let cur = self.cur.get();
         let end = self.end.get();
         if cur < end {
@@ -1220,18 +1255,36 @@ thread_local! {
 /// produce (F-9) — a native stack overflow would otherwise kill the process
 /// silently, and `abort` made the error uncatchable by `try`/`catch`.
 fn enter_call() -> bool {
-    CALL_DEPTH.with(|d| {
+    let ok = CALL_DEPTH.with(|d| {
         let n = d.get() + 1;
         if n > crate::vm::MAX_CALL_DEPTH {
             return false;
         }
         d.set(n);
         true
-    })
+    });
+    if ok {
+        let prev = CALL_SLAB_ALLOCS.with(|c| {
+            let p = c.get();
+            c.set(0);
+            p
+        });
+        CALL_ALLOC_STACK.with(|s| s.borrow_mut().push(prev));
+    }
+    ok
 }
 
 fn leave_call() {
     CALL_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    let used = CALL_SLAB_ALLOCS.with(|c| {
+        let u = c.get();
+        let prev = CALL_ALLOC_STACK.with(|s| s.borrow_mut().pop().unwrap_or(0));
+        c.set(prev);
+        u
+    });
+    LAST_CALL_SLAB_ALLOCS.store(used, std::sync::atomic::Ordering::Relaxed);
+    MAX_CALL_SLAB_ALLOCS.fetch_max(used, std::sync::atomic::Ordering::Relaxed);
+    COMPLETED_CALL_SLAB_ALLOCS.fetch_add(used, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Build a `Value::Cfn` for a compiled function (called from closures).

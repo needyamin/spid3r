@@ -768,3 +768,356 @@ fn main() {{
     );
     run_both("fastcgi_responder_speaks_the_protocol", &src);
 }
+
+// ------------------------------------------------ R5.2 keep-alive edge cases
+
+#[test]
+fn keep_alive_idle_eviction_pipelining_off_and_tls_reuse() {
+    let p12_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("localhost.p12")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let cert_pem_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("data")
+        .join("localhost_cert.pem")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let tls_enabled = if cfg!(feature = "tls") {
+        "true"
+    } else {
+        "false"
+    };
+
+    let src = format!(
+        r#"import "web";
+import "http";
+{client}
+fn main() {{
+    let app = web_app();
+    let hits = map("n", 0);
+    app.get("/ping", fn(req) {{
+        hits["n"] = hits["n"] + 1;
+        return json_response(200, map("hit", hits["n"]));
+    }});
+    let l = tcp_listen("127.0.0.1:0").unwrap();
+    let addr = tcp_local_addr(l).unwrap();
+    spawn fn() {{
+        serve_listener(
+            l,
+            fn(req) {{ return app.handle(req); }},
+            map(
+                "access_log", false,
+                "watch_signals", false,
+                "idle_timeout_ms", 150,
+                "max_requests_per_conn", 5
+            ),
+            -1
+        );
+        return 0;
+    }};
+    sleep_ms(40);
+
+    // 1. Idle-timeout eviction: first request keeps alive; sleeping past
+    //    idle_timeout_ms causes the server to evict/close the idle socket.
+    let c1 = new Client(addr);
+    c1.send(request("GET", "/ping", map(), null), "");
+    let r1 = c1.read();
+    assert_eq(r1["status"], 200);
+    assert_eq(header_value(r1["head"], "connection"), "keep-alive");
+    sleep_ms(300);
+    // Socket was closed by server after idle timeout; a fresh connection works.
+    c1.close();
+
+    // 2. Pipelining off: sending two back-to-back requests in one write
+    //    answers the first with `connection: close` and drops the second.
+    let before_hits = hits["n"];
+    let c2 = new Client(addr);
+    let req_a = request("GET", "/ping", map(), null);
+    let req_b = request("GET", "/ping", map(), null);
+    c2.send(req_a + req_b, "");
+    let r2 = c2.read();
+    assert_eq(r2["status"], 200);
+    assert_eq(header_value(r2["head"], "connection"), "close");
+    sleep_ms(50);
+    assert_eq(hits["n"], before_hits + 1);
+    c2.close();
+
+    tcp_close(l);
+
+    // 3. TLS keep-alive reuse via serve_listener + http_fetch when TLS is compiled in.
+    if {tls_enabled} {{
+        let tl = tls_listen("{p12}", "", "127.0.0.1:0").unwrap();
+        let taddr = tcp_local_addr(tl).unwrap();
+        spawn fn() {{
+            serve_listener(
+                tl,
+                fn(req) {{ return app.handle(req); }},
+                map("access_log", false, "watch_signals", false, "tls", true),
+                -1
+            );
+            return 0;
+        }};
+        sleep_ms(50);
+        let url = "https://localhost:" + taddr.split(":")[1] + "/ping";
+        let f1 = http_fetch("GET", url, map(), null, map("ca_cert", "{ca_pem}")).unwrap();
+        assert_eq(f1["status"], 200);
+        let f2 = http_fetch("GET", url, map(), null, map("ca_cert", "{ca_pem}")).unwrap();
+        assert_eq(f2["status"], 200);
+        tcp_close(tl);
+    }}
+    return 0;
+}}
+"#,
+        client = HTTP_CLIENT,
+        tls_enabled = tls_enabled,
+        p12 = p12_path,
+        ca_pem = cert_pem_path
+    );
+    run_both(
+        "keep_alive_idle_eviction_pipelining_off_and_tls_reuse",
+        &src,
+    );
+}
+
+// ------------------------------------------------ R5.3 chunked request bodies
+
+#[test]
+fn chunked_request_bodies_and_adversarial_framing() {
+    let src = format!(
+        r#"import "web";
+import "http";
+{client}
+fn main() {{
+    let app = web_app();
+    app.post("/upload", fn(req) {{
+        return json_response(200, map("body", req["body"], "len", len(req["body_bytes"])));
+    }});
+    let l = tcp_listen("127.0.0.1:0").unwrap();
+    let addr = tcp_local_addr(l).unwrap();
+    spawn fn() {{
+        serve_listener(
+            l,
+            fn(req) {{ return app.handle(req); }},
+            map("access_log", false, "watch_signals", false, "max_body_bytes", 32),
+            -1
+        );
+        return 0;
+    }};
+    sleep_ms(40);
+
+    // 1. Valid multi-chunk request with chunk extension and trailer.
+    let c1 = new Client(addr);
+    let raw_ok = "POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+        + "5;ext=1\r\nhello\r\n"
+        + "7\r\n, world\r\n"
+        + "0\r\nX-Checksum: abc\r\n\r\n";
+    c1.send(raw_ok, "");
+    let r1 = c1.read();
+    assert_eq(r1["status"], 200);
+    assert(r1["body"].contains("\"body\":\"hello, world\""));
+    assert(r1["body"].contains("\"len\":12"));
+    c1.close();
+
+    // 2. Oversized chunked body (> max_body_bytes = 32) -> 413 Payload Too Large.
+    let c2 = new Client(addr);
+    let raw_big = "POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n"
+        + "25\r\n0123456789abcdefghijklmnopqrstuvwxyz!\r\n0\r\n\r\n";
+    c2.send(raw_big, "");
+    let r2 = c2.read();
+    assert_eq(r2["status"], 413);
+    c2.close();
+
+    // 3. Negative chunk size -> 400 Bad Request.
+    let c3 = new Client(addr);
+    c3.send("POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n-4\r\ntest\r\n0\r\n\r\n", "");
+    let r3 = c3.read();
+    assert_eq(r3["status"], 400);
+    c3.close();
+
+    // 4. Hex-with-junk chunk size -> 400 Bad Request.
+    let c4 = new Client(addr);
+    c4.send("POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\n\r\n4zz\r\ntest\r\n0\r\n\r\n", "");
+    let r4 = c4.read();
+    assert_eq(r4["status"], 400);
+    c4.close();
+
+    // 5. Conflicting Transfer-Encoding + Content-Length -> 400 Bad Request.
+    let c5 = new Client(addr);
+    c5.send("POST /upload HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 4\r\n\r\n4\r\ntest\r\n0\r\n\r\n", "");
+    let r5 = c5.read();
+    assert_eq(r5["status"], 400);
+    c5.close();
+
+    tcp_close(l);
+    return 0;
+}}
+"#,
+        client = HTTP_CLIENT
+    );
+    run_both("chunked_request_bodies_and_adversarial_framing", &src);
+}
+
+// ------------------------------------------------ R5.4 streaming responses
+
+#[test]
+fn streaming_responses_across_sources_and_curl_interop() {
+    let src = r#"import "web";
+import "http";
+fn main() {
+    // Prepare an upstream socket pair for the socket-streaming route.
+    let up_l = tcp_listen("127.0.0.1:0").unwrap();
+    let up_addr = tcp_local_addr(up_l).unwrap();
+
+    let app = web_app();
+    app.get("/stream-list", fn(req) {
+        return stream_response(
+            200,
+            map("content-type", "text/plain; charset=utf-8"),
+            ["alpha-", "beta-", "gamma"]
+        );
+    });
+    app.get("/stream-fn", fn(req) {
+        let state = map("i", 0);
+        return stream_response(
+            200,
+            map("content-type", "text/plain; charset=utf-8"),
+            fn() {
+                let idx = state["i"];
+                if idx >= 3 {
+                    return null;
+                }
+                state["i"] = idx + 1;
+                return "part" + string(idx) + ";";
+            }
+        );
+    });
+    app.get("/stream-sock", fn(req) {
+        let c = tcp_connect(up_addr).unwrap();
+        return stream_response(
+            200,
+            map("content-type", "text/plain; charset=utf-8"),
+            c
+        );
+    });
+
+    spawn fn() {
+        let s = tcp_accept(up_l).unwrap();
+        tcp_write(s, "from-");
+        tcp_write(s, "upstream-socket");
+        tcp_close(s);
+        return 0;
+    };
+
+    let l = tcp_listen("127.0.0.1:0").unwrap();
+    let addr = tcp_local_addr(l).unwrap();
+    spawn fn() {
+        serve_listener(
+            l,
+            fn(req) { return app.handle(req); },
+            map("access_log", false, "watch_signals", false),
+            -1
+        );
+        return 0;
+    };
+    sleep_ms(40);
+
+    let base = "http://" + addr;
+    let r1 = http_fetch("GET", base + "/stream-list").unwrap();
+    assert_eq(r1["status"], 200);
+    assert_eq(r1["headers"]["transfer-encoding"], "chunked");
+    assert_eq(r1["body"], "alpha-beta-gamma");
+
+    let r2 = http_fetch("GET", base + "/stream-fn").unwrap();
+    assert_eq(r2["status"], 200);
+    assert_eq(r2["headers"]["transfer-encoding"], "chunked");
+    assert_eq(r2["body"], "part0;part1;part2;");
+
+    let r3 = http_fetch("GET", base + "/stream-sock").unwrap();
+    assert_eq(r3["status"], 200);
+    assert_eq(r3["headers"]["transfer-encoding"], "chunked");
+    assert_eq(r3["body"], "from-upstream-socket");
+
+    tcp_close(up_l);
+    tcp_close(l);
+    return 0;
+}
+"#;
+    run_both("streaming_responses_across_sources", src);
+
+    // Real curl interop check against a live Spid3r chunked streaming endpoint.
+    let curl_bin = if cfg!(windows) { "curl.exe" } else { "curl" };
+    if std::process::Command::new(curl_bin)
+        .arg("--version")
+        .output()
+        .is_ok()
+    {
+        let (addr_tx, addr_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let server_thread = std::thread::Builder::new()
+            .name("curl-interop-server".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || {
+                let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                let port = listener.local_addr().unwrap().port();
+                drop(listener);
+                let addr = format!("127.0.0.1:{}", port);
+                let _ = addr_tx.send(addr.clone());
+                let srv_src = format!(
+                    r#"import "http";
+fn main() {{
+    let srv = new HttpServer();
+    srv.logging = false;
+    srv.opts["watch_signals"] = false;
+    srv.get("/curl-stream", fn(req) {{
+        return http_stream(200, map("content-type", "text/plain"), ["curl-", "chunked-", "ok"]);
+    }});
+    srv.bind("{addr}");
+    srv.serve(1);
+    srv.close();
+    return 0;
+}}
+"#,
+                    addr = addr
+                );
+                let res = run_vm(&srv_src, "curl_interop_server");
+                let _ = done_tx.send(res);
+            })
+            .unwrap();
+
+        let addr = addr_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        let out = std::process::Command::new(curl_bin)
+            .args([
+                "--http1.1",
+                "-sS",
+                "-D",
+                "-",
+                &format!("http://{}/curl-stream", addr),
+            ])
+            .output()
+            .expect("failed to execute curl");
+        assert!(
+            out.status.success(),
+            "curl failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.to_ascii_lowercase()
+                .contains("transfer-encoding: chunked"),
+            "missing chunked header in curl output: {}",
+            text
+        );
+        assert!(
+            text.ends_with("curl-chunked-ok"),
+            "unexpected curl body: {}",
+            text
+        );
+        let srv_res = done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(srv_res.unwrap(), 0);
+        server_thread.join().unwrap();
+    }
+}

@@ -30,54 +30,54 @@ import "lexer_json";
 // ------------------------------------------------------------- builtins
 
 const BUILTIN_CONSTRUCTORS = [
-    "list", "vec", "stack", "queue", "deque", "linked_list", "singly_linked_list",
-    "doubly_linked_list", "map", "set", "tuple", "binary_tree", "bst", "heap",
-    "priority_queue", "graph", "hash_table", "trie", "matrix", "matrix_from_list",
-    "vector", "bytes", "ring_buffer", "bag", "ref", "channel", "mutex",
-    "some", "none", "ok", "err",
+"list", "vec", "stack", "queue", "deque", "linked_list", "singly_linked_list",
+"doubly_linked_list", "map", "set", "tuple", "binary_tree", "bst", "heap",
+"priority_queue", "graph", "hash_table", "trie", "matrix", "matrix_from_list",
+"vector", "bytes", "ring_buffer", "bag", "ref", "channel", "mutex",
+"some", "none", "ok", "err",
 ];
 
 const BUILTIN_FUNCTIONS = [
-    "print", "println", "assert", "assert_eq", "weak", "deref", "eprint", "read_line",
-    "read_file", "write_file", "write_file_atomic", "file_exists", "file_delete",
-    "remove_file", "rename", "copy_file", "list_dir", "is_dir", "is_file", "file_size",
-    "file_mtime", "cwd", "chdir", "exe_path", "env_set", "path_join", "basename",
-    "dirname", "path_ext", "is_ok", "is_err", "dir_create", "dir_remove", "sleep_ms",
-    "now", "env", "args", "gui_args", "spawn_process", "run_payload",
-    "run_payload_strict", "exec_capture", "yield", "task_count", "len", "abs", "sqrt",
-    "pow", "min", "max", "clamp", "floor", "ceil", "round", "trunc", "sign", "exp",
-    "ln", "log10", "log2", "sin", "cos", "tan", "asin", "acos", "atan", "is_nan",
-    "is_inf", "atan2", "hypot", "float_or", "nan", "inf", "random_float",
-    "random_normal", "sha256", "sha512", "ed25519_keypair", "ed25519_sign",
-    "ed25519_verify", "hmac_sha256", "pbkdf2_sha256", "secure_compare", "random_bytes",
-    "chr", "ord", "crc32", "adler32", "deflate", "inflate", "gzip_compress", "gunzip",
-    "zlib_compress", "unzlib", "zip_create", "zip_read", "zip_list", "msgpack_encode",
-    "msgpack_decode", "cbor_encode", "cbor_decode", "pb_encode", "pb_decode", "fft",
-    "ifft", "scrypt", "redis_close", "redis_command", "redis_connect", "pg_close",
-    "pg_exec", "pg_query", "pg_connect", "mysql_close", "mysql_exec", "mysql_query",
-    "mysql_connect", "argon2", "bcrypt_hash", "bcrypt_verify", "png_decode",
-    "png_encode", "wav_decode", "wav_encode", "pdf_write", "pdf_escape",
-    "base64_encode", "base64_decode", "base64_url_encode", "base64_url_decode",
-    "hex_encode", "hex_decode", "base32_encode", "base32_decode", "int", "float",
-    "string", "bool", "bit_and", "bit_or", "bit_xor", "shl", "shr", "random_int",
-    "json_parse", "json_write", "spid3rinfo", "config_get", "config_set",
-    "config_reload", "type_of", "is_failure", "gc_collect", "gc_live_cells",
-    "tcp_listen", "tcp_accept", "tcp_accept_timeout", "tcp_connect", "tcp_read",
-    "tcp_read_exact", "tcp_write_bytes", "tcp_write", "tcp_close", "tcp_local_addr",
-    "tcp_peer_addr", "tcp_set_timeout", "tcp_poll", "after_ms", "every_ms", "timer_cancel", "timer_pending", "timer_check", "event_loop_run", "event_loop_stop", "on_readable", "on_writable", "on_timer", "event_loop_unwatch", "tcp_recv_to_file", "tcp_send_file",
-    "ws_connect", "ws_accept", "ws_send", "ws_send_bytes", "ws_recv", "ws_close",
-    "udp_bind", "udp_local_addr", "udp_send_to", "udp_recv_from", "udp_join_multicast",
-    "udp_leave_multicast", "udp_set_multicast_ttl", "udp_set_broadcast", "udp_close",
-    "http_read_request", "http_write_response", "http_fetch", "__http_fetch",
-    "multipart_parse", "__multipart_parse", "multipart_build", "__multipart_build",
-    "shutdown_requested", "request_shutdown", "reset_shutdown", "url_decode",
-    "url_encode", "read_bytes", "bytes_concat", "write_bytes", "save_npy", "load_npy",
-    "read_csv", "parse_csv", "write_csv", "regex_match", "regex_find", "regex_find_all",
-    "regex_replace", "unix_time", "now_ms", "elapsed_ms", "unix_ms", "datetime_parts",
-    "datetime_from_parts", "format_datetime", "tz_names", "tz_info", "tz_parts",
-    "tz_from_parts", "tz_format", "tz_version", "unicode_normalize",
-    "unicode_is_normalized", "unicode_casefold", "unicode_strip_marks",
-    "unicode_combining_class", "unicode_version", "db_open",
+"print", "println", "assert", "assert_eq", "weak", "deref", "eprint", "read_line",
+"read_file", "write_file", "write_file_atomic", "file_exists", "file_delete",
+"remove_file", "rename", "copy_file", "list_dir", "is_dir", "is_file", "file_size",
+"file_mtime", "cwd", "chdir", "exe_path", "env_set", "path_join", "basename",
+"dirname", "path_ext", "is_ok", "is_err", "dir_create", "dir_remove", "sleep_ms",
+"now", "env", "args", "gui_args", "spawn_process", "run_payload",
+"run_payload_strict", "exec_capture", "yield", "task_count", "len", "abs", "sqrt",
+"pow", "min", "max", "clamp", "floor", "ceil", "round", "trunc", "sign", "exp",
+"ln", "log10", "log2", "sin", "cos", "tan", "asin", "acos", "atan", "is_nan",
+"is_inf", "atan2", "hypot", "float_or", "nan", "inf", "random_float",
+"random_normal", "sha256", "sha512", "ed25519_keypair", "ed25519_sign",
+"ed25519_verify", "hmac_sha256", "pbkdf2_sha256", "secure_compare", "random_bytes",
+"chr", "ord", "crc32", "adler32", "deflate", "inflate", "gzip_compress", "gunzip",
+"zlib_compress", "unzlib", "zip_create", "zip_read", "zip_list", "msgpack_encode",
+"msgpack_decode", "cbor_encode", "cbor_decode", "pb_encode", "pb_decode", "fft",
+"ifft", "scrypt", "redis_close", "redis_command", "redis_connect", "pg_close",
+"pg_exec", "pg_query", "pg_connect", "mysql_close", "mysql_exec", "mysql_query",
+"mysql_connect", "argon2", "bcrypt_hash", "bcrypt_verify", "png_decode",
+"png_encode", "wav_decode", "wav_encode", "pdf_write", "pdf_escape",
+"base64_encode", "base64_decode", "base64_url_encode", "base64_url_decode",
+"hex_encode", "hex_decode", "base32_encode", "base32_decode", "int", "float",
+"string", "bool", "bit_and", "bit_or", "bit_xor", "shl", "shr", "random_int",
+"json_parse", "json_write", "spid3rinfo", "config_get", "config_set",
+"config_reload", "type_of", "is_failure", "gc_collect", "gc_live_cells",
+"tcp_listen", "tcp_accept", "tcp_accept_timeout", "tls_listen", "tls_accept", "tcp_connect", "tcp_read",
+"tcp_read_exact", "tcp_write_bytes", "tcp_write", "tcp_close", "tcp_local_addr",
+"tcp_peer_addr", "tcp_set_timeout", "tcp_poll", "after_ms", "every_ms", "timer_cancel", "timer_pending", "timer_check", "event_loop_run", "event_loop_stop", "on_readable", "on_writable", "on_timer", "event_loop_unwatch", "tcp_recv_to_file", "tcp_send_file",
+"ws_connect", "ws_accept", "ws_send", "ws_send_bytes", "ws_recv", "ws_close",
+"udp_bind", "udp_local_addr", "udp_send_to", "udp_recv_from", "udp_join_multicast",
+"udp_leave_multicast", "udp_set_multicast_ttl", "udp_set_broadcast", "udp_close",
+"http_read_request", "http_write_response", "http_write_response_chunk", "http_fetch", "__http_fetch",
+"multipart_parse", "__multipart_parse", "multipart_build", "__multipart_build",
+"shutdown_requested", "request_shutdown", "reset_shutdown", "url_decode",
+"url_encode", "read_bytes", "bytes_concat", "write_bytes", "save_npy", "load_npy",
+"read_csv", "parse_csv", "write_csv", "regex_match", "regex_find", "regex_find_all",
+"regex_replace", "unix_time", "now_ms", "elapsed_ms", "unix_ms", "datetime_parts",
+"datetime_from_parts", "format_datetime", "tz_names", "tz_info", "tz_parts",
+"tz_from_parts", "tz_format", "tz_version", "unicode_normalize",
+"unicode_is_normalized", "unicode_casefold", "unicode_strip_marks",
+"unicode_combining_class", "unicode_version", "db_open",
 ];
 
 let CONS_MAP = null;
@@ -100,35 +100,35 @@ fn builtin_maps() {
 
 // The Type list names for known builtin types (check_type_name's TYPES).
 const KNOWN_TYPES = [
-    "int", "float", "bool", "string", "ptr", "usize", "null", "list", "vec", "stack",
-    "queue", "deque", "linked_list", "singly_linked_list", "doubly_linked_list", "map",
-    "set", "tuple", "binary_tree", "bst", "heap", "priority_queue", "graph",
-    "hash_table", "trie", "matrix", "vector", "bytes", "ring_buffer", "bag", "ref",
-    "option", "result", "task", "channel", "mutex", "any",
+"int", "float", "bool", "string", "ptr", "usize", "null", "list", "vec", "stack",
+"queue", "deque", "linked_list", "singly_linked_list", "doubly_linked_list", "map",
+"set", "tuple", "binary_tree", "bst", "heap", "priority_queue", "graph",
+"hash_table", "trie", "matrix", "vector", "bytes", "ring_buffer", "bag", "ref",
+"option", "result", "task", "channel", "mutex", "any",
 ];
 
 const COLL_TYPES = [
-    "list", "vec", "stack", "queue", "deque", "linked_list", "singly_linked_list",
-    "doubly_linked_list", "map", "set", "tuple", "binary_tree", "bst", "heap",
-    "priority_queue", "graph", "hash_table", "trie", "matrix", "vector", "bytes",
-    "ring_buffer", "bag", "ref", "option", "result", "task", "channel", "mutex",
-    "some", "none", "ok", "err",
+"list", "vec", "stack", "queue", "deque", "linked_list", "singly_linked_list",
+"doubly_linked_list", "map", "set", "tuple", "binary_tree", "bst", "heap",
+"priority_queue", "graph", "hash_table", "trie", "matrix", "vector", "bytes",
+"ring_buffer", "bag", "ref", "option", "result", "task", "channel", "mutex",
+"some", "none", "ok", "err",
 ];
 
 // builtin_return_type: the precise static types of a handful of builtins.
 fn builtin_return_type(name) {
     if name == "int" or name == "len" or name == "abs" or name == "random_int"
-        or name == "now" or name == "now_ms" or name == "elapsed_ms" or name == "unix_time"
-        or name == "unix_ms" {
+    or name == "now" or name == "now_ms" or name == "elapsed_ms" or name == "unix_time"
+    or name == "unix_ms" {
         return ["Int"];
     }
     if name == "float" or name == "sqrt" or name == "pow" or name == "clamp"
-        or name == "floor" or name == "ceil" or name == "round" or name == "trunc"
-        or name == "sign" or name == "exp" or name == "ln" or name == "log10"
-        or name == "log2" or name == "sin" or name == "cos" or name == "tan"
-        or name == "asin" or name == "acos" or name == "atan" or name == "atan2"
-        or name == "hypot" or name == "float_or" or name == "nan" or name == "inf"
-        or name == "random_float" or name == "random_normal" {
+    or name == "floor" or name == "ceil" or name == "round" or name == "trunc"
+    or name == "sign" or name == "exp" or name == "ln" or name == "log10"
+    or name == "log2" or name == "sin" or name == "cos" or name == "tan"
+    or name == "asin" or name == "acos" or name == "atan" or name == "atan2"
+    or name == "hypot" or name == "float_or" or name == "nan" or name == "inf"
+    or name == "random_float" or name == "random_normal" {
         return ["Float"];
     }
     if name == "is_nan" or name == "is_inf" or name == "is_ok" or name == "is_err" {
@@ -144,7 +144,7 @@ fn builtin_return_type(name) {
         return ["Int"];
     }
     if name == "sha256" or name == "sha512" or name == "hmac_sha256"
-        or name == "pbkdf2_sha256" or name == "ed25519_sign" {
+    or name == "pbkdf2_sha256" or name == "ed25519_sign" {
         return ["Str"];
     }
     if name == "crc32" or name == "adler32" {
@@ -192,8 +192,8 @@ fn builtin_return_type(name) {
 public fn new_checker(is_main, source_file) {
     builtin_maps();
     return [
-        map(), map(), map(), [map()], 0, 0, false, false, null, null,
-        is_main, source_file, map(), map(), map(), map(), [], 0, [],
+    map(), map(), map(), [map()], 0, 0, false, false, null, null,
+    is_main, source_file, map(), map(), map(), map(), [], 0, [],
     ];
 }
 
@@ -205,10 +205,18 @@ fn chk_warn(st, lint, sp, msg) {
     st[18].push([lint, sp, msg]);
 }
 
-fn classes_of(st) { return st[0]; }
-fn interfaces_of(st) { return st[1]; }
-fn funcs_of(st) { return st[2]; }
-fn scopes_of(st) { return st[3]; }
+fn classes_of(st) {
+    return st[0];
+}
+fn interfaces_of(st) {
+    return st[1];
+}
+fn funcs_of(st) {
+    return st[2];
+}
+fn scopes_of(st) {
+    return st[3];
+}
 
 fn err_at_sp(sp, msg) {
     throw [msg, sp[0], sp[1], sp[2]];
@@ -221,7 +229,10 @@ fn chk_err(st, sp, msg) {
 // The type-mismatch diagnostic's actionable help (the oracle's `= help:` line
 // is decoration; the message itself is the parity surface).
 fn mismatch(sp, msg) {
-    err_at_sp(sp, msg + "\u{1}HELP\u{1}annotations are checked before the program runs; use `any` to opt out, or convert explicitly with string(x) / int(x) / float(x)");
+    err_at_sp(
+        sp,
+        msg + "\u{1}HELP\u{1}annotations are checked before the program runs; use `any` to opt out, or convert explicitly with string(x) / int(x) / float(x)"
+    );
 }
 
 // The help marker travels inside the message; main.matrix splits it off into
@@ -260,31 +271,53 @@ fn unknown_name(st, sp, name) {
     let u = st[15];
     if u.has(name) {
         let d = u[name];
-        chk_err(st, sp, name + " is declared in " + d[0] + " but not exported — mark it `public " + d[1] + "`");
+        chk_err(
+            st,
+            sp,
+            name + " is declared in " + d[0] + " but not exported — mark it `public " + d[1] + "`"
+        );
     }
     chk_err(st, sp, "unknown name '" + name + "'");
 }
 
 // ------------------------------------------------------------- Ty helpers
 
-fn ty_any() { return ["Any"]; }
+fn ty_any() {
+    return ["Any"];
+}
 
 fn ty_name(t) {
     let tag = t[0];
-    if tag == "Any" { return "any"; }
-    if tag == "Int" { return "int"; }
-    if tag == "Float" { return "float"; }
-    if tag == "Bool" { return "bool"; }
-    if tag == "Str" { return "string"; }
-    if tag == "Null" { return "null"; }
+    if tag == "Any" {
+        return "any";
+    }
+    if tag == "Int" {
+        return "int";
+    }
+    if tag == "Float" {
+        return "float";
+    }
+    if tag == "Bool" {
+        return "bool";
+    }
+    if tag == "Str" {
+        return "string";
+    }
+    if tag == "Null" {
+        return "null";
+    }
     if tag == "Coll" {
         if t[2] != null {
             return t[1] + "<" + ty_name(t[2]) + ">";
         }
         return t[1];
     }
-    if tag == "Class" { return t[1]; }
-    if tag == "Interface" { return t[1]; }
+    if tag == "Class" {
+        return t[1];
+    }
+    if tag == "Interface" {
+        return t[1];
+    }
     if tag == "Nullable" {
         return ty_name(t[1]) + "?";
     }
@@ -295,7 +328,9 @@ fn ty_name(t) {
         }
         return parts.join(" | ");
     }
-    if tag == "Fn" { return "function"; }
+    if tag == "Fn" {
+        return "function";
+    }
     return "any";
 }
 
@@ -712,7 +747,11 @@ public fn sem_load_module_info(resolved) {
 fn module_info(path, source_file, st, sp) {
     let resolved = resolve_module_path(path, source_file);
     if resolved == null {
-        chk_err(st, sp, "module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)");
+        chk_err(
+            st,
+            sp,
+            "module '" + path + "' not found (looked next to the importing file and on SPID3R_PATH)"
+        );
     }
     return sem_load_module_info(resolved);
 }
@@ -918,12 +957,20 @@ public fn check_program(st, prog) {
             }
             if st[10] and name == "main" {
                 if f[5].len() > 0 {
-                    chk_err(st, f[9], "fn main must take no parameters (found " + string(f[5].len()) + "); the runtime calls it with none");
+                    chk_err(
+                        st,
+                        f[9],
+                        "fn main must take no parameters (found " + string(f[5].len()) + "); the runtime calls it with none"
+                    );
                 }
                 if f[6] != null {
                     check_type_name(st, f[6][1], f[6][5]);
                     if lower_name(f[6][1]) != "int" {
-                        chk_err(st, f[9], "fn main must return int (the exit code) or nothing, not " + f[6][1]);
+                        chk_err(
+                            st,
+                            f[9],
+                            "fn main must return int (the exit code) or nothing, not " + f[6][1]
+                        );
                     }
                 }
             }
@@ -938,7 +985,18 @@ public fn check_program(st, prog) {
             if v != null and v[3] {
                 chk_err(st, f[9], "local '" + name + "' shadows an imported binding");
             }
-            declare(st, name, f[9], [false, null, fn_sig_type(st, f), false, "local", false, null]);
+            declare(
+                st,
+                name,
+                f[9],
+                [false,
+                null,
+                fn_sig_type(st, f),
+                false,
+                "local",
+                false,
+                null]
+            );
             st[12][name] = 1;
         } else if tag == "Class" {
             if seen.has(s[2]) {
@@ -1115,7 +1173,11 @@ public fn check_program(st, prog) {
             }
             if not found {
                 let sp = class_spans[name];
-                chk_err(st, sp, "class '" + name + "' must implement the abstract method '" + method + "' from '" + owner + "'");
+                chk_err(
+                    st,
+                    sp,
+                    "class '" + name + "' must implement the abstract method '" + method + "' from '" + owner + "'"
+                );
             }
         }
     }
@@ -1133,21 +1195,37 @@ public fn check_program(st, prog) {
                     let arity = entry[0];
                     let iface_ret = entry[1];
                     if not classes_of(st)[s[2]][4].has(mname) {
-                        chk_err(st, s[10], "class '" + s[2] + "' does not implement '" + mname + "' required by interface '" + iface + "'");
+                        chk_err(
+                            st,
+                            s[10],
+                            "class '" + s[2] + "' does not implement '" + mname + "' required by interface '" + iface + "'"
+                        );
                     }
                     let mi = classes_of(st)[s[2]][4][mname];
                     if mi[1] != "public" {
-                        chk_err(st, s[10], "method '" + mname + "' must be public to satisfy interface '" + iface + "'");
+                        chk_err(
+                            st,
+                            s[10],
+                            "method '" + mname + "' must be public to satisfy interface '" + iface + "'"
+                        );
                     }
                     if mi[2].len() != arity {
-                        chk_err(st, s[10], "method '" + mname + "' has arity " + string(mi[2].len()) + " but interface '" + iface + "' wants " + string(arity));
+                        chk_err(
+                            st,
+                            s[10],
+                            "method '" + mname + "' has arity " + string(mi[2].len()) + " but interface '" + iface + "' wants " + string(arity)
+                        );
                     }
                     if iface_ret != null {
                         let exp_ty = resolve_type(st, iface_ret);
                         if mi[4] != null {
                             let act_ty = resolve_type(st, mi[4]);
                             if not assignable(st, act_ty, exp_ty) {
-                                chk_err(st, s[10], "method '" + mname + "' returns " + ty_name(act_ty) + " but interface '" + iface + "' expects " + ty_name(exp_ty));
+                                chk_err(
+                                    st,
+                                    s[10],
+                                    "method '" + mname + "' returns " + ty_name(act_ty) + " but interface '" + iface + "' expects " + ty_name(exp_ty)
+                                );
                             }
                         }
                     }
@@ -1163,7 +1241,12 @@ public fn check_program(st, prog) {
     for s in stmts {
         if st[10] {
             if s[0] == "ExprStmt" and s[1][0] == "Call" and s[1][1][0] == "Ident" and s[1][1][1] == "main" {
-                chk_warn(st, "unreachable-code", s[1][3], "explicit call to 'main': main() is invoked automatically; remove this call");
+                chk_warn(
+                    st,
+                    "unreachable-code",
+                    s[1][3],
+                    "explicit call to 'main': main() is invoked automatically; remove this call"
+                );
             }
         }
         check_stmt(st, s);
@@ -1217,7 +1300,20 @@ fn declare_pattern(st, p) {
         return;
     }
     if tag == "Bind" {
-        declare(st, p[1], [0, 0, 0], [false, null, null, false, "local", false, null]);
+        declare(
+            st,
+            p[1],
+            [0,
+            0,
+            0],
+            [false,
+            null,
+            null,
+            false,
+            "local",
+            false,
+            null]
+        );
         return;
     }
     // PatVariant
@@ -1265,7 +1361,11 @@ fn check_exhaustive(st, arms, span) {
     if missing.len() == 0 {
         return;
     }
-    chk_err(st, span, "this match is not exhaustive for enum '" + owner + "': missing " + missing.join(", ") + " (add an arm or `_`)");
+    chk_err(
+        st,
+        span,
+        "this match is not exhaustive for enum '" + owner + "': missing " + missing.join(", ") + " (add an arm or `_`)"
+    );
 }
 
 fn block_has_value(b) {
@@ -1332,7 +1432,12 @@ fn check_stmts(st, stmts) {
     let dead_reported = false;
     for s in stmts {
         if terminated and not dead_reported {
-            chk_warn(st, "unreachable-code", stmt_span(s), "unreachable code: this statement follows a `return`, `throw`, `break`, or `continue`");
+            chk_warn(
+                st,
+                "unreachable-code",
+                stmt_span(s),
+                "unreachable code: this statement follows a `return`, `throw`, `break`, or `continue`"
+            );
             dead_reported = true;
         }
         check_stmt(st, s);
@@ -1414,9 +1519,31 @@ fn check_stmt(st, s) {
     if tag == "ForIn" {
         check_expr(st, s[3]);
         push_scope(st);
-        declare(st, s[1], stmt_span(s), [false, null, null, false, "local", false, null]);
+        declare(
+            st,
+            s[1],
+            stmt_span(s),
+            [false,
+            null,
+            null,
+            false,
+            "local",
+            false,
+            null]
+        );
         if s[2] != null {
-            declare(st, s[2], stmt_span(s), [false, null, null, false, "local", false, null]);
+            declare(
+                st,
+                s[2],
+                stmt_span(s),
+                [false,
+                null,
+                null,
+                false,
+                "local",
+                false,
+                null]
+            );
         }
         st[4] += 1;
         let had = false;
@@ -1448,14 +1575,28 @@ fn check_stmt(st, s) {
                 let want = resolve_type(st, init[3]);
                 let got = chk_type_of(st, init[4]);
                 if not assignable(st, got, want) {
-                    mismatch(nsp(init[4]), "type mismatch in '" + init[2] + "': expected " + ty_name(want) + ", got " + ty_name(got));
+                    mismatch(
+                        nsp(init[4]),
+                        "type mismatch in '" + init[2] + "': expected " + ty_name(want) + ", got " + ty_name(got)
+                    );
                 }
             }
             let tyo = null;
             if init[3] != null {
                 tyo = resolve_type(st, init[3]);
             }
-            declare(st, init[2], init[5], [false, null, tyo, false, "local", false, null]);
+            declare(
+                st,
+                init[2],
+                init[5],
+                [false,
+                null,
+                tyo,
+                false,
+                "local",
+                false,
+                null]
+            );
         }
         check_expr(st, s[2]);
         check_expr(st, s[3]);
@@ -1486,10 +1627,17 @@ fn check_stmt(st, s) {
             if s[1] != null {
                 let got = chk_type_of(st, s[1]);
                 if not assignable(st, got, st[9]) {
-                    mismatch(s[2], "return type mismatch: expected " + ty_name(st[9]) + ", got " + ty_name(got));
+                    mismatch(
+                        s[2],
+                        "return type mismatch: expected " + ty_name(st[9]) + ", got " + ty_name(got)
+                    );
                 }
             } else {
-                chk_err(st, s[2], "function declared to return " + ty_name(st[9]) + " but returns nothing");
+                chk_err(
+                    st,
+                    s[2],
+                    "function declared to return " + ty_name(st[9]) + " but returns nothing"
+                );
             }
         }
         return;
@@ -1522,7 +1670,18 @@ fn check_stmt(st, s) {
         check_block(st, s[1]);
         if s[2] != null {
             push_scope(st);
-            declare(st, s[2][1], s[2][3], [false, null, null, false, "local", false, null]);
+            declare(
+                st,
+                s[2][1],
+                s[2][3],
+                [false,
+                null,
+                null,
+                false,
+                "local",
+                false,
+                null]
+            );
             let had = false;
             try {
                 check_stmts(st, s[2][2][1]);
@@ -1578,7 +1737,11 @@ fn check_import(st, s) {
             if found == null {
                 if st[15].has(export_name) {
                     let d = st[15][export_name];
-                    chk_err(st, sp, d[1] + " '" + export_name + "' in module '" + d[0] + "' is private (add 'public' to export it)");
+                    chk_err(
+                        st,
+                        sp,
+                        d[1] + " '" + export_name + "' in module '" + d[0] + "' is private (add 'public' to export it)"
+                    );
                 }
                 chk_err(st, sp, "module '" + path + "' does not export '" + export_name + "'");
             }
@@ -1593,7 +1756,11 @@ fn check_import(st, s) {
             }
             if scope.has(local_name) {
                 if scope[local_name][3] {
-                    chk_err(st, sp, "import collision: '" + local_name + "' is imported by multiple modules");
+                    chk_err(
+                        st,
+                        sp,
+                        "import collision: '" + local_name + "' is imported by multiple modules"
+                    );
                 }
             }
             scope[local_name] = [is_const, null, null, true, "import", false, null, sp];
@@ -1635,7 +1802,11 @@ fn check_import(st, s) {
             }
             if scope.has(n[0]) {
                 if scope[n[0]][3] {
-                    chk_err(st, sp, "import collision: '" + n[0] + "' is imported by multiple modules");
+                    chk_err(
+                        st,
+                        sp,
+                        "import collision: '" + n[0] + "' is imported by multiple modules"
+                    );
                 }
             }
             scope[n[0]] = [n[1], null, null, true, "import", false, null, sp];
@@ -1662,7 +1833,18 @@ fn check_fn_stmt(st, s) {
     }
     if st[3].len() > 1 {
         if f[4] != null {
-            declare(st, f[4], f[9], [false, null, fn_sig_type(st, f), false, "local", false, null]);
+            declare(
+                st,
+                f[4],
+                f[9],
+                [false,
+                null,
+                fn_sig_type(st, f),
+                false,
+                "local",
+                false,
+                null]
+            );
         }
     }
     st[5] += 1;
@@ -1686,7 +1868,11 @@ fn check_fn_stmt(st, s) {
         names[p[1]] = 1;
         if p[3] != null {
             if not is_const_default(p[3]) {
-                chk_err(st, p[4], "the default for parameter '" + p[1] + "' must be a constant (a literal number, string, bool, or null)");
+                chk_err(
+                    st,
+                    p[4],
+                    "the default for parameter '" + p[1] + "' must be a constant (a literal number, string, bool, or null)"
+                );
             }
         }
         let cls = null;
@@ -1769,7 +1955,19 @@ fn check_class_stmt(st, s) {
         st[16].push([]);
         let is_ctor = m[4] == "new";
         if is_ctor {
-            declare(st, "self", m[9], [false, c[2], ["Class", c[2]], false, "local", false, null]);
+            declare(
+                st,
+                "self",
+                m[9],
+                [false,
+                c[2],
+                ["Class",
+                c[2]],
+                false,
+                "local",
+                false,
+                null]
+            );
             let names = map();
             for p in m[5] {
                 if names.has(p[1]) {
@@ -1780,10 +1978,33 @@ fn check_class_stmt(st, s) {
                 if p[2] != null {
                     tyo = resolve_type(st, p[2]);
                 }
-                declare(st, p[1], p[4], [false, null, tyo, false, "local", false, null]);
+                declare(
+                    st,
+                    p[1],
+                    p[4],
+                    [false,
+                    null,
+                    tyo,
+                    false,
+                    "local",
+                    false,
+                    null]
+                );
             }
         } else {
-            declare(st, "self", m[9], [false, c[2], ["Class", c[2]], false, "local", false, null]);
+            declare(
+                st,
+                "self",
+                m[9],
+                [false,
+                c[2],
+                ["Class",
+                c[2]],
+                false,
+                "local",
+                false,
+                null]
+            );
             let names = map();
             let i = 1;
             while i < m[5].len() {
@@ -1796,7 +2017,18 @@ fn check_class_stmt(st, s) {
                 if p[2] != null {
                     tyo = resolve_type(st, p[2]);
                 }
-                declare(st, p[1], p[4], [false, null, tyo, false, "local", false, null]);
+                declare(
+                    st,
+                    p[1],
+                    p[4],
+                    [false,
+                    null,
+                    tyo,
+                    false,
+                    "local",
+                    false,
+                    null]
+                );
                 i += 1;
             }
         }
@@ -1851,7 +2083,10 @@ fn check_let(st, s, is_const) {
         let want = resolve_type(st, s[3]);
         let got = chk_type_of(st, s[4]);
         if not assignable(st, got, want) {
-            mismatch(nsp(s[4]), "type mismatch in '" + s[2] + "': expected " + ty_name(want) + ", got " + ty_name(got));
+            mismatch(
+                nsp(s[4]),
+                "type mismatch in '" + s[2] + "': expected " + ty_name(want) + ", got " + ty_name(got)
+            );
         }
     }
     let scope = st[3][st[3].len() - 1];
@@ -1887,7 +2122,9 @@ fn is_const_default(e) {
         return true;
     }
     if tag == "Call" {
-        if e[1][0] == "Ident" and (e[1][1] == "map" or e[1][1] == "list" or e[1][1] == "set" or e[1][1] == "tuple") {
+        if e[1][0] == "Ident" and (
+            e[1][1] == "map" or e[1][1] == "list" or e[1][1] == "set" or e[1][1] == "tuple"
+        ) {
             for a in e[2] {
                 if not is_const_default(a) {
                     return false;
@@ -2008,7 +2245,11 @@ fn receiver_class(st, e) {
 
 fn check_sig_args(st, label, sig, args, sp) {
     if has_named_args(args) {
-        chk_err(st, sp, "named arguments on a call through '" + label + "' are not supported yet (call the declared function directly)");
+        chk_err(
+            st,
+            sp,
+            "named arguments on a call through '" + label + "' are not supported yet (call the declared function directly)"
+        );
     }
     if args.len() < sig[1] or args.len() > sig[0] {
         let want = "";
@@ -2025,7 +2266,11 @@ fn check_sig_args(st, label, sig, args, sp) {
             let want = sig[2][i];
             let got = chk_type_of(st, args[i]);
             if not assignable(st, got, want) {
-                chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of '" + label + "' expects " + ty_name(want) + ", got " + ty_name(got));
+                chk_err(
+                    st,
+                    nsp(args[i]),
+                    "argument " + string(i + 1) + " of '" + label + "' expects " + ty_name(want) + ", got " + ty_name(got)
+                );
             }
         }
         i += 1;
@@ -2113,7 +2358,11 @@ fn check_super_in(st, parent, sp, method, args) {
             } else {
                 want = string(sig[5] - 1) + " to " + string(sig[2].len() - 1) + " argument(s)";
             }
-            chk_err(st, sp, "method " + parent + "::" + method + " expects " + want + ", got " + string(argc));
+            chk_err(
+                st,
+                sp,
+                "method " + parent + "::" + method + " expects " + want + ", got " + string(argc)
+            );
         }
         return;
     }
@@ -2130,7 +2379,11 @@ fn check_super_in(st, parent, sp, method, args) {
         } else {
             want = string(sig[5]) + " to " + string(sig[2].len()) + " argument(s)";
         }
-        chk_err(st, sp, "constructor " + parent + "::new expects " + want + ", got " + string(argc));
+        chk_err(
+            st,
+            sp,
+            "constructor " + parent + "::new expects " + want + ", got " + string(argc)
+        );
     }
     return;
 }
@@ -2174,12 +2427,20 @@ fn check_named_args(st, args, names, required, label, sp) {
         }
     }
     if positional > names.len() {
-        chk_err(st, sp, "too many positional arguments for " + label + " (at most " + string(names.len()) + ")");
+        chk_err(
+            st,
+            sp,
+            "too many positional arguments for " + label + " (at most " + string(names.len()) + ")"
+        );
     }
     k = 0;
     while k < names.len() {
         if not provided[k] and k < required {
-            chk_err(st, sp, "missing required parameter '" + names[k] + "' in the call to " + label);
+            chk_err(
+                st,
+                sp,
+                "missing required parameter '" + names[k] + "' in the call to " + label
+            );
         }
         k += 1;
     }
@@ -2199,7 +2460,11 @@ fn check_expr(st, e) {
         }
         for b in blocks {
             if not block_has_value(b) {
-                chk_err(st, e[4], "an if-expression branch must end with an expression (or with return/throw)");
+                chk_err(
+                    st,
+                    e[4],
+                    "an if-expression branch must end with an expression (or with return/throw)"
+                );
             }
         }
         check_block(st, e[2]);
@@ -2230,7 +2495,11 @@ fn check_expr(st, e) {
                     check_expr(st, arm[2]);
                 }
                 if not block_has_value(arm[3]) {
-                    chk_err(st, arm[4], "a match arm must end with an expression (or with return/throw)");
+                    chk_err(
+                        st,
+                        arm[4],
+                        "a match arm must end with an expression (or with return/throw)"
+                    );
                 }
                 check_block(st, arm[3]);
             } catch (ex) {
@@ -2289,7 +2558,11 @@ fn check_expr(st, e) {
             names[p[1]] = 1;
             if p[3] != null {
                 if not is_const_default(p[3]) {
-                    chk_err(st, p[4], "the default for parameter '" + p[1] + "' must be a constant (a literal number, string, bool, or null)");
+                    chk_err(
+                        st,
+                        p[4],
+                        "the default for parameter '" + p[1] + "' must be a constant (a literal number, string, bool, or null)"
+                    );
                 }
             }
             let tyo = null;
@@ -2399,7 +2672,10 @@ fn check_assign(st, e) {
             if v[2] != null {
                 let got = chk_type_of(st, value);
                 if not assignable(st, got, v[2]) {
-                    mismatch(sp, "type mismatch assigning to '" + name + "': expected " + ty_detail_name(v[2]) + ", got " + ty_detail_name(got));
+                    mismatch(
+                        sp,
+                        "type mismatch assigning to '" + name + "': expected " + ty_detail_name(v[2]) + ", got " + ty_detail_name(got)
+                    );
                 }
             }
         } else if not known(st, name) {
@@ -2414,7 +2690,11 @@ fn check_assign(st, e) {
             if key != null {
                 for c in consts {
                     if c == key {
-                        chk_err(st, sp, "cannot assign to constant '" + key + "' (it is a public const of the module)");
+                        chk_err(
+                            st,
+                            sp,
+                            "cannot assign to constant '" + key + "' (it is a public const of the module)"
+                        );
                     }
                 }
             }
@@ -2428,7 +2708,11 @@ fn check_assign(st, e) {
                 let vis = fd[0];
                 let decl_c = fd[1];
                 if vis == "private" and st[8] != decl_c {
-                    chk_err(st, sp, "field '" + target[1] + "' of class '" + decl_c + "' is private");
+                    chk_err(
+                        st,
+                        sp,
+                        "field '" + target[1] + "' of class '" + decl_c + "' is private"
+                    );
                 }
             } else {
                 chk_err(st, sp, "class '" + c + "' has no field '" + target[1] + "'");
@@ -2444,7 +2728,10 @@ fn check_assign(st, e) {
                         let want = resolve_type(st, ft);
                         let got = chk_type_of(st, value);
                         if not assignable(st, got, want) {
-                            mismatch(sp, "type mismatch assigning to field '" + target[1] + "': expected " + ty_name(want) + ", got " + ty_name(got));
+                            mismatch(
+                                sp,
+                                "type mismatch assigning to field '" + target[1] + "': expected " + ty_name(want) + ", got " + ty_name(got)
+                            );
                         }
                     }
                 }
@@ -2466,7 +2753,11 @@ fn check_field(st, e) {
             let vis = fd[0];
             let decl_c = fd[1];
             if vis == "private" and st[8] != decl_c {
-                chk_err(st, e[3], "field '" + e[1] + "' of class '" + decl_c + "' is private");
+                chk_err(
+                    st,
+                    e[3],
+                    "field '" + e[1] + "' of class '" + decl_c + "' is private"
+                );
             }
         } else {
             chk_err(st, e[3], "class '" + c + "' has no field '" + e[1] + "'");
@@ -2508,7 +2799,11 @@ fn check_call(st, e) {
                     let want = resolve_type(st, fi[2][i]);
                     let got = chk_type_of(st, args[i]);
                     if not assignable(st, got, want) {
-                        chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of '" + name + "' expects " + ty_name(want) + ", got " + ty_name(got));
+                        chk_err(
+                            st,
+                            nsp(args[i]),
+                            "argument " + string(i + 1) + " of '" + name + "' expects " + ty_name(want) + ", got " + ty_name(got)
+                        );
                     }
                 }
                 i += 1;
@@ -2522,7 +2817,11 @@ fn check_call(st, e) {
             if sig != null {
                 check_sig_args(st, name, sig, args, sp);
             } else if has_named_args(args) {
-                chk_err(st, sp, "named arguments on a call to '" + name + "' are not supported: the callee is not a statically-known function");
+                chk_err(
+                    st,
+                    sp,
+                    "named arguments on a call to '" + name + "' are not supported: the callee is not a statically-known function"
+                );
             } else if not known(st, name) {
                 unknown_name(st, sp, name);
             }
@@ -2533,7 +2832,11 @@ fn check_call(st, e) {
         if ct[0] == "Fn" and ct[1] != null {
             check_sig_args(st, "<expression>", ct[1], args, sp);
         } else if has_named_args(args) {
-            chk_err(st, sp, "named arguments on a call through '<expression>' are not supported yet (call the declared function directly)");
+            chk_err(
+                st,
+                sp,
+                "named arguments on a call through '<expression>' are not supported yet (call the declared function directly)"
+            );
         }
     }
     for a in args {
@@ -2566,7 +2869,11 @@ fn check_method(st, e) {
                 if key != null {
                     for c in consts {
                         if c == key {
-                            chk_err(st, sp, "cannot assign to constant '" + key + "' (it is a public const of the module)");
+                            chk_err(
+                                st,
+                                sp,
+                                "cannot assign to constant '" + key + "' (it is a public const of the module)"
+                            );
                         }
                     }
                 }
@@ -2574,7 +2881,11 @@ fn check_method(st, e) {
         }
     }
     if has_named_args(args) {
-        chk_err(st, sp, "named arguments on method calls are not supported yet (call " + name + " as a function, or pass arguments positionally)");
+        chk_err(
+            st,
+            sp,
+            "named arguments on method calls are not supported yet (call " + name + " as a function, or pass arguments positionally)"
+        );
     }
     let cls = receiver_class(st, object);
     if cls != null {
@@ -2596,7 +2907,11 @@ fn check_method(st, e) {
             } else {
                 want = string(arity_min - 1) + " to " + string(arity - 1) + " argument(s)";
             }
-            chk_err(st, sp, "method '" + name + "' expects " + want + ", got " + string(args.len()));
+            chk_err(
+                st,
+                sp,
+                "method '" + name + "' expects " + want + ", got " + string(args.len())
+            );
         }
         let msig = method_sig(st, cls, name);
         if msig != null {
@@ -2606,7 +2921,11 @@ fn check_method(st, e) {
                     let want = resolve_type(st, msig[2][i + 1]);
                     let got = chk_type_of(st, args[i]);
                     if not assignable(st, got, want) {
-                        chk_err(st, nsp(args[i]), "argument " + string(i + 1) + " of method '" + name + "' expects " + ty_name(want) + ", got " + ty_name(got));
+                        chk_err(
+                            st,
+                            nsp(args[i]),
+                            "argument " + string(i + 1) + " of method '" + name + "' expects " + ty_name(want) + ", got " + ty_name(got)
+                        );
                     }
                 }
                 i += 1;
@@ -2627,7 +2946,11 @@ fn check_new(st, e) {
     if classes_of(st).has(cls) {
         let ci = classes_of(st)[cls];
         if ci[5] {
-            chk_err(st, sp, "cannot instantiate the abstract class '" + cls + "' (subclass it and implement its abstract methods)");
+            chk_err(
+                st,
+                sp,
+                "cannot instantiate the abstract class '" + cls + "' (subclass it and implement its abstract methods)"
+            );
         }
         let mi = method_sig(st, cls, "new");
         if mi != null {
@@ -2640,15 +2963,27 @@ fn check_new(st, e) {
                 } else {
                     want = string(mi[5]) + " to " + string(mi[2].len()) + " argument(s)";
                 }
-                chk_err(st, sp, "new " + cls + " expects " + want + ", got " + string(args.len()));
+                chk_err(
+                    st,
+                    sp,
+                    "new " + cls + " expects " + want + ", got " + string(args.len())
+                );
             }
         } else if args.len() > 0 {
-            chk_err(st, sp, "new " + cls + " expects 0 argument(s), got " + string(args.len()));
+            chk_err(
+                st,
+                sp,
+                "new " + cls + " expects 0 argument(s), got " + string(args.len())
+            );
         }
     } else if cls == "Object" and args.len() > 0 {
         chk_err(st, sp, "new Object expects 0 argument(s), got " + string(args.len()));
     } else if has_named_args(args) {
-        chk_err(st, sp, "named arguments on 'new " + cls + "' are not supported: the class is not declared in this file");
+        chk_err(
+            st,
+            sp,
+            "named arguments on 'new " + cls + "' are not supported: the class is not declared in this file"
+        );
     }
     for a in args {
         check_arg(st, a);
@@ -2672,11 +3007,21 @@ fn chk_type_of(st, e) {
     if tag == "NamedArg" {
         return ["Any"];
     }
-    if tag == "Int" { return ["Int"]; }
-    if tag == "Float" { return ["Float"]; }
-    if tag == "Str" { return ["Str"]; }
-    if tag == "Bool" { return ["Bool"]; }
-    if tag == "Null" { return ["Null"]; }
+    if tag == "Int" {
+        return ["Int"];
+    }
+    if tag == "Float" {
+        return ["Float"];
+    }
+    if tag == "Str" {
+        return ["Str"];
+    }
+    if tag == "Bool" {
+        return ["Bool"];
+    }
+    if tag == "Null" {
+        return ["Null"];
+    }
     if tag == "IfE" {
         return branch_type(st, e[2], e[3]);
     }
@@ -2687,8 +3032,12 @@ fn chk_type_of(st, e) {
         }
         return acc;
     }
-    if tag == "OptField" { return ["Any"]; }
-    if tag == "Propagate" { return ["Any"]; }
+    if tag == "OptField" {
+        return ["Any"];
+    }
+    if tag == "Propagate" {
+        return ["Any"];
+    }
     if tag == "Coalesce" {
         return common_type(chk_type_of(st, e[1]), chk_type_of(st, e[2]));
     }
@@ -2766,9 +3115,15 @@ fn chk_type_of(st, e) {
         }
         return ["Bool"];
     }
-    if tag == "Logical" { return ["Bool"]; }
-    if tag == "Super" { return ["Any"]; }
-    if tag == "SuperCall" { return ["Any"]; }
+    if tag == "Logical" {
+        return ["Bool"];
+    }
+    if tag == "Super" {
+        return ["Any"];
+    }
+    if tag == "SuperCall" {
+        return ["Any"];
+    }
     if tag == "Call" {
         let callee = e[1];
         if callee[0] == "Ident" {
@@ -2860,7 +3215,9 @@ fn chk_type_of(st, e) {
     if tag == "Await" {
         return chk_type_of(st, e[1]);
     }
-    if tag == "Spawn" { return ["Any"]; }
+    if tag == "Spawn" {
+        return ["Any"];
+    }
     return ["Any"];
 }
 
@@ -2900,13 +3257,27 @@ fn assignable(st, from, to) {
     }
     let f = from[0];
     let t = to[0];
-    if f == "Int" and t == "Int" { return true; }
-    if f == "Float" and t == "Float" { return true; }
-    if f == "Bool" and t == "Bool" { return true; }
-    if f == "Str" and t == "Str" { return true; }
-    if f == "Null" and t == "Null" { return true; }
-    if f == "Int" and t == "Float" { return true; }
-    if f == "Null" and (t == "Class" or t == "Interface" or t == "Coll") { return true; }
+    if f == "Int" and t == "Int" {
+        return true;
+    }
+    if f == "Float" and t == "Float" {
+        return true;
+    }
+    if f == "Bool" and t == "Bool" {
+        return true;
+    }
+    if f == "Str" and t == "Str" {
+        return true;
+    }
+    if f == "Null" and t == "Null" {
+        return true;
+    }
+    if f == "Int" and t == "Float" {
+        return true;
+    }
+    if f == "Null" and (t == "Class" or t == "Interface" or t == "Coll") {
+        return true;
+    }
     if f == "Class" and t == "Class" {
         return from[1] == to[1] or is_subclass(st, from[1], to[1]);
     }
@@ -2968,17 +3339,19 @@ public fn registry_json(st, prog, source_file) {
     let import_nodes = gather(prog, "Import");
 
     REG.push(",\"classes\":[");
-    emit_sep( class_nodes, 0, class_json);
+    emit_sep(class_nodes, 0, class_json);
     REG.push("],\"interfaces\":[");
-    emit_sep( iface_nodes, 0, iface_json);
+    emit_sep(iface_nodes, 0, iface_json);
     REG.push("],\"enums\":[");
-    emit_sep( enum_nodes, 0, enum_json);
+    emit_sep(enum_nodes, 0, enum_json);
     REG.push("],\"functions\":[");
-    emit_sep( fn_nodes, 0, fn_reg_json);
+    emit_sep(fn_nodes, 0, fn_reg_json);
     REG.push("],\"imports\":[");
-    emit_sep( import_nodes, 0, import_json);
-    REG.push("]}
-");
+    emit_sep(import_nodes, 0, import_json);
+    REG.push(
+        "]}
+"
+    );
     return REG.join("");
 }
 
@@ -3038,7 +3411,9 @@ fn class_json(i, s) {
         if mname == null {
             mname = "";
         }
-        REG.push("{\"name\":" + jstr(mname) + ",\"vis\":\"" + m[1] + "\",\"arity\":" + string(m[5].len()) + ",\"min_arity\":" + string(m[5].len() - count_defaults(m[5])) + ",\"is_async\":" + string(m[2]) + "}");
+        REG.push(
+            "{\"name\":" + jstr(mname) + ",\"vis\":\"" + m[1] + "\",\"arity\":" + string(m[5].len()) + ",\"min_arity\":" + string(m[5].len() - count_defaults(m[5])) + ",\"is_async\":" + string(m[2]) + "}"
+        );
         j += 1;
     }
     REG.push("]}");
@@ -3055,7 +3430,9 @@ fn iface_json(i, s) {
         if j > 0 {
             REG.push(",");
         }
-        REG.push("{\"name\":" + jstr(m[1]) + ",\"arity\":" + string(m[2].len()) + "}");
+        REG.push(
+            "{\"name\":" + jstr(m[1]) + ",\"arity\":" + string(m[2].len()) + "}"
+        );
         j += 1;
     }
     REG.push("],\"defaults\":[");
@@ -3085,7 +3462,9 @@ fn enum_json(i, s) {
         if j > 0 {
             REG.push(",");
         }
-        REG.push("{\"name\":" + jstr(v[1]) + ",\"nfields\":" + string(v[2].len()) + "}");
+        REG.push(
+            "{\"name\":" + jstr(v[1]) + ",\"nfields\":" + string(v[2].len()) + "}"
+        );
         j += 1;
     }
     REG.push("]}");
@@ -3129,7 +3508,6 @@ fn import_json(i, s) {
     REG.push("}");
     return;
 }
-
 
 fn str_list_json(xs) {
     let frags = [];

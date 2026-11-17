@@ -56,9 +56,35 @@ public fn http_redirect(location) {
     return http_response(302, map("location", location), "");
 }
 
+/// A chunked-streaming response. `source` may be:
+///   - a `list` of string/bytes chunks
+///   - a zero-arg callback `fn() -> chunk_or_null` (called until null/empty)
+///   - an open readable socket handle (`int`, read via `tcp_read` until EOF)
+///   - a `bytes` or `string` buffer
+public fn http_stream(status, headers, source) {
+    let h = headers;
+    if h == null {
+        h = map();
+    }
+    return map(
+        "__http_response",
+        true,
+        "status",
+        status,
+        "headers",
+        h,
+        "body",
+        null,
+        "stream",
+        source
+    );
+}
+
 /// Make an HTTP client request: ok(response) or err(msg).
-public fn http_fetch(method, url, headers = null, body = null) {
-    if headers == null and body == null {
+public fn http_fetch(method, url, headers = null, body = null, opts = null) {
+    if opts != null {
+        return __http_fetch(method, url, headers, body, opts);
+    } elif headers == null and body == null {
         return __http_fetch(method, url);
     } elif body == null {
         return __http_fetch(method, url, headers);
@@ -248,6 +274,17 @@ public class HttpServer {
         return tcp_local_addr(self.listener).unwrap();
     }
 
+    /// Bind a TLS (PKCS#12) listener without serving yet.
+    public fn bind_tls(self, cert_path, key_path, addr) {
+        let r = tls_listen(cert_path, key_path, addr);
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        self.listener = r.unwrap();
+        self.opts["tls"] = true;
+        return tcp_local_addr(self.listener).unwrap();
+    }
+
     /// Accept connections on a bound server. `max_connections < 0` serves
     /// forever; otherwise returns after that many connections are accepted.
     ///
@@ -383,6 +420,7 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
     // is right for a standalone app and wrong for an embedded one (or a test
     // suite running several servers). opt out with watch_signals: false.
     let watch_signals = opt(opts, "watch_signals", true);
+    let is_tls = opt(opts, "tls", false);
 
     let counter = mutex(map("n", 0));
 
@@ -398,7 +436,21 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
         // windows-latest, where the accept then stayed blocked forever and the
         // server never noticed the shutdown). Polling gives the loop a bound it
         // owns, so shutdown is deterministic on every platform.
-        let c = tcp_accept_timeout(listener, 50);
+        let c = null;
+        if is_tls {
+            c = tls_accept(listener, 50);
+        } else {
+            try {
+                c = tcp_accept_timeout(listener, 50);
+            } catch (e) {
+                if string(e).contains("is a TLS listener") {
+                    is_tls = true;
+                    c = tls_accept(listener, 50);
+                } else {
+                    throw e;
+                }
+            }
+        }
         if c == null {
             if watch_signals and shutdown_requested() {
                 tcp_close(listener);
@@ -407,6 +459,10 @@ public fn serve_listener(listener, dispatch, opts, max_connections) {
             continue;
         }
         if c.is_err() {
+            let emsg = string(c.unwrap_err());
+            if emsg.contains("TLS handshake") {
+                continue;
+            }
             break;
         }
         let conn = c.unwrap();
@@ -479,6 +535,74 @@ fn cfg_int(key, dflt) {
     return n;
 }
 
+fn write_stream_body(conn, source) {
+    let st = type_of(source);
+    if st == "list" {
+        for item in source {
+            if item != null and len(item) > 0 {
+                let r = http_write_response_chunk(conn, item, false);
+                if r.is_err() {
+                    return false;
+                }
+            }
+        }
+        return http_write_response_chunk(conn, "", true).is_ok();
+    }
+    if st == "function" {
+        while true {
+            let chunk = source();
+            if chunk == null or len(chunk) == 0 {
+                break;
+            }
+            let r = http_write_response_chunk(conn, chunk, false);
+            if r.is_err() {
+                return false;
+            }
+        }
+        return http_write_response_chunk(conn, "", true).is_ok();
+    }
+    if st == "int" {
+        while true {
+            let r = tcp_read(source, 8192);
+            if r.is_err() {
+                break;
+            }
+            let chunk = r.unwrap();
+            if chunk == null or len(chunk) == 0 {
+                break;
+            }
+            let w = http_write_response_chunk(conn, chunk, false);
+            if w.is_err() {
+                return false;
+            }
+        }
+        return http_write_response_chunk(conn, "", true).is_ok();
+    }
+    if source != null and len(source) > 0 {
+        return http_write_response_chunk(conn, source, true).is_ok();
+    }
+    return http_write_response_chunk(conn, "", true).is_ok();
+}
+
+fn with_chunked_header(headers) {
+    if type_of(headers) == "list" {
+        let out = list();
+        for e in headers {
+            out.push(e);
+        }
+        out.push(map("name", "transfer-encoding", "value", "chunked"));
+        return out;
+    }
+    let out = map();
+    if headers != null and type_of(headers) == "map" {
+        for k in headers.keys() {
+            out[k] = headers[k];
+        }
+    }
+    out["transfer-encoding"] = "chunked";
+    return out;
+}
+
 /// Serve one connection: up to `max_requests_per_conn` requests, then close.
 ///
 /// Limits resolve per connection: an explicit `opts` entry wins, otherwise the
@@ -493,19 +617,47 @@ fn handle_connection(conn, dispatch, opts) {
     let idle = int(opt(opts, "idle_timeout_ms", cfg_int("net.keepalive_ms", 5000)));
     let io_timeout = int(opt(opts, "timeout_ms", cfg_int("net.timeout_ms", 30000)));
     let max_reqs = int(opt(opts, "max_requests_per_conn", 100));
-    let max_body = int(opt(opts, "max_body_bytes", cfg_int("net.max_body", 8 * 1024 * 1024)));
+    let max_body = int(
+        opt(opts, "max_body_bytes", cfg_int("net.max_body", 8 * 1024 * 1024))
+    );
     let max_headers = int(opt(opts, "max_headers", cfg_int("net.max_headers", 64)));
     let access_log = opt(opts, "access_log", true);
     let on_error = opt(opts, "on_error", null);
+    let watch_signals = opt(opts, "watch_signals", true);
     tcp_set_timeout(conn, io_timeout);
     let served = 0;
     while served < max_reqs {
         let start = now_ms();
+        let idle_tid = -1;
+        if served > 0 and idle > 0 {
+            idle_tid = after_ms(idle);
+        }
         let read = http_read_request(conn);
+        if idle_tid >= 0 {
+            let expired = timer_check();
+            timer_cancel(idle_tid);
+            if read.is_err() and expired.contains(idle_tid) {
+                break;
+            }
+        }
+        // Reset socket deadline from keep-alive idle_timeout_ms back to
+        // io_timeout for active request dispatch and response writing.
+        tcp_set_timeout(conn, io_timeout);
         if read.is_err() {
+            let emsg = string(read.unwrap_err());
+            if emsg.contains("body exceeds") {
+                http_write_response(
+                    conn,
+                    413,
+                    map("content-type", "application/json; charset=utf-8"),
+                    json_write(map("error", "payload too large", "limit", max_body)),
+                    false
+                );
+                break;
+            }
             // A malformed first request deserves an answer; an idle timeout or
             // a peer that hung up does not.
-            if served == 0 and not read.unwrap_err().contains("timed out") {
+            if served == 0 and not emsg.contains("timed out") {
                 http_write_response(conn, 400, map(), "400 Bad Request", false);
             }
             break;
@@ -525,7 +677,8 @@ fn handle_connection(conn, dispatch, opts) {
             break;
         }
         let declared = header_of(req, "content-length");
-        if declared != null and int(declared) != null and int(declared) > max_body {
+        let actual_len = len(opt(req, "body_bytes", ""));
+        if (declared != null and int(declared) != null and int(declared) > max_body) or actual_len > max_body {
             http_write_response(
                 conn,
                 413,
@@ -571,22 +724,47 @@ fn handle_connection(conn, dispatch, opts) {
         let status = 200;
         let headers = map();
         let body = "";
+        let stream_src = null;
         if type_of(res) == "map" and res.has("__http_response") {
             status = res["status"];
             headers = res["headers"];
             body = res["body"];
+            stream_src = opt(res, "stream", null);
         } else {
             // A dispatcher that returned a bare value: answer as text.
             status = 200;
             body = string(res);
         }
-        // keep_alive / idle = 0: close after each response (Connection: close).
-        let more = keep_alive and idle > 0 and wants_keep_alive(req) and served + 1 < max_reqs;
+        // keep_alive / idle = 0, pipelining detected, or graceful shutdown
+        // requested: close after this response (Connection: close).
+        let more = keep_alive
+        and idle > 0
+        and wants_keep_alive(req)
+        and not opt(req, "pipelined", false)
+        and not (watch_signals and shutdown_requested())
+        and served + 1 < max_reqs;
         let head = string(opt(req, "method", "GET")) == "HEAD";
-        if head {
-            body = "";
+        if stream_src != null {
+            let sh = with_chunked_header(headers);
+            let hw = http_write_response(conn, status, sh, null, more);
+            if hw.is_err() {
+                break;
+            }
+            if head {
+                if http_write_response_chunk(conn, "", true).is_err() {
+                    break;
+                }
+            } else {
+                if not write_stream_body(conn, stream_src) {
+                    break;
+                }
+            }
+        } else {
+            if head {
+                body = "";
+            }
+            http_write_response(conn, status, headers, body, more);
         }
-        http_write_response(conn, status, headers, body, more);
         served += 1;
         if access_log {
             eprint(

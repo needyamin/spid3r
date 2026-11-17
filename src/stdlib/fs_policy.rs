@@ -385,6 +385,7 @@ basedir_guard!(g_write_csv, super::n_write_csv, [0]);
 basedir_guard!(g_db_open, super::db::n_db_open, [0]);
 basedir_guard!(g_tcp_recv_to_file, super::net::n_tcp_recv_to_file, [1]);
 basedir_guard!(g_tcp_send_file, super::net::n_tcp_send_file, [1]);
+basedir_guard!(g_tls_listen, super::net::n_tls_listen, [0]);
 
 /// The guarded replacement for a path-taking native, or `None` when the
 /// native takes no script-controlled path (pure computation, network handles,
@@ -417,10 +418,12 @@ pub fn guarded(name: &str) -> Option<crate::vm::NativeImpl> {
         "read_csv" => Some(g_read_csv),
         "write_csv" => Some(g_write_csv),
         // Beyond the Capability::FileSystem list: the SQLite database file
-        // handle, and the two TCP natives that stream to/from a script path.
+        // handle, the two TCP natives that stream to/from a script path, and
+        // the TLS listener cert archive path.
         "db_open" => Some(g_db_open),
         "tcp_recv_to_file" => Some(g_tcp_recv_to_file),
         "tcp_send_file" => Some(g_tcp_send_file),
+        "tls_listen" => Some(g_tls_listen),
         _ => None,
     }
 }
@@ -596,7 +599,7 @@ mod tests {
             }
             assert!(guarded(name).is_some(), "{} must be guarded", name);
         }
-        for name in ["db_open", "tcp_recv_to_file", "tcp_send_file"] {
+        for name in ["db_open", "tcp_recv_to_file", "tcp_send_file", "tls_listen"] {
             assert!(guarded(name).is_some(), "{} must be guarded", name);
         }
         let builtins: std::collections::HashSet<&str> = crate::stdlib::builtin_defs()
@@ -629,6 +632,7 @@ mod tests {
             "db_open",
             "tcp_recv_to_file",
             "tcp_send_file",
+            "tls_listen",
         ] {
             assert!(
                 builtins.contains(name),

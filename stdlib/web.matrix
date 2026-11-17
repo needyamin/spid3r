@@ -183,6 +183,10 @@ public fn redirect_response(location) {
     return map("__http_response", true, "status", 302, "headers", headers, "body", "");
 }
 
+public fn stream_response(status, headers, source) {
+    return http_stream(status, headers, source);
+}
+
 // ------------------------------------------------------------------ cookies
 
 /// Build a `Set-Cookie` header value. This is the only cookie builder in the
@@ -875,6 +879,17 @@ public class WebApp {
             throw r.unwrap_err();
         }
         self.listener = r.unwrap();
+        return tcp_local_addr(self.listener).unwrap();
+    }
+
+    /// Bind a TLS (PKCS#12) listener without serving yet.
+    public fn bind_tls(self, cert_path, key_path, addr) {
+        let r = tls_listen(cert_path, key_path, addr);
+        if r.is_err() {
+            throw r.unwrap_err();
+        }
+        self.listener = r.unwrap();
+        self.opts["tls"] = true;
         return tcp_local_addr(self.listener).unwrap();
     }
 }

@@ -1039,7 +1039,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.0" onchange="onStepBox(this)"><span class="sid">R4.0</span> Allocation accounting epoch <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.0" checked onchange="onStepBox(this)"><span class="sid">R4.0</span> Allocation accounting epoch <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1051,7 +1051,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.1" onchange="onStepBox(this)"><span class="sid">R4.1</span> Scratch-slab design spike <span class="badge b-dp">spike · may conclude "infeasible"</span><span class="badge b-eff">L</span><span class="deps">deps: R4.0</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.1" checked onchange="onStepBox(this)"><span class="sid">R4.1</span> Scratch-slab design spike <span class="badge b-dp">spike · may conclude "infeasible"</span><span class="badge b-eff">L</span><span class="deps">deps: R4.0</span></div>
         <div class="step-body">
           <h5>S0 · Analyze (the spike)</h5>
           <ul>
@@ -1063,7 +1063,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.2" onchange="onStepBox(this)"><span class="sid">R4.2</span> <code>rss_over_time</code> benchmark <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R4.0</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.2" checked onchange="onStepBox(this)"><span class="sid">R4.2</span> <code>rss_over_time</code> benchmark <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R4.0</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1077,7 +1077,7 @@
       <h2 id="s8">8 · Phase R5 — Web Server Stack <span class="badge b-high">high</span> <span class="deps muted">deps: R2</span></h2>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.1" onchange="onStepBox(this)"><span class="sid">R5.1</span> TLS server natives <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.1" checked onchange="onStepBox(this)"><span class="sid">R5.1</span> TLS server natives <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1</span></div>
         <div class="step-body">
           <h5>S0 · Analyze</h5>
           <ul>
@@ -1094,7 +1094,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.2" onchange="onStepBox(this)"><span class="sid">R5.2</span> Keep-alive connection lifecycle (gap-fill &amp; timer integration) <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R5.1, R2.2</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.2" checked onchange="onStepBox(this)"><span class="sid">R5.2</span> Keep-alive connection lifecycle (gap-fill &amp; timer integration) <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R5.1, R2.2</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis update (verified on tree):</strong> a server-side keep-alive loop (<code>wants_keep_alive</code>, <code>keep_alive: true</code>, <code>idle_timeout_ms</code>, <code>timeout_ms</code>, <code>max_requests_per_conn</code>) is <strong>already implemented</strong> in <code>stdlib/http.matrix:151/255/293/332/361</code> and <code>stdlib/web.matrix:639-640/850</code>, with <code>tests/web_stack_tests.rs:273</code> (<code>keep_alive_serves_several_requests_per_connection</code>) passing.</div>
           <h5>S2 · Implement</h5>
@@ -1106,7 +1106,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.3" onchange="onStepBox(this)"><span class="sid">R5.3</span> Chunked request bodies <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R5.2</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.3" checked onchange="onStepBox(this)"><span class="sid">R5.3</span> Chunked request bodies <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R5.2</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1117,7 +1117,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.4" onchange="onStepBox(this)"><span class="sid">R5.4</span> Streaming responses <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: R5.2</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.4" checked onchange="onStepBox(this)"><span class="sid">R5.4</span> Streaming responses <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: R5.2</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>

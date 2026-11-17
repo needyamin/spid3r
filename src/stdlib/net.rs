@@ -44,6 +44,8 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("tcp_listen", n_tcp_listen),
         ("tcp_accept", n_tcp_accept),
         ("tcp_accept_timeout", n_tcp_accept_timeout),
+        ("tls_listen", n_tls_listen),
+        ("tls_accept", n_tls_accept),
         ("tcp_connect", n_tcp_connect),
         ("tcp_read", n_tcp_read),
         ("tcp_write", n_tcp_write),
@@ -73,6 +75,7 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("udp_close", n_udp_close),
         ("http_read_request", n_http_read_request),
         ("http_write_response", n_http_write_response),
+        ("http_write_response_chunk", n_http_write_response_chunk),
         ("http_fetch", n_http_fetch),
         ("__http_fetch", n_http_fetch),
         ("url_decode", n_url_decode),
@@ -85,6 +88,8 @@ pub fn native_defs() -> Vec<NativeDef> {
 #[derive(Clone)]
 enum Sock {
     Listener(Arc<TcpListener>),
+    #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+    TlsListener(Arc<native_tls::TlsAcceptor>, Arc<TcpListener>),
     Stream(Arc<Conn>),
     Udp(Arc<UdpSocket>),
     /// A WebSocket connection: the same stream machinery as `Stream`, with
@@ -236,6 +241,11 @@ pub(crate) fn raw_fd_of(id: i64) -> Option<i32> {
 fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
     match lookup(id) {
         Some(Sock::Listener(l)) => Ok(l),
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        Some(Sock::TlsListener(_, _)) => Err(format!(
+            "{}: handle {} is a TLS listener, not a plain TCP listener",
+            who, id
+        )),
         Some(Sock::Stream(_)) => Err(format!(
             "{}: handle {} is a connection, not a listener",
             who, id
@@ -252,11 +262,43 @@ fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
     }
 }
 
+#[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+fn get_tls_listener(
+    id: i64,
+    who: &str,
+) -> Result<(Arc<native_tls::TlsAcceptor>, Arc<TcpListener>), String> {
+    match lookup(id) {
+        Some(Sock::TlsListener(acceptor, listener)) => Ok((acceptor, listener)),
+        Some(Sock::Listener(_)) => Err(format!(
+            "{}: handle {} is a plain TCP listener, not a TLS listener",
+            who, id
+        )),
+        Some(Sock::Stream(_)) => Err(format!(
+            "{}: handle {} is a connection, not a TLS listener",
+            who, id
+        )),
+        Some(Sock::Udp(_)) => Err(format!(
+            "{}: handle {} is a UDP socket, not a TLS listener",
+            who, id
+        )),
+        Some(Sock::Ws(_)) => Err(format!(
+            "{}: handle {} is a WebSocket, not a TLS listener",
+            who, id
+        )),
+        None => Err(format!("{}: handle {} is not open", who, id)),
+    }
+}
+
 fn get_stream(id: i64, who: &str) -> Result<Arc<Conn>, String> {
     match lookup(id) {
         Some(Sock::Stream(s)) => Ok(s),
         Some(Sock::Listener(_)) => Err(format!(
             "{}: handle {} is a listener, not a connection",
+            who, id
+        )),
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        Some(Sock::TlsListener(_, _)) => Err(format!(
+            "{}: handle {} is a TLS listener, not a connection",
             who, id
         )),
         Some(Sock::Udp(_)) => Err(format!(
@@ -280,6 +322,11 @@ fn get_udp(id: i64, who: &str) -> Result<Arc<UdpSocket>, String> {
         )),
         Some(Sock::Listener(_)) => Err(format!(
             "{}: handle {} is a TCP listener, not a UDP socket",
+            who, id
+        )),
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        Some(Sock::TlsListener(_, _)) => Err(format!(
+            "{}: handle {} is a TLS listener, not a UDP socket",
             who, id
         )),
         Some(Sock::Ws(_)) => Err(format!(
@@ -604,6 +651,252 @@ fn n_tcp_accept_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
     outcome
 }
 
+/// `tls_listen(cert_path, key_path, port)` -> `ok(listener)` / `err(msg)`.
+///
+/// Minimal PKCS#12-only design: `cert_path` must point to a DER-encoded
+/// PKCS#12 (`.p12` / `.pfx`) identity archive containing the server certificate
+/// chain and private key, and `key_path` is the PKCS#12 passphrase string (or
+/// `""` / `null` for an empty passphrase; never opened on disk). PEM and
+/// separate key files are rejected cleanly.
+///
+/// `port` may be an `int` (`0..=65535`, bound on `127.0.0.1:<port>`) or an
+/// explicit `"host:port"` string (e.g. `"127.0.0.1:0"` or `"0.0.0.0:8443"`).
+#[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+pub(crate) fn n_tls_listen(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "tls_listen";
+    arity(WHO, &args, 3)?;
+    let cert_path = want_str(&args[0], WHO)?;
+    let passphrase = match &args[1] {
+        Value::Str(s) => s.to_string(),
+        Value::Null => String::new(),
+        other => {
+            return Err(format!(
+                "{} expects a passphrase string or null for key_path, found {}",
+                WHO,
+                type_name(other)
+            ))
+        }
+    };
+    let bind_addr = match &args[2] {
+        Value::Int(p) => {
+            if !(0..=65535).contains(p) {
+                return Err(format!(
+                    "{}: port must be between 0 and 65535, got {}",
+                    WHO, p
+                ));
+            }
+            format!("127.0.0.1:{}", p)
+        }
+        Value::Str(s) => s.to_string(),
+        other => {
+            return Err(format!(
+                "{} expects an int port or address string, found {}",
+                WHO,
+                type_name(other)
+            ))
+        }
+    };
+    let der = match std::fs::read(&cert_path) {
+        Ok(b) => b,
+        Err(e) => return err(format!("{} '{}': {}", WHO, cert_path, e)),
+    };
+    let trimmed = match der.iter().position(|b| !b.is_ascii_whitespace()) {
+        Some(i) => &der[i..],
+        None => &[],
+    };
+    if trimmed.starts_with(b"-----BEGIN ") || der.windows(11).any(|w| w == b"-----BEGIN ") {
+        return err(format!(
+            "{}: PEM certificates are not supported; pass a PKCS#12 (.p12 / .pfx) file in cert_path and its passphrase (or \"\" / null) in key_path",
+            WHO
+        ));
+    }
+    let identity = match native_tls::Identity::from_pkcs12(&der, &passphrase) {
+        Ok(id) => id,
+        Err(e) => {
+            let lower_cert = cert_path.to_ascii_lowercase();
+            let lower_key = passphrase.to_ascii_lowercase();
+            if lower_cert.ends_with(".pem")
+                || lower_cert.ends_with(".crt")
+                || lower_key.ends_with(".pem")
+                || lower_key.ends_with(".key")
+            {
+                return err(format!(
+                    "{}: PEM / separate key files are not supported; pass a PKCS#12 (.p12 / .pfx) file in cert_path and its passphrase (or \"\" / null) in key_path ({})",
+                    WHO, e
+                ));
+            }
+            return err(format!(
+                "{} '{}': invalid PKCS#12 identity: {}",
+                WHO, cert_path, e
+            ));
+        }
+    };
+    let acceptor = match native_tls::TlsAcceptor::new(identity) {
+        Ok(a) => a,
+        Err(e) => return err(format!("{}: TLS setup failed: {}", WHO, e)),
+    };
+    match TcpListener::bind(&bind_addr) {
+        Ok(l) => ok(Value::Int(register(Sock::TlsListener(
+            Arc::new(acceptor),
+            Arc::new(l),
+        )))),
+        Err(e) => err(format!("{} '{}': {}", WHO, bind_addr, e)),
+    }
+}
+
+#[cfg(all(not(feature = "tls"), not(target_arch = "wasm32")))]
+pub(crate) fn n_tls_listen(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err(
+        "tls_listen needs the `tls` feature (rebuild the toolchain with --features tls); \
+         the zero-dependency core ships without a TLS stack"
+            .to_string(),
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn n_tls_listen(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err("tls_listen is not supported on WebAssembly".to_string())
+}
+
+/// `tls_accept(listener, timeout_ms?)` -> `ok(conn)` / `null` on timeout / `err(msg)`.
+///
+/// Accepts a TCP connection (blocking if `timeout_ms` is omitted or `null`, or
+/// polling non-blocking up to `timeout_ms`), completes the server-side TLS
+/// handshake bounded by `default_io_timeout()`, and wraps the stream via
+/// `Conn::new_tls`.
+///
+/// TLS readiness caveat (`kernel_poll` / `tcp_poll` / `eventloop.rs`):
+/// `tcp_poll` and `event_loop_run` watch the underlying raw TCP file descriptor
+/// (`TlsStream::get_ref()`). Kernel TCP readability (`POLLIN`) does **not**
+/// guarantee decrypted application bytes are ready (a partial TLS record or
+/// key-update/renegotiation record makes the fd readable while `read()`
+/// blocks or returns `WouldBlock`), and bytes already decrypted and buffered
+/// inside `TlsStream` are invisible to `poll(2)` / `WSAPoll`.
+#[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+fn n_tls_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "tls_accept";
+    if !(1..=2).contains(&args.len()) {
+        return Err(format!(
+            "{} expects 1 or 2 arguments, got {}",
+            WHO,
+            args.len()
+        ));
+    }
+    let id = want_int(&args[0], WHO)?;
+    let timeout = match args.get(1) {
+        None | Some(Value::Null) => None,
+        Some(Value::Int(ms)) => {
+            if *ms < 0 {
+                return Err(format!(
+                    "{}: timeout_ms must be >= 0 (or null for blocking)",
+                    WHO
+                ));
+            }
+            Some(Duration::from_millis(*ms as u64))
+        }
+        Some(other) => {
+            return Err(format!(
+                "{} expects an int timeout or null, found {}",
+                WHO,
+                type_name(other)
+            ))
+        }
+    };
+    let (acceptor, listener) = get_tls_listener(id, WHO)?;
+
+    let stream = if let Some(dur) = timeout {
+        if let Err(e) = listener.set_nonblocking(true) {
+            return err(io_msg(WHO, &e));
+        }
+        let deadline = Instant::now() + dur;
+        enum AcceptStep {
+            Stream(TcpStream),
+            TimedOut,
+            Closed,
+            IoErr(std::io::Error),
+        }
+        let step = loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if lookup(id).is_none() {
+                        let _ = stream.shutdown(Shutdown::Both);
+                        break AcceptStep::Closed;
+                    }
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_nodelay(true);
+                    break AcceptStep::Stream(stream);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if lookup(id).is_none() {
+                        break AcceptStep::Closed;
+                    }
+                    if Instant::now() >= deadline {
+                        break AcceptStep::TimedOut;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => break AcceptStep::IoErr(e),
+            }
+        };
+        let _ = listener.set_nonblocking(false);
+        match step {
+            AcceptStep::Stream(s) => s,
+            AcceptStep::TimedOut => return Ok(Value::Null),
+            AcceptStep::Closed => return err("tls_accept: listener closed"),
+            AcceptStep::IoErr(e) => return err(io_msg(WHO, &e)),
+        }
+    } else {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if lookup(id).is_none() {
+                    let _ = stream.shutdown(Shutdown::Both);
+                    return err("tls_accept: listener closed");
+                }
+                let _ = stream.set_nodelay(true);
+                stream
+            }
+            Err(e) => return err(io_msg(WHO, &e)),
+        }
+    };
+
+    // Bound the TLS handshake with default_io_timeout() (not the accept poll
+    // timeout) so a stalling client cannot wedge a worker forever.
+    if let Some(hs_t) = default_io_timeout() {
+        let _ = stream.set_read_timeout(Some(hs_t));
+        let _ = stream.set_write_timeout(Some(hs_t));
+    }
+    let tls_stream = match acceptor.accept(stream) {
+        Ok(s) => s,
+        Err(native_tls::HandshakeError::WouldBlock(_)) => {
+            return err(format!("{}: TLS handshake timed out", WHO));
+        }
+        Err(native_tls::HandshakeError::Failure(e)) => {
+            return err(format!("{}: TLS handshake failed: {}", WHO, e));
+        }
+    };
+    // Clear handshake timeouts so ensure_io_timeout / tcp_set_timeout sees
+    // the same clean state (read_timeout() == None) as tcp_accept.
+    let _ = tls_stream.get_ref().set_read_timeout(None);
+    let _ = tls_stream.get_ref().set_write_timeout(None);
+    ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new_tls(
+        tls_stream,
+    ))))))
+}
+
+#[cfg(all(not(feature = "tls"), not(target_arch = "wasm32")))]
+fn n_tls_accept(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err(
+        "tls_accept needs the `tls` feature (rebuild the toolchain with --features tls); \
+         the zero-dependency core ships without a TLS stack"
+            .to_string(),
+    )
+}
+
+#[cfg(target_arch = "wasm32")]
+fn n_tls_accept(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
+    Err("tls_accept is not supported on WebAssembly".to_string())
+}
+
 /// `tcp_connect("example.com:80")` -> `ok(conn)` / `err(msg)`.
 fn n_tcp_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_connect", &args, 1)?;
@@ -818,8 +1111,30 @@ pub(crate) fn n_tcp_send_file(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Valu
     ok(Value::Int(total as i64))
 }
 
+fn close_listener(l: Arc<TcpListener>) {
+    // If another thread is currently blocked in `tcp_accept` / `tls_accept`, std
+    // cannot interrupt a blocking accept() directly; poke it with a
+    // short-lived connection so the acceptor notices the closure.
+    // When `strong_count == 1`, no acceptor holds a clone of `l`, so
+    // dropping `l` below closes the OS listener socket immediately.
+    if Arc::strong_count(&l) > 1 {
+        if let Ok(mut addr) = l.local_addr() {
+            if addr.ip().is_unspecified() {
+                addr = match addr {
+                    SocketAddr::V4(a) => SocketAddr::from(([127, 0, 0, 1], a.port())),
+                    SocketAddr::V6(a) => {
+                        SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, a.port()))
+                    }
+                };
+            }
+            let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(250));
+        }
+    }
+    drop(l);
+}
+
 /// `tcp_close(handle)` -> `true` if the handle was open. Closing a listener
-/// also wakes any task blocked in `tcp_accept` on it.
+/// also wakes any task blocked in `tcp_accept` or `tls_accept` on it.
 fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_close", &args, 1)?;
     let id = want_int(&args[0], "tcp_close")?;
@@ -839,25 +1154,13 @@ fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             Ok(Value::Bool(true))
         }
         Some(Sock::Listener(l)) => {
-            // If another thread is currently blocked in `tcp_accept`, std
-            // cannot interrupt a blocking accept() directly; poke it with a
-            // short-lived connection so the acceptor notices the closure.
-            // When `strong_count == 1`, no acceptor holds a clone of `l`, so
-            // dropping `l` below closes the OS listener socket immediately.
-            if Arc::strong_count(&l) > 1 {
-                if let Ok(mut addr) = l.local_addr() {
-                    if addr.ip().is_unspecified() {
-                        addr = match addr {
-                            SocketAddr::V4(a) => SocketAddr::from(([127, 0, 0, 1], a.port())),
-                            SocketAddr::V6(a) => {
-                                SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, a.port()))
-                            }
-                        };
-                    }
-                    let _ = TcpStream::connect_timeout(&addr, Duration::from_millis(250));
-                }
-            }
-            drop(l);
+            close_listener(l);
+            Ok(Value::Bool(true))
+        }
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        Some(Sock::TlsListener(acceptor, l)) => {
+            drop(acceptor);
+            close_listener(l);
             Ok(Value::Bool(true))
         }
         None => Ok(Value::Bool(false)),
@@ -870,6 +1173,8 @@ fn n_tcp_local_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
     let id = want_int(&args[0], "tcp_local_addr")?;
     let addr = match lookup(id) {
         Some(Sock::Listener(l)) => l.local_addr(),
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        Some(Sock::TlsListener(_, l)) => l.local_addr(),
         Some(Sock::Stream(s)) => s.stream.lock().unwrap().local_addr(),
         Some(Sock::Udp(s)) => s.local_addr(),
         Some(Sock::Ws(s)) => s.stream.lock().unwrap().local_addr(),
@@ -933,6 +1238,14 @@ fn n_tcp_set_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String
 /// (`check_writable = false`) it is reported optimistically on every platform
 /// because the wait is on readability; pass `true` as the 3rd argument to
 /// include `POLLOUT` and report actual kernel writability instead.
+///
+/// TLS caveat: for TLS connections, `kernel_poll` watches the underlying TCP
+/// fd (`TlsStream::get_ref()`), so `readable` means ciphertext/TCP bytes or EOF
+/// are present at the OS socket, **not** that decrypted application bytes are
+/// ready (a partial TLS record or renegotiation/key-update record can make
+/// the TCP fd readable while `read()` blocks or returns `WouldBlock`), and
+/// bytes already decrypted/buffered inside `TlsStream` are invisible to
+/// `poll(2)` / `WSAPoll`.
 fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     const WHO: &str = "tcp_poll";
     if args.len() != 2 && args.len() != 3 {
@@ -1069,6 +1382,8 @@ fn probe_readable(id: i64, who: &str) -> Result<bool, String> {
             result
         }
         Sock::Listener(_) => Ok(false),
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        Sock::TlsListener(_, _) => Ok(false),
     }
 }
 
@@ -1335,22 +1650,136 @@ fn parse_ws_url(url: &str) -> Result<(bool, String, String, String), String> {
     Ok((secure, host, host_port, path.to_string()))
 }
 
-/// `ws_connect(url)` -> `ok(handle)`. Performs the RFC 6455 client
+#[cfg_attr(not(feature = "tls"), allow(dead_code))]
+struct TlsClientOpts {
+    ca_cert: Option<String>,
+    ca_pem: Option<String>,
+}
+
+fn parse_tls_client_opts(opts: Option<&Value>, who: &str) -> Result<Option<TlsClientOpts>, String> {
+    let Some(v) = opts else {
+        return Ok(None);
+    };
+    match v {
+        Value::Null => Ok(None),
+        Value::Map(m) => {
+            let guard = m.lock().unwrap();
+            let mut ca_cert = None;
+            let mut ca_pem = None;
+            for (k, val) in &guard.entries {
+                let key = k.display();
+                match key.as_str() {
+                    "ca_cert" => match val {
+                        Value::Null => {}
+                        Value::Str(s) => ca_cert = Some(s.to_string()),
+                        other => {
+                            return Err(format!(
+                                "{}: opts['ca_cert'] must be a string path, found {}",
+                                who,
+                                type_name(other)
+                            ))
+                        }
+                    },
+                    "ca_pem" => match val {
+                        Value::Null => {}
+                        Value::Str(s) => ca_pem = Some(s.to_string()),
+                        other => {
+                            return Err(format!(
+                                "{}: opts['ca_pem'] must be a string, found {}",
+                                who,
+                                type_name(other)
+                            ))
+                        }
+                    },
+                    other => {
+                        return Err(format!("{}: unknown TLS option '{}'", who, other));
+                    }
+                }
+            }
+            if ca_cert.is_none() && ca_pem.is_none() {
+                Ok(None)
+            } else {
+                Ok(Some(TlsClientOpts { ca_cert, ca_pem }))
+            }
+        }
+        other => Err(format!(
+            "{} expects an opts map or null, found {}",
+            who,
+            type_name(other)
+        )),
+    }
+}
+
+#[cfg(feature = "tls")]
+fn build_tls_connector(
+    opts: Option<&TlsClientOpts>,
+    who: &str,
+) -> Result<native_tls::TlsConnector, String> {
+    let Some(opts) = opts else {
+        return native_tls::TlsConnector::new()
+            .map_err(|e| format!("{}: TLS setup failed: {}", who, e));
+    };
+    let mut builder = native_tls::TlsConnector::builder();
+    if let Some(ref path) = opts.ca_cert {
+        crate::stdlib::fs_policy::check_path(path)?;
+        let bytes = std::fs::read(path).map_err(|e| format!("{} '{}': {}", who, path, e))?;
+        let pem_certs = native_tls::Certificate::stack_from_pem(&bytes)
+            .map_err(|e| format!("{} '{}': invalid PEM certificate: {}", who, path, e))?;
+        if !pem_certs.is_empty() {
+            for cert in pem_certs {
+                builder.add_root_certificate(cert);
+            }
+        } else {
+            let cert = native_tls::Certificate::from_der(&bytes)
+                .map_err(|e| format!("{} '{}': invalid certificate: {}", who, path, e))?;
+            builder.add_root_certificate(cert);
+        }
+    }
+    if let Some(ref pem) = opts.ca_pem {
+        let pem_certs = native_tls::Certificate::stack_from_pem(pem.as_bytes())
+            .map_err(|e| format!("{}: invalid ca_pem certificate: {}", who, e))?;
+        if pem_certs.is_empty() {
+            return Err(format!(
+                "{}: ca_pem did not contain any PEM certificates",
+                who
+            ));
+        }
+        for cert in pem_certs {
+            builder.add_root_certificate(cert);
+        }
+    }
+    builder
+        .build()
+        .map_err(|e| format!("{}: TLS setup failed: {}", who, e))
+}
+
+/// `ws_connect(url, opts?)` -> `ok(handle)`. Performs the RFC 6455 client
 /// handshake and verifies the server's accept key.
+///
+/// Optional `opts` map supports `"ca_cert"` (path to PEM/DER root cert) and
+/// `"ca_pem"` (PEM string) while keeping OS root verification + hostname
+/// verification active by default.
 fn n_ws_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     const WHO: &str = "ws_connect";
-    arity(WHO, &args, 1)?;
+    if !(1..=2).contains(&args.len()) {
+        return Err(format!(
+            "{} expects 1 or 2 arguments, got {}",
+            WHO,
+            args.len()
+        ));
+    }
     let url = want_str(&args[0], WHO)?;
+    let tls_opts = parse_tls_client_opts(args.get(1), WHO)?;
     let (secure, host, host_port, path) = parse_ws_url(&url)?;
     let key = ws_client_key();
-    let stream =
-        TcpStream::connect(&host_port).map_err(|e| format!("ws_connect '{}': {}", url, e))?;
-    let _ = stream.set_nodelay(true);
     let conn = if secure {
         #[cfg(feature = "tls")]
         {
-            let connector = native_tls::TlsConnector::new()
-                .map_err(|e| format!("ws_connect '{}': TLS setup failed: {}", url, e))?;
+            let connector = build_tls_connector(tls_opts.as_ref(), WHO)
+                .map_err(|e| format!("ws_connect '{}': {}", url, e))?;
+            let stream = TcpStream::connect(&host_port)
+                .map_err(|e| format!("ws_connect '{}': {}", url, e))?;
+            let _ = stream.set_nodelay(true);
             let tls = connector
                 .connect(&host, stream)
                 .map_err(|e| format!("ws_connect '{}': TLS handshake failed: {}", url, e))?;
@@ -1358,13 +1787,17 @@ fn n_ws_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         }
         #[cfg(not(feature = "tls"))]
         {
-            let _ = host;
+            let _ = (host, host_port, tls_opts);
             return Err(
                 "ws_connect: wss:// needs the `tls` feature (rebuild with --features tls)"
                     .to_string(),
             );
         }
     } else {
+        let _ = tls_opts;
+        let stream =
+            TcpStream::connect(&host_port).map_err(|e| format!("ws_connect '{}': {}", url, e))?;
+        let _ = stream.set_nodelay(true);
         Arc::new(Conn::new(stream))
     };
     let request = format!(
@@ -1694,6 +2127,8 @@ fn sock_raw_fd(sock: &Sock) -> usize {
     match sock {
         Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().as_raw_socket() as usize,
         Sock::Listener(l) => l.as_raw_socket() as usize,
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        Sock::TlsListener(_, l) => l.as_raw_socket() as usize,
         Sock::Udp(u) => u.as_raw_socket() as usize,
     }
 }
@@ -1704,6 +2139,8 @@ fn sock_raw_fd(sock: &Sock) -> i32 {
     match sock {
         Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().as_raw_fd(),
         Sock::Listener(l) => l.as_raw_fd(),
+        #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
+        Sock::TlsListener(_, l) => l.as_raw_fd(),
         Sock::Udp(u) => u.as_raw_fd(),
     }
 }
@@ -1712,6 +2149,11 @@ fn sock_raw_fd(sock: &Sock) -> i32 {
 /// `None` when the platform call is unavailable or fails (the caller then
 /// falls back to the probe loop), `Some` with one (id, readable, writable)
 /// per socket otherwise.
+///
+/// TLS caveat: `sock_raw_fd` returns the underlying TCP descriptor
+/// (`TlsStream::get_ref()`), so `poll(2)` / `WSAPoll` only observes encrypted
+/// socket readiness (`POLLIN` != decrypted application bytes ready, and bytes
+/// already buffered inside `TlsStream` are invisible to kernel readiness).
 #[cfg(any(unix, windows))]
 fn kernel_poll(
     socks: &[(i64, Sock)],
@@ -1872,8 +2314,14 @@ impl Head {
 /// Read up to and including the blank line that ends an HTTP head.
 /// Generic over the transport: a plain `TcpStream` or a TLS stream (the
 /// `tls` feature), which share the `Read` surface the framing needs.
-fn read_head<S: Read>(mut stream: S, who: &str) -> Result<Head, String> {
-    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+fn read_head<S: Read>(stream: S, who: &str) -> Result<Head, String> {
+    read_head_from(stream, Vec::new(), who)
+}
+
+fn read_head_from<S: Read>(mut stream: S, mut buf: Vec<u8>, who: &str) -> Result<Head, String> {
+    if buf.is_empty() {
+        buf.reserve(4096);
+    }
     let mut chunk = [0u8; 8192];
     let end = loop {
         if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
@@ -1972,6 +2420,16 @@ fn read_to_eof<S: Read>(mut stream: S, mut body: Vec<u8>, who: &str) -> Result<V
 
 /// Decode a `Transfer-Encoding: chunked` body.
 fn read_chunked<S: Read>(stream: S, leftover: Vec<u8>, who: &str) -> Result<Vec<u8>, String> {
+    read_chunked_ext(stream, leftover, who).map(|(b, _)| b)
+}
+
+/// Decode a `Transfer-Encoding: chunked` body and report whether extra
+/// pipelined bytes were already buffered after the terminating chunk.
+fn read_chunked_ext<S: Read>(
+    stream: S,
+    leftover: Vec<u8>,
+    who: &str,
+) -> Result<(Vec<u8>, bool), String> {
     let cap = max_body_bytes();
     let mut reader = ChunkReader {
         stream,
@@ -1983,12 +2441,18 @@ fn read_chunked<S: Read>(stream: S, leftover: Vec<u8>, who: &str) -> Result<Vec<
     loop {
         let size_line = reader.line()?;
         let size_hex = size_line.split(';').next().unwrap_or("").trim();
-        let size = usize::from_str_radix(size_hex, 16)
-            .map_err(|_| format!("{}: bad chunk size '{}'", who, size_hex))?;
+        if size_hex.is_empty() || !size_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("{}: bad chunk size '{}'", who, size_hex));
+        }
+        let size = match usize::from_str_radix(size_hex, 16) {
+            Ok(n) => n,
+            Err(_) => return Err(format!("{}: body exceeds the {} byte limit", who, cap)),
+        };
         if size == 0 {
             // Skip optional trailers up to the final blank line.
             while !reader.line()?.is_empty() {}
-            return Ok(body);
+            let trailing = reader.pos < reader.buf.len();
+            return Ok((body, trailing));
         }
         // checked_add: a hostile chunk size near usize::MAX would otherwise
         // wrap the sum past the cap and stream unbounded memory.
@@ -1999,7 +2463,9 @@ fn read_chunked<S: Read>(stream: S, leftover: Vec<u8>, who: &str) -> Result<Vec<
             }
         }
         body.extend_from_slice(&reader.take(size)?);
-        reader.line()?; // CRLF after each chunk
+        if !reader.line()?.is_empty() {
+            return Err(format!("{}: bad chunk framing after data", who));
+        }
     }
 }
 
@@ -2134,18 +2600,28 @@ fn n_http_read_request(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Stri
     arity(WHO, &args, 1)?;
     let id = want_int(&args[0], WHO)?;
     let conn = get_stream(id, WHO)?;
-    let stream = conn.stream.lock().unwrap();
-    match read_request(&stream) {
+    // Drain any bytes read ahead by probe_readable BEFORE locking stream
+    // (matches n_tcp_read / n_tcp_read_exact / read_head_conn lock ordering).
+    let ahead = {
+        let mut p = conn.pending.lock().unwrap();
+        if p.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut *p)
+        }
+    };
+    let mut stream = conn.stream.lock().unwrap();
+    match read_request(&mut stream, ahead) {
         Ok(v) => ok(v),
         Err(e) => err(e),
     }
 }
 
-fn read_request(stream: &TcpStream) -> Result<Value, String> {
+fn read_request(stream: &mut ConnStream, ahead: Vec<u8>) -> Result<Value, String> {
     const WHO: &str = "http_read_request";
     // A-16: bound the header phase unless the program set its own timeout.
-    ensure_io_timeout(stream)?;
-    let head = read_head(stream, WHO)?;
+    ensure_io_timeout(&*stream)?;
+    let head = read_head_from(&mut *stream, ahead, WHO)?;
     let parts: Vec<&str> = head.start_line.split_whitespace().collect();
     if parts.len() != 3 || !parts[2].starts_with("HTTP/") {
         return Err(format!(
@@ -2157,20 +2633,29 @@ fn read_request(stream: &TcpStream) -> Result<Value, String> {
     let target = parts[1];
     let version = parts[2].to_string();
 
-    if head
-        .header("transfer-encoding")
-        .is_some_and(|te| te.to_ascii_lowercase().contains("chunked"))
-    {
-        return Err(format!("{}: chunked request bodies are not supported", WHO));
-    }
-    let len = match head.header("content-length") {
-        Some(v) => v
-            .parse::<usize>()
-            .map_err(|_| format!("{}: bad content-length '{}'", WHO, v))?,
-        None => 0,
-    };
     let leftover = head.leftover.clone();
-    let body = read_exact_body(stream, leftover, len, WHO)?;
+    let is_chunked = head
+        .header("transfer-encoding")
+        .is_some_and(|te| te.to_ascii_lowercase().contains("chunked"));
+    let (body, pipelined) = if is_chunked {
+        if head.header("content-length").is_some() {
+            return Err(format!(
+                "{}: conflicting transfer-encoding and content-length",
+                WHO
+            ));
+        }
+        read_chunked_ext(&mut *stream, leftover, WHO)?
+    } else {
+        let len = match head.header("content-length") {
+            Some(v) => v
+                .parse::<usize>()
+                .map_err(|_| format!("{}: bad content-length '{}'", WHO, v))?,
+            None => 0,
+        };
+        let has_trailing = leftover.len() > len;
+        let b = read_exact_body(&mut *stream, leftover, len, WHO)?;
+        (b, has_trailing)
+    };
 
     let (raw_path, raw_query) = target.split_once('?').unwrap_or((target, ""));
     let remote = stream
@@ -2196,6 +2681,7 @@ fn read_request(stream: &TcpStream) -> Result<Value, String> {
             Value::Bytes(new_ref(body.clone())),
         ),
         ("remote".to_string(), str_val(remote)),
+        ("pipelined".to_string(), Value::Bool(pipelined)),
     ])
 }
 
@@ -2267,6 +2753,12 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
     let body_len = body_raw.as_ref().map_or(body_text.len(), |b| b.len());
     let stream = get_stream(id, WHO)?;
 
+    let is_chunked_head = matches!(&args[3], Value::Null)
+        && headers.iter().any(|(n, v)| {
+            n.eq_ignore_ascii_case("transfer-encoding")
+                && v.to_ascii_lowercase().contains("chunked")
+        });
+
     let mut out = format!("HTTP/1.1 {} {}\r\n", status, reason_phrase(status));
     let mut has_type = false;
     for (name, value) in &headers {
@@ -2280,15 +2772,24 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
     if !has_type {
         out.push_str("content-type: text/plain; charset=utf-8\r\n");
     }
-    out.push_str(&format!(
-        "content-length: {}\r\nconnection: {}\r\nserver: spid3r\r\n\r\n",
-        body_len,
-        if keep_alive { "keep-alive" } else { "close" }
-    ));
+    if is_chunked_head {
+        out.push_str(&format!(
+            "transfer-encoding: chunked\r\nconnection: {}\r\nserver: spid3r\r\n\r\n",
+            if keep_alive { "keep-alive" } else { "close" }
+        ));
+    } else {
+        out.push_str(&format!(
+            "content-length: {}\r\nconnection: {}\r\nserver: spid3r\r\n\r\n",
+            body_len,
+            if keep_alive { "keep-alive" } else { "close" }
+        ));
+    }
     let mut bytes = out.into_bytes();
-    match body_raw {
-        Some(raw) => bytes.extend_from_slice(&raw),
-        None => bytes.extend_from_slice(body_text.as_bytes()),
+    if !is_chunked_head {
+        match body_raw {
+            Some(raw) => bytes.extend_from_slice(&raw),
+            None => bytes.extend_from_slice(body_text.as_bytes()),
+        }
     }
     let mut s = stream.stream.lock().unwrap();
     match s.write_all(&bytes).and_then(|_| s.flush()) {
@@ -2297,14 +2798,70 @@ fn n_http_write_response(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, St
     }
 }
 
-/// `http_fetch(method, url, headers?, body?)` -> `ok(response)` where the
-/// response map has `status` (int), `headers` (map), and `body`.
-/// Plain `http://` only: TLS would need a third-party crate.
+/// `http_write_response_chunk(conn, bytes, final: bool)` -> `ok(bytes_written)`.
+///
+/// Emits HTTP/1.1 chunked transfer framing (`<hex-len>\r\n<payload>\r\n`, and
+/// `0\r\n\r\n` when `final` is `true`). Pair with `http_write_response(conn,
+/// status, map("transfer-encoding", "chunked"), null, keep_alive)` or the
+/// `http_stream` / `stream_response` helpers in `stdlib/http.matrix` and
+/// `stdlib/web.matrix`.
+fn n_http_write_response_chunk(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    const WHO: &str = "http_write_response_chunk";
+    arity(WHO, &args, 3)?;
+    let id = want_int(&args[0], WHO)?;
+    let is_final = match &args[2] {
+        Value::Bool(b) => *b,
+        other => {
+            return Err(format!(
+                "{} expects a boolean final flag, found {}",
+                WHO,
+                type_name(other)
+            ))
+        }
+    };
+    let payload: Vec<u8> = match &args[1] {
+        Value::Bytes(b) => b.lock().unwrap().clone(),
+        Value::Str(s) => s.as_bytes().to_vec(),
+        Value::Null => Vec::new(),
+        other => {
+            return Err(format!(
+                "{} expects bytes, string, or null payload, found {}",
+                WHO,
+                type_name(other)
+            ))
+        }
+    };
+    let stream = get_stream(id, WHO)?;
+    let mut out = Vec::with_capacity(payload.len() + 24);
+    if !payload.is_empty() {
+        out.extend_from_slice(format!("{:x}\r\n", payload.len()).as_bytes());
+        out.extend_from_slice(&payload);
+        out.extend_from_slice(b"\r\n");
+    }
+    if is_final {
+        out.extend_from_slice(b"0\r\n\r\n");
+    }
+    if out.is_empty() {
+        return ok(Value::Int(0));
+    }
+    let mut s = stream.stream.lock().unwrap();
+    match s.write_all(&out).and_then(|_| s.flush()) {
+        Ok(()) => ok(Value::Int(out.len() as i64)),
+        Err(e) => err(io_msg(WHO, &e)),
+    }
+}
+
+/// `http_fetch(method, url, headers?, body?, opts?)` -> `ok(response)` where
+/// the response map has `status` (int), `headers` (map), and `body`.
+///
+/// Optional `opts` map supports `"ca_cert"` (path to PEM/DER root cert) and
+/// `"ca_pem"` (PEM string) while keeping OS root verification + hostname
+/// verification active by default.
 fn n_http_fetch(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     const WHO: &str = "http_fetch";
-    if !(2..=4).contains(&args.len()) {
+    if !(2..=5).contains(&args.len()) {
         return Err(format!(
-            "{} expects 2 to 4 arguments, got {}",
+            "{} expects 2 to 5 arguments, got {}",
             WHO,
             args.len()
         ));
@@ -2319,10 +2876,11 @@ fn n_http_fetch(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         Some(Value::Null) | None => String::new(),
         Some(v) => want_str(v, WHO)?,
     };
+    let tls_opts = parse_tls_client_opts(args.get(4), WHO)?;
     if method.is_empty() || !method.bytes().all(|b| b.is_ascii_alphabetic()) {
         return Err(format!("{}: invalid method '{}'", WHO, method));
     }
-    match fetch(&method, &url, &headers, &body) {
+    match fetch(&method, &url, &headers, &body, tls_opts.as_ref()) {
         Ok(v) => ok(v),
         Err(e) => err(e),
     }
@@ -2333,6 +2891,7 @@ fn fetch(
     url: &str,
     headers: &[(String, String)],
     body: &str,
+    tls_opts: Option<&TlsClientOpts>,
 ) -> Result<Value, String> {
     const WHO: &str = "http_fetch";
     let (secure, rest) = if let Some(r) = url.strip_prefix("https://") {
@@ -2383,12 +2942,11 @@ fn fetch(
     let mut stream: Conn = if secure {
         #[cfg(feature = "tls")]
         {
+            let connector = build_tls_connector(tls_opts, WHO)?;
             let tcp =
                 connect_with_timeout(&addr).map_err(|e| format!("{} '{}': {}", WHO, url, e))?;
             let _ = tcp.set_read_timeout(Some(FETCH_IO_TIMEOUT));
             let _ = tcp.set_write_timeout(Some(FETCH_IO_TIMEOUT));
-            let connector = native_tls::TlsConnector::new()
-                .map_err(|e| format!("{}: TLS setup failed: {}", WHO, e))?;
             let tls = connector
                 .connect(host, tcp)
                 .map_err(|e| format!("{}: TLS handshake with '{}' failed: {}", WHO, host, e))?;
@@ -2396,7 +2954,7 @@ fn fetch(
         }
         #[cfg(not(feature = "tls"))]
         {
-            let _ = host;
+            let _ = (host, tls_opts);
             return Err(format!(
                 "{}: https:// needs the `tls` feature (rebuild the toolchain with \
                  --features tls); the zero-dependency core ships without a TLS stack",
@@ -2404,6 +2962,7 @@ fn fetch(
             ));
         }
     } else {
+        let _ = tls_opts;
         let tcp = connect_with_timeout(&addr).map_err(|e| format!("{} '{}': {}", WHO, url, e))?;
         let _ = tcp.set_read_timeout(Some(FETCH_IO_TIMEOUT));
         let _ = tcp.set_write_timeout(Some(FETCH_IO_TIMEOUT));
@@ -2532,6 +3091,78 @@ mod tests {
             err.contains("body exceeds"),
             "expected the body cap to reject the hostile size, got: {}",
             err
+        );
+    }
+
+    #[test]
+    fn chunked_request_adversarial_framing_is_rejected() {
+        use std::io::Write as _;
+
+        fn run_req_frame(raw: &'static [u8]) -> Result<Value, String> {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let client = std::thread::spawn(move || {
+                let mut s = std::net::TcpStream::connect(addr).unwrap();
+                let _ = s.write_all(raw);
+            });
+            let (stream, _) = listener.accept().unwrap();
+            let mut cs = ConnStream::Plain(stream);
+            let res = read_request(&mut cs, Vec::new());
+            client.join().unwrap();
+            res
+        }
+
+        // 1. Oversized chunk size (> 64 MiB ceiling / usize overflow).
+        let err_oversized = run_req_frame(
+            b"POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\n",
+        )
+        .unwrap_err();
+        assert!(
+            err_oversized.contains("body exceeds"),
+            "expected body exceeds error, got: {}",
+            err_oversized
+        );
+
+        // 2. Negative chunk size (and leading '+' sign).
+        let err_neg = run_req_frame(
+            b"POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n-5\r\nhello\r\n0\r\n\r\n",
+        )
+        .unwrap_err();
+        assert!(
+            err_neg.contains("bad chunk size"),
+            "expected bad chunk size for negative size, got: {}",
+            err_neg
+        );
+        let err_plus = run_req_frame(
+            b"POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n+5\r\nhello\r\n0\r\n\r\n",
+        )
+        .unwrap_err();
+        assert!(
+            err_plus.contains("bad chunk size"),
+            "expected bad chunk size for leading plus, got: {}",
+            err_plus
+        );
+
+        // 3. Hex-with-junk (no ';' extension separator).
+        let err_junk = run_req_frame(
+            b"POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5xyz\r\nhello\r\n0\r\n\r\n",
+        )
+        .unwrap_err();
+        assert!(
+            err_junk.contains("bad chunk size"),
+            "expected bad chunk size for hex-with-junk, got: {}",
+            err_junk
+        );
+
+        // 4. Truncated trailer (EOF before terminating blank CRLF after 0\r\n).
+        let err_trailer = run_req_frame(
+            b"POST /up HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX-Trailer: val",
+        )
+        .unwrap_err();
+        assert!(
+            err_trailer.contains("connection closed mid-chunk"),
+            "expected mid-chunk EOF error on truncated trailer, got: {}",
+            err_trailer
         );
     }
 }

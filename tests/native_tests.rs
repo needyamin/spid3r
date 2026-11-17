@@ -1148,3 +1148,44 @@ fn main() {
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&exe_path);
 }
+
+#[test]
+fn native_aot_slab_alloc_accounting_exposed_in_spid3rinfo() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let src_path = dir.join("spid3r_nat_r40_alloc.matrix");
+    let exe_path = dir.join("spid3r_nat_r40_alloc.exe");
+    let src = "\
+fn make_work(n) {
+    let xs = list();
+    let i = 0;
+    while (i < n) {
+        xs.push(\"item-\" + string(i));
+        i = i + 1;
+    }
+    return xs.len();
+}
+fn main() {
+    let n = make_work(25);
+    let info = spid3rinfo();
+    let mem = info[\"AOT Memory\"];
+    println(n);
+    println(int(mem[\"Slab capacity\"]) == 4096);
+    println(int(mem[\"Slabs allocated\"]) >= 1);
+    println(int(mem[\"Completed call allocs\"]) > 0);
+    println(int(mem[\"Max call allocs\"]) > 0);
+    return 0;
+}
+";
+    std::fs::write(&src_path, src).expect("write src");
+    let src_s = src_path.to_str().unwrap().to_string();
+    let exe_s = exe_path.to_str().unwrap().to_string();
+    out(&["build", &src_s, "-o", &exe_s]).expect("native build");
+    let native = run_exe(&exe_s).expect("native run");
+    assert_eq!(native, "25\ntrue\ntrue\ntrue\ntrue\n");
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+}

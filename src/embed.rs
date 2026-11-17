@@ -147,6 +147,8 @@ impl Capability {
             Capability::Network => &[
                 "tcp_listen",
                 "tcp_accept",
+                "tls_listen",
+                "tls_accept",
                 "tcp_connect",
                 "tcp_read",
                 "tcp_write",
@@ -176,6 +178,7 @@ impl Capability {
                 "udp_close",
                 "http_read_request",
                 "http_write_response",
+                "http_write_response_chunk",
                 "http_fetch",
                 "__http_fetch",
             ],

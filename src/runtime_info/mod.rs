@@ -203,6 +203,12 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
     s.push("Memory free", free.unwrap_or_else(|| "?".into()));
     s.push("Process RSS", process_rss().unwrap_or_else(|| "?".into()));
     s.push(
+        "Process RSS bytes",
+        process_rss_bytes()
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "?".into()),
+    );
+    s.push(
         "Logical CPUs",
         std::thread::available_parallelism()
             .map(|n| n.get().to_string())
@@ -288,6 +294,24 @@ fn collect_with(redact: bool, remote: bool) -> Vec<Section> {
     s.push("agent", "on");
     s.push("spid3rinfo", "on");
     out.push(s);
+
+    {
+        let st = crate::native::rt::slab_alloc_stats();
+        let mut s = Section::new("AOT Memory");
+        s.push(
+            "Slab capacity",
+            crate::native::rt::ARENA_SLAB_LEN.to_string(),
+        );
+        s.push("Slabs allocated", st.slabs_allocated.to_string());
+        s.push("Current call allocs", st.current_call_allocs.to_string());
+        s.push("Last call allocs", st.last_call_allocs.to_string());
+        s.push("Max call allocs", st.max_call_allocs.to_string());
+        s.push(
+            "Completed call allocs",
+            st.completed_call_allocs.to_string(),
+        );
+        out.push(s);
+    }
 
     let mut s = Section::new("Modules");
     s.push(
@@ -559,19 +583,80 @@ fn memory_totals() -> (Option<String>, Option<String>) {
     }
 }
 
-fn process_rss() -> Option<String> {
+fn process_rss_bytes() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
+        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
+            if let Some(pages_str) = statm.split_whitespace().nth(1) {
+                if let Ok(pages) = pages_str.parse::<u64>() {
+                    return Some(pages * 4096);
+                }
+            }
+        }
         let text = std::fs::read_to_string("/proc/self/status").ok()?;
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("VmRSS:") {
                 let kb = rest.split_whitespace().next()?;
-                return kb.parse::<u64>().ok().map(|n| human_bytes(n * 1024));
+                return kb.parse::<u64>().ok().map(|n| n * 1024);
             }
         }
         None
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        #[repr(C)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+        extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn K32GetProcessMemoryInfo(
+                process: isize,
+                ppsmem_counters: *mut ProcessMemoryCounters,
+                cb: u32,
+            ) -> i32;
+        }
+        let mut pmc = ProcessMemoryCounters {
+            cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+            page_fault_count: 0,
+            peak_working_set_size: 0,
+            working_set_size: 0,
+            quota_peak_paged_pool_usage: 0,
+            quota_paged_pool_usage: 0,
+            quota_peak_non_paged_pool_usage: 0,
+            quota_non_paged_pool_usage: 0,
+            pagefile_usage: 0,
+            peak_pagefile_usage: 0,
+        };
+        // SAFETY: `GetCurrentProcess()` returns a valid pseudo-handle and `pmc`
+        // is a valid `ProcessMemoryCounters` buffer sized by `pmc.cb`.
+        let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb) };
+        if ok != 0 {
+            return Some(pmc.working_set_size as u64);
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
+fn process_rss() -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        process_rss_bytes().map(human_bytes)
+    }
+    #[cfg(target_arch = "wasm32")]
     {
         None
     }
