@@ -1,0 +1,19 @@
+// benchmarks/equality.matrix - scalar equality comparison churn.
+// Prints one checksum line.
+fn main() {
+    let hits = 0;
+    let r = 0;
+    while r < 100000 {
+        let a = r % 97;
+        let b = (r * 3) % 97;
+        if a == b {
+            hits = hits + 1;
+        }
+        if string(a) == "42" {
+            hits = hits + 1;
+        }
+        r = r + 1;
+    }
+    println(hits);
+    return 0;
+}

@@ -1,0 +1,25 @@
+fn build_set(n: int) {
+    let s = set();
+    let i = 0;
+    while i < n {
+        s.add(i * 2);
+        i += 1;
+    }
+    return s;
+}
+fn main() {
+    let s = build_set(256);
+    let t0 = now_ms();
+    let hits = 0;
+    let r = 0;
+    while r < 20000 {
+        if s.contains((r * 13) % 512) {
+            hits += 1;
+        }
+        r += 1;
+    }
+    let us = (now_ms() - t0) * 1000;
+    println("RESULT " + string(hits) + " 20000");
+    println("TIME_US " + string(us));
+    return 0;
+}

@@ -307,3 +307,23 @@ fn main() {
 fn mixed_int_float_equality_is_exact_on_both_engines() {
     both(INT_FLOAT_EQUALITY);
 }
+
+const CYCLE_EQUALITY: &str = r#"
+fn main() {
+    let a = list();
+    a.push(a);
+    let b = list();
+    b.push(b);
+    assert(a == b);
+    assert(a == a);
+    assert(not (a == [1]));
+    assert(not (1 == a));
+    assert(not (a == null));
+    return 0;
+}
+"#;
+
+#[test]
+fn cyclic_container_equality_terminates_on_both_engines() {
+    both(CYCLE_EQUALITY);
+}

@@ -1,0 +1,20 @@
+// benchmarks/set.matrix - set add / contains churn.
+// Prints one checksum line.
+fn main() {
+    let s = set();
+    let i = 0;
+    while i < 256 {
+        s.add(i * 2);
+        i = i + 1;
+    }
+    let hits = 0;
+    let r = 0;
+    while r < 5000 {
+        if s.contains((r * 13) % 512) {
+            hits = hits + 1;
+        }
+        r = r + 1;
+    }
+    println(hits);
+    return 0;
+}

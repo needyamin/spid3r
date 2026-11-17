@@ -199,6 +199,38 @@ fn set_does_union_intersection_difference() {
     );
 }
 
+#[test]
+fn set_cross_type_numeric_and_container_membership() {
+    expect_ok(
+        r#"
+        fn main() {
+            let s = set(2, -0.0, "hi", true, [1, 2]);
+            assert(s.contains(2.0));
+            assert(s.contains(0.0));
+            assert(s.contains("hi"));
+            assert(s.contains(true));
+            assert(s.contains([1, 2]));
+            assert(not s.contains([1, 3]));
+            // Adding 2.0 must not duplicate 2.
+            s.add(2.0);
+            assert(s.len() == 5);
+            // Removing an indexed scalar shifts subsequent indices cleanly.
+            s.remove(2);
+            assert(not s.contains(2));
+            assert(not s.contains(2.0));
+            assert(s.contains("hi"));
+            assert(s.contains([1, 2]));
+            assert(s.len() == 4);
+            // Self-referential set contains/remove still terminate cleanly.
+            let cyc = set();
+            cyc.add(cyc);
+            assert(cyc.contains(cyc));
+            return 0;
+        }
+    "#,
+    );
+}
+
 // ---- linked lists ---------------------------------------------------------
 
 #[test]

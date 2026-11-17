@@ -76,6 +76,8 @@ PINS = {
     "prime": "RESULT 5133 121013308",
     "json": "RESULT 249868800 9163",
     "map": "RESULT 44432313 100000",
+    "set": "RESULT 10000 20000",
+    "equality": "RESULT 4124 200000",
 }
 RESULT_RE = re.compile(r"^RESULT [0-9]+ [0-9]+$")
 TIME_RE = re.compile(r"^TIME_US [0-9]+$")
@@ -948,7 +950,7 @@ def measure_selfhost_suite(args) -> dict:
 
         requested = (
             ["lex", "parse", "check", "self_compile", "corpus_build"]
-            if args.workloads == "prime,json,map"
+            if args.workloads == "prime,json,map,set,equality"
             else [w.strip() for w in args.workloads.split(",") if w.strip()]
         )
         timeout = max(float(args.timeout), 300.0)
@@ -1243,7 +1245,7 @@ def main(argv=None) -> int:
     ap.add_argument("--passes", type=int, default=2)
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--variants", default="vm,no-opt,tree,exec")
-    ap.add_argument("--workloads", default="prime,json,map")
+    ap.add_argument("--workloads", default="prime,json,map,set,equality")
     ap.add_argument("--out", help="override the result JSON path")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)

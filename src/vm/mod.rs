@@ -3265,7 +3265,7 @@ impl Vm {
                                 continue;
                             }
                             let mut entries = Vec::new();
-                            let mut frozen = std::collections::HashSet::new();
+                            let mut frozen = collections::FxHashSet::default();
                             for (name, value, is_const) in exports {
                                 let key = crate::value::MapKey::Str(name.into());
                                 if is_const {

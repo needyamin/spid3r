@@ -853,11 +853,37 @@ pub fn hash_value(v: &Value) -> u64 {
     h.finish()
 }
 
+#[inline]
+pub fn is_scalar(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)
+    )
+}
+
+#[inline]
+fn scalar_equal(a: &Value, b: &Value) -> Option<bool> {
+    match (a, b) {
+        (Value::Null, Value::Null) => Some(true),
+        (Value::Bool(x), Value::Bool(y)) => Some(x == y),
+        (Value::Int(x), Value::Int(y)) => Some(x == y),
+        (Value::Float(x), Value::Float(y)) => Some(x == y),
+        (Value::Int(x), Value::Float(y)) => Some(int_float_eq(*x, *y)),
+        (Value::Float(x), Value::Int(y)) => Some(int_float_eq(*y, *x)),
+        (Value::Str(x), Value::Str(y)) => Some(x == y),
+        _ if is_scalar(a) || is_scalar(b) => Some(false),
+        _ => None,
+    }
+}
+
 /// Deep structural equality. Primitives compare by value (int/float compare
 /// numerically); collections compare element-wise; everything with identity
 /// (functions, instances, tasks, channels, mutexes, classes) compares by
 /// pointer.
 pub fn values_equal(a: &Value, b: &Value) -> bool {
+    if let Some(eq) = scalar_equal(a, b) {
+        return eq;
+    }
     let mut seen = std::collections::HashSet::new();
     values_equal_inner(a, b, &mut seen)
 }
@@ -873,16 +899,7 @@ pub fn same_slot(a: &Value, b: &Value) -> bool {
     if let (Some(x), Some(y)) = (ref_id(a), ref_id(b)) {
         return x == y;
     }
-    match (a, b) {
-        (Value::Null, Value::Null) => true,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Int(x), Value::Int(y)) => x == y,
-        (Value::Float(x), Value::Float(y)) => x == y,
-        (Value::Int(x), Value::Float(y)) => int_float_eq(*x, *y),
-        (Value::Float(x), Value::Int(y)) => int_float_eq(*y, *x),
-        (Value::Str(x), Value::Str(y)) => x == y,
-        _ => false,
-    }
+    scalar_equal(a, b).unwrap_or(false)
 }
 
 /// Exact mixed Int/Float equality: a distinct mathematical value never compares
@@ -1732,7 +1749,7 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
             let nd = new_ref(c::SetData::default());
             register!(Value::Set(nd.clone()));
             let items: Vec<Value> = items.iter().map(|it| deep_clone_inner(it, memo)).collect();
-            nd.lock().unwrap().items = items;
+            *nd.lock().unwrap() = c::SetData::from_items(items);
             Value::Set(nd)
         }
         Value::Tuple(t) => {

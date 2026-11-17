@@ -74,10 +74,10 @@ def verify(verbose: bool = True) -> dict:
     if extra:
         errors.append(f"ledger lists unmanifested files: {extra}")
 
-    # Exactly three timed workloads + one calibration fixture, nothing else.
+    # Exactly five timed workloads + one calibration fixture, nothing else.
     workloads = sorted(p for p, r in roles.items() if r == "workload")
     calibrations = sorted(p for p, r in roles.items() if r == "calibration")
-    if workloads != ["json.matrix", "map.matrix", "prime.matrix"]:
+    if workloads != ["equality.matrix", "json.matrix", "map.matrix", "prime.matrix", "set.matrix"]:
         errors.append(f"unexpected workload set: {workloads}")
     if calibrations != ["phase0_calibration.matrix"]:
         errors.append(f"unexpected calibration set: {calibrations}")
@@ -87,6 +87,8 @@ def verify(verbose: bool = True) -> dict:
         "prime": "RESULT 5133 121013308",
         "json": "RESULT 249868800 9163",
         "map": "RESULT 44432313 100000",
+        "set": "RESULT 10000 20000",
+        "equality": "RESULT 4124 200000",
     }.items():
         if m["workloads"][w]["expected_result"] != pin:
             errors.append(f"{w}: pinned RESULT changed")

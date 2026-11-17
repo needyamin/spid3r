@@ -925,6 +925,61 @@ fn main() {
         err: None,
         aot: false,
     },
+    Case {
+        name: "phase0_hlc_set",
+        src: r#"fn build_set(n: int) {
+    let s = set();
+    let i = 0;
+    while i < n {
+        s.add(i * 2);
+        i += 1;
+    }
+    return s;
+}
+fn main() {
+    let s = build_set(256);
+    let hits = 0;
+    let r = 0;
+    while r < 20000 {
+        if s.contains((r * 13) % 512) {
+            hits += 1;
+        }
+        r += 1;
+    }
+    println("RESULT " + string(hits) + " 20000");
+    return 0;
+}
+"#,
+        out: "RESULT 10000 20000",
+        code: 0,
+        err: None,
+        aot: false,
+    },
+    Case {
+        name: "phase0_hlc_equality",
+        src: r#"fn main() {
+    let hits = 0;
+    let r = 0;
+    while r < 200000 {
+        let a = r % 97;
+        let b = (r * 3) % 97;
+        if a == b {
+            hits += 1;
+        }
+        if string(a) == "42" {
+            hits += 1;
+        }
+        r += 1;
+    }
+    println("RESULT " + string(hits) + " 200000");
+    return 0;
+}
+"#,
+        out: "RESULT 4124 200000",
+        code: 0,
+        err: None,
+        aot: false,
+    },
     // ------------------------------------------------------------------
     // Phase 1 conformance controls.
     //

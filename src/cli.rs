@@ -3291,6 +3291,8 @@ const BENCH_ITERS: &[(&str, u64)] = &[
     ("closures", 40_000),
     ("json", 2_000),
     ("tasks", 2_000),
+    ("set", 5_000),
+    ("equality", 100_000),
 ];
 
 fn bench_iters(stem: &str) -> Option<u64> {
@@ -3324,6 +3326,8 @@ const BENCH_FLOORS: &[(&str, u64)] = &[
     ("closures", 170_000),
     ("json", 8_000),
     ("tasks", 6_000),
+    ("set", 30_000),
+    ("equality", 500_000),
 ];
 
 fn bench_floor(stem: &str) -> Option<u64> {

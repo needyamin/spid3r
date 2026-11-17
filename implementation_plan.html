@@ -1,0 +1,1850 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spid3r — Implementation Plan (step-by-step, analysis-verified) · 2026-11-17</title>
+  <meta name="description"
+    content="Step-by-step implementation plan for the Spid3r language roadmap. Every step is grounded in a verification pass: claims were tested against source, feasibility was checked against the real API surface (inkwell 0.11, native-tls 0.2.18, hand-extern precedents), and the plan was corrected where analysis disproved it.">
+
+  <link rel="icon" type="image/png" href="src/assets/spid3r.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <script>
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem('spid3r-dev-theme'); } catch (_) { }
+      if (!t) {
+        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+
+  <style>
+    :root {
+      --font-body: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      --font-heading: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono: 'JetBrains Mono', "SF Mono", Consolas, monospace;
+
+      --bg-base: #0b0f17;
+      --bg-surface: #111722;
+      --bg-card: #161e2e;
+      --bg-card-alt: #1a2335;
+      --bg-code: #080c13;
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-line: #1e293b;
+      --border-hover: rgba(56, 189, 248, 0.35);
+
+      --fg-primary: #f1f5f9;
+      --fg-secondary: #94a3b8;
+      --fg-muted: #64748b;
+
+      --w3-green: #04AA6D;
+      --w3-green-hover: #059862;
+      --w3-green-light: rgba(4, 170, 109, 0.12);
+      --cyan: #38bdf8;
+      --indigo: #818cf8;
+      --purple: #c084fc;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+
+      --shadow-md: 0 8px 16px rgba(0, 0, 0, 0.4);
+      --radius: 12px;
+      --topbar-height: 58px;
+      --max-width: 1220px;
+    }
+
+    html[data-theme="light"] {
+      --bg-base: #f8fafc;
+      --bg-surface: #ffffff;
+      --bg-card: #ffffff;
+      --bg-card-alt: #f1f5f9;
+      --bg-code: #f1f5f9;
+      --border-subtle: rgba(0, 0, 0, 0.08);
+      --border-line: #e2e8f0;
+      --border-hover: rgba(4, 170, 109, 0.4);
+      --fg-primary: #0f172a;
+      --fg-secondary: #475569;
+      --fg-muted: #94a3b8;
+      --w3-green-light: #e8f5e9;
+      --cyan: #0284c7;
+      --indigo: #6366f1;
+      --amber: #b45309;
+      --rose: #e11d48;
+      --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background: var(--bg-base);
+      color: var(--fg-primary);
+      font-family: var(--font-body);
+      font-size: 15px;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--w3-green); text-decoration: none; }
+    a:hover { color: var(--w3-green-hover); text-decoration: underline; }
+
+    .topbar {
+      position: sticky; top: 0; z-index: 50;
+      height: var(--topbar-height);
+      display: flex; align-items: center; gap: 18px;
+      padding: 0 22px;
+      background: rgba(11, 15, 23, 0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border-line);
+    }
+
+    html[data-theme="light"] .topbar { background: rgba(255, 255, 255, 0.94); }
+
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      font-family: var(--font-heading); font-weight: 700; font-size: 17px;
+      color: var(--fg-primary);
+    }
+
+    .brand:hover { text-decoration: none; color: var(--fg-primary); }
+    .brand img { width: 26px; height: 26px; border-radius: 6px; }
+    .brand .accent { color: var(--w3-green); }
+    .brand .sub { font-size: 13px; font-weight: 500; color: var(--fg-secondary); }
+
+    .topbar-nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+
+    .nav-tab {
+      padding: 7px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 500;
+      color: var(--fg-secondary);
+    }
+
+    .nav-tab:hover { background: var(--bg-card-alt); color: var(--fg-primary); text-decoration: none; }
+
+    .theme-btn {
+      border: 1px solid var(--border-line); background: var(--bg-card);
+      color: var(--fg-secondary); border-radius: 8px; padding: 6px 11px;
+      cursor: pointer; font-size: 14px; line-height: 1;
+    }
+
+    .theme-btn:hover { border-color: var(--border-hover); color: var(--fg-primary); }
+
+    .layout {
+      display: grid; grid-template-columns: 250px minmax(0, 1fr);
+      gap: 0; max-width: var(--max-width); margin: 0 auto;
+    }
+
+    .toc {
+      position: sticky; top: var(--topbar-height);
+      align-self: start; max-height: calc(100vh - var(--topbar-height));
+      overflow-y: auto; padding: 26px 8px 40px 4px;
+      border-right: 1px solid var(--border-line);
+      font-size: 13px;
+    }
+
+    .toc .toc-title {
+      font-family: var(--font-heading); font-weight: 600; font-size: 11.5px;
+      letter-spacing: .09em; text-transform: uppercase;
+      color: var(--fg-muted); padding: 0 12px 8px;
+    }
+
+    .toc a {
+      display: block; padding: 5px 12px; border-radius: 8px;
+      color: var(--fg-secondary); border-left: 2px solid transparent;
+    }
+
+    .toc a:hover { background: var(--bg-card-alt); color: var(--fg-primary); text-decoration: none; }
+    .toc a.active { color: var(--w3-green); border-left-color: var(--w3-green); background: var(--w3-green-light); }
+
+    .content { padding: 34px 26px 90px 34px; min-width: 0; }
+
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .toc { display: none; }
+      .content { padding: 26px 16px 70px; }
+    }
+
+    h1, h2, h3, h4 { font-family: var(--font-heading); line-height: 1.3; }
+    h1 { font-size: 30px; margin: 6px 0 10px; letter-spacing: -0.01em; }
+    h2 {
+      font-size: 22px; margin: 46px 0 14px; padding-top: 14px;
+      border-top: 1px solid var(--border-line);
+      scroll-margin-top: calc(var(--topbar-height) + 12px);
+    }
+
+    h2:first-of-type { border-top: none; margin-top: 26px; }
+    h3 { font-size: 16.5px; margin: 26px 0 8px; scroll-margin-top: calc(var(--topbar-height) + 12px); }
+    h4 { font-size: 14.5px; margin: 18px 0 6px; }
+    p { margin: 9px 0; }
+    .muted { color: var(--fg-secondary); }
+    .small { font-size: 13px; }
+
+    code {
+      font-family: var(--font-mono); font-size: 12.5px;
+      background: var(--bg-code); border: 1px solid var(--border-subtle);
+      border-radius: 5px; padding: 1.5px 5px; color: var(--cyan);
+      word-break: break-word;
+    }
+
+    pre {
+      font-family: var(--font-mono); font-size: 12.5px; line-height: 1.55;
+      background: var(--bg-code); border: 1px solid var(--border-line);
+      border-radius: 10px; padding: 14px 16px; overflow-x: auto; color: var(--fg-secondary);
+    }
+
+    pre code { background: none; border: none; padding: 0; color: inherit; }
+
+    .card {
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: var(--radius); padding: 16px 18px; margin: 14px 0;
+    }
+
+    .card.accent { border-left: 3px solid var(--w3-green); }
+    .card.warn { border-left: 3px solid var(--rose); }
+    .card.info { border-left: 3px solid var(--cyan); }
+    .card.dp { border-left: 3px solid var(--indigo); }
+
+    .badge {
+      display: inline-block; padding: 2px 9px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; letter-spacing: .04em;
+      text-transform: uppercase; vertical-align: middle; margin-right: 6px;
+    }
+
+    .b-crit { background: rgba(251, 113, 133, .14); color: var(--rose); border: 1px solid rgba(251, 113, 133, .4); }
+    .b-high { background: rgba(251, 191, 36, .13); color: var(--amber); border: 1px solid rgba(251, 191, 36, .4); }
+    .b-med { background: rgba(56, 189, 248, .13); color: var(--cyan); border: 1px solid rgba(56, 189, 248, .4); }
+    .b-low { background: var(--bg-card-alt); color: var(--fg-muted); border: 1px solid var(--border-line); }
+    .b-ok { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid rgba(4, 170, 109, .4); }
+    .b-dp { background: rgba(129, 140, 248, .14); color: var(--indigo); border: 1px solid rgba(129, 140, 248, .4); }
+    .b-eff { background: var(--bg-card-alt); color: var(--fg-secondary); border: 1px solid var(--border-line); }
+    .b-pass { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid rgba(4, 170, 109, .4); }
+    .b-fix { background: rgba(251, 191, 36, .13); color: var(--amber); border: 1px solid rgba(251, 191, 36, .4); }
+    .b-kill { background: rgba(251, 113, 133, .14); color: var(--rose); border: 1px solid rgba(251, 113, 133, .4); }
+
+    /* Checkbox tracking (full_plan.html GR-1 discipline) */
+    .stepbox {
+      appearance: none; -webkit-appearance: none;
+      width: 17px; height: 17px; flex: 0 0 auto; margin: 0;
+      border: 2px solid var(--fg-muted); border-radius: 5px;
+      background: var(--bg-card); cursor: pointer; position: relative;
+      vertical-align: middle;
+    }
+
+    .stepbox:checked { background: var(--w3-green); border-color: var(--w3-green); }
+    .stepbox:checked::after {
+      content: "\2713"; color: #fff; font-size: 12px; font-weight: 800;
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -54%);
+    }
+
+    .step.done { border-color: rgba(4, 170, 109, .45); }
+    .step.done .step-head { background: var(--w3-green-light); }
+    .step.done .sid { color: var(--w3-green); }
+
+    .pbar {
+      height: 10px; border-radius: 999px; background: var(--bg-card-alt);
+      border: 1px solid var(--border-line); overflow: hidden; margin: 10px 0 8px;
+    }
+
+    .pbar > div {
+      height: 100%; width: 0%; background: var(--w3-green);
+      border-radius: 999px; transition: width .25s ease;
+    }
+
+    .phaseprog { font-size: 12.5px; color: var(--fg-secondary); line-height: 1.9; }
+    .phaseprog b { color: var(--fg-primary); font-family: var(--font-mono); font-size: 12px; }
+
+    .lbl {
+      display: inline-block; padding: 1px 7px; border-radius: 6px;
+      font-size: 10px; font-weight: 800; letter-spacing: .07em;
+      text-transform: uppercase; margin-right: 6px; vertical-align: 1px;
+    }
+
+    .lbl.del { background: rgba(56, 189, 248, .13); color: var(--cyan); border: 1px solid rgba(56, 189, 248, .4); }
+    .lbl.gate { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid rgba(4, 170, 109, .4); }
+    .step-body .deliv { font-size: 13.5px; margin: 2px 0 8px; }
+
+    .tablewrap { overflow-x: auto; margin: 14px 0; }
+
+    table {
+      width: 100%; border-collapse: collapse; font-size: 13.5px;
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: 10px; overflow: hidden;
+    }
+
+    th {
+      font-family: var(--font-heading); font-size: 12px; letter-spacing: .05em;
+      text-transform: uppercase; color: var(--fg-secondary);
+      background: var(--bg-card-alt); text-align: left; padding: 9px 12px;
+      border-bottom: 1px solid var(--border-line); white-space: nowrap;
+    }
+
+    td { padding: 8px 12px; border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    td code { white-space: nowrap; }
+    .num { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; }
+    .good { color: var(--w3-green); font-weight: 600; }
+    .bad { color: var(--rose); font-weight: 600; }
+    .warnc { color: var(--amber); font-weight: 600; }
+
+    .kicker {
+      font-family: var(--font-heading); font-size: 12px; font-weight: 600;
+      letter-spacing: .1em; text-transform: uppercase; color: var(--w3-green);
+      margin-top: 40px;
+    }
+
+    .meta-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0 4px; }
+    .meta-chip {
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: 10px; padding: 8px 14px; font-size: 12.5px; color: var(--fg-secondary);
+    }
+
+    .meta-chip b { color: var(--fg-primary); font-weight: 600; }
+
+    /* Step cards */
+    .step {
+      background: var(--bg-card); border: 1px solid var(--border-line);
+      border-radius: var(--radius); margin: 16px 0; overflow: hidden;
+    }
+
+    .step-head {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+      padding: 11px 16px; background: var(--bg-card-alt);
+      border-bottom: 1px solid var(--border-line);
+      font-family: var(--font-heading); font-weight: 600; font-size: 15px;
+    }
+
+    .step-head .sid { color: var(--w3-green); font-family: var(--font-mono); font-size: 13px; }
+    .step-head .deps { margin-left: auto; font-size: 11.5px; font-weight: 500; color: var(--fg-muted); }
+
+    .step-body { padding: 12px 16px 14px; }
+
+    .step-body h5 {
+      margin: 10px 0 4px; font-family: var(--font-heading); font-size: 11.5px;
+      letter-spacing: .09em; text-transform: uppercase; color: var(--cyan);
+    }
+
+    .step-body h5:first-child { margin-top: 0; }
+    .step-body ul { margin: 4px 0; padding-left: 20px; }
+    .step-body li { margin: 3px 0; font-size: 13.5px; }
+    .step-body p { margin: 4px 0; font-size: 13.5px; }
+
+    .gate { border-left: 3px solid var(--w3-green); background: var(--w3-green-light); border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 13px; }
+    .risk { border-left: 3px solid var(--rose); background: rgba(251, 113, 133, .07); border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 13px; }
+    .analysis { border-left: 3px solid var(--cyan); background: rgba(56, 189, 248, .06); border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 13px; }
+
+    ul.tight, ol.tight { margin: 8px 0; padding-left: 22px; }
+    ul.tight li, ol.tight li { margin: 5px 0; }
+
+    .footer {
+      border-top: 1px solid var(--border-line); margin-top: 60px; padding-top: 18px;
+      font-size: 12.5px; color: var(--fg-muted);
+    }
+
+    @media print {
+      .topbar, .toc, .theme-btn { display: none !important; }
+      .layout { grid-template-columns: 1fr; }
+      body { background: #fff; color: #111; }
+      .card, table, pre, .step { break-inside: avoid; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="topbar">
+    <a class="brand" href="#top">
+      <img src="src/assets/spid3r.png" alt="">
+      Spid3r&nbsp;<span class="accent">Plan</span>
+      <span class="sub">Implementation Plan — analysis-verified, step-by-step</span>
+    </a>
+    <nav class="topbar-nav">
+      <a class="nav-tab" href="#s1">Verification</a>
+      <a class="nav-tab" href="#s2">Protocol</a>
+      <a class="nav-tab" href="#s4">R1</a>
+      <a class="nav-tab" href="#s6">R3</a>
+      <a class="nav-tab" href="#s13">Sequence</a>
+      <a class="nav-tab" href="#sd">Changes log</a>
+    </nav>
+    <button class="theme-btn" onclick="toggleTheme()" title="Toggle theme">◐</button>
+  </div>
+
+  <div class="layout" id="top">
+    <nav class="toc">
+      <div class="toc-title">Contents</div>
+      <a href="#s0">0 · Method &amp; team</a>
+      <a href="#s1">1 · Verification matrix</a>
+      <a href="#s2">2 · Execution protocol</a>
+      <a href="#s2b">2.5 · Agent contract (strict)</a>
+      <a href="#s3">3 · R0 Release closure</a>
+      <a href="#s4">4 · R1 Collections</a>
+      <a href="#s5">5 · R2 Evented I/O</a>
+      <a href="#s6">6 · R3 AOT codegen</a>
+      <a href="#s7">7 · R4 AOT memory</a>
+      <a href="#s8">8 · R5 Web server stack</a>
+      <a href="#s9">9 · R6 Diagnostics &amp; types</a>
+      <a href="#s10">10 · R7 I/O completeness</a>
+      <a href="#s11">11 · R8 Ecosystem</a>
+      <a href="#s12">12 · R9–R13 + DP calendar</a>
+      <a href="#s13">13 · Sequencing &amp; effort</a>
+      <a href="#s14">14 · Risk register</a>
+      <a href="#sa">A · Command cheat-sheet</a>
+      <a href="#sb">B · File-touch map</a>
+      <a href="#sc">C · Ledger row template</a>
+      <a href="#sd">D · Analysis-driven changes</a>
+    </nav>
+
+    <main class="content">
+      <div class="kicker">Planning deliverable · 2026-11-17 · tree <code>87decd8</code></div>
+      <h1>Spid3r — Implementation Plan</h1>
+      <p class="muted">Step-by-step, dependency-ordered execution plan for the Spid3r language. Built by a verification team
+        <em>before</em> any step was planned: every load-bearing claim was tested against the source, every planned change was
+        feasibility-checked against the real API surface, and the plan was corrected where analysis disproved it (Appendix D).
+        The audit was delivered in-session; <code>report.html</code> was removed at the owner's request — this file is the single
+        governing deliverable, subordinate to <code>full_plan.html</code>.</p>
+
+      <div class="card accent" id="version-strip">
+        <strong>PLAN v2.2 — full production tracks</strong> · rev 2026-11-17 · 82 boxes (74 steps + 8 owner decisions) ·
+        v2.2: the container-engine (R11) and OS/bare-metal (R13) tracks are upgraded from feasibility spikes to
+        <strong>production-grade programs</strong> with CI-objective gates; DP-7 (unsafe-syscall home) and DP-8 (OS-track charter) added;
+        "Production-grade bar" defined in §2.5. Every track ships production DoD — nothing in this plan is an experiment.
+        If you can read this strip, you are viewing the current file; otherwise hard-refresh (<b>Ctrl+Shift+R</b>).
+      </div>
+
+      <div class="meta-grid">
+        <span class="meta-chip"><b>Mode</b> Planning — nothing implemented yet</span>
+        <span class="meta-chip"><b>Tree</b> commit <code>87decd8</code>, build green</span>
+        <span class="meta-chip"><b>Governing</b> <code>full_plan.html</code> GR-1…4 · SEC-A…D</span>
+        <span class="meta-chip"><b>Companion</b> audit delivered in-session (report.html removed by request)</span>
+        <span class="meta-chip"><b>Steps</b> 74 step boxes + 8 owner boxes — checkbox-tracked</span>
+      </div>
+
+      <div class="card accent" id="progress-card">
+        <strong>Progress</strong> — <span id="prog-text" class="num">0 / 82</span>
+        <button id="reset-ticks" onclick="resetTicks()" style="border:1px solid var(--border-line);background:var(--bg-card);color:var(--fg-secondary);border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer;">Reset local ticks</button>
+        <div class="pbar"><div id="prog-fill"></div></div>
+        <div id="prog-phases" class="phaseprog">loading…</div>
+        <p class="small muted" style="margin:6px 0 0;">Green bar = ticked boxes. The executing AI agent ticks a box <em>in this file</em>
+          (adds <code>checked</code> to the step's input, in the same commit as the step's ledger row) — so progress survives reloads and is
+          visible to everyone. Your manual ticks in the browser are a local overlay on top of that; <em>Reset local ticks</em> re-syncs to the file.</p>
+      </div>
+
+      <div class="card warn">
+        <strong>Checkbox discipline — mirrors <code>full_plan.html</code> GR-1.</strong> One checkbox per step: the step title is the
+        <span class="lbl del">DELIV</span> and the green <span class="lbl gate">GATE</span> block is its verifiable gate. A box may be
+        ticked <strong>only</strong> when its Gate has actually run and passed on the real repository, with the evidence appended to the
+        ledger in the same commit. The ledger — never this file's box state — is the source of record.
+        <p style="margin-top:8px;"><strong>Agent workflow (how boxes get ticked):</strong> when the AI agent completes a step, it adds
+          <code>checked</code> to that step's input <em>in this file</em> — e.g.
+          <code>&lt;input type="checkbox" class="stepbox" id="sb-R1.2" checked onchange="onStepBox(this)"&gt;</code> — in the
+          <strong>same commit</strong> as the step's code + ledger row. Quick status check for any step:
+          <code>grep -n "sb-R1.2" implementation_plan.html</code> — the line contains <code>checked</code> only once the Gate ran green.
+          The progress bar and per-phase counts (<code>R0 3/5 · R1 0/6 · …</code>) update automatically on every open; manual browser
+          ticks are a per-browser overlay and never overwrite the file's own state.</p>
+      </div>
+
+      <!-- ══════════════════ 0 ══════════════════ -->
+      <h2 id="s0">0 · Method &amp; Team — test, analyze, then plan</h2>
+      <p>The plan was produced in three stages, in this exact order:</p>
+      <ol class="tight">
+        <li><strong>Test</strong> — five verification engineers re-checked the audit's claims against the actual source (Part&nbsp;A
+          verdict tables in §1), and ran the built-in bench on the current tree to confirm the starting point is green.</li>
+        <li><strong>Analyze</strong> — the same engineers feasibility-checked every planned change against the real code and API
+          surface: inkwell 0.11 registry source (attributes, metadata, target-cpu, PassBuilderOptions), native-tls 0.2.18, the
+          hand-extern precedents (<code>net.rs</code> <code>sys</code> module, <code>shutdown.rs</code> signal,
+          <code>db.rs</code> kernel32), the exhaustive-<code>match</code> cost of new <code>Value</code> variants, the scheduler's
+          GC-quiescence contract, and the phase0 bench wiring (Part&nbsp;B in §1).</li>
+        <li><strong>Plan</strong> — only then were steps written. Where analysis contradicted the audit, <em>the plan follows the
+          analysis</em>; every such change is logged in <a href="#sd">Appendix D</a>.</li>
+      </ol>
+
+      <div class="tablewrap">
+        <table>
+          <tr><th>Team role</th><th>Verified &amp; analyzed</th><th>Feeds phases</th></tr>
+          <tr><td><strong>V1 · Value model</strong></td><td><code>values_equal</code>, <code>SetData</code>, <code>MapData</code> internals, hasher observability, for-in semantics, snapshot-retry discipline, all gating tests</td><td>R1</td></tr>
+          <tr><td><strong>V2 · LLVM backend</strong></td><td>inkwell 0.11 attribute/metadata/target-cpu/PBO API surface (registry source), slab-allocator hazards, class registration, globals table, backend test pins</td><td>R3, R4</td></tr>
+          <tr><td><strong>V3 · I/O &amp; platform</strong></td><td>WSAPoll/epoll/kqueue feasibility, timer primitives, scheduler parking contract, file-handle design cost, TLS acceptor API, I/O test inventory</td><td>R2, R5, R7</td></tr>
+          <tr><td><strong>V4 · Frontend &amp; tooling</strong></td><td>parser recovery points, checker overlay placement, LSP wire format, bench-workload recipe (<code>PINS</code>, manifest, floors), selfhost lexer status</td><td>R1.0, R6</td></tr>
+          <tr><td><strong>V5 · Release &amp; ecosystem</strong></td><td><code>release.yml</code> closure sequence, <code>GR/SEC</code> checkbox IDs, pkg signing/resolver/docgen reuse paths, Rust-side HTTP client</td><td>R0, R8</td></tr>
+          <tr><td><strong>Orchestrator</strong></td><td>Advisory bench baseline on the current build; cross-team synthesis; house-style reports</td><td>all</td></tr>
+        </table>
+      </div>
+
+      <!-- ══════════════════ 1 ══════════════════ -->
+      <h2 id="s1">1 · Verification Matrix — what was tested before planning</h2>
+      <p class="muted">~50 claims checked. Below: the ones that shape the plan. Full verdict: <span class="badge b-pass">PASS</span> = claim
+        confirmed at cited lines; <span class="badge b-fix">FIX</span> = confirmed with correction; <span class="badge b-kill">KILL</span> =
+        analysis disproved the planned fix.</p>
+
+      <div class="tablewrap">
+        <table>
+          <tr><th>Area</th><th>Verification result (anchors current at <code>87decd8</code>)</th><th>Plan impact</th></tr>
+          <tr><td><code>values_equal</code> HashSet-per-call</td><td><span class="badge b-pass">PASS</span> <code>value/mod.rs:860-863</code> — alloc is unconditional; scalar arms only <em>insert</em> when both sides are refs (914-922). Caveat: container arms snapshot-clone items under the lock — a bigger cost than the set itself. <strong>No depth guard exists</strong>; cycle termination relies solely on the seen-pair protocol.</td><td>R1.1 designed as scalar fast path; keep pair protocol</td></tr>
+          <tr><td><code>SetData</code> linear scan</td><td><span class="badge b-pass">PASS</span> <code>seq.rs:941-944</code> — but sets accept <em>any</em> value (constructor <code>collections/mod.rs:254-262</code> does no key validation); <code>values_equal(2, 2.0)</code> is true; containers hash by pointer identity. A pure <code>HashSet&lt;MapKey&gt;</code> is impossible.</td><td>R1.3 = scalar side-index + <code>values_equal</code> confirm + linear fallback</td></tr>
+          <tr><td>Map remove O(n) reindex</td><td><span class="badge b-fix">FIX</span> <code>remove</code> = <code>seq.rs:823-837</code>; <code>reindex()</code> = <code>seq.rs:778-785</code> (clear + full reinsert); called only from remove/delete. <strong>Swap-delete would break the documented insertion-order contract</strong> (<code>docs/DATA_STRUCTURES.md:148</code>, pinned by <code>tests/engine_matrix.rs:201/521</code>).</td><td>R1.4 reduced to in-place index patching; swap-delete rejected</td></tr>
+          <tr><td>Hasher swap observability</td><td><span class="badge b-pass">PASS</span> — <code>MapData.index</code> is never iterated (only get/insert/clear, <code>seq.rs:763-784</code>); all observable order reads the <code>entries</code> Vec. <strong>But</strong> <code>hash_table()</code> bucket order derives from <code>MapKey::hash</code> + deterministic <code>DefaultHasher</code> (<code>misc.rs:879-884</code>, pinned by <code>tests/data_structure_tests.rs:357-375</code>) — so <code>MapKey</code>'s derived Hash must NOT change.</td><td>R1.2 = hasher only on <code>index</code>+<code>frozen</code>, via <code>BuildHasherDefault</code></td></tr>
+          <tr><td>for-in snapshot semantics</td><td><span class="badge b-fix">FIX</span> VM materializes a frozen <code>Tuple</code> snapshot (<code>vm/mod.rs:3314-3321</code>); tree clones (<code>interpreter/mod.rs:862-902</code>); borrow-based iteration would make mutation-during-iteration observable and break fresh-binding (<code>compiler.rs:777-781</code>). Snapshot semantics are undocumented but test-pinned.</td><td>Borrow-based for-in deferred → new decision DP-6</td></tr>
+          <tr><td>inkwell 0.11 attributes</td><td><span class="badge b-pass">PASS</span> — kind-id API fully present: <code>Attribute::get_named_enum_kind_id</code> (<code>attributes.rs:183</code>), <code>Context::create_enum_attribute</code> (<code>context.rs:371</code>), <code>FunctionValue::add_attribute(AttributeLoc, Attribute)</code> (<code>fn_value.rs:292</code>). Caveat: on LLVM 23 prefer <code>memory(...)</code> over legacy <code>readonly</code>/<code>pure</code>; verify kind-ids non-zero at startup.</td><td>R3.1 green-lit, with startup probe (R3.0)</td></tr>
+          <tr><td>inkwell TBAA/metadata</td><td><span class="badge b-pass">PASS</span> — <code>InstructionValue::set_metadata</code> (<code>instruction_value.rs:1201</code>), <code>Context::metadata_node/metadata_string</code> (<code>context.rs:1181/1215</code>).</td><td>R3.1b optional TBAA</td></tr>
+          <tr><td>target-cpu pluggability</td><td><span class="badge b-fix">FIX</span> — <code>create_target_machine(triple, cpu, features, …)</code> takes plain strings (<code>targets.rs:905-934</code>); <code>llvm.rs:293</code> already passes <code>&amp;cpu_for_triple(triple)</code> (<code>"x86-64"</code> / <code>"generic"</code> / <code>"apple-a14"</code> at <code>llvm.rs:261-272</code>), and only <code>features</code> (<code>:294</code>) is <code>""</code>.</td><td>R3.2 = flag plumbing only</td></tr>
+          <tr><td>PassBuilderOptions surface</td><td><span class="badge b-fix">FIX</span> — <code>PassBuilderOptions::create()</code> already used at <code>llvm.rs:301-302</code>; settable: loop vectorization/interleaving/SLP/unrolling, LICM MSSA caps, call-graph profile, merge functions (<code>passes.rs:1185-1233</code>). <strong>No inlining-threshold setter</strong> (<code>set_inliner_with_threshold</code> at <code>:122</code> is legacy PM only) — threshold tuning needs a custom pipeline string.</td><td>R3.3 scope set accordingly</td></tr>
+          <tr><td>Per-call arena reset</td><td><span class="badge b-kill">KILL</span> — returned <code>*mut Value</code> handles are dereferenced later by compiled code; closures created in a call are called after it (<code>rt.rs:1172-1212</code>); spawned tasks run compiled code concurrently (<code>rt.rs:2142-2187</code>). Restoring the slab cursor would recycle live boxes. <strong>Only safe bracket: the whole top-level entry</strong> (<code>rt.rs:2053-2113</code>), which is useless for servers.</td><td>R4 redesigned: accounting + scratch-slab spike; bounded memory moves behind DP-1</td></tr>
+          <tr><td>Method devirtualization</td><td><span class="badge b-fix">FIX</span> — no class integer ID today (mint at publication, <code>ir.rs:4709-4717</code>); runtime class mutation impossible in the language; need MRO-flattened slot table + <code>find_method_cclass</code> fallback; error texts pinned (<code>rt.rs:1291, 1266-1273</code>).</td><td>R3.4 design fixed</td></tr>
+          <tr><td>Globals generation</td><td><span class="badge b-fix">FIX</span> — no mutation counter today (<code>rt.rs:50-53</code>); native table is process-wide, not shared with tree/VM engines; IR writers (<code>ir.rs:3287/4086/4552/4711</code>) all go through <code>spid3r_global_set</code> (<code>rt_init</code> at <code>rt.rs:390</code> populates stdlib natives before user code); note <code>spid3r_value_null()</code> (<code>rt.rs:441-443</code>) already caches <code>NULL_VAL</code> via <code>OnceLock</code>, so caching targets <code>Builtin</code>/global lookups &amp; skipping the mutex+HashMap lookup.</td><td>R3.5 = AtomicU64 gen + cached-handle trampoline</td></tr>
+          <tr><td>WSAPoll listeners/UDP</td><td><span class="badge b-fix">FIX</span> — exclusion is a design choice in <code>n_tcp_poll</code> (<code>net.rs:944-958</code>), not an OS limit; fd types already match; need to generalize <code>kernel_poll</code>'s <code>&amp;[(i64, Arc&lt;Conn&gt;)]</code> signature.</td><td>R2.1 = cheap first win</td></tr>
+          <tr><td>epoll/kqueue</td><td><span class="badge b-pass">PASS</span> — three hand-extern precedents exist (<code>net.rs:1627-1660</code>, <code>shutdown.rs:39-44</code>, <code>db.rs:92-130</code> kernel32); <code>epoll_event</code> must be <code>#[repr(packed)]</code>; ms timeouts on all three OSes.</td><td>R2.3 feasible without crates</td></tr>
+          <tr><td>Scheduler parking contract</td><td><span class="badge b-pass">PASS</span> — a blocking poll must call <code>enter_blocked()</code> (precedent <code>sleep_ms:1289-1298</code>); must NOT touch <code>enter_untimed_park</code> (watchdog counter, <code>sched/mod.rs:98-102</code>); dedicated loop thread + channel fits better than a pool job (watchdog precedent <code>:758</code>).</td><td>R2.3 integration design fixed</td></tr>
+          <tr><td><code>Value::File</code> variant cost</td><td><span class="badge b-fix">FIX</span> — mandatory new arms only in 3 exhaustive matches (<code>type_name:1056-1105</code>, <code>display_value_inner:1257-1580</code>, <code>deep_clone_inner:1962-1975</code>), but full cost (tests, ABI, JSON policy) is unbounded; integer-handle design mirrors <code>Sock</code> (<code>net.rs:86-94</code>, table <code>:205-220</code>) and touches nothing in <code>Value</code>.</td><td>R7.1 = opaque integer handles</td></tr>
+          <tr><td>TLS server</td><td><span class="badge b-pass">PASS</span> — native-tls 0.2.18 pinned; <code>TlsAcceptor::new(Identity) + accept()</code>; minimal design = PKCS#12 only; new <code>Sock::TlsListener</code> + <code>get_tls_listener</code>; accepted conns reuse every existing native.</td><td>R5.1 scoped</td></tr>
+          <tr><td>Selfhost lexer byte-scan</td><td><span class="badge b-kill">KILL</span> — <strong>already implemented</strong> (<code>selfhost/lexer.matrix:1-21</code>, byte-based since 2026-11-14; W4.2 fast path at :501-525). Audit item P-MED-4 is stale.</td><td>Effort reassigned to R2.2 timers</td></tr>
+          <tr><td>Parser recovery points</td><td><span class="badge b-pass">PASS</span> — statement loops at <code>parse_program:236-278</code> / <code>parse_block:976-985</code>; no <code>Vec&lt;Diagnostic&gt;</code> path in the parser today; CLI already loops warnings (<code>cli.rs:1558-1568</code>); LSP wire format already sends arrays (<code>lsp/mod.rs:1532-1566</code>).</td><td>R6.1 scoped, ARC-06 safe</td></tr>
+          <tr><td>Checker narrowing placement</td><td><span class="badge b-pass">PASS</span> — overlay slot: <code>Checker.scopes: Vec&lt;HashMap&gt;</code> (<code>semantic/mod.rs:97</code>); consult point is the <code>Expr::Ident</code> arm (<code>:2910-2918</code>); 5 highest-value narrowing sites identified; <code>?. </code> and <code>?</code> are currently <code>Ty::Any</code> (<code>:2905/:2908</code>).</td><td>R6.3 design fixed</td></tr>
+          <tr><td>Bench workload recipe</td><td><span class="badge b-fix">FIX</span> — <code>PINS</code> lives in <code>phase0_bench.py:75-79</code> <strong>and duplicated in <code>phase0_fixtures.py</strong></code>; integrity fail-closed via <code>phase0_manifest.py</code> (<code>phase0_bench.py:540-542</code>); <code>bench --gate</code> floors are hardcoded <code>BENCH_ITERS/BENCH_FLOORS</code> in <code>cli.rs:3285-3327</code>.</td><td>R1.0 exact recipe written</td></tr>
+          <tr><td>release.yml closure</td><td><span class="badge b-pass">PASS</span> — <code>workflow_dispatch</code> (no inputs, <code>release.yml:19</code>); 4-target matrix; NSIS job calls <code>--smoke-install</code> (<code>:153</code>); publish only on <code>v*</code> tags (<code>:223</code>, <code>clobber:false</code>); LLVM 23 provisioned on all runners.</td><td>R0 exact command sequence</td></tr>
+          <tr><td>Rust-side HTTP for pkg</td><td><span class="badge b-fix">FIX</span> — <code>net.rs fetch(:2283)</code> is a plain-Rust fn with <code>&amp;str</code> args, reusable with a visibility change; but body is <code>from_utf8_lossy</code> (<code>:2420-2422</code>) — corrupts binary tarballs → needs <code>fetch_bytes</code>; release builds for Linux/macOS compile <strong>without</strong> the <code>tls</code> feature (<code>release.yml:79</code>).</td><td>R8.1 precondition of R8.2</td></tr>
+          <tr><td>Staticlib bitcode</td><td><span class="badge b-fix">FIX</span> — plain staticlib today; <code>RUSTFLAGS="-C embed-bitcode=yes"</code> works, but MSVC <code>link.exe</code> ignores IR members — needs <code>lld-link -flto</code> on the link side. Real work, not a flag flip.</td><td>R3.6 = stretch experiment behind a flag</td></tr>
+          <tr><td>Current tree health</td><td><span class="badge b-pass">PASS</span> — verified 2026-11-17 on <code>87decd8</code>: <code>tools/gate.sh</code> 9/9 PASS; <code>tools/difftest.sh</code> ALL EXAMPLES MATCH; <code>cargo fmt --check</code> exit 0; <code>cargo clippy --all-targets --features native -- -D warnings</code> exit 0; <code>cargo test --features native --no-run</code> exit 0; <code>verify_doc_claims.js</code> 37/0; <code>verify_dev_snippets.js</code> 19/0; <code>phase0_manifest.py --verify</code> PASS; <code>phase0_fixtures.py --verify</code> 35 checks PASS; <code>corpus_manifest.py verify</code> 135 files OK; <code>phase0_bench.py --quick --variants vm,exec</code> PASS (<code>ADVISORY_ONLY</code>: prime vm <code>31.752 ms</code> / exec <code>30.859 ms</code>, json vm <code>169.940 ms</code> / exec <code>168.328 ms</code>, map vm <code>23.365 ms</code> / exec <code>23.480 ms</code>).</td><td>Baseline for all measurement steps</td></tr>
+        </table>
+      </div>
+
+      <h3>Advisory baseline captured 2026-11-17 (this host, best-of-3, <code>spid3r bench --runs 3 --compare</code>)</h3>
+      <p class="muted small">ADVISORY_ONLY per GR-2 — absolute values are host-specific; floors are the portable truth. Every gate is currently
+        green, which is the precondition for starting any phase.</p>
+      <div class="tablewrap">
+        <table>
+          <tr><th>Benchmark</th><th>Iters/sec</th><th>Gate floor</th><th>Margin</th></tr>
+          <tr><td><code>arith</code></td><td class="num">42,038,974</td><td class="num">6,000,000</td><td class="num good">7.0×</td></tr>
+          <tr><td><code>strings</code></td><td class="num">2,865,138</td><td class="num">140,000</td><td class="num good">20.5×</td></tr>
+          <tr><td><code>list</code></td><td class="num">6,722,237</td><td class="num">800,000</td><td class="num good">8.4×</td></tr>
+          <tr><td><code>map</code></td><td class="num">1,671,556</td><td class="num">160,000</td><td class="num good">10.4×</td></tr>
+          <tr><td><code>methods</code></td><td class="num">2,630,077</td><td class="num">500,000</td><td class="num good">5.3×</td></tr>
+          <tr><td><code>closures</code></td><td class="num">1,870,916</td><td class="num">170,000</td><td class="num good">11.0×</td></tr>
+          <tr><td><code>json</code></td><td class="num">130,742</td><td class="num">8,000</td><td class="num good">16.3×</td></tr>
+          <tr><td><code>tasks</code></td><td class="num">182,507</td><td class="num">6,000</td><td class="num good">30.4×</td></tr>
+        </table>
+      </div>
+
+      <!-- ══════════════════ 2 ══════════════════ -->
+      <h2 id="s2">2 · Execution Protocol — every step follows the same lifecycle</h2>
+      <p>Each step below is written as <strong>S0 → S6</strong>. The S-steps are not suggestions: a step is done only when S5's ledger
+        row exists and S6's CI is green (or the failure is honestly recorded).</p>
+
+      <div class="tablewrap">
+        <table>
+          <tr><th>S</th><th>Stage</th><th>What happens</th><th>Ground rule served</th></tr>
+          <tr><td><strong>S0</strong></td><td>Baseline &amp; analysis</td><td>Run the step's analysis commands (measure current behavior, dump IR, read the exact functions); write the finding into the step's working notes. If the analysis contradicts the plan, <em>stop and amend the plan first</em>.</td><td>GR-1 (no fake results)</td></tr>
+          <tr><td><strong>S1</strong></td><td>Contract test first</td><td>Add or identify the test that pins current behavior (or the new expectation); for new harnesses, teeth-prove RED then restore.</td><td>GR-1, GR-2 (teeth)</td></tr>
+          <tr><td><strong>S2</strong></td><td>Implement</td><td>Touch only the files listed in the step. No drive-by refactors.</td><td>GR-2</td></tr>
+          <tr><td><strong>S3</strong></td><td>Parity verify</td><td>Run the step's gate list (below) — all green.</td><td>GR-2</td></tr>
+          <tr><td><strong>S4</strong></td><td>Perf (where applicable)</td><td>phase0 protocol: 9/21/2, MAD ≤5%, agreement ≤3%, checksum-first, selftest; regression rule &gt;1.05× and &gt;3× pooled MAD on 2 runs.</td><td>GR-1, GR-2</td></tr>
+          <tr><td><strong>S5</strong></td><td>Ledger + commit</td><td>One commit: code + doc + ledger row (template Appendix C). Ask before committing if the owner hasn't said to.</td><td>GR-1</td></tr>
+          <tr><td><strong>S6</strong></td><td>CI evidence</td><td>Push → watch Actions → append separate CI-evidence row; red = record cause; flake = prove in isolation and re-run.</td><td>GR-1</td></tr>
+        </table>
+      </div>
+
+      <div class="card warn">
+        <strong>Environment rules (from <code>AGENTS.md</code> §5/§8 — non-negotiable):</strong>
+        <ul class="tight">
+          <li><code>tools/*.sh</code> run under <strong>Git Bash</strong>: <code>&amp; "C:\Program Files\Git\bin\bash.exe" tools/&lt;script&gt;.sh</code> — plain <code>bash</code> on PATH is WSL's and breaks them.</li>
+          <li>Close stdin when launching corpus programs: <code>&lt; /dev/null</code> (native-parity otherwise hangs for minutes).</li>
+          <li><strong>Never run two cargo builds with different feature sets at once</strong> — they all write <code>target/debug/spid3r</code> (<code>gate.sh</code> is strictly sequential for this reason).</li>
+          <li>PowerShell 5 <code>Get-Content/Set-Content</code> re-encodes UTF-8 — edit <code>.matrix</code>/<code>.sh</code> files with editor tools only.</li>
+          <li>Mimosa PreToolUse scanner: commit without naming staged files in the command text (<code>git add tools/</code> style workarounds); <code>ENOBUFS</code> scanner errors are resource errors, not findings.</li>
+          <li>Build Stage 0 with <code>cargo build --features native</code>; run native tests with <code>cargo test --features native</code>.</li>
+        </ul>
+      </div>
+
+      <div class="card accent">
+        <strong>Universal gate list</strong> (S3 runs this for every code step; steps add phase-specific gates on top):
+        <code>tools/gate.sh</code> 9/9 → <code>tools/difftest.sh</code> ALL MATCH → <code>cargo fmt --check</code> →
+        <code>cargo clippy --all-targets --features native</code> → affected parity harnesses (per step) →
+        <code>python tools/phase0_manifest.py --verify</code> when bench fixtures changed.
+      </div>
+
+      <!-- ══════════════════ 2.5 ══════════════════ -->
+      <h2 id="s2b">2.5 · Agent Execution Contract — strict role set for any AI agent</h2>
+      <div class="card dp">
+        <strong>ROLE.</strong> You are the <em>executing engineer</em> for this plan. You implement <strong>one step at a time</strong>,
+        in dependency order, on the real repository. You are the operator of this plan, not its designer: you do not redesign, reorder,
+        or reinterpret steps. When reality contradicts the plan (S0 analysis), you <strong>stop, record the finding, and amend this
+        document first</strong> — exactly how Appendix D came to exist. You never "improve" scope silently.
+      </div>
+      <div class="card warn">
+        <strong>HARD RULES — a violation makes the step INVALID and must be reverted.</strong>
+        <ol class="tight">
+          <li><strong>No fake implementations.</strong> No stubs, no placeholders, no "temporary" shortcuts that pretend to work, no
+            mocked-out gates. A step that cannot be completed is left OPEN in the ledger with the exact reason — that is a valid
+            outcome; a pretended completion is not.</li>
+          <li><strong>No fake results.</strong> Never claim a gate passed that did not run. Never quote a number that was not produced by
+            the named command on this tree, this commit. Never edit historical benchmark artifacts or ledger rows — the ledger is
+            append-only; corrections are new rows.</li>
+          <li><strong>Tick discipline.</strong> A checkbox (<code>sb-&lt;step&gt;</code>) is set only when (a) the step's GATE commands
+            ran and passed on the real repo, (b) the ledger row is appended, and (c) the <code>checked</code> attribute is added — all
+            <strong>in the same commit</strong>. Leaving a box unticked is always acceptable. A falsely ticked box never is.</li>
+          <li><strong>No performance claims without measurement.</strong> Never write or say "X is now as fast as Rust/Node" without a
+            phase0 measurement under the pinned protocol (Appendix A) proving it, on the commit that claims it. Comparisons are
+            same-host, same-protocol; absolute ms are ADVISORY_ONLY; ratios are the portable truth. Tier-B targets bind only after
+            their first measurement; unreachable targets are retired openly (<code>docs/PERF_TARGET_RETIREMENT.md</code> style) —
+            never quietly dropped, never quietly declared met.</li>
+          <li><strong>Scope lock.</strong> Touch only the files listed for the step (Appendix B). No drive-by refactors, no dependency
+            additions, no feature creep, no "while I'm here". If an unrelated bug blocks you: record it in the ledger, route around
+            it, and ask the owner before fixing anything outside the step.</li>
+          <li><strong>Contract lock.</strong> After every code step: <code>tools/gate.sh</code> 9/9, <code>tools/difftest.sh</code> ALL
+            MATCH, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets --features native</code>, plus the step's specific
+            gates. Any red = the step is not done, no matter how small the diff.</li>
+          <li><strong>Decision lock.</strong> Steps marked <span class="badge b-dp">owner</span>/<span class="badge b-dp">DP</span>
+            (R0.4; R2.3 needs DP-2; R10.x needs DP-1; runtime-loading FFI needs DP-5) are executed only after the owner's recorded
+            confirmation in the ledger. You may prepare their analysis; you may not implement them.</li>
+          <li><strong>Safety lock (SEC-A…D).</strong> No new <code>unsafe</code> outside <code>src/native/rt.rs</code>; every new extern
+            declaration follows the hand-FFI precedents (<code>net.rs sys</code>, <code>shutdown.rs signal</code>,
+            <code>db.rs kernel32</code>) with a written safety comment; compiler operations perform no network access; exit codes stay
+            0/1/2/4 per <code>README.md</code>; every artifact keeps its SHA-256 integrity story.</li>
+          <li><strong>Truth lock.</strong> Report failures verbatim with the command output. A flake is proven in isolation and re-run —
+            never absorbed into a green summary, never "fixed" by touching unrelated code (the known
+            <code>tests/phase2_net_limits.rs</code> flake is the canonical example). Negative results get ledger rows, not silence.</li>
+          <li><strong>Memory lock.</strong> <code>AGENTS.md</code> + the <code>full_plan.html</code> ledger are the memory. Read the
+            step's GR-n/SEC-n context before starting. Never ask the owner to re-explain what the ledger already records.</li>
+          <li><strong>Environment lock.</strong> <code>tools/*.sh</code> under Git Bash with <code>&lt; /dev/null</code>; strictly
+            sequential cargo builds (feature configs collide on <code>target/debug/spid3r</code>); edit <code>.matrix</code>/<code>.sh</code>
+            files with editor tools only (PowerShell 5 re-encodes UTF-8).</li>
+          <li><strong>Commit lock.</strong> One commit per step: code + docs + plan tick + ledger row together. Push only when the owner
+            said to; ask before committing if the owner hasn't.</li>
+        </ol>
+      </div>
+      <div class="card accent">
+        <strong>What "fast like Rust or Node.js" honestly means here — the measured trajectory.</strong> This plan does not
+        <em>promise</em> parity; it sequences the engineering that closes the gap and binds every claim to a measurement:
+        <ul class="tight">
+          <li><strong>R1–R4 horizon (no owner decision needed):</strong> Tier-B targets are set at first measurement, then met or
+            retired openly — prime AOT currently 4.23× off Rust → target ≤3.0×; json 8.46× off Node → ≤5.0×; map 17.93× → ≤6.0×;
+            proposed selfhost lex target ≥2.0 MB/s (current <code>0.733 MB/s</code> at <code>benchmark.html:942</code>, Tier-A floor <code>0.192 MB/s</code>); AOT RSS measured on the request-loop workload (R4.2; reclamation itself is DP-1-gated because the
+            hazard analysis killed per-call arenas — see R4).</li>
+          <li><strong>DP-1 horizon (owner decision):</strong> Value v2 (tagged pointers / inline scalars) is the path to ≤2–3× off
+            Rust/Node on compute and to unboxed containers (R10.3). Without it the plateau is real and permanent; with it, R10.3's
+            monomorphizer is the biggest single lever.</li>
+          <li><strong>Node-level web capability:</strong> R2 (evented I/O) + R5 (TLS server, keep-alive, chunked, streaming) deliver the
+            <em>capability</em>; its performance is whatever <code>http_echo</code>/<code>http_json</code> measure on the same host
+            against the Node baseline — first measured, then floored, then improved.</li>
+          <li><strong>The anti-fake rule governing all of it:</strong> every speed statement in the ledger must be reproducible by the
+            commands in Appendix A on the commit that claims it. A claim that cannot be reproduced is treated as a false result
+            (Rule 2) and reverted.</li>
+        </ul>
+      </div>
+      <div class="card dp">
+        <strong>Production-grade bar — identical for every track (web, daemon/CLI, container, OS).</strong> A track is
+        <em>production</em> when ALL of the following hold, verified by objective commands — never by narrative:
+        (1) CI-objective tests (for containers: real image pulled from a fixture registry, run, killed, removed, exit codes exact;
+        for the OS: deterministic QEMU boots with serial-output assertions); (2) checksummed artifacts (SEC-B); (3) a written threat
+        model + security review for every privileged operation (DP-7 surface); (4) fuzz targets over every parser touching untrusted
+        bytes (SEC-C); (5) docs whose claims pass <code>verify_doc_claims.js</code>; (6) zero stubs/placeholders, verified by the
+        no-fake rules above; (7) an append-only ledger trail for every step. <strong>Nothing in this plan is labeled an experiment;
+        later sequencing means more prerequisites, not a lower bar.</strong>
+      </div>
+
+      <!-- ══════════════════ 3 ══════════════════ -->
+      <h2 id="s3">3 · Phase R0 — Release Closure (no code changes)</h2>
+      <p class="muted">Verified facts: <code>release.yml</code> triggers on <code>workflow_dispatch</code> (no inputs) and <code>v*</code>
+        tags; LLVM 23 + NSIS are provisioned on the runners; publish attaches assets only on tags with <code>clobber:false</code>.</p>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R0.1" onchange="onStepBox(this)"><span class="sid">R0.1</span> Dispatch release dry-run <span class="badge b-eff">M (mostly waiting)</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>Confirm tree is pushed and clean; confirm <code>release.yml</code> jobs: build ×4 targets, <code>windows-installer</code> (NSIS + <code>--smoke-install</code>), publish-verify.</li>
+          </ul>
+          <h5>S2 · Do</h5>
+          <ul>
+            <li><code>gh workflow run release</code> → watch <code>gh run watch</code>. Dry run: assets do <em>not</em> attach (tag-gated).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> all jobs green; publish job's verification step reports 4 tarballs + sha256sums verified; NSIS smoke-install PASS in the installer job log.</div>
+          <div class="risk"><strong>Risk:</strong> runner-level LLVM/NSIS setup drift. Rollback: fix workflow only; no code involved.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R0.2" onchange="onStepBox(this)"><span class="sid">R0.2</span> Tag → publish assets <span class="badge b-eff">S</span><span class="deps">deps: R0.1</span></div>
+        <div class="step-body">
+          <h5>S2 · Do</h5>
+          <ul>
+            <li>Push tag <code>v1.1.1</code> (or owner-chosen version) → publish job attaches the 4 tarballs + installer + <code>sha256sums.txt</code> to the GitHub release.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> <code>sha256sum -c sha256sums.txt</code> locally against downloaded assets; installer runs silently (<code>/S</code>) via the already-verified smoke path.</div>
+          <div class="risk"><strong>Risk:</strong> <code>clobber:false</code> — a re-run against the same tag fails. Rollback: delete draft release, re-tag.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R0.3" onchange="onStepBox(this)"><span class="sid">R0.3</span> Ledger + GR/SEC sign-off <span class="badge b-eff">S</span><span class="deps">deps: R0.1, R0.2</span></div>
+        <div class="step-body">
+          <h5>S2 · Do</h5>
+          <ul>
+            <li>Append CI-evidence ledger row (run IDs, tarball SHAs, smoke result) — template in Appendix C.</li>
+            <li>Tick <code>s10-1</code>, then sign-off boxes <code>gr1…gr4</code> and <code>sec1…sec4</code> in <code>full_plan.html</code> (the release cycle is the direct evidence for GR-3 artifact integrity / SEC-B tamper-exit).</li>
+            <li>Append correction-note rows superseding the two ledger rows that state "10.1 open pending release.yml push" — the ledger is <strong>append-only</strong>: never edit or delete old rows (AGENTS.md §1).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> <code>full_plan.html</code> 51/51 checkboxes resolved (checked or explicitly waived); progress counts updated; commit per GR discipline.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R0.4" onchange="onStepBox(this)"><span class="sid">R0.4</span> P-8 §8 owner confirmation <span class="badge b-dp">owner</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Do</h5>
+          <ul>
+            <li>Present the P-8 three-way disposition table (Sections 06/§8) to the owner; record confirmation or amendments in the ledger. This retires the "pending owner confirmation" flag that has been open since Phase 11 P-8.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R0.5" onchange="onStepBox(this)"><span class="sid">R0.5</span> Housekeeping (optional) <span class="badge b-low">low</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Do</h5>
+          <ul>
+            <li>Correct the stale <code>variants</code> block in <code>benchmarks/reference.p1.json</code> (says AOT "not_measured") — regenerate via the producing tool or add an explicit correction note; <strong>never edit historical numbers</strong>.</li>
+            <li>Fix doc drift: <code>semantic/ty.rs:23-24</code> ("elements erased") vs actual assignability; <code>parser/mod.rs:1</code> "Pratt-style" claim.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> <code>tools/verify_doc_claims.js</code> 37/0; <code>verify_dev_snippets.js</code> 19/0.</div>
+        </div>
+      </div>
+
+      <!-- ══════════════════ 4 ══════════════════ -->
+      <h2 id="s4">4 · Phase R1 — Collections Fast Path <span class="badge b-crit">critical</span></h2>
+      <p class="muted">Scope <strong>corrected by verification</strong>: no swap-delete (order contract), no full set hash index (sets accept
+        any value), no <code>MapKey</code> Hash change (hash_table bucket order pinned), no borrow-based for-in (deferred → DP-6).
+        What remains is exactly the safe subset — and it still targets the top of the map/json gap.</p>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.0" checked onchange="onStepBox(this)"><span class="sid">R1.0</span> Baseline + new workloads <span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>Run <code>python tools/phase0_bench.py --quick</code> (2/5/1) on <code>prime,json,map</code> — record today's numbers before any code change.</li>
+          </ul>
+          <h5>S2 · Implement (bench infrastructure only)</h5>
+          <ul>
+            <li>Author <code>benchmarks/compare/set.matrix</code> + <code>benchmarks/compare/equality.matrix</code>, mirroring
+              <code>map.matrix</code>: exactly one <code>RESULT &lt;int&gt; &lt;int&gt;</code> line + one <code>TIME_US</code> line.</li>
+            <li>Pin checksums in <strong>both</strong> places: <code>PINS</code> in <code>tools/phase0_bench.py:75-79</code> and the duplicate in <code>tools/phase0_fixtures.py</code> (~:45-49).</li>
+            <li>Register in <code>benchmarks/compare/manifest.json</code>; regenerate <code>python tools/phase0_manifest.py --write</code>.</li>
+            <li>Extend <code>--workloads</code> default (<code>phase0_bench.py:1246</code>) to <code>"prime,json,map,set,equality"</code>.</li>
+            <li>Add <code>("set", N)</code>/<code>("equality", N)</code> to <code>BENCH_ITERS</code> (<code>cli.rs:3285-3294</code>) and floors to <code>BENCH_FLOORS</code> (<code>cli.rs:3318-3327</code>) — without <code>BENCH_ITERS</code> the gate FAILs with "no iters/sec".</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> <code>python tools/phase0_manifest.py --verify</code> PASS; <code>tools/phase0_fixtures.py --verify</code> PASS; <code>target/release/spid3r.exe bench --gate</code> 10/10 PASS; quick phase0 PASS on 5 workloads.</div>
+          <div class="risk"><strong>Risk:</strong> checksum mismatch after editing workload files — regenerate manifest <em>in the same commit</em> as the workload.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.1" checked onchange="onStepBox(this)"><span class="sid">R1.1</span> <code>values_equal</code> scalar fast path <span class="badge b-crit">critical</span><span class="badge b-eff">S</span><span class="deps">deps: R1.0</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>Read <code>src/value/mod.rs:860-1052</code>; confirm the ordered-pair protocol (insert <code>(x&lt;=y)</code> before recursion, re-entry ⇒ true) and that <strong>no depth guard exists</strong> — the seen-set is the only cycle terminator.</li>
+          </ul>
+          <h5>S1 · Contract test first</h5>
+          <ul>
+            <li><code>tests/numbers.rs:268-309</code> (assertions at <code>:285-309</code>, file is 309 lines) already pins mixed Int/Float exactness; add a cycle-equality case if not covered (<code>tests/fix_f3_hangs.rs</code>/<code>deadlock_tests.rs</code> cover self-referential containers — confirm).</li>
+          </ul>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>In <code>values_equal_inner</code>'s wrapper (<code>value/mod.rs:860-863</code>): before allocating, if <code>ref_id(a).is_none() &amp;&amp; ref_id(b).is_none()</code> evaluate the scalar match directly (duplicating the scalar arms) and return. Refs keep the existing seen-set path untouched.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list + <code>tests/numbers.rs</code>, <code>tests/weak_tests.rs</code>, <code>tests/stdlib_assert.rs</code> (every <code>assert_eq</code> exercises this path), <code>tests/stage2_concurrency.rs</code> (A-7 no re-lock). <strong>S4:</strong> <code>equality</code> workload quick-run; expect scalar-case improvement (target set after measurement).</div>
+          <div class="risk"><strong>Risk:</strong> accidentally skipping the seen-set for mixed scalar/ref pairs → infinite recursion. Mitigation: the fast path returns only when BOTH sides are scalars; keep everything else byte-identical.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.2" checked onchange="onStepBox(this)"><span class="sid">R1.2</span> FxHash-style hasher for <code>MapData.index</code> + <code>frozen</code> <span class="badge b-crit">critical</span><span class="badge b-eff">S</span><span class="deps">deps: R1.0</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>Confirmed: <code>index</code> is only get/insert/clear (<code>seq.rs:763-784</code>); <code>frozen</code> only <code>contains</code> (<code>seq.rs:738-740</code>); neither is iterated → hasher swap is unobservable.</li>
+            <li><strong>Do not touch</strong> <code>MapKey</code>'s derived Hash — <code>hash_table()</code> bucket order depends on it (<code>misc.rs:879-884</code>, pinned <code>tests/data_structure_tests.rs:357-375</code>).</li>
+          </ul>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>New <code>src/value/collections/fxhash.rs</code>: vendored ~30-line FxHash-style <code>Hasher</code> (keeps the zero-dependency policy — no new crate).</li>
+            <li>Change <code>MapData.index</code> to <code>HashMap&lt;MapKey, usize, BuildHasherDefault&lt;FxHasher&gt;&gt;</code> (<code>seq.rs:671</code>) and <code>frozen</code> likewise (<code>seq.rs:680</code>). Update the 3 construction sites (703-706, 773, 781-784).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list + <code>tests/data_structure_tests.rs:141</code> (map order/float rejection), <code>tests/engine_matrix.rs:201/521</code> (insertion order), <code>tests/vm_dispatch_tests.rs</code> (map field cache). <strong>S4:</strong> <code>map</code> workload full phase0; Tier-B target: measured improvement vs R1.0 baseline (set after measurement, retire openly if unreachable).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.3" checked onchange="onStepBox(this)"><span class="sid">R1.3</span> Set scalar hash index <span class="badge b-crit">critical</span><span class="badge b-eff">M</span><span class="deps">deps: R1.2</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>Confirmed constraint: sets accept any value; equality is deep <code>values_equal</code>; so the index is an <em>accelerator</em>, never the authority.</li>
+          </ul>
+          <h5>S1 · Contract test first</h5>
+          <ul>
+            <li>Add a test: <code>set(2) contains 2.0 == true</code>, <code>set(-0.0) contains 0.0 == true</code> (or excluded-from-fast-path behavior, per design), container members still work (linear path).</li>
+          </ul>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>SetData</code> gains <code>index: HashMap&lt;u64, Vec&lt;usize&gt;, BuildHasherDefault&lt;FxHasher&gt;&gt;</code> over canonical hashes of Int/Str/Bool members only (Float excluded initially — ±0.0 and 2.0-vs-2 cross-equality make canonicalization risky; document).</li>
+            <li>Update <code>SetData::method</code> push/remove/contains (<code>seq.rs:960-980</code>), <code>set_detached</code> (<code>seq.rs:369-417</code> — index update inside the verified commit after <code>slots_unchanged</code>; a CONFLICT retry must not double-insert), <code>set_op</code> (<code>seq.rs:1029-1070</code>), constructor (<code>collections/mod.rs:254-262</code>).</li>
+            <li>Every index hit is confirmed by <code>values_equal</code>; miss ⇒ existing linear scan. Removal path: swap-with-last inside the index's <code>Vec&lt;usize&gt;</code> then patch.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list + <code>tests/data_structure_tests.rs:184</code> (set algebra), cycle tests, <code>tests/phase5_perf_parity.rs</code> (snapshot fallback). <strong>S4:</strong> <code>set</code> workload.</div>
+          <div class="risk"><strong>Risk:</strong> index desync after failed detach commit → stale positions. Mitigation: rebuild index on CONFLICT abort (sets are small; correctness &gt; micro-perf).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.4" onchange="onStepBox(this)"><span class="sid">R1.4</span> Map remove: in-place index patching <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R1.2</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis changed this step:</strong> swap-delete is rejected — it reorders <code>entries</code>, breaking
+            the documented insertion-order contract (<code>docs/DATA_STRUCTURES.md:148</code>, <code>tests/engine_matrix.rs:201</code>);
+            tombstones would touch 15+ direct <code>entries</code> readers. Scope reduced to constant-factor work.</div>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Keep <code>entries.remove(i)</code> (order-preserving shift); replace <code>reindex()</code>'s clear+reinsert with an in-place pass that decrements every stored position &gt; <code>i</code> (no rehashing, no key clones). Same O(n) asymptotics, smaller constant; honest label in the ledger.</li>
+            <li>Sites: <code>seq.rs:823-837</code> (remove), <code>seq.rs:838-852</code> (delete).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list + map-order tests (engine_matrix 201/521), <code>for (k,v) in m</code> parity (<code>lower/mod.rs:617-728</code> behavior unchanged).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.5" onchange="onStepBox(this)"><span class="sid">R1.5</span> Measure, floors, ledger <span class="badge b-eff">M</span><span class="deps">deps: R1.1–R1.4</span></div>
+        <div class="step-body">
+          <h5>S4 · Measure</h5>
+          <ul>
+            <li>Full phase0 (9/21/2) on <code>prime,json,map,set,equality</code>; 2-run confirmation for any floor change; HLC corpus optional.</li>
+          </ul>
+          <h5>S5 · Ledger</h5>
+          <ul>
+            <li>One row per step + a phase summary row with before/after medians and MADs; raise <code>BENCH_FLOORS</code> only after the 2-run rule.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card dp">
+        <span class="badge b-dp">DP-6 (new)</span> <strong>Borrow-based <code>for-in</code> iteration</strong> — would remove the per-loop deep
+        clone (<code>collections/mod.rs:1707-1712</code>) but changes documented-by-tests snapshot semantics (mutation-during-iteration
+        visibility, loop-var freshness). <strong>Deferred pending owner sign-off</strong>; reversible path (R1 without it) unaffected.
+      </div>
+
+      <!-- ══════════════════ 5 ══════════════════ -->
+      <h2 id="s5">5 · Phase R2 — Evented I/O Core <span class="badge b-crit">critical</span> <span class="badge b-dp">DP-2 at R2.3</span></h2>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.0" onchange="onStepBox(this)"><span class="sid">R2.0</span> Baseline the current model <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>Measure today: a Spid3r echo server via <code>tcp_poll</code> + <code>spawn</code> (2 ms readiness granularity, <code>stdlib/event.matrix</code>) — throughput + P99 at 16/64 connections; record as the "before" for R2.4's harness.</li>
+            <li>Confirm <code>enter_blocked()</code> discipline facts (<code>sched/mod.rs:63-192</code>, precedent <code>sleep_ms:1289-1298</code>).</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.1" onchange="onStepBox(this)"><span class="sid">R2.1</span> Generalize <code>tcp_poll</code>: listeners + UDP + true writability <span class="badge b-crit">critical</span><span class="badge b-eff">M</span><span class="deps">deps: R2.0</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis:</strong> the listener/UDP exclusion is a design choice in <code>n_tcp_poll</code>
+            (<code>net.rs:944-958</code>), not a WSAPoll limit — POLLIN on a listen socket fires on pending connections; fd types already
+            match (<code>as_raw_socket</code>/<code>as_raw_fd</code>, <code>net.rs:1673-1702</code>).</div>
+          <h5>S1 · Contract test first</h5>
+          <ul>
+            <li>Extend <code>tests/io_additions.rs</code>: poll a listener (fires on connect), poll a UDP socket (fires on datagram), writable edge cases.</li>
+          </ul>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Resolve loop: drop the two rejections; generalize <code>kernel_poll</code> input from <code>&amp;[(i64, Arc&lt;Conn&gt;)]</code> to a raw-fd pair list (small refactor of <code>net.rs:1667-1723</code>).</li>
+            <li>Writability: add an opt-in per-call flag that includes <code>POLLOUT</code> (default stays optimistic-true to avoid behavior change for existing callers — document).</li>
+            <li>Keep POLLERR/HUP→readable mapping (<code>net.rs:1714-1716</code>) and the <code>!used_kernel</code> / wasm fallback (<code>net.rs:981-1000</code>, wasm stub <code>:1729</code>).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list + <code>tests/net_tests.rs</code>, <code>tests/io_additions.rs</code>, <code>tests/net_timeout.rs</code>; <code>tests/phase2_net_limits.rs</code> in isolation (known CI flake — prove, re-run, record).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.2" onchange="onStepBox(this)"><span class="sid">R2.2</span> Timers <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis:</strong> no new clock needed (<code>sched::now_ms</code>, <code>sched/mod.rs:1311-1320</code>);
+            all three poll APIs take ms timeouts; a min-heap suffices — no timer thread. (This step absorbed the freed effort from the
+            already-done selfhost lexer byte-scan — see Appendix D.)</div>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>New <code>src/stdlib/timer.rs</code>: <code>after_ms(ms) -> timer</code>, <code>every_ms(ms) -> timer</code>, <code>timer_cancel(id)</code>, <code>timer_pending(id)</code>; timer table mirrors the <code>Sock</code> pattern (<code>net.rs:86-94</code>, table/monotonic <code>NEXT_HANDLE</code> <code>:205-220</code>); deadlines in a <code>BinaryHeap&lt;Reverse&lt;(i64, i64)&gt;&gt;</code>.</li>
+            <li>Register in <code>build_builtin_defs()</code> (<code>stdlib/mod.rs:66-219</code>); note: timers <em>fire</em> only when someone polls the event loop (R2.3) or calls <code>timer_check()</code> — document the semantics.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> new <code>tests/timer_tests.rs</code> (ordering, cancel, monotonic edge); sandbox parity extension (timers are capability-free).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.3" onchange="onStepBox(this)"><span class="sid">R2.3</span> Event-loop core <span class="badge b-crit">critical</span><span class="badge b-dp">needs DP-2 sign-off</span><span class="badge b-eff">L</span><span class="deps">deps: R2.1, R2.2</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis:</strong> dedicated loop thread + channel (watchdog-thread precedent
+            <code>sched/mod.rs:758</code>) fits better than a pool job; every park wrapped in <code>enter_blocked()</code>/<code>enter_active()</code>;
+            never <code>enter_untimed_park</code> (watchdog counter, <code>sched/mod.rs:98-102</code>).</div>
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>Hand-declare: Linux <code>epoll_create1/epoll_ctl/epoll_wait</code> with <code>#[repr(packed)] epoll_event</code>; macOS <code>kqueue/kevent</code> + <code>timespec</code>; Windows keeps WSAPoll. Follow the three existing precedents (<code>net.rs sys</code>, <code>shutdown.rs signal</code>, <code>db.rs kernel32</code>).</li>
+          </ul>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>New <code>src/stdlib/eventloop.rs</code>: loop thread owns the kernel fd; registrations arrive via channel; on readiness/timer deadlines, dispatches <code>Job</code>s through <code>sched.spawn_job</code>.</li>
+            <li>Surface: <code>event_loop_run()</code> (blocks the calling task; registers as the loop), <code>on_readable(handle, fn)</code>, <code>on_writable</code>, <code>on_timer</code>; cancellation via <code>shutdown_requested()</code> + loop stop flag (pattern <code>sched/mod.rs:559-564</code>).</li>
+            <li>wasm: keep the 2 ms probe fallback path (<code>net.rs:981-1000</code>).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> new <code>tests/event_loop_tests.rs</code> (readiness, timers, cancel-during-poll, GC-quiescence interplay — loop parked must not freeze collection; deadlock watchdog must not fire); universal gate list; scheduler tests (<code>tests/sched_*.rs</code>).</div>
+          <div class="risk"><strong>Risk:</strong> GC freeze if a park skips <code>enter_blocked()</code>; watchdog false-positives. Mitigation: the gate test suite must include a GC-during-idle-loop case before merge.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.4" onchange="onStepBox(this)"><span class="sid">R2.4</span> <code>http_echo</code> benchmark harness <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1 (R2.3 for real numbers)</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>benchmarks/compare/http_echo/</code>: server <code>.matrix</code> (fresh process, fixed 64-byte body, keep-alive arm + close arm), client driver (Python, pinned protocol: N conns, duration, warmup), Node http baseline script for the same-host ratio.</li>
+            <li>Document the protocol in <code>benchmarks/README.md</code>; measurement method: client-side completed-requests + P99, checksum = total request count pin.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> two consecutive runs agree ≤3%; run recorded as baseline in the ledger (Tier-B targets set <em>after</em> first measurement — GR-2: no invented targets).</div>
+        </div>
+      </div>
+
+      <!-- ══════════════════ 6 ══════════════════ -->
+      <h2 id="s6">6 · Phase R3 — AOT Codegen Quality <span class="badge b-crit">critical</span></h2>
+      <p class="muted">Verification green-lit the inkwell work: attributes, metadata, target-cpu, and most PBO toggles are all present in
+        inkwell 0.11 as used with LLVM 23. Backend changes must keep <em>both</em> codegen pipelines converging (Rust <code>ir.rs</code> and
+        the Spid3r-written <code>selfhost/codegen.matrix</code>), or the selfhost parity scripts break.</p>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.0" onchange="onStepBox(this)"><span class="sid">R3.0</span> IR baseline + inkwell capability probe <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li><code>SPID3R_DUMP_IR=1 spid3r build benchmarks/compare/prime.matrix -o /tmp/prime.exe</code> (Git Bash; PowerShell: set <code>$env:SPID3R_DUMP_IR="1"</code> first; prints pre-O3 IR at <code>link.rs:871</code> before <code>emit_object</code>) — save the pre-change IR as the comparison artifact.</li>
+            <li>Add a <code>#[cfg(feature="native")]</code> probe test asserting <code>Attribute::get_named_enum_kind_id("nounwind"/"willreturn"/"alwaysinline"/"memory") != 0</code> on LLVM 23 (kind-id API: <code>attributes.rs:183</code>).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> probe test passes locally on the pinned LLVM 23.1 toolchain.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.1" onchange="onStepBox(this)"><span class="sid">R3.1</span> Function attributes <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R3.0</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>nounwind</code> + <code>willreturn</code> on every <code>spid3r_fn.*</code> (site: <code>compile_function</code>, <code>ir.rs:4147-4323</code>) and on the entry stub.</li>
+            <li><code>memory(read)</code>-style or legacy <code>readonly</code> markers on the <code>spid3r_is_int</code>/<code>spid3r_int_of</code> declarations (purity already documented, <code>rt.rs:553-556</code>) — enabling hoisting of leaf checks in the hybrid path.</li>
+            <li>Prefer the <code>memory(...)</code> attribute name on LLVM 23; keep a startup probe that falls back to legacy kinds if a kind-id is 0.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list + <code>tests/native_tests.rs</code>, <code>tests/native_catchability.rs</code> (error texts byte-identical), <code>tests/engine_matrix.rs</code> aot rows, <code>tools/selfhost_native_parity.sh</code> (124/0/10/0). <strong>S4:</strong> diff pre-O3 IR vs R3.0 artifact (post-O3 effects verified via benchmark); phase0 A/B on prime (advisory, 2-pass).</div>
+          <div class="risk"><strong>Risk:</strong> mis-declaring <code>memory</code> on a non-pure trampoline = miscompile. Mitigation: only the two documented-pure helpers; everything else nounwind/willreturn only (those are safe — the ABI never unwinds by design, pending-throw flag instead).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.2" onchange="onStepBox(this)"><span class="sid">R3.2</span> <code>--target-cpu</code> knob <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R3.0</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Plumb a <code>spid3r build --target-cpu &lt;cpu&gt;</code> flag into <code>emit_object</code>'s <code>create_target_machine</code> call (<code>llvm.rs:293-294</code>, where <code>:293</code> currently passes <code>&amp;cpu_for_triple(triple)</code> and <code>:294</code> passes <code>""</code>); values: <code>x86-64</code> (default, unchanged on x86_64), <code>x86-64-v2</code>, <code>x86-64-v3</code>, <code>native</code>; features string passes through.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> builds with each value; runtime outputs identical; artifact checksum discipline unaffected. <strong>S4:</strong> HLC prime A/B under v3 (advisory).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.3" onchange="onStepBox(this)"><span class="sid">R3.3</span> PassBuilderOptions configuration <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R3.1</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Configure <code>PassBuilderOptions::create()</code> (already instantiated with defaults at <code>llvm.rs:301-302</code>): set <code>set_loop_vectorization(true)</code> (<code>passes.rs:1191</code>), <code>set_loop_interleaving(true)</code> (<code>:1185</code>), <code>set_loop_slp_vectorization(true)</code> (<code>:1197</code>), <code>set_loop_unrolling(true)</code> (<code>:1203</code>), <code>set_merge_functions(true)</code> (<code>:1233</code>). Note: no inlining-threshold setter exists on <code>PassBuilderOptions</code> in inkwell 0.11 (<code>set_inliner_with_threshold</code> at <code>:122</code> is legacy PM only) — if tuning is ever needed, use a custom pipeline string in <code>run_passes</code>.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> same as R3.1; <strong>S4</strong> phase0 A/B (json/map/prime); keep <code>default&lt;O3&gt;</code> as the pipeline string.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.4" onchange="onStepBox(this)"><span class="sid">R3.4</span> Method-slot devirtualization <span class="badge b-crit">critical</span><span class="badge b-eff">L</span><span class="deps">deps: R3.1</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>Map every dynamic-dispatch path that must keep working: non-instance receivers (<code>rt.rs:1293</code>), direct <code>CClass</code> calls (<code>rt.rs:1116</code>), <code>super</code> resolution by name in globals (<code>rt.rs:1342-1349</code>), error texts (<code>rt.rs:1291, 1266-1273</code> — pinned by <code>tests/engine_matrix.rs</code>).</li>
+          </ul>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Mint a stable class id (<code>AtomicU64</code>) at publication time only — after all build mutations (<code>register_class</code> tail, <code>ir.rs:4709-4717</code>; the runtime mutates the Arc while unique before that point).</li>
+            <li>At publication, MRO-flatten a slot table: <code>Vec&lt;Option&lt;Arc&lt;CompiledFn&gt;&gt;&gt;</code> + name→slot; new trampolines <code>spid3r_class_slot_of(class_id, name) -&gt; i64</code> (slot or −1) and <code>spid3r_method_slot(self, slot, name_ptr, argc, argv)</code> (carries the name for identical fallback errors).</li>
+            <li>IR: at call sites where the receiver's class is statically known (ctor bodies, <code>self</code> methods of non-extended classes), emit slot call + guard that falls back to <code>spid3r_method</code> on −1. Start conservative: only <code>self.m()</code> inside methods.</li>
+            <li>Remember the rebuild rule: new trampoline symbols require <code>cargo build</code> before AOT tests (<code>docs/ENGINE_CONTRACT.md</code> rule 4).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list + <code>tests/native_tests.rs</code> (inheritance/override/super), <code>tests/native_catchability.rs</code>, <code>tools/selfhost_native_parity.sh</code> + <code>selfhost_bootstrap_parity.sh</code> (both codegen pipelines must converge), <code>tools/native_diff.sh</code>. <strong>S4:</strong> built-in <code>spid3r bench</code> <code>methods</code> benchmark (and/or add a <code>benchmarks/compare/methods.matrix</code> workload if phase0-measured) + HLC corpus codegen parity ≤1.25×.</div>
+          <div class="risk"><strong>Risk:</strong> stale slot after class publication ordering bug. Mitigation: ids minted strictly at publication; slot tables immutable thereafter (language cannot mutate classes — verified).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.5" onchange="onStepBox(this)"><span class="sid">R3.5</span> Globals handle cache <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R3.1</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>AtomicU64 GLOBAL_GEN</code> bumped inside <code>spid3r_global_set</code>/<code>spid3r_global_def</code> (<code>rt.rs:994-1014</code>) — covers all IR writers (<code>ir.rs:3287/4086/4552/4711</code>) and constructor registrations (<code>rt.rs:2298/2357</code>); <code>rt_init</code> (<code>rt.rs:390</code>) populates stdlib natives before user code runs.</li>
+            <li>New trampoline <code>spid3r_global_cached(handle: *mut GVHandle) -&gt; *mut Value</code>: compares generation, returns the cached clone else re-fetches (<code>rt.rs:980-991</code> path) and re-caches; also cache the <code>Builtin</code> fallback result (note: <code>spid3r_value_null()</code> at <code>rt.rs:441-443</code> already caches <code>NULL_VAL</code> via <code>OnceLock</code>).</li>
+            <li>IR: per-module handle table (name → GVHandle) built in the entry stub; per-use cached load replaces <code>global_value()</code> (<code>ir.rs:3673-3677</code>).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list + <code>tests/native_tests.rs</code> (globals semantics incl. import flattening), <code>tests/aot_args.rs</code>; a spawned-task globals-sharing test (tasks deliberately share the table, <code>rt.rs:2120-2123</code>). <strong>S4:</strong> phase0 (globals appear in <code>global_read</code> micro-workload — add it in R1.0 style if measuring in isolation).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.6" onchange="onStepBox(this)"><span class="sid">R3.6</span> Staticlib bitcode experiment <span class="badge b-low">stretch</span><span class="badge b-eff">XL</span><span class="deps">deps: R3.1–R3.5 measured</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis:</strong> MSVC <code>link.exe</code> ignores IR members — requires <code>lld-link -flto</code>
+            (or LTO-aware GNU link) on the link side; rustc side is <code>RUSTFLAGS="-C embed-bitcode=yes"</code>. Toolchain must match
+            exactly (rustc 1.99.1 ↔ LLVM 23.1 — pinned, so feasible).</div>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Behind <code>SPID3R_RUNTIME_LTO=1</code>: build the runtime with embedded bitcode; switch <code>link_windows</code>/<code>link_plain</code> (<code>link.rs:1394+/1609+</code>) to the LTO-aware linker when the flag is set.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> produced exe passes the full engine matrix; sizes recorded; kill criteria: if the LTO link is slower to produce or brittle on CI, retire the experiment openly in the ledger (PERF_TARGET_RETIREMENT-style).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.7" onchange="onStepBox(this)"><span class="sid">R3.7</span> Phase measurement <span class="badge b-eff">M</span><span class="deps">deps: R3.1–R3.5</span></div>
+        <div class="step-body">
+          <h5>S4/S5 · Measure + ledger</h5>
+          <ul>
+            <li>HLC corpus codegen parity (≤1.25× gate, P-3 harness); phase0 prime/json/map with 2-run rule; bench_report sync (<code>--verify-sync</code> extended if sections change).</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- ══════════════════ 7 ══════════════════ -->
+      <h2 id="s7">7 · Phase R4 — AOT Memory <span class="badge b-high">high</span> — scope corrected by hazard analysis</h2>
+      <div class="card warn">
+        <strong>What the analysis killed:</strong> the original "epoch-based slab reclamation / per-call arena reset" is unsafe by
+        construction — returned <code>*mut Value</code> handles are dereferenced after the call, closures created in a call are invoked
+        after it (<code>rt.rs:1172-1212</code>), and spawned tasks run compiled code concurrently (<code>rt.rs:2142-2187</code>). The only
+        verified-safe reset bracket is the whole top-level entry (<code>rt.rs:2053-2113</code>) — useless for servers.
+        <strong>Consequence:</strong> bounded AOT memory is now gated on DP-1 (Value v2); R4 delivers measurement + a design spike instead
+        of a false promise.
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.0" onchange="onStepBox(this)"><span class="sid">R4.0</span> Allocation accounting epoch <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Thread-local per-call counter incremented in the slab <code>alloc</code> path; saved/reset around the <code>enter_call()</code> bracket (<code>rt.rs:1069-1124</code>, also <code>construct_cinstance:2001-2007</code> and the method-dispatch call <code>rt.rs:1281-1285</code>).</li>
+            <li>Expose via <code>spid3rinfo()</code> / a debug native (engine-internal observability — GC-exemption precedent, ENGINE_CONTRACT exemption 4).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> universal gate list; zero observable-behavior change by construction.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.1" onchange="onStepBox(this)"><span class="sid">R4.1</span> Scratch-slab design spike <span class="badge b-dp">spike · may conclude "infeasible"</span><span class="badge b-eff">L</span><span class="deps">deps: R4.0</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze (the spike)</h5>
+          <ul>
+            <li>Question: which trampoline-returned boxes are <em>provably</em> dead before the next call? Requires an IR-level liveness pass over generated code (locals across calls keep handles; temporaries consumed immediately may not).</li>
+            <li>Deliverable: a written feasibility memo — either a safe subset (e.g. boxes created only inside <code>spid3r_value_from_cstr</code>-style conversions consumed within the same statement) or the conclusion "not provable without DP-1".</li>
+          </ul>
+          <div class="risk"><strong>Kill criteria:</strong> any case where a scratch-slab box can be observed after reset ⇒ spike concludes infeasible, recorded honestly; bounded memory joins DP-1's expected payoff.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R4.2" onchange="onStepBox(this)"><span class="sid">R4.2</span> <code>rss_over_time</code> benchmark <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R4.0</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Request-loop workload: fixed-size allocations per request, sample RSS every 100 requests for 100k requests (Windows: new hand-extern <code>GetProcessMemoryInfo</code> following the kernel32 extern precedent at <code>link.rs:1079-1080</code> / <code>db.rs:97-98</code> / <code>runtime_info/mod.rs:499</code>; Unix: <code>/proc/self/statm</code>).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> two-run agreement ≤3%; baseline recorded — this makes the leak visible and measurable regardless of when DP-1 lands.</div>
+        </div>
+      </div>
+
+      <!-- ══════════════════ 8 ══════════════════ -->
+      <h2 id="s8">8 · Phase R5 — Web Server Stack <span class="badge b-high">high</span> <span class="deps muted">deps: R2</span></h2>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.1" onchange="onStepBox(this)"><span class="sid">R5.1</span> TLS server natives <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1</span></div>
+        <div class="step-body">
+          <h5>S0 · Analyze</h5>
+          <ul>
+            <li>native-tls 0.2.18 confirmed in <code>Cargo.lock</code>; minimal design = PKCS#12 only (<code>Identity::from_pkcs12</code> documented on all three backends; PEM support is per-backend undocumented — reject with a clean error for now).</li>
+          </ul>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>New <code>Sock::TlsListener(Arc&lt;TlsAcceptor&gt;, Arc&lt;TcpListener&gt;)</code> + <code>get_tls_listener</code> helper (beside <code>net.rs:222-277</code>).</li>
+            <li>Natives <code>tls_listen(cert_path, key_path, port) -> handle</code> and <code>tls_accept(listener, timeout)</code>: accept TCP → <code>acceptor.accept(stream)</code> → wrap via existing <code>Conn::new_tls</code> (<code>net.rs:183-191</code>) → returned as a normal stream handle. Every existing conn/HTTP/WS native then works unchanged.</li>
+            <li>Document the inherited caveat: <code>kernel_poll</code> on TLS polls the underlying TCP fd (readable ≠ decrypted-ready) — same caveat the TLS client already lives with.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> new <code>tests/tls_server.rs</code> (self-signed PKCS#12 fixture, echo over TLS, wss handshake via existing <code>ws_accept</code>); add a local-server fetch test in <code>tests/tls_fetch.rs</code> (existing <code>https_fetch_gets_example_com</code> at <code>:53</code> stays as live-network check); <code>tests/web_stack_tests.rs</code>.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.2" onchange="onStepBox(this)"><span class="sid">R5.2</span> Keep-alive connection lifecycle (gap-fill &amp; timer integration) <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R5.1, R2.2</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis update (verified on tree):</strong> a server-side keep-alive loop (<code>wants_keep_alive</code>, <code>keep_alive: true</code>, <code>idle_timeout_ms</code>, <code>timeout_ms</code>, <code>max_requests_per_conn</code>) is <strong>already implemented</strong> in <code>stdlib/http.matrix:151/255/293/332/361</code> and <code>stdlib/web.matrix:639-640/850</code>, with <code>tests/web_stack_tests.rs:273</code> (<code>keep_alive_serves_several_requests_per_connection</code>) passing.</div>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Audit edge cases (idle timeout over TLS, header-read timeout reset, graceful close on shutdown) and wire R2.2 timers / R2.3 event-loop idle eviction where needed.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> extend <code>tests/web_stack_tests.rs</code> keep-alive coverage (TLS keep-alive reuse, idle-timeout eviction, pipelining off).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.3" onchange="onStepBox(this)"><span class="sid">R5.3</span> Chunked request bodies <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R5.2</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Decode <code>transfer-encoding: chunked</code> in <code>n_http_read_request</code> (replace the refusal at <code>net.rs:2112-2117</code>), capped at the existing <code>MAX_BODY_CEILING</code> (64 MiB). Note: response-side <code>read_chunked</code> (<code>net.rs:1926</code>) takes <code>&amp;TcpStream</code>, so the request path needs a stream/buffer adapter.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> adversarial framing tests — following the oversized-size pattern at <code>net.rs:2470-2488</code> (<code>chunked_body_overflow_size_is_rejected</code>), add request-side tests for oversized chunk size, negative, hex-with-junk, and truncated trailer.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R5.4" onchange="onStepBox(this)"><span class="sid">R5.4</span> Streaming responses <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: R5.2</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>http_write_response_chunk(conn, bytes, final: bool)</code> native emitting chunked transfer framing; framework layer streams file/socket sources via R7.1 file handles.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> <code>web_stack_tests</code> extension + curl interop test.</div>
+        </div>
+      </div>
+
+      <!-- ══════════════════ 9 ══════════════════ -->
+      <h2 id="s9">9 · Phase R6 — Diagnostics &amp; Type System <span class="badge b-high">high</span></h2>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.1" onchange="onStepBox(this)"><span class="sid">R6.1</span> Parser multi-diagnostic recovery <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis-pinned design:</strong> recover at statement level only
+            (<code>parse_program</code> at <code>parser/mod.rs:233</code>, loop <code>:236-278</code>; <code>parse_block</code> loop <code>:976-985</code>); also handle early-return <code>Err</code> sites in <code>parse_program</code> (<code>:247-249</code> decorator, <code>:271</code> import order); expression parsers stay fail-fast; recovered AST is
+            used for <em>reporting only</em> — run/build keep failing on the first diagnostic, so ARC-06 is untouched.</div>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>Parser.diags: Vec&lt;Diagnostic&gt;</code> with a cap (25, depth-guard style); new <code>parse_recovering()</code> used by <code>check</code>/LSP; anchors: consume <code>Semi</code>, skip to statement-start keywords/`@`/<code>}</code>/<code>EOF</code> (do not consume braces).</li>
+            <li>CLI: <code>cmd_check_with</code> (<code>cli.rs:1505</code>) currently loops only <em>lint warnings</em> (<code>cli.rs:1558-1568</code>) while <code>parse_file</code> (<code>~1537</code>) / <code>check_file_with_warnings</code> (<code>1556</code>) abort on first error via <code>?</code> — add an error-printing loop alongside warnings; exit code stays 1; <code>run</code>/<code>build</code> unchanged (first error).</li>
+            <li>LSP: <code>analyze()</code> (<code>lsp/mod.rs:814-864</code>) currently sends single-element <code>vec![d]</code> — push the accumulated vec; wire format already sends arrays (<code>:1532-1566</code>; R6.2's <code>code</code> field will extend the LSP shape).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> differential tests unchanged (same exit 1 + identical first message); new snapshot tests (multi-error file); <code>tests/lsp_tests.rs</code>; universal gate list.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.2" onchange="onStepBox(this)"><span class="sid">R6.2</span> Error codes + end spans + colors <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R6.1</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Codes <code>E1xxx</code> per phase on <code>Diagnostic</code>; rendered as <code>error[E1027][parser]: …</code>.</li>
+            <li>End line/col on tokens (lexer <code>bump()</code> tracks end pos; <code>Span</code> gains optional end) — fmt's token-preservation checker must be re-verified (<code>fmt.rs:369-382</code>).</li>
+            <li>ANSI colors when stdout/stderr is a tty (respect <code>NO_COLOR</code>); JSON output gains code fields.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> <code>tests/fmt_tests.rs</code> (token preservation, idempotence), snapshot tests, <code>tests/lsp_tests.rs</code> (UTF-16 range conversion still exact), CI stays plain-output.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.3" onchange="onStepBox(this)"><span class="sid">R6.3</span> Flow-sensitive nullability narrowing <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis-pinned design:</strong> overlay stack <code>narrowed: Vec&lt;HashMap&lt;String, Ty&gt;&gt;</code> on
+            <code>Checker</code> (pushed/popped in <code>&amp;mut self</code> <code>check_stmt</code> arms, read-only inside <code>&amp;self</code> <code>type_of</code> at <code>semantic/mod.rs:2887</code>); consult point = <code>Expr::Ident</code> arm (<code>semantic/mod.rs:2910-2918</code>); per-branch push/pop
+            where <code>push_scope/pop_scope</code> already nest; no cross-branch merge except via existing <code>common_type</code>.
+            Behavior-neutral by policy (advisory types).</div>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Narrowing triggers (the 5 verified high-value sites): (1) <code>if x != null</code>/<code>is_null(x)</code> guards ⇒ inner type on the taken branch (<code>Stmt::If:2491</code>); (2) after <code>let v = f()?</code> ⇒ non-null (<code>Expr::Propagate</code> in <code>type_of</code> at <code>:2908</code>); (3) <code>?. </code> receiver non-null on taken path, result keeps inner element type instead of Any (<code>:2905</code>); (4) catch binder carries error payload type (<code>Stmt::Try:2674-2686</code>); (5) <code>while</code> guard narrowing (<code>:2509</code>).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> new <code>tests/narrowing_tests.rs</code>; <code>tests/gradual_typing_tests.rs</code> unchanged-pass; universal gate list. <strong>Note:</strong> optionally feed <code>analyze_int_locals</code> (<code>ir.rs:1790-1855</code>) with checker facts as a follow-up measure.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.4" onchange="onStepBox(this)"><span class="sid">R6.4</span> Scrutinee-driven exhaustiveness <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>check_exhaustive</code> (<code>semantic/mod.rs:935-982</code>): when the scrutinee's <code>Ty</code> resolves to an enum <code>Coll</code>/<code>Class</code>, require its variants regardless of arm inference; keep the current heuristic as fallback; wildcard arms still satisfy.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> new exhaustiveness tests (missing variant now caught via scrutinee; existing heuristics tests unchanged-pass).</div>
+        </div>
+      </div>
+
+      <!-- ══════════════════ 10 ══════════════════ -->
+      <h2 id="s10">10 · Phase R7 — I/O Completeness <span class="badge b-high">high</span></h2>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.1" onchange="onStepBox(this)"><span class="sid">R7.1</span> File-handle natives (opaque integer handles) <span class="badge b-crit">critical</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis-pinned design:</strong> integer handles mirroring the <code>Sock</code> table
+            (<code>net.rs:86-94</code>, table/monotonic <code>NEXT_HANDLE</code> <code>:205-220</code>) — <em>not</em> a <code>Value::File</code> variant. The variant's mandatory cost is only 3
+            exhaustive-match arms (<code>type_name</code>, <code>display_value_inner</code>, <code>deep_clone_inner</code> identity list),
+            but its full cost (tests, ABI expectations, JSON policy) is unbounded; sockets and db already ship on the integer pattern.</div>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>New <code>src/stdlib/file.rs</code>: <code>FileHandle { file: Mutex&lt;std::fs::File&gt;, path: String }</code> table + monotonic <code>NEXT_HANDLE</code> (like <code>net.rs:210</code>; no handle-id reuse) + max-open cap.</li>
+            <li>Natives (minimal set first): <code>file_open(path, mode)</code>, <code>file_read(id, max_bytes)</code>, <code>file_read_line(id)</code>, <code>file_write(id, text|bytes)</code>, <code>file_seek(id, pos, whence)</code>, <code>file_tell(id)</code>, <code>file_flush(id)</code>, <code>file_close(id)</code>.</li>
+            <li>R7.1b (follow-up): <code>file_fsync</code> — Windows <code>FlushFileBuffers</code>, Unix <code>fsync</code> (hand externs, kernel32 precedent <code>db.rs:92-130</code>); <code>file_lock</code> (LockFileEx / <code>flock</code>).</li>
+            <li>Register in <code>build_builtin_defs()</code>; add every path-taking native to <code>fs_policy.rs::guarded()</code> (<code>:396-426</code> list).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> new <code>tests/file_handles.rs</code> (modes, seek edge cases, double-close error text, policy denial under <code>security.basedir</code>); engine-parity rows in <code>tests/engine_matrix.rs</code>; <code>tools/selfhost_sandbox_parity.sh</code> extension (fs policy funnel covers the new natives).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.2" onchange="onStepBox(this)"><span class="sid">R7.2</span> Process options: env + cwd <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Extend the <code>spawn_process</code> options map (currently only <code>hidden</code> is read, <code>stdlib/mod.rs:1176-1201</code>) with <code>env</code> (map) and <code>cwd</code> (string). Live pipes stay out of scope (exec_capture covers capture) — documented.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> <code>tests/integration_tests.rs</code> extension or new <code>tests/process_opts.rs</code>.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.3" onchange="onStepBox(this)"><span class="sid">R7.3</span> Cooperative signal registration <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Extend <code>shutdown.rs</code>'s hand-declared <code>signal()</code> set (<code>SIGINT</code>/<code>SIGTERM</code> at <code>:43/:64-66</code>; add <code>SIGUSR1</code>/<code>SIGUSR2</code> on Unix, cfg-gated; new <code>SetConsoleCtrlHandler</code> hand-extern on Windows) and <strong>coordinate with <code>src/agent/mod.rs:30-40/171-176</code></strong> which already registers <code>SIGHUP</code> (<code>libc_signal(1, sig_handler)</code> → <code>RELOAD_REQUESTED</code>) so handlers do not overwrite each other. Add per-signal <code>AtomicBool</code> flags + <code>signal_requested(name)</code> poll native; keep the cooperative model (handler = swap only).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> Unix-only tests (cfg) raising signals via a child process; existing shutdown tests unchanged.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.4" onchange="onStepBox(this)"><span class="sid">R7.4</span> Unix domain sockets <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>std::os::unix::net::{UnixListener, UnixStream}</code> is std — no externs needed. Natives <code>uds_listen(path)</code>/<code>uds_connect(path)</code> → existing stream natives via a <code>Sock::Uds(Arc&lt;UnixStream&gt;)</code> variant (cfg(unix); clean usage error on Windows).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> cfg(unix) tests (socket file cleanup, connect/echo); Windows behavior = documented usage error.</div>
+        </div>
+      </div>
+
+      <!-- ══════════════════ 11 ══════════════════ -->
+      <h2 id="s11">11 · Phase R8 — Ecosystem <span class="badge b-med">medium</span></h2>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.1" onchange="onStepBox(this)"><span class="sid">R8.1</span> <code>fetch_bytes</code> refactor <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <div class="analysis"><strong>Analysis:</strong> <code>net.rs fetch(:2283)</code> is already a plain-Rust fn with <code>&amp;str</code>
+            args — reusable from <code>pkg</code> with a visibility change; but the response body path is <code>from_utf8_lossy</code>
+            (<code>:2419-2422</code>) which corrupts binary tarballs (and <code>body: &amp;str</code> is also text-only for uploads). Also: release builds for Linux/macOS compile
+            <strong>without</strong> <code>tls</code> (<code>release.yml:79</code>) — decide: add <code>tls</code> to the release feature
+            set or ship http-only registry mirrors with a documented warning.</div>
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Make <code>fetch</code> <code>pub(crate)</code>; add <code>fetch_bytes(...) -&gt; Result&lt;(u16, Vec&lt;(String,String)&gt;, Vec&lt;u8&gt;), String&gt;</code> sharing the framing (<code>read_head</code> at <code>:1827</code>, <code>read_exact_body</code> at <code>:1880</code>, <code>read_chunked</code> at <code>:1926</code>, <code>net.rs:1827-1963</code>).</li>
+            <li>Resolve the release <code>tls</code>-feature question in the same step (owner-visible tradeoff: artifact size vs https registries).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> <code>tests/net_tests.rs</code> + binary-download round-trip test (loopback server serving bytes).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.2" onchange="onStepBox(this)"><span class="sid">R8.2</span> Remote registry client <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R8.1</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>New <code>src/pkg/registry.rs</code>: if the configured registry root starts with <code>http(s)://</code>, GET the index/tarball into the same <code>&lt;name&gt;/&lt;version&gt;/</code> cache layout <code>resolve_registry</code> already reads (<code>pkg/mod.rs:1042-1090</code>, <code>match best</code> at <code>:1080</code>); verify sha256 before extraction; reuse <code>read_tar</code> (<code>:481</code>) <strong>plus the path-traversal guard from <code>unpack</code> (<code>pkg/mod.rs:777-800</code>)</strong> (note: <code>read_tar</code> itself only checks symlinks/hardlinks/devices/ustar checksums — traversal refusal lives in <code>unpack</code>).</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> loopback HTTP server tests (install from remote == install from local mirror, byte-identical vendor trees); offline behavior = clean error.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.3" onchange="onStepBox(this)"><span class="sid">R8.3</span> Ed25519 package signing <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R8.2</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>publish_to_dir</code> (<code>src/pkg/ops.rs:452</code>) additionally writes <code>sha256.txt.sig</code> = Ed25519 over the exact ASCII <code>sha256.txt</code> bytes (<code>pkg/ed25519.rs sign:576</code> — verified present and vector-tested).</li>
+            <li>New config key <code>packages.trust_pk</code> (underscore naming per <code>packages.allow_insecure_git</code>; add to schema table near <code>config/schema.rs:787</code> + hex32 check in <code>validate_extra</code> at <code>:830</code>); install verifies chain: sha256(src/) == sha256.txt → verify(sig, sha256.txt) under pinned pk. Unsigned registries keep working with a warning; <code>docs/REGISTRY.md:148-150</code> ("No signature verification") updated in the same commit.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> signing KATs (RFC 8032 vectors already in <code>ed25519.rs</code> tests), tamper tests (flip a byte → install refuses), <code>tests/pkg_tests.rs</code>/<code>pkg_manager.rs</code>.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.4" onchange="onStepBox(this)"><span class="sid">R8.4</span> Dependency version unification <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: R8.2</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li><code>install_with</code> (<code>pkg/mod.rs:1518-1649</code>, <code>seen</code> at <code>:1553</code>) <strong>and <code>install_workspace</code> (<code>pkg/mod.rs:1377</code> — identical greedy <code>seen</code> map)</strong>: replace <code>seen: BTreeMap&lt;String,(String,String)&gt;</code> with <code>Resolution { origin, version, constraints: Vec&lt;(requiring, Constraint)&gt; }</code>; on a new incompatible constraint, intersect all recorded constraints and re-resolve (<code>resolve_registry</code> scans candidate dirs and picks highest-matching at <code>:1062-1080</code>); re-queue vendored dependents for re-validation.</li>
+            <li>Lockfile: shape unchanged (records final resolution) — no version bump needed; update <code>docs/REGISTRY.md:151-160</code>'s greedy-behavior promise in the same commit.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> diamond-dependency tests (compatible + conflicting), cycle detection unchanged, <code>tests/pkg_manager.rs</code>.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.5" onchange="onStepBox(this)"><span class="sid">R8.5</span> Doc generator <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>Factor <code>doc_above</code>/<code>strip_comment</code> out of <code>src/lsp/mod.rs:361-402</code> (<code>doc_above</code> <code>:361-387</code>, <code>strip_comment</code> <code>:389-402</code>) into a shared module (single association rule for LSP + docgen); <code>spid3r doc</code> walks public symbols via <code>module_info_of_in</code> (<code>modules/mod.rs:575-660</code>) with the same-file comment list; HTML + JSON renderers.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> snapshot tests; <code>tests/lsp_tests.rs</code> unchanged (shared refactor); doc output for <code>examples/</code> committed under <code>docs/</code> optional.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.6" onchange="onStepBox(this)"><span class="sid">R8.6</span> REPL line editing + profiler self-time <span class="badge b-low">low</span><span class="badge b-eff">S each</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <h5>S2 · Implement</h5>
+          <ul>
+            <li>REPL: hand-rolled raw mode (Windows console API via kernel32 extern precedent; termios hand-externs on Unix) — history, cursor editing; keep the current line mode as fallback.</li>
+            <li>Profiler: per-function self-time attribution via call/return instrumentation (<code>docs/IMPROVEMENT_PLAN.md:63-68</code>; note <code>inst_spans</code> in <code>vm/bytecode.rs:27-29</code> is instruction-to-Span error mapping, not profiler attribution). Gate with <code>tests/profiler.rs</code>.</li>
+          </ul>
+          <div class="gate"><strong>Gate:</strong> REPL non-tty fallback tests; profiler self-check vs total instruction count.</div>
+        </div>
+      </div>
+
+      <!-- ══════════════════ 12 ══════════════════ -->
+      <h2 id="s12">12 · Phases R9–R13 + Decision-Point Calendar &amp; Sign-offs</h2>
+
+      <div class="card accent">
+        <strong>Track versioning — every track is production-grade; sequencing is not a downgrade.</strong>
+        <strong>v1.0</strong> = language + toolchain + <em>web servers/backends, CLI tools, daemons, registry clients</em> at production
+        DoD (R0–R9, R12). <strong>v2.0</strong> = <em>container engine</em> (OCI) at production DoD (R11). <strong>v3.0-track</strong> =
+        <em>OS/bare-metal</em> at production DoD (R13). "Production DoD" is defined in §2.5 and is identical for every track:
+        CI-objective tests, checksummed artifacts, security review, docs, fuzzing, no stubs. Later sequencing ≠ experiment.
+      </div>
+
+      <h3>R9 · Systems primitives — production FFI &amp; runtime <span class="badge b-dp">DP-5 for runtime loading</span></h3>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.1" onchange="onStepBox(this)"><span class="sid">R9.1</span> FFI structs-by-value + varargs <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R3.1–R3.5 · SEC-A row</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> <code>extern fn</code> accepts structs-by-value (register-class PODs first) and varargs callers, marshalled in <code>declare_externs</code>/<code>compile_extern_call</code> (<code>ir.rs:3732+</code>).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> FFI test-matrix extension green; SEC-A ledger row appended; <code>docs/FFI.md</code> updated in the same commit; universal gate list.</div>
+          <div class="risk"><strong>Risk:</strong> struct ABI mismatch. Mitigation: reject non-register-class layouts with clean usage errors; expand later.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.2" onchange="onStepBox(this)"><span class="sid">R9.2</span> Callback thunks <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R9.1</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Generated <code>extern "C"</code> thunk wrappers that box args and invoke a Spid3r closure (trampoline style), so C code can call back into Spid3r.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> C→Spid3r callback round-trip test green; lifetime/panic rules documented (<code>docs/FFI.md</code>); catchability parity per the <code>tests/native_catchability.rs</code> pattern.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.3" onchange="onStepBox(this)"><span class="sid">R9.3</span> <code>atomic_int</code> value type <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Language-visible <code>atomic_int</code> with load/store/CAS/exchange natives; AOT trampolines mirror the <code>AtomicPtr&lt;Value&gt;</code> cell pattern (<code>rt.rs:1759-1790</code>); scheduler plumbing already proves Send/Sync.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> New <code>tests/atomics_tests.rs</code> (contention, ordering) green on tree/VM; AOT parity rows in <code>tests/engine_matrix.rs</code>; sandbox coverage extended in <code>selfhost_sandbox_parity.sh</code>.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.4" onchange="onStepBox(this)"><span class="sid">R9.4</span> Freestanding profile skeleton <span class="badge b-low">low</span><span class="badge b-eff">L</span><span class="deps">deps: owner scope sign-off (no Value change needed)</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> <code>--freestanding</code> build mode: no scheduler/stdlib/net, panic=abort, custom <code>--entry</code>; minimal runtime subset; <code>examples/freestanding</code> demo.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> <code>examples/freestanding</code> builds and runs on the host; artifact-integrity tests (<code>tests/artifact_hardening.rs</code>) green; mode documented as systems-track only.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.5" onchange="onStepBox(this)"><span class="sid">R9.5</span> Cross-compilation flags <span class="badge b-med">medium</span><span class="badge b-eff">L</span><span class="deps">deps: R9.4</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Replace the non-host rejection (<code>link.rs:517-524</code>) with a sysroot-aware path for x86-64/aarch64 ELF/PE/Mach-O (LLVM targets already initialized for x86+aarch64, <code>Cargo.toml:63-67</code>).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Cross-built binary for one non-host target produced and checksummed; host-path behavior byte-identical (regression gate); SEC-B artifact checks extended to cross artifacts.</div>
+          <div class="risk"><strong>Risk:</strong> sysroot discovery drift across platforms. Mitigation: explicit <code>--sysroot</code> flag, fail closed with a clean usage error.</div>
+        </div>
+      </div>
+      <h3>R10 · Generics &amp; unboxing <span class="badge b-dp">DP-1 required</span></h3>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.1" onchange="onStepBox(this)"><span class="sid">R10.1</span> Generics design doc <span class="badge b-dp">owner: DP-1</span><span class="badge b-eff">L</span><span class="deps">deps: DP-1 approved</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Approved design doc: monomorphization strategy, erased-syntax back-compat, checker instantiation model, AOT codegen plan, corpus/parity impact list.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Owner sign-off recorded in the ledger; the doc is the contract for R10.2/R10.3.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.2" onchange="onStepBox(this)"><span class="sid">R10.2</span> Parser + checker instantiation <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R10.1</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Real generic syntax parsed (<code>parse_type_params</code> currently skips, <code>parser:677-698</code>; <code>TypeExpr</code> gains multi-args, <code>ast:30</code>) and checker-side instantiation with constraint checks.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> New engine-matrix rows per instantiation shape; corpus additions with SH-4 ledger entries; tree/VM parity green; erased-syntax programs unchanged.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.3" onchange="onStepBox(this)"><span class="sid">R10.3</span> AOT monomorphizer + unboxed containers <span class="badge b-crit">critical</span><span class="badge b-eff">XL</span><span class="deps">deps: R10.2</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> AOT monomorphizes generic functions; <code>list&lt;int&gt;</code>-style declarations map to unboxed storage — the cleanest path to closing the 8–18× container gap.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> HLC corpus codegen parity ≤1.25×; phase0 Tier-B on json/map; <code>selfhost_native_parity.sh</code> unchanged (selfhost sources do not use generics); ledger rows with before/after.</div>
+        </div>
+      </div>
+      <h3>R11 · Container engine (OCI) — production track <span class="badge b-dp">DP-7 at R11.4</span> <span class="deps muted">deps: R5 (TLS), R7.1 (file handles), R7.4 (UDS), R8.2 (registry client), R9.3 (atomics)</span></h3>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.1" onchange="onStepBox(this)"><span class="sid">R11.1</span> OCI image model + registry client v2 <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R8.2</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Full OCI image-spec support in <code>src/pkg/registry.rs</code> + new <code>src/oci/</code>: image manifests, manifest lists (multi-arch selection by host triple), config JSON, layer descriptors; registry v2 API client (manifest/blob GET, token-flow stub for anonymous) over R8.1 <code>fetch_bytes</code>.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Loopback registry fixture (OCI layout served over local HTTP, following the <code>net_tests.rs</code> fake-server pattern): pull manifest+config+layers, byte-verify every digest sha256; manifest-list picks the host-arch entry; offline/malformed digests = clean errors; universal gate list.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.2" onchange="onStepBox(this)"><span class="sid">R11.2</span> Pull, verify, unpack (layers, whiteouts) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.1</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Layer pipeline: gzip inflate (existing <code>stdlib/compress.rs</code>) → ustar unpack (existing <code>pkg/mod.rs read_tar</code>, hardened) with OCI whiteout handling (<code>.wh.</code> files), per-layer sha256 verification <em>before</em> extraction, content-addressed layer cache under the Spid3r state dir.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Corrupted-layer digest = refuse, exit 4-style clean error, nothing extracted; whiteout removals applied in order; path-traversal attempts in layer tars refused (extend existing tar refusals); concurrent pulls race-safe (atomic rename into cache); memory-capped streaming (no whole-layer buffering beyond cap).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.3" onchange="onStepBox(this)"><span class="sid">R11.3</span> Rootfs assembly + snapshotter (overlayfs) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.2</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Rootfs assembly from the layer cache: overlayfs mount (lowerdir=layer stack, upperdir+workdir per container) via R11.4 mount shim; fallback copy-up rootfs mode for filesystems without overlay; snapshot GC (refcount per layer).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Linux-only (cfg) tests in CI: mount succeeds, read-only lower layers immutable, writes land in upperdir, container removal cleans upper+work; GC frees unreferenced layers; no mount leakage across failed runs.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.4" onchange="onStepBox(this)"><span class="sid">R11.4</span> Syscall shim layer (clone3/unshare/mount/pivot_root/caps/seccomp) <span class="badge b-crit">critical</span><span class="badge b-dp">DP-7</span><span class="badge b-eff">XL</span><span class="deps">deps: DP-7 approved</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> New <code>src/native/sys.rs</code> — the DP-7-sanctioned home for Linux syscall shims, hand-declared per the <code>net.rs sys</code> precedent, zero crates: <code>clone3</code>, <code>unshare</code>, <code>mount/umount2</code>, <code>pivot_root</code>, <code>chroot</code>, <code>setns</code>, <code>capset</code>, <code>seccomp(prctl)</code>, <code>netlink (RTM_NEWLINK/RTM_NEWADDR)</code> for R11.6. Every call site: written safety comment, argument whitelisting, errno-mapped clean errors.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> SEC-A ledger row + security review of the whole module; no other file gains <code>unsafe</code>; each shim has a unit test driving it through a real container operation; feature-flag <code>container</code> gates the module out of core builds; wasm/core builds unaffected.</div>
+          <div class="risk"><strong>Risk:</strong> privileged-op misuse. Mitigation: DP-7 review, capability drop order enforced by construction (drop before exec), every shim fails closed.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.5" onchange="onStepBox(this)"><span class="sid">R11.5</span> Runtime core: namespaces, cgroups v2, caps, seccomp <span class="badge b-crit">critical</span><span class="badge b-eff">XL</span><span class="deps">deps: R11.3, R11.4</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r-container</code> runtime core: create container (pid/net/mnt/ipc/uts/user namespaces), cgroups v2 limits (cpu.max, memory.max, pids.max) wired to the config system, capability drop to a minimal set, default seccomp profile (denylist, <code>NO_NEW_PRIVS</code>), <code>exec</code> of the OCI config process, wait/reap, full container state machine (creating→running→stopped→removed) with crash-safe state files (WAL pattern from the pkg lockfile precedent).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI tests (rootless-in-userns where CI allows, else rootful Linux runner): run <code>busybox</code>-style rootfs → process starts, cgroup limits observable in <code>cgroup.controllers</code>, caps inside = dropped set, seccomp blocks a known syscall, kill/wait/exit-code propagation exact, state survives daemon restart, orphan cleanup on SIGKILL of the runtime.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.6" onchange="onStepBox(this)"><span class="sid">R11.6</span> Container networking (veth + bridge + port publishing) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.4, R11.5</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Default bridge network: create <code>spid3r0</code> bridge + veth pair per container via netlink shim, IPAM from a config pool, host-side NAT/port publishing (nftables or iptables shim — decision inside the step's S0), per-container network namespace isolation.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI: container gets IP, reaches the host bridge gateway, published port reachable from host loopback, two containers isolated unless same network; teardown removes veth/addresses; host networking untouched on failure.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.7" onchange="onStepBox(this)"><span class="sid">R11.7</span> CLI + daemon (<code>spid3r container …</code>, API socket) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.5, R11.6</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r container pull/run/create/start/stop/kill/rm/ps/inspect/logs</code> CLI over a small daemon holding state; UDS API (R7.4) with the agent's role-matrix auth pattern (<code>src/agent/store.rs</code>); structured logs per container (rotation per <code>logging.rs</code> precedent).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Full lifecycle via CLI only: pull→run→ps→stop→rm with exact exit codes (0/1/2/4 contract); daemon kill -9 → state recovers on restart; concurrent CLI calls race-safe (handle-table + file locks); sandbox parity harness extended for the new natives (deny-by-default without <code>container</code> capability).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.8" onchange="onStepBox(this)"><span class="sid">R11.8</span> Security hardening: rootless mode + image signatures <span class="badge b-crit">critical</span><span class="badge b-eff">L</span><span class="deps">deps: R11.5, R8.3</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Rootless containers (user namespace re-map, subordinate uid/gid, no setuid) as a first-class mode; image signature verification chained to R8.3's Ed25519 trust model (registry manifests signed; policy = require/allow per registry); default seccomp+caps profile reviewed against a documented threat model (<code>docs/SECURITY.md</code> chapter).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Rootless run of the CI fixture image on a Linux runner with zero privileged helpers; unsigned-image policy refusal = clean error; tampered layer = refusal (exit 4 semantics); threat-model doc merged; external security review scheduled and its findings tracked to closure.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.9" onchange="onStepBox(this)"><span class="sid">R11.9</span> Conformance, fuzzing, docs — production DoD <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.7, R11.8</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Production sign-off suite: OCI-bundle layout compatibility (run a bundle produced by standard tooling), stress (100 create/kill cycles, restart storms), fuzz targets for manifest/config/layer parsing wired into the fuzz workflow, <code>docs/CONTAINERS.md</code> (threat model, quickstart, limitations stated plainly), release artifact + checksums.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Zero fuzz crashes over a CI window; stress suite green; conformance matrix green in CI on Linux; docs claims verified (<code>verify_doc_claims.js</code> extended); ledger rows for the whole phase + CI evidence; <strong>v2.0 container track declared production-complete only when every box above is green</strong>.</div>
+        </div>
+      </div>
+      <h3>R12 · 1.0 hardening</h3>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.1" onchange="onStepBox(this)"><span class="sid">R12.1</span> External crypto review <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> External review of the hand-rolled primitives (<code>pkg/ed25519.rs</code>, <code>stdlib/argon2.rs</code>, <code>bcrypt.rs</code>, <code>crypto/mod.rs</code>) incl. constant-time review of Ed25519 scalarmult.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Review report received; findings tracked to closure; trust statement updated in <code>docs/SECURITY.md</code> (honest "not side-channel hardened" until proven).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.2" onchange="onStepBox(this)"><span class="sid">R12.2</span> Fuzz breadth for I/O + serialization <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R5.3, R7.1</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Fuzz targets for HTTP framing, WS decode, chunked bodies, msgpack/CBOR/pb, tar extraction, registry manifests (all pure functions — ideal surfaces).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Targets wired into the fuzz workflow; zero crashes/hangs over a CI window; SEC-C ledger row updated.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.3" onchange="onStepBox(this)"><span class="sid">R12.3</span> AOT opt-in budget enforcement <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> <code>--enforce-budget</code> for native builds: emits the instruction counter + limit check (reusing the <code>emit_cancel_poll</code> pattern, <code>ir.rs:1137-1166</code>).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Budget exhaustion = clean fatal on native; off-by-default runs byte-identical; contract exemption 5 documentation amended in <code>docs/ENGINE_CONTRACT.md</code>; <code>tests/execution_budget.rs</code> extension.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.4" onchange="onStepBox(this)"><span class="sid">R12.4</span> Reliability misc <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> <code>drop_iteratively</code> extended to remaining container types; check-time import-cycle diagnostics replace the silent swallow (<code>modules/mod.rs:449-470</code>); docs-claims verifier extended to new surfaces.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Deep-chain drop tests green (no stack overflow); cycle-diagnostic test added (feeds the SH-4 corpus gap); <code>verify_doc_claims.js</code> count updated and green.</div>
+        </div>
+      </div>
+
+      <h3>R13 · OS / bare-metal track — production program <span class="badge b-dp">DP-8 charter · DP-1 for value mode</span> <span class="deps muted">deps: R9.4, R9.5 (freestanding + cross-compile)</span></h3>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.1" onchange="onStepBox(this)"><span class="sid">R13.1</span> Bare-metal boot path + CI boot tests <span class="badge b-crit">critical</span><span class="badge b-dp">needs DP-8</span><span class="badge b-eff">XL</span><span class="deps">deps: DP-8 approved, R9.4, R9.5</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> New zero-dependency <code>kernel/</code> workspace member: multiboot2 boot header + GRUB boot path, kernel linker script (no red zone, known memory map), serial (COM1) console output, <code>printk</code>; CI job boots the image in <code>qemu-system-x86_64</code> with <code>-serial stdio</code> and asserts the boot banner.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI boot test green and deterministic (fixed QEMU cmdline, timeout + serial assertion); kernel artifact checksummed (SEC-B); builds with the pinned toolchain, zero new crates; host toolchain behavior byte-identical (regression gate).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.2" onchange="onStepBox(this)"><span class="sid">R13.2</span> CPU bring-up: GDT/TSS, IDT, exceptions, timers <span class="badge b-high">high</span><span class="badge b-eff">XL</span><span class="deps">deps: R13.1</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> GDT/TSS setup, IDT with full exception handlers printing register dumps, PIT + local APIC timer bring-up, interrupt enable/disable discipline (no-IRQ windows documented), <code>hlt</code>-based idle.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI: induced divide-by-zero prints a correct register dump and recovers-or-halts per policy; timer tick counts monotonic across a 10-minute QEMU soak with zero triple-faults; interrupt window invariants asserted by a debug build.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.3" onchange="onStepBox(this)"><span class="sid">R13.3</span> Memory: frame allocator, paging, kernel heap <span class="badge b-crit">critical</span><span class="badge b-eff">XL</span><span class="deps">deps: R13.2</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Physical frame allocator from the multiboot2 memory map (bitmap, audited), identity/higher-half paging setup, kernel heap (bump → free-list) with the Spid3r value mode that never touches the host GC (fixed-region allocations only — the systems value mode DP-1 gates for general containers).</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI: alloc/free stress with integrity audit (every frame accounted exactly once, zero double-mapping); heap exhaustion = clean <code>panic</code> with message (never silent wrap — matches release <code>overflow-checks</code> semantics); page-fault handler dumps va/pa context.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.4" onchange="onStepBox(this)"><span class="sid">R13.4</span> Console, keyboard, kernel shell <span class="badge b-med">medium</span><span class="badge b-eff">L</span><span class="deps">deps: R13.2</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> VGA text/framebuffer console + serial dual output with log levels, PS/2 keyboard driver (scancode set 1 → keymap), minimal kernel shell (help/ps/meminfo commands) for interactive debugging.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI: deterministic QEMU <code>sendkey</code> script types a command; shell echoes and executes it; serial and VGA outputs agree; keyboard buffer never overflows under burst input.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.5" onchange="onStepBox(this)"><span class="sid">R13.5</span> Scheduling + context switching <span class="badge b-high">high</span><span class="badge b-eff">XL</span><span class="deps">deps: R13.3</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Kernel threads with per-thread stacks, cooperative yield first, then pre-emptive scheduling off the APIC timer; run-queue fairness; idle balancing.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI: two threads ping-pong N times with exact final counts; pre-emption observed under a CPU-bound thread + timer; 30-minute soak with zero stack corruption or lost wakeups; context-switch cost measured and recorded (not claimed).</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.6" onchange="onStepBox(this)"><span class="sid">R13.6</span> Userland split: ring 3, syscalls, ELF, init <span class="badge b-crit">critical</span><span class="badge b-eff">XL</span><span class="deps">deps: R13.5</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> Ring-3 transition, <code>syscall/sysret</code> entry with a documented ABI (numbers, arg registers, error convention), ELF64 loader (malformed = clean refusal), and an <code>init</code> program <strong>written in Spid3r</strong>, compiled by the R9.4 freestanding profile — the language itself running on Spid3rOS.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI: init runs in ring 3, performs the documented syscalls, exits; invalid syscall number = process killed, kernel survives; malformed ELF = clean refusal, kernel survives; syscall ABI documented in <code>docs/OS_TRACK.md</code>.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.7" onchange="onStepBox(this)"><span class="sid">R13.7</span> Drivers: virtio-net + virtio-block <span class="badge b-high">high</span><span class="badge b-eff">XL</span><span class="deps">deps: R13.6</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> PCI enumeration + virtio (MMIO/PCI modern) block and network drivers — QEMU-standard devices chosen for CI determinism; block read/write path with checksum verification; one UDP packet over virtio-net to a host tap.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> CI with QEMU virtio devices: block read of a fixture sector range verifies sha256; UDP packet round-trip to the tap device asserts payload bytes; driver register map + interrupt handling documented; device removal = clean error, kernel survives.</div>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.8" onchange="onStepBox(this)"><span class="sid">R13.8</span> Systems SDK, docs, production sign-off <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R13.7</span></div>
+        <div class="step-body">
+          <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r kernel build</code> UX, <code>docs/OS_TRACK.md</code> (boot flow, memory map, syscall ABI, driver porting guide, honest limitations), kernel artifact checksums (SEC-B), external review of all kernel <code>unsafe</code>, boot-matrix CI job, ledger close-out.</p>
+          <div class="gate"><span class="lbl gate">GATE</span> Every boot/conformance test green over a CI window; docs claims verified; kernel <code>unsafe</code> externally reviewed with findings tracked; <strong>v3.0-track OS program declared production-complete only with the owner's recorded sign-off</strong> — never self-declared.</div>
+        </div>
+      </div>
+
+      <h3>Decision-point calendar</h3>
+      <div class="tablewrap">
+        <table>
+          <tr><th>DP</th><th>Needed before</th><th>Question</th><th>Recommendation</th></tr>
+          <tr><td><span class="badge b-dp">DP-2</span></td><td>R2.3</td><td>Sanction the evented-I/O core (sched contract surface + new natives)</td><td>Approve — no engine-contract violation</td></tr>
+          <tr><td><span class="badge b-dp">DP-6</span></td><td>any R1 follow-up on for-in</td><td>Borrow-based for-in (observable snapshot-semantics change)</td><td>Defer; keep snapshot semantics</td></tr>
+          <tr><td><span class="badge b-dp">DP-1</span></td><td>R10, full R4, unboxing work</td><td>Amend the RED LINE to allow a Value v2 (tagged pointers / inline scalars)</td><td>Approve after R1+R3 measurements land</td></tr>
+          <tr><td><span class="badge b-dp">DP-3</span></td><td>HTTP/2 work</td><td>Third-party crates for h2/quic behind <code>--features net2</code></td><td>Recommend approve when HTTP/2 is scheduled</td></tr>
+          <tr><td><span class="badge b-dp">DP-4</span></td><td>after R3.7 measurement</td><td>Register-VM redesign</td><td>Decide on data; inline caches may suffice</td></tr>
+          <tr><td><span class="badge b-dp">DP-5</span></td><td>R9.1+</td><td><code>dlopen</code> runtime FFI</td><td>Approve behind explicit flag + SEC-A row</td></tr>
+          <tr><td><span class="badge b-dp">DP-7</span></td><td>R11.4</td><td>Authorize <code>src/native/sys.rs</code> as a sanctioned home for hand-declared Linux syscall <code>unsafe</code> (clone3/unshare/mount/pivot_root/setns/capset/seccomp/netlink), extending the existing FFI/OS-shim exceptions (<code>db.rs</code>, <code>llvm.rs</code>, <code>net.rs</code>, <code>shutdown.rs</code>) — every site safety-commented + reviewed</td><td>Approve for the container track — zero crates, fail-closed shims</td></tr>
+          <tr><td><span class="badge b-dp">DP-8</span></td><td>R13.1</td><td>Charter the OS/bare-metal track: x86-64-first, multiboot2 + QEMU CI, virtio-first drivers, new zero-dependency <code>kernel/</code> workspace member</td><td>Approve to charter the v3.0-track production program</td></tr>
+        </table>
+      </div>
+
+      <h3>Decision sign-off boxes <span class="badge b-dp">owner</span></h3>
+      <div class="card dp">
+        <p class="small muted">Ticking an owner box is a scope/red-line decision, not an implementation step. Each decision is recorded in
+          the ledger as "pending owner confirmation" until ticked here and confirmed.</p>
+        <ul class="tight" style="list-style:none; padding-left:2px;">
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-1" onchange="onStepBox(this)"> &nbsp;<strong>DP-1</strong> — amend the RED LINE to allow a <code>Value</code> v2 (tagged pointers / inline scalars) — gates R10, full R4, unboxing work.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-2" onchange="onStepBox(this)"> &nbsp;<strong>DP-2</strong> — sanction the evented-I/O core (sched contract surface + new natives) — gates R2.3.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-3" onchange="onStepBox(this)"> &nbsp;<strong>DP-3</strong> — selective third-party crates for HTTP/2+ (<code>--features net2</code>, core stays zero-dep) — gates HTTP/2 work.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-4" onchange="onStepBox(this)"> &nbsp;<strong>DP-4</strong> — register-VM redesign decision (after R3.7 measurement data).</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-5" onchange="onStepBox(this)"> &nbsp;<strong>DP-5</strong> — <code>dlopen</code> runtime FFI behind an explicit flag + SEC-A row — gates R9.1+ runtime loading.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-6" onchange="onStepBox(this)"> &nbsp;<strong>DP-6</strong> — borrow-based <code>for-in</code> (observable snapshot-semantics change) — gates any R1 follow-up on iteration.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-7" onchange="onStepBox(this)"> &nbsp;<strong>DP-7</strong> — authorize <code>src/native/sys.rs</code> as a sanctioned <code>unsafe</code> home for Linux syscall shims — gates R11.4 (container runtime).</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-8" onchange="onStepBox(this)"> &nbsp;<strong>DP-8</strong> — charter the OS/bare-metal production track (x86-64, multiboot2+QEMU CI, virtio-first, zero-dep <code>kernel/</code> member) — gates R13.</li>
+        </ul>
+      </div>
+
+      <!-- ══════════════════ 13 ══════════════════ -->
+      <h2 id="s13">13 · Sequencing &amp; Effort</h2>
+      <pre>
+LANE A (perf)        R1.0 ─► R1.1 ─► R1.2 ─► R1.3 ─► R1.4 ─► R1.5 ─► R3.0 ─► R3.1 ─► R3.2/3.3 ─► R3.4 ─► R3.5 ─► R3.7 ─► [DP-1/DP-4 decisions]
+LANE B (I/O)                              R2.0 ─► R2.1 ─► R2.2 ─► [DP-2] ─► R2.3 ─► R2.4 ─► R5.1 ─► R5.2 ─► R5.3/5.4 ─► R7.1 ─► R7.2/7.3/7.4
+LANE C (release/eco)   R0.1 ─► R0.2 ─► R0.3 ─► R0.4 ─► R8.1 ─► R8.2 ─► R8.3 ─► R8.4 ─► R8.5 ─► R8.6
+LANE D (frontend)     R6.1 ─► R6.2 ─► R6.3 ─► R6.4
+LANE E (container)                                      R11.1 ─► R11.2 ─► R11.3 ─► [DP-7] ─► R11.4 ─► R11.5 ─► R11.6 ─► R11.7 ─► R11.8 ─► R11.9  ⇒ v2.0
+LANE F (OS track)                                                                 R9.4 ─► R9.5 ─► [DP-8 + DP-1] ─► R13.1 ─► R13.2 ─► R13.3 ─► R13.4 ─► R13.5 ─► R13.6 ─► R13.7 ─► R13.8  ⇒ v3.0-track
+R4 (memory)                            R4.0 ─► R4.1 (spike) ─► R4.2   [bounded-memory promise waits on DP-1]
+R12 (1.0 hardening)   last of Lanes A–D; R12 closes v1.0
+      </pre>
+      <p class="muted small">Lanes are independent by design (different files, different gates) and can run as parallel work streams.
+        The universal gate list serializes on <code>target/debug/spid3r</code> — never run two feature-config builds concurrently
+        (<code>gate.sh</code> is already sequential).</p>
+
+      <div class="tablewrap">
+        <table>
+          <tr><th>Phase</th><th>Steps</th><th>Effort total (assumptions, not commitments)</th><th>Blocking decisions</th></tr>
+          <tr><td>R0 release</td><td>5</td><td>~2–3 days elapsed (mostly CI waits)</td><td>none</td></tr>
+          <tr><td>R1 collections</td><td>6</td><td>~1–2 weeks</td><td>none (DP-6 only if pursued)</td></tr>
+          <tr><td>R2 evented I/O</td><td>5</td><td>~2–3 weeks</td><td>DP-2 before R2.3</td></tr>
+          <tr><td>R3 AOT codegen</td><td>8</td><td>~2–3 weeks</td><td>none (R3.6 stretch, own kill criteria)</td></tr>
+          <tr><td>R4 memory</td><td>3</td><td>~1 week (R4.1 may conclude infeasible)</td><td>bounded memory → DP-1</td></tr>
+          <tr><td>R5 web stack</td><td>4</td><td>~1–2 weeks</td><td>needs R2.1+</td></tr>
+          <tr><td>R6 diagnostics/types</td><td>4</td><td>~2 weeks</td><td>none</td></tr>
+          <tr><td>R7 I/O completeness</td><td>4</td><td>~1–2 weeks</td><td>none</td></tr>
+          <tr><td>R8 ecosystem</td><td>6</td><td>~2 weeks</td><td>release <code>tls</code>-feature tradeoff in R8.1</td></tr>
+          <tr><td>R9 systems primitives</td><td>5</td><td>~2–3 weeks</td><td>DP-5 (runtime loading)</td></tr>
+          <tr><td>R10 generics</td><td>3</td><td>quarter-scale (design → frontend → AOT)</td><td>DP-1</td></tr>
+          <tr><td>R11 container engine (v2.0)</td><td>9</td><td>~2–3 months (Linux-runner CI required)</td><td>DP-7 at R11.4; R5/R7/R8 prerequisites</td></tr>
+          <tr><td>R12 1.0 hardening</td><td>4</td><td>~2 weeks</td><td>closes Lanes A–D</td></tr>
+          <tr><td>R13 OS/bare-metal (v3.0-track)</td><td>8</td><td>~2 quarters (program scale)</td><td>DP-8 + DP-1 + R9.4/R9.5</td></tr>
+        </table>
+      </div>
+      <p class="muted small">Effort classes: S &lt; 1 day · M 1–3 days · L 3–7 days · XL &gt; 1 week. These are planning assumptions for
+        sequencing only — per GR-1 they are not promises and carry no evidence weight.</p>
+
+      <!-- ══════════════════ 14 ══════════════════ -->
+      <h2 id="s14">14 · Risk Register</h2>
+      <div class="tablewrap">
+        <table>
+          <tr><th>#</th><th>Risk</th><th>Affected steps</th><th>Mitigation / trigger</th></tr>
+          <tr><td>1</td><td>Semantic drift in collection fixes (order, equality, hashing)</td><td>R1.1–R1.4</td><td>Order contract pinned by <code>engine_matrix.rs:201/521</code> + <code>docs/DATA_STRUCTURES.md:148</code>; index hits always confirmed by <code>values_equal</code>; hasher confined to never-iterated maps</td></tr>
+          <tr><td>2</td><td>Misdeclared LLVM attributes = miscompile</td><td>R3.1</td><td>Only documented-pure helpers get memory/readonly; nounwind/willreturn are ABI-safe; startup probe verifies kind-ids; full engine matrix gates</td></tr>
+          <tr><td>3</td><td>Two codegen pipelines diverge (Rust vs selfhost)</td><td>R3.*</td><td>Every backend step runs <code>selfhost_native_parity.sh</code> + <code>selfhost_bootstrap_parity.sh</code>; both must converge</td></tr>
+          <tr><td>4</td><td>GC freeze / watchdog false-positives from event-loop parking</td><td>R2.3</td><td><code>enter_blocked()</code> discipline tested explicitly (GC-during-idle-loop gate test) before merge</td></tr>
+          <tr><td>5</td><td>Recovered AST executed (ARC-06 violation)</td><td>R6.1</td><td><code>parse_recovering()</code> used only by check/LSP; run/build keep first-error hard fail; gate: differential outputs byte-identical</td></tr>
+          <tr><td>6</td><td>known CI flake <code>tests/phase2_net_limits.rs</code></td><td>any I/O step</td><td>Prove in isolation, re-run, record — never "fix" unrelated code (AGENTS.md §5)</td></tr>
+          <tr><td>7</td><td>Scratch-slab box observed after reset (UAF)</td><td>R4.1</td><td>Spike with explicit kill criteria; no implementation without a written safety memo; bounded-memory promise stays behind DP-1</td></tr>
+          <tr><td>8</td><td>Registry over http / missing TLS in release builds</td><td>R8.1–R8.2</td><td>Decision recorded in R8.1 (add <code>tls</code> to release features vs http-only warning); never silently downgrade</td></tr>
+          <tr><td>9</td><td>Bench fixture drift (PINS duplicated in two files)</td><td>R1.0</td><td>Edit both <code>PINS</code> sites + regenerate manifest in the same commit; fail-closed verify at measure start</td></tr>
+          <tr><td>10</td><td>Feature-config build collisions</td><td>all</td><td>Strictly sequential gate steps; never parallel cargo with different features</td></tr>
+          <tr><td>11</td><td>Privileged container ops misused (mount/clone/seccomp)</td><td>R11.4–R11.8</td><td>DP-7 review, fail-closed shims, capability drop before exec by construction, rootless mode first-class, external security review gate on R11.8</td></tr>
+          <tr><td>12</td><td>Kernel early-boot instability (triple faults, heap corruption)</td><td>R13.1–R13.5</td><td>Deterministic QEMU CI boot tests with serial assertions; soak tests; frame-accounting audit; OOM panics cleanly, never silently wraps</td></tr>
+          <tr><td>13</td><td>QEMU CI flakiness (timers, sendkey, network taps)</td><td>R13.*, R11.6</td><td>Fixed QEMU cmdlines + generous timeouts + retry-once policy recorded as flake evidence; serial assertions over screen scraping</td></tr>
+        </table>
+      </div>
+
+      <!-- ══════════════════ Appendices ══════════════════ -->
+      <h2 id="sa">Appendix A · Command Cheat-Sheet</h2>
+      <div class="tablewrap">
+        <table>
+          <tr><th>Purpose</th><th>Command (PowerShell unless noted)</th></tr>
+          <tr><td>Full gate</td><td><code>&amp; "C:\Program Files\Git\bin\bash.exe" tools/gate.sh</code> → expect 9/9 PASS</td></tr>
+          <tr><td>Differential</td><td><code>&amp; "C:\Program Files\Git\bin\bash.exe" tools/difftest.sh</code> → ALL MATCH</td></tr>
+          <tr><td>Native parity sweep (~14 min)</td><td><code>&amp; "C:\Program Files\Git\bin\bash.exe" tools/selfhost_native_parity.sh &lt; /dev/null</code> → pass=124 fail=0 skip=10 defer=0</td></tr>
+          <tr><td>Bootstrap 3-way</td><td><code>&amp; "C:\Program Files\Git\bin\bash.exe" tools/selfhost_bootstrap_parity.sh &lt; /dev/null</code> → pass=124 obj_match=111 ok=226</td></tr>
+          <tr><td>Format / lint</td><td><code>cargo fmt --check</code> · <code>cargo clippy --all-targets --features native</code></td></tr>
+          <tr><td>Quick perf</td><td><code>python tools/phase0_bench.py --quick</code> (2/5/1)</td></tr>
+          <tr><td>Full perf</td><td><code>python tools/phase0_bench.py</code> (9/21/2, checksum-first, selftest)</td></tr>
+          <tr><td>Bench fixture integrity</td><td><code>python tools/phase0_manifest.py --verify</code> · <code>python tools/phase0_fixtures.py --verify</code></td></tr>
+          <tr><td>Bench gate (floors)</td><td><code>target/release/spid3r.exe bench --gate --compare --runs 5</code></td></tr>
+          <tr><td>Corpus manifest</td><td><code>python tools/corpus_manifest.py verify</code> (build only with a ledger entry)</td></tr>
+          <tr><td>Doc claims</td><td><code>node tools/verify_doc_claims.js</code> (37/0) · <code>node tools/verify_dev_snippets.js</code> (19/0)</td></tr>
+          <tr><td>Stage-0 build</td><td><code>cargo build --features native</code></td></tr>
+          <tr><td>Stage-1 build</td><td><code>target/release/spid3r.exe build selfhost/main.matrix -o selfhost/main_native.exe</code></td></tr>
+          <tr><td>IR dump</td><td><code>$env:SPID3R_DUMP_IR=1</code> before <code>spid3r build</code></td></tr>
+          <tr><td>Release dry-run</td><td><code>gh workflow run release</code> → <code>gh run watch</code></td></tr>
+          <tr><td>Kernel boot test (R13)</td><td><code>qemu-system-x86_64 -M q35 -m 128M -kernel kernel/build/kernel.bin -serial stdio -display none</code> + serial banner assertion (CI job wraps with timeout)</td></tr>
+          <tr><td>Container smoke (R11)</td><td>loopback OCI fixture → <code>spid3r container pull &amp;&amp; spid3r container run &lt;img&gt; echo ok</code> → exit 0 + <code>ok</code> on stdout (CI, Linux runner)</td></tr>
+        </table>
+      </div>
+
+      <h2 id="sb">Appendix B · File-Touch Map (per phase)</h2>
+      <div class="tablewrap">
+        <table>
+          <tr><th>Phase</th><th>Files touched</th></tr>
+          <tr><td>R1</td><td><code>src/value/mod.rs</code> · <code>src/value/collections/{seq,mod,fxhash(new)}.rs</code> · <code>src/cli.rs</code> (BENCH_ITERS/FLOORS) · <code>tools/phase0_bench.py</code> · <code>tools/phase0_fixtures.py</code> · <code>benchmarks/compare/*</code> + manifest/SOURCES</td></tr>
+          <tr><td>R2</td><td><code>src/stdlib/net.rs</code> · <code>src/stdlib/{timer,eventloop}(new)</code> · <code>src/stdlib/mod.rs</code> (registration) · <code>src/sched/mod.rs</code> (loop-thread hooks) · <code>stdlib/event.matrix</code></td></tr>
+          <tr><td>R3</td><td><code>src/native/ir.rs</code> · <code>src/native/llvm.rs</code> · <code>src/native/rt.rs</code> (new trampolines, GLOBAL_GEN) · <code>src/native/link.rs</code> (R3.6) · <code>Cargo.toml</code>/RUSTFLAGS (R3.6)</td></tr>
+          <tr><td>R4</td><td><code>src/native/rt.rs</code> (accounting) · benchmarks (<code>rss_over_time</code>)</td></tr>
+          <tr><td>R5</td><td><code>src/stdlib/net.rs</code> · <code>stdlib/{web,http}.matrix</code></td></tr>
+          <tr><td>R6</td><td><code>src/parser/mod.rs</code> · <code>src/diagnostics/mod.rs</code> · <code>src/lexer/mod.rs</code> · <code>src/semantic/mod.rs</code> · <code>src/lsp/mod.rs</code> · <code>src/cli.rs</code> (print loop)</td></tr>
+          <tr><td>R7</td><td><code>src/stdlib/{file,mod,fs_policy,shutdown}.rs</code> (<code>file.rs</code> new) · <code>src/stdlib/net.rs</code> (UDS variant)</td></tr>
+          <tr><td>R8</td><td><code>src/stdlib/net.rs</code> (fetch_bytes) · <code>src/pkg/{registry,mod,ops}.rs</code> (<code>registry.rs</code> new) · <code>src/config/schema.rs</code> · <code>src/lsp/mod.rs</code> + new <code>src/docgen.rs</code> · <code>src/repl/mod.rs</code> · <code>src/vm/mod.rs</code> (profiler)</td></tr>
+          <tr><td>R11 (v2.0)</td><td>new <code>src/oci/{manifest,client,layers}.rs</code> · new <code>src/native/sys.rs</code> (DP-7) · new <code>src/container/{runtime,cgroup,net,daemon}.rs</code> · <code>src/cli.rs</code> (<code>container</code> subcommand) · <code>src/config/schema.rs</code> · <code>.github/workflows/ci.yml</code> (Linux container job)</td></tr>
+          <tr><td>R13 (v3.0-track)</td><td>new <code>kernel/</code> workspace member (<code>boot</code>, <code>mem</code>, <code>intr</code>, <code>sched</code>, <code>drivers</code>, <code>user</code> modules) · <code>kernel/link.ld</code> · <code>.github/workflows/ci.yml</code> (QEMU boot job) · <code>docs/OS_TRACK.md</code> (new)</td></tr>
+        </table>
+      </div>
+
+      <h2 id="sc">Appendix C · Ledger Row Template</h2>
+      <pre>
+&lt;tr&gt;&lt;td&gt;2026-11-DD&lt;/td&gt;&lt;td&gt;&lt;step-id&gt; &lt;short name&gt;&lt;/td&gt;&lt;td&gt;
+  HYPOTHESIS: &lt;what we expected&gt;.&lt;br&gt;
+  EVIDENCE: &lt;commands run + results, e.g. gate.sh 9/9; difftest ALL MATCH;
+  phase0 json median 148.82 → 137.4 ms (MAD 1.2%, 2-pass agree 0.8%);
+  parity harness results; teeth-proof note for new harnesses&gt;.&lt;br&gt;
+  VERDICT: PASS / PARTIAL (what remains) / OPEN (why) / RETIRED (why).
+&lt;/td&gt;&lt;/tr&gt;
+      </pre>
+      <p class="muted small">CI evidence goes in a separate appended row once Actions is green. Negative results, divergences, flakes and
+        tooling problems are recorded, never omitted (GR-1 rule 7).</p>
+
+      <h2 id="sd">Appendix D · Analysis-Driven Changes Log</h2>
+      <p class="muted">Everything the verification pass changed relative to the audit's first-pass recommendations — the "test before
+        plan" receipts.</p>
+      <div class="tablewrap">
+        <table>
+          <tr><th>#</th><th>Audit said</th><th>Analysis found</th><th>Plan change</th></tr>
+          <tr><td>1</td><td>P-MED-4: rewrite selfhost lexer to byte-scan</td><td><span class="badge b-kill">KILL</span> Already byte-based since 2026-11-14 (<code>selfhost/lexer.matrix:1-21</code>)</td><td>Item dropped; effort reassigned to R2.2 timers</td></tr>
+          <tr><td>2</td><td>Map remove via swap-delete + tombstones</td><td><span class="badge b-kill">KILL</span> Swap-delete breaks the documented insertion-order contract (pinned tests); tombstones touch 15+ direct readers</td><td>R1.4 reduced to in-place index patching; contract change explicitly not taken</td></tr>
+          <tr><td>3</td><td>Give <code>Set</code> a hash index</td><td><span class="badge b-fix">FIX</span> Sets accept any value; <code>2 == 2.0</code> deep-equal; containers hash by identity</td><td>R1.3 = scalar-only accelerator + <code>values_equal</code> confirm + linear fallback</td></tr>
+          <tr><td>4</td><td>Iterate for-in by reference</td><td><span class="badge b-fix">FIX</span> Borrow makes mutation-during-iteration observable; snapshot semantics test-pinned</td><td>Deferred to new decision DP-6</td></tr>
+          <tr><td>5</td><td>AOT epoch-based slab reclamation / per-call arenas</td><td><span class="badge b-kill">KILL</span> Returned handles + escaping closures + concurrent tasks make per-call reset unsafe; only whole-program bracket is safe</td><td>R4 redesigned: accounting epoch + design spike + RSS benchmark; bounded memory gated on DP-1</td></tr>
+          <tr><td>6</td><td>Swap <code>MapKey</code> hasher</td><td><span class="badge b-fix">FIX</span> <code>hash_table()</code> bucket order derives from <code>MapKey::hash</code> and is test-pinned</td><td>Hasher applied only to <code>MapData.index</code>/<code>frozen</code> via <code>BuildHasherDefault</code>; derived Hash untouched</td></tr>
+          <tr><td>7</td><td>Concern: inkwell may not expose attributes/TBAA</td><td><span class="badge b-pass">PASS</span> Registry source confirms kind-id attributes, <code>set_metadata</code>, cpu/features strings; no inlining-threshold setter on the new PM</td><td>R3.1–R3.3 green-lit with a startup kind-id probe; threshold tuning via pipeline string only if ever needed</td></tr>
+          <tr><td>8</td><td><code>Value::File</code> variant for file handles</td><td><span class="badge b-fix">FIX</span> Mandatory cost = 3 exhaustive-match arms; full cost unbounded; integer-handle pattern already proven twice</td><td>R7.1 = opaque integer handles (Sock-style)</td></tr>
+          <tr><td>9</td><td>TLS server via <code>TlsAcceptor</code></td><td><span class="badge b-pass">PASS</span> native-tls 0.2.18 confirmed; PEM support per-backend undocumented</td><td>R5.1 = PKCS#12-only minimal design; documented caveat on poll/TLS</td></tr>
+          <tr><td>10</td><td>Event loop as scheduler jobs</td><td><span class="badge b-fix">FIX</span> Pool jobs pollute accounting; watchdog thread is the in-repo precedent; <code>enter_untimed_park</code> must not be used</td><td>R2.3 = dedicated loop thread + channel, <code>enter_blocked()</code> discipline</td></tr>
+          <tr><td>11</td><td>Registry client reuses existing HTTP</td><td><span class="badge b-fix">FIX</span> <code>fetch</code> body is <code>from_utf8_lossy</code> (corrupts tarballs); release Linux/macOS builds lack <code>tls</code></td><td>R8.1 added as a hard precondition (bytes variant + feature decision)</td></tr>
+          <tr><td>12</td><td>fsync native</td><td><span class="badge b-fix">FIX</span> No <code>fsync</code> anywhere; Windows needs <code>FlushFileBuffers</code> (kernel32 extern precedent exists in <code>db.rs</code>)</td><td>R7.1b scoped with per-OS extern plan</td></tr>
+        </table>
+      </div>
+
+      <div class="footer">
+        <p><strong>How to use this plan:</strong> start with Lane C (R0 — pure process, zero risk) and Lane A (R1) in parallel.
+          Every step carries its own analysis-first stage; if S0 contradicts the step, amend this document before writing code — that
+          discipline is what produced Appendix D, and it is the reason the plan can be trusted.</p>
+        <p class="small">Planning deliverable · generated 2026-11-17 against commit <code>87decd8</code>, re-checked as v2.1 (anchors
+          spot-verified against source; errata in the version strip) · governing documents: <code>full_plan.html</code> (roadmap +
+          append-only ledger), <code>AGENTS.md</code> (working rules) · no repository source was modified to produce this file ·
+          bench numbers marked ADVISORY_ONLY per GR-2; all targets are to-be-measured, never claimed.</p>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    function toggleTheme() {
+      var cur = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', cur);
+      try { localStorage.setItem('spid3r-dev-theme', cur); } catch (_) { }
+    }
+
+    /* ── Checkbox progress (full_plan.html GR-1 discipline) ─────────────
+       File state (the `checked` attribute) = the executing agent's record.
+       localStorage = thin human overlay; never overwrites file state.     */
+    var CHECK_KEY = 'spid3r-impl-plan-checks-v1';
+    var PHASE_ORDER = ['R0', 'R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10', 'R11', 'R12', 'DP'];
+
+    function phaseOf(box) {
+      var id = box.id.replace(/^sb-/, '');
+      if (id.indexOf('DP') === 0) return 'DP';
+      return id.split('.')[0];
+    }
+
+    function onStepBox(el) {
+      var card = el.closest ? el.closest('.step') : null;
+      if (card) card.classList.toggle('done', el.checked);
+      saveChecks();
+      updateProgress();
+    }
+
+    function saveChecks() {
+      try {
+        var st = {};
+        document.querySelectorAll('.stepbox').forEach(function (b) {
+          if (b.checked !== b.defaultChecked) st[b.id] = b.checked;
+        });
+        localStorage.setItem(CHECK_KEY, JSON.stringify(st));
+      } catch (_) { }
+    }
+
+    function updateProgress() {
+      var boxes = Array.prototype.slice.call(document.querySelectorAll('.stepbox'));
+      var done = boxes.filter(function (b) { return b.checked; }).length;
+      var fill = document.getElementById('prog-fill');
+      var txt = document.getElementById('prog-text');
+      var ph = document.getElementById('prog-phases');
+      if (fill) fill.style.width = (boxes.length ? (done * 100 / boxes.length) : 0) + '%';
+      if (txt) txt.textContent = done + ' / ' + boxes.length + ' boxes';
+      if (ph) {
+        var by = {};
+        boxes.forEach(function (b) {
+          var p = phaseOf(b);
+          by[p] = by[p] || [0, 0];
+          by[p][1]++;
+          if (b.checked) by[p][0]++;
+        });
+        ph.innerHTML = PHASE_ORDER.filter(function (k) { return by[k]; }).map(function (k) {
+          var full = by[k][0] === by[k][1];
+          return '<b>' + k + '</b> ' + by[k][0] + '/' + by[k][1] + (full ? ' \u2713' : '');
+        }).join(' &nbsp;\u00b7&nbsp; ');
+      }
+    }
+
+    function resetTicks() {
+      try { localStorage.removeItem(CHECK_KEY); } catch (_) { }
+      document.querySelectorAll('.stepbox').forEach(function (b) {
+        b.checked = b.defaultChecked;
+        var card = b.closest ? b.closest('.step') : null;
+        if (card) card.classList.toggle('done', b.checked);
+      });
+      saveChecks();
+      updateProgress();
+    }
+
+    (function () {
+      var saved = null;
+      try { saved = JSON.parse(localStorage.getItem(CHECK_KEY) || '{}'); } catch (_) { }
+      document.querySelectorAll('.stepbox').forEach(function (b) {
+        b.checked = (saved && (b.id in saved)) ? saved[b.id] : b.defaultChecked;
+        var card = b.closest ? b.closest('.step') : null;
+        if (card) card.classList.toggle('done', b.checked);
+        b.addEventListener('change', function () { onStepBox(b); });
+      });
+      updateProgress();
+    })();
+
+    /* ── TOC scroll-spy ──────────────────────────────────────────────── */
+    (function () {
+      var links = Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+      var targets = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+      function onScroll() {
+        var y = window.scrollY + 100, best = 0;
+        for (var i = 0; i < targets.length; i++) {
+          if (targets[i] && targets[i].offsetTop <= y) best = i;
+        }
+        links.forEach(function (a, i) { a.classList.toggle('active', i === best); });
+      }
+      window.addEventListener('scroll', onScroll, { passive: true });
+      onScroll();
+    })();
+  </script>
+</body>
+
+</html>

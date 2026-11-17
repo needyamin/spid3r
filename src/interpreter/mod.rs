@@ -661,7 +661,7 @@ impl Interp {
                         }
                     } else if let Some(alias_name) = alias {
                         let mut entries = Vec::new();
-                        let mut frozen = std::collections::HashSet::new();
+                        let mut frozen = crate::value::collections::FxHashSet::default();
                         for (name, value, is_const) in names {
                             let key = crate::value::MapKey::Str(name.into());
                             if is_const {

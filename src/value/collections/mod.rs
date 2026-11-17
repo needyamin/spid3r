@@ -2,9 +2,12 @@
 //! iteration, and length. The interpreter routes every `obj.name(args)` here
 //! (except instances, which it dispatches itself).
 
+pub mod fxhash;
 pub mod misc;
 pub mod nodes;
 pub mod seq;
+
+pub use fxhash::{FxHashMap, FxHashSet, FxHasher};
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -248,17 +251,17 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
             }
             Ok(Value::Map(new_ref(seq::MapData::namespace(
                 entries,
-                std::collections::HashSet::new(),
+                FxHashSet::default(),
             ))))
         }
         "set" => {
-            let mut items: Vec<Value> = Vec::new();
+            let mut s = seq::SetData::default();
             for a in args {
-                if !items.iter().any(|v| values_equal(v, &a)) {
-                    items.push(a);
+                if s.find(&a).is_none() {
+                    s.push_unchecked(a);
                 }
             }
-            Ok(Value::Set(new_ref(seq::SetData { items })))
+            Ok(Value::Set(new_ref(s)))
         }
         "tuple" => Ok(Value::Tuple(new_ref(args))),
         "binary_tree" => Ok(Value::BinTree(new_ref(nodes::BinTreeData::new()))),
@@ -759,6 +762,14 @@ pub fn call_method_host(
                     let other_items = o.lock().unwrap().items.clone();
                     return seq::set_op(name, self_items, other_items);
                 }
+            }
+            if matches!(name, "push" | "add" | "remove" | "contains")
+                && args.len() == 1
+                && crate::value::is_scalar(&args[0])
+            {
+                // Scalar operands never lock any nested container, so we can
+                // query/mutate the side-index directly without cloning `items`.
+                return d.lock().unwrap().method(name, &args);
             }
             if matches!(name, "push" | "add" | "remove" | "contains" | "to_list") {
                 // Audit A-7: snapshot-then-operate, see the list arm above.

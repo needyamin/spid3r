@@ -386,7 +386,7 @@ pub fn set_detached(
             if !slots_unchanged(&g.items, &items) {
                 return Err(CONFLICT.to_string());
             }
-            g.items.push(args[0].clone());
+            g.push_unchecked(args[0].clone());
             Ok(Value::Null)
         }
         "remove" => {
@@ -399,7 +399,7 @@ pub fn set_detached(
                     // snapshot instead of removing a different element.
                     match g.items.get(i) {
                         Some(cur) if crate::value::same_slot(cur, &items[i]) => {
-                            g.items.remove(i);
+                            g.remove_at(i);
                             Ok(Value::Null)
                         }
                         _ => Err(CONFLICT.to_string()),
@@ -668,7 +668,7 @@ pub struct MapData {
     pub entries: Vec<(super::MapKey, Value)>,
     /// key -> position in `entries`. Kept in sync by `find`-adjacent
     /// mutations; rebuilt wholesale when entries shift.
-    index: std::collections::HashMap<super::MapKey, usize>,
+    index: super::FxHashMap<super::MapKey, usize>,
     /// True when this map is a **module namespace** — the value bound to an
     /// import alias (`import "m" as mu`). Such a map is a read-only view of
     /// the module's exports: it cannot be mutated, and an exported name
@@ -677,7 +677,7 @@ pub struct MapData {
     pub namespace: bool,
     /// The module's `public const` exports. They are frozen: a namespace copy
     /// of a constant must not be rebindable (`mu["VERSION"] = 9`).
-    pub frozen: std::collections::HashSet<super::MapKey>,
+    pub frozen: super::FxHashSet<super::MapKey>,
     /// Monotonic mutation counter (Phase 5). Bumped by every value or
     /// structural mutation so a future inline cache can detect invalidation.
     /// `Value::Map` is `Ref<MapData>` (pointer-sized `Arc<Mutex<..>>`), so
@@ -700,7 +700,8 @@ impl MapData {
     /// Build a map from entries (last duplicate wins, like the `map(...)`
     /// constructor). The only sanctioned way to construct `MapData`.
     pub fn from_entries(entries: Vec<(super::MapKey, Value)>) -> MapData {
-        let mut index = std::collections::HashMap::with_capacity(entries.len());
+        let mut index =
+            super::FxHashMap::with_capacity_and_hasher(entries.len(), Default::default());
         for (i, (k, _)) in entries.iter().enumerate() {
             index.insert(k.clone(), i);
         }
@@ -708,7 +709,7 @@ impl MapData {
             entries,
             index,
             namespace: false,
-            frozen: std::collections::HashSet::new(),
+            frozen: super::FxHashSet::default(),
             generation: 0,
         }
     }
@@ -725,7 +726,7 @@ impl MapData {
     /// immutable here exactly as they are in the module itself.
     pub fn namespace(
         entries: Vec<(super::MapKey, Value)>,
-        frozen: std::collections::HashSet<super::MapKey>,
+        frozen: super::FxHashSet<super::MapKey>,
     ) -> MapData {
         let mut m = MapData::from_entries(entries);
         m.namespace = true;
@@ -925,10 +926,43 @@ pub fn map_values_out(entries: &[(super::MapKey, Value)]) -> Value {
 
 // --------------------------------------------------------------------- set
 
+/// Canonical hash for `SetData` scalar side-index (`Int`, `Str`, `Bool` only).
+/// `Float` is excluded because ±0.0 and `2.0 == 2` cross-equality would
+/// require canonicalizing numeric values across types; `has_float` triggers
+/// linear fallback when querying `Int` against a set containing `Float`s.
+#[inline]
+fn scalar_set_hash(v: &Value) -> Option<u64> {
+    use std::hash::Hasher;
+    let mut h = super::FxHasher::default();
+    match v {
+        Value::Int(i) => {
+            h.write_u8(1);
+            h.write_u64(*i as u64);
+            Some(h.finish())
+        }
+        Value::Str(s) => {
+            h.write_u8(2);
+            h.write(s.as_bytes());
+            Some(h.finish())
+        }
+        Value::Bool(b) => {
+            h.write_u8(3);
+            h.write_u8(*b as u8);
+            Some(h.finish())
+        }
+        _ => None,
+    }
+}
+
 /// Unique membership, insertion order kept for display and iteration.
 #[derive(Debug, Default)]
 pub struct SetData {
     pub items: Vec<Value>,
+    /// Side-index over `Int`/`Str`/`Bool` items -> positions in `items`.
+    /// Every hit is confirmed via `values_equal`; misses fall back to linear
+    /// scan when `Float` cross-equality may apply (`has_float`).
+    index: super::FxHashMap<u64, Vec<usize>>,
+    has_float: bool,
 }
 
 impl Drop for SetData {
@@ -939,9 +973,69 @@ impl Drop for SetData {
 }
 
 impl SetData {
-    fn find(&self, v: &Value) -> Option<usize> {
+    pub fn from_items(items: Vec<Value>) -> SetData {
+        let mut s = SetData {
+            items: Vec::with_capacity(items.len()),
+            index: super::FxHashMap::default(),
+            has_float: false,
+        };
+        for item in items {
+            s.push_unchecked(item);
+        }
+        s
+    }
+
+    pub(crate) fn push_unchecked(&mut self, v: Value) {
+        let idx = self.items.len();
+        if matches!(v, Value::Float(_)) {
+            self.has_float = true;
+        }
+        if let Some(h) = scalar_set_hash(&v) {
+            self.index.entry(h).or_default().push(idx);
+        }
+        self.items.push(v);
+    }
+
+    pub(crate) fn remove_at(&mut self, i: usize) {
+        let removed = self.items.remove(i);
+        if let Some(h) = scalar_set_hash(&removed) {
+            if let Some(bucket) = self.index.get_mut(&h) {
+                if let Some(pos) = bucket.iter().position(|&idx| idx == i) {
+                    bucket.swap_remove(pos);
+                }
+                if bucket.is_empty() {
+                    self.index.remove(&h);
+                }
+            }
+        }
+        for bucket in self.index.values_mut() {
+            for pos in bucket.iter_mut() {
+                if *pos > i {
+                    *pos -= 1;
+                }
+            }
+        }
+        if matches!(removed, Value::Float(_)) {
+            self.has_float = self.items.iter().any(|x| matches!(x, Value::Float(_)));
+        }
+    }
+
+    pub fn find(&self, v: &Value) -> Option<usize> {
+        if let Some(h) = scalar_set_hash(v) {
+            if let Some(bucket) = self.index.get(&h) {
+                for &idx in bucket {
+                    if values_equal(&self.items[idx], v) {
+                        return Some(idx);
+                    }
+                }
+            }
+            if !(matches!(v, Value::Int(_)) && self.has_float) {
+                return None;
+            }
+        }
         self.items.iter().position(|x| values_equal(x, v))
     }
+
     pub fn method(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
         match name {
             "len" => {
@@ -955,12 +1049,14 @@ impl SetData {
             "clear" => {
                 want(name, args, 0)?;
                 self.items.clear();
+                self.index.clear();
+                self.has_float = false;
                 Ok(Value::Null)
             }
             "push" | "add" => {
                 want(name, args, 1)?;
                 if self.find(&args[0]).is_none() {
-                    self.items.push(args[0].clone());
+                    self.push_unchecked(args[0].clone());
                 }
                 Ok(Value::Null)
             }
@@ -968,7 +1064,7 @@ impl SetData {
                 want(name, args, 1)?;
                 match self.find(&args[0]) {
                     Some(i) => {
-                        self.items.remove(i);
+                        self.remove_at(i);
                         Ok(Value::Null)
                     }
                     None => Err("value not in set".to_string()),
@@ -1011,9 +1107,9 @@ impl SetData {
             }
             "clone" => {
                 want(name, args, 0)?;
-                Ok(Value::Set(new_ref(SetData {
-                    items: self.items.iter().map(deep_clone).collect(),
-                })))
+                Ok(Value::Set(new_ref(SetData::from_items(
+                    self.items.iter().map(deep_clone).collect(),
+                ))))
             }
             _ => Err(unknown(name, "set")),
         }
@@ -1029,13 +1125,13 @@ impl SetData {
 pub fn set_op(op: &str, self_items: Vec<Value>, other_items: Vec<Value>) -> Result<Value, String> {
     match op {
         "union" => {
-            let mut items = self_items;
+            let mut s = SetData::from_items(self_items);
             for v in other_items.iter() {
-                if !items.iter().any(|x| values_equal(x, v)) {
-                    items.push(deep_clone(v));
+                if s.find(v).is_none() {
+                    s.push_unchecked(deep_clone(v));
                 }
             }
-            Ok(Value::Set(new_ref(SetData { items })))
+            Ok(Value::Set(new_ref(s)))
         }
         "intersection" | "intersect" => {
             let items: Vec<Value> = self_items
@@ -1043,7 +1139,7 @@ pub fn set_op(op: &str, self_items: Vec<Value>, other_items: Vec<Value>) -> Resu
                 .filter(|v| other_items.iter().any(|w| values_equal(v, w)))
                 .map(deep_clone)
                 .collect();
-            Ok(Value::Set(new_ref(SetData { items })))
+            Ok(Value::Set(new_ref(SetData::from_items(items))))
         }
         "difference" => {
             let items: Vec<Value> = self_items
@@ -1051,7 +1147,7 @@ pub fn set_op(op: &str, self_items: Vec<Value>, other_items: Vec<Value>) -> Resu
                 .filter(|v| !other_items.iter().any(|w| values_equal(v, w)))
                 .map(deep_clone)
                 .collect();
-            Ok(Value::Set(new_ref(SetData { items })))
+            Ok(Value::Set(new_ref(SetData::from_items(items))))
         }
         "is_subset" => {
             let res = self_items
@@ -1385,11 +1481,11 @@ mod tests {
 
     #[test]
     fn set_add_with_a_stale_snapshot_reports_conflict_instead_of_duplicating() {
-        let set = new_ref(SetData { items: Vec::new() });
+        let set = new_ref(SetData::default());
         // Snapshot taken by "task A" while the set was empty.
         let stale = set.lock().unwrap().items.clone();
         // "Task B" adds the value first.
-        set.lock().unwrap().items.push(s("x"));
+        set.lock().unwrap().push_unchecked(s("x"));
         // Task A now tries to commit against its stale snapshot.
         let r = set_detached(&set, stale, "add", &[s("x")]);
         assert!(matches!(r, Err(ref e) if e == CONFLICT), "got {:?}", r);
@@ -1398,7 +1494,7 @@ mod tests {
 
     #[test]
     fn set_add_commits_when_the_snapshot_is_still_current() {
-        let set = new_ref(SetData { items: Vec::new() });
+        let set = new_ref(SetData::default());
         let snapshot = set.lock().unwrap().items.clone();
         let r = set_detached(&set, snapshot, "add", &[s("x")]);
         assert!(r.is_ok(), "uncontended add must succeed: {:?}", r);
@@ -1407,12 +1503,10 @@ mod tests {
 
     #[test]
     fn set_remove_with_a_shifted_slot_reports_conflict() {
-        let set = new_ref(SetData {
-            items: vec![s("a"), s("b")],
-        });
+        let set = new_ref(SetData::from_items(vec![s("a"), s("b")]));
         let stale = set.lock().unwrap().items.clone();
         // A concurrent remove shifts "b" into slot 0.
-        set.lock().unwrap().items.remove(0);
+        set.lock().unwrap().remove_at(0);
         let r = set_detached(&set, stale, "remove", &[s("b")]);
         assert!(
             matches!(r, Err(ref e) if e == CONFLICT),

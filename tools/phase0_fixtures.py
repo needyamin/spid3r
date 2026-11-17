@@ -48,11 +48,13 @@ PINS = {
     "prime": "RESULT 5133 121013308",
     "json": "RESULT 249868800 9163",
     "map": "RESULT 44432313 100000",
+    "set": "RESULT 10000 20000",
+    "equality": "RESULT 4124 200000",
 }
 TIME_RE = re.compile(r"^TIME_US [0-9]+$")
 RESULT_RE = re.compile(r"^RESULT [0-9]+ [0-9]+$")
 CASE_RE = re.compile(
-    r'name:\s*"phase0_hlc_(prime|json|map)"\s*,\s*src:\s*r#"(.*?)"#\s*,',
+    r'name:\s*"phase0_hlc_(prime|json|map|set|equality)"\s*,\s*src:\s*r#"(.*?)"#\s*,',
     re.S,
 )
 TIMING_LINES = (

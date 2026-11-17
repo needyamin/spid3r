@@ -87,6 +87,31 @@
       ],
       "iterations": 100000,
       "inline_case_transformation": "verbatim minus exactly 3 lines (line numbers 12, 20, 22)."
+    },
+    "set": {
+      "id": "r1_set",
+      "description": "256-element set with 20,000 contains() probes",
+      "constants": {
+        "size": 256,
+        "probes": 20000
+      },
+      "expected_result": "RESULT 10000 20000",
+      "spid3r_source": "set.matrix",
+      "references": [],
+      "iterations": 20000,
+      "inline_case_transformation": "verbatim minus exactly 3 lines (let t0 / let us / println TIME_US)."
+    },
+    "equality": {
+      "id": "r1_equality",
+      "description": "200,000 iterations of scalar int and string equality comparisons",
+      "constants": {
+        "iterations": 200000
+      },
+      "expected_result": "RESULT 4124 200000",
+      "spid3r_source": "equality.matrix",
+      "references": [],
+      "iterations": 200000,
+      "inline_case_transformation": "verbatim minus exactly 3 lines (let t0 / let us / println TIME_US)."
     }
   },
   "sources": [
@@ -159,6 +184,16 @@
       "path": "phase0_calibration.matrix",
       "sha256": "f437fbb7bcdb51b2c0b4d643a511dcde877af7595f740a7046f8684417d7a596",
       "role": "calibration"
+    },
+    {
+      "path": "set.matrix",
+      "sha256": "a70009112fc3fcdd74d36789c554b2c5987d02d27cf3318280be9ebf0b40033a",
+      "role": "workload"
+    },
+    {
+      "path": "equality.matrix",
+      "sha256": "0a1d42d21404a8c000df737f845178cdb5c2c6f2f9126b5730b9ad2ec84d5d83",
+      "role": "workload"
     }
   ],
   "calibration": {
@@ -173,12 +208,14 @@
     "verbatim": [
       "prime.matrix",
       "json.matrix",
-      "map.matrix"
+      "map.matrix",
+      "set.matrix",
+      "equality.matrix"
     ],
     "derived_matrix_files": 0,
     "clones": 0,
     "examples_churn": 0,
-    "inline_golden_value_cases": 3,
+    "inline_golden_value_cases": 5,
     "note": "The 3 deterministic RESULT-only sources live INLINE as raw Rust string literals inside tests/engine_matrix.rs const CASES. They are conformance fixtures ONLY, never timed."
   },
   "variants": [
