@@ -801,7 +801,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.4" onchange="onStepBox(this)"><span class="sid">R1.4</span> Map remove: in-place index patching <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R1.2</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.4" checked onchange="onStepBox(this)"><span class="sid">R1.4</span> Map remove: in-place index patching <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R1.2</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis changed this step:</strong> swap-delete is rejected — it reorders <code>entries</code>, breaking
             the documented insertion-order contract (<code>docs/DATA_STRUCTURES.md:148</code>, <code>tests/engine_matrix.rs:201</code>);
@@ -816,7 +816,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.5" onchange="onStepBox(this)"><span class="sid">R1.5</span> Measure, floors, ledger <span class="badge b-eff">M</span><span class="deps">deps: R1.1–R1.4</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R1.5" checked onchange="onStepBox(this)"><span class="sid">R1.5</span> Measure, floors, ledger <span class="badge b-eff">M</span><span class="deps">deps: R1.1–R1.4</span></div>
         <div class="step-body">
           <h5>S4 · Measure</h5>
           <ul>
@@ -839,7 +839,7 @@
       <h2 id="s5">5 · Phase R2 — Evented I/O Core <span class="badge b-crit">critical</span> <span class="badge b-dp">DP-2 at R2.3</span></h2>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.0" onchange="onStepBox(this)"><span class="sid">R2.0</span> Baseline the current model <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.0" checked onchange="onStepBox(this)"><span class="sid">R2.0</span> Baseline the current model <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S0 · Analyze</h5>
           <ul>
@@ -850,7 +850,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.1" onchange="onStepBox(this)"><span class="sid">R2.1</span> Generalize <code>tcp_poll</code>: listeners + UDP + true writability <span class="badge b-crit">critical</span><span class="badge b-eff">M</span><span class="deps">deps: R2.0</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.1" checked onchange="onStepBox(this)"><span class="sid">R2.1</span> Generalize <code>tcp_poll</code>: listeners + UDP + true writability <span class="badge b-crit">critical</span><span class="badge b-eff">M</span><span class="deps">deps: R2.0</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis:</strong> the listener/UDP exclusion is a design choice in <code>n_tcp_poll</code>
             (<code>net.rs:944-958</code>), not a WSAPoll limit — POLLIN on a listen socket fires on pending connections; fd types already
@@ -870,7 +870,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.2" onchange="onStepBox(this)"><span class="sid">R2.2</span> Timers <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.2" checked onchange="onStepBox(this)"><span class="sid">R2.2</span> Timers <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis:</strong> no new clock needed (<code>sched::now_ms</code>, <code>sched/mod.rs:1311-1320</code>);
             all three poll APIs take ms timeouts; a min-heap suffices — no timer thread. (This step absorbed the freed effort from the
@@ -885,7 +885,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.3" onchange="onStepBox(this)"><span class="sid">R2.3</span> Event-loop core <span class="badge b-crit">critical</span><span class="badge b-dp">needs DP-2 sign-off</span><span class="badge b-eff">L</span><span class="deps">deps: R2.1, R2.2</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.3" checked onchange="onStepBox(this)"><span class="sid">R2.3</span> Event-loop core <span class="badge b-crit">critical</span><span class="badge b-dp">needs DP-2 sign-off</span><span class="badge b-eff">L</span><span class="deps">deps: R2.1, R2.2</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis:</strong> dedicated loop thread + channel (watchdog-thread precedent
             <code>sched/mod.rs:758</code>) fits better than a pool job; every park wrapped in <code>enter_blocked()</code>/<code>enter_active()</code>;
@@ -906,7 +906,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.4" onchange="onStepBox(this)"><span class="sid">R2.4</span> <code>http_echo</code> benchmark harness <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1 (R2.3 for real numbers)</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R2.4" checked onchange="onStepBox(this)"><span class="sid">R2.4</span> <code>http_echo</code> benchmark harness <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R2.1 (R2.3 for real numbers)</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -924,7 +924,7 @@
         the Spid3r-written <code>selfhost/codegen.matrix</code>), or the selfhost parity scripts break.</p>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.0" onchange="onStepBox(this)"><span class="sid">R3.0</span> IR baseline + inkwell capability probe <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.0" checked onchange="onStepBox(this)"><span class="sid">R3.0</span> IR baseline + inkwell capability probe <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S0 · Analyze</h5>
           <ul>
@@ -936,7 +936,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.1" onchange="onStepBox(this)"><span class="sid">R3.1</span> Function attributes <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R3.0</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.1" checked onchange="onStepBox(this)"><span class="sid">R3.1</span> Function attributes <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R3.0</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -950,7 +950,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.2" onchange="onStepBox(this)"><span class="sid">R3.2</span> <code>--target-cpu</code> knob <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R3.0</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.2" checked onchange="onStepBox(this)"><span class="sid">R3.2</span> <code>--target-cpu</code> knob <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R3.0</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -961,7 +961,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.3" onchange="onStepBox(this)"><span class="sid">R3.3</span> PassBuilderOptions configuration <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R3.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.3" checked onchange="onStepBox(this)"><span class="sid">R3.3</span> PassBuilderOptions configuration <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: R3.1</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -972,7 +972,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.4" onchange="onStepBox(this)"><span class="sid">R3.4</span> Method-slot devirtualization <span class="badge b-crit">critical</span><span class="badge b-eff">L</span><span class="deps">deps: R3.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.4" checked onchange="onStepBox(this)"><span class="sid">R3.4</span> Method-slot devirtualization <span class="badge b-crit">critical</span><span class="badge b-eff">L</span><span class="deps">deps: R3.1</span></div>
         <div class="step-body">
           <h5>S0 · Analyze</h5>
           <ul>
@@ -991,7 +991,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.5" onchange="onStepBox(this)"><span class="sid">R3.5</span> Globals handle cache <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R3.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.5" checked onchange="onStepBox(this)"><span class="sid">R3.5</span> Globals handle cache <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R3.1</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1004,7 +1004,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.6" onchange="onStepBox(this)"><span class="sid">R3.6</span> Staticlib bitcode experiment <span class="badge b-low">stretch</span><span class="badge b-eff">XL</span><span class="deps">deps: R3.1–R3.5 measured</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.6" checked onchange="onStepBox(this)"><span class="sid">R3.6</span> Staticlib bitcode experiment <span class="badge b-low">stretch</span><span class="badge b-eff">XL</span><span class="deps">deps: R3.1–R3.5 measured</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis:</strong> MSVC <code>link.exe</code> ignores IR members — requires <code>lld-link -flto</code>
             (or LTO-aware GNU link) on the link side; rustc side is <code>RUSTFLAGS="-C embed-bitcode=yes"</code>. Toolchain must match
@@ -1018,7 +1018,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.7" onchange="onStepBox(this)"><span class="sid">R3.7</span> Phase measurement <span class="badge b-eff">M</span><span class="deps">deps: R3.1–R3.5</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R3.7" checked onchange="onStepBox(this)"><span class="sid">R3.7</span> Phase measurement <span class="badge b-eff">M</span><span class="deps">deps: R3.1–R3.5</span></div>
         <div class="step-body">
           <h5>S4/S5 · Measure + ledger</h5>
           <ul>
@@ -1591,7 +1591,7 @@
           the ledger as "pending owner confirmation" until ticked here and confirmed.</p>
         <ul class="tight" style="list-style:none; padding-left:2px;">
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-1" onchange="onStepBox(this)"> &nbsp;<strong>DP-1</strong> — amend the RED LINE to allow a <code>Value</code> v2 (tagged pointers / inline scalars) — gates R10, full R4, unboxing work.</li>
-          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-2" onchange="onStepBox(this)"> &nbsp;<strong>DP-2</strong> — sanction the evented-I/O core (sched contract surface + new natives) — gates R2.3.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-2" checked onchange="onStepBox(this)"> &nbsp;<strong>DP-2</strong> — sanction the evented-I/O core (sched contract surface + new natives) — gates R2.3.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-3" onchange="onStepBox(this)"> &nbsp;<strong>DP-3</strong> — selective third-party crates for HTTP/2+ (<code>--features net2</code>, core stays zero-dep) — gates HTTP/2 work.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-4" onchange="onStepBox(this)"> &nbsp;<strong>DP-4</strong> — register-VM redesign decision (after R3.7 measurement data).</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-5" onchange="onStepBox(this)"> &nbsp;<strong>DP-5</strong> — <code>dlopen</code> runtime FFI behind an explicit flag + SEC-A row — gates R9.1+ runtime loading.</li>

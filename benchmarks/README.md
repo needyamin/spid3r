@@ -261,3 +261,18 @@ while `--prof --no-opt` stays at the Phase 1 count of 18050.
   `TIME_US` carries no elapsed-time information.
 - Startup-to-first-byte for real applications, memory ceilings, or I/O — these
   are micro-benchmarks, not application benchmarks.
+
+## `http_echo` benchmark (R2.4)
+
+`benchmarks/compare/http_echo/` measures HTTP/1.1 64-byte echo throughput and
+P99 latency for Spid3r's event-loop server (`server.matrix`, using
+`on_readable` + `event_loop_run`) against a matching Node.js `http` server
+(`server.js`).
+
+- **Protocol (`bench.py`):** fresh server process per pass on `127.0.0.1:0`
+  (ephemeral port), `N = 16` concurrent client threads, `0.5 s` warmup, `2.0 s`
+  measurement window, two consecutive passes per target/mode (`keepalive` and
+  `close`), requiring two-pass agreement `<= 3%`.
+- **Checksum:** every response must return `200 OK` with exact 64-byte body
+  (`64 * completed` verified bytes, zero failed responses).
+- **Tier-B targets:** set only after the initial baseline measurement (GR-2).

@@ -408,6 +408,12 @@ pub struct CompiledClass {
     pub fields: Vec<(String, crate::ast::Vis)>,
     pub methods: std::collections::HashMap<String, (crate::ast::Vis, Arc<CompiledFn>)>,
     pub ctor: Option<Arc<CompiledFn>>,
+    /// Stable runtime class ID minted at publication (`0` before publication).
+    pub class_id: u64,
+    /// MRO-flattened method slot table populated at publication.
+    pub vtable: Vec<Arc<CompiledFn>>,
+    /// Method name -> slot index in `vtable`.
+    pub vtable_slots: std::collections::HashMap<String, usize>,
 }
 
 /// An instance of a natively compiled class.

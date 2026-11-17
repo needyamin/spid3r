@@ -633,9 +633,54 @@ impl Vm {
         self.run_compiled(Arc::new(script))
     }
 
+    fn make_invoker(&self) -> crate::stdlib::eventloop::CallbackInvoker {
+        let globals = self.globals.clone();
+        let global_consts = self.global_consts.clone();
+        let consts = self.consts.clone();
+        let sched = self.sched.clone();
+        let modules = self.modules.clone();
+        let embedded = self.embedded.clone();
+        let file = self.file.clone();
+        let module_dirs = self.module_dirs.clone();
+        let budget = self.budget.clone();
+        let wall_clock = self.wall_clock.clone();
+        let mem_limit = self.mem_limit.clone();
+        let max_depth = self.max_depth;
+        let opt_enabled = self.opt_enabled;
+        Arc::new(move |cb, args| {
+            let fd = match cb {
+                Value::VFunc(f) => f,
+                other => {
+                    return Err(format!(
+                        "event loop callback must be a function, found {}",
+                        crate::value::type_name(&other)
+                    ))
+                }
+            };
+            let mut vm = Vm::with_shared(
+                globals.clone(),
+                global_consts.clone(),
+                consts.clone(),
+                sched.clone(),
+                modules.clone(),
+                embedded.clone(),
+                file.clone(),
+                module_dirs.clone(),
+            );
+            vm.budget = budget.clone();
+            vm.wall_clock = wall_clock.clone();
+            vm.mem_limit = mem_limit.clone();
+            vm.max_depth = max_depth;
+            vm.opt_enabled = opt_enabled;
+            let _inv_guard = crate::stdlib::eventloop::push_invoker(vm.make_invoker());
+            vm.run_function(fd, args).map_err(|e| e.to_diag().message)
+        })
+    }
+
     /// Run a script function that has already been compiled (e.g. loaded from a
     /// `.matrixc` file by `exec`). Mirrors the tail of `run_program`.
     pub fn run_compiled(&mut self, script: Arc<VmFunc>) -> Result<i32, Diagnostic> {
+        let _inv_guard = crate::stdlib::eventloop::push_invoker(self.make_invoker());
         if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
             return Err(Diagnostic::new(Phase::Runtime, message));
         }

@@ -363,7 +363,53 @@ impl Interp {
         Ok(())
     }
 
+    fn make_invoker(&self) -> crate::stdlib::eventloop::CallbackInvoker {
+        let globals = self.globals.clone();
+        let sched = self.sched.clone();
+        let modules = self.modules.clone();
+        let file = self.file.clone();
+        let module_dirs = self.module_dirs.clone();
+        let budget = self.budget.clone();
+        let wall_clock = self.wall_clock.clone();
+        let mem_limit = self.mem_limit.clone();
+        let max_depth = self.max_call_depth;
+        Arc::new(move |cb, args| {
+            let fd = match cb {
+                Value::Function(f) => f,
+                other => {
+                    return Err(format!(
+                        "event loop callback must be a function, found {}",
+                        crate::value::type_name(&other)
+                    ))
+                }
+            };
+            let mut interp = Interp::shared(
+                globals.clone(),
+                sched.clone(),
+                modules.clone(),
+                file.clone(),
+                module_dirs.clone(),
+            );
+            interp.set_budget(budget.clone());
+            interp.set_wall_clock(wall_clock.clone());
+            interp.set_mem_limit(mem_limit.clone());
+            interp.max_call_depth = max_depth;
+            let _inv_guard = crate::stdlib::eventloop::push_invoker(interp.make_invoker());
+            let _guard_sweep = GuardSweep {
+                interp: &interp,
+                mark: 0,
+            };
+            let span = Span::new(file.clone(), 0, 0, 0);
+            match interp.call_function(&fd, args, &span) {
+                Ok(v) => Ok(v),
+                Err(Flow::Error(d)) | Err(Flow::Fatal(d)) => Err(d.message),
+                Err(_) => Err("unexpected control flow in event loop callback".to_string()),
+            }
+        })
+    }
+
     fn run_program_inner(&self, program: &Program) -> Result<i32, Diagnostic> {
+        let _inv_guard = crate::stdlib::eventloop::push_invoker(self.make_invoker());
         // `extern fn` resolves at link time, and the tree interpreter links
         // nothing. Refuse before running a single statement rather than
         // defining a function whose body is empty — a silent `null` return is

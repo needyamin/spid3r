@@ -679,6 +679,10 @@ pub struct Ir<'ctx> {
     /// W4.3: top-level unambiguous scalar `const` values safe to inline at use sites.
     top_consts: HashMap<String, Expr>,
     top_ints: HashMap<String, i64>,
+    /// R3.4: runtime class-id global for the enclosing class's methods/ctor.
+    current_class_id_gv: Option<inkwell::values::GlobalValue<'ctx>>,
+    /// R3.5: per-module `{ i64 gen, ptr val }` cache slots for globals/builtins.
+    global_caches: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
 }
 
 /// Declared boundary types of one `extern fn` (SH-7). Marshalling dispatches
@@ -717,6 +721,8 @@ impl<'ctx> Ir<'ctx> {
             hybrid_off: false,
             top_consts: HashMap::new(),
             top_ints: HashMap::new(),
+            current_class_id_gv: None,
+            global_caches: HashMap::new(),
             is_entry: false,
             strings: HashMap::new(),
             tramps: HashMap::new(),
@@ -858,8 +864,28 @@ impl<'ctx> Ir<'ctx> {
             None => self.ctx.void_type().fn_type(&metas, false),
         };
         let f = self.module.add_function(name, ft, None);
+        if matches!(name, "spid3r_is_int" | "spid3r_int_of") {
+            self.add_fn_enum_attr(f, "nounwind", 0);
+            self.add_fn_enum_attr(f, "willreturn", 0);
+            // Both helpers only read the Value box and never mutate, lock, or throw.
+            // LLVM MemoryEffects encoding: Ref (0b01) across all 4 locations = 0x55 -> `memory(read)`.
+            if !self.add_fn_enum_attr(f, "memory", 0x55) {
+                self.add_fn_enum_attr(f, "readonly", 0);
+            }
+        }
         self.tramps.insert(name.to_string(), f);
         f
+    }
+
+    fn add_fn_enum_attr(&self, f: FunctionValue<'ctx>, kind: &str, val: u64) -> bool {
+        let id = inkwell::attributes::Attribute::get_named_enum_kind_id(kind);
+        if id != 0 {
+            let attr = self.ctx.create_enum_attribute(id, val);
+            f.add_attribute(inkwell::attributes::AttributeLoc::Function, attr);
+            true
+        } else {
+            false
+        }
     }
 
     /// Emit a call with a fresh temporary name (borrow-friendly wrapper around
@@ -3523,6 +3549,86 @@ impl<'ctx> Ir<'ctx> {
                 }
                 let (np, _) = self.str_global(name);
                 let arr = self.argv_array(&argv);
+                let n = self.i64c(args.len() as i64);
+                if matches!(object.as_ref(), Expr::Ident(id, _) if id == "self") {
+                    if let Some(cid_gv) = self.current_class_id_gv {
+                        let cid = self
+                            .builder
+                            .build_load(self.i64_ty(), cid_gv.as_pointer_value(), "cid")
+                            .unwrap()
+                            .into_int_value();
+                        let slot_name = self.tmp_name("mslot");
+                        let slot_gv = self.module.add_global(self.i64_ty(), None, &slot_name);
+                        slot_gv.set_initializer(&self.i64_ty().const_int((-2i64) as u64, true));
+                        slot_gv.set_linkage(inkwell::module::Linkage::Internal);
+                        let slot_ptr = slot_gv.as_pointer_value();
+                        let cur_slot = self
+                            .builder
+                            .build_load(self.i64_ty(), slot_ptr, "slot")
+                            .unwrap()
+                            .into_int_value();
+                        let uninit = self
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::EQ,
+                                cur_slot,
+                                self.i64_ty().const_int((-2i64) as u64, true),
+                                "slot.uninit",
+                            )
+                            .unwrap();
+                        let f_cur = self.current_fn();
+                        let cur_bb = self.builder.get_insert_block().unwrap();
+                        let resolve_bb = self.ctx.append_basic_block(f_cur, "slot.resolve");
+                        let call_bb = self.ctx.append_basic_block(f_cur, "slot.call");
+                        self.builder
+                            .build_conditional_branch(uninit, resolve_bb, call_bb)
+                            .unwrap();
+
+                        self.builder.position_at_end(resolve_bb);
+                        let f_slot_of = self.tramp(
+                            "spid3r_class_slot_of",
+                            &[self.i64_ty().into(), self.ptr_ty().into()],
+                            Some(self.i64_ty().into()),
+                        );
+                        let resolved =
+                            call_int(self.emit_call(f_slot_of, &[cid.into(), np.into()], "rslot"));
+                        self.builder.build_store(slot_ptr, resolved).unwrap();
+                        self.builder.build_unconditional_branch(call_bb).unwrap();
+
+                        self.builder.position_at_end(call_bb);
+                        let phi = self.builder.build_phi(self.i64_ty(), "slot.val").unwrap();
+                        phi.add_incoming(&[(&cur_slot, cur_bb), (&resolved, resolve_bb)]);
+                        let f_mslot = self.tramp(
+                            "spid3r_method_slot",
+                            &[
+                                self.ptr_ty().into(),
+                                self.i64_ty().into(),
+                                self.i64_ty().into(),
+                                self.ptr_ty().into(),
+                                self.i64_ty().into(),
+                                self.ptr_ty().into(),
+                            ],
+                            Some(self.ptr_ty().into()),
+                        );
+                        let mname = self.tmp_name("ms");
+                        let r = self
+                            .builder
+                            .build_call(
+                                f_mslot,
+                                &[
+                                    obj.into(),
+                                    cid.into(),
+                                    phi.as_basic_value().into(),
+                                    np.into(),
+                                    n.into(),
+                                    arr.into(),
+                                ],
+                                &mname,
+                            )
+                            .unwrap();
+                        return Ok(call_ptr(r));
+                    }
+                }
                 let f = self.tramp(
                     "spid3r_method",
                     &[
@@ -3533,7 +3639,6 @@ impl<'ctx> Ir<'ctx> {
                     ],
                     Some(self.ptr_ty().into()),
                 );
-                let n = self.i64c(args.len() as i64);
                 let mname = self.tmp_name("m");
                 let r = self
                     .builder
@@ -3670,10 +3775,28 @@ impl<'ctx> Ir<'ctx> {
         }
     }
 
-    /// Read a name from the runtime global table.
+    /// Read a name from the runtime global table via the generation-guarded
+    /// per-module cache slot (`{ i64 gen, ptr val }`).
     fn global_value(&mut self, name: &str) -> PointerValue<'ctx> {
+        let slot_gv = if let Some(&gv) = self.global_caches.get(name) {
+            gv
+        } else {
+            let slot_ty = self
+                .ctx
+                .struct_type(&[self.i64_ty().into(), self.ptr_ty().into()], false);
+            let gv_name = self.tmp_name("gcache");
+            let gv = self.module.add_global(slot_ty, None, &gv_name);
+            let init = slot_ty.const_named_struct(&[
+                self.i64_ty().const_zero().into(),
+                self.ptr_ty().const_null().into(),
+            ]);
+            gv.set_initializer(&init);
+            gv.set_linkage(inkwell::module::Linkage::Internal);
+            self.global_caches.insert(name.to_string(), gv);
+            gv
+        };
         let (np, _) = self.str_global(name);
-        self.call1p("spid3r_global_get", np)
+        self.call2p("spid3r_global_cached", np, slot_gv.as_pointer_value())
     }
 
     /// Call an arbitrary value handle with `argc` arguments from a raw array.
@@ -4156,6 +4279,8 @@ impl<'ctx> Ir<'ctx> {
         self.fn_counter += 1;
         let llvm_name = format!("spid3r_fn.{}.{}", self.fn_counter, name_hint);
         let f = self.module.add_function(&llvm_name, fty, None);
+        self.add_fn_enum_attr(f, "nounwind", 0);
+        self.add_fn_enum_attr(f, "willreturn", 0);
         // Remember where emission was happening (this function is emitted as
         // a side effect; the caller keeps building in its own block).
         let saved_bb = self.builder.get_insert_block();
@@ -4492,6 +4617,8 @@ impl<'ctx> Ir<'ctx> {
         let ptr_ty = self.ptr_ty();
         let fty = ptr_ty.fn_type(&[], false);
         let entry = self.module.add_function("spid3r_entry", fty, None);
+        self.add_fn_enum_attr(entry, "nounwind", 0);
+        self.add_fn_enum_attr(entry, "willreturn", 0);
         let bb = self.ctx.append_basic_block(entry, "entry");
         self.builder.position_at_end(bb);
         let saved = (
@@ -4633,6 +4760,11 @@ impl<'ctx> Ir<'ctx> {
                 .build_call(f, &[cls.into(), fp.into(), self.i8c(vis).into()], "")
                 .unwrap();
         }
+        let cid_name = self.tmp_name("class_id");
+        let cid_gv = self.module.add_global(self.i64_ty(), None, &cid_name);
+        cid_gv.set_initializer(&self.i64_ty().const_zero());
+        cid_gv.set_linkage(inkwell::module::Linkage::Internal);
+        let prev_class_id_gv = self.current_class_id_gv.replace(cid_gv);
         for m in &c.methods {
             let is_ctor = m.name.as_deref() == Some("new");
             let arity = if is_ctor {
@@ -4706,6 +4838,17 @@ impl<'ctx> Ir<'ctx> {
                     .unwrap();
             }
         }
+        self.current_class_id_gv = prev_class_id_gv;
+        // Mint class_id + MRO-flatten vtable right before publishing globally.
+        let pub_fn = self.tramp(
+            "spid3r_class_publish",
+            &[self.ptr_ty().into()],
+            Some(self.i64_ty().into()),
+        );
+        let cid_val = call_int(self.emit_call(pub_fn, &[cls.into()], "pub_cid"));
+        self.builder
+            .build_store(cid_gv.as_pointer_value(), cid_val)
+            .unwrap();
         // now publish the fully built class under its name
         let f = self.tramp(
             "spid3r_global_set",

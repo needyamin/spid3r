@@ -278,6 +278,18 @@ pub fn emit_object(
     opt: bool,
     out: &std::path::Path,
 ) -> Result<(), String> {
+    emit_object_with_cpu(module, triple, None, opt, out)
+}
+
+/// Emit a module to a native object file for the given triple and optional
+/// target CPU (`x86-64`, `x86-64-v2`, `x86-64-v3`, or `native`).
+pub fn emit_object_with_cpu(
+    module: &inkwell::module::Module,
+    triple: &str,
+    target_cpu: Option<&str>,
+    opt: bool,
+    out: &std::path::Path,
+) -> Result<(), String> {
     Target::initialize_all(&InitializationConfig::default());
     let triple_val = inkwell::targets::TargetTriple::create(triple);
     let target = Target::from_triple(&triple_val)
@@ -287,11 +299,19 @@ pub fn emit_object(
     } else {
         OptimizationLevel::None
     };
+    let (cpu, features): (String, String) = match target_cpu {
+        Some("native") => (
+            TargetMachine::get_host_cpu_name().to_string(),
+            TargetMachine::get_host_cpu_features().to_string(),
+        ),
+        Some(c) => (c.to_string(), String::new()),
+        None => (cpu_for_triple(triple), String::new()),
+    };
     let tm: TargetMachine = target
         .create_target_machine(
             &triple_val,
-            &cpu_for_triple(triple),
-            "",
+            &cpu,
+            &features,
             level,
             RelocMode::PIC,
             CodeModel::Default,
@@ -299,8 +319,29 @@ pub fn emit_object(
         .ok_or_else(|| format!("cannot create a target machine for '{triple}'"))?;
     if opt {
         let opts = inkwell::passes::PassBuilderOptions::create();
+        opts.set_loop_vectorization(true);
+        opts.set_loop_interleaving(true);
+        opts.set_loop_slp_vectorization(true);
+        opts.set_loop_unrolling(true);
+        opts.set_merge_functions(true);
         let _ = module.run_passes("default<O3>", &tm, opts);
     }
     tm.write_to_file(module, FileType::Object, out)
         .map_err(|e| format!("cannot emit '{triple}' object: {e:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use inkwell::attributes::Attribute;
+
+    #[test]
+    fn llvm23_attribute_kind_ids_are_nonzero() {
+        for name in ["nounwind", "willreturn", "alwaysinline", "memory"] {
+            let id = Attribute::get_named_enum_kind_id(name);
+            assert_ne!(
+                id, 0,
+                "LLVM enum attribute kind id for '{name}' must be non-zero"
+            );
+        }
+    }
 }

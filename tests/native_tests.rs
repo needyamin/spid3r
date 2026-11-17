@@ -1114,3 +1114,37 @@ fn native_first_class_class_construction_matches_tree() {
     let _ = std::fs::remove_file(&main_path);
     let _ = std::fs::remove_file(&exe);
 }
+
+#[test]
+fn native_spawned_task_globals_cache_invalidates_across_tasks() {
+    if !native_available() {
+        eprintln!("skip native test: LLVM-C.dll not found");
+        return;
+    }
+    let dir = std::env::temp_dir();
+    let src_path = dir.join("spid3r_nat_gcache.matrix");
+    let exe_path = dir.join("spid3r_nat_gcache.exe");
+    let src = "\
+let g = 10;
+fn read_g() -> int { return g; }
+fn main() {
+    println(read_g());
+    let t = spawn fn() {
+        g = 42;
+    };
+    t.join();
+    println(read_g());
+    return 0;
+}
+";
+    std::fs::write(&src_path, src).expect("write src");
+    let src_s = src_path.to_str().unwrap().to_string();
+    let exe_s = exe_path.to_str().unwrap().to_string();
+    let tree = out(&["run", "--engine", "tree", &src_s]).expect("tree run");
+    out(&["build", &src_s, "-o", &exe_s]).expect("native build");
+    let native = run_exe(&exe_s).expect("native run");
+    assert_eq!(tree, "10\n42\n");
+    assert_eq!(tree, native);
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+}

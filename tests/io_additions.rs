@@ -297,3 +297,53 @@ fn tcp_poll_wakes_promptly_on_readiness() {
     assert_eq!(run_tree(KERNEL_POLL_CODE).unwrap(), 0);
     assert_eq!(run_vm(KERNEL_POLL_CODE).unwrap(), 0);
 }
+
+const GENERALIZED_POLL_CODE: &str = r#"
+fn main() {
+    // 1. Listener polling: not readable before connect, readable once a client connects.
+    let listener = tcp_listen("127.0.0.1:0").unwrap();
+    let addr = tcp_local_addr(listener).unwrap();
+    let before_l = tcp_poll([listener], 0).unwrap();
+    assert_eq(len(before_l["readable"]), 0);
+    // With check_writable = true, a listener is not writable.
+    let before_lw = tcp_poll([listener], 0, true).unwrap();
+    assert_eq(len(before_lw["writable"]), 0);
+
+    let client = tcp_connect(addr).unwrap();
+    let after_l = tcp_poll([listener], 2000).unwrap();
+    assert_eq(len(after_l["readable"]), 1);
+    assert_eq(after_l["readable"][0], listener);
+    let accepted = tcp_accept(listener).unwrap();
+
+    // 2. True writability on connected stream with check_writable = true.
+    let w_res = tcp_poll([client, listener], 500, true).unwrap();
+    assert_eq(len(w_res["writable"]), 1);
+    assert_eq(w_res["writable"][0], client);
+
+    // 3. UDP socket polling: not readable initially, readable after send_to.
+    let rx = udp_bind("127.0.0.1:0").unwrap();
+    let rx_addr = udp_local_addr(rx).unwrap();
+    let tx = udp_bind("127.0.0.1:0").unwrap();
+    let before_u = tcp_poll([rx], 0).unwrap();
+    assert_eq(len(before_u["readable"]), 0);
+    udp_send_to(tx, rx_addr, "ping").unwrap();
+    let after_u = tcp_poll([rx], 2000).unwrap();
+    assert_eq(len(after_u["readable"]), 1);
+    assert_eq(after_u["readable"][0], rx);
+    let pkt = udp_recv_from(rx, 64).unwrap();
+    assert_eq(pkt[0], "ping");
+
+    udp_close(rx);
+    udp_close(tx);
+    tcp_close(accepted);
+    tcp_close(client);
+    tcp_close(listener);
+    return 0;
+}
+"#;
+
+#[test]
+fn tcp_poll_supports_listeners_udp_and_true_writability_on_both_engines() {
+    assert_eq!(run_tree(GENERALIZED_POLL_CODE).unwrap(), 0);
+    assert_eq!(run_vm(GENERALIZED_POLL_CODE).unwrap(), 0);
+}

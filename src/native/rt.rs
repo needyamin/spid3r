@@ -401,12 +401,30 @@ pub fn rt_init() {
         fields: Vec::new(),
         methods: HashMap::new(),
         ctor: None,
+        class_id: 0,
+        vtable: Vec::new(),
+        vtable_slots: HashMap::new(),
     });
     g.insert("Object".to_string(), Value::CClass(object));
     // `none` is a builtin global (an `Option` holding nothing), matching the
     // tree/VM engines — so `none.unwrap()` throws "unwrap on none" instead of
     // the generic "null values have no methods".
     g.insert("none".to_string(), Value::Option(None));
+    crate::stdlib::eventloop::set_aot_invoker(std::sync::Arc::new(|cb, args| {
+        let f_ptr = leak(cb);
+        let mut arg_ptrs: Vec<*mut Value> = args.into_iter().map(leak).collect();
+        let res = spid3r_call_inner_dispatch(f_ptr, arg_ptrs.len(), arg_ptrs.as_mut_ptr());
+        if spid3r_threw() != 0 {
+            let thrown = spid3r_take_thrown();
+            if thrown.is_null() {
+                Err("event loop callback threw".to_string())
+            } else {
+                Err(crate::value::display_value(&to_owned(deref(thrown))))
+            }
+        } else {
+            Ok(to_owned(res))
+        }
+    }));
 }
 
 // ----------------------------------------------------------------------------
@@ -976,30 +994,72 @@ pub extern "C" fn spid3r_cstr_free(p: *mut c_char) {
 // extern "C" trampolines — globals
 // ----------------------------------------------------------------------------
 
-#[no_mangle]
-pub extern "C" fn spid3r_global_get(name: *const c_char) -> *mut Value {
+static GLOBAL_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+#[repr(C)]
+pub struct GlobalCacheSlot {
+    pub gen: std::sync::atomic::AtomicU64,
+    pub val: std::sync::atomic::AtomicPtr<Value>,
+}
+
+fn fetch_global_value(name: *const c_char) -> Value {
     let key = cstr_ref(name);
     let hit = globals().lock().unwrap().get(key.as_ref()).cloned();
     match hit {
-        Some(v) => leak_fast(v),
-        None => leak_fast(
-            crate::stdlib::resolve_builtin_native(key.as_ref())
-                .map(Value::Native)
-                .unwrap_or(Value::Null),
-        ),
+        Some(v) => v,
+        None => crate::stdlib::resolve_builtin_native(key.as_ref())
+            .map(Value::Native)
+            .unwrap_or(Value::Null),
     }
+}
+
+#[no_mangle]
+pub extern "C" fn spid3r_global_get(name: *const c_char) -> *mut Value {
+    leak_fast(fetch_global_value(name))
+}
+
+/// Generation-guarded cached global lookup (`{ i64 gen, ptr val }` slot).
+/// Fast path hits with zero mutexes and zero HashMap lookups; any write via
+/// `spid3r_global_set`/`spid3r_global_def` bumps `GLOBAL_GEN` and invalidates.
+#[no_mangle]
+pub extern "C" fn spid3r_global_cached(
+    name: *const c_char,
+    slot: *mut GlobalCacheSlot,
+) -> *mut Value {
+    use std::sync::atomic::Ordering;
+    let cur_gen = GLOBAL_GEN.load(Ordering::Acquire);
+    let s = unsafe { &*slot };
+    if s.gen.load(Ordering::Acquire) == cur_gen {
+        let ptr = s.val.load(Ordering::Acquire);
+        if !ptr.is_null() {
+            return leak_fast(deref(ptr).clone());
+        }
+    }
+    static CACHE_MISS_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = CACHE_MISS_LOCK.lock().unwrap();
+    let gen_before = GLOBAL_GEN.load(Ordering::Acquire);
+    let val = fetch_global_value(name);
+    let boxed = Box::into_raw(Box::new(val.clone()));
+    if GLOBAL_GEN.load(Ordering::Acquire) == gen_before {
+        s.val.store(boxed, Ordering::Release);
+        s.gen.store(gen_before, Ordering::Release);
+    }
+    leak_fast(val)
 }
 
 #[no_mangle]
 pub extern "C" fn spid3r_global_set(name: *const c_char, v: *mut Value) {
     let key = cstr_ref(name);
     let val = to_owned(v);
-    let mut g = globals().lock().unwrap();
-    if let Some(slot) = g.get_mut(key.as_ref()) {
-        *slot = val;
-    } else {
-        g.insert(key.into_owned(), val);
+    {
+        let mut g = globals().lock().unwrap();
+        if let Some(slot) = g.get_mut(key.as_ref()) {
+            *slot = val;
+        } else {
+            g.insert(key.into_owned(), val);
+        }
     }
+    GLOBAL_GEN.fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
 /// Define a global if it does not exist yet (used for top-level `let`).
@@ -1007,9 +1067,16 @@ pub extern "C" fn spid3r_global_set(name: *const c_char, v: *mut Value) {
 pub extern "C" fn spid3r_global_def(name: *const c_char, v: *mut Value) {
     let key = cstr_ref(name);
     let val = to_owned(v);
-    let mut g = globals().lock().unwrap();
-    if !g.contains_key(key.as_ref()) {
-        g.insert(key.into_owned(), val);
+    let mut changed = false;
+    {
+        let mut g = globals().lock().unwrap();
+        if !g.contains_key(key.as_ref()) {
+            g.insert(key.into_owned(), val);
+            changed = true;
+        }
+    }
+    if changed {
+        GLOBAL_GEN.fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1244,6 +1311,75 @@ pub extern "C" fn spid3r_method(
     })
 }
 
+fn invoke_cfn(
+    obj: *mut Value,
+    cfn: &CompiledFn,
+    name: &str,
+    argc: usize,
+    argv: *const *mut Value,
+) -> *mut Value {
+    // Same wording as the VM/tree runtime dispatch (PAR-04): the
+    // message counts the *declared* parameters and the *passed*
+    // arguments, neither of which includes `self`.
+    if argc + 1 < cfn.min_arity || argc + 1 > cfn.arity {
+        let want = if cfn.min_arity == cfn.arity {
+            format!("{} argument(s)", cfn.arity - 1)
+        } else {
+            format!("{} to {} argument(s)", cfn.min_arity - 1, cfn.arity - 1)
+        };
+        return rt_throw(&format!("method {} expects {}, got {}", name, want, argc));
+    }
+    let env = cfn.env;
+    let code = cfn.code;
+    let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
+    call_args.push(obj);
+    for i in 0..argc {
+        let p = unsafe { *argv.add(i) };
+        call_args.push(p);
+    }
+    if !enter_call() {
+        return rt_throw("stack overflow: call depth limit reached");
+    }
+    let r = unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
+    leave_call();
+    r
+}
+
+/// Slot-based devirtualized method dispatch (`self.m(...)`). Falls back to
+/// `spid3r_method_inner` when `slot < 0` or the receiver's runtime class ID
+/// differs from `expected_class_id` (e.g. a subclass instance).
+#[no_mangle]
+pub extern "C" fn spid3r_method_slot(
+    obj: *mut Value,
+    expected_class_id: u64,
+    slot: i64,
+    name: *const c_char,
+    argc: usize,
+    argv: *const *mut Value,
+) -> *mut Value {
+    ffi_value("method_slot", || {
+        cancel_guard({
+            if slot >= 0 && expected_class_id != 0 {
+                if let Value::CInstance(inst) = deref(obj) {
+                    let cfn = {
+                        let g = inst.lock().unwrap();
+                        if g.class.class_id == expected_class_id {
+                            g.class.vtable.get(slot as usize).cloned()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(cfn) = cfn {
+                        let name_s = cstr_ref(name);
+                        return invoke_cfn(obj, &cfn, name_s.as_ref(), argc, argv);
+                    }
+                }
+            }
+            spid3r_method_inner(obj, name, argc, argv)
+        })
+    })
+}
+
 fn spid3r_method_inner(
     obj: *mut Value,
     name: *const c_char,
@@ -1252,7 +1388,6 @@ fn spid3r_method_inner(
 ) -> *mut Value {
     let object = deref(obj);
     let name = cstr_ref(name);
-    let args = unsafe { args_vec(argc, argv) };
     let maybe_class = match object {
         Value::CInstance(inst) => Some(inst.lock().unwrap().class.clone()),
         Value::CClass(c) => Some(c.clone()),
@@ -1260,36 +1395,14 @@ fn spid3r_method_inner(
     };
     if let Some(class) = maybe_class {
         if let Some((_, cfn)) = find_method_cclass(&class, name.as_ref()) {
-            // Same wording as the VM/tree runtime dispatch (PAR-04): the
-            // message counts the *declared* parameters and the *passed*
-            // arguments, neither of which includes `self`.
-            if argc + 1 < cfn.min_arity || argc + 1 > cfn.arity {
-                let want = if cfn.min_arity == cfn.arity {
-                    format!("{} argument(s)", cfn.arity - 1)
-                } else {
-                    format!("{} to {} argument(s)", cfn.min_arity - 1, cfn.arity - 1)
-                };
-                return rt_throw(&format!("method {} expects {}, got {}", name, want, argc));
-            }
-            let env = cfn.env;
-            let code = cfn.code;
-            let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
-            call_args.push(obj);
-            for a in &args {
-                call_args.push(leak_fast(a.clone()));
-            }
-            if !enter_call() {
-                return rt_throw("stack overflow: call depth limit reached");
-            }
-            let r = unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
-            leave_call();
-            return r;
+            return invoke_cfn(obj, &cfn, name.as_ref(), argc, argv);
         }
         // Catchable like the tree/VM dispatch (`fail`/`Flow::Error`), not an
         // internal abort: a call through an untyped value can reach this with
         // any method name (found by tests/engine_matrix.rs).
         return rt_throw(&format!("class {} has no method '{}'", class.name, name));
     }
+    let args = unsafe { args_vec(argc, argv) };
     match collections::call_method_host(&mut NativeCallbackHost, object, name.as_ref(), args) {
         Ok(v) => leak_fast(v),
         Err(msg) => match crate::sched::take_error_thrown() {
@@ -1866,8 +1979,88 @@ pub extern "C" fn spid3r_class_register(
         fields: Vec::new(),
         methods: HashMap::new(),
         ctor: None,
+        class_id: 0,
+        vtable: Vec::new(),
+        vtable_slots: HashMap::new(),
     });
     leak(Value::CClass(class))
+}
+
+static NEXT_CLASS_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn class_tables() -> &'static Mutex<HashMap<u64, std::sync::Arc<crate::value::CompiledClass>>> {
+    static TABLES: std::sync::OnceLock<
+        Mutex<HashMap<u64, std::sync::Arc<crate::value::CompiledClass>>>,
+    > = std::sync::OnceLock::new();
+    TABLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Finalize a class after all fields/methods/ctor have been attached: mints a
+/// stable `class_id` and MRO-flattens its method `vtable`, then publishes it in
+/// `CLASS_TABLES`. Returns the minted `class_id`.
+#[no_mangle]
+pub extern "C" fn spid3r_class_publish(class: *const Value) -> u64 {
+    let id = NEXT_CLASS_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    {
+        let c = class_mut(class);
+        let mut vtable: Vec<std::sync::Arc<CompiledFn>> = Vec::new();
+        let mut slots: HashMap<String, usize> = HashMap::new();
+        // Collect ancestor chain from root down to `c` so child overrides reuse
+        // the parent's slot index.
+        let mut chain: Vec<&crate::value::CompiledClass> = Vec::new();
+        let mut cur = c.parent.as_deref();
+        while let Some(p) = cur {
+            chain.push(p);
+            cur = p.parent.as_deref();
+        }
+        for anc in chain.into_iter().rev() {
+            let mut names: Vec<&String> = anc.methods.keys().collect();
+            names.sort();
+            for name in names {
+                let cfn = anc.methods[name].1.clone();
+                if let Some(&slot) = slots.get(name) {
+                    vtable[slot] = cfn;
+                } else {
+                    let slot = vtable.len();
+                    slots.insert(name.clone(), slot);
+                    vtable.push(cfn);
+                }
+            }
+        }
+        let mut own_names: Vec<String> = c.methods.keys().cloned().collect();
+        own_names.sort();
+        for name in own_names {
+            let cfn = c.methods[&name].1.clone();
+            if let Some(&slot) = slots.get(&name) {
+                vtable[slot] = cfn;
+            } else {
+                let slot = vtable.len();
+                slots.insert(name, slot);
+                vtable.push(cfn);
+            }
+        }
+        c.class_id = id;
+        c.vtable = vtable;
+        c.vtable_slots = slots;
+    }
+    if let Value::CClass(arc) = deref(class) {
+        class_tables().lock().unwrap().insert(id, arc.clone());
+    }
+    id
+}
+
+/// Resolve a method name to its slot index for `class_id`, or `-1` if absent.
+#[no_mangle]
+pub extern "C" fn spid3r_class_slot_of(class_id: u64, name: *const c_char) -> i64 {
+    if class_id == 0 {
+        return -1;
+    }
+    let name = cstr_ref(name);
+    let g = class_tables().lock().unwrap();
+    g.get(&class_id)
+        .and_then(|c| c.vtable_slots.get(name.as_ref()).copied())
+        .map(|s| s as i64)
+        .unwrap_or(-1)
 }
 
 /// Mutable access to a class during registration. The class Value was just

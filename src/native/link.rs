@@ -180,6 +180,8 @@ pub struct BuildMeta {
     /// Append the running `spid3r` executable to the payload, so the launcher
     /// can start its own runtime copy on a machine without Spid3r installed.
     pub bundle_runtime: bool,
+    /// Optional target CPU override (`x86-64`, `x86-64-v2`, `x86-64-v3`, `native`).
+    pub target_cpu: Option<String>,
 }
 
 /// The program compiled when `--bytecode` is given.
@@ -271,6 +273,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     let mut file: Option<String> = None;
     let mut out: Option<String> = None;
     let mut target: Option<String> = None;
+    let mut target_cpu: Option<String> = None;
     let mut release = false;
     let mut icon: Option<PathBuf> = None;
     let mut product_name: Option<String> = None;
@@ -304,6 +307,24 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
                         .cloned()
                         .ok_or_else(|| err("--target needs a triple"))?,
                 );
+            }
+            "--target-cpu" => {
+                i += 1;
+                let cpu = args
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| err("--target-cpu needs a CPU name"))?;
+                match cpu.as_str() {
+                    "x86-64" | "x86-64-v2" | "x86-64-v3" | "native" => {
+                        target_cpu = Some(cpu);
+                    }
+                    other => {
+                        return Err(err(format!(
+                            "--target-cpu must be 'x86-64', 'x86-64-v2', 'x86-64-v3', or 'native', got '{}'",
+                            other
+                        )));
+                    }
+                }
             }
             "--release" => release = true,
             // `extern fn` needs a library to resolve against. Repeatable, and a
@@ -534,6 +555,7 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
         subsystem,
         allow_gui,
         bundle_runtime,
+        target_cpu,
     };
 
     // Collect and validate the payload *before* compiling and linking: a bad
@@ -872,8 +894,14 @@ pub fn build_native(
         eprintln!("{}", module.to_string());
     }
     // 2. object file
-    crate::native::llvm::emit_object(&module, triple, opt, obj_path)
-        .map_err(|e| Diagnostic::new(Phase::Usage, e))?;
+    crate::native::llvm::emit_object_with_cpu(
+        &module,
+        triple,
+        meta.target_cpu.as_deref(),
+        opt,
+        obj_path,
+    )
+    .map_err(|e| Diagnostic::new(Phase::Usage, e))?;
     // 3. link against the runtime staticlib
     link_executable(obj_path, out_path, triple, meta, opt, tmp)?;
     Ok(format!(
@@ -1399,6 +1427,7 @@ fn link_windows(
     opt: bool,
     tmp: &Path,
 ) -> Result<(), Diagnostic> {
+    let use_lto = std::env::var("SPID3R_RUNTIME_LTO").as_deref() == Ok("1");
     let mut link_exe: Option<PathBuf> = None;
     let mut libs_dir: Option<PathBuf> = None;
     for root in vs_roots() {
@@ -1411,6 +1440,17 @@ fn link_windows(
             link_exe = Some(cand);
             libs_dir = Some(root.join("lib").join("x64"));
             break;
+        }
+    }
+    if use_lto {
+        let lld_cands = [
+            std::env::var_os("LLVM_SYS_231_PREFIX")
+                .map(|p| PathBuf::from(p).join("bin").join("lld-link.exe")),
+            Some(PathBuf::from(r"C:\LLVM-23\bin\lld-link.exe")),
+            which_program("lld-link"),
+        ];
+        if let Some(lld) = lld_cands.into_iter().flatten().find(|p| p.is_file()) {
+            link_exe = Some(lld);
         }
     }
     if link_exe.is_none() {
@@ -1622,6 +1662,9 @@ fn link_plain(
         ))
     })?;
     let mut args: Vec<String> = vec![obj.display().to_string()];
+    if opt && std::env::var("SPID3R_RUNTIME_LTO").as_deref() == Ok("1") {
+        args.push("-flto".to_string());
+    }
     args.extend(user_link_args());
     if !cfg!(windows) && !cfg!(target_os = "macos") {
         args.push("-Wl,--start-group".to_string());

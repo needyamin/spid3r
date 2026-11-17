@@ -715,7 +715,7 @@ impl MapData {
     }
 
     /// Invalidate any cached resolution for this map. Called from every
-    /// mutation path (`set_key`, `reindex`, `clear`).
+    /// mutation path (`set_key`, `remove_at`, `clear`).
     #[inline]
     fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
@@ -776,13 +776,18 @@ impl MapData {
             }
         }
     }
-    /// Rebuild the side index after `entries` shifted (remove/clear paths).
-    fn reindex(&mut self) {
-        self.bump_generation();
-        self.index.clear();
-        for (i, (k, _)) in self.entries.iter().enumerate() {
-            self.index.insert(k.clone(), i);
+    /// Remove entry `i` (preserving insertion order of remaining entries) and
+    /// patch `self.index` in place without rehashing or cloning keys.
+    fn remove_at(&mut self, k: &super::MapKey, i: usize) -> Value {
+        let v = self.entries.remove(i).1;
+        self.index.remove(k);
+        for pos in self.index.values_mut() {
+            if *pos > i {
+                *pos -= 1;
+            }
         }
+        self.bump_generation();
+        v
     }
     pub fn method(&mut self, name: &str, args: &[Value]) -> Result<Value, String> {
         match name {
@@ -828,11 +833,7 @@ impl MapData {
                     return Err(e);
                 }
                 match self.find(&k) {
-                    Some(i) => {
-                        let v = self.entries.remove(i).1;
-                        self.reindex();
-                        Ok(v)
-                    }
+                    Some(i) => Ok(self.remove_at(&k, i)),
                     None => Err(format!("missing key {}", k.display())),
                 }
             }
@@ -844,8 +845,7 @@ impl MapData {
                 }
                 match self.find(&k) {
                     Some(i) => {
-                        self.entries.remove(i);
-                        self.reindex();
+                        self.remove_at(&k, i);
                         Ok(Value::Null)
                     }
                     None => Err(format!("missing key {}", k.display())),

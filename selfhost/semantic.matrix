@@ -64,7 +64,7 @@ const BUILTIN_FUNCTIONS = [
     "config_reload", "type_of", "is_failure", "gc_collect", "gc_live_cells",
     "tcp_listen", "tcp_accept", "tcp_accept_timeout", "tcp_connect", "tcp_read",
     "tcp_read_exact", "tcp_write_bytes", "tcp_write", "tcp_close", "tcp_local_addr",
-    "tcp_peer_addr", "tcp_set_timeout", "tcp_poll", "tcp_recv_to_file", "tcp_send_file",
+    "tcp_peer_addr", "tcp_set_timeout", "tcp_poll", "after_ms", "every_ms", "timer_cancel", "timer_pending", "timer_check", "event_loop_run", "event_loop_stop", "on_readable", "on_writable", "on_timer", "event_loop_unwatch", "tcp_recv_to_file", "tcp_send_file",
     "ws_connect", "ws_accept", "ws_send", "ws_send_bytes", "ws_recv", "ws_close",
     "udp_bind", "udp_local_addr", "udp_send_to", "udp_recv_from", "udp_join_multicast",
     "udp_leave_multicast", "udp_set_multicast_ttl", "udp_set_broadcast", "udp_close",

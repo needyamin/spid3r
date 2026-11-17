@@ -80,6 +80,10 @@ pub fn native_defs() -> Vec<NativeDef> {
     ]
 }
 
+pub fn is_requested() -> bool {
+    REQUESTED.load(Ordering::SeqCst)
+}
+
 /// `shutdown_requested()` -> bool. Installs the signal handler on first call,
 /// so a program that never serves anything is unaffected.
 fn n_requested(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {

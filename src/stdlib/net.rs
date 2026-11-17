@@ -219,6 +219,20 @@ fn lookup(id: i64) -> Option<Sock> {
     table().lock().unwrap().get(&id).cloned()
 }
 
+pub(crate) fn is_open(id: i64) -> bool {
+    table().lock().unwrap().contains_key(&id)
+}
+
+#[cfg(windows)]
+pub(crate) fn raw_fd_of(id: i64) -> Option<usize> {
+    lookup(id).map(|s| sock_raw_fd(&s))
+}
+
+#[cfg(unix)]
+pub(crate) fn raw_fd_of(id: i64) -> Option<i32> {
+    lookup(id).map(|s| sock_raw_fd(&s))
+}
+
 fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
     match lookup(id) {
         Some(Sock::Listener(l)) => Ok(l),
@@ -915,12 +929,19 @@ fn n_tcp_set_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String
 /// polling never loses data either way: the next `tcp_read` hands the probed
 /// bytes over first.
 ///
-/// `writable` lists the connections that are open for writing. It is reported
-/// optimistically on every platform (a connected socket accepts writes until
-/// the peer stops reading), because the wait is on readability.
+/// `writable` lists the connections that are open for writing. By default
+/// (`check_writable = false`) it is reported optimistically on every platform
+/// because the wait is on readability; pass `true` as the 3rd argument to
+/// include `POLLOUT` and report actual kernel writability instead.
 fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     const WHO: &str = "tcp_poll";
-    arity(WHO, &args, 2)?;
+    if args.len() != 2 && args.len() != 3 {
+        return Err(format!(
+            "{} expects 2 or 3 arguments, found {}",
+            WHO,
+            args.len()
+        ));
+    }
     let ids = match collections::iter_values(&args[0]) {
         Ok(items) => {
             let mut out = Vec::with_capacity(items.len());
@@ -941,22 +962,18 @@ fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     if timeout_ms < 0 {
         return Err(format!("{}: timeout_ms must not be negative", WHO));
     }
+    let check_writable = if args.len() == 3 {
+        want_bool(&args[2], WHO)?
+    } else {
+        false
+    };
     // Resolve the handles up front: the kernel call needs their sockets, and
     // resolving here also gives the caller the same error contract as the
     // fallback path.
-    let mut conns: Vec<(i64, Arc<Conn>)> = Vec::with_capacity(ids.len());
+    let mut socks: Vec<(i64, Sock)> = Vec::with_capacity(ids.len());
     for id in &ids {
-        let conn = match lookup(*id) {
-            Some(Sock::Stream(c)) | Some(Sock::Ws(c)) => c,
-            Some(Sock::Listener(_)) => {
-                return Err(format!("{}: handle {} is a listener", WHO, id));
-            }
-            Some(Sock::Udp(_)) => {
-                return Err(format!("{}: handle {} is a UDP socket", WHO, id));
-            }
-            None => return Err(format!("{}: handle {} is not open", WHO, id)),
-        };
-        conns.push((*id, conn));
+        let sock = lookup(*id).ok_or_else(|| format!("{}: handle {} is not open", WHO, id))?;
+        socks.push((*id, sock));
     }
 
     let mut readable: Vec<i64> = Vec::new();
@@ -966,7 +983,7 @@ fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     // socket becomes ready. The probe loop below only runs when the platform
     // call is unavailable or fails.
     let mut used_kernel = false;
-    if let Some(results) = kernel_poll(&conns, timeout_ms as i32) {
+    if let Some(results) = kernel_poll(&socks, timeout_ms as i32, check_writable) {
         used_kernel = true;
         for (id, r, w) in results {
             if r {
@@ -1017,35 +1034,42 @@ fn n_tcp_poll(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 /// Is there data to read on this connection? Reads ahead into the pending
 /// buffer so the bytes are not lost.
 fn probe_readable(id: i64, who: &str) -> Result<bool, String> {
-    let conn = match lookup(id) {
-        Some(Sock::Stream(c)) => c,
-        Some(Sock::Ws(c)) => c,
-        Some(Sock::Listener(_)) => {
-            return Err(format!("{}: handle {} is a listener", who, id));
+    let sock = lookup(id).ok_or_else(|| format!("{}: handle {} is not open", who, id))?;
+    match sock {
+        Sock::Stream(conn) | Sock::Ws(conn) => {
+            let mut stream = conn.stream.lock().unwrap();
+            let _ = stream.set_nonblocking(true);
+            let mut buf = vec![0u8; 64 * 1024];
+            let result = match stream.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    let mut pending = conn.pending.lock().unwrap();
+                    pending.extend_from_slice(&buf[..n]);
+                    Ok(true)
+                }
+                Ok(0) => Ok(true), // the peer closed: readable (EOF)
+                Ok(_) => Ok(false),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(false),
+                Err(e) => Err(io_msg(who, &e)),
+            };
+            // Restore blocking mode for the next ordinary read.
+            let _ = stream.set_nonblocking(false);
+            result
         }
-        Some(Sock::Udp(_)) => {
-            return Err(format!("{}: handle {} is a UDP socket", who, id));
+        Sock::Udp(u) => {
+            let _ = u.set_nonblocking(true);
+            let mut buf = [0u8; 1];
+            let result = match u.peek(&mut buf) {
+                Ok(_) => Ok(true),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(false),
+                Err(e) => Err(io_msg(who, &e)),
+            };
+            let _ = u.set_nonblocking(false);
+            result
         }
-        None => return Err(format!("{}: handle {} is not open", who, id)),
-    };
-    let mut stream = conn.stream.lock().unwrap();
-    let _ = stream.set_nonblocking(true);
-    let mut buf = vec![0u8; 64 * 1024];
-    let result = match stream.read(&mut buf) {
-        Ok(n) if n > 0 => {
-            let mut pending = conn.pending.lock().unwrap();
-            pending.extend_from_slice(&buf[..n]);
-            Ok(true)
-        }
-        Ok(0) => Ok(true), // the peer closed: readable (EOF)
-        Ok(_) => Ok(false),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false),
-        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => Ok(false),
-        Err(e) => Err(io_msg(who, &e)),
-    };
-    // Restore blocking mode for the next ordinary read.
-    let _ = stream.set_nonblocking(false);
-    result
+        Sock::Listener(_) => Ok(false),
+    }
 }
 
 /// The UDP socket behind a handle.
@@ -1635,7 +1659,10 @@ mod sys {
         pub events: i16,
         pub revents: i16,
     }
-    pub const POLLIN: i16 = 0x0001;
+    // WinSock2.h WSAPoll constants (distinct from POSIX poll.h).
+    pub const POLLIN: i16 = 0x0100; // POLLRDNORM
+    pub const POLLOUT: i16 = 0x0010; // POLLWRNORM
+    pub const POLLERR_HUP: i16 = 0x0003; // POLLERR | POLLHUP
     extern "system" {
         pub fn WSAPoll(fd_array: *mut PollFd, fds: u32, timeout: i32) -> i32;
     }
@@ -1650,6 +1677,8 @@ mod sys {
         pub revents: i16,
     }
     pub const POLLIN: i16 = 0x0001;
+    pub const POLLOUT: i16 = 0x0004;
+    pub const POLLERR_HUP: i16 = 0x0018; // POLLERR | POLLHUP
     #[cfg(target_os = "macos")]
     pub type Nfds = u32;
     #[cfg(not(target_os = "macos"))]
@@ -1659,64 +1688,79 @@ mod sys {
     }
 }
 
-/// Ask the OS which of these connections are readable/writable.
+#[cfg(windows)]
+fn sock_raw_fd(sock: &Sock) -> usize {
+    use std::os::windows::io::AsRawSocket;
+    match sock {
+        Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().as_raw_socket() as usize,
+        Sock::Listener(l) => l.as_raw_socket() as usize,
+        Sock::Udp(u) => u.as_raw_socket() as usize,
+    }
+}
+
+#[cfg(unix)]
+fn sock_raw_fd(sock: &Sock) -> i32 {
+    use std::os::unix::io::AsRawFd;
+    match sock {
+        Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().as_raw_fd(),
+        Sock::Listener(l) => l.as_raw_fd(),
+        Sock::Udp(u) => u.as_raw_fd(),
+    }
+}
+
+/// Ask the OS which of these sockets are readable/writable.
 /// `None` when the platform call is unavailable or fails (the caller then
 /// falls back to the probe loop), `Some` with one (id, readable, writable)
-/// per connection otherwise.
+/// per socket otherwise.
 #[cfg(any(unix, windows))]
-fn kernel_poll(conns: &[(i64, Arc<Conn>)], timeout_ms: i32) -> Option<Vec<(i64, bool, bool)>> {
-    if conns.is_empty() {
+fn kernel_poll(
+    socks: &[(i64, Sock)],
+    timeout_ms: i32,
+    check_writable: bool,
+) -> Option<Vec<(i64, bool, bool)>> {
+    if socks.is_empty() {
         return Some(Vec::new());
     }
-    #[cfg(windows)]
-    let mut fds: Vec<sys::PollFd> = {
-        use std::os::windows::io::AsRawSocket;
-        conns
-            .iter()
-            .map(|(_, c)| {
-                let sock = c.stream.lock().unwrap().as_raw_socket() as usize;
-                sys::PollFd {
-                    fd: sock,
-                    // Readability only. A connected socket is nearly always
-                    // writable, so asking for POLLOUT as well makes the call
-                    // return at once and it never actually waits for data.
-                    events: sys::POLLIN,
-                    revents: 0,
-                }
-            })
-            .collect()
+    let events = if check_writable {
+        sys::POLLIN | sys::POLLOUT
+    } else {
+        sys::POLLIN
     };
-    #[cfg(unix)]
-    let mut fds: Vec<sys::PollFd> = {
-        use std::os::unix::io::AsRawFd;
-        conns
-            .iter()
-            .map(|(_, c)| {
-                let fd = c.stream.lock().unwrap().as_raw_fd();
-                sys::PollFd {
-                    fd,
-                    events: sys::POLLIN, // see the Windows arm above
-                    revents: 0,
-                }
-            })
-            .collect()
+    let mut fds: Vec<sys::PollFd> = socks
+        .iter()
+        .map(|(_, s)| sys::PollFd {
+            fd: sock_raw_fd(s),
+            events,
+            revents: 0,
+        })
+        .collect();
+    let rc = {
+        let _blocked = crate::sched::enter_blocked();
+        #[cfg(windows)]
+        {
+            unsafe { sys::WSAPoll(fds.as_mut_ptr(), fds.len() as u32, timeout_ms) }
+        }
+        #[cfg(unix)]
+        {
+            unsafe { sys::poll(fds.as_mut_ptr(), fds.len() as sys::Nfds, timeout_ms) }
+        }
     };
-    #[cfg(windows)]
-    let rc = unsafe { sys::WSAPoll(fds.as_mut_ptr(), fds.len() as u32, timeout_ms) };
-    #[cfg(unix)]
-    let rc = unsafe { sys::poll(fds.as_mut_ptr(), fds.len() as sys::Nfds, timeout_ms) };
     if rc < 0 {
         return None; // e.g. EINTR or an unsupported socket: fall back
     }
-    let mut out = Vec::with_capacity(conns.len());
-    for (i, (id, _)) in conns.iter().enumerate() {
+    let mut out = Vec::with_capacity(socks.len());
+    for (i, (id, _)) in socks.iter().enumerate() {
         let rev = fds[i].revents;
-        // POLLERR/POLLHUP/POLLNVAL (0x8/0x10/0x20) mean the socket is done:
+        // POLLERR/POLLHUP mean the socket is done:
         // report it readable so the caller's read sees EOF.
-        let readable = rev & sys::POLLIN != 0 || rev & 0x18 != 0;
-        // POLLOUT was not requested, so report writability optimistically:
-        // the handle resolved above, so the socket is open for writing.
-        let writable = true;
+        let readable = rev & sys::POLLIN != 0 || rev & sys::POLLERR_HUP != 0;
+        let writable = if check_writable {
+            rev & sys::POLLOUT != 0
+        } else {
+            // POLLOUT was not requested, so report writability optimistically:
+            // the handle resolved above, so the socket is open for writing.
+            true
+        };
         out.push((*id, readable, writable));
     }
     Some(out)
@@ -1726,7 +1770,11 @@ fn kernel_poll(conns: &[(i64, Arc<Conn>)], timeout_ms: i32) -> Option<Vec<(i64, 
 /// returning `None` sends `tcp_poll` down the portable probe loop, which is
 /// what the wasm build has always used.
 #[cfg(not(any(unix, windows)))]
-fn kernel_poll(_conns: &[(i64, Arc<Conn>)], _timeout_ms: i32) -> Option<Vec<(i64, bool, bool)>> {
+fn kernel_poll(
+    _socks: &[(i64, Sock)],
+    _timeout_ms: i32,
+    _check_writable: bool,
+) -> Option<Vec<(i64, bool, bool)>> {
     None
 }
 

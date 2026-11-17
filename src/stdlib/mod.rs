@@ -10,6 +10,7 @@ pub mod datetime;
 pub mod db;
 pub mod digest;
 pub mod entropy;
+pub mod eventloop;
 pub mod fs_policy;
 pub mod kdf;
 pub mod media;
@@ -22,6 +23,7 @@ pub mod regex;
 pub mod serialize;
 pub mod shutdown;
 pub mod signal;
+pub mod timer;
 pub mod tz;
 pub mod unicode;
 mod unicode_tables;
@@ -215,6 +217,8 @@ fn build_builtin_defs() -> Vec<NativeDef> {
     defs.extend(mysql::native_defs());
     defs.extend(unicode::native_defs());
     defs.extend(tz::native_defs());
+    defs.extend(timer::native_defs());
+    defs.extend(eventloop::native_defs());
     defs
 }
 
