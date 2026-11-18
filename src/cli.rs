@@ -3572,10 +3572,20 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
     Ok(EXIT_OK)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn container_err(msg: String) -> Diagnostic {
     Diagnostic::new(Phase::Runtime, msg)
 }
 
+#[cfg(target_arch = "wasm32")]
+fn cmd_container(_args: &[String]) -> Result<i32, Diagnostic> {
+    Err(Diagnostic::new(
+        Phase::Usage,
+        "container subcommands are not available on wasm32",
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn cmd_container(args: &[String]) -> Result<i32, Diagnostic> {
     let Some(sub) = args.first().map(|s| s.as_str()) else {
         eprintln!(
