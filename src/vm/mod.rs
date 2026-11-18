@@ -327,10 +327,31 @@ struct MapFieldCache {
 
 /// Opcode execution counts for `spid3r run --prof`. Indexed by the raw opcode
 /// byte (the full byte range — `OpCode::from_u8` already rejected anything
+#[derive(Clone, Default)]
+struct ProfFuncStat {
+    calls: u64,
+    self_insts: u64,
+    incl_insts: u64,
+    self_ns: u128,
+    active_depth: usize,
+}
+
+#[derive(Clone)]
+struct ProfFrame {
+    name: String,
+    self_insts: u64,
+    incl_insts: u64,
+    self_ns: u128,
+    #[cfg(not(target_arch = "wasm32"))]
+    segment_start: std::time::Instant,
+}
+
 /// else before the counter sees it), so counting is one array increment.
 struct Profiler {
     counts: [u64; 256],
     instructions: u64,
+    funcs: HashMap<String, ProfFuncStat>,
+    stack: Vec<ProfFrame>,
 }
 
 impl Default for Profiler {
@@ -338,14 +359,73 @@ impl Default for Profiler {
         Profiler {
             counts: [0u64; 256],
             instructions: 0,
+            funcs: HashMap::new(),
+            stack: Vec::new(),
         }
     }
 }
 
 impl Profiler {
+    fn enter_frame(&mut self, name: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let now = std::time::Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(caller) = self.stack.last_mut() {
+            caller.self_ns += now
+                .saturating_duration_since(caller.segment_start)
+                .as_nanos();
+        }
+        let stat = self.funcs.entry(name.to_string()).or_default();
+        stat.calls += 1;
+        stat.active_depth += 1;
+        self.stack.push(ProfFrame {
+            name: name.to_string(),
+            self_insts: 0,
+            incl_insts: 0,
+            self_ns: 0,
+            #[cfg(not(target_arch = "wasm32"))]
+            segment_start: now,
+        });
+    }
+
+    fn exit_frame(&mut self) {
+        let Some(frame) = self.stack.pop() else {
+            return;
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let now = std::time::Instant::now();
+        #[cfg(not(target_arch = "wasm32"))]
+        let frame_ns = frame.self_ns
+            + now
+                .saturating_duration_since(frame.segment_start)
+                .as_nanos();
+        #[cfg(target_arch = "wasm32")]
+        let frame_ns = frame.self_ns;
+
+        if let Some(caller) = self.stack.last_mut() {
+            caller.incl_insts += frame.incl_insts;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                caller.segment_start = now;
+            }
+        }
+        if let Some(stat) = self.funcs.get_mut(&frame.name) {
+            stat.self_insts += frame.self_insts;
+            stat.self_ns += frame_ns;
+            if stat.active_depth <= 1 {
+                stat.incl_insts += frame.incl_insts;
+            }
+            stat.active_depth = stat.active_depth.saturating_sub(1);
+        }
+    }
+
     fn count(&mut self, opcode_byte: u8) {
         self.counts[opcode_byte as usize] += 1;
         self.instructions += 1;
+        if let Some(top) = self.stack.last_mut() {
+            top.self_insts += 1;
+            top.incl_insts += 1;
+        }
     }
 
     fn report(&self) -> String {
@@ -359,6 +439,7 @@ impl Profiler {
             })
             .collect();
         rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        let denom = self.instructions.max(1) as f64;
         let mut out = String::from("==== vm profile ====\n");
         out.push_str(&format!("instructions: {}\n", self.instructions));
         out.push_str("  count  %   opcode\n");
@@ -366,9 +447,45 @@ impl Profiler {
             out.push_str(&format!(
                 "{:>8}  {:>4.1}%  {}\n",
                 count,
-                100.0 * *count as f64 / self.instructions as f64,
+                100.0 * *count as f64 / denom,
                 name
             ));
+        }
+
+        // Fold any live frames on `self.stack` (e.g. mid-run or uncaught error)
+        // into a snapshot so self_insts across functions always sums cleanly.
+        let mut fn_map = self.funcs.clone();
+        if !self.stack.is_empty() {
+            let mut open = self.stack.clone();
+            while let Some(frame) = open.pop() {
+                if let Some(caller) = open.last_mut() {
+                    caller.incl_insts += frame.incl_insts;
+                }
+                if let Some(stat) = fn_map.get_mut(&frame.name) {
+                    stat.self_insts += frame.self_insts;
+                    stat.self_ns += frame.self_ns;
+                    if stat.active_depth <= 1 {
+                        stat.incl_insts += frame.incl_insts;
+                    }
+                    stat.active_depth = stat.active_depth.saturating_sub(1);
+                }
+            }
+        }
+        let mut fn_rows: Vec<(String, ProfFuncStat)> = fn_map.into_iter().collect();
+        fn_rows.sort_by(|a, b| b.1.self_insts.cmp(&a.1.self_insts).then(a.0.cmp(&b.0)));
+        if !fn_rows.is_empty() {
+            out.push_str("\n==== function profile (self-time) ====\n");
+            out.push_str(
+                "  function                  calls  self_insts    %  incl_insts   self_ms\n",
+            );
+            for (name, stat) in &fn_rows {
+                let pct = 100.0 * (stat.self_insts as f64) / denom;
+                let self_ms = (stat.self_ns as f64) / 1_000_000.0;
+                out.push_str(&format!(
+                    "  fn {:<24}  calls: {:>6}  self_insts: {:>8} ({:>4.1}%)  incl_insts: {:>8}  self_ms: {:>8.3}\n",
+                    name, stat.calls, stat.self_insts, pct, stat.incl_insts, self_ms
+                ));
+            }
         }
         out
     }
@@ -952,11 +1069,39 @@ impl Vm {
     }
 
     /// Enable opcode profiling for this VM (`spid3r run --prof`). Counts every
-    /// executed instruction by opcode; the report is retrieved with
-    /// [`Self::profiling_report`] after the run.
+    /// executed instruction by opcode and per function; the report is retrieved
+    /// with [`Self::profiling_report`] after the run.
     pub fn enable_profiling(&mut self) {
-        self.prof = Some(Profiler::default());
+        let mut prof = Profiler::default();
+        for (idx, frame) in self.frames.iter().enumerate() {
+            let name = Self::frame_prof_name(&frame.label, &frame.func, idx == 0);
+            prof.enter_frame(&name);
+        }
+        self.prof = Some(prof);
         self.refresh_obs();
+    }
+
+    fn frame_prof_name(label: &FrameLabel, func: &VmFunc, is_root: bool) -> String {
+        label
+            .render()
+            .or_else(|| func.name.clone())
+            .unwrap_or_else(|| {
+                if is_root {
+                    "<main>".to_string()
+                } else {
+                    "<anonymous>".to_string()
+                }
+            })
+    }
+
+    fn pop_frame(&mut self) -> Option<CallFrame> {
+        let popped = self.frames.pop();
+        if popped.is_some() && (self.obs & OBS_PROF != 0) {
+            if let Some(p) = self.prof.as_mut() {
+                p.exit_frame();
+            }
+        }
+        popped
     }
 
     /// Collect line coverage for the next run.
@@ -2974,7 +3119,7 @@ impl Vm {
                         // any waiter).
                         let _ = std::mem::take(&mut self.frames[nf].guards);
                     }
-                    if let Some(popped_frame) = self.frames.pop() {
+                    if let Some(popped_frame) = self.pop_frame() {
                         self.free_slots(popped_frame.slots);
                     }
                     self.depth = self.depth.saturating_sub(1);
@@ -3109,7 +3254,7 @@ impl Vm {
                             // Dropping the tokens unlocks the mutexes.
                             let _ = std::mem::take(&mut self.frames[nf].guards);
                         }
-                        if let Some(popped_frame) = self.frames.pop() {
+                        if let Some(popped_frame) = self.pop_frame() {
                             self.free_slots(popped_frame.slots);
                         }
                         self.depth = self.depth.saturating_sub(1);
@@ -3652,6 +3797,12 @@ impl Vm {
                 .collect()
         };
         let frame_globals = fd.globals.clone().unwrap_or_else(|| self.globals.clone());
+        if self.obs & OBS_PROF != 0 {
+            let prof_name = Self::frame_prof_name(&label, &fd, self.frames.is_empty());
+            if let Some(p) = self.prof.as_mut() {
+                p.enter_frame(&prof_name);
+            }
+        }
         self.frames.push(CallFrame {
             func: fd,
             globals: frame_globals,
@@ -3870,7 +4021,7 @@ impl Vm {
                 if !self.frames[nf].guards.is_empty() {
                     let _ = std::mem::take(&mut self.frames[nf].guards);
                 }
-                if let Some(popped_frame) = self.frames.pop() {
+                if let Some(popped_frame) = self.pop_frame() {
                     self.free_slots(popped_frame.slots);
                 }
                 self.depth = self.depth.saturating_sub(1);
@@ -3899,7 +4050,7 @@ impl Vm {
                         // any waiter).
                         let _ = std::mem::take(&mut self.frames[nf].guards);
                     }
-                    if let Some(popped_frame) = self.frames.pop() {
+                    if let Some(popped_frame) = self.pop_frame() {
                         self.free_slots(popped_frame.slots);
                     }
                     self.depth = self.depth.saturating_sub(1);
@@ -3913,7 +4064,7 @@ impl Vm {
                     // Dropping the tokens unlocks the mutexes.
                     let _ = std::mem::take(&mut self.frames[nf].guards);
                 }
-                if let Some(popped_frame) = self.frames.pop() {
+                if let Some(popped_frame) = self.pop_frame() {
                     self.free_slots(popped_frame.slots);
                 }
                 self.depth = self.depth.saturating_sub(1);

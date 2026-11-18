@@ -132,6 +132,9 @@ struct Checker {
     /// its handler argument (B3). Prefixing with `_` still works and remains
     /// the documented way for other callback-taking APIs.
     gui_handler_depth: usize,
+    /// Flow-sensitive type narrowing overlay stack (R6.3). Pushed/popped per
+    /// lexical scope and per guarded branch (`if`/`while`/`try-catch`).
+    narrowed: Vec<HashMap<String, Ty>>,
 }
 
 pub fn check(program: &Program, is_main: bool) -> SpidResult<()> {
@@ -555,6 +558,7 @@ impl Checker {
             type_params: Vec::new(),
             unexported_module_names: HashMap::new(),
             gui_handler_depth: 0,
+            narrowed: vec![HashMap::new()],
         }
     }
 }
@@ -755,6 +759,8 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "tcp_accept_timeout",
     "tls_listen",
     "tls_accept",
+    "uds_listen",
+    "uds_connect",
     "tcp_connect",
     "tcp_read",
     "tcp_read_exact",
@@ -805,6 +811,7 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "shutdown_requested",
     "request_shutdown",
     "reset_shutdown",
+    "signal_requested",
     "url_decode",
     "url_encode",
     // binary I/O and npy
@@ -813,6 +820,17 @@ const BUILTIN_FUNCTIONS: &[&str] = &[
     "write_bytes",
     "save_npy",
     "load_npy",
+    "file_open",
+    "file_read",
+    "file_read_line",
+    "file_write",
+    "file_seek",
+    "file_tell",
+    "file_flush",
+    "file_fsync",
+    "file_lock",
+    "file_unlock",
+    "file_close",
     // csv
     "read_csv",
     "parse_csv",
@@ -946,21 +964,48 @@ impl Checker {
     /// expected to be covered. Anything ambiguous (literals only, variants from
     /// two enums, a `_` or binding arm) is left alone — the runtime reports an
     /// unmatched value instead.
-    fn check_exhaustive(&self, arms: &[MatchArm], span: &Span) -> SpidResult<()> {
-        let mut owner: Option<&str> = None;
+    fn check_exhaustive(&self, scrutinee: &Expr, arms: &[MatchArm], span: &Span) -> SpidResult<()> {
+        for arm in arms {
+            if matches!(arm.pattern, Pattern::Wild | Pattern::Bind(_)) {
+                // A catch-all (or a guard on one) makes the match total.
+                return Ok(());
+            }
+        }
+        // R6.4: when the scrutinee's static type resolves to a known enum,
+        // require all of its variants regardless of whether the arms mention
+        // any variant of that enum.
+        let scrut_ty = Self::non_null_ty(&self.type_of(scrutinee));
+        let scrut_enum: Option<&str> = match &scrut_ty {
+            Ty::Class(c) if self.enums.contains_key(c) => Some(c.as_str()),
+            Ty::Coll(c, _) if self.enums.contains_key(c) => Some(c.as_str()),
+            _ => None,
+        };
+
+        let mut owner: Option<&str> = scrut_enum;
         let mut covered: Vec<&str> = Vec::new();
         for arm in arms {
             match &arm.pattern {
-                // A catch-all (or a guard on one) makes the match total.
                 Pattern::Wild | Pattern::Bind(_) => return Ok(()),
-                Pattern::Literal(_) => return Ok(()),
+                Pattern::Literal(_) => {
+                    if scrut_enum.is_none() {
+                        return Ok(());
+                    }
+                }
                 Pattern::Variant { name, .. } => {
                     let Some(e) = self.variant_enum.get(name) else {
-                        return Ok(());
+                        if scrut_enum.is_none() {
+                            return Ok(());
+                        }
+                        continue;
                     };
                     match owner {
                         None => owner = Some(e.as_str()),
-                        Some(prev) if prev != e.as_str() => return Ok(()),
+                        Some(prev) if prev != e.as_str() => {
+                            if scrut_enum.is_none() {
+                                return Ok(());
+                            }
+                            continue;
+                        }
                         _ => {}
                     }
                     covered.push(name.as_str());
@@ -1090,7 +1135,13 @@ impl Checker {
                                 min_arity: v.fields.len(),
                                 params: v.fields.iter().map(|_| None).collect(),
                                 param_names: v.fields.clone(),
-                                ret: None,
+                                ret: Some(TypeExpr {
+                                    name: e.name.clone(),
+                                    arg: None,
+                                    nullable: false,
+                                    union: Vec::new(),
+                                    span: v.span.clone(),
+                                }),
                             },
                         );
                     }
@@ -1290,6 +1341,21 @@ impl Checker {
                             for v in &e.variants {
                                 self.variant_enum.insert(v.name.clone(), e.name.clone());
                                 vnames.push(v.name.clone());
+                                self.funcs
+                                    .entry(v.name.clone())
+                                    .or_insert_with(|| FuncInfo {
+                                        arity: v.fields.len(),
+                                        min_arity: v.fields.len(),
+                                        params: v.fields.iter().map(|_| None).collect(),
+                                        param_names: v.fields.clone(),
+                                        ret: Some(TypeExpr {
+                                            name: e.name.clone(),
+                                            arg: None,
+                                            nullable: false,
+                                            union: Vec::new(),
+                                            span: v.span.clone(),
+                                        }),
+                                    });
                             }
                             self.enums.insert(e.name.clone(), vnames);
                         }
@@ -1881,6 +1947,198 @@ impl Checker {
 
     fn push_scope(&mut self) {
         self.scopes.push(HashMap::new());
+        self.narrowed.push(HashMap::new());
+    }
+
+    fn lookup_narrowed(&self, name: &str) -> Option<Ty> {
+        for layer in self.narrowed.iter().rev() {
+            if let Some(t) = layer.get(name) {
+                return Some(t.clone());
+            }
+        }
+        None
+    }
+
+    fn set_narrowed(&mut self, name: String, ty: Ty) {
+        if let Some(top) = self.narrowed.last_mut() {
+            top.insert(name, ty);
+        }
+    }
+
+    fn clear_narrowed(&mut self, name: &str) {
+        for layer in &mut self.narrowed {
+            layer.remove(name);
+        }
+    }
+
+    /// Strip `Null` from a nullable/union/option/result type (R6.3).
+    fn non_null_ty(ty: &Ty) -> Ty {
+        match ty {
+            Ty::Nullable(inner) => Self::non_null_ty(inner),
+            Ty::Union(members) => {
+                let mut out = Vec::new();
+                for m in members {
+                    if *m == Ty::Null {
+                        continue;
+                    }
+                    let u = Self::non_null_ty(m);
+                    if !out.contains(&u) {
+                        out.push(u);
+                    }
+                }
+                match out.len() {
+                    0 => Ty::Any,
+                    1 => out.pop().unwrap(),
+                    _ => Ty::Union(out),
+                }
+            }
+            Ty::Coll(k, Some(elem))
+                if matches!(k.as_str(), "option" | "result" | "some" | "ok") =>
+            {
+                Self::non_null_ty(elem)
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn declared_or_narrowed_ty(&self, name: &str) -> Ty {
+        if let Some(t) = self.lookup_narrowed(name) {
+            return t;
+        }
+        self.lookup(name)
+            .and_then(|v| v.ty.clone())
+            .unwrap_or(Ty::Any)
+    }
+
+    /// Extract `(when_true, when_false)` narrowing maps from a guard condition
+    /// (`x != null`, `x == null`, `is_null(x)`, `not ...`, `and`, `or`).
+    fn extract_null_guards(&self, cond: &Expr) -> (HashMap<String, Ty>, HashMap<String, Ty>) {
+        match cond {
+            Expr::Binary { op, l, r, .. } if matches!(op, BinOp::Ne | BinOp::Eq) => {
+                let ident = match (&**l, &**r) {
+                    (Expr::Ident(n, _), Expr::Null(_)) | (Expr::Null(_), Expr::Ident(n, _)) => {
+                        Some(n.as_str())
+                    }
+                    _ => None,
+                };
+                if let Some(name) = ident {
+                    let base = self.declared_or_narrowed_ty(name);
+                    let non_null = Self::non_null_ty(&base);
+                    let mut t_map = HashMap::new();
+                    let mut f_map = HashMap::new();
+                    if *op == BinOp::Ne {
+                        t_map.insert(name.to_string(), non_null);
+                        f_map.insert(name.to_string(), Ty::Null);
+                    } else {
+                        t_map.insert(name.to_string(), Ty::Null);
+                        f_map.insert(name.to_string(), non_null);
+                    }
+                    return (t_map, f_map);
+                }
+                (HashMap::new(), HashMap::new())
+            }
+            Expr::Call { callee, args, .. } => {
+                if let Expr::Ident(fname, _) = &**callee {
+                    if fname == "is_null" && args.len() == 1 {
+                        if let Expr::Ident(name, _) = &args[0] {
+                            let base = self.declared_or_narrowed_ty(name);
+                            let non_null = Self::non_null_ty(&base);
+                            let mut t_map = HashMap::new();
+                            let mut f_map = HashMap::new();
+                            t_map.insert(name.clone(), Ty::Null);
+                            f_map.insert(name.clone(), non_null);
+                            return (t_map, f_map);
+                        }
+                    }
+                }
+                (HashMap::new(), HashMap::new())
+            }
+            Expr::Unary {
+                op: UnOp::Not,
+                expr,
+                ..
+            } => {
+                let (t_map, f_map) = self.extract_null_guards(expr);
+                (f_map, t_map)
+            }
+            Expr::Logical {
+                op: LogOp::And,
+                l,
+                r,
+                ..
+            } => {
+                let (mut lt, _) = self.extract_null_guards(l);
+                let (rt, _) = self.extract_null_guards(r);
+                lt.extend(rt);
+                (lt, HashMap::new())
+            }
+            Expr::Logical {
+                op: LogOp::Or,
+                l,
+                r,
+                ..
+            } => {
+                let (_, mut lf) = self.extract_null_guards(l);
+                let (_, rf) = self.extract_null_guards(r);
+                lf.extend(rf);
+                (HashMap::new(), lf)
+            }
+            _ => (HashMap::new(), HashMap::new()),
+        }
+    }
+
+    fn block_always_diverges(b: &Block) -> bool {
+        b.stmts.last().is_some_and(|s| {
+            matches!(
+                s,
+                Stmt::Return { .. }
+                    | Stmt::Throw { .. }
+                    | Stmt::Break { .. }
+                    | Stmt::Continue { .. }
+            )
+        })
+    }
+
+    fn infer_thrown_type(&self, b: &Block) -> Option<Ty> {
+        let mut acc: Option<Ty> = None;
+        for s in &b.stmts {
+            let sub = match s {
+                Stmt::Throw { value, .. } => Some(self.type_of(value)),
+                Stmt::If {
+                    then, elifs, els, ..
+                } => {
+                    let mut t = self.infer_thrown_type(then);
+                    for (_, eb) in elifs {
+                        if let Some(et) = self.infer_thrown_type(eb) {
+                            t = Some(match t {
+                                Some(prev) => common_type(prev, et),
+                                None => et,
+                            });
+                        }
+                    }
+                    if let Some(els_b) = els {
+                        if let Some(et) = self.infer_thrown_type(els_b) {
+                            t = Some(match t {
+                                Some(prev) => common_type(prev, et),
+                                None => et,
+                            });
+                        }
+                    }
+                    t
+                }
+                Stmt::While { body, .. } | Stmt::ForIn { body, .. } | Stmt::Block(body) => {
+                    self.infer_thrown_type(body)
+                }
+                _ => None,
+            };
+            if let Some(t) = sub {
+                acc = Some(match acc {
+                    Some(prev) => common_type(prev, t),
+                    None => t,
+                });
+            }
+        }
+        acc.filter(|t| *t != Ty::Any)
     }
 
     /// Record that `name` was read, so the unused-* lints stay quiet.
@@ -1894,6 +2152,7 @@ impl Checker {
     }
 
     fn pop_scope(&mut self) {
+        let _ = self.narrowed.pop();
         let scope = match self.scopes.pop() {
             Some(s) => s,
             None => return,
@@ -2449,7 +2708,20 @@ impl Checker {
                         is_import: false,
                         ..Default::default()
                     },
-                )
+                )?;
+                if ty.is_none() {
+                    if let Some(v) = value {
+                        let vt = self.type_of(v);
+                        if matches!(v, Expr::Propagate(..)) && vt != Ty::Any {
+                            self.set_narrowed(name.clone(), vt);
+                        } else if let Ty::Class(ref en) = vt {
+                            if self.enums.contains_key(en) {
+                                self.set_narrowed(name.clone(), vt);
+                            }
+                        }
+                    }
+                }
+                Ok(())
             }
             Stmt::Const {
                 name,
@@ -2510,20 +2782,44 @@ impl Checker {
                 ..
             } => {
                 self.check_expr(cond)?;
-                self.check_block(then)?;
+                let (true_map, mut false_map) = self.extract_null_guards(cond);
+                self.narrowed.push(true_map);
+                let r_then = self.check_block(then);
+                self.narrowed.pop();
+                r_then?;
                 for (c, b) in elifs {
-                    self.check_expr(c)?;
-                    self.check_block(b)?;
+                    self.narrowed.push(false_map.clone());
+                    let r_c = self.check_expr(c);
+                    let (c_true, c_false) = self.extract_null_guards(c);
+                    self.narrowed.pop();
+                    r_c?;
+                    let mut branch_map = false_map.clone();
+                    branch_map.extend(c_true);
+                    self.narrowed.push(branch_map);
+                    let r_b = self.check_block(b);
+                    self.narrowed.pop();
+                    r_b?;
+                    false_map.extend(c_false);
                 }
                 if let Some(b) = els {
-                    self.check_block(b)?;
+                    self.narrowed.push(false_map.clone());
+                    let r_els = self.check_block(b);
+                    self.narrowed.pop();
+                    r_els?;
+                } else if Self::block_always_diverges(then) && elifs.is_empty() {
+                    if let Some(top) = self.narrowed.last_mut() {
+                        top.extend(false_map);
+                    }
                 }
                 Ok(())
             }
             Stmt::While { cond, body, .. } => {
                 self.check_expr(cond)?;
+                let (true_map, _) = self.extract_null_guards(cond);
                 self.loop_depth += 1;
+                self.narrowed.push(true_map);
                 let r = self.check_block(body);
+                self.narrowed.pop();
                 self.loop_depth -= 1;
                 r
             }
@@ -2685,6 +2981,7 @@ impl Checker {
                 ..
             } => {
                 self.check_block(body)?;
+                let thrown_ty = self.infer_thrown_type(body);
                 if let Some(cc) = catch {
                     self.push_scope();
                     self.declare(
@@ -2698,6 +2995,9 @@ impl Checker {
                             ..Default::default()
                         },
                     )?;
+                    if let Some(tt) = thrown_ty {
+                        self.set_narrowed(cc.name.clone(), tt);
+                    }
                     let r = self.check_stmts(&cc.body.stmts);
                     self.pop_scope();
                     r?;
@@ -2737,7 +3037,7 @@ impl Checker {
                 Ty::Coll(lower, elem)
             }
             _ => {
-                if self.classes.contains_key(&t.name) {
+                if self.classes.contains_key(&t.name) || self.enums.contains_key(&t.name) {
                     Ty::Class(t.name.clone())
                 } else if self.interfaces.contains_key(&t.name) {
                     Ty::Interface(t.name.clone())
@@ -2889,10 +3189,19 @@ impl Checker {
 
     /// The static type of a value-position `if`: the two branches must agree,
     /// and a missing `else` contributes `null`.
-    fn branch_type(&self, then: &Block, els: Option<&Block>) -> Ty {
-        let a = block_value_type(self, then);
+    fn branch_type(&self, cond: &Expr, then: &Block, els: Option<&Block>) -> Ty {
+        let (true_map, false_map) = self.extract_null_guards(cond);
+        let a = match then.stmts.last() {
+            Some(Stmt::Expr(Expr::Ident(n, _))) if true_map.contains_key(n) => true_map[n].clone(),
+            _ => block_value_type(self, then),
+        };
         let b = match els {
-            Some(b) => block_value_type(self, b),
+            Some(b_blk) => match b_blk.stmts.last() {
+                Some(Stmt::Expr(Expr::Ident(n, _))) if false_map.contains_key(n) => {
+                    false_map[n].clone()
+                }
+                _ => block_value_type(self, b_blk),
+            },
             None => Ty::Null,
         };
         common_type(a, b)
@@ -2909,21 +3218,63 @@ impl Checker {
             Expr::Str(_, _) => Ty::Str,
             Expr::Bool(_, _) => Ty::Bool,
             Expr::Null(_) => Ty::Null,
-            Expr::If { then, els, .. } => self.branch_type(then, els.as_ref()),
+            Expr::If {
+                cond, then, els, ..
+            } => self.branch_type(cond, then, els.as_ref()),
             Expr::Match { arms, .. } => arms
                 .iter()
                 .map(|a| block_value_type(self, &a.body))
                 .fold(Ty::Null, common_type),
-            // A null-safe field read can always produce null, so the only honest
-            // static type is `any`.
-            Expr::OptField { .. } => Ty::Any,
-            // The payload type of an option/result is not tracked, so `?` is
-            // dynamically typed.
-            Expr::Propagate(..) => Ty::Any,
-            Expr::Coalesce { l, r, .. } => common_type(self.type_of(l), self.type_of(r)),
+            Expr::OptField { object, name, .. } => {
+                let obj_ty = self.type_of(object);
+                let non_null_obj = Self::non_null_ty(&obj_ty);
+                let is_nullable = matches!(obj_ty, Ty::Nullable(_) | Ty::Null)
+                    || matches!(&obj_ty, Ty::Union(m) if m.contains(&Ty::Null));
+                if let Ty::Class(ref c) = non_null_obj {
+                    if let Some(ci) = self.classes.get(c) {
+                        if let Some((_, Some(ft))) = ci.fields.get(name) {
+                            let fty = self.resolve_type(ft);
+                            return if is_nullable {
+                                Ty::Nullable(Box::new(fty))
+                            } else {
+                                fty
+                            };
+                        }
+                    }
+                }
+                if let Ty::Coll(_, Some(elem)) = non_null_obj {
+                    return *elem;
+                }
+                Ty::Any
+            }
+            Expr::Propagate(inner, _) => {
+                let t = self.type_of(inner);
+                match t {
+                    Ty::Nullable(b) => Self::non_null_ty(&b),
+                    Ty::Coll(ref k, Some(ref elem))
+                        if matches!(k.as_str(), "option" | "result" | "some" | "ok") =>
+                    {
+                        Self::non_null_ty(elem)
+                    }
+                    Ty::Union(_) => Self::non_null_ty(&t),
+                    _ => Ty::Any,
+                }
+            }
+            Expr::Coalesce { l, r, .. } => {
+                let lt = self.type_of(l);
+                let rt = self.type_of(r);
+                let non_null_l = Self::non_null_ty(&lt);
+                if non_null_l != Ty::Any && non_null_l != Ty::Null {
+                    common_type(non_null_l, rt)
+                } else {
+                    common_type(lt, rt)
+                }
+            }
             Expr::Ident(name, _) => {
                 if name == "self" {
                     self.current_class.clone().map(Ty::Class).unwrap_or(Ty::Any)
+                } else if let Some(nt) = self.lookup_narrowed(name) {
+                    nt
                 } else {
                     self.lookup(name)
                         .and_then(|v| v.ty.clone())
@@ -3091,11 +3442,11 @@ impl Checker {
         if let Ty::Union(members) = to {
             return members.iter().any(|m| self.assignable(from, m));
         }
-        if let Ty::Nullable(inner) = to {
-            return matches!(from, Ty::Null) || self.assignable(from, inner);
-        }
         if let Ty::Nullable(inner) = from {
             return self.assignable(&Ty::Null, to) && self.assignable(inner, to);
+        }
+        if let Ty::Nullable(inner) = to {
+            return matches!(from, Ty::Null) || self.assignable(from, inner);
         }
         match (from, to) {
             (Ty::Int, Ty::Int)
@@ -3109,6 +3460,11 @@ impl Checker {
             | (Ty::Null, Ty::Coll(_, _)) => true,
             (Ty::Class(c), Ty::Class(p)) => c == p || self.is_subclass(c, p),
             (Ty::Class(c), Ty::Interface(i)) => self.implements(c, i),
+            (Ty::Class(c), Ty::Coll(m, _)) | (Ty::Coll(m, _), Ty::Class(c))
+                if m == "map" && self.enums.contains_key(c) =>
+            {
+                true
+            }
             (Ty::Coll(a, ea), Ty::Coll(b, eb)) => {
                 if a != b {
                     return false;
@@ -3250,6 +3606,7 @@ impl Checker {
         if TYPES.iter().any(|t| t.eq_ignore_ascii_case(name))
             || self.classes.contains_key(name)
             || self.interfaces.contains_key(name)
+            || self.enums.contains_key(name)
             // An erased generic parameter is in scope for its own declaration.
             || self.type_params.iter().any(|level| level.iter().any(|p| p == name))
         {
@@ -3284,14 +3641,41 @@ impl Checker {
                         ));
                     }
                 }
-                self.check_block(then)?;
+                let (true_map, false_map) = self.extract_null_guards(cond);
+                self.narrowed.push(true_map);
+                let r_then = self.check_block(then);
+                self.narrowed.pop();
+                r_then?;
                 if let Some(b) = els {
-                    self.check_block(b)?;
+                    self.narrowed.push(false_map);
+                    let r_els = self.check_block(b);
+                    self.narrowed.pop();
+                    r_els?;
                 }
                 Ok(())
             }
-            Expr::OptField { object, .. } => self.check_expr(object),
-            Expr::Propagate(inner, _) => self.check_expr(inner),
+            Expr::OptField { object, .. } => {
+                self.check_expr(object)?;
+                if let Expr::Ident(name, _) = &**object {
+                    let base = self.declared_or_narrowed_ty(name);
+                    let nn = Self::non_null_ty(&base);
+                    if nn != Ty::Any && nn != base {
+                        // Receiver is non-null along the taken field evaluation path.
+                    }
+                }
+                Ok(())
+            }
+            Expr::Propagate(inner, _) => {
+                self.check_expr(inner)?;
+                if let Expr::Ident(name, _) = &**inner {
+                    let base = self.declared_or_narrowed_ty(name);
+                    let nn = Self::non_null_ty(&base);
+                    if nn != Ty::Any {
+                        self.set_narrowed(name.clone(), nn);
+                    }
+                }
+                Ok(())
+            }
             Expr::Match {
                 scrutinee,
                 arms,
@@ -3320,7 +3704,7 @@ impl Checker {
                     self.pop_scope();
                     r?;
                 }
-                self.check_exhaustive(arms, span)
+                self.check_exhaustive(scrutinee, arms, span)
             }
             Expr::Coalesce { l, r, .. } => {
                 self.check_expr(l)?;
@@ -3427,8 +3811,8 @@ impl Checker {
                         }
                         None if !self.known(name) => return Err(self.unknown_name(span, name)),
                         Some(v) => {
+                            let got = self.type_of(value);
                             if let Some(t) = &v.ty {
-                                let got = self.type_of(value);
                                 if !self.assignable(&got, t) {
                                     return Err(self.mismatch(
                                         span,
@@ -3440,6 +3824,13 @@ impl Checker {
                                         ),
                                     ));
                                 }
+                                if matches!(t, Ty::Nullable(_) | Ty::Union(_)) && got != Ty::Any {
+                                    self.set_narrowed(name.clone(), got);
+                                } else {
+                                    self.clear_narrowed(name);
+                                }
+                            } else {
+                                self.clear_narrowed(name);
                             }
                         }
                         _ => {}

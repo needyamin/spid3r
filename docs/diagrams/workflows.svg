@@ -27,7 +27,7 @@
 <text x="66" y="160" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Core Toolchain &amp; Differential</text>
 <text x="372" y="160" text-anchor="end" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" font-weight="500" fill="#2563EB">Linux · Win · macOS</text>
 <text x="46" y="180" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• clippy --no-default-features (-D warnings) · rustfmt</text>
-<text x="46" y="196" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• cargo test suite (1,330 core tests)</text>
+<text x="46" y="196" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• cargo test suite (1,367 core tests)</text>
 <text x="46" y="212" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#475569">• 3-engine differential: tree == vm == exec verification</text>
 
 <!-- CI Job 2: GUI Feature -->
@@ -76,7 +76,7 @@
 <!-- CI Outcome Badge -->
 <rect x="36" y="678" width="346" height="46" rx="6" fill="#F0FDF4" stroke="#BBF7D0" stroke-width="1"/>
 <text x="209" y="696" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="600" fill="#166534">CI PASS: 6/6 Jobs Green · 100% Differential Conformance</text>
-<text x="209" y="712" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#15803D">Canonical test counts (1,354 total) pinned via tools/count_tests.sh</text>
+<text x="209" y="712" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#15803D">Canonical test counts (1,394 total) pinned via tools/count_tests.sh</text>
 
 <!-- ==================== COLUMN 2: RELEASE WORKFLOW ==================== -->
 <rect x="410" y="70" width="346" height="666" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>

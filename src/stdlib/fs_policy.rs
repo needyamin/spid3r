@@ -386,6 +386,9 @@ basedir_guard!(g_db_open, super::db::n_db_open, [0]);
 basedir_guard!(g_tcp_recv_to_file, super::net::n_tcp_recv_to_file, [1]);
 basedir_guard!(g_tcp_send_file, super::net::n_tcp_send_file, [1]);
 basedir_guard!(g_tls_listen, super::net::n_tls_listen, [0]);
+basedir_guard!(g_file_open, super::file::n_file_open, [0]);
+basedir_guard!(g_uds_listen, super::net::n_uds_listen, [0]);
+basedir_guard!(g_uds_connect, super::net::n_uds_connect, [0]);
 
 /// The guarded replacement for a path-taking native, or `None` when the
 /// native takes no script-controlled path (pure computation, network handles,
@@ -417,13 +420,16 @@ pub fn guarded(name: &str) -> Option<crate::vm::NativeImpl> {
         "load_npy" => Some(g_load_npy),
         "read_csv" => Some(g_read_csv),
         "write_csv" => Some(g_write_csv),
+        "file_open" => Some(g_file_open),
         // Beyond the Capability::FileSystem list: the SQLite database file
-        // handle, the two TCP natives that stream to/from a script path, and
-        // the TLS listener cert archive path.
+        // handle, the two TCP natives that stream to/from a script path, the
+        // TLS listener cert archive path, and Unix domain socket paths.
         "db_open" => Some(g_db_open),
         "tcp_recv_to_file" => Some(g_tcp_recv_to_file),
         "tcp_send_file" => Some(g_tcp_send_file),
         "tls_listen" => Some(g_tls_listen),
+        "uds_listen" => Some(g_uds_listen),
+        "uds_connect" => Some(g_uds_connect),
         _ => None,
     }
 }
@@ -592,14 +598,38 @@ mod tests {
     /// exhaustiveness proof.
     #[test]
     fn the_guard_map_is_exhaustive() {
+        const HANDLE_ONLY_FS_NATIVES: &[&str] = &[
+            "exe_path",
+            "file_read",
+            "file_read_line",
+            "file_write",
+            "file_seek",
+            "file_tell",
+            "file_flush",
+            "file_fsync",
+            "file_lock",
+            "file_unlock",
+            "file_close",
+        ];
         for name in crate::embed::Capability::FileSystem.natives() {
-            if *name == "exe_path" {
-                assert!(guarded(name).is_none(), "exe_path takes no path argument");
+            if HANDLE_ONLY_FS_NATIVES.contains(name) {
+                assert!(
+                    guarded(name).is_none(),
+                    "{} takes an integer handle (or no path), not a path argument",
+                    name
+                );
                 continue;
             }
             assert!(guarded(name).is_some(), "{} must be guarded", name);
         }
-        for name in ["db_open", "tcp_recv_to_file", "tcp_send_file", "tls_listen"] {
+        for name in [
+            "db_open",
+            "tcp_recv_to_file",
+            "tcp_send_file",
+            "tls_listen",
+            "uds_listen",
+            "uds_connect",
+        ] {
             assert!(guarded(name).is_some(), "{} must be guarded", name);
         }
         let builtins: std::collections::HashSet<&str> = crate::stdlib::builtin_defs()
@@ -629,10 +659,13 @@ mod tests {
             "load_npy",
             "read_csv",
             "write_csv",
+            "file_open",
             "db_open",
             "tcp_recv_to_file",
             "tcp_send_file",
             "tls_listen",
+            "uds_listen",
+            "uds_connect",
         ] {
             assert!(
                 builtins.contains(name),

@@ -593,6 +593,15 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Allow bare-path and file:// git dependencies (alias of SPID3R_ALLOW_LOCAL_GIT_DEPS)."
     ),
+    key_frozen!(
+        "packages",
+        "trust_pk",
+        ConfigValue::Str,
+        "",
+        None,
+        None,
+        "Trusted Ed25519 public key (64 hex chars) for registry signature verification (alias of SPID3R_TRUST_PK)."
+    ),
     // [paths]
     // All three are frozen: a remote peer that could relocate the host's
     // write targets could point the runtime cache, the agent state home or
@@ -787,6 +796,7 @@ pub static DEFAULTS: &[(&str, ConfigValue, &str)] = {
         ("packages.registry", ConfigValue::Str, ""),
         ("packages.allow_insecure_git", ConfigValue::Bool, "false"),
         ("packages.allow_local_git", ConfigValue::Bool, "false"),
+        ("packages.trust_pk", ConfigValue::Str, ""),
         ("paths.cache_dir", ConfigValue::Str, ""),
         ("paths.state_dir", ConfigValue::Str, ""),
         ("paths.sqlite_path", ConfigValue::Str, ""),
@@ -834,6 +844,19 @@ pub fn validate_extra(dotted: &str, raw: &str) -> Result<(), String> {
         // the tz machinery supports (see `stdlib::tz`): UTC, fixed offsets
         // like `+06:00`, and IANA names from `tz_names()`.
         "runtime.timezone" => crate::stdlib::tz::check_timezone_setting(raw),
+        "packages.trust_pk" => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty()
+                || (trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()))
+            {
+                Ok(())
+            } else {
+                Err(format!(
+                    "packages.trust_pk must be a 64-character hex Ed25519 public key, found {:?}",
+                    raw
+                ))
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -948,6 +971,7 @@ allow_remote = false
 # registry =                 ; canonical registry directory (alias: SPID3R_REGISTRY)
 allow_insecure_git = false   ; allow http:// and git:// dependencies
 allow_local_git = false      ; allow bare-path and file:// git dependencies
+# trust_pk =                 ; 64-hex Ed25519 public key for registry signature checks
 
 [paths]
 # cache_dir =                ; cache home for the extracted bundle runtime
@@ -1041,8 +1065,8 @@ mod tests {
     fn every_schema_default_coerces_and_default_ini_mentions_every_key() {
         assert_eq!(
             KEYS.len(),
-            59,
-            "update the phase-5 schema key baseline deliberately"
+            60,
+            "update the phase-5/R8 schema key baseline deliberately"
         );
         for key in KEYS {
             let dotted = key.dotted();
@@ -1280,6 +1304,7 @@ mod tests {
             "modules.disable",
             "packages.allow_insecure_git",
             "packages.allow_local_git",
+            "packages.trust_pk",
             // New in phase 4: the host's write targets and the SQLite
             // library location. A remote peer that could relocate them
             // could poison data or plant a library.

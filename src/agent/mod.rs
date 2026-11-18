@@ -31,6 +31,13 @@ use protocol::{KIND_DATA, KIND_ERROR, KIND_PAIR};
 /// accept loop and every connection loop perform the actual reload.
 static RELOAD_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Notify the agent daemon that SIGHUP was received (called from the shared
+/// signal handler in `crate::stdlib::shutdown`).
+#[cfg(unix)]
+pub(crate) fn notify_sighup() {
+    RELOAD_REQUESTED.store(true, Ordering::SeqCst);
+}
+
 /// Set when `ops.run restart_runtime` has acked the client and the process
 /// should exit so the freshly spawned child can take over the port.
 static EXIT_AFTER_REPLY: AtomicBool = AtomicBool::new(false);
@@ -168,12 +175,10 @@ pub fn serve() -> Result<(), String> {
         i64,
     )>::new()));
 
-    // SIGHUP reload on Unix: the handler only raises a flag (allocations,
-    // locks and file I/O are not async-signal-safe); the loops reload.
+    // SIGHUP reload on Unix: shared cooperative signal handler in stdlib::shutdown
+    // raises both SIG_HUP (`signal_requested("SIGHUP")`) and `RELOAD_REQUESTED`.
     #[cfg(unix)]
-    unsafe {
-        libc_signal(1, sig_handler);
-    }
+    crate::stdlib::shutdown::install();
 
     loop {
         maybe_reload();
@@ -222,24 +227,6 @@ pub fn serve() -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-#[cfg(unix)]
-extern "C" fn sig_handler(_sig: i32) {
-    // Async-signal-safe by construction: a single lock-free atomic store.
-    // The real reload (locks + file I/O) happens in maybe_reload().
-    RELOAD_REQUESTED.store(true, Ordering::SeqCst);
-}
-
-#[cfg(unix)]
-unsafe fn libc_signal(sig: i32, handler: extern "C" fn(i32)) {
-    extern "C" {
-        // Same signature as the declaration in stdlib/shutdown.rs: a
-        // mismatched redeclaration of the same libc symbol is a hard clippy
-        // error. The handler is passed as usize and cast inside.
-        fn signal(sig: i32, handler: usize) -> usize;
-    }
-    signal(sig, handler as usize);
 }
 
 /// Half-open window for replayed nonces: an entry older than this is evicted

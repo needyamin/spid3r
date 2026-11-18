@@ -17,6 +17,7 @@ pub mod config;
 pub mod control;
 pub mod crypto;
 pub mod diagnostics;
+pub mod doc;
 pub mod embed;
 pub mod environment;
 pub mod fmt;

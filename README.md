@@ -51,9 +51,9 @@ Prebuilt releases bundle **`spid3r-self`** (the self-hosted native compiler & de
 
 Third-party code reaches a program through seven routes, and only one of them can be sandboxed.
 
-![Packages: declare, vendor, verify, publish, install — checksummed end to end](docs/diagrams/packages.svg)
+![Packages: declare, vendor, verify, sign, publish, install — local & remote registries](docs/diagrams/packages.svg)
 
-**Packages** ship today. A package is a `spider.toml` plus a `src/` tree; `spid3r add` declares and vendors it, `spid3r tree` shows what that resolved to, and `spid3r verify` re-hashes every vendored file against `spider.lock` so a hand-edited dependency fails instead of compiling. `spid3r publish --to-dir` writes a static registry entry with a checksum, and `spid3r install` **requires** that checksum for registry packages — a registry entry without one is refused rather than vendored unverified. No network build scripts — installing a package never executes its code.
+**Packages** ship today. A package is a `spider.toml` plus a `src/` tree; `spid3r add` declares and vendors it, `spid3r tree` shows what that resolved to, and `spid3r verify` re-hashes every vendored file against `spider.lock` so a hand-edited dependency fails instead of compiling. `spid3r publish --to-dir` writes `<dir>/<name>/<version>/` (`spider.toml`, `src/`, `package.tar`, `sha256.txt`, and detached Ed25519 signature `sha256.txt.sig`) plus `<dir>/<name>/index.txt` and `<dir>/registry.pub`. `spid3r install` resolves `path`, `git`, local-directory, and remote `http(s)://` registries (`SPID3R_REGISTRY` / `packages.registry`), **requires** `sha256.txt` for registry packages, verifies `sha256.txt.sig` under `packages.trust_pk` / `SPID3R_TRUST_PK` (or `registry.pub`), and unifies compatible semver constraints across diamond dependency graphs. No build scripts — installing a package never executes its code.
 
 ![Host plugins: declare, implement, register — merged into the native table](docs/diagrams/host-plugins.svg)
 
@@ -122,11 +122,11 @@ See [docs/selfhost/](docs/selfhost/README.md) for the full ADR, retirement bound
 
 | Aspect | Detail |
 |---|---|
-| **Implementation** | `100,538` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `19,862` lines) |
+| **Implementation** | `102,312` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `19,304` lines) |
 | **Engines** | tree · bytecode VM · LLVM 23 AOT · WebAssembly |
 | **Bytecode** | 60 opcodes · serialized `.matrixc` container with SHA-256 integrity |
-| **Standard library** | `29` `.matrix` modules + `229` built-in native entries (linked via `66` AOT C-ABI trampolines) |
-| **Tests** | `1,357` Rust/integration tests (`1,330` core · `13` GUI · `14` native AOT) · three-engine differential + `134`-program frozen selfhost corpus |
+| **Standard library** | `29` `.matrix` modules + `257` built-in native entries (linked via `70` AOT C-ABI trampolines) |
+| **Tests** | `1,394` Rust/integration tests (`1,367` core · `13` GUI · `14` native AOT) · three-engine differential + `134`-program frozen selfhost corpus |
 | **Self-hosting** | Stage 1 → Stage 2 → Stage 3 COFF/ELF `spid3r_main.o` bit-identical fixed point, SHA-256 runtime pinning, and frozen-corpus parity ([docs/selfhost/](docs/selfhost/README.md) · [SELFHOST.md](docs/selfhost/SELFHOST.md) · [SELFHOST_RETIREMENT.md](docs/selfhost/SELFHOST_RETIREMENT.md)) |
 | **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput baselines ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
 | **Binary** | `spid3r` (`~12.4 MB`) + self-hosted `spid3r-self` (`~5.1 MB`) · static CRT on Windows · runs with no installed runtime |
@@ -153,7 +153,7 @@ fn main() {
 }
 ```
 
-Types are optional (including nullable `T?` and union `int | string` annotations). Classes with `static fn` methods, interfaces with default method bodies, selective cross-module imports (`import { A, B as C } from "mod"`), arrow closures (`x => expr`), map literals (`{ "k": v }`), raw strings (`r"..."`), `try`/`catch`, `spawn` and channels, 20+ native containers, vectors and matrices — all in the core.
+Types are optional (including nullable `T?` and union `int | string` annotations) with flow-sensitive nullability narrowing (`if x != null`, `?`, `?.`, `while`) and scrutinee-driven enum `match` exhaustiveness. Classes with `static fn` methods, interfaces with default method bodies, selective cross-module imports (`import { A, B as C } from "mod"`), arrow closures (`x => expr`), map literals (`{ "k": v }`), raw strings (`r"..."`), `try`/`catch`, `spawn` and channels, 20+ native containers, vectors and matrices, and `E1xxx` diagnostics — all in the core.
 
 ## Install
 
@@ -171,11 +171,12 @@ cargo install --path . --no-default-features
 
 | Command | Does |
 |---|---|
-| `spid3r run app.matrix` | execute on the VM (`--engine tree` for the oracle) |
-| `spid3r check` | types, scopes, lints — no execution |
-| `spid3r repl` | interactive shell |
+| `spid3r run app.matrix` | execute on the VM (`--engine tree` oracle, `--prof` opcode + per-function self-time) |
+| `spid3r check` | types, scopes, flow narrowing, enum exhaustiveness, lints, multi-error recovery (`E1xxx`) — no execution |
+| `spid3r repl` | interactive shell with TTY cursor editing & history (non-TTY `read_line` fallback) |
 | `spid3r debug --break 12` | breakpoints, stepping, backtrace, locals |
 | `spid3r fmt --check` | canonical formatting, exits 1 on drift |
+| `spid3r doc [--json] [--private] [-o PATH]` | generate HTML or JSON documentation from source doc comments |
 | `spid3r test` | differential run across engines |
 | `spid3r lsp` | editor server: diagnostics, hover, rename, actions |
 | `spid3r build` | native executable |

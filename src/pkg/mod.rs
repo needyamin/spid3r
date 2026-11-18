@@ -835,6 +835,8 @@ pub use ed25519::{keypair_from_seed, sign as ed25519_sign, verify as ed25519_ver
 /// Inspect/edit half of the package manager: `verify`, `tree`, `add`,
 /// `remove`, `publish --to-dir`, `search --local`.
 pub mod ops;
+/// Remote HTTP(S) registry client (`R8.2`).
+pub mod registry;
 
 // ---------------------------------------------------------------- install
 
@@ -930,7 +932,7 @@ fn vendor_dep_checked(
     // Read and validate the declared checksum BEFORE vendoring.
     let expected: Option<String> = if matches!(source, DepSource::Registry { .. }) {
         let path = dep_dir.join("sha256.txt");
-        let text = std::fs::read_to_string(&path).map_err(|e| {
+        let raw_sha_bytes = std::fs::read(&path).map_err(|e| {
             format!(
                 "registry dependency '{}': no readable sha256.txt at {} ({}) — \
                  refusing to install unverified code; publish with \
@@ -940,6 +942,7 @@ fn vendor_dep_checked(
                 e
             )
         })?;
+        let text = String::from_utf8_lossy(&raw_sha_bytes);
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(format!(
@@ -948,22 +951,81 @@ fn vendor_dep_checked(
                 name
             ));
         }
+
+        // Verify the SOURCE tree before signature check / vendoring.
+        let actual = tree_hash(dep_dir)?;
+        if actual != trimmed {
+            return Err(format!(
+                "registry dependency '{}': checksum mismatch before install \
+                 (sha256.txt declares {}, source tree hashes to {})",
+                name, trimmed, actual
+            ));
+        }
+
+        // R8.3: verify detached Ed25519 signature over the exact ASCII bytes of
+        // sha256.txt when `packages.trust_pk` (or `SPID3R_TRUST_PK`) is set.
+        let trust_pk = crate::config::get("packages.trust_pk")
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                std::env::var("SPID3R_TRUST_PK")
+                    .ok()
+                    .filter(|v| !v.trim().is_empty())
+            });
+        let sig_path = dep_dir.join("sha256.txt.sig");
+        if let Some(pk_hex) = trust_pk {
+            let pk_bytes = hex_decode(pk_hex.trim()).ok_or_else(|| {
+                format!(
+                    "registry dependency '{}': invalid packages.trust_pk hex '{}'",
+                    name,
+                    pk_hex.trim()
+                )
+            })?;
+            let pk_arr: [u8; 32] = pk_bytes.try_into().map_err(|_| {
+                format!(
+                    "registry dependency '{}': packages.trust_pk must decode to 32 bytes",
+                    name
+                )
+            })?;
+            let sig_text = std::fs::read_to_string(&sig_path).map_err(|e| {
+                format!(
+                    "registry dependency '{}': missing signature {} required by packages.trust_pk ({})",
+                    name,
+                    sig_path.display(),
+                    e
+                )
+            })?;
+            let sig_bytes = hex_decode(sig_text.trim()).ok_or_else(|| {
+                format!(
+                    "registry dependency '{}': invalid hex signature in {}",
+                    name,
+                    sig_path.display()
+                )
+            })?;
+            let sig_arr: [u8; 64] = sig_bytes.try_into().map_err(|_| {
+                format!(
+                    "registry dependency '{}': signature in {} must decode to 64 bytes",
+                    name,
+                    sig_path.display()
+                )
+            })?;
+            if !ed25519_verify(&pk_arr, &raw_sha_bytes, &sig_arr) {
+                return Err(format!(
+                    "registry dependency '{}': Ed25519 signature verification failed for {}",
+                    name,
+                    sig_path.display()
+                ));
+            }
+        } else if !sig_path.is_file() {
+            eprintln!(
+                "warning: registry dependency '{}' is unsigned (no sha256.txt.sig)",
+                name
+            );
+        }
+
         Some(trimmed.to_string())
     } else {
         None
     };
-
-    // Verify the SOURCE tree where it lies, before anything is copied.
-    if let Some(expected) = &expected {
-        let actual = tree_hash(dep_dir)?;
-        if actual != *expected {
-            return Err(format!(
-                "registry dependency '{}': checksum mismatch before install \
-                 (sha256.txt declares {}, source tree hashes to {})",
-                name, expected, actual
-            ));
-        }
-    }
 
     let (files, hash) = vendor_dep(root, name, dep_dir)?;
 
@@ -1014,7 +1076,11 @@ fn resolve_source(
             Ok((dir, format!("git+{}#{}", url, commit)))
         }
         DepSource::Registry { version, registry } => {
-            let dir = resolve_registry(name, version, registry.as_deref())?;
+            let constraint =
+                Constraint::parse(version).map_err(|e| format!("dependency '{}': {}", name, e))?;
+            let constraints = vec![(String::new(), constraint, version.clone())];
+            let dir =
+                resolve_registry_multi(root, name, &constraints, registry.as_deref(), update)?;
             let resolved = dir
                 .file_name()
                 .map(|s| s.to_string_lossy().to_string())
@@ -1024,32 +1090,51 @@ fn resolve_source(
     }
 }
 
-/// The registry base directory: `packages.registry` (canonical home of the
-/// legacy `SPID3R_REGISTRY` env alias), or a named sub-registry
-/// `<registry>/<name>`. `None` when the key is unset or empty.
-fn registry_root(registry: Option<&str>) -> Option<PathBuf> {
-    let base = crate::config::get("packages.registry")
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)?;
-    Some(match registry {
-        Some(name) => base.join(name),
-        None => base,
-    })
+/// The configured registry base (local path or `http(s)://` URL).
+fn registry_base_setting() -> Option<String> {
+    crate::config::get("packages.registry")
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
-/// Resolve `name` at a version satisfying `version` (a constraint like `^1.2`)
-/// inside the registry, picking the highest matching `<version>/` directory.
-fn resolve_registry(name: &str, version: &str, registry: Option<&str>) -> Result<PathBuf, String> {
-    let constraint =
-        Constraint::parse(version).map_err(|e| format!("dependency '{}': {}", name, e))?;
-    let root = registry_root(registry).ok_or_else(|| {
+/// Resolve the on-disk directory containing `<name>/<version>/` entries for a
+/// local or remote (`http://` / `https://`) registry.
+fn resolve_registry_dir(
+    project_root: &Path,
+    name: &str,
+    registry: Option<&str>,
+    update: bool,
+) -> Result<PathBuf, String> {
+    let base = registry_base_setting().ok_or_else(|| {
         format!(
             "dependency '{}' is a registry dependency, but SPID3R_REGISTRY is not set \
-             (point it at a package registry directory; see docs/REGISTRY.md)",
+             (point it at a package registry directory or URL; see docs/REGISTRY.md)",
             name
         )
     })?;
-    let pkg_dir = root.join(name);
+    if registry::is_remote_url(&base) {
+        let cache_root =
+            registry::sync_remote_package(project_root, &base, registry, name, update)?;
+        return Ok(cache_root);
+    }
+    let root = PathBuf::from(base);
+    Ok(match registry {
+        Some(sub) => root.join(sub),
+        None => root,
+    })
+}
+
+/// Resolve `name` at the highest version satisfying EVERY constraint in
+/// `constraints` inside the local or synced remote registry.
+fn resolve_registry_multi(
+    project_root: &Path,
+    name: &str,
+    constraints: &[(String, Constraint, String)],
+    registry: Option<&str>,
+    update: bool,
+) -> Result<PathBuf, String> {
+    let reg_root = resolve_registry_dir(project_root, name, registry, update)?;
+    let pkg_dir = reg_root.join(name);
     if !pkg_dir.is_dir() {
         return Err(format!(
             "registry: no package '{}' (looked in {})",
@@ -1073,18 +1158,38 @@ fn resolve_registry(name: &str, version: &str, registry: Option<&str>) -> Result
         let Ok(v) = Version::parse(dirname) else {
             continue;
         };
-        if constraint.matches(&v) && best.as_ref().is_none_or(|(bv, _)| v > *bv) {
+        if constraints.iter().all(|(_, c, _)| c.matches(&v))
+            && best.as_ref().is_none_or(|(bv, _)| v > *bv)
+        {
             best = Some((v, path));
         }
     }
     match best {
         Some((_, dir)) => Ok(dir),
-        None => Err(format!(
+        None if constraints.len() == 1 => Err(format!(
             "registry: no version of '{}' matches {} (looked in {})",
             name,
-            version,
+            constraints[0].2,
             pkg_dir.display()
         )),
+        None => {
+            let desc: Vec<String> = constraints
+                .iter()
+                .map(|(req, _, raw)| {
+                    if req.is_empty() {
+                        raw.clone()
+                    } else {
+                        format!("{} ({})", raw, req)
+                    }
+                })
+                .collect();
+            Err(format!(
+                "registry: no version of '{}' satisfies all conflicting constraints [{}] (looked in {})",
+                name,
+                desc.join(", "),
+                pkg_dir.display()
+            ))
+        }
     }
 }
 
@@ -1361,10 +1466,47 @@ fn run_git(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+struct ResolvedPkg {
+    origin: String,
+    version: String,
+    is_registry: bool,
+    registry_name: Option<String>,
+    files: usize,
+    hash: String,
+    constraints: Vec<(String, Constraint, String)>,
+    used_by: String,
+}
+
+fn check_constraints_match_version(
+    name: &str,
+    constraints: &[(String, Constraint, String)],
+    declared_version: &str,
+    declared_pkg_name: &str,
+) -> Result<(), String> {
+    let actual =
+        Version::parse(declared_version).map_err(|e| format!("dependency '{}': {}", name, e))?;
+    for (req, constraint, raw) in constraints {
+        if !constraint.matches(&actual) {
+            if req.is_empty() {
+                return Err(format!(
+                    "dependency '{}' requires version {}, but {} provides {}",
+                    name, raw, declared_pkg_name, declared_version
+                ));
+            }
+            return Err(format!(
+                "dependency '{}' (required by {}) requires version {}, but {} provides {}",
+                name, req, raw, declared_pkg_name, declared_version
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Install every workspace member's dependencies into ONE shared `vendor/` at
 /// the workspace root, with one lockfile. Dependencies resolve relative to the
 /// member that declares them. Two members vendoring the same dependency name
-/// from different sources is an error.
+/// from different sources is an error; compatible registry version constraints
+/// are unified across members and diamond dependencies (R8.4).
 fn install_workspace(
     root: &Path,
     manifest: &Manifest,
@@ -1372,15 +1514,15 @@ fn install_workspace(
 ) -> Result<InstallReport, String> {
     let locked = read_locked_sources(root);
     let mut report = InstallReport::default();
-    let mut lock = String::from("# generated by spid3r install; do not edit\n");
-    lock.push_str("# workspace\n");
-    let mut seen: BTreeMap<String, (String, String)> = BTreeMap::new(); // name -> (origin, version)
+    let mut resolutions: BTreeMap<String, ResolvedPkg> = BTreeMap::new();
+    let mut member_blocks: Vec<(String, String, Vec<String>)> = Vec::new();
 
     struct WsQueueItem {
         dep: Dependency,
         base_dir: PathBuf,
         active_chain: Vec<String>,
         member: String,
+        requirer: String,
     }
 
     for member in &manifest.members {
@@ -1395,25 +1537,22 @@ fn install_workspace(
                 member_dir.display()
             )
         })?;
-        lock.push_str(&format!(
-            "# member {} ({})\n",
-            member,
-            member_manifest.version()
-        ));
+        let mut member_pkgs: Vec<String> = Vec::new();
 
         let mut queue: VecDeque<WsQueueItem> = VecDeque::new();
-        for dep in member_manifest.deps {
+        for dep in &member_manifest.deps {
             queue.push_back(WsQueueItem {
-                dep,
+                dep: dep.clone(),
                 base_dir: member_dir.clone(),
                 active_chain: vec![member.clone()],
                 member: member.clone(),
+                requirer: member.clone(),
             });
         }
 
         while let Some(item) = queue.pop_front() {
-            let name = &item.dep.name;
-            if item.active_chain.contains(name) {
+            let name = item.dep.name.clone();
+            if item.active_chain.contains(&name) {
                 return Err(format!(
                     "circular dependency detected: {} -> {}",
                     item.active_chain.join(" -> "),
@@ -1421,36 +1560,124 @@ fn install_workspace(
                 ));
             }
 
-            let (dep_dir, origin) = resolve_source(
-                root,
-                &item.base_dir,
-                name,
-                &item.dep.source,
-                &locked,
-                update,
-            )?;
-
-            if let Some((prev_origin, prev_version)) = seen.get(name) {
-                if prev_origin != &origin {
-                    return Err(format!(
-                        "workspace: dependency '{}' is declared twice with different sources ({} and {})",
-                        name, prev_origin, origin
-                    ));
+            if resolutions.contains_key(&name) {
+                let mut re_resolved: Option<(PathBuf, Manifest, String, usize, String)> = None;
+                {
+                    let existing = resolutions.get_mut(&name).unwrap();
+                    match &item.dep.source {
+                        DepSource::Registry { version, registry } if existing.is_registry => {
+                            if existing.registry_name != *registry {
+                                return Err(format!(
+                                    "workspace: dependency '{}' is declared twice with different sources ({} and {})",
+                                    name,
+                                    existing.origin,
+                                    item.dep.source.describe()
+                                ));
+                            }
+                            let c = Constraint::parse(version)
+                                .map_err(|e| format!("dependency '{}': {}", name, e))?;
+                            existing.constraints.push((
+                                item.requirer.clone(),
+                                c.clone(),
+                                version.clone(),
+                            ));
+                            let cur_ver = Version::parse(&existing.version)
+                                .map_err(|e| format!("dependency '{}': {}", name, e))?;
+                            if !c.matches(&cur_ver) {
+                                let new_dir = resolve_registry_multi(
+                                    root,
+                                    &name,
+                                    &existing.constraints,
+                                    registry.as_deref(),
+                                    update,
+                                )?;
+                                let dep_manifest = Manifest::load(&new_dir)?.ok_or_else(|| {
+                                    format!(
+                                        "dependency '{}' ({}) has no spider.toml",
+                                        name,
+                                        new_dir.display()
+                                    )
+                                })?;
+                                check_constraints_match_version(
+                                    &name,
+                                    &existing.constraints,
+                                    dep_manifest.version(),
+                                    dep_manifest.name(),
+                                )?;
+                                let (files, hash) =
+                                    vendor_dep_checked(root, &name, &new_dir, &item.dep.source)?;
+                                let resolved_name = new_dir
+                                    .file_name()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| dep_manifest.version().to_string());
+                                re_resolved = Some((
+                                    new_dir,
+                                    dep_manifest,
+                                    format!("registry+{}", resolved_name),
+                                    files,
+                                    hash,
+                                ));
+                            }
+                        }
+                        _ => {
+                            let (_dep_dir, origin) = resolve_source(
+                                root,
+                                &item.base_dir,
+                                &name,
+                                &item.dep.source,
+                                &locked,
+                                update,
+                            )?;
+                            if existing.origin != origin {
+                                return Err(format!(
+                                    "workspace: dependency '{}' is declared twice with different sources ({} and {})",
+                                    name, existing.origin, origin
+                                ));
+                            }
+                            if let Some(constraint_text) = item.dep.version.as_deref() {
+                                let constraint = Constraint::parse(constraint_text)
+                                    .map_err(|e| format!("dependency '{}': {}", name, e))?;
+                                let actual = Version::parse(&existing.version)
+                                    .map_err(|e| format!("dependency '{}': {}", name, e))?;
+                                if !constraint.matches(&actual) {
+                                    return Err(format!(
+                                        "dependency '{}' requires version {}, but {} provides {}",
+                                        name, constraint_text, name, existing.version
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 }
-                if let Some(constraint_text) = item.dep.version.as_deref() {
-                    let constraint = Constraint::parse(constraint_text)
-                        .map_err(|e| format!("dependency '{}': {}", name, e))?;
-                    let actual = Version::parse(prev_version)
-                        .map_err(|e| format!("dependency '{}': {}", name, e))?;
-                    if !constraint.matches(&actual) {
-                        return Err(format!(
-                            "dependency '{}' requires version {}, but {} provides {}",
-                            name, constraint_text, name, prev_version
-                        ));
+                if let Some((new_dir, dep_manifest, new_origin, files, hash)) = re_resolved {
+                    let existing = resolutions.get_mut(&name).unwrap();
+                    existing.origin = new_origin;
+                    existing.version = dep_manifest.version().to_string();
+                    existing.files = files;
+                    existing.hash = hash;
+                    let mut next_chain = item.active_chain.clone();
+                    next_chain.push(name.clone());
+                    for child_dep in dep_manifest.deps {
+                        queue.push_back(WsQueueItem {
+                            dep: child_dep,
+                            base_dir: new_dir.clone(),
+                            active_chain: next_chain.clone(),
+                            member: item.member.clone(),
+                            requirer: name.clone(),
+                        });
                     }
                 }
                 continue;
             }
+
+            let (dep_dir, origin) = resolve_source(
+                root,
+                &item.base_dir,
+                &name,
+                &item.dep.source,
+                &locked,
+                update,
+            )?;
 
             let dep_manifest = Manifest::load(&dep_dir)?.ok_or_else(|| {
                 format!(
@@ -1460,30 +1687,44 @@ fn install_workspace(
                 )
             })?;
 
+            let mut constraints = Vec::new();
             if let Some(constraint_text) = item.dep.version.as_deref() {
                 let constraint = Constraint::parse(constraint_text)
                     .map_err(|e| format!("dependency '{}': {}", name, e))?;
-                let actual = Version::parse(dep_manifest.version())
-                    .map_err(|e| format!("dependency '{}': {}", name, e))?;
-                if !constraint.matches(&actual) {
-                    return Err(format!(
-                        "dependency '{}' requires version {}, but {} provides {}",
-                        name,
-                        constraint_text,
-                        dep_manifest.name(),
-                        dep_manifest.version()
-                    ));
-                }
+                constraints.push((
+                    item.requirer.clone(),
+                    constraint,
+                    constraint_text.to_string(),
+                ));
+                check_constraints_match_version(
+                    &name,
+                    &constraints,
+                    dep_manifest.version(),
+                    dep_manifest.name(),
+                )?;
             }
 
-            let (files, hash) = vendor_dep_checked(root, name, &dep_dir, &item.dep.source)?;
-            lock.push_str(&format!(
-                "\n[[package]]\nname = \"{}\"\nversion = \"{}\"\nsource = \"{}\"\nused-by = \"{}\"\nfiles = {}\nsha256 = \"{}\"\n",
-                name, dep_manifest.version(), origin, item.member, files, hash
-            ));
+            let (files, hash) = vendor_dep_checked(root, &name, &dep_dir, &item.dep.source)?;
+            let (is_registry, registry_name) = match &item.dep.source {
+                DepSource::Registry { registry, .. } => (true, registry.clone()),
+                _ => (false, None),
+            };
+            resolutions.insert(
+                name.clone(),
+                ResolvedPkg {
+                    origin,
+                    version: dep_manifest.version().to_string(),
+                    is_registry,
+                    registry_name,
+                    files,
+                    hash,
+                    constraints,
+                    used_by: item.member.clone(),
+                },
+            );
             report.deps.push(name.clone());
             report.vendored += files;
-            seen.insert(name.clone(), (origin, dep_manifest.version().to_string()));
+            member_pkgs.push(name.clone());
 
             let mut next_chain = item.active_chain.clone();
             next_chain.push(name.clone());
@@ -1493,7 +1734,26 @@ fn install_workspace(
                     base_dir: dep_dir.clone(),
                     active_chain: next_chain.clone(),
                     member: item.member.clone(),
+                    requirer: name.clone(),
                 });
+            }
+        }
+        member_blocks.push((
+            member.clone(),
+            member_manifest.version().to_string(),
+            member_pkgs,
+        ));
+    }
+
+    let mut lock = String::from("# generated by spid3r install; do not edit\n# workspace\n");
+    for (member, mver, pkgs) in member_blocks {
+        lock.push_str(&format!("# member {} ({})\n", member, mver));
+        for pkg in pkgs {
+            if let Some(res) = resolutions.get(&pkg) {
+                lock.push_str(&format!(
+                    "\n[[package]]\nname = \"{}\"\nversion = \"{}\"\nsource = \"{}\"\nused-by = \"{}\"\nfiles = {}\nsha256 = \"{}\"\n",
+                    pkg, res.version, res.origin, res.used_by, res.files, res.hash
+                ));
             }
         }
     }
@@ -1515,6 +1775,7 @@ pub fn install(root: &Path) -> Result<InstallReport, String> {
 /// `spid3r install`: resolve and vendor every dependency, then write
 /// `spider.lock`. `update` ignores the commits recorded there and re-resolves
 /// git dependencies to their current `rev`/default-branch tip.
+/// Supports compatible version-range unification across diamond dependencies (R8.4).
 pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> {
     let Some(manifest) = Manifest::load(root)? else {
         return Err(format!(
@@ -1527,34 +1788,31 @@ pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> 
     }
     let locked = read_locked_sources(root);
     let mut report = InstallReport::default();
-    let mut lock = String::from("# generated by spid3r install; do not edit\n");
-    lock.push_str(&format!(
-        "# package {} {}\n",
-        manifest.name(),
-        manifest.version()
-    ));
 
     struct QueueItem {
         dep: Dependency,
         base_dir: PathBuf,
         active_chain: Vec<String>,
+        requirer: String,
     }
 
     let mut queue: VecDeque<QueueItem> = VecDeque::new();
     let root_pkg_name = manifest.name().to_string();
-    for dep in manifest.deps {
+    for dep in &manifest.deps {
         queue.push_back(QueueItem {
-            dep,
+            dep: dep.clone(),
             base_dir: root.to_path_buf(),
             active_chain: vec![root_pkg_name.clone()],
+            requirer: root_pkg_name.clone(),
         });
     }
 
-    let mut seen: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut resolutions: BTreeMap<String, ResolvedPkg> = BTreeMap::new();
+    let mut order: Vec<String> = Vec::new();
 
     while let Some(item) = queue.pop_front() {
-        let name = &item.dep.name;
-        if item.active_chain.contains(name) {
+        let name = item.dep.name.clone();
+        if item.active_chain.contains(&name) {
             return Err(format!(
                 "circular dependency detected: {} -> {}",
                 item.active_chain.join(" -> "),
@@ -1562,36 +1820,123 @@ pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> 
             ));
         }
 
-        let (dep_dir, origin) = resolve_source(
-            root,
-            &item.base_dir,
-            name,
-            &item.dep.source,
-            &locked,
-            update,
-        )?;
-
-        if let Some((prev_origin, prev_version)) = seen.get(name) {
-            if prev_origin != &origin {
-                return Err(format!(
-                    "dependency '{}' is declared twice with different sources ({} and {})",
-                    name, prev_origin, origin
-                ));
+        if resolutions.contains_key(&name) {
+            let mut re_resolved: Option<(PathBuf, Manifest, String, usize, String)> = None;
+            {
+                let existing = resolutions.get_mut(&name).unwrap();
+                match &item.dep.source {
+                    DepSource::Registry { version, registry } if existing.is_registry => {
+                        if existing.registry_name != *registry {
+                            return Err(format!(
+                                "dependency '{}' is declared twice with different sources ({} and {})",
+                                name,
+                                existing.origin,
+                                item.dep.source.describe()
+                            ));
+                        }
+                        let c = Constraint::parse(version)
+                            .map_err(|e| format!("dependency '{}': {}", name, e))?;
+                        existing.constraints.push((
+                            item.requirer.clone(),
+                            c.clone(),
+                            version.clone(),
+                        ));
+                        let cur_ver = Version::parse(&existing.version)
+                            .map_err(|e| format!("dependency '{}': {}", name, e))?;
+                        if !c.matches(&cur_ver) {
+                            let new_dir = resolve_registry_multi(
+                                root,
+                                &name,
+                                &existing.constraints,
+                                registry.as_deref(),
+                                update,
+                            )?;
+                            let dep_manifest = Manifest::load(&new_dir)?.ok_or_else(|| {
+                                format!(
+                                    "dependency '{}' ({}) has no spider.toml",
+                                    name,
+                                    new_dir.display()
+                                )
+                            })?;
+                            check_constraints_match_version(
+                                &name,
+                                &existing.constraints,
+                                dep_manifest.version(),
+                                dep_manifest.name(),
+                            )?;
+                            let (files, hash) =
+                                vendor_dep_checked(root, &name, &new_dir, &item.dep.source)?;
+                            let resolved_name = new_dir
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .unwrap_or_else(|| dep_manifest.version().to_string());
+                            re_resolved = Some((
+                                new_dir,
+                                dep_manifest,
+                                format!("registry+{}", resolved_name),
+                                files,
+                                hash,
+                            ));
+                        }
+                    }
+                    _ => {
+                        let (_dep_dir, origin) = resolve_source(
+                            root,
+                            &item.base_dir,
+                            &name,
+                            &item.dep.source,
+                            &locked,
+                            update,
+                        )?;
+                        if existing.origin != origin {
+                            return Err(format!(
+                                "dependency '{}' is declared twice with different sources ({} and {})",
+                                name, existing.origin, origin
+                            ));
+                        }
+                        if let Some(constraint_text) = item.dep.version.as_deref() {
+                            let constraint = Constraint::parse(constraint_text)
+                                .map_err(|e| format!("dependency '{}': {}", name, e))?;
+                            let actual = Version::parse(&existing.version)
+                                .map_err(|e| format!("dependency '{}': {}", name, e))?;
+                            if !constraint.matches(&actual) {
+                                return Err(format!(
+                                    "dependency '{}' requires version {}, but {} provides {}",
+                                    name, constraint_text, name, existing.version
+                                ));
+                            }
+                        }
+                    }
+                }
             }
-            if let Some(constraint_text) = item.dep.version.as_deref() {
-                let constraint = Constraint::parse(constraint_text)
-                    .map_err(|e| format!("dependency '{}': {}", name, e))?;
-                let actual = Version::parse(prev_version)
-                    .map_err(|e| format!("dependency '{}': {}", name, e))?;
-                if !constraint.matches(&actual) {
-                    return Err(format!(
-                        "dependency '{}' requires version {}, but {} provides {}",
-                        name, constraint_text, name, prev_version
-                    ));
+            if let Some((new_dir, dep_manifest, new_origin, files, hash)) = re_resolved {
+                let existing = resolutions.get_mut(&name).unwrap();
+                existing.origin = new_origin;
+                existing.version = dep_manifest.version().to_string();
+                existing.files = files;
+                existing.hash = hash;
+                let mut next_chain = item.active_chain.clone();
+                next_chain.push(name.clone());
+                for child_dep in dep_manifest.deps {
+                    queue.push_back(QueueItem {
+                        dep: child_dep,
+                        base_dir: new_dir.clone(),
+                        active_chain: next_chain.clone(),
+                        requirer: name.clone(),
+                    });
                 }
             }
             continue;
         }
+
+        let (dep_dir, origin) = resolve_source(
+            root,
+            &item.base_dir,
+            &name,
+            &item.dep.source,
+            &locked,
+            update,
+        )?;
 
         let dep_manifest = Manifest::load(&dep_dir)?.ok_or_else(|| {
             format!(
@@ -1601,30 +1946,44 @@ pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> 
             )
         })?;
 
+        let mut constraints = Vec::new();
         if let Some(constraint_text) = item.dep.version.as_deref() {
             let constraint = Constraint::parse(constraint_text)
                 .map_err(|e| format!("dependency '{}': {}", name, e))?;
-            let actual = Version::parse(dep_manifest.version())
-                .map_err(|e| format!("dependency '{}': {}", name, e))?;
-            if !constraint.matches(&actual) {
-                return Err(format!(
-                    "dependency '{}' requires version {}, but {} provides {}",
-                    name,
-                    constraint_text,
-                    dep_manifest.name(),
-                    dep_manifest.version()
-                ));
-            }
+            constraints.push((
+                item.requirer.clone(),
+                constraint,
+                constraint_text.to_string(),
+            ));
+            check_constraints_match_version(
+                &name,
+                &constraints,
+                dep_manifest.version(),
+                dep_manifest.name(),
+            )?;
         }
 
-        let (files, hash) = vendor_dep_checked(root, name, &dep_dir, &item.dep.source)?;
-        lock.push_str(&format!(
-            "\n[[package]]\nname = \"{}\"\nversion = \"{}\"\nsource = \"{}\"\nfiles = {}\nsha256 = \"{}\"\n",
-            name, dep_manifest.version(), origin, files, hash
-        ));
+        let (files, hash) = vendor_dep_checked(root, &name, &dep_dir, &item.dep.source)?;
+        let (is_registry, registry_name) = match &item.dep.source {
+            DepSource::Registry { registry, .. } => (true, registry.clone()),
+            _ => (false, None),
+        };
+        resolutions.insert(
+            name.clone(),
+            ResolvedPkg {
+                origin,
+                version: dep_manifest.version().to_string(),
+                is_registry,
+                registry_name,
+                files,
+                hash,
+                constraints,
+                used_by: String::new(),
+            },
+        );
+        order.push(name.clone());
         report.deps.push(name.clone());
         report.vendored += files;
-        seen.insert(name.clone(), (origin, dep_manifest.version().to_string()));
 
         let mut next_chain = item.active_chain.clone();
         next_chain.push(name.clone());
@@ -1633,7 +1992,22 @@ pub fn install_with(root: &Path, update: bool) -> Result<InstallReport, String> 
                 dep: child_dep,
                 base_dir: dep_dir.clone(),
                 active_chain: next_chain.clone(),
+                requirer: name.clone(),
             });
+        }
+    }
+
+    let mut lock = format!(
+        "# generated by spid3r install; do not edit\n# package {} {}\n",
+        manifest.name(),
+        manifest.version()
+    );
+    for pkg in &order {
+        if let Some(res) = resolutions.get(pkg) {
+            lock.push_str(&format!(
+                "\n[[package]]\nname = \"{}\"\nversion = \"{}\"\nsource = \"{}\"\nfiles = {}\nsha256 = \"{}\"\n",
+                pkg, res.version, res.origin, res.files, res.hash
+            ));
         }
     }
 

@@ -1131,7 +1131,7 @@
       <h2 id="s9">9 · Phase R6 — Diagnostics &amp; Type System <span class="badge b-high">high</span></h2>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.1" onchange="onStepBox(this)"><span class="sid">R6.1</span> Parser multi-diagnostic recovery <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.1" checked onchange="onStepBox(this)"><span class="sid">R6.1</span> Parser multi-diagnostic recovery <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis-pinned design:</strong> recover at statement level only
             (<code>parse_program</code> at <code>parser/mod.rs:233</code>, loop <code>:236-278</code>; <code>parse_block</code> loop <code>:976-985</code>); also handle early-return <code>Err</code> sites in <code>parse_program</code> (<code>:247-249</code> decorator, <code>:271</code> import order); expression parsers stay fail-fast; recovered AST is
@@ -1147,7 +1147,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.2" onchange="onStepBox(this)"><span class="sid">R6.2</span> Error codes + end spans + colors <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R6.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.2" checked onchange="onStepBox(this)"><span class="sid">R6.2</span> Error codes + end spans + colors <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R6.1</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1160,7 +1160,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.3" onchange="onStepBox(this)"><span class="sid">R6.3</span> Flow-sensitive nullability narrowing <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.3" checked onchange="onStepBox(this)"><span class="sid">R6.3</span> Flow-sensitive nullability narrowing <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis-pinned design:</strong> overlay stack <code>narrowed: Vec&lt;HashMap&lt;String, Ty&gt;&gt;</code> on
             <code>Checker</code> (pushed/popped in <code>&amp;mut self</code> <code>check_stmt</code> arms, read-only inside <code>&amp;self</code> <code>type_of</code> at <code>semantic/mod.rs:2887</code>); consult point = <code>Expr::Ident</code> arm (<code>semantic/mod.rs:2910-2918</code>); per-branch push/pop
@@ -1175,7 +1175,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.4" onchange="onStepBox(this)"><span class="sid">R6.4</span> Scrutinee-driven exhaustiveness <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R6.4" checked onchange="onStepBox(this)"><span class="sid">R6.4</span> Scrutinee-driven exhaustiveness <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1188,8 +1188,8 @@
       <!-- ══════════════════ 10 ══════════════════ -->
       <h2 id="s10">10 · Phase R7 — I/O Completeness <span class="badge b-high">high</span></h2>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.1" onchange="onStepBox(this)"><span class="sid">R7.1</span> File-handle natives (opaque integer handles) <span class="badge b-crit">critical</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.1" checked onchange="onStepBox(this)"><span class="sid">R7.1</span> File-handle natives (opaque integer handles) <span class="badge b-crit">critical</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis-pinned design:</strong> integer handles mirroring the <code>Sock</code> table
             (<code>net.rs:86-94</code>, table/monotonic <code>NEXT_HANDLE</code> <code>:205-220</code>) — <em>not</em> a <code>Value::File</code> variant. The variant's mandatory cost is only 3
@@ -1206,8 +1206,8 @@
         </div>
       </div>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.2" onchange="onStepBox(this)"><span class="sid">R7.2</span> Process options: env + cwd <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.2" checked onchange="onStepBox(this)"><span class="sid">R7.2</span> Process options: env + cwd <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1217,8 +1217,8 @@
         </div>
       </div>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.3" onchange="onStepBox(this)"><span class="sid">R7.3</span> Cooperative signal registration <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.3" checked onchange="onStepBox(this)"><span class="sid">R7.3</span> Cooperative signal registration <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1228,8 +1228,8 @@
         </div>
       </div>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.4" onchange="onStepBox(this)"><span class="sid">R7.4</span> Unix domain sockets <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R7.4" checked onchange="onStepBox(this)"><span class="sid">R7.4</span> Unix domain sockets <span class="badge b-med">medium</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1242,8 +1242,8 @@
       <!-- ══════════════════ 11 ══════════════════ -->
       <h2 id="s11">11 · Phase R8 — Ecosystem <span class="badge b-med">medium</span></h2>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.1" onchange="onStepBox(this)"><span class="sid">R8.1</span> <code>fetch_bytes</code> refactor <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.1" checked onchange="onStepBox(this)"><span class="sid">R8.1</span> <code>fetch_bytes</code> refactor <span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <div class="analysis"><strong>Analysis:</strong> <code>net.rs fetch(:2283)</code> is already a plain-Rust fn with <code>&amp;str</code>
             args — reusable from <code>pkg</code> with a visibility change; but the response body path is <code>from_utf8_lossy</code>
@@ -1259,8 +1259,8 @@
         </div>
       </div>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.2" onchange="onStepBox(this)"><span class="sid">R8.2</span> Remote registry client <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R8.1</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.2" checked onchange="onStepBox(this)"><span class="sid">R8.2</span> Remote registry client <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R8.1</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1270,8 +1270,8 @@
         </div>
       </div>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.3" onchange="onStepBox(this)"><span class="sid">R8.3</span> Ed25519 package signing <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R8.2</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.3" checked onchange="onStepBox(this)"><span class="sid">R8.3</span> Ed25519 package signing <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R8.2</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1282,8 +1282,8 @@
         </div>
       </div>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.4" onchange="onStepBox(this)"><span class="sid">R8.4</span> Dependency version unification <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: R8.2</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.4" checked onchange="onStepBox(this)"><span class="sid">R8.4</span> Dependency version unification <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: R8.2</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1294,8 +1294,8 @@
         </div>
       </div>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.5" onchange="onStepBox(this)"><span class="sid">R8.5</span> Doc generator <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.5" checked onchange="onStepBox(this)"><span class="sid">R8.5</span> Doc generator <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>
@@ -1305,8 +1305,8 @@
         </div>
       </div>
 
-      <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.6" onchange="onStepBox(this)"><span class="sid">R8.6</span> REPL line editing + profiler self-time <span class="badge b-low">low</span><span class="badge b-eff">S each</span><span class="deps">deps: none</span></div>
+      <div class="step done">
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R8.6" checked onchange="onStepBox(this)"><span class="sid">R8.6</span> REPL line editing + profiler self-time <span class="badge b-low">low</span><span class="badge b-eff">S each</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S2 · Implement</h5>
           <ul>

@@ -296,3 +296,60 @@ fn websocket_binary_frames_roundtrip() {
     assert_eq!(run_tree(code).unwrap(), 0);
     assert_eq!(run_vm(code).unwrap(), 0);
 }
+
+#[test]
+fn fetch_bytes_roundtrips_binary_tarball_payload() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let payload: Vec<u8> = (0u8..=255)
+        .chain([0x00, 0xff, 0x80, 0xfe, 0xc3, 0x28].iter().copied())
+        .collect();
+    let expected = payload.clone();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let srv = std::thread::spawn(move || {
+        // Serve 3 requests: 1 direct fetch_bytes + 2 http_fetch (tree + vm)
+        for _ in 0..3 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut req_buf = [0u8; 1024];
+            let _ = stream.read(&mut req_buf);
+            let hdr = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            stream.write_all(hdr.as_bytes()).unwrap();
+            stream.write_all(&payload).unwrap();
+            stream.flush().unwrap();
+        }
+    });
+
+    let url = format!("http://{}/artifact.tar", addr);
+    let (status, _, body) = spid3r_lang::stdlib::net::fetch_bytes("GET", &url, &[], &[]).unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(body, expected, "fetch_bytes corrupted non-UTF-8 bytes");
+
+    let script = format!(
+        r#"
+    fn main() {{
+        let r = http_fetch("GET", {:?}).unwrap();
+        assert_eq(r["status"], 200);
+        let b = r["body_bytes"];
+        assert_eq(len(b), {});
+        assert_eq(b[0], 0);
+        assert_eq(b[128], 128);
+        assert_eq(b[255], 255);
+        assert_eq(b[257], 255);
+        return 0;
+    }}
+    "#,
+        url,
+        expected.len()
+    );
+    assert_eq!(run_tree(&script).unwrap(), 0);
+    assert_eq!(run_vm(&script).unwrap(), 0);
+
+    srv.join().unwrap();
+}

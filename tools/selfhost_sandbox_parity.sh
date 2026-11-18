@@ -50,6 +50,9 @@ fn main() {
     println("write: " + string(w.is_ok()));
     let r = read_file("spid3r_sbx_probe.txt");
     println("read: " + r.unwrap());
+    let fh = file_open("spid3r_sbx_probe.txt", "r").unwrap();
+    println("handle_line: " + file_read_line(fh).unwrap());
+    file_close(fh);
     let m = read_file("spid3r_sbx_no_such_file.txt");
     if m.is_err() {
         println("missing: caught " + m.unwrap_err());
@@ -156,6 +159,8 @@ mk_sbx_fs() {
 fn main() {
     try { write_file("spid3r_sbx_probe.txt", "y"); println("BAD"); } catch (e) { println("caught: " + e); }
     try { let _r = read_file("spid3r_sbx_probe.txt"); println("BAD"); } catch (e) { println("caught: " + e); }
+    try { let _h = file_open("spid3r_sbx_probe.txt", "r"); println("BAD"); } catch (e) { println("caught: " + e); }
+    try { let _c = file_close(1); println("BAD"); } catch (e) { println("caught: " + e); }
     return 0;
 }
 EOF

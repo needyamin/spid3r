@@ -112,3 +112,4 @@ __pycache__/
 # file is ADVISORY ONLY and must never be committed. The frozen, pinned-host
 # snapshot is benchmarks/results.phase0.json (which IS committed).
 /benchmarks/results.phase0.ci-advisory.json
+/task.html

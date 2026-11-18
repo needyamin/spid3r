@@ -1187,3 +1187,32 @@ fn code_action_is_empty_away_from_a_diagnostic() {
     );
     s.finish();
 }
+
+#[test]
+fn parser_recovery_publishes_multiple_diagnostics_with_codes() {
+    let mut s = Session::start();
+    let src = "fn main() {\n  let a = ;\n  let b = ;\n  return 0;\n}\n";
+    let diags = s.open(URI, src);
+    let list = diags.as_arr().expect("diagnostics array");
+    assert_eq!(
+        list.len(),
+        2,
+        "expected 2 recovered parser diagnostics, got: {:?}",
+        list
+    );
+    assert_eq!(list[0].get("code").and_then(|c| c.as_str()), Some("E1027"));
+    assert_eq!(list[1].get("code").and_then(|c| c.as_str()), Some("E1027"));
+    let line0 = list[0]
+        .get("range")
+        .and_then(|r| r.get("start"))
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_i());
+    let line1 = list[1]
+        .get("range")
+        .and_then(|r| r.get("start"))
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_i());
+    assert_eq!(line0, Some(1));
+    assert_eq!(line1, Some(2));
+    s.finish();
+}

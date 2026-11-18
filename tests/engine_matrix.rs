@@ -1225,6 +1225,33 @@ fn main() {
         err: None,
         aot: false,
     },
+    Case {
+        name: "r7_file_handles_parity",
+        src: r#"fn main() {
+    let p = "target/r7_em_handle_" + string(random_int(100000, 999999)) + ".txt";
+    let h = file_open(p, "w+").unwrap();
+    println(file_write(h, "alpha\nbeta\ngamma").unwrap());
+    println(file_flush(h).unwrap());
+    println(file_fsync(h).unwrap());
+    println(file_seek(h, 0, "start").unwrap());
+    println(file_read_line(h).unwrap());
+    println(file_tell(h).unwrap());
+    println(file_read_line(h).unwrap());
+    println(file_read_line(h).unwrap());
+    println(file_read_line(h).unwrap());
+    println(file_lock(h, true).unwrap());
+    println(file_unlock(h).unwrap());
+    println(file_close(h).unwrap());
+    println(file_close(h).is_err());
+    file_delete(p);
+    return 0;
+}
+"#,
+        out: "16\ntrue\ntrue\n0\nalpha\n6\nbeta\ngamma\nnull\ntrue\ntrue\ntrue\ntrue",
+        code: 0,
+        err: None,
+        aot: true,
+    },
 ];
 
 #[test]

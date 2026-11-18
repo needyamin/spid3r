@@ -88,3 +88,110 @@ fn prof_with_the_tree_engine_is_a_usage_error() {
         stderr
     );
 }
+
+#[test]
+fn prof_attributes_per_function_self_instructions_summing_to_total() {
+    let src = "\
+fn leaf(x) {
+    return x * 2 + 1;
+}
+fn work(n) {
+    let s = 0;
+    let i = 0;
+    while i < n {
+        s = s + leaf(i);
+        i = i + 1;
+    }
+    return s;
+}
+fn main() {
+    println(work(25));
+    return 0;
+}
+";
+    let (code, stdout, stderr) = run("prof_funcs", &["--engine", "vm", "--prof"], src);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert_eq!(stdout.trim(), "625");
+    assert!(
+        stderr.contains("==== function profile (self-time) ===="),
+        "missing function profile section:\n{}",
+        stderr
+    );
+    assert!(stderr.contains("fn leaf"), "stderr:\n{}", stderr);
+    assert!(stderr.contains("fn work"), "stderr:\n{}", stderr);
+
+    let total: u64 = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("instructions: ")?.trim().parse().ok())
+        .expect("instructions total");
+
+    let op_sum: u64 = stderr
+        .lines()
+        .filter_map(|l| l.split_whitespace().next()?.parse::<u64>().ok())
+        .sum();
+    assert_eq!(op_sum, total, "opcode counts must sum to total");
+
+    let mut fn_self_sum: u64 = 0;
+    let mut leaf_calls: Option<u64> = None;
+    let mut work_calls: Option<u64> = None;
+    for line in stderr.lines() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("fn ") {
+            let fn_name = rest.split_whitespace().next().unwrap_or("");
+            if let Some(after_calls) = rest.split("calls:").nth(1) {
+                let calls: u64 = after_calls
+                    .split_whitespace()
+                    .next()
+                    .and_then(|t| t.parse().ok())
+                    .unwrap_or(0);
+                if fn_name == "leaf" {
+                    leaf_calls = Some(calls);
+                } else if fn_name == "work" {
+                    work_calls = Some(calls);
+                }
+            }
+            if let Some(after_self) = rest.split("self_insts:").nth(1) {
+                let si: u64 = after_self
+                    .split_whitespace()
+                    .next()
+                    .and_then(|t| t.parse().ok())
+                    .expect("parse self_insts");
+                fn_self_sum += si;
+            }
+        }
+    }
+    assert_eq!(leaf_calls, Some(25), "stderr:\n{}", stderr);
+    assert_eq!(work_calls, Some(1), "stderr:\n{}", stderr);
+    assert_eq!(
+        fn_self_sum, total,
+        "sum of per-function self_insts ({}) must equal total instructions ({})",
+        fn_self_sum, total
+    );
+}
+
+#[test]
+fn repl_non_tty_piped_session_evaluates_resets_and_quits() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_spid3r"))
+        .arg("repl")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn repl");
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        stdin
+            .write_all(b"let x = 10;\nx + 5;\n:reset\n:quit\n")
+            .unwrap();
+    }
+    let out = child.wait_with_output().expect("wait repl");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "repl failed: stderr={stderr}");
+    assert!(stdout.contains("spid3r repl"), "{stdout}");
+    assert!(stdout.contains("15"), "{stdout}");
+    assert!(stdout.contains("bindings cleared"), "{stdout}");
+}

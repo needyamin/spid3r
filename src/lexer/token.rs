@@ -227,6 +227,16 @@ pub struct Token {
     pub span: crate::diagnostics::Span,
 }
 
+impl Token {
+    pub fn end_line(&self) -> u32 {
+        self.span.end_line()
+    }
+
+    pub fn end_col(&self) -> u32 {
+        self.span.end_col()
+    }
+}
+
 /// One piece of an interpolated string literal.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InterpPiece {

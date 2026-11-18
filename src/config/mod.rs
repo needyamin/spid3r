@@ -548,6 +548,7 @@ fn apply_process_env(
         ("SPID3R_REGISTRY", "packages.registry"),
         ("SPID3R_ALLOW_INSECURE_GIT", "packages.allow_insecure_git"),
         ("SPID3R_ALLOW_LOCAL_GIT_DEPS", "packages.allow_local_git"),
+        ("SPID3R_TRUST_PK", "packages.trust_pk"),
         // Path aliases: the historical spellings predate the [paths]
         // section; the generic SPID3R_PATHS_* spellings win when both are
         // set, because the generic layer runs after this one. The

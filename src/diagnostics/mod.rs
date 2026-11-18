@@ -23,6 +23,16 @@ impl Span {
             len,
         }
     }
+
+    /// End line of this span (1-based).
+    pub fn end_line(&self) -> u32 {
+        self.line
+    }
+
+    /// End column of this span (1-based, exclusive: `col + len`).
+    pub fn end_col(&self) -> u32 {
+        self.col.saturating_add(self.len)
+    }
 }
 
 impl fmt::Display for Span {
@@ -141,6 +151,9 @@ pub struct Diagnostic {
 /// The optional, rarely-present parts of a [`Diagnostic`].
 #[derive(Clone, Debug, Default)]
 pub struct DiagnosticExtras {
+    /// Optional explicit error code (e.g. `"E1027"`). When set, `render_with`
+    /// includes it in the header as `error[E1027][parser]: …`.
+    pub code: Option<String>,
     /// An actionable suggestion, rendered as `= help: …`.
     pub help: Option<String>,
     /// Extra context, rendered as `= note: …`.
@@ -208,6 +221,73 @@ impl Diagnostic {
             .get_or_insert_with(|| Box::new(DiagnosticExtras::default()))
     }
 
+    /// Attach an explicit `E1xxx` error code (`error[E1027][parser]: …`).
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.extras_mut().code = Some(code.into());
+        self
+    }
+
+    /// Explicit error code if attached via [`Diagnostic::with_code`].
+    pub fn explicit_code(&self) -> Option<&str> {
+        self.extras.as_ref().and_then(|e| e.code.as_deref())
+    }
+
+    /// Canonical `E1xxx` diagnostic code for this phase/diagnostic.
+    pub fn code(&self) -> &str {
+        if let Some(c) = self.explicit_code() {
+            return c;
+        }
+        match self.phase {
+            Phase::Lexer => {
+                if self.message.contains("unterminated string") {
+                    "E1101"
+                } else if self.message.contains("unterminated block comment") {
+                    "E1102"
+                } else {
+                    "E1100"
+                }
+            }
+            Phase::Parser => {
+                if self.message.contains("unterminated block") {
+                    "E1021"
+                } else if self.message.contains("expected an expression") {
+                    "E1022"
+                } else if self.message.contains("expected an identifier") {
+                    "E1023"
+                } else if self.message.contains("decorator must precede") {
+                    "E1024"
+                } else if self.message.contains("import must appear before") {
+                    "E1025"
+                } else {
+                    "E1027"
+                }
+            }
+            Phase::Semantic => match self.lint {
+                Lint::UnusedVariable => "E1391",
+                Lint::UnusedParameter => "E1392",
+                Lint::UnusedImport => "E1393",
+                Lint::UnreachableCode => "E1394",
+                Lint::None => {
+                    if self.message.contains("unknown name") {
+                        "E1301"
+                    } else if self.message.contains("type mismatch") {
+                        "E1302"
+                    } else if self.message.contains("not exhaustive") {
+                        "E1303"
+                    } else if self.message.contains("unknown type") {
+                        "E1304"
+                    } else {
+                        "E1300"
+                    }
+                }
+            },
+            Phase::Runtime => "E1400",
+            Phase::Vm => "E1500",
+            Phase::Usage => "E1600",
+            Phase::Build => "E1700",
+        }
+    }
+
     /// Attach an actionable suggestion (`= help: …`).
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.extras_mut().help = Some(help.into());
@@ -244,20 +324,55 @@ impl Diagnostic {
         self.render_with(None)
     }
 
+    /// Render for terminal stderr: uses ANSI colors when stderr is an
+    /// interactive TTY and `NO_COLOR` is not set (CI and piped commands stay
+    /// plain-text).
+    pub fn render_stderr(&self) -> String {
+        self.render_ansi(None, should_color_stderr())
+    }
+
+    /// Like [`Diagnostic::render`], always including the `[E1xxx]` code in the
+    /// header (`error[E1027][parser]: …`).
+    pub fn render_coded(&self, source: Option<&str>) -> String {
+        self.render_full(source, false, true)
+    }
+
     /// Like [`Diagnostic::render`], with the source supplied by the caller
     /// (used by the embedding API and the WASM bridge, which have no file).
     pub fn render_with(&self, source: Option<&str>) -> String {
+        let force_code = self.explicit_code().is_some()
+            || std::env::var_os("SPID3R_ERROR_CODES").is_some_and(|v| v != "0");
+        self.render_full(source, false, force_code)
+    }
+
+    /// Render with optional ANSI color codes (respecting `NO_COLOR` when called
+    /// via [`Diagnostic::render_stderr`]).
+    pub fn render_ansi(&self, source: Option<&str>, color: bool) -> String {
+        let force_code = self.explicit_code().is_some()
+            || std::env::var_os("SPID3R_ERROR_CODES").is_some_and(|v| v != "0");
+        self.render_full(source, color, force_code)
+    }
+
+    fn render_full(&self, source: Option<&str>, color: bool, show_code: bool) -> String {
         let mut out = String::new();
         let kind = match self.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
         };
-        out.push_str(&format!(
-            "{}[{}]: {}",
-            kind,
-            self.phase.as_str(),
-            self.message
-        ));
+        let header = if show_code {
+            format!("{}[{}][{}]", kind, self.code(), self.phase.as_str())
+        } else {
+            format!("{}[{}]", kind, self.phase.as_str())
+        };
+        if color {
+            let ansi = match self.severity {
+                Severity::Error => "\x1b[1;31m",
+                Severity::Warning => "\x1b[1;33m",
+            };
+            out.push_str(&format!("{}{}\x1b[0m: {}", ansi, header, self.message));
+        } else {
+            out.push_str(&format!("{}: {}", header, self.message));
+        }
         if let Some(v) = &self.thrown {
             out.push_str(&format!(" (thrown: {})", crate::value::display_value(v)));
         }
@@ -265,7 +380,11 @@ impl Diagnostic {
             self.push_footer(&mut out);
             return out;
         };
-        out.push_str(&format!("\n  --> {}", span));
+        if color {
+            out.push_str(&format!("\n  \x1b[1;34m-->\x1b[0m {}", span));
+        } else {
+            out.push_str(&format!("\n  --> {}", span));
+        }
 
         let owned;
         let text = match source {
@@ -303,13 +422,18 @@ impl Diagnostic {
     pub fn to_json(&self) -> String {
         let span = match &self.span {
             Some(s) => format!(
-                "\"file\":{},\"line\":{},\"col\":{},\"len\":{}",
+                "\"file\":{},\"line\":{},\"col\":{},\"len\":{},\"end_line\":{},\"end_col\":{}",
                 json_str(&s.file),
                 s.line,
                 s.col,
-                s.len
+                s.len,
+                s.end_line(),
+                s.end_col()
             ),
-            None => "\"file\":null,\"line\":null,\"col\":null,\"len\":null".to_string(),
+            None => {
+                "\"file\":null,\"line\":null,\"col\":null,\"len\":null,\"end_line\":null,\"end_col\":null"
+                    .to_string()
+            }
         };
         let notes: Vec<String> = self.notes().iter().map(|n| json_str(n)).collect();
         let trace: Vec<String> = self
@@ -328,11 +452,12 @@ impl Diagnostic {
             })
             .collect();
         format!(
-            "{{\"severity\":{},\"phase\":{},\"lint\":{},\"message\":{},{},\"help\":{},\"notes\":[{}],\"trace\":[{}]}}",
+            "{{\"severity\":{},\"code\":{},\"phase\":{},\"lint\":{},\"message\":{},{},\"help\":{},\"notes\":[{}],\"trace\":[{}]}}",
             json_str(match self.severity {
                 Severity::Error => "error",
                 Severity::Warning => "warning",
             }),
+            json_str(self.code()),
             json_str(self.phase.as_str()),
             match self.lint {
                 Lint::None => "null".to_string(),
@@ -348,6 +473,19 @@ impl Diagnostic {
             trace.join(",")
         )
     }
+}
+
+/// Whether stderr should use ANSI colors: true only when stderr is a terminal,
+/// `NO_COLOR` is unset/empty, and `TERM != "dumb"`.
+pub fn should_color_stderr() -> bool {
+    use std::io::IsTerminal;
+    if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        return false;
+    }
+    if std::env::var("TERM").as_deref() == Ok("dumb") {
+        return false;
+    }
+    std::io::stderr().is_terminal()
 }
 
 /// The caret block for one line of source, or `None` when the span points

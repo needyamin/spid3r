@@ -46,6 +46,8 @@ pub fn native_defs() -> Vec<NativeDef> {
         ("tcp_accept_timeout", n_tcp_accept_timeout),
         ("tls_listen", n_tls_listen),
         ("tls_accept", n_tls_accept),
+        ("uds_listen", n_uds_listen),
+        ("uds_connect", n_uds_connect),
         ("tcp_connect", n_tcp_connect),
         ("tcp_read", n_tcp_read),
         ("tcp_write", n_tcp_write),
@@ -90,6 +92,8 @@ enum Sock {
     Listener(Arc<TcpListener>),
     #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
     TlsListener(Arc<native_tls::TlsAcceptor>, Arc<TcpListener>),
+    #[cfg(unix)]
+    UdsListener(Arc<std::os::unix::net::UnixListener>, String),
     Stream(Arc<Conn>),
     Udp(Arc<UdpSocket>),
     /// A WebSocket connection: the same stream machinery as `Stream`, with
@@ -102,15 +106,107 @@ enum ConnStream {
     Plain(TcpStream),
     #[cfg(feature = "tls")]
     Tls(Box<native_tls::TlsStream<TcpStream>>),
+    #[cfg(unix)]
+    Uds(std::os::unix::net::UnixStream),
 }
 
-impl std::ops::Deref for ConnStream {
-    type Target = TcpStream;
-    fn deref(&self) -> &TcpStream {
+impl ConnStream {
+    fn read_timeout(&self) -> std::io::Result<Option<Duration>> {
         match self {
-            ConnStream::Plain(s) => s,
+            ConnStream::Plain(s) => s.read_timeout(),
             #[cfg(feature = "tls")]
-            ConnStream::Tls(s) => s.get_ref(),
+            ConnStream::Tls(s) => s.get_ref().read_timeout(),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.read_timeout(),
+        }
+    }
+
+    fn set_read_timeout(&self, dur: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            ConnStream::Plain(s) => s.set_read_timeout(dur),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref().set_read_timeout(dur),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.set_read_timeout(dur),
+        }
+    }
+
+    fn set_write_timeout(&self, dur: Option<Duration>) -> std::io::Result<()> {
+        match self {
+            ConnStream::Plain(s) => s.set_write_timeout(dur),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref().set_write_timeout(dur),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.set_write_timeout(dur),
+        }
+    }
+
+    fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
+        match self {
+            ConnStream::Plain(s) => s.set_nonblocking(nonblocking),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref().set_nonblocking(nonblocking),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.set_nonblocking(nonblocking),
+        }
+    }
+
+    fn shutdown(&self, how: Shutdown) -> std::io::Result<()> {
+        match self {
+            ConnStream::Plain(s) => s.shutdown(how),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref().shutdown(how),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.shutdown(how),
+        }
+    }
+
+    fn local_addr_str(&self) -> std::io::Result<String> {
+        match self {
+            ConnStream::Plain(s) => s.local_addr().map(|a| a.to_string()),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref().local_addr().map(|a| a.to_string()),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.local_addr().map(|a| {
+                a.as_pathname()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "unix".to_string())
+            }),
+        }
+    }
+
+    fn peer_addr_str(&self) -> std::io::Result<String> {
+        match self {
+            ConnStream::Plain(s) => s.peer_addr().map(|a| a.to_string()),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref().peer_addr().map(|a| a.to_string()),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.peer_addr().map(|a| {
+                a.as_pathname()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "unix".to_string())
+            }),
+        }
+    }
+
+    #[cfg(windows)]
+    fn raw_socket(&self) -> usize {
+        use std::os::windows::io::AsRawSocket;
+        match self {
+            ConnStream::Plain(s) => s.as_raw_socket() as usize,
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref().as_raw_socket() as usize,
+        }
+    }
+
+    #[cfg(unix)]
+    fn raw_fd(&self) -> i32 {
+        use std::os::unix::io::AsRawFd;
+        match self {
+            ConnStream::Plain(s) => s.as_raw_fd(),
+            #[cfg(feature = "tls")]
+            ConnStream::Tls(s) => s.get_ref().as_raw_fd(),
+            ConnStream::Uds(s) => s.as_raw_fd(),
         }
     }
 }
@@ -121,6 +217,8 @@ impl Read for ConnStream {
             ConnStream::Plain(s) => s.read(buf),
             #[cfg(feature = "tls")]
             ConnStream::Tls(s) => s.read(buf),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.read(buf),
         }
     }
 }
@@ -131,6 +229,8 @@ impl Write for ConnStream {
             ConnStream::Plain(s) => s.write(buf),
             #[cfg(feature = "tls")]
             ConnStream::Tls(s) => s.write(buf),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.write(buf),
         }
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -138,6 +238,8 @@ impl Write for ConnStream {
             ConnStream::Plain(s) => s.flush(),
             #[cfg(feature = "tls")]
             ConnStream::Tls(s) => s.flush(),
+            #[cfg(unix)]
+            ConnStream::Uds(s) => s.flush(),
         }
     }
 }
@@ -194,6 +296,20 @@ impl Conn {
             ws_server_side: AtomicBool::new(false),
         }
     }
+
+    #[cfg(unix)]
+    fn new_uds(stream: std::os::unix::net::UnixStream) -> Conn {
+        let writer = stream
+            .try_clone()
+            .ok()
+            .map(|clone| Mutex::new(ConnStream::Uds(clone)));
+        Conn {
+            stream: Mutex::new(ConnStream::Uds(stream)),
+            writer,
+            pending: Mutex::new(Vec::new()),
+            ws_server_side: AtomicBool::new(false),
+        }
+    }
 }
 
 /// Lock the connection's write half: the cloned writer for plain sockets,
@@ -246,6 +362,11 @@ fn get_listener(id: i64, who: &str) -> Result<Arc<TcpListener>, String> {
             "{}: handle {} is a TLS listener, not a plain TCP listener",
             who, id
         )),
+        #[cfg(unix)]
+        Some(Sock::UdsListener(_, _)) => Err(format!(
+            "{}: handle {} is a Unix domain socket listener, not a plain TCP listener",
+            who, id
+        )),
         Some(Sock::Stream(_)) => Err(format!(
             "{}: handle {} is a connection, not a listener",
             who, id
@@ -271,6 +392,11 @@ fn get_tls_listener(
         Some(Sock::TlsListener(acceptor, listener)) => Ok((acceptor, listener)),
         Some(Sock::Listener(_)) => Err(format!(
             "{}: handle {} is a plain TCP listener, not a TLS listener",
+            who, id
+        )),
+        #[cfg(unix)]
+        Some(Sock::UdsListener(_, _)) => Err(format!(
+            "{}: handle {} is a Unix domain socket listener, not a TLS listener",
             who, id
         )),
         Some(Sock::Stream(_)) => Err(format!(
@@ -301,6 +427,11 @@ fn get_stream(id: i64, who: &str) -> Result<Arc<Conn>, String> {
             "{}: handle {} is a TLS listener, not a connection",
             who, id
         )),
+        #[cfg(unix)]
+        Some(Sock::UdsListener(_, _)) => Err(format!(
+            "{}: handle {} is a Unix domain socket listener, not a connection",
+            who, id
+        )),
         Some(Sock::Udp(_)) => Err(format!(
             "{}: handle {} is a UDP socket, not a connection",
             who, id
@@ -327,6 +458,11 @@ fn get_udp(id: i64, who: &str) -> Result<Arc<UdpSocket>, String> {
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
         Some(Sock::TlsListener(_, _)) => Err(format!(
             "{}: handle {} is a TLS listener, not a UDP socket",
+            who, id
+        )),
+        #[cfg(unix)]
+        Some(Sock::UdsListener(_, _)) => Err(format!(
+            "{}: handle {} is a Unix domain socket listener, not a UDP socket",
             who, id
         )),
         Some(Sock::Ws(_)) => Err(format!(
@@ -531,7 +667,7 @@ fn max_body_bytes() -> usize {
 ///
 /// A timeout the program chose with `tcp_set_timeout` always wins: silently
 /// shortening it would break a deliberately patient connection.
-fn ensure_io_timeout(stream: &TcpStream) -> Result<(), String> {
+fn ensure_io_timeout(stream: &ConnStream) -> Result<(), String> {
     match stream.read_timeout() {
         Ok(Some(_)) => Ok(()),
         Ok(None) => match default_io_timeout() {
@@ -572,10 +708,26 @@ fn n_tcp_listen(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
 }
 
 /// `tcp_accept(listener)` -> `ok(conn)`. Blocks the calling task's worker
-/// until a client connects.
+/// until a client connects. Works for both plain TCP listeners and Unix
+/// domain socket listeners (`uds_listen`).
 fn n_tcp_accept(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_accept", &args, 1)?;
     let id = want_int(&args[0], "tcp_accept")?;
+    #[cfg(unix)]
+    if let Some(Sock::UdsListener(listener, _)) = lookup(id) {
+        return match listener.accept() {
+            Ok((stream, _)) => {
+                if lookup(id).is_none() {
+                    let _ = stream.shutdown(Shutdown::Both);
+                    return err("tcp_accept: listener closed");
+                }
+                ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new_uds(
+                    stream,
+                ))))))
+            }
+            Err(e) => err(io_msg("tcp_accept", &e)),
+        };
+    }
     let listener = get_listener(id, "tcp_accept")?;
     match listener.accept() {
         Ok((stream, _)) => {
@@ -611,6 +763,39 @@ fn n_tcp_accept_timeout(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, Str
     arity("tcp_accept_timeout", &args, 2)?;
     let id = want_int(&args[0], "tcp_accept_timeout")?;
     let timeout_ms = want_int(&args[1], "tcp_accept_timeout")?.max(0) as u64;
+    #[cfg(unix)]
+    if let Some(Sock::UdsListener(listener, _)) = lookup(id) {
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| io_msg("tcp_accept_timeout", &e))?;
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let outcome: Result<Value, String> = loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    if lookup(id).is_none() {
+                        let _ = stream.shutdown(Shutdown::Both);
+                        break err("tcp_accept: listener closed");
+                    }
+                    let _ = stream.set_nonblocking(false);
+                    break ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new_uds(
+                        stream,
+                    ))))));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if lookup(id).is_none() {
+                        break err("tcp_accept: listener closed");
+                    }
+                    if Instant::now() >= deadline {
+                        break Ok(Value::Null);
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => break err(io_msg("tcp_accept_timeout", &e)),
+            }
+        };
+        let _ = listener.set_nonblocking(false);
+        return outcome;
+    }
     let listener = get_listener(id, "tcp_accept_timeout")?;
     listener
         .set_nonblocking(true)
@@ -897,6 +1082,50 @@ fn n_tls_accept(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String> {
     Err("tls_accept is not supported on WebAssembly".to_string())
 }
 
+/// `uds_listen(path)` -> `ok(listener_id)` / `err(msg)`.
+///
+/// Binds a Unix Domain Socket listener at `path` on Unix platforms. On
+/// non-Unix platforms (Windows, WebAssembly), returns `err(...)`.
+pub(crate) fn n_uds_listen(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("uds_listen", &args, 1)?;
+    let path = want_str(&args[0], "uds_listen")?;
+    #[cfg(unix)]
+    {
+        match std::os::unix::net::UnixListener::bind(&path) {
+            Ok(l) => ok(Value::Int(register(Sock::UdsListener(Arc::new(l), path)))),
+            Err(e) => err(format!("uds_listen '{}': {}", path, e)),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        err("uds_listen: Unix domain sockets are only supported on Unix platforms")
+    }
+}
+
+/// `uds_connect(path)` -> `ok(conn_id)` / `err(msg)`.
+///
+/// Connects to a Unix Domain Socket at `path` on Unix platforms. On
+/// non-Unix platforms (Windows, WebAssembly), returns `err(...)`.
+pub(crate) fn n_uds_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
+    arity("uds_connect", &args, 1)?;
+    let path = want_str(&args[0], "uds_connect")?;
+    #[cfg(unix)]
+    {
+        match std::os::unix::net::UnixStream::connect(&path) {
+            Ok(s) => ok(Value::Int(register(Sock::Stream(Arc::new(Conn::new_uds(
+                s,
+            )))))),
+            Err(e) => err(format!("uds_connect '{}': {}", path, e)),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        err("uds_connect: Unix domain sockets are only supported on Unix platforms")
+    }
+}
+
 /// `tcp_connect("example.com:80")` -> `ok(conn)` / `err(msg)`.
 fn n_tcp_connect(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     arity("tcp_connect", &args, 1)?;
@@ -1163,6 +1392,15 @@ fn n_tcp_close(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
             close_listener(l);
             Ok(Value::Bool(true))
         }
+        #[cfg(unix)]
+        Some(Sock::UdsListener(l, path)) => {
+            if Arc::strong_count(&l) > 1 {
+                let _ = std::os::unix::net::UnixStream::connect(&path);
+            }
+            drop(l);
+            let _ = std::fs::remove_file(&path);
+            Ok(Value::Bool(true))
+        }
         None => Ok(Value::Bool(false)),
     }
 }
@@ -1172,16 +1410,18 @@ fn n_tcp_local_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String>
     arity("tcp_local_addr", &args, 1)?;
     let id = want_int(&args[0], "tcp_local_addr")?;
     let addr = match lookup(id) {
-        Some(Sock::Listener(l)) => l.local_addr(),
+        Some(Sock::Listener(l)) => l.local_addr().map(|a| a.to_string()),
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
-        Some(Sock::TlsListener(_, l)) => l.local_addr(),
-        Some(Sock::Stream(s)) => s.stream.lock().unwrap().local_addr(),
-        Some(Sock::Udp(s)) => s.local_addr(),
-        Some(Sock::Ws(s)) => s.stream.lock().unwrap().local_addr(),
+        Some(Sock::TlsListener(_, l)) => l.local_addr().map(|a| a.to_string()),
+        #[cfg(unix)]
+        Some(Sock::UdsListener(_, path)) => Ok(path),
+        Some(Sock::Stream(s)) => s.stream.lock().unwrap().local_addr_str(),
+        Some(Sock::Udp(s)) => s.local_addr().map(|a| a.to_string()),
+        Some(Sock::Ws(s)) => s.stream.lock().unwrap().local_addr_str(),
         None => return Err(format!("tcp_local_addr: handle {} is not open", id)),
     };
     match addr {
-        Ok(a) => ok(str_val(a.to_string())),
+        Ok(a) => ok(str_val(a)),
         Err(e) => err(io_msg("tcp_local_addr", &e)),
     }
 }
@@ -1191,9 +1431,9 @@ fn n_tcp_peer_addr(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
     arity("tcp_peer_addr", &args, 1)?;
     let id = want_int(&args[0], "tcp_peer_addr")?;
     let conn = get_stream(id, "tcp_peer_addr")?;
-    let addr = conn.stream.lock().unwrap().peer_addr();
+    let addr = conn.stream.lock().unwrap().peer_addr_str();
     match addr {
-        Ok(a) => ok(str_val(a.to_string())),
+        Ok(a) => ok(str_val(a)),
         Err(e) => err(io_msg("tcp_peer_addr", &e)),
     }
 }
@@ -1384,6 +1624,8 @@ fn probe_readable(id: i64, who: &str) -> Result<bool, String> {
         Sock::Listener(_) => Ok(false),
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
         Sock::TlsListener(_, _) => Ok(false),
+        #[cfg(unix)]
+        Sock::UdsListener(_, _) => Ok(false),
     }
 }
 
@@ -1651,9 +1893,9 @@ fn parse_ws_url(url: &str) -> Result<(bool, String, String, String), String> {
 }
 
 #[cfg_attr(not(feature = "tls"), allow(dead_code))]
-struct TlsClientOpts {
-    ca_cert: Option<String>,
-    ca_pem: Option<String>,
+pub(crate) struct TlsClientOpts {
+    pub(crate) ca_cert: Option<String>,
+    pub(crate) ca_pem: Option<String>,
 }
 
 fn parse_tls_client_opts(opts: Option<&Value>, who: &str) -> Result<Option<TlsClientOpts>, String> {
@@ -2125,7 +2367,7 @@ mod sys {
 fn sock_raw_fd(sock: &Sock) -> usize {
     use std::os::windows::io::AsRawSocket;
     match sock {
-        Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().as_raw_socket() as usize,
+        Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().raw_socket(),
         Sock::Listener(l) => l.as_raw_socket() as usize,
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
         Sock::TlsListener(_, l) => l.as_raw_socket() as usize,
@@ -2137,10 +2379,11 @@ fn sock_raw_fd(sock: &Sock) -> usize {
 fn sock_raw_fd(sock: &Sock) -> i32 {
     use std::os::unix::io::AsRawFd;
     match sock {
-        Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().as_raw_fd(),
+        Sock::Stream(c) | Sock::Ws(c) => c.stream.lock().unwrap().raw_fd(),
         Sock::Listener(l) => l.as_raw_fd(),
         #[cfg(all(feature = "tls", not(target_arch = "wasm32")))]
         Sock::TlsListener(_, l) => l.as_raw_fd(),
+        Sock::UdsListener(l, _) => l.as_raw_fd(),
         Sock::Udp(u) => u.as_raw_fd(),
     }
 }
@@ -2658,10 +2901,7 @@ fn read_request(stream: &mut ConnStream, ahead: Vec<u8>) -> Result<Value, String
     };
 
     let (raw_path, raw_query) = target.split_once('?').unwrap_or((target, ""));
-    let remote = stream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_default();
+    let remote = stream.peer_addr_str().unwrap_or_default();
     make_map(vec![
         ("method".to_string(), str_val(method)),
         ("path".to_string(), str_val(percent_decode(raw_path, false))),
@@ -2872,9 +3112,10 @@ fn n_http_fetch(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
         Some(v) => header_pairs(v, WHO)?,
         None => Vec::new(),
     };
-    let body = match args.get(3) {
-        Some(Value::Null) | None => String::new(),
-        Some(v) => want_str(v, WHO)?,
+    let body: Vec<u8> = match args.get(3) {
+        Some(Value::Null) | None => Vec::new(),
+        Some(Value::Bytes(b)) => b.lock().unwrap().clone(),
+        Some(v) => want_str(v, WHO)?.into_bytes(),
     };
     let tls_opts = parse_tls_client_opts(args.get(4), WHO)?;
     if method.is_empty() || !method.bytes().all(|b| b.is_ascii_alphabetic()) {
@@ -2886,13 +3127,28 @@ fn n_http_fetch(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     }
 }
 
-fn fetch(
+/// Raw HTTP response `(status, headers, body_bytes)`.
+pub type HttpBytesResponse = (u16, Vec<(String, String)>, Vec<u8>);
+
+/// Low-level HTTP/HTTPS client returning raw status, headers, and exact response bytes
+/// (without lossy UTF-8 conversion). Used both by `http_fetch` and the remote
+/// package registry client.
+pub fn fetch_bytes(
     method: &str,
     url: &str,
     headers: &[(String, String)],
-    body: &str,
+    body: &[u8],
+) -> Result<HttpBytesResponse, String> {
+    fetch_bytes_with_tls(method, url, headers, body, None)
+}
+
+pub(crate) fn fetch_bytes_with_tls(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
     tls_opts: Option<&TlsClientOpts>,
-) -> Result<Value, String> {
+) -> Result<HttpBytesResponse, String> {
     const WHO: &str = "http_fetch";
     let (secure, rest) = if let Some(r) = url.strip_prefix("https://") {
         (true, r)
@@ -2987,10 +3243,12 @@ fn fetch(
         req.push_str(&format!("content-length: {}\r\n", body.len()));
     }
     req.push_str("\r\n");
-    req.push_str(body);
     stream
         .write_all(req.as_bytes())
         .map_err(|e| io_msg(WHO, &e))?;
+    if !body.is_empty() {
+        stream.write_all(body).map_err(|e| io_msg(WHO, &e))?;
+    }
 
     let head = read_head(&mut *stream, WHO)?;
     let mut parts = head.start_line.splitn(3, ' ');
@@ -3020,13 +3278,26 @@ fn fetch(
         read_to_eof(&mut *stream, leftover, WHO)?
     };
 
+    Ok((status as u16, head.headers, body_bytes))
+}
+
+pub(crate) fn fetch(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    tls_opts: Option<&TlsClientOpts>,
+) -> Result<Value, String> {
+    let (status, resp_headers, body_bytes) =
+        fetch_bytes_with_tls(method, url, headers, body, tls_opts)?;
     make_map(vec![
-        ("status".to_string(), Value::Int(status)),
-        ("headers".to_string(), headers_value(&head.headers)?),
+        ("status".to_string(), Value::Int(status as i64)),
+        ("headers".to_string(), headers_value(&resp_headers)?),
         (
             "body".to_string(),
             str_val(String::from_utf8_lossy(&body_bytes).into_owned()),
         ),
+        ("body_bytes".to_string(), Value::Bytes(new_ref(body_bytes))),
     ])
 }
 

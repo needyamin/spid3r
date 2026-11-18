@@ -457,7 +457,10 @@ pub fn publish_to_dir(root: &Path, dir: &Path) -> Result<(PathBuf, String), Stri
     if version.is_empty() {
         return Err("the package has no version".to_string());
     }
-    let dest = dir.join(manifest.name()).join(&version);
+    super::Version::parse(&version)
+        .map_err(|e| format!("invalid package version '{}': {}", version, e))?;
+    let pkg_dir = dir.join(manifest.name());
+    let dest = pkg_dir.join(&version);
     if dest.exists() {
         return Err(format!(
             "{} already exists — bump the version instead of overwriting a published release",
@@ -477,9 +480,93 @@ pub fn publish_to_dir(root: &Path, dir: &Path) -> Result<(PathBuf, String), Stri
     copy_tree(&src, &dest.join("src"))?;
 
     let hash = content_hash(&dest.join("src"))?;
-    std::fs::write(dest.join("sha256.txt"), format!("{}\n", hash))
+    let sha_txt = format!("{}\n", hash);
+    std::fs::write(dest.join("sha256.txt"), sha_txt.as_bytes())
         .map_err(|e| format!("cannot write sha256.txt: {}", e))?;
+
+    // R8.2: bundle tarball + maintain <dir>/<name>/index.txt for HTTP(S) registries.
+    let entries = super::pack_entries(root)?;
+    let tar_bytes = super::write_tar(&entries);
+    std::fs::write(dest.join("package.tar"), &tar_bytes)
+        .map_err(|e| format!("cannot write package.tar: {}", e))?;
+
+    let mut versions: Vec<super::Version> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&pkg_dir) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                if let Ok(v) = super::Version::parse(name) {
+                    versions.push(v);
+                }
+            }
+        }
+    }
+    versions.sort();
+    let index_body: String = versions
+        .iter()
+        .map(|v| format!("{}.{}.{}\n", v.major, v.minor, v.patch))
+        .collect();
+    std::fs::write(pkg_dir.join("index.txt"), index_body)
+        .map_err(|e| format!("cannot write index.txt: {}", e))?;
+
+    // R8.3: Ed25519 signature over the exact ASCII bytes of sha256.txt.
+    let (pk, sk) = load_or_create_signing_keypair(dir)?;
+    std::fs::write(
+        dir.join("registry.pub"),
+        format!("{}\n", super::hex_encode(&pk)),
+    )
+    .map_err(|e| format!("cannot write registry.pub: {}", e))?;
+    let sig = super::ed25519_sign(&sk, sha_txt.as_bytes())?;
+    std::fs::write(
+        dest.join("sha256.txt.sig"),
+        format!("{}\n", super::hex_encode(&sig)),
+    )
+    .map_err(|e| format!("cannot write sha256.txt.sig: {}", e))?;
+
     Ok((dest, hash))
+}
+
+fn load_or_create_signing_keypair(dir: &Path) -> Result<([u8; 32], [u8; 64]), String> {
+    let parse_seed_hex = |raw: &str, label: &str| -> Result<[u8; 32], String> {
+        let trimmed = raw.trim();
+        let bytes = super::hex_decode(trimmed)
+            .ok_or_else(|| format!("{}: invalid hex signing key", label))?;
+        if bytes.len() != 32 && bytes.len() != 64 {
+            return Err(format!(
+                "{}: signing key must be 32-byte seed (64 hex chars) or 64-byte secret (128 hex chars), got {} bytes",
+                label,
+                bytes.len()
+            ));
+        }
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&bytes[..32]);
+        Ok(seed)
+    };
+
+    for var in ["SPID3R_SIGN_KEY", "SPID3R_PACKAGES_SIGN_KEY"] {
+        if let Ok(val) = std::env::var(var) {
+            if !val.trim().is_empty() {
+                let seed = parse_seed_hex(&val, var)?;
+                return Ok(super::keypair_from_seed(&seed));
+            }
+        }
+    }
+
+    let key_path = dir.join("registry.key");
+    let seed = if key_path.is_file() {
+        let text = std::fs::read_to_string(&key_path)
+            .map_err(|e| format!("cannot read {}: {}", key_path.display(), e))?;
+        parse_seed_hex(&text, &key_path.display().to_string())?
+    } else {
+        let mut seed = [0u8; 32];
+        crate::stdlib::entropy::fill_random(&mut seed)?;
+        std::fs::write(&key_path, format!("{}\n", super::hex_encode(&seed)))
+            .map_err(|e| format!("cannot write {}: {}", key_path.display(), e))?;
+        seed
+    };
+    Ok(super::keypair_from_seed(&seed))
 }
 
 fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {

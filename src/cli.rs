@@ -118,6 +118,9 @@ COMMANDS:
                                            shipped suite lives in benchmarks/
     fmt [--check] [files...]               Canonical formatting (in place);
                                            --check exits 1 if any file differs
+    doc [--json] [--private] [-o PATH] [paths...]
+                                           Generate HTML or JSON documentation
+                                           from source doc comments
     lsp                                    Language Server over stdio
                                            (JSON-RPC: diagnostics, hover,
                                            go-to-definition, symbols,
@@ -433,6 +436,7 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "test" => cmd_test(&rest),
         "bench" => cmd_bench(&rest),
         "fmt" => cmd_fmt(&rest),
+        "doc" => crate::doc::cmd_doc(&rest),
         "lsp" => Ok(crate::lsp::cmd_lsp()),
         "init" => cmd_init(&rest),
         "modules" => cmd_modules(&rest),
@@ -483,8 +487,9 @@ fn outcome_code(outcome: Result<i32, Diagnostic>, json: bool, cmd: &str) -> i32 
                 // consumable by an editor or a CI annotation step.
                 println!("{}", d.to_json());
             } else {
-                // `render` adds the source snippet and the help/note lines.
-                eprintln!("{}", d.render());
+                // `render_stderr` adds the source snippet, help/note lines, and
+                // ANSI colors when stderr is a TTY and NO_COLOR is unset.
+                eprintln!("{}", d.render_stderr());
             }
             if d.phase == Phase::Usage {
                 EXIT_USAGE
@@ -869,6 +874,18 @@ USAGE:
 OPTIONS:
     --break <lines>        Comma-separated breakpoints (e.g. 10,25)
     --commands <file>      Read debugger commands from file
+    -h, --help             Print help information
+"),
+        "doc" => Some("\
+spid3r doc - Generate documentation from Spid3r source files
+
+USAGE:
+    spid3r doc [options] [files_or_dirs...]
+
+OPTIONS:
+    --json                 Emit JSON instead of HTML
+    --private              Include private declarations
+    -o, --out <path>       Write output to file or directory (default: stdout)
     -h, --help             Print help information
 "),
         _ => None,
@@ -1537,7 +1554,22 @@ fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
     }
     let file = single_file(&positional, "check")?;
     let (src, file_name) = read_source(&file)?;
-    let program = parser::parse_file(&src, file_name)?;
+    let program = if dump_registry {
+        parser::parse_file(&src, file_name)?
+    } else {
+        let (prog, parse_errors) = parser::parse_file_recovering(&src, file_name);
+        if !parse_errors.is_empty() {
+            for d in &parse_errors {
+                if json {
+                    println!("{}", d.to_json());
+                } else {
+                    eprintln!("{}", d.render_stderr());
+                }
+            }
+            return Ok(EXIT_USER_ERROR);
+        }
+        prog
+    };
     // a file without fn main is a library module: checked without the main rule
     let has_main = program.stmts.iter().any(|s| match s {
         crate::ast::Stmt::Fn(f) => f.name.as_deref() == Some("main"),
@@ -1563,7 +1595,7 @@ fn cmd_check_with(args: &[String], json: bool) -> Result<i32, Diagnostic> {
         if json {
             println!("{}", w.to_json());
         } else {
-            eprintln!("{}", w.render());
+            eprintln!("{}", w.render_stderr());
         }
     }
     if dump {

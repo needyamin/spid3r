@@ -565,7 +565,10 @@ fn write_stream_body(conn, source) {
         while true {
             let r = tcp_read(source, 8192);
             if r.is_err() {
-                break;
+                r = file_read(source, 8192);
+                if r.is_err() {
+                    break;
+                }
             }
             let chunk = r.unwrap();
             if chunk == null or len(chunk) == 0 {

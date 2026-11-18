@@ -138,27 +138,36 @@ $ echo $?
 It also reports a directory under `vendor/` that no lock entry covers — a
 package nobody declared is not something to trust.
 
-## What it does not do (v1)
+## Remote registries, signing & dependency unification (R8.1–R8.4)
 
-- **No network fetch.** Point `SPID3R_REGISTRY` at a local/checked-out tree. A
-  remote index + download is a deliberate future step (it needs an HTTP client,
-  which the zero-dependency default avoids). `spid3r publish --to-dir` writes the
-  registry layout and `spid3r search --local` reads it, so the whole cycle works
-  offline; only *distribution* is missing.
-- **No signature verification.** TLS plus the SHA-256 in `spider.lock` is the v1
-  trust model. Ed25519 signing needs a new dependency and key management, and is
-  out of scope; do not describe the checksum as a signature.
-- **No version-range intersection across the graph.** A constraint is checked
-  against the resolved version, not unified across importers: a diamond where
-  two packages demand incompatible ranges is reported as a conflict, not solved
-  by backtracking. Greedy highest-satisfying is the v1 rule.
-- **Transitive resolution is supported** for all three source kinds (path, git,
-  registry): `install` walks each dependency's own `[dependencies]` breadth-first
-  with cycle detection and a same-name/different-source conflict check, so a
-  registry package's dependencies are vendored too. (This section claimed the
-  opposite until 2026-10-21; the code has done it since the workspace support
-  landed.) There is still no *version-range intersection* across the graph — a
-  constraint is checked against the resolved version, not unified.
+- **HTTP(S) remote registries (`R8.2`).** `SPID3R_REGISTRY` / `packages.registry`
+  accepts both local directory paths and `http://` / `https://` registry base
+  URLs. Remote registries serve `<base>/<name>/index.txt`,
+  `<base>/<name>/<version>/package.tar`, and `<base>/<name>/<version>/sha256.txt`,
+  and are cached under `.spid3r/registry/<url-hash>/<name>/<version>/` after
+  verifying `sha256.txt` `tree` hashes and path-traversal safety.
+- **Release `--no-default-features` vs `--features tls` tradeoff.** Portable
+  Unix release tarballs are built with `--no-default-features --features native`
+  (without `tls`) to keep release binaries compact, whereas Windows MSI builds
+  enable `tls`. Builds without `tls` support `http://` registry mirrors and
+  local directories cleanly and fail with a clear TLS feature diagnostic if
+  given an `https://` registry URL.
+- **Ed25519 package signing (`R8.3`).** `spid3r publish --to-dir` writes
+  `<dir>/<name>/<version>/package.tar`, `<dir>/<name>/index.txt`,
+  `<dir>/registry.key` (unless `SPID3R_SIGN_KEY` / `SPID3R_PACKAGES_SIGN_KEY`
+  is supplied), `<dir>/registry.pub`, and `<dir>/<name>/<version>/sha256.txt.sig`
+  (64-byte raw Ed25519 signature over the exact `sha256.txt` bytes). On
+  `install` / `update`, when `packages.trust_pk` or `SPID3R_TRUST_PK` (64-hex
+  Ed25519 public key) is configured, the client verifies `sha256.txt.sig` and
+  refuses unsigned or tampered packages cleanly; when `trust_pk` is unset and a
+  signature exists, it verifies against `<dir>/registry.pub` (or unsigned
+  packages emit a warning on stderr before installing).
+- **Version-range unification (`R8.4`).** Diamond dependencies across both
+  single-project manifests and `[workspace]` members intersect all required
+  semver constraints for each package name, re-selecting the highest registry
+  version satisfying every constraint (for example `^1.0` + `=1.2.0` -> `1.2.0`)
+  and reporting conflicting constraints cleanly instead of silently picking the
+  first constraint visited.
 - **No semver pre-releases / build metadata** — plain `major.minor.patch`.
 
 ## Example

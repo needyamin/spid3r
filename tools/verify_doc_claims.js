@@ -301,6 +301,20 @@ const CLAIMS = [
     src: 'fn main() { let h = bcrypt_hash("pw", 3); return 0; }',
     expectError: /cost must be 4\.\.31/,
   },
+
+  // doc.html (Chapter 11 / 14b) — Map remove (R1.4) + spid3rinfo() AOT Memory section (R4).
+  {
+    doc: 'doc.html (Map remove)',
+    claim: 'map.remove(k) removes the entry and returns its value (or null)',
+    src: 'fn main() { let m = {"a": 10, "b": 20}; println(m.remove("a")); println(m.has("a")); return 0; }',
+    expect: '10\nfalse',
+  },
+  {
+    doc: 'doc.html (spid3rinfo sections)',
+    claim: 'spid3rinfo() includes the AOT Memory section',
+    src: 'fn main() { let i = spid3rinfo(); println(i.has("AOT Memory")); return 0; }',
+    expect: 'true',
+  },
 ];
 
 // Constructors: each documented constructor must be callable and must produce

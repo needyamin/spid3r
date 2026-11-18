@@ -1727,17 +1727,19 @@
               <tr>
                 <td><strong>2. Syntax Parsing</strong></td>
                 <td><code>src/parser/mod.rs</code></td>
-                <td>Top-down recursive descent + Pratt precedence parser. Enforces strict maximum statement nesting of
-                  64 levels to prevent call stack exhaustion.</td>
+                <td>Top-down recursive descent + Pratt precedence parser with statement-level error recovery
+                  (<code>parse_recovering</code> reports up to 25 syntax errors in <code>check</code>/<code>lsp</code>,
+                  while <code>run</code>/<code>build</code> fail fast on the first). Enforces strict 64-level nesting depth.</td>
                 <td>Abstract Syntax Tree (<code>ast::Program</code>)</td>
               </tr>
               <tr>
                 <td><strong>3. Semantic Analysis</strong></td>
                 <td><code>src/semantic/mod.rs</code></td>
-                <td>Scope resolution, variable declaration verification, constant folding, class member visibility
-                  checking (<code>public</code> / <code>private</code>), interface contract compliance, and dead code
-                  detection.</td>
-                <td>Validated AST or descriptive compiler diagnostic</td>
+                <td>Scope resolution, constant folding, flow-sensitive nullability narrowing (<code>T?</code> &rarr;
+                  <code>T</code>), scrutinee-driven enum <code>match</code> exhaustiveness, member visibility checks
+                  (<code>public</code> / <code>private</code>), interface compliance, lints, and <code>E1xxx</code> codes
+                  with end spans.</td>
+                <td>Validated AST or coded compiler diagnostic</td>
               </tr>
               <tr>
                 <td><strong>4. Lowering Pass</strong></td>
@@ -1748,11 +1750,12 @@
                 <td>Desugared Low-level AST</td>
               </tr>
               <tr>
-                <td><strong>5. Dual Execution</strong></td>
-                <td><code>src/vm/</code> &amp; <code>src/interpreter/</code></td>
-                <td><strong>Bytecode VM:</strong> Compiles AST to compact bytecode (<code>.matrixc</code>) and runs on a
-                  fast register-stack virtual machine.<br><strong>Tree Interpreter:</strong> Walks the AST directly for
-                  reference parity and differential audit testing.</td>
+                <td><strong>5. Execution Backends</strong></td>
+                <td><code>src/vm/</code>, <code>src/interpreter/</code> &amp; <code>src/native/</code></td>
+                <td><strong>Bytecode VM:</strong> 60-opcode VM with optimizer and per-opcode + per-function self-time
+                  profiler.<br><strong>Tree Interpreter:</strong> Reference AST oracle for differential parity.<br>
+                  <strong>Native AOT (LLVM 23):</strong> Scalar unboxing, direct field GEPs, and call-scoped bump-slab
+                  arena reclamation.</td>
                 <td>Live execution, captured stdout, exit status</td>
               </tr>
               <tr>
@@ -1792,7 +1795,8 @@
                 <td><code>spid3r run &lt;file.matrix&gt;</code></td>
                 <td><code>spid3r run --engine vm main.matrix</code></td>
                 <td>Compile and execute program. Flags: <code>--engine tree|vm</code>, <code>--prof</code> (prints
-                  per-opcode execution profiling counts), <code>--budget N</code> (stop after roughly N steps with the
+                  per-opcode execution counts plus per-function self-time and inclusive instruction attribution in
+                  <code>==== function profile (self-time) ====</code>), <code>--budget N</code> (stop after roughly N steps with the
                   fatal error <code>execution budget exhausted</code> — for untrusted code), <code>--max-steps N</code>
                   (documented alias of <code>--budget</code>; specify only one of the two), <code>--max-call-depth N</code>
                   (cap the call stack depth — VM and tree engines, default 1000, propagated to tasks and modules),
@@ -1805,8 +1809,10 @@
               <tr>
                 <td><code>spid3r check &lt;file.matrix&gt;</code></td>
                 <td><code>spid3r check main.matrix --deny-warnings</code></td>
-                <td>Lex, parse, and semantic check without executing. Lints: unused variables, unused parameters,
-                  unreachable code.</td>
+                <td>Lex, parse (recovering up to 25 syntax errors in one pass), and run semantic checks (types, scopes,
+                  flow-sensitive nullability narrowing, scrutinee-driven enum exhaustiveness, unused/unreachable lints)
+                  without executing. Emits <code>E1xxx</code> codes, <code>[line:col .. end_line:end_col]</code> spans,
+                  and TTY-gated ANSI colors (respecting <code>NO_COLOR</code>).</td>
               </tr>
               <tr>
                 <td><code>spid3r compile &lt;file.matrix&gt;</code></td>
@@ -1846,9 +1852,21 @@
                   files require formatting.</td>
               </tr>
               <tr>
+                <td><code>spid3r doc [paths...]</code></td>
+                <td><code>spid3r doc src/ -o docs/api.html</code></td>
+                <td>Extract <code>///</code> and <code>//</code> doc comments above declarations (sharing
+                  <code>doc_above</code> / <code>strip_comment</code> with <code>spid3r lsp</code>) and emit a
+                  self-contained searchable HTML reference or deterministic JSON (<code>--json</code>). Pass
+                  <code>--private</code> to include non-<code>public</code> symbols.</td>
+              </tr>
+              <tr>
                 <td><code>spid3r repl</code></td>
                 <td><code>spid3r repl</code></td>
-                <td>Interactive Read-Eval-Print-Loop for rapid prototyping and testing expressions.</td>
+                <td>Interactive Read-Eval-Print-Loop with raw-mode TTY cursor editing (<code>Home</code>,
+                  <code>End</code>, <code>Left</code>/<code>Right</code>, <code>Delete</code>, <code>Ctrl-A</code>,
+                  <code>Ctrl-E</code>, <code>Ctrl-U</code>, <code>Ctrl-K</code>, <code>Ctrl-L</code>) and 500-entry
+                  history recall (<code>Up</code>/<code>Down</code> preserving drafts), falling back cleanly to line
+                  mode when stdin/stdout is not a terminal.</td>
               </tr>
               <tr>
                 <td><code>spid3r debug &lt;file.matrix&gt;</code></td>
@@ -1950,8 +1968,13 @@
               <tr>
                 <td><code>spid3r install [--update]</code></td>
                 <td><code>spid3r install</code></td>
-                <td>Resolve <code>path</code>/<code>git</code> dependencies into <code>vendor/</code> and write
-                  <code>spider.lock</code>; <code>--update</code> re-resolves instead of honouring the locked commits.
+                <td>Resolve <code>path</code>, <code>git</code>, local-directory, and remote <code>http(s)://</code>
+                  registry dependencies (<code>SPID3R_REGISTRY</code> / <code>packages.registry</code>) into
+                  <code>vendor/</code> and write <code>spider.lock</code>. Verifies mandatory <code>sha256.txt</code>
+                  hashes, enforces tar path-traversal safety, verifies Ed25519 <code>sha256.txt.sig</code> signatures
+                  against <code>packages.trust_pk</code> / <code>SPID3R_TRUST_PK</code> (or <code>registry.pub</code>),
+                  and unifies diamond version constraints across single-project and <code>[workspace]</code> manifests;
+                  <code>--update</code> re-resolves instead of honouring locked versions/commits.
                 </td>
               </tr>
               <tr>
@@ -1988,16 +2011,19 @@
               <tr>
                 <td><code>spid3r search &lt;query&gt;</code></td>
                 <td><code>spid3r search math --local</code></td>
-                <td>Find packages by name in the local registry (<code>SPID3R_REGISTRY</code>) and in
-                  <code>vendor/</code>. v1 is local-only: there is no network index yet.
+                <td>Find packages by name in a configured local directory registry (<code>SPID3R_REGISTRY</code>) and
+                  in <code>vendor/</code> (remote <code>http(s)://</code> registries are fetched on
+                  <code>spid3r install</code>).
                 </td>
               </tr>
               <tr>
                 <td><code>spid3r publish --to-dir &lt;dir&gt;</code></td>
                 <td><code>spid3r publish --to-dir ../registry</code></td>
                 <td>Write <code>&lt;dir&gt;/&lt;name&gt;/&lt;version&gt;/</code> containing <code>spider.toml</code>,
-                  <code>src/</code> and a <code>sha256.txt</code> — the layout the local registry resolver reads.
-                  Republishing an existing version is refused rather than overwritten.
+                  <code>src/</code>, <code>package.tar</code>, <code>sha256.txt</code>, and a detached Ed25519 signature
+                  <code>sha256.txt.sig</code>, plus sorted <code>&lt;dir&gt;/&lt;name&gt;/index.txt</code> and
+                  <code>&lt;dir&gt;/registry.key</code> / <code>registry.pub</code> (or sign with
+                  <code>SPID3R_SIGN_KEY</code>). Republishing an existing version is refused rather than overwritten.
                 </td>
               </tr>
               <tr>
@@ -2200,14 +2226,23 @@
           A package is a directory with a <code>spider.toml</code> and a <code>src/</code> tree. <code>spid3r add</code>
           declares it and vendors it in one step, <code>spid3r tree</code> shows what that resolved to,
           <code>spid3r verify</code> proves the vendored bytes are the ones the lock file describes, and
-          <code>spid3r publish --to-dir</code> writes a static registry entry with a checksum. None of it touches the
-          network, and none of it runs the package's code.
+          <code>spid3r publish --to-dir</code> writes a registry entry with <code>package.tar</code>,
+          <code>index.txt</code>, <code>sha256.txt</code>, and an Ed25519 signature <code>sha256.txt.sig</code>
+          (<code>registry.pub</code>). <code>spid3r install</code> supports both local directory mirrors and remote
+          <code>http(s)://</code> registries (<code>SPID3R_REGISTRY</code> / <code>packages.registry</code>, cached
+          under <code>.spid3r/registry/</code>), verifies SHA-256 and Ed25519 signatures (pinned via
+          <code>packages.trust_pk</code> / <code>SPID3R_TRUST_PK</code>), intersects compatible diamond semver ranges
+          across both single-project and workspace dependency graphs, and <strong>never executes package code</strong>.
+          Note: release tarballs built without <code>tls</code> support <code>http://</code> mirrors and local
+          directories; enable <code>--features tls</code> (included in Windows installers) for <code>https://</code>
+          registries. See <code>docs/REGISTRY.md</code>.
         </p>
         <figure class="diagram">
           <img src="../diagrams/packages.svg"
-            alt="Package flow: spider.toml plus src tree, spid3r add vendors and pins it in spider.lock, spid3r verify re-hashes every file against the lock so hand edits fail, publish --to-dir writes a static registry entry with a checksum, spid3r install requires the checksum — no checksum, no install. Installing never executes package code.">
-          <figcaption>Checksummed end to end: declare, vendor, verify, publish, install. A hand-edited dependency fails
-            instead of compiling, and an unchecksummed registry entry is refused rather than vendored unverified.</figcaption>
+            alt="Package flow: spider.toml plus src tree, spid3r add vendors and pins it in spider.lock, spid3r verify re-hashes every file against the lock so hand edits fail, publish --to-dir writes package.tar, index.txt, sha256.txt and Ed25519 sha256.txt.sig, spid3r install supports local or HTTP(S) registries with signature verification and diamond semver unification. Installing never executes package code.">
+          <figcaption>Signed and checksummed end to end: declare, vendor, verify, publish, install. Supports local and
+            HTTP(S) registries, Ed25519 <code>packages.trust_pk</code> verification, and diamond constraint unification —
+            with zero build scripts executed.</figcaption>
         </figure>
         <div
           style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6;">
@@ -3476,6 +3511,24 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           with <code>()</code>.
         </p>
 
+        <div class="callout tip">
+          <div class="callout-header">🔍 Nullability Narrowing, Scrutinee Exhaustiveness &amp; <code>E1xxx</code> Diagnostics</div>
+          <ul>
+            <li><strong>Flow-Sensitive Nullability Narrowing:</strong> Nullable bindings (<code>T?</code>) narrow
+              automatically to <code>T</code> inside <code>if (x != null)</code> / <code>if (!is_null(x))</code>
+              branches, after early-exit guards (<code>if (x == null) { return ...; }</code>), after <code>?</code>
+              error/null propagation, through <code>?.</code> optional fields, inside <code>while (x != null)</code>
+              loops (while un-reassigned to nullable), and on <code>catch (e)</code> error binders.</li>
+            <li><strong>Scrutinee-Driven Enum Exhaustiveness:</strong> When a <code>match</code> scrutinee has a static
+              enum type, the semantic checker enforces every variant of that enum (unless covered by <code>_</code> or a
+              variable binding), falling back to arm inference when untyped.</li>
+            <li><strong>Multi-Error Diagnostics:</strong> <code>spid3r check</code> and <code>spid3r lsp</code> recover
+              across up to 25 syntax errors in one pass with <code>E1xxx</code> error codes,
+              <code>[line:col .. end_line:end_col]</code> spans, and TTY-gated ANSI colors (<code>NO_COLOR</code>
+              supported).</li>
+          </ul>
+        </div>
+
         <!-- Example Card 9 -->
         <div class="w3-card-example" id="ex-enums">
           <div class="w3-card-header">
@@ -3765,7 +3818,7 @@ println(" Sum via reduce: " + string(sum_all));      // 21
                 <td><code>get</code>, <code>set</code>, <code>m[k]</code>, <code>remove</code>, <code>has</code>,
                   <code>keys</code>, <code>values</code>, <code>items</code>, <code>len</code>, <code>clear</code>
                 </td>
-                <td>O(1) average lookup/insert (insertion-ordered)</td>
+                <td>O(1) average lookup/insert/<code>remove(k)</code> via <code>FxHash</code> index table (tombstone compaction + insertion order preserved)</td>
               </tr>
               <tr id="sets">
                 <td><strong>Set</strong></td>
@@ -3773,7 +3826,7 @@ println(" Sum via reduce: " + string(sum_all));      // 21
                 <td><code>add</code>, <code>remove</code>, <code>contains</code>, <code>union</code>,
                   <code>intersect</code>/<code>intersection</code>, <code>difference</code>, <code>is_subset</code>
                 </td>
-                <td>O(1) membership and insertion; unique members</td>
+                <td>O(1) average membership and insertion (<code>FxHash</code> scalar index for <code>int</code>/<code>string</code>/<code>bool</code>; unique members)</td>
               </tr>
               <tr id="bags">
                 <td><strong>Bag</strong></td>
@@ -4253,14 +4306,71 @@ println(" Sum via reduce: " + string(sum_all));      // 21
                 </td>
               </tr>
               <tr>
+                <td><strong>Filesystem (Handles)</strong></td>
+                <td><code>file_open</code> / <code>file_close</code></td>
+                <td><code>file_open(path, mode?)</code> / <code>file_close(id)</code></td>
+                <td>Open a streaming file handle (modes <code>"r"</code>, <code>"w"</code>, <code>"a"</code>,
+                  <code>"r+"</code>, <code>"w+"</code>) returning a monotonic non-reused integer handle
+                  <code>ok(id)</code> (max 1,024 open handles; path guarded by <code>security.basedir</code>).</td>
+              </tr>
+              <tr>
+                <td><strong>Filesystem (Handles)</strong></td>
+                <td><code>file_read</code> / <code>file_read_line</code> / <code>file_write</code></td>
+                <td><code>file_read(id, max_bytes)</code> / <code>file_read_line(id)</code> / <code>file_write(id, data)</code></td>
+                <td>Buffered handle I/O returning <code>ok(bytes)</code>, <code>ok(string?)</code> (<code>null</code>
+                  at EOF), or bytes written <code>ok(int)</code> for string/bytes payloads.</td>
+              </tr>
+              <tr>
+                <td><strong>Filesystem (Handles)</strong></td>
+                <td><code>file_seek</code> / <code>file_tell</code> / <code>file_flush</code> / <code>file_fsync</code></td>
+                <td><code>file_seek(id, pos, whence?)</code> / <code>file_tell(id)</code> / <code>file_flush(id)</code> / <code>file_fsync(id)</code></td>
+                <td>Cursor positioning (<code>"start"</code>, <code>"current"</code>, <code>"end"</code>), byte
+                  offset query, stream flush, and durable disk sync (Windows <code>FlushFileBuffers</code> / Unix
+                  <code>fsync</code>).</td>
+              </tr>
+              <tr>
+                <td><strong>Filesystem (Handles)</strong></td>
+                <td><code>file_lock</code> / <code>file_unlock</code></td>
+                <td><code>file_lock(id, exclusive?)</code> / <code>file_unlock(id)</code></td>
+                <td>Advisory/OS region file locking (Windows <code>LockFileEx</code>/<code>UnlockFileEx</code>, Unix
+                  <code>flock</code>; shared when <code>exclusive == false</code>).</td>
+              </tr>
+              <tr>
                 <td><strong>Process</strong></td>
                 <td><code>spawn_process</code></td>
                 <td><code>spawn_process(cmd, args[, opts])</code></td>
                 <td>Starts a child process and waits for it, returning its exit code as <code>result</code>
-                  (<code>ok(int)</code> / <code>err(string)</code>). <code>opts</code> is an optional map; the key
-                  <code>hidden</code> (<code>bool</code>) passes <code>CREATE_NO_WINDOW</code> on Windows so the child
-                  gets no console window. On other platforms <code>hidden</code> is accepted and ignored.
+                  (<code>ok(int)</code> / <code>err(string)</code>). <code>opts</code> is an optional map supporting:
+                  <code>cwd</code> (<code>string</code>, checked against <code>security.basedir</code>),
+                  <code>env</code> (<code>map</code> of environment variables passed to the child), and
+                  <code>hidden</code> (<code>bool</code>; passes <code>CREATE_NO_WINDOW</code> on Windows, ignored elsewhere).
                 </td>
+              </tr>
+              <tr>
+                <td><strong>Signals &amp; Shutdown</strong></td>
+                <td><code>signal_requested</code> / <code>shutdown_requested</code></td>
+                <td><code>signal_requested(name, clear?)</code> / <code>shutdown_requested()</code></td>
+                <td>Cooperative signal polling for <code>"INT"</code>, <code>"TERM"</code>, <code>"HUP"</code>,
+                  <code>"USR1"</code>, <code>"USR2"</code> (Unix signal handlers coordinated with agent <code>SIGHUP</code>
+                  reload; Windows console control handler for shutdown).</td>
+              </tr>
+              <tr>
+                <td><strong>Event Loop &amp; Timers</strong></td>
+                <td><code>poll_create</code> / <code>poll_add</code> / <code>poll_wait</code></td>
+                <td><code>poll_create()</code> / <code>poll_wait(ep, ms)</code> / <code>after_ms(ms)</code> / <code>timer_check(id)</code> / <code>timer_cancel(id)</code></td>
+                <td>OS readiness polling over <code>epoll</code> (Linux), <code>kqueue</code> (macOS/BSD), or
+                  <code>wepoll</code> (Windows), paired with monotonic millisecond timers (also <code>poll_mod</code>,
+                  <code>poll_del</code>, <code>poll_close</code>).</td>
+              </tr>
+              <tr>
+                <td><strong>Networking &amp; UDS</strong></td>
+                <td><code>http_fetch</code> / <code>http_write_response_chunk</code> / <code>uds_*</code></td>
+                <td><code>http_fetch(m, url, hdrs?, body?)</code> / <code>uds_listen(path)</code> / <code>uds_connect(path)</code></td>
+                <td>HTTP(S) client returns response map with both UTF-8 <code>"body"</code> and exact
+                  <code>"body_bytes"</code> (<code>bytes</code>); chunked response primitive
+                  <code>http_write_response_chunk(conn, bytes, final)</code>; Unix domain sockets
+                  <code>uds_listen</code> / <code>uds_connect</code> (unlinked on close on Unix; usage error on Windows;
+                  paths guarded by <code>security.basedir</code>).</td>
               </tr>
               <tr>
                 <td><strong>Filesystem</strong></td>
@@ -4578,7 +4688,9 @@ println(" Sum via reduce: " + string(sum_all));      // 21
               <tr>
                 <td><code>web.matrix</code></td>
                 <td><code>import "web" as w;</code></td>
-                <td>Express-style router, HTTP request/response handler, URL param decoding.</td>
+                <td>Express-style HTTP/HTTPS server (<code>bind_tls</code>), keep-alive idle eviction,
+                  <code>Transfer-Encoding: chunked</code> request decoding, streaming responses
+                  (<code>stream_response</code>), and URL param decoding.</td>
               </tr>
               <tr>
                 <td><code>dataframe.matrix</code></td>
@@ -4663,7 +4775,9 @@ println(" Sum via reduce: " + string(sum_all));      // 21
               <tr>
                 <td><code>http.matrix</code></td>
                 <td><code>import "http" as http;</code></td>
-                <td>HTTP/1.1 web framework: router, request/response helpers, static files.</td>
+                <td>HTTP/1.1 web framework: router, request/response helpers, chunked parsing, keep-alive timers, static
+                  files, and streaming responses (<code>http_stream</code> over lists, callbacks, sockets, and
+                  <code>file_open</code> handles).</td>
               </tr>
               <tr>
                 <td><code>fastcgi.matrix</code></td>
@@ -4678,7 +4792,8 @@ println(" Sum via reduce: " + string(sum_all));      // 21
               <tr>
                 <td><code>event.matrix</code></td>
                 <td><code>import "event" as ev;</code></td>
-                <td>Event loop over the readiness primitive (non-blocking I/O).</td>
+                <td>Event loop backed by OS readiness primitives (<code>epoll</code>/<code>kqueue</code>/<code>wepoll</code>
+                  plus non-blocking timers).</td>
               </tr>
               <tr>
                 <td><code>gen.matrix</code></td>
@@ -4871,7 +4986,8 @@ disable =                ; module names that fail to import
 assert_active = true     ; false makes assert()/assert_eq() no-ops
 
 [packages]
-registry =               ; canonical registry directory (alias: SPID3R_REGISTRY)
+registry =               ; local dir or http(s):// URL (alias: SPID3R_REGISTRY)
+trust_pk =               ; 64-hex Ed25519 public key for registry signatures (alias: SPID3R_TRUST_PK)
 allow_insecure_git = false
 allow_local_git = false
 
@@ -5187,8 +5303,16 @@ agent.bind = 0.0.0.0
                 <td><code>[packages]</code></td>
                 <td><code>registry</code></td>
                 <td><em>empty</em></td>
-                <td>Canonical home of the <code>SPID3R_REGISTRY</code> env alias: root directory of a local package
-                  registry.</td>
+                <td>Canonical home of the <code>SPID3R_REGISTRY</code> env alias: local registry root directory or remote
+                  <code>http(s)://</code> base URL.</td>
+              </tr>
+              <tr>
+                <td><code>[packages]</code></td>
+                <td><code>trust_pk</code></td>
+                <td><em>empty</em></td>
+                <td>Canonical home of <code>SPID3R_TRUST_PK</code>: 64-character hex Ed25519 public key used to verify
+                  <code>sha256.txt.sig</code> on <code>spid3r install</code> (refuses unsigned or tampered packages when
+                  set). Frozen for remote <code>config.set</code>.</td>
               </tr>
               <tr>
                 <td><code>[packages]</code></td>
@@ -5358,12 +5482,13 @@ agent.bind = 0.0.0.0
         </div>
         <p>
           Sections: <strong>Spid3r</strong> (version, language, Rust, profile), <strong>System</strong> (OS, arch,
-          memory, CPUs), <strong>Installation</strong> (exe, ini, log, state), <strong>Features</strong>
-          (<code>gui</code>, <code>native (LLVM AOT)</code>, <code>tls</code>, <code>plugins-wasm</code>,
-          <code>agent</code>, <code>spid3rinfo</code>), <strong>Modules</strong> (embedded stdlib, plugins),
-          <strong>Configuration</strong>, <strong>Environment</strong>, <strong>Memory</strong>,
-          <strong>Agent</strong>. On <code>wasm32</code> (the playground build) the Environment and Agent sections
-          are omitted — there is no OS process or environment there. Keys containing or ending in
+          memory, CPUs, <code>Process RSS</code> / <code>Process RSS bytes</code>), <strong>Installation</strong> (exe,
+          ini, log, state), <strong>Features</strong> (<code>gui</code>, <code>native (LLVM AOT)</code>,
+          <code>tls</code>, <code>plugins-wasm</code>, <code>agent</code>, <code>spid3rinfo</code>),
+          <strong>Modules</strong> (embedded stdlib, plugins), <strong>Configuration</strong>, <strong>Environment</strong>,
+          <strong>Memory (interpreter)</strong>, <strong>AOT Memory</strong> (bump-slab arena allocation &amp; slab
+          counters), and <strong>Agent</strong>. On <code>wasm32</code> (the playground build) the Environment and Agent
+          sections are omitted — there is no OS process or environment there. Keys containing or ending in
           <code>password</code>, <code>passwd</code>, <code>pwd</code>, <code>passphrase</code>,
           <code>token</code>, <code>secret</code>, <code>shared</code>, <code>credential</code>,
           <code>authorization</code>, <code>cookie</code>, <code>api_key</code>, <code>apikey</code>,
@@ -5497,9 +5622,9 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           <code>&lt;state&gt;/audit.log</code>. Disable with <code>[logging] audit = false</code> — locally only:
           the remote <code>config.set</code> op refuses a schema-derived set of security-relevant keys — every
           <code>security.*</code> and <code>logging.*</code> key, <code>agent.role_*</code>, the agent
-          <code>enabled/bind/port/max_connections/request_timeout_ms/max_body</code> switches, the phase-3
-          capability keys (<code>modules.disable</code>, <code>packages.allow_insecure_git</code>,
-          <code>packages.allow_local_git</code>), and the phase-4 path keys (<code>paths.cache_dir</code>,
+          <code>enabled/bind/port/max_connections/request_timeout_ms/max_body</code> switches, the package/module
+          policy keys (<code>modules.disable</code>, <code>packages.allow_insecure_git</code>,
+          <code>packages.allow_local_git</code>, <code>packages.trust_pk</code>), and the path keys (<code>paths.cache_dir</code>,
           <code>paths.state_dir</code>, <code>paths.sqlite_path</code>, <code>cache.bytecode_dir</code>) — so a
           paired operator cannot grant itself more operations, silence the audit trail, re-bind the listener, widen
           the script deny lists, or relocate the host's write targets. Benign keys (e.g.
@@ -5574,7 +5699,7 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           Rebuilding <code>selfhost/</code> or running compiler and dev-CLI commands with <code>spid3r-self</code>
           requires zero <code>cargo</code> or <code>rustc</code> calls. Rust Stage 0 (<code>src/</code>) stays in
           place permanently as the cold bootstrap seed, differential oracle (<code>src/oracle.rs</code>), pinned
-          runtime staticlib (66 <code>spid3r_*</code> trampolines + 229 stdlib natives), and host for non-AOT
+          runtime staticlib (70 <code>spid3r_*</code> trampolines + 257 stdlib natives), and host for non-AOT
           engines/tools (<code>tree</code>, <code>vm</code>, <code>repl</code>, <code>debug</code>, <code>lsp</code>,
           <code>agent</code>, <code>gui</code>, <code>wasm32</code>, <code>plugin</code>).
         </p>
@@ -5596,7 +5721,7 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
 
         <figure class="diagram">
           <img src="../selfhost/diagrams/rust-vs-selfhost-boundary.svg"
-            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned runtime staticlib ABI (66 trampolines, 229 natives), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
+            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned runtime staticlib ABI (70 trampolines, 257 natives), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
           <figcaption>Pure self-hosted compiler work vs permanently retained Rust Stage 0 (SH-2 · SH-6 · SH-8),
             coupled only through the SHA-256-verified <code>spid3r_lang</code> runtime staticlib ABI.</figcaption>
         </figure>
@@ -5828,9 +5953,11 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
             </tr>
             <tr>
               <td>On the native backend</td>
-              <td><code>gc_collect()</code> reclaims nothing by construction (the AOT runtime uses an arena) and
-                the builtins report engine-internal numbers. That is a documented trade, not a collector
-                failure.</td>
+              <td>The AOT runtime allocates via a thread-local bump-slab arena (<code>ARENA_SLAB_LEN = 4096</code>) with
+                call-scoped reclamation (<code>spid3r_arena_enter</code> / <code>spid3r_arena_leave</code> and
+                <code>spid3r_return_leave</code> evacuating return values cleanly); <code>gc_collect()</code>,
+                <code>gc_live_cells()</code>, and <code>spid3rinfo()["AOT Memory"]</code> report engine-internal arena
+                and slab counters.</td>
             </tr>
           </tbody>
         </table>
@@ -6039,7 +6166,7 @@ println("SHA-256 of sum: " + sha256(string(sum)));
           '(?<type>\\b(?:int|float|string|bool|list|vec|tuple|map|set|bag|stack|queue|deque|heap|priority_queue|binary_tree|bst|trie|graph|matrix|vector|ring_buffer|linked_list|hash_table|option|result|ref|weak|any|void)\\b)',
           '(?<kw>\\b(?:fn|let|const|if|elif|else|while|for|in|return|break|continue|throw|try|catch|finally|spawn|async|await|class|extends|implements|public|private|new|import|as|self|super|match|enum|interface|abstract|yield|and|or|not)\\b)',
           '(?<lit>\\b(?:true|false|null|some|none|ok|err)\\b)',
-          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|sha512|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|ed25519_keypair|ed25519_sign|ed25519_verify|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|spid3rinfo|config_get|config_set|config_reload)\\b)',
+          '(?<builtin>\\b(?:println|print|eprint|read_line|read_file|write_file|file_exists|file_open|file_read|file_read_line|file_write|file_seek|file_tell|file_flush|file_fsync|file_lock|file_unlock|file_close|signal_requested|shutdown_requested|uds_listen|uds_connect|poll_create|poll_add|poll_mod|poll_del|poll_wait|poll_close|after_ms|timer_check|timer_cancel|http_fetch|http_write_response_chunk|len|type_of|now|abs|sqrt|pow|min|max|clamp|random_int|random_float|sha256|sha512|hmac_sha256|base64_encode|base64_decode|hex_encode|hex_decode|ed25519_keypair|ed25519_sign|ed25519_verify|json_parse|json_write|parse_csv|write_csv|regex_match|regex_find|regex_find_all|regex_replace|datetime_parts|format_datetime|gc_collect|gc_live_cells|vector|matrix|stack|queue|heap|trie|graph|channel|mutex|spid3rinfo|config_get|config_set|config_reload)\\b)',
           '(?<op>==|!=|<=|>=|=>|->|\\+\\+|--|\\+=|-=|\\*=|\\/=|%=|&&|\\|\\||\\?\\.|\\?\\?|[+\\-*\\/%!=<>~&|^?:])'
         ].join('|'),
         'g'

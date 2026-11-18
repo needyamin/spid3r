@@ -11,6 +11,7 @@ pub mod db;
 pub mod digest;
 pub mod entropy;
 pub mod eventloop;
+pub mod file;
 pub mod fs_policy;
 pub mod kdf;
 pub mod media;
@@ -219,6 +220,7 @@ fn build_builtin_defs() -> Vec<NativeDef> {
     defs.extend(tz::native_defs());
     defs.extend(timer::native_defs());
     defs.extend(eventloop::native_defs());
+    defs.extend(file::native_defs());
     defs
 }
 
@@ -1173,27 +1175,76 @@ fn n_spawn_process(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
     }
     let cmd = want_str(&args[0], "spawn_process")?;
     let argv = argv_list(&args[1], "spawn_process")?;
-    // Optional third argument: map("hidden", true) starts a console program
-    // without a console window. That is what lets a GUI-subsystem launcher
-    // start a console toolchain (`spid3r gui`) with no terminal flashing up.
+    // Optional third argument: map("hidden", true, "cwd", "/dir", "env", map("K", "V"))
+    // starts a child process with optional hidden console, working directory,
+    // and environment overrides.
     let mut hidden = false;
+    let mut cwd_opt: Option<String> = None;
+    let mut env_pairs: Vec<(String, String)> = Vec::new();
     if args.len() == 3 {
         if let Value::Map(opts) = &args[2] {
-            let key = crate::value::as_map_key(&Value::Str("hidden".into()))?;
-            let found = {
-                let m = opts.lock().unwrap();
-                m.find(&key).map(|i| m.entries[i].1.clone())
-            };
-            if let Some(v) = found {
-                match v {
-                    Value::Bool(b) => hidden = b,
-                    Value::Null => {}
-                    other => {
-                        return Err(format!(
-                            "spawn_process: 'hidden' must be a bool, found {}",
-                            crate::value::type_name(&other)
-                        ));
-                    }
+            let entries = opts.lock().unwrap().entries.clone();
+            for (k, v) in entries {
+                match k.display().as_str() {
+                    "hidden" => match v {
+                        Value::Bool(b) => hidden = b,
+                        Value::Null => {}
+                        other => {
+                            return Err(format!(
+                                "spawn_process: 'hidden' must be a bool, found {}",
+                                crate::value::type_name(&other)
+                            ));
+                        }
+                    },
+                    "cwd" => match v {
+                        Value::Str(s) => {
+                            let s_str = s.to_string();
+                            fs_policy::check_path(&s_str)?;
+                            cwd_opt = Some(s_str);
+                        }
+                        Value::Null => {}
+                        other => {
+                            return Err(format!(
+                                "spawn_process: 'cwd' must be a string, found {}",
+                                crate::value::type_name(&other)
+                            ));
+                        }
+                    },
+                    "env" => match v {
+                        Value::Map(em) => {
+                            let em_entries = em.lock().unwrap().entries.clone();
+                            for (ek, ev) in em_entries {
+                                let k_str = match ek {
+                                    MapKey::Str(s) => s,
+                                    other => {
+                                        return Err(format!(
+                                            "spawn_process: 'env' keys must be strings, found {}",
+                                            other.display()
+                                        ));
+                                    }
+                                };
+                                let v_str = match ev {
+                                    Value::Str(s) => s.to_string(),
+                                    other => {
+                                        return Err(format!(
+                                            "spawn_process: 'env' value for '{}' must be a string, found {}",
+                                            k_str,
+                                            crate::value::type_name(&other)
+                                        ));
+                                    }
+                                };
+                                env_pairs.push((k_str.to_string(), v_str));
+                            }
+                        }
+                        Value::Null => {}
+                        other => {
+                            return Err(format!(
+                                "spawn_process: 'env' must be a map, found {}",
+                                crate::value::type_name(&other)
+                            ));
+                        }
+                    },
+                    _ => {}
                 }
             }
         } else if !matches!(&args[2], Value::Null) {
@@ -1207,6 +1258,12 @@ fn n_spawn_process(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> 
     // operations that can fail return a `result` instead of throwing.
     let mut command = std::process::Command::new(&cmd);
     command.args(&argv);
+    if let Some(ref dir) = cwd_opt {
+        command.current_dir(dir);
+    }
+    if !env_pairs.is_empty() {
+        command.envs(env_pairs);
+    }
     apply_spawn_flags(&mut command, hidden);
     match command.status() {
         Ok(status) => {

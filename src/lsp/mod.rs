@@ -357,52 +357,7 @@ struct Decl {
     doc: Option<String>,
 }
 
-/// A comment run immediately above a declaration, markers stripped.
-fn doc_above(span: &Span, comments: &[Comment]) -> Option<String> {
-    if span.line < 2 {
-        return None;
-    }
-    let mut rows: Vec<(u32, String)> = comments
-        .iter()
-        .filter(|c| c.line < span.line)
-        .map(|c| (c.line, strip_comment(&c.text)))
-        .collect();
-    rows.sort_by_key(|(l, _)| *l);
-    let mut collected: Vec<String> = Vec::new();
-    let mut prev = span.line as i64 - 1;
-    for (line, text) in rows.into_iter().rev() {
-        if i64::from(line) == prev {
-            collected.push(text);
-            prev -= 1;
-        } else {
-            break;
-        }
-    }
-    collected.reverse();
-    if collected.is_empty() {
-        None
-    } else {
-        Some(collected.join("\n"))
-    }
-}
-
-fn strip_comment(t: &str) -> String {
-    let t = t.trim();
-    if let Some(rest) = t.strip_prefix("///") {
-        return rest.trim().to_string();
-    }
-    if let Some(rest) = t.strip_prefix("//") {
-        return rest.trim().to_string();
-    }
-    if let Some(rest) = t.strip_prefix("/*") {
-        let inner = rest.strip_suffix("*/").unwrap_or(rest);
-        return inner.trim().to_string();
-    }
-    if let Some(rest) = t.strip_prefix('*') {
-        return rest.trim().to_string();
-    }
-    t.to_string()
-}
+use crate::doc::doc_above;
 
 fn type_str(ty: &Option<ast::TypeExpr>) -> String {
     match ty {
@@ -827,26 +782,24 @@ fn analyze(text: &str) -> Doc {
             comments = lexed.comments.clone();
             tokens = lexed.tokens.clone();
             ranges = lexed.ranges.clone();
-            match parser::parse(lexed.tokens) {
-                Err(d) => {
-                    program = Program { stmts: vec![] };
-                    diags = vec![d];
-                }
-                Ok(p) => {
-                    let has_main = p.stmts.iter().any(|s| match s {
-                        Stmt::Fn(f) => f.name.as_deref() == Some("main"),
-                        _ => false,
-                    });
-                    // Errors and warnings, exactly like `spid3r check`: on
-                    // error the checker stops at the first one, and that one
-                    // is what the editor must show (dropping it would leave
-                    // the file looking clean).
-                    diags = match semantic::check_file_with_warnings(&p, has_main, "<lsp>") {
-                        Ok(warnings) => warnings,
-                        Err(first_error) => vec![first_error],
-                    };
-                    program = p;
-                }
+            let (p, parse_diags) = parser::parse_recovering(lexed.tokens);
+            if !parse_diags.is_empty() {
+                program = p;
+                diags = parse_diags;
+            } else {
+                let has_main = p.stmts.iter().any(|s| match s {
+                    Stmt::Fn(f) => f.name.as_deref() == Some("main"),
+                    _ => false,
+                });
+                // Errors and warnings, exactly like `spid3r check`: on
+                // error the checker stops at the first one, and that one
+                // is what the editor must show (dropping it would leave
+                // the file looking clean).
+                diags = match semantic::check_file_with_warnings(&p, has_main, "<lsp>") {
+                    Ok(warnings) => warnings,
+                    Err(first_error) => vec![first_error],
+                };
+                program = p;
             }
         }
     }
@@ -1550,6 +1503,7 @@ fn publish_diagnostics(out: &mut impl Write, uri: &str, doc: &Doc) {
             Json::Obj(vec![
                 ("range".into(), range),
                 ("severity".into(), Json::Int(severity)),
+                ("code".into(), Json::Str(d.code().to_string())),
                 ("source".into(), Json::Str("spid3r".into())),
                 ("message".into(), Json::Str(message)),
             ])

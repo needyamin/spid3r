@@ -414,3 +414,615 @@ fn publishing_an_existing_version_is_refused() {
     assert!(err.contains("already exists"), "{err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+mod r8_tests {
+    use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Output};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread::JoinHandle;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn spid3r_bin() -> &'static str {
+        env!("CARGO_BIN_EXE_spid3r")
+    }
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "spid3r_r8_{}_{}_{}",
+            label,
+            std::process::id(),
+            nanos
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn run_spid3r(cwd: &Path, args: &[&str], envs: &[(&str, Option<&str>)]) -> Output {
+        let mut cmd = Command::new(spid3r_bin());
+        cmd.current_dir(cwd).args(args);
+        cmd.env_remove("SPID3R_REGISTRY")
+            .env_remove("SPID3R_PACKAGES_REGISTRY")
+            .env_remove("SPID3R_TRUST_PK")
+            .env_remove("SPID3R_PACKAGES_TRUST_PK")
+            .env_remove("SPID3R_SIGN_KEY")
+            .env_remove("SPID3R_PACKAGES_SIGN_KEY");
+        for (k, v) in envs {
+            match v {
+                Some(val) => {
+                    cmd.env(k, val);
+                }
+                None => {
+                    cmd.env_remove(k);
+                }
+            }
+        }
+        cmd.output().expect("spid3r command runs")
+    }
+
+    struct LoopbackServer {
+        port: u16,
+        stop: Arc<AtomicBool>,
+        handle: Option<JoinHandle<()>>,
+    }
+
+    impl Drop for LoopbackServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _ = TcpStream::connect(("127.0.0.1", self.port));
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    fn start_file_server(root: PathBuf) -> LoopbackServer {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_bg = stop.clone();
+        let handle = std::thread::spawn(move || {
+            while !stop_bg.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        if stop_bg.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        let mut buf = [0u8; 4096];
+                        let n = stream.read(&mut buf).unwrap_or(0);
+                        let req = String::from_utf8_lossy(&buf[..n]);
+                        let raw_path = req
+                            .lines()
+                            .next()
+                            .and_then(|l| l.split_whitespace().nth(1))
+                            .unwrap_or("/");
+                        let rel = raw_path
+                            .split('?')
+                            .next()
+                            .unwrap_or("/")
+                            .trim_start_matches('/');
+                        let mut candidate = root.clone();
+                        let mut safe = true;
+                        for comp in Path::new(rel).components() {
+                            match comp {
+                                std::path::Component::Normal(c) => candidate.push(c),
+                                _ => {
+                                    safe = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if safe && candidate.is_file() {
+                            let body = std::fs::read(&candidate).unwrap_or_default();
+                            let hdr = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = stream.write_all(hdr.as_bytes());
+                            let _ = stream.write_all(&body);
+                        } else {
+                            let body = b"not found";
+                            let hdr = format!(
+                                "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = stream.write_all(hdr.as_bytes());
+                            let _ = stream.write_all(body);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        LoopbackServer {
+            port,
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn collect_tree_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
+        fn walk(base: &Path, cur: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+            let mut entries: Vec<_> = std::fs::read_dir(cur)
+                .unwrap()
+                .map(|e| e.unwrap())
+                .collect();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let p = entry.path();
+                if p.is_dir() {
+                    walk(base, &p, out);
+                } else if p.is_file() {
+                    let rel = p
+                        .strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    out.insert(rel, std::fs::read(&p).unwrap());
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    fn raw_tar_with_entry(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut hdr = [0u8; 512];
+        let name_bytes = name.as_bytes();
+        hdr[..name_bytes.len()].copy_from_slice(name_bytes);
+        hdr[100..108].copy_from_slice(b"0000644\0");
+        hdr[108..116].copy_from_slice(b"0000000\0");
+        hdr[116..124].copy_from_slice(b"0000000\0");
+        let size_oct = format!("{:011o}\0", data.len());
+        hdr[124..136].copy_from_slice(size_oct.as_bytes());
+        hdr[136..148].copy_from_slice(b"00000000000\0");
+        hdr[148..156].copy_from_slice(b"        ");
+        hdr[156] = b'0';
+        hdr[257..263].copy_from_slice(b"ustar\0");
+        hdr[263..265].copy_from_slice(b"00");
+        let sum: u32 = hdr.iter().map(|&b| b as u32).sum();
+        let cksum = format!("{:06o}\0 ", sum);
+        hdr[148..156].copy_from_slice(cksum.as_bytes());
+
+        let mut tar = Vec::new();
+        tar.extend_from_slice(&hdr);
+        let pad = (512 - (data.len() % 512)) % 512;
+        tar.extend_from_slice(data);
+        tar.resize(tar.len() + pad, 0);
+        tar.resize(tar.len() + 1024, 0);
+        tar
+    }
+
+    #[test]
+    fn r8_2_http_registry_install_matches_local_dir_and_rejects_traversal_and_offline() {
+        let root = temp_dir("http_reg");
+        let reg_dir = root.join("registry");
+        let lib_dir = root.join("lib_src");
+        write_file(
+            &lib_dir.join("spider.toml"),
+            "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n",
+        );
+        write_file(
+            &lib_dir.join("src/lib.matrix"),
+            "public fn hello() -> str { return \"hi from remote\"; }\n",
+        );
+
+        let pub_out = run_spid3r(
+            &lib_dir,
+            &["publish", "--to-dir", reg_dir.to_str().unwrap()],
+            &[],
+        );
+        assert!(
+            pub_out.status.success(),
+            "publish failed: {}",
+            String::from_utf8_lossy(&pub_out.stderr)
+        );
+        assert!(reg_dir.join("greet/1.0.0/package.tar").is_file());
+        assert!(reg_dir.join("greet/index.txt").is_file());
+
+        let proj_local = root.join("proj_local");
+        write_file(
+            &proj_local.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\ngreet = { version = \"^1.0\" }\n",
+        );
+        write_file(
+            &proj_local.join("src/main.matrix"),
+            "import \"greet/lib\";\nprint(hello());\n",
+        );
+        let reg_str = reg_dir.to_str().unwrap();
+        let loc_out = run_spid3r(
+            &proj_local,
+            &["install"],
+            &[("SPID3R_REGISTRY", Some(reg_str))],
+        );
+        assert!(
+            loc_out.status.success(),
+            "local install failed: {}",
+            String::from_utf8_lossy(&loc_out.stderr)
+        );
+
+        let srv = start_file_server(reg_dir.clone());
+        let url = format!("http://127.0.0.1:{}", srv.port);
+
+        let proj_remote = root.join("proj_remote");
+        write_file(
+            &proj_remote.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\ngreet = { version = \"^1.0\" }\n",
+        );
+        write_file(
+            &proj_remote.join("src/main.matrix"),
+            "import \"greet/lib\";\nprint(hello());\n",
+        );
+        let rem_out = run_spid3r(
+            &proj_remote,
+            &["install"],
+            &[("SPID3R_REGISTRY", Some(&url))],
+        );
+        assert!(
+            rem_out.status.success(),
+            "remote install failed: {}\nstdout: {}",
+            String::from_utf8_lossy(&rem_out.stderr),
+            String::from_utf8_lossy(&rem_out.stdout)
+        );
+
+        let local_tree = collect_tree_bytes(&proj_local.join("vendor/greet"));
+        let remote_tree = collect_tree_bytes(&proj_remote.join("vendor/greet"));
+        assert!(
+            !local_tree.is_empty(),
+            "vendor/greet must contain vendored files"
+        );
+        assert_eq!(
+            local_tree, remote_tree,
+            "remote HTTP install must match local directory install byte-for-byte"
+        );
+
+        let proj_offline = root.join("proj_offline");
+        write_file(
+            &proj_offline.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\ngreet = { version = \"^1.0\" }\n",
+        );
+        write_file(&proj_offline.join("src/main.matrix"), "print(1);\n");
+        let off_out = run_spid3r(
+            &proj_offline,
+            &["install"],
+            &[("SPID3R_REGISTRY", Some("http://127.0.0.1:1"))],
+        );
+        assert!(
+            !off_out.status.success(),
+            "offline remote registry install must fail cleanly"
+        );
+        let off_err = String::from_utf8_lossy(&off_out.stderr);
+        assert!(
+            off_err.contains("error") && !off_err.contains("panicked"),
+            "unexpected offline error: {}",
+            off_err
+        );
+
+        // Path-traversal tarball served over HTTP must be refused cleanly.
+        let evil_reg = root.join("evil_reg");
+        write_file(&evil_reg.join("evilpkg/index.txt"), "1.0.0\n");
+        write_file(&evil_reg.join("evilpkg/1.0.0/sha256.txt"), &"0".repeat(64));
+        let evil_tar = raw_tar_with_entry("../escaped.txt", b"pwn");
+        std::fs::create_dir_all(evil_reg.join("evilpkg/1.0.0")).unwrap();
+        std::fs::write(evil_reg.join("evilpkg/1.0.0/package.tar"), evil_tar).unwrap();
+
+        let evil_srv = start_file_server(evil_reg);
+        let evil_url = format!("http://127.0.0.1:{}", evil_srv.port);
+        let proj_evil = root.join("proj_evil/nested");
+        write_file(
+            &proj_evil.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nevilpkg = { version = \"^1.0\" }\n",
+        );
+        write_file(&proj_evil.join("src/main.matrix"), "print(1);\n");
+        let evil_out = run_spid3r(
+            &proj_evil,
+            &["install"],
+            &[("SPID3R_REGISTRY", Some(&evil_url))],
+        );
+        assert!(!evil_out.status.success(), "traversal tar must be refused");
+        assert!(
+            !root.join("proj_evil/escaped.txt").exists() && !proj_evil.join("escaped.txt").exists(),
+            "path traversal wrote a file outside extraction root"
+        );
+
+        drop(evil_srv);
+        drop(srv);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn r8_3_ed25519_signed_registry_verify_tamper_and_trust_pk() {
+        let root = temp_dir("ed25519_reg");
+        let reg_dir = root.join("registry");
+        let lib_dir = root.join("signed_src");
+        write_file(
+            &lib_dir.join("spider.toml"),
+            "[package]\nname = \"signedlib\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n",
+        );
+        write_file(
+            &lib_dir.join("src/lib.matrix"),
+            "public fn val() -> int { return 7; }\n",
+        );
+
+        let pub_out = run_spid3r(
+            &lib_dir,
+            &["publish", "--to-dir", reg_dir.to_str().unwrap()],
+            &[],
+        );
+        assert!(
+            pub_out.status.success(),
+            "publish failed: {}",
+            String::from_utf8_lossy(&pub_out.stderr)
+        );
+        let sig_path = reg_dir.join("signedlib/1.0.0/sha256.txt.sig");
+        let pubkey_path = reg_dir.join("registry.pub");
+        assert!(sig_path.is_file(), "sha256.txt.sig missing");
+        assert!(pubkey_path.is_file(), "registry.pub missing");
+        assert!(
+            reg_dir.join("registry.key").is_file(),
+            "registry.key missing"
+        );
+        let pk_hex = std::fs::read_to_string(&pubkey_path)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(pk_hex.len(), 64);
+
+        let reg_str = reg_dir.to_str().unwrap();
+
+        // 1. Valid signature + matching trust_pk installs cleanly.
+        let proj_ok = root.join("proj_ok");
+        write_file(
+            &proj_ok.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nsignedlib = { version = \"^1.0\" }\n",
+        );
+        write_file(&proj_ok.join("src/main.matrix"), "print(1);\n");
+        let ok_out = run_spid3r(
+            &proj_ok,
+            &["install"],
+            &[
+                ("SPID3R_REGISTRY", Some(reg_str)),
+                ("SPID3R_PACKAGES_TRUST_PK", Some(&pk_hex)),
+            ],
+        );
+        assert!(
+            ok_out.status.success(),
+            "valid signed install failed: {}",
+            String::from_utf8_lossy(&ok_out.stderr)
+        );
+        assert!(proj_ok.join("vendor/signedlib/lib.matrix").is_file());
+
+        // 2. Wrong trust_pk refuses install and leaves vendor/ empty.
+        let proj_wrong_pk = root.join("proj_wrong_pk");
+        write_file(
+            &proj_wrong_pk.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nsignedlib = { version = \"^1.0\" }\n",
+        );
+        write_file(&proj_wrong_pk.join("src/main.matrix"), "print(1);\n");
+        let wrong_pk = "01".repeat(32);
+        let wrong_out = run_spid3r(
+            &proj_wrong_pk,
+            &["install"],
+            &[
+                ("SPID3R_REGISTRY", Some(reg_str)),
+                ("SPID3R_PACKAGES_TRUST_PK", Some(&wrong_pk)),
+            ],
+        );
+        assert!(
+            !wrong_out.status.success(),
+            "wrong trust_pk must be refused"
+        );
+        assert!(!proj_wrong_pk.join("vendor/signedlib").exists());
+
+        // 3. 1-byte tamper in sha256.txt.sig refuses install and leaves vendor/ empty.
+        let orig_sig = std::fs::read(&sig_path).unwrap();
+        let mut tampered_sig = orig_sig.clone();
+        tampered_sig[0] ^= 0xFF;
+        std::fs::write(&sig_path, &tampered_sig).unwrap();
+        let proj_bad_sig = root.join("proj_bad_sig");
+        write_file(
+            &proj_bad_sig.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nsignedlib = { version = \"^1.0\" }\n",
+        );
+        write_file(&proj_bad_sig.join("src/main.matrix"), "print(1);\n");
+        let bad_sig_out = run_spid3r(
+            &proj_bad_sig,
+            &["install"],
+            &[
+                ("SPID3R_REGISTRY", Some(reg_str)),
+                ("SPID3R_PACKAGES_TRUST_PK", Some(&pk_hex)),
+            ],
+        );
+        assert!(!bad_sig_out.status.success(), "tampered sig must fail");
+        assert!(!proj_bad_sig.join("vendor/signedlib").exists());
+
+        // 4. Unsigned package: refused when trust_pk set; warns and installs when trust_pk unset.
+        std::fs::remove_file(&sig_path).unwrap();
+        let proj_unsigned_pinned = root.join("proj_unsigned_pinned");
+        write_file(
+            &proj_unsigned_pinned.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nsignedlib = { version = \"^1.0\" }\n",
+        );
+        write_file(&proj_unsigned_pinned.join("src/main.matrix"), "print(1);\n");
+        let up_out = run_spid3r(
+            &proj_unsigned_pinned,
+            &["install"],
+            &[
+                ("SPID3R_REGISTRY", Some(reg_str)),
+                ("SPID3R_PACKAGES_TRUST_PK", Some(&pk_hex)),
+            ],
+        );
+        assert!(
+            !up_out.status.success(),
+            "unsigned package must fail when trust_pk is configured"
+        );
+        assert!(!proj_unsigned_pinned.join("vendor/signedlib").exists());
+
+        let proj_unsigned_warn = root.join("proj_unsigned_warn");
+        write_file(
+            &proj_unsigned_warn.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nsignedlib = { version = \"^1.0\" }\n",
+        );
+        write_file(&proj_unsigned_warn.join("src/main.matrix"), "print(1);\n");
+        let uw_out = run_spid3r(
+            &proj_unsigned_warn,
+            &["install"],
+            &[("SPID3R_REGISTRY", Some(reg_str))],
+        );
+        assert!(
+            uw_out.status.success(),
+            "unsigned without trust_pk should still install: {}",
+            String::from_utf8_lossy(&uw_out.stderr)
+        );
+        let uw_err = String::from_utf8_lossy(&uw_out.stderr);
+        assert!(
+            uw_err.contains("unsigned"),
+            "expected unsigned warning on stderr, got: {}",
+            uw_err
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn r8_4_diamond_dependency_unification_and_conflict() {
+        let root = temp_dir("diamond");
+        let reg_dir = root.join("registry");
+        let reg_str = reg_dir.to_str().unwrap();
+
+        for ver in ["1.2.0", "1.5.0", "2.0.0"] {
+            let dir = root.join(format!("common_{}", ver));
+            write_file(
+                &dir.join("spider.toml"),
+                &format!(
+                    "[package]\nname = \"common\"\nversion = \"{}\"\nentry = \"src/lib.matrix\"\n",
+                    ver
+                ),
+            );
+            write_file(
+                &dir.join("src/lib.matrix"),
+                &format!("public fn ver() -> str {{ return \"{}\"; }}\n", ver),
+            );
+            let out = run_spid3r(&dir, &["publish", "--to-dir", reg_str], &[]);
+            assert!(
+                out.status.success(),
+                "publish common {} failed: {}",
+                ver,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        let mid_dir = root.join("mid_1_0_0");
+        write_file(
+            &mid_dir.join("spider.toml"),
+            "[package]\nname = \"mid\"\nversion = \"1.0.0\"\nentry = \"src/lib.matrix\"\n\n[dependencies]\ncommon = { version = \"=1.2.0\" }\n",
+        );
+        write_file(
+            &mid_dir.join("src/lib.matrix"),
+            "import \"common/lib\";\npublic fn mid_ver() -> str { return ver(); }\n",
+        );
+        let out = run_spid3r(&mid_dir, &["publish", "--to-dir", reg_str], &[]);
+        assert!(
+            out.status.success(),
+            "publish mid failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        // 1. Compatible single-project diamond: ^1.0 and =1.2.0 must unify to 1.2.0 (not 1.5.0).
+        let proj = root.join("app_ok");
+        write_file(
+            &proj.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\ncommon = { version = \"^1.0\" }\nmid = { version = \"^1.0\" }\n",
+        );
+        write_file(
+            &proj.join("src/main.matrix"),
+            "import \"common/lib\";\nimport \"mid/lib\";\nprint(ver() + \":\" + mid_ver());\n",
+        );
+        let ok_out = run_spid3r(&proj, &["install"], &[("SPID3R_REGISTRY", Some(reg_str))]);
+        assert!(
+            ok_out.status.success(),
+            "diamond install failed: {}",
+            String::from_utf8_lossy(&ok_out.stderr)
+        );
+        let vendored_lib = std::fs::read_to_string(proj.join("vendor/common/lib.matrix")).unwrap();
+        let lock_text = std::fs::read_to_string(proj.join("spider.lock")).unwrap();
+        assert!(
+            vendored_lib.contains("\"1.2.0\"") && lock_text.contains("version = \"1.2.0\""),
+            "expected unified common 1.2.0, got:\n{}\nlock:\n{}",
+            vendored_lib,
+            lock_text
+        );
+
+        // 2. Compatible workspace diamond: member_a ^1.0 + member_b mid (=1.2.0) -> 1.2.0.
+        let ws = root.join("ws_ok");
+        write_file(
+            &ws.join("spider.toml"),
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
+        );
+        write_file(
+            &ws.join("a/spider.toml"),
+            "[package]\nname = \"a\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\ncommon = { version = \"^1.0\" }\n",
+        );
+        write_file(&ws.join("a/src/main.matrix"), "print(1);\n");
+        write_file(
+            &ws.join("b/spider.toml"),
+            "[package]\nname = \"b\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\nmid = { version = \"^1.0\" }\n",
+        );
+        write_file(&ws.join("b/src/main.matrix"), "print(2);\n");
+        let ws_out = run_spid3r(&ws, &["install"], &[("SPID3R_REGISTRY", Some(reg_str))]);
+        assert!(
+            ws_out.status.success(),
+            "workspace diamond install failed: {}",
+            String::from_utf8_lossy(&ws_out.stderr)
+        );
+        let ws_lib = std::fs::read_to_string(ws.join("vendor/common/lib.matrix")).unwrap();
+        let ws_lock = std::fs::read_to_string(ws.join("spider.lock")).unwrap();
+        assert!(
+            ws_lib.contains("\"1.2.0\"") && ws_lock.contains("version = \"1.2.0\""),
+            "expected workspace unified common 1.2.0, got:\n{}\nlock:\n{}",
+            ws_lib,
+            ws_lock
+        );
+
+        // 3. Conflicting diamond: ^2.0 vs =1.2.0 must fail cleanly.
+        let proj_bad = root.join("app_conflict");
+        write_file(
+            &proj_bad.join("spider.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nentry = \"src/main.matrix\"\n\n[dependencies]\ncommon = { version = \"^2.0\" }\nmid = { version = \"^1.0\" }\n",
+        );
+        write_file(&proj_bad.join("src/main.matrix"), "print(1);\n");
+        let bad_out = run_spid3r(
+            &proj_bad,
+            &["install"],
+            &[("SPID3R_REGISTRY", Some(reg_str))],
+        );
+        assert!(
+            !bad_out.status.success(),
+            "conflicting diamond must fail cleanly"
+        );
+        let bad_err = String::from_utf8_lossy(&bad_out.stderr);
+        assert!(
+            bad_err.contains("common") && !bad_err.contains("panicked"),
+            "unexpected conflict error: {}",
+            bad_err
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

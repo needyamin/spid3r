@@ -12,6 +12,7 @@ use std::sync::Arc;
 /// spawned thread, and the size the test suite runs on. At 96 the parser sat on
 /// the edge (adding one precedence level overflowed it), so 64 leaves room.
 const MAX_PARSE_DEPTH: usize = 64;
+const MAX_PARSE_DIAGS: usize = 25;
 
 pub struct Parser {
     toks: Vec<Token>,
@@ -31,6 +32,12 @@ pub struct Parser {
     /// True while parsing a `match` arm's `if <guard>` expression so a bare
     /// identifier or parenthesized guard before `=>` is not parsed as an arrow closure.
     in_match_guard: bool,
+    /// Statement-level error recovery mode (`check` / LSP only; `run`/`build`
+    /// stay fail-fast on the first diagnostic).
+    recovering: bool,
+    /// Accumulated parser diagnostics when `recovering` is true (capped at
+    /// `MAX_PARSE_DIAGS`).
+    diags: Vec<crate::diagnostics::Diagnostic>,
 }
 
 pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
@@ -51,8 +58,44 @@ pub fn parse(toks: Vec<Token>) -> SpidResult<Program> {
         depth: 0,
         value_block_depth: 0,
         in_match_guard: false,
+        recovering: false,
+        diags: Vec::new(),
     };
     p.parse_program()
+}
+
+/// Statement-recovering parse used by `spid3r check` and `spid3r lsp` (R6.1).
+/// Returns the partial AST alongside up to `MAX_PARSE_DIAGS` diagnostics.
+pub fn parse_recovering(toks: Vec<Token>) -> (Program, Vec<crate::diagnostics::Diagnostic>) {
+    if toks.is_empty() {
+        return (
+            Program { stmts: Vec::new() },
+            vec![crate::diagnostics::Diagnostic::new(
+                Phase::Parser,
+                "cannot parse an empty token stream (the lexer always emits EOF)",
+            )],
+        );
+    }
+    let mut p = Parser {
+        toks,
+        saw_bigint_lit: false,
+        saw_yield: false,
+        pos: 0,
+        depth: 0,
+        value_block_depth: 0,
+        in_match_guard: false,
+        recovering: true,
+        diags: Vec::new(),
+    };
+    match p.parse_program() {
+        Ok(prog) => (prog, p.diags),
+        Err(d) => {
+            if p.diags.len() < MAX_PARSE_DIAGS {
+                p.diags.push(d);
+            }
+            (Program { stmts: Vec::new() }, p.diags)
+        }
+    }
 }
 
 /// Does `raw` lex and parse as exactly one expression?
@@ -77,6 +120,8 @@ pub(crate) fn hole_is_expression(raw: &str, depth: u32) -> bool {
         depth: crate::lexer::MAX_INTERP_DEPTH as usize,
         value_block_depth: 0,
         in_match_guard: false,
+        recovering: false,
+        diags: Vec::new(),
     };
     match sub.parse_expr() {
         Ok(expr) => {
@@ -114,6 +159,8 @@ pub fn parse_expression(src: &str, file: std::sync::Arc<str>) -> SpidResult<Expr
         depth: 0,
         value_block_depth: 0,
         in_match_guard: false,
+        recovering: false,
+        diags: Vec::new(),
     };
     let e = p.parse_expr()?;
     if !p.at(&TokenKind::Eof) {
@@ -228,52 +275,122 @@ impl Parser {
         err_at(Phase::Parser, self.span(), msg)
     }
 
+    /// Synchronize to the next statement or declaration boundary after a syntax
+    /// error in `recovering` mode (R6.1). Consumes a trailing `;` if reached;
+    /// stops *before* statement-start keywords, `@`, `}`, or `EOF` (never
+    /// consumes braces so enclosing `parse_block` loops stay balanced).
+    fn synchronize(&mut self, start_pos: usize) {
+        if self.pos == start_pos && !self.at(&TokenKind::Eof) && !self.at(&TokenKind::RBrace) {
+            self.pos += 1;
+        }
+        while !self.at(&TokenKind::Eof) {
+            if self.at(&TokenKind::Semi) {
+                self.pos += 1;
+                return;
+            }
+            if self.at(&TokenKind::RBrace) || self.at(&TokenKind::At) {
+                return;
+            }
+            if matches!(
+                self.kind(),
+                TokenKind::Kw(
+                    Keyword::Fn
+                        | Keyword::Let
+                        | Keyword::Const
+                        | Keyword::If
+                        | Keyword::While
+                        | Keyword::For
+                        | Keyword::Break
+                        | Keyword::Continue
+                        | Keyword::Return
+                        | Keyword::Import
+                        | Keyword::Try
+                        | Keyword::Throw
+                        | Keyword::Class
+                        | Keyword::Abstract
+                        | Keyword::Interface
+                        | Keyword::Public
+                        | Keyword::Private
+                        | Keyword::Spawn
+                        | Keyword::Async
+                        | Keyword::Enum
+                )
+            ) {
+                return;
+            }
+            self.pos += 1;
+        }
+    }
+
+    fn record_recovery_err(&mut self, d: crate::diagnostics::Diagnostic, start_pos: usize) -> bool {
+        self.diags.push(d);
+        if self.diags.len() >= MAX_PARSE_DIAGS {
+            self.pos = self.toks.len().saturating_sub(1);
+            return false;
+        }
+        self.synchronize(start_pos);
+        true
+    }
+
     // ---- program -------------------------------------------------------
 
     fn parse_program(&mut self) -> SpidResult<Program> {
         let mut stmts = Vec::new();
         let mut seen_non_import = false;
         while !self.at(&TokenKind::Eof) {
-            if self.at(&TokenKind::At) {
-                seen_non_import = true;
-                let decs = self.parse_decorators()?;
-                let decl = self.parse_declaration()?;
-                let name = match &decl {
-                    Stmt::Fn(f) => f.name.clone(),
-                    Stmt::Class(c) => Some(c.name.clone()),
-                    _ => None,
-                };
-                let Some(name) = name else {
-                    return Err(
-                        self.err_here("a decorator must precede a function or a class declaration")
-                    );
-                };
-                stmts.push(decl);
-                // Bottom-up, like Python: the last decorator is applied first.
-                for dec in decs.into_iter().rev() {
-                    let sp = self.prev_span();
-                    let call = Expr::Call {
-                        callee: Box::new(dec),
-                        args: vec![Expr::Ident(name.clone(), sp.clone())],
-                        span: sp.clone(),
+            let item_start = self.pos;
+            let step: SpidResult<()> = (|| {
+                if self.at(&TokenKind::At) {
+                    seen_non_import = true;
+                    let decs = self.parse_decorators()?;
+                    let decl = self.parse_declaration()?;
+                    let name = match &decl {
+                        Stmt::Fn(f) => f.name.clone(),
+                        Stmt::Class(c) => Some(c.name.clone()),
+                        _ => None,
                     };
-                    stmts.push(Stmt::Expr(Expr::Assign {
-                        target: Box::new(Expr::Ident(name.clone(), sp.clone())),
-                        op: crate::ast::AssignOp::Assign,
-                        value: Box::new(call),
-                        span: sp,
-                    }));
+                    let Some(name) = name else {
+                        return Err(self.err_here(
+                            "a decorator must precede a function or a class declaration",
+                        ));
+                    };
+                    stmts.push(decl);
+                    // Bottom-up, like Python: the last decorator is applied first.
+                    for dec in decs.into_iter().rev() {
+                        let sp = self.prev_span();
+                        let call = Expr::Call {
+                            callee: Box::new(dec),
+                            args: vec![Expr::Ident(name.clone(), sp.clone())],
+                            span: sp.clone(),
+                        };
+                        stmts.push(Stmt::Expr(Expr::Assign {
+                            target: Box::new(Expr::Ident(name.clone(), sp.clone())),
+                            op: crate::ast::AssignOp::Assign,
+                            value: Box::new(call),
+                            span: sp,
+                        }));
+                    }
+                    return Ok(());
                 }
-                continue;
-            }
-            if self.at_kw(Keyword::Import) {
-                if seen_non_import {
-                    return Err(self.err_here("import must appear before other declarations"));
+                if self.at_kw(Keyword::Import) {
+                    if seen_non_import {
+                        return Err(self.err_here("import must appear before other declarations"));
+                    }
+                    stmts.push(self.parse_import()?);
+                } else {
+                    seen_non_import = true;
+                    stmts.push(self.parse_declaration()?);
                 }
-                stmts.push(self.parse_import()?);
-            } else {
-                seen_non_import = true;
-                stmts.push(self.parse_declaration()?);
+                Ok(())
+            })();
+            if let Err(d) = step {
+                if self.recovering {
+                    if !self.record_recovery_err(d, item_start) {
+                        break;
+                    }
+                } else {
+                    return Err(d);
+                }
             }
         }
         if self.saw_yield {
@@ -981,7 +1098,16 @@ impl Parser {
                         "unterminated block; expected '}'",
                     ));
                 }
-                stmts.push(self.parse_statement()?);
+                let stmt_start = self.pos;
+                match self.parse_statement() {
+                    Ok(s) => stmts.push(s),
+                    Err(d) if self.recovering => {
+                        if !self.record_recovery_err(d, stmt_start) {
+                            break;
+                        }
+                    }
+                    Err(d) => return Err(d),
+                }
             }
             let end = self.expect_kw_rbrace()?;
             Ok(Block {
@@ -2463,6 +2589,8 @@ impl Parser {
                                 saw_yield: false,
                                 value_block_depth: self.value_block_depth,
                                 in_match_guard: false,
+                                recovering: false,
+                                diags: Vec::new(),
                             };
                             match sub.parse_expr() {
                                 Ok(e) if sub.at(&TokenKind::Eof) => Some((e, sub.saw_bigint_lit)),
@@ -2521,4 +2649,14 @@ fn join(a: Span, b: Span) -> Span {
 pub fn parse_file(src: &str, file: Arc<str>) -> SpidResult<Program> {
     let toks = crate::lexer::Lexer::new(src, file).tokenize()?;
     parse(toks)
+}
+
+pub fn parse_file_recovering(
+    src: &str,
+    file: Arc<str>,
+) -> (Program, Vec<crate::diagnostics::Diagnostic>) {
+    match crate::lexer::Lexer::new(src, file).tokenize() {
+        Ok(toks) => parse_recovering(toks),
+        Err(d) => (Program { stmts: Vec::new() }, vec![d]),
+    }
 }

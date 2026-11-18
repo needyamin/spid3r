@@ -32,7 +32,7 @@ use super::ops::{field, jstr};
 /// this whitelist against `spid3r --help` so a new CLI command cannot ship
 /// without a panel decision.
 const ALLOWED: &[&str] = &[
-    "run", "check", "compile", "build", "test", "fmt", "disasm", "exec", "modules", "init",
+    "run", "check", "compile", "build", "test", "fmt", "doc", "disasm", "exec", "modules", "init",
     "install", "pack", "unpack", "dist", "bench", "plugin", "info", "version", "magic", "bundle",
     // Package / registry one-shots and module tooling (parity with the CLI).
     "add", "publish", "remove", "search", "verify", "tree",

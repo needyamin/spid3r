@@ -196,3 +196,74 @@ fn a_synthetic_span_falls_back_to_the_plain_form() {
     assert!(rendered.contains("--> <memory>:1:1"));
     assert!(!rendered.contains('^'), "no snippet for a fake file");
 }
+
+#[test]
+fn parser_recovering_reports_multiple_errors_in_check() {
+    let path = write(
+        "multi_err",
+        "fn main() {\n    let a = ;\n    let b = ;\n    return 0;\n}\n",
+    );
+    let (code, _out, err) = check(&path, &[]);
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("2 |     let a = ;"),
+        "expected first error on line 2, got:\n{}",
+        err
+    );
+    assert!(
+        err.contains("3 |     let b = ;"),
+        "expected recovered second error on line 3, got:\n{}",
+        err
+    );
+
+    // JSON mode emits one JSON object per recovered error with code & end_col.
+    let path_json = write(
+        "multi_err_json",
+        "fn main() {\n    let a = ;\n    let b = ;\n    return 0;\n}\n",
+    );
+    let (jcode, jout, jerr) = check(&path_json, &["--json"]);
+    assert_eq!(jcode, 1);
+    assert!(jerr.is_empty());
+    let lines: Vec<&str> = jout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "expected 2 JSON diagnostic lines, got: {jout}"
+    );
+    assert!(lines[0].contains("\"code\":\"E1027\""));
+    assert!(lines[0].contains("\"end_line\":2"));
+    assert!(lines[1].contains("\"line\":3"));
+}
+
+#[test]
+fn error_codes_end_spans_and_ansi_colors_work() {
+    use spid3r_lang::diagnostics::{Diagnostic, Phase, Span};
+    use spid3r_lang::lexer::Lexer;
+
+    let toks = Lexer::new("let alpha = 42;\n", std::sync::Arc::from("<test>"))
+        .tokenize()
+        .expect("lex");
+    // `alpha` starts at line 1, col 5, len 5 -> end_line 1, end_col 10.
+    assert_eq!(toks[1].span.line, 1);
+    assert_eq!(toks[1].span.col, 5);
+    assert_eq!(toks[1].end_line(), 1);
+    assert_eq!(toks[1].end_col(), 10);
+
+    let d = Diagnostic::at(
+        Phase::Parser,
+        Span::new(std::sync::Arc::from("<test>"), 1, 5, 5),
+        "unexpected token",
+    )
+    .with_code("E1027");
+    let coded = d.render_with(Some("let alpha = 42;\n"));
+    assert!(
+        coded.starts_with("error[E1027][parser]: unexpected token"),
+        "unexpected coded header: {}",
+        coded
+    );
+    let colored = d.render_ansi(Some("let alpha = 42;\n"), true);
+    assert!(colored.contains("\x1b[1;31merror[E1027][parser]\x1b[0m: unexpected token"));
+    assert!(colored.contains("\x1b[1;34m-->\x1b[0m <test>:1:5"));
+    let plain = d.render_ansi(Some("let alpha = 42;\n"), false);
+    assert!(!plain.contains("\x1b["));
+}
