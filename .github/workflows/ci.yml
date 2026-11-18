@@ -508,7 +508,7 @@ jobs:
           cp -f /tmp/p0-run1.json /tmp/perf-phase0-cache/p0-prev.json
 
   # ---------------------------------------------------------------- selfhost
-  # Roadmap step 0.5 (full_plan.html): the self-host parity gate. From Phase 1
+  # Roadmap step 0.5 (SH-4): the self-host parity gate. From Phase 1
   # onward this job runs the Spid3r-written front end (selfhost/) against the
   # stage-0 oracle over the frozen corpus (SH-4), so a parity regression
   # cannot merge. In Phase 0 it enforces the two preconditions that already

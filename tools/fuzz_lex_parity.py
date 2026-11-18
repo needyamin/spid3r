@@ -18,7 +18,7 @@ construction: that is exactly the domain the CLI harness can reach on either
 side (`read_file`/`read_to_string` both reject invalid UTF-8 before any
 lexer runs).
 
-KNOWN DIVERGENCE (ledger-recorded, full_plan.html): the oracle validates a
+KNOWN DIVERGENCE (SH-4, docs/selfhost/SELFHOST.md): the oracle validates a
 `{expr}` interpolation capture by PARSING it (hole_is_expression); the parser
 is Phase 2, so the port accepts captures the oracle may reject. A differing
 case is classified as interp-domain when either side's output mentions

@@ -60,6 +60,7 @@
       --topbar-height: 58px;
       --max-width: 1180px;
     }
+
     html[data-theme="light"] {
       --bg-base: #f8fafc;
       --bg-surface: #ffffff;
@@ -81,8 +82,14 @@
       --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
     }
 
-    * { box-sizing: border-box; }
-    html { scroll-behavior: smooth; }
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
     body {
       margin: 0;
       background: var(--bg-base);
@@ -92,145 +99,487 @@
       line-height: 1.65;
       -webkit-font-smoothing: antialiased;
     }
-    a { color: var(--w3-green); text-decoration: none; }
-    a:hover { color: var(--w3-green-hover); text-decoration: underline; }
+
+    a {
+      color: var(--w3-green);
+      text-decoration: none;
+    }
+
+    a:hover {
+      color: var(--w3-green-hover);
+      text-decoration: underline;
+    }
 
     .topbar {
-      position: sticky; top: 0; z-index: 50;
+      position: sticky;
+      top: 0;
+      z-index: 50;
       height: var(--topbar-height);
-      display: flex; align-items: center; gap: 18px;
+      display: flex;
+      align-items: center;
+      gap: 18px;
       padding: 0 22px;
       background: rgba(11, 15, 23, 0.92);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid var(--border-line);
     }
-    html[data-theme="light"] .topbar { background: rgba(255, 255, 255, 0.94); }
-    .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-heading); font-weight: 700; font-size: 17px; color: var(--fg-primary); }
-    .brand:hover { text-decoration: none; color: var(--fg-primary); }
-    .brand img { width: 26px; height: 26px; border-radius: 6px; }
-    .brand .accent { color: var(--w3-green); }
-    .brand .sub { font-size: 13px; font-weight: 500; color: var(--fg-secondary); }
-    .topbar-nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
-    .nav-tab {
-      padding: 7px 12px; border-radius: 8px; font-size: 13.5px; font-weight: 500;
-      color: var(--fg-secondary);
-    }
-    .nav-tab:hover { background: var(--bg-card-alt); color: var(--fg-primary); text-decoration: none; }
-    .nav-tab.active { background: var(--w3-green-light); color: var(--w3-green); }
-    .btn-top {
-      background: var(--bg-card); border: 1px solid var(--border-line);
-      color: var(--fg-secondary); border-radius: 8px; padding: 7px 11px;
-      cursor: pointer; font-size: 14px; font-family: var(--font-body);
-    }
-    .btn-top:hover { border-color: var(--border-hover); color: var(--fg-primary); }
 
-    main { max-width: var(--max-width); margin: 0 auto; padding: 34px 22px 70px; }
-
-    .hero { padding: 8px 0 26px; border-bottom: 1px solid var(--border-line); margin-bottom: 30px; }
-    .eyebrow {
-      font-family: var(--font-mono); font-size: 12px; letter-spacing: .14em;
-      text-transform: uppercase; color: var(--w3-green); margin-bottom: 10px;
+    html[data-theme="light"] .topbar {
+      background: rgba(255, 255, 255, 0.94);
     }
-    h1 {
-      font-family: var(--font-heading); font-size: 40px; line-height: 1.1;
-      margin: 0 0 12px; letter-spacing: -0.02em;
-    }
-    .lead { color: var(--fg-secondary); font-size: 16.5px; max-width: 76ch; margin: 0 0 18px; }
-    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
-    .chip {
-      display: inline-flex; align-items: center; gap: 6px;
-      background: var(--bg-card); border: 1px solid var(--border-line);
-      border-radius: 999px; padding: 5px 12px;
-      font-size: 12.5px; color: var(--fg-secondary); font-family: var(--font-mono);
-    }
-    .chip b { color: var(--fg-primary); font-weight: 600; }
 
-    h2 {
-      font-family: var(--font-heading); font-size: 24px; margin: 44px 0 6px;
-      letter-spacing: -0.01em;
-    }
-    h2 .num { color: var(--w3-green); font-family: var(--font-mono); font-size: 15px; margin-right: 10px; }
-    .section-lead { color: var(--fg-secondary); margin: 0 0 18px; max-width: 82ch; }
-    h3 { font-family: var(--font-heading); font-size: 17px; margin: 26px 0 8px; }
-
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin: 18px 0 6px; }
-    .card {
-      background: var(--bg-card); border: 1px solid var(--border-line);
-      border-radius: var(--radius); padding: 16px 18px;
-    }
-    .card .k { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--fg-muted); font-family: var(--font-mono); }
-    .card .v { font-family: var(--font-heading); font-size: 27px; font-weight: 700; margin: 6px 0 2px; }
-    .card .v.green { color: var(--w3-green); }
-    .card .n { font-size: 12.5px; color: var(--fg-secondary); }
-
-    .table-wrap { overflow-x: auto; border: 1px solid var(--border-line); border-radius: var(--radius); background: var(--bg-card); }
-    table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    thead th {
-      text-align: left; padding: 11px 14px; font-size: 11.5px; text-transform: uppercase;
-      letter-spacing: .09em; color: var(--fg-muted); font-weight: 600;
-      border-bottom: 1px solid var(--border-line); white-space: nowrap;
-      font-family: var(--font-mono);
-    }
-    tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border-subtle); vertical-align: middle; }
-    tbody tr:last-child td { border-bottom: none; }
-    tbody tr:hover { background: var(--bg-card-alt); }
-    .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-    .dim { color: var(--fg-muted); font-size: 12.5px; }
-    .name { font-weight: 600; }
-    .name small { display: block; font-weight: 400; color: var(--fg-muted); font-size: 12px; }
-
-    .badge {
-      display: inline-block; padding: 2px 9px; border-radius: 999px;
-      font-size: 11.5px; font-weight: 600; letter-spacing: .04em;
-      font-family: var(--font-mono); white-space: nowrap;
-    }
-    .badge.pass { background: var(--w3-green-light); color: var(--w3-green); border: 1px solid var(--w3-green-border); }
-    .badge.fail { background: rgba(251, 113, 133, 0.14); color: var(--rose); border: 1px solid rgba(251, 113, 133, 0.4); }
-    .badge.info { background: rgba(56, 189, 248, 0.14); color: var(--cyan); border: 1px solid rgba(56, 189, 248, 0.4); }
-    .badge.warn { background: rgba(251, 191, 36, 0.14); color: var(--amber); border: 1px solid rgba(251, 191, 36, 0.4); }
-    .badge.muted { background: var(--bg-card-alt); color: var(--fg-muted); border: 1px solid var(--border-line); }
-
-    .track { position: relative; height: 8px; width: 100%; min-width: 110px; background: var(--bg-card-alt); border-radius: 999px; overflow: hidden; }
-    .track span { position: absolute; inset: 0 auto 0 0; border-radius: 999px; background: linear-gradient(90deg, var(--w3-green), var(--cyan)); }
-
-    .chart { width: 100%; max-width: 840px; height: auto; display: block; margin: 4px auto 0; }
-    .chart-label { fill: var(--fg-secondary); font-family: var(--font-mono); font-size: 11.5px; }
-    .chart-val { fill: var(--fg-muted); font-family: var(--font-mono); font-size: 10.5px; }
-    .chart-tick { fill: var(--fg-muted); font-family: var(--font-mono); font-size: 10px; }
-    .grid { stroke: var(--border-line); stroke-width: 1; stroke-dasharray: 2 3; }
-    .bar.spid3r { fill: var(--w3-green); }
-    .bar.php { fill: var(--indigo); }
-    .bar.python { fill: var(--amber); }
-    .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 2px 0; font-size: 12.5px; color: var(--fg-secondary); }
-    .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; }
-    .legend .spid3r { background: var(--w3-green); }
-    .legend .php { background: var(--indigo); }
-    .legend .python { background: var(--amber); }
-
-    pre {
-      background: var(--bg-code); border: 1px solid var(--border-line);
-      border-radius: 10px; padding: 14px 16px; overflow-x: auto;
-      font-family: var(--font-mono); font-size: 13px; line-height: 1.6;
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-family: var(--font-heading);
+      font-weight: 700;
+      font-size: 17px;
       color: var(--fg-primary);
     }
-    code { font-family: var(--font-mono); font-size: 0.92em; }
-    p code, li code { background: var(--bg-card-alt); border: 1px solid var(--border-subtle); border-radius: 5px; padding: 1px 5px; }
+
+    .brand:hover {
+      text-decoration: none;
+      color: var(--fg-primary);
+    }
+
+    .brand img {
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+    }
+
+    .brand .accent {
+      color: var(--w3-green);
+    }
+
+    .brand .sub {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--fg-secondary);
+    }
+
+    .topbar-nav {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+
+    .nav-tab {
+      padding: 7px 12px;
+      border-radius: 8px;
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--fg-secondary);
+    }
+
+    .nav-tab:hover {
+      background: var(--bg-card-alt);
+      color: var(--fg-primary);
+      text-decoration: none;
+    }
+
+    .nav-tab.active {
+      background: var(--w3-green-light);
+      color: var(--w3-green);
+    }
+
+    .btn-top {
+      background: var(--bg-card);
+      border: 1px solid var(--border-line);
+      color: var(--fg-secondary);
+      border-radius: 8px;
+      padding: 7px 11px;
+      cursor: pointer;
+      font-size: 14px;
+      font-family: var(--font-body);
+    }
+
+    .btn-top:hover {
+      border-color: var(--border-hover);
+      color: var(--fg-primary);
+    }
+
+    main {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 34px 22px 70px;
+    }
+
+    .hero {
+      padding: 8px 0 26px;
+      border-bottom: 1px solid var(--border-line);
+      margin-bottom: 30px;
+    }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--w3-green);
+      margin-bottom: 10px;
+    }
+
+    h1 {
+      font-family: var(--font-heading);
+      font-size: 40px;
+      line-height: 1.1;
+      margin: 0 0 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .lead {
+      color: var(--fg-secondary);
+      font-size: 16.5px;
+      max-width: 76ch;
+      margin: 0 0 18px;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-line);
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-size: 12.5px;
+      color: var(--fg-secondary);
+      font-family: var(--font-mono);
+    }
+
+    .chip b {
+      color: var(--fg-primary);
+      font-weight: 600;
+    }
+
+    h2 {
+      font-family: var(--font-heading);
+      font-size: 24px;
+      margin: 44px 0 6px;
+      letter-spacing: -0.01em;
+    }
+
+    h2 .num {
+      color: var(--w3-green);
+      font-family: var(--font-mono);
+      font-size: 15px;
+      margin-right: 10px;
+    }
+
+    .section-lead {
+      color: var(--fg-secondary);
+      margin: 0 0 18px;
+      max-width: 82ch;
+    }
+
+    h3 {
+      font-family: var(--font-heading);
+      font-size: 17px;
+      margin: 26px 0 8px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px;
+      margin: 18px 0 6px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+    }
+
+    .card .k {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--fg-muted);
+      font-family: var(--font-mono);
+    }
+
+    .card .v {
+      font-family: var(--font-heading);
+      font-size: 27px;
+      font-weight: 700;
+      margin: 6px 0 2px;
+    }
+
+    .card .v.green {
+      color: var(--w3-green);
+    }
+
+    .card .n {
+      font-size: 12.5px;
+      color: var(--fg-secondary);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border-line);
+      border-radius: var(--radius);
+      background: var(--bg-card);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    thead th {
+      text-align: left;
+      padding: 11px 14px;
+      font-size: 11.5px;
+      text-transform: uppercase;
+      letter-spacing: .09em;
+      color: var(--fg-muted);
+      font-weight: 600;
+      border-bottom: 1px solid var(--border-line);
+      white-space: nowrap;
+      font-family: var(--font-mono);
+    }
+
+    tbody td {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+      vertical-align: middle;
+    }
+
+    tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    tbody tr:hover {
+      background: var(--bg-card-alt);
+    }
+
+    .mono {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .dim {
+      color: var(--fg-muted);
+      font-size: 12.5px;
+    }
+
+    .name {
+      font-weight: 600;
+    }
+
+    .name small {
+      display: block;
+      font-weight: 400;
+      color: var(--fg-muted);
+      font-size: 12px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      font-family: var(--font-mono);
+      white-space: nowrap;
+    }
+
+    .badge.pass {
+      background: var(--w3-green-light);
+      color: var(--w3-green);
+      border: 1px solid var(--w3-green-border);
+    }
+
+    .badge.fail {
+      background: rgba(251, 113, 133, 0.14);
+      color: var(--rose);
+      border: 1px solid rgba(251, 113, 133, 0.4);
+    }
+
+    .badge.info {
+      background: rgba(56, 189, 248, 0.14);
+      color: var(--cyan);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+    }
+
+    .badge.warn {
+      background: rgba(251, 191, 36, 0.14);
+      color: var(--amber);
+      border: 1px solid rgba(251, 191, 36, 0.4);
+    }
+
+    .badge.muted {
+      background: var(--bg-card-alt);
+      color: var(--fg-muted);
+      border: 1px solid var(--border-line);
+    }
+
+    .track {
+      position: relative;
+      height: 8px;
+      width: 100%;
+      min-width: 110px;
+      background: var(--bg-card-alt);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .track span {
+      position: absolute;
+      inset: 0 auto 0 0;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--w3-green), var(--cyan));
+    }
+
+    .chart {
+      width: 100%;
+      max-width: 840px;
+      height: auto;
+      display: block;
+      margin: 4px auto 0;
+    }
+
+    .chart-label {
+      fill: var(--fg-secondary);
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+    }
+
+    .chart-val {
+      fill: var(--fg-muted);
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+    }
+
+    .chart-tick {
+      fill: var(--fg-muted);
+      font-family: var(--font-mono);
+      font-size: 10px;
+    }
+
+    .grid {
+      stroke: var(--border-line);
+      stroke-width: 1;
+      stroke-dasharray: 2 3;
+    }
+
+    .bar.spid3r {
+      fill: var(--w3-green);
+    }
+
+    .bar.php {
+      fill: var(--indigo);
+    }
+
+    .bar.python {
+      fill: var(--amber);
+    }
+
+    .legend {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin: 10px 2px 0;
+      font-size: 12.5px;
+      color: var(--fg-secondary);
+    }
+
+    .legend i {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      margin-right: 6px;
+    }
+
+    .legend .spid3r {
+      background: var(--w3-green);
+    }
+
+    .legend .php {
+      background: var(--indigo);
+    }
+
+    .legend .python {
+      background: var(--amber);
+    }
+
+    pre {
+      background: var(--bg-code);
+      border: 1px solid var(--border-line);
+      border-radius: 10px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--fg-primary);
+    }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.92em;
+    }
+
+    p code,
+    li code {
+      background: var(--bg-card-alt);
+      border: 1px solid var(--border-subtle);
+      border-radius: 5px;
+      padding: 1px 5px;
+    }
 
     .note {
-      border-left: 3px solid var(--cyan); background: var(--bg-card);
-      padding: 12px 16px; border-radius: 0 10px 10px 0; margin: 16px 0;
-      color: var(--fg-secondary); font-size: 14px;
+      border-left: 3px solid var(--cyan);
+      background: var(--bg-card);
+      padding: 12px 16px;
+      border-radius: 0 10px 10px 0;
+      margin: 16px 0;
+      color: var(--fg-secondary);
+      font-size: 14px;
     }
-    .note b { color: var(--fg-primary); }
-    ul { padding-left: 20px; }
-    li { margin: 5px 0; color: var(--fg-secondary); }
-    li b { color: var(--fg-primary); }
+
+    .note b {
+      color: var(--fg-primary);
+    }
+
+    ul {
+      padding-left: 20px;
+    }
+
+    li {
+      margin: 5px 0;
+      color: var(--fg-secondary);
+    }
+
+    li b {
+      color: var(--fg-primary);
+    }
 
     footer {
-      max-width: var(--max-width); margin: 0 auto; padding: 22px;
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 22px;
       border-top: 1px solid var(--border-line);
-      color: var(--fg-muted); font-size: 12.5px;
-      display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between;
+      color: var(--fg-muted);
+      font-size: 12.5px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: space-between;
     }
   </style>
 </head>
@@ -309,71 +658,94 @@
           </tr>
         </thead>
         <tbody>
-        <tr>
-          <td class="name">Arithmetic &amp; Loop<small>2M-iteration integer accumulation loop</small></td>
-          <td class="mono">2,000,000</td>
-          <td class="mono">41.95M<span class="dim">/s</span></td>
-          <td class="mono dim">6.00M</td>
-          <td class="mono">7.0&times;</td>
-          <td><div class="track"><span style="width:38.6%"></span></div></td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="name">String Building<small>30K string concatenations and slices</small></td>
-          <td class="mono">30,000</td>
-          <td class="mono">2.65M<span class="dim">/s</span></td>
-          <td class="mono dim">140k</td>
-          <td class="mono">18.9&times;</td>
-          <td><div class="track"><span style="width:96.8%"></span></div></td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="name">List Churn<small>200K pushes then pops, summing values</small></td>
-          <td class="mono">200,000</td>
-          <td class="mono">6.46M<span class="dim">/s</span></td>
-          <td class="mono dim">800k</td>
-          <td class="mono">8.1&times;</td>
-          <td><div class="track"><span style="width:47.0%"></span></div></td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="name">Map / Dict<small>40K hash inserts and lookups</small></td>
-          <td class="mono">40,000</td>
-          <td class="mono">1.70M<span class="dim">/s</span></td>
-          <td class="mono dim">160k</td>
-          <td class="mono">10.6&times;</td>
-          <td><div class="track"><span style="width:63.0%"></span></div></td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="name">Method Dispatch<small>200K method calls on objects</small></td>
-          <td class="mono">200,000</td>
-          <td class="mono">2.70M<span class="dim">/s</span></td>
-          <td class="mono dim">500k</td>
-          <td class="mono">5.4&times;</td>
-          <td><div class="track"><span style="width:23.5%"></span></div></td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="name">Closures<small>40K closure allocations and calls</small></td>
-          <td class="mono">40,000</td>
-          <td class="mono">2.09M<span class="dim">/s</span></td>
-          <td class="mono dim">170k</td>
-          <td class="mono">12.3&times;</td>
-          <td><div class="track"><span style="width:71.5%"></span></div></td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="name">JSON Encode / Decode<small>2K encode/decode round-trips</small></td>
-          <td class="mono">2,000</td>
-          <td class="mono">121k<span class="dim">/s</span></td>
-          <td class="mono dim">8k</td>
-          <td class="mono">15.1&times;</td>
-          <td><div class="track"><span style="width:83.5%"></span></div></td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="name">Spawn &amp; Join<small>2K spawn/join task round-trips</small></td>
-          <td class="mono">2,000</td>
-          <td class="mono">171k<span class="dim">/s</span></td>
-          <td class="mono dim">6k</td>
-          <td class="mono">28.4&times;</td>
-          <td><div class="track"><span style="width:100.0%"></span></div></td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr>
+          <tr>
+            <td class="name">Arithmetic &amp; Loop<small>2M-iteration integer accumulation loop</small></td>
+            <td class="mono">2,000,000</td>
+            <td class="mono">41.95M<span class="dim">/s</span></td>
+            <td class="mono dim">6.00M</td>
+            <td class="mono">7.0&times;</td>
+            <td>
+              <div class="track"><span style="width:38.6%"></span></div>
+            </td>
+            <td><span class="badge pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td class="name">String Building<small>30K string concatenations and slices</small></td>
+            <td class="mono">30,000</td>
+            <td class="mono">2.65M<span class="dim">/s</span></td>
+            <td class="mono dim">140k</td>
+            <td class="mono">18.9&times;</td>
+            <td>
+              <div class="track"><span style="width:96.8%"></span></div>
+            </td>
+            <td><span class="badge pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td class="name">List Churn<small>200K pushes then pops, summing values</small></td>
+            <td class="mono">200,000</td>
+            <td class="mono">6.46M<span class="dim">/s</span></td>
+            <td class="mono dim">800k</td>
+            <td class="mono">8.1&times;</td>
+            <td>
+              <div class="track"><span style="width:47.0%"></span></div>
+            </td>
+            <td><span class="badge pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td class="name">Map / Dict<small>40K hash inserts and lookups</small></td>
+            <td class="mono">40,000</td>
+            <td class="mono">1.70M<span class="dim">/s</span></td>
+            <td class="mono dim">160k</td>
+            <td class="mono">10.6&times;</td>
+            <td>
+              <div class="track"><span style="width:63.0%"></span></div>
+            </td>
+            <td><span class="badge pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td class="name">Method Dispatch<small>200K method calls on objects</small></td>
+            <td class="mono">200,000</td>
+            <td class="mono">2.70M<span class="dim">/s</span></td>
+            <td class="mono dim">500k</td>
+            <td class="mono">5.4&times;</td>
+            <td>
+              <div class="track"><span style="width:23.5%"></span></div>
+            </td>
+            <td><span class="badge pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td class="name">Closures<small>40K closure allocations and calls</small></td>
+            <td class="mono">40,000</td>
+            <td class="mono">2.09M<span class="dim">/s</span></td>
+            <td class="mono dim">170k</td>
+            <td class="mono">12.3&times;</td>
+            <td>
+              <div class="track"><span style="width:71.5%"></span></div>
+            </td>
+            <td><span class="badge pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td class="name">JSON Encode / Decode<small>2K encode/decode round-trips</small></td>
+            <td class="mono">2,000</td>
+            <td class="mono">121k<span class="dim">/s</span></td>
+            <td class="mono dim">8k</td>
+            <td class="mono">15.1&times;</td>
+            <td>
+              <div class="track"><span style="width:83.5%"></span></div>
+            </td>
+            <td><span class="badge pass">PASS</span></td>
+          </tr>
+          <tr>
+            <td class="name">Spawn &amp; Join<small>2K spawn/join task round-trips</small></td>
+            <td class="mono">2,000</td>
+            <td class="mono">171k<span class="dim">/s</span></td>
+            <td class="mono dim">6k</td>
+            <td class="mono">28.4&times;</td>
+            <td>
+              <div class="track"><span style="width:100.0%"></span></div>
+            </td>
+            <td><span class="badge pass">PASS</span></td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -398,61 +770,87 @@
           </tr>
         </thead>
         <tbody>
-        <tr>
-          <td class="name">Arithmetic &amp; Loop</td>
-          <td class="mono">47.7</td>
-          <td class="mono dim">377.0</td>
-          <td class="mono">7.91&times; faster</td>
-          <td><div class="track"><span style="width:12.6%"></span></div></td>
-        </tr><tr>
-          <td class="name">String Building</td>
-          <td class="mono">11.3</td>
-          <td class="mono dim">32.8</td>
-          <td class="mono">2.90&times; faster</td>
-          <td><div class="track"><span style="width:34.5%"></span></div></td>
-        </tr><tr>
-          <td class="name">List Churn</td>
-          <td class="mono">31.0</td>
-          <td class="mono dim">52.3</td>
-          <td class="mono">1.69&times; faster</td>
-          <td><div class="track"><span style="width:59.2%"></span></div></td>
-        </tr><tr>
-          <td class="name">Map / Dict</td>
-          <td class="mono">23.5</td>
-          <td class="mono dim">37.1</td>
-          <td class="mono">1.58&times; faster</td>
-          <td><div class="track"><span style="width:63.4%"></span></div></td>
-        </tr><tr>
-          <td class="name">Method Dispatch</td>
-          <td class="mono">74.1</td>
-          <td class="mono dim">138.1</td>
-          <td class="mono">1.86&times; faster</td>
-          <td><div class="track"><span style="width:53.7%"></span></div></td>
-        </tr><tr>
-          <td class="name">Closures</td>
-          <td class="mono">19.2</td>
-          <td class="mono dim">55.6</td>
-          <td class="mono">2.90&times; faster</td>
-          <td><div class="track"><span style="width:34.5%"></span></div></td>
-        </tr><tr>
-          <td class="name">JSON Encode / Decode</td>
-          <td class="mono">16.6</td>
-          <td class="mono dim">18.9</td>
-          <td class="mono">1.14&times; faster</td>
-          <td><div class="track"><span style="width:87.9%"></span></div></td>
-        </tr><tr>
-          <td class="name">Spawn &amp; Join</td>
-          <td class="mono">11.7</td>
-          <td class="mono dim">12.3</td>
-          <td class="mono">1.05&times; faster</td>
-          <td><div class="track"><span style="width:94.9%"></span></div></td>
-        </tr><tr>
-          <td class="name">Stress Suite<small>correctness only, not gated</small></td>
-          <td class="mono">34.1</td>
-          <td class="mono dim">52.9</td>
-          <td class="mono">1.55&times; faster</td>
-          <td><div class="track"><span style="width:64.5%"></span></div></td>
-        </tr>
+          <tr>
+            <td class="name">Arithmetic &amp; Loop</td>
+            <td class="mono">47.7</td>
+            <td class="mono dim">377.0</td>
+            <td class="mono">7.91&times; faster</td>
+            <td>
+              <div class="track"><span style="width:12.6%"></span></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">String Building</td>
+            <td class="mono">11.3</td>
+            <td class="mono dim">32.8</td>
+            <td class="mono">2.90&times; faster</td>
+            <td>
+              <div class="track"><span style="width:34.5%"></span></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">List Churn</td>
+            <td class="mono">31.0</td>
+            <td class="mono dim">52.3</td>
+            <td class="mono">1.69&times; faster</td>
+            <td>
+              <div class="track"><span style="width:59.2%"></span></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">Map / Dict</td>
+            <td class="mono">23.5</td>
+            <td class="mono dim">37.1</td>
+            <td class="mono">1.58&times; faster</td>
+            <td>
+              <div class="track"><span style="width:63.4%"></span></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">Method Dispatch</td>
+            <td class="mono">74.1</td>
+            <td class="mono dim">138.1</td>
+            <td class="mono">1.86&times; faster</td>
+            <td>
+              <div class="track"><span style="width:53.7%"></span></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">Closures</td>
+            <td class="mono">19.2</td>
+            <td class="mono dim">55.6</td>
+            <td class="mono">2.90&times; faster</td>
+            <td>
+              <div class="track"><span style="width:34.5%"></span></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">JSON Encode / Decode</td>
+            <td class="mono">16.6</td>
+            <td class="mono dim">18.9</td>
+            <td class="mono">1.14&times; faster</td>
+            <td>
+              <div class="track"><span style="width:87.9%"></span></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">Spawn &amp; Join</td>
+            <td class="mono">11.7</td>
+            <td class="mono dim">12.3</td>
+            <td class="mono">1.05&times; faster</td>
+            <td>
+              <div class="track"><span style="width:94.9%"></span></div>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">Stress Suite<small>correctness only, not gated</small></td>
+            <td class="mono">34.1</td>
+            <td class="mono dim">52.9</td>
+            <td class="mono">1.55&times; faster</td>
+            <td>
+              <div class="track"><span style="width:64.5%"></span></div>
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -474,12 +872,59 @@
           </tr>
         </thead>
         <tbody>
-        <tr><td class="name">Arithmetic &amp; Loop</td><td class="mono">47.7</td><td class="mono">40.7</td><td class="mono">55.3</td></tr><tr><td class="name">String Building</td><td class="mono">11.3</td><td class="mono">25.8</td><td class="mono">17.3</td></tr><tr><td class="name">List Churn</td><td class="mono">31.0</td><td class="mono">27.0</td><td class="mono">21.6</td></tr><tr><td class="name">Map / Dict</td><td class="mono">23.5</td><td class="mono">25.4</td><td class="mono">20.1</td></tr><tr><td class="name">Method Dispatch</td><td class="mono">74.1</td><td class="mono">31.2</td><td class="mono">21.5</td></tr><tr><td class="name">Closures</td><td class="mono">19.2</td><td class="mono">24.6</td><td class="mono">18.3</td></tr><tr><td class="name">JSON Encode / Decode</td><td class="mono">16.6</td><td class="mono">24.7</td><td class="mono">31.2</td></tr><tr><td class="name">Spawn &amp; Join</td><td class="mono">11.7</td><td class="mono">23.0</td><td class="mono">23.4</td></tr>
+          <tr>
+            <td class="name">Arithmetic &amp; Loop</td>
+            <td class="mono">47.7</td>
+            <td class="mono">40.7</td>
+            <td class="mono">55.3</td>
+          </tr>
+          <tr>
+            <td class="name">String Building</td>
+            <td class="mono">11.3</td>
+            <td class="mono">25.8</td>
+            <td class="mono">17.3</td>
+          </tr>
+          <tr>
+            <td class="name">List Churn</td>
+            <td class="mono">31.0</td>
+            <td class="mono">27.0</td>
+            <td class="mono">21.6</td>
+          </tr>
+          <tr>
+            <td class="name">Map / Dict</td>
+            <td class="mono">23.5</td>
+            <td class="mono">25.4</td>
+            <td class="mono">20.1</td>
+          </tr>
+          <tr>
+            <td class="name">Method Dispatch</td>
+            <td class="mono">74.1</td>
+            <td class="mono">31.2</td>
+            <td class="mono">21.5</td>
+          </tr>
+          <tr>
+            <td class="name">Closures</td>
+            <td class="mono">19.2</td>
+            <td class="mono">24.6</td>
+            <td class="mono">18.3</td>
+          </tr>
+          <tr>
+            <td class="name">JSON Encode / Decode</td>
+            <td class="mono">16.6</td>
+            <td class="mono">24.7</td>
+            <td class="mono">31.2</td>
+          </tr>
+          <tr>
+            <td class="name">Spawn &amp; Join</td>
+            <td class="mono">11.7</td>
+            <td class="mono">23.0</td>
+            <td class="mono">23.4</td>
+          </tr>
         </tbody>
       </table>
     </div>
     <div class="note">
-      
+
       <b>Startup is not free for anyone:</b> the measured fixed cost is 8.2&nbsp;ms
       for Spid3r, 22.2&nbsp;ms for PHP and 16.0&nbsp;ms for
       Python. For the light benchmarks that fixed cost is the same order as the workload itself, which is
@@ -504,55 +949,62 @@
           </tr>
         </thead>
         <tbody>
-        <tr>
-          <td class="name">Arithmetic &amp; Loop</td>
-          <td class="mono">39.4</td>
-          <td class="mono dim">18.5</td>
-          <td class="mono dim">39.4</td>
-          <td><span class="badge muted">PHP</span></td>
-        </tr><tr>
-          <td class="name">String Building</td>
-          <td class="mono">3.08</td>
-          <td class="mono dim">3.67</td>
-          <td class="mono dim">1.31</td>
-          <td><span class="badge muted">Python</span></td>
-        </tr><tr>
-          <td class="name">List Churn</td>
-          <td class="mono">22.7</td>
-          <td class="mono dim">4.85</td>
-          <td class="mono dim">5.59</td>
-          <td><span class="badge muted">PHP</span></td>
-        </tr><tr>
-          <td class="name">Map / Dict</td>
-          <td class="mono">15.3</td>
-          <td class="mono dim">3.26</td>
-          <td class="mono dim">4.16</td>
-          <td><span class="badge muted">PHP</span></td>
-        </tr><tr>
-          <td class="name">Method Dispatch</td>
-          <td class="mono">65.9</td>
-          <td class="mono dim">9.08</td>
-          <td class="mono dim">5.52</td>
-          <td><span class="badge muted">Python</span></td>
-        </tr><tr>
-          <td class="name">Closures</td>
-          <td class="mono">10.9</td>
-          <td class="mono dim">2.49</td>
-          <td class="mono dim">2.35</td>
-          <td><span class="badge muted">Python</span></td>
-        </tr><tr>
-          <td class="name">JSON Encode / Decode</td>
-          <td class="mono">8.35</td>
-          <td class="mono dim">2.58</td>
-          <td class="mono dim">15.3</td>
-          <td><span class="badge muted">PHP</span></td>
-        </tr><tr>
-          <td class="name">Spawn &amp; Join</td>
-          <td class="mono">3.48</td>
-          <td class="mono dim">0.85</td>
-          <td class="mono dim">7.41</td>
-          <td><span class="badge muted">PHP</span></td>
-        </tr>
+          <tr>
+            <td class="name">Arithmetic &amp; Loop</td>
+            <td class="mono">39.4</td>
+            <td class="mono dim">18.5</td>
+            <td class="mono dim">39.4</td>
+            <td><span class="badge muted">PHP</span></td>
+          </tr>
+          <tr>
+            <td class="name">String Building</td>
+            <td class="mono">3.08</td>
+            <td class="mono dim">3.67</td>
+            <td class="mono dim">1.31</td>
+            <td><span class="badge muted">Python</span></td>
+          </tr>
+          <tr>
+            <td class="name">List Churn</td>
+            <td class="mono">22.7</td>
+            <td class="mono dim">4.85</td>
+            <td class="mono dim">5.59</td>
+            <td><span class="badge muted">PHP</span></td>
+          </tr>
+          <tr>
+            <td class="name">Map / Dict</td>
+            <td class="mono">15.3</td>
+            <td class="mono dim">3.26</td>
+            <td class="mono dim">4.16</td>
+            <td><span class="badge muted">PHP</span></td>
+          </tr>
+          <tr>
+            <td class="name">Method Dispatch</td>
+            <td class="mono">65.9</td>
+            <td class="mono dim">9.08</td>
+            <td class="mono dim">5.52</td>
+            <td><span class="badge muted">Python</span></td>
+          </tr>
+          <tr>
+            <td class="name">Closures</td>
+            <td class="mono">10.9</td>
+            <td class="mono dim">2.49</td>
+            <td class="mono dim">2.35</td>
+            <td><span class="badge muted">Python</span></td>
+          </tr>
+          <tr>
+            <td class="name">JSON Encode / Decode</td>
+            <td class="mono">8.35</td>
+            <td class="mono dim">2.58</td>
+            <td class="mono dim">15.3</td>
+            <td><span class="badge muted">PHP</span></td>
+          </tr>
+          <tr>
+            <td class="name">Spawn &amp; Join</td>
+            <td class="mono">3.48</td>
+            <td class="mono dim">0.85</td>
+            <td class="mono dim">7.41</td>
+            <td><span class="badge muted">PHP</span></td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -561,13 +1013,103 @@
       <span><i class="php"></i>PHP</span>
       <span><i class="python"></i>Python</span>
     </div>
-    <svg class="chart" viewBox="0 0 688 558" role="img" aria-label="Startup-adjusted compute time per benchmark, log scale, lower is faster"><line x1="112.0" y1="2" x2="112.0" y2="528" class="grid"/><text x="112.0" y="546" class="chart-tick" text-anchor="middle">1</text><line x1="236.1" y1="2" x2="236.1" y2="528" class="grid"/><text x="236.1" y="546" class="chart-tick" text-anchor="middle">3</text><line x1="372.0" y1="2" x2="372.0" y2="528" class="grid"/><text x="372.0" y="546" class="chart-tick" text-anchor="middle">10</text><line x1="496.1" y1="2" x2="496.1" y2="528" class="grid"/><text x="496.1" y="546" class="chart-tick" text-anchor="middle">30</text><text x="2" y="33.0" class="chart-label">arith</text><rect x="112.0" y="2.0" width="414.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 39.4 ms</title></rect><text x="531.9" y="14.0" class="chart-val">39.4</text><rect x="112.0" y="20.0" width="329.5" height="13" rx="2.5" class="bar php"><title>php: 18.5 ms</title></rect><text x="446.5" y="32.0" class="chart-val">18.5</text><rect x="112.0" y="38.0" width="414.7" height="13" rx="2.5" class="bar python"><title>python: 39.4 ms</title></rect><text x="531.7" y="50.0" class="chart-val">39.4</text><text x="2" y="99.0" class="chart-label">strings</text><rect x="112.0" y="68.0" width="127.1" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 3.08 ms</title></rect><text x="244.1" y="80.0" class="chart-val">3.08</text><rect x="112.0" y="86.0" width="146.7" height="13" rx="2.5" class="bar php"><title>php: 3.67 ms</title></rect><text x="263.7" y="98.0" class="chart-val">3.67</text><rect x="112.0" y="104.0" width="30.9" height="13" rx="2.5" class="bar python"><title>python: 1.31 ms</title></rect><text x="147.9" y="116.0" class="chart-val">1.31</text><text x="2" y="165.0" class="chart-label">list</text><rect x="112.0" y="134.0" width="352.6" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 22.7 ms</title></rect><text x="469.6" y="146.0" class="chart-val">22.7</text><rect x="112.0" y="152.0" width="178.4" height="13" rx="2.5" class="bar php"><title>php: 4.85 ms</title></rect><text x="295.4" y="164.0" class="chart-val">4.85</text><rect x="112.0" y="170.0" width="194.3" height="13" rx="2.5" class="bar python"><title>python: 5.59 ms</title></rect><text x="311.3" y="182.0" class="chart-val">5.59</text><text x="2" y="231.0" class="chart-label">map</text><rect x="112.0" y="200.0" width="308.0" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 15.3 ms</title></rect><text x="425.0" y="212.0" class="chart-val">15.3</text><rect x="112.0" y="218.0" width="133.6" height="13" rx="2.5" class="bar php"><title>php: 3.26 ms</title></rect><text x="250.6" y="230.0" class="chart-val">3.26</text><rect x="112.0" y="236.0" width="161.0" height="13" rx="2.5" class="bar python"><title>python: 4.16 ms</title></rect><text x="278.0" y="248.0" class="chart-val">4.16</text><text x="2" y="297.0" class="chart-label">methods</text><rect x="112.0" y="266.0" width="472.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 65.9 ms</title></rect><text x="589.9" y="278.0" class="chart-val">65.9</text><rect x="112.0" y="284.0" width="249.1" height="13" rx="2.5" class="bar php"><title>php: 9.08 ms</title></rect><text x="366.1" y="296.0" class="chart-val">9.08</text><rect x="112.0" y="302.0" width="192.9" height="13" rx="2.5" class="bar python"><title>python: 5.52 ms</title></rect><text x="309.9" y="314.0" class="chart-val">5.52</text><text x="2" y="363.0" class="chart-label">closures</text><rect x="112.0" y="332.0" width="270.0" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 10.9 ms</title></rect><text x="387.0" y="344.0" class="chart-val">10.9</text><rect x="112.0" y="350.0" width="103.0" height="13" rx="2.5" class="bar php"><title>php: 2.49 ms</title></rect><text x="220.0" y="362.0" class="chart-val">2.49</text><rect x="112.0" y="368.0" width="96.3" height="13" rx="2.5" class="bar python"><title>python: 2.35 ms</title></rect><text x="213.3" y="380.0" class="chart-val">2.35</text><text x="2" y="429.0" class="chart-label">json</text><rect x="112.0" y="398.0" width="239.6" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 8.35 ms</title></rect><text x="356.6" y="410.0" class="chart-val">8.35</text><rect x="112.0" y="416.0" width="106.9" height="13" rx="2.5" class="bar php"><title>php: 2.58 ms</title></rect><text x="223.9" y="428.0" class="chart-val">2.58</text><rect x="112.0" y="434.0" width="307.7" height="13" rx="2.5" class="bar python"><title>python: 15.3 ms</title></rect><text x="424.7" y="446.0" class="chart-val">15.3</text><text x="2" y="495.0" class="chart-label">tasks</text><rect x="112.0" y="464.0" width="140.9" height="13" rx="2.5" class="bar spid3r"><title>spid3r: 3.48 ms</title></rect><text x="257.9" y="476.0" class="chart-val">3.48</text><rect x="112.0" y="482.0" width="1.5" height="13" rx="2.5" class="bar php"><title>php: 0.85 ms</title></rect><text x="117.0" y="494.0" class="chart-val">0.85</text><rect x="112.0" y="500.0" width="226.2" height="13" rx="2.5" class="bar python"><title>python: 7.41 ms</title></rect><text x="343.2" y="512.0" class="chart-val">7.41</text></svg>
+    <svg class="chart" viewBox="0 0 688 558" role="img"
+      aria-label="Startup-adjusted compute time per benchmark, log scale, lower is faster">
+      <line x1="112.0" y1="2" x2="112.0" y2="528" class="grid" /><text x="112.0" y="546" class="chart-tick"
+        text-anchor="middle">1</text>
+      <line x1="236.1" y1="2" x2="236.1" y2="528" class="grid" /><text x="236.1" y="546" class="chart-tick"
+        text-anchor="middle">3</text>
+      <line x1="372.0" y1="2" x2="372.0" y2="528" class="grid" /><text x="372.0" y="546" class="chart-tick"
+        text-anchor="middle">10</text>
+      <line x1="496.1" y1="2" x2="496.1" y2="528" class="grid" /><text x="496.1" y="546" class="chart-tick"
+        text-anchor="middle">30</text><text x="2" y="33.0" class="chart-label">arith</text>
+      <rect x="112.0" y="2.0" width="414.9" height="13" rx="2.5" class="bar spid3r">
+        <title>spid3r: 39.4 ms</title>
+      </rect><text x="531.9" y="14.0" class="chart-val">39.4</text>
+      <rect x="112.0" y="20.0" width="329.5" height="13" rx="2.5" class="bar php">
+        <title>php: 18.5 ms</title>
+      </rect><text x="446.5" y="32.0" class="chart-val">18.5</text>
+      <rect x="112.0" y="38.0" width="414.7" height="13" rx="2.5" class="bar python">
+        <title>python: 39.4 ms</title>
+      </rect><text x="531.7" y="50.0" class="chart-val">39.4</text><text x="2" y="99.0"
+        class="chart-label">strings</text>
+      <rect x="112.0" y="68.0" width="127.1" height="13" rx="2.5" class="bar spid3r">
+        <title>spid3r: 3.08 ms</title>
+      </rect><text x="244.1" y="80.0" class="chart-val">3.08</text>
+      <rect x="112.0" y="86.0" width="146.7" height="13" rx="2.5" class="bar php">
+        <title>php: 3.67 ms</title>
+      </rect><text x="263.7" y="98.0" class="chart-val">3.67</text>
+      <rect x="112.0" y="104.0" width="30.9" height="13" rx="2.5" class="bar python">
+        <title>python: 1.31 ms</title>
+      </rect><text x="147.9" y="116.0" class="chart-val">1.31</text><text x="2" y="165.0"
+        class="chart-label">list</text>
+      <rect x="112.0" y="134.0" width="352.6" height="13" rx="2.5" class="bar spid3r">
+        <title>spid3r: 22.7 ms</title>
+      </rect><text x="469.6" y="146.0" class="chart-val">22.7</text>
+      <rect x="112.0" y="152.0" width="178.4" height="13" rx="2.5" class="bar php">
+        <title>php: 4.85 ms</title>
+      </rect><text x="295.4" y="164.0" class="chart-val">4.85</text>
+      <rect x="112.0" y="170.0" width="194.3" height="13" rx="2.5" class="bar python">
+        <title>python: 5.59 ms</title>
+      </rect><text x="311.3" y="182.0" class="chart-val">5.59</text><text x="2" y="231.0" class="chart-label">map</text>
+      <rect x="112.0" y="200.0" width="308.0" height="13" rx="2.5" class="bar spid3r">
+        <title>spid3r: 15.3 ms</title>
+      </rect><text x="425.0" y="212.0" class="chart-val">15.3</text>
+      <rect x="112.0" y="218.0" width="133.6" height="13" rx="2.5" class="bar php">
+        <title>php: 3.26 ms</title>
+      </rect><text x="250.6" y="230.0" class="chart-val">3.26</text>
+      <rect x="112.0" y="236.0" width="161.0" height="13" rx="2.5" class="bar python">
+        <title>python: 4.16 ms</title>
+      </rect><text x="278.0" y="248.0" class="chart-val">4.16</text><text x="2" y="297.0"
+        class="chart-label">methods</text>
+      <rect x="112.0" y="266.0" width="472.9" height="13" rx="2.5" class="bar spid3r">
+        <title>spid3r: 65.9 ms</title>
+      </rect><text x="589.9" y="278.0" class="chart-val">65.9</text>
+      <rect x="112.0" y="284.0" width="249.1" height="13" rx="2.5" class="bar php">
+        <title>php: 9.08 ms</title>
+      </rect><text x="366.1" y="296.0" class="chart-val">9.08</text>
+      <rect x="112.0" y="302.0" width="192.9" height="13" rx="2.5" class="bar python">
+        <title>python: 5.52 ms</title>
+      </rect><text x="309.9" y="314.0" class="chart-val">5.52</text><text x="2" y="363.0"
+        class="chart-label">closures</text>
+      <rect x="112.0" y="332.0" width="270.0" height="13" rx="2.5" class="bar spid3r">
+        <title>spid3r: 10.9 ms</title>
+      </rect><text x="387.0" y="344.0" class="chart-val">10.9</text>
+      <rect x="112.0" y="350.0" width="103.0" height="13" rx="2.5" class="bar php">
+        <title>php: 2.49 ms</title>
+      </rect><text x="220.0" y="362.0" class="chart-val">2.49</text>
+      <rect x="112.0" y="368.0" width="96.3" height="13" rx="2.5" class="bar python">
+        <title>python: 2.35 ms</title>
+      </rect><text x="213.3" y="380.0" class="chart-val">2.35</text><text x="2" y="429.0"
+        class="chart-label">json</text>
+      <rect x="112.0" y="398.0" width="239.6" height="13" rx="2.5" class="bar spid3r">
+        <title>spid3r: 8.35 ms</title>
+      </rect><text x="356.6" y="410.0" class="chart-val">8.35</text>
+      <rect x="112.0" y="416.0" width="106.9" height="13" rx="2.5" class="bar php">
+        <title>php: 2.58 ms</title>
+      </rect><text x="223.9" y="428.0" class="chart-val">2.58</text>
+      <rect x="112.0" y="434.0" width="307.7" height="13" rx="2.5" class="bar python">
+        <title>python: 15.3 ms</title>
+      </rect><text x="424.7" y="446.0" class="chart-val">15.3</text><text x="2" y="495.0"
+        class="chart-label">tasks</text>
+      <rect x="112.0" y="464.0" width="140.9" height="13" rx="2.5" class="bar spid3r">
+        <title>spid3r: 3.48 ms</title>
+      </rect><text x="257.9" y="476.0" class="chart-val">3.48</text>
+      <rect x="112.0" y="482.0" width="1.5" height="13" rx="2.5" class="bar php">
+        <title>php: 0.85 ms</title>
+      </rect><text x="117.0" y="494.0" class="chart-val">0.85</text>
+      <rect x="112.0" y="500.0" width="226.2" height="13" rx="2.5" class="bar python">
+        <title>python: 7.41 ms</title>
+      </rect><text x="343.2" y="512.0" class="chart-val">7.41</text>
+    </svg>
     <p class="dim" style="text-align:center">Startup-adjusted compute time, log scale &mdash; shorter is faster.</p>
-    
+
     <h2><span class="num">04</span>Phase 11 P-1: Native AOT &amp; Node.js / Rust reference</h2>
     <p class="section-lead">
-      Cross-language compute comparison on identical checksum-pinned workloads (<code>benchmarks/compare/{prime,json,map}</code>)
-      under the Phase 0 protocol (9 warmups, 21 measured repeats, 2 passes, MAD&divide;median &le; 5%, two-pass agreement &le; 3%,
+      Cross-language compute comparison on identical checksum-pinned workloads
+      (<code>benchmarks/compare/{prime,json,map}</code>)
+      under the Phase 0 protocol (9 warmups, 21 measured repeats, 2 passes, MAD&divide;median &le; 5%, two-pass
+      agreement &le; 3%,
       blocking 5% sensitivity self-test <code>PASS</code>). Raw artifact:
       <code>benchmarks/reference.p1.json</code> (ADVISORY_ONLY).
     </p>
@@ -585,31 +1127,33 @@
           </tr>
         </thead>
         <tbody>
-        <tr>
-          <td class="name"><code>prime</code></td>
-          <td class="mono">31.15&nbsp;ms<small class="dim">1.41% MAD / 1.83% ag</small></td>
-          <td class="mono">8.74&nbsp;ms<small class="dim">3.63% MAD / 1.23% ag</small></td>
-          <td class="mono">1.70&nbsp;ms<small class="dim">1.17% MAD / 0.06% ag</small></td>
-          <td class="mono">1.36&nbsp;ms<small class="dim">0.59% MAD / 0.29% ag</small></td>
-          <td class="mono">3.56&times;</td>
-          <td class="mono">5.13&times; slower</td>
-        </tr><tr>
-          <td class="name"><code>json</code></td>
-          <td class="mono">167.92&nbsp;ms<small class="dim">1.42% MAD / 0.39% ag</small></td>
-          <td class="mono">199.05&nbsp;ms<small class="dim">0.70% MAD / 0.19% ag</small></td>
-          <td class="mono">17.60&nbsp;ms<small class="dim">0.34% MAD / 0.78% ag</small></td>
-          <td class="dim">&mdash;</td>
-          <td class="mono">0.84&times;</td>
-          <td class="mono">11.31&times; slower</td>
-        </tr><tr>
-          <td class="name"><code>map</code></td>
-          <td class="mono">21.21&nbsp;ms<small class="dim">1.48% MAD / 0.78% ag</small></td>
-          <td class="mono">45.17&nbsp;ms<small class="dim">0.42% MAD / 1.20% ag</small></td>
-          <td class="mono">1.56&nbsp;ms<small class="dim">1.22% MAD / 0.13% ag</small></td>
-          <td class="dim">&mdash;</td>
-          <td class="mono">0.47&times;</td>
-          <td class="mono">28.92&times; slower</td>
-        </tr>
+          <tr>
+            <td class="name"><code>prime</code></td>
+            <td class="mono">31.15&nbsp;ms<small class="dim">1.41% MAD / 1.83% ag</small></td>
+            <td class="mono">8.74&nbsp;ms<small class="dim">3.63% MAD / 1.23% ag</small></td>
+            <td class="mono">1.70&nbsp;ms<small class="dim">1.17% MAD / 0.06% ag</small></td>
+            <td class="mono">1.36&nbsp;ms<small class="dim">0.59% MAD / 0.29% ag</small></td>
+            <td class="mono">3.56&times;</td>
+            <td class="mono">5.13&times; slower</td>
+          </tr>
+          <tr>
+            <td class="name"><code>json</code></td>
+            <td class="mono">167.92&nbsp;ms<small class="dim">1.42% MAD / 0.39% ag</small></td>
+            <td class="mono">199.05&nbsp;ms<small class="dim">0.70% MAD / 0.19% ag</small></td>
+            <td class="mono">17.60&nbsp;ms<small class="dim">0.34% MAD / 0.78% ag</small></td>
+            <td class="dim">&mdash;</td>
+            <td class="mono">0.84&times;</td>
+            <td class="mono">11.31&times; slower</td>
+          </tr>
+          <tr>
+            <td class="name"><code>map</code></td>
+            <td class="mono">21.21&nbsp;ms<small class="dim">1.48% MAD / 0.78% ag</small></td>
+            <td class="mono">45.17&nbsp;ms<small class="dim">0.42% MAD / 1.20% ag</small></td>
+            <td class="mono">1.56&nbsp;ms<small class="dim">1.22% MAD / 0.13% ag</small></td>
+            <td class="dim">&mdash;</td>
+            <td class="mono">0.47&times;</td>
+            <td class="mono">28.92&times; slower</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -619,9 +1163,11 @@
       Node.js 30.21&nbsp;ms, Rust-exe 6.60&nbsp;ms.
       Spid3r variants use external <code>wall_ms &minus; startup_baseline_ms</code> exclusively.
       Where process spawn is &gt;50% of wall time for fast reference runs (Node 60.6&ndash;91.1%, Rust 83.7%),
-      the table reports high-resolution internal timers (<code>process.hrtime.bigint()</code> / <code>Instant::now()</code>)
+      the table reports high-resolution internal timers (<code>process.hrtime.bigint()</code> /
+      <code>Instant::now()</code>)
       as the stable compute metric while retaining external subtraction in the JSON log.
-      On <code>prime</code>, Spid3r native (8.74&nbsp;ms) is 5.13&times; slower than Node and 6.42&times; slower than Rust &mdash; Phase 11 P-2..P-9 targets this gap.
+      On <code>prime</code>, Spid3r native (8.74&nbsp;ms) is 5.13&times; slower than Node and 6.42&times; slower than
+      Rust &mdash; Phase 11 P-2..P-9 targets this gap.
     </div>
     <details>
       <summary>Per-engine dispersion and two-pass agreement ledger (Phase 11 P-1)</summary>
@@ -640,107 +1186,117 @@
             </tr>
           </thead>
           <tbody>
-          <tr>
-          <td class="mono">prime</td>
-          <td class="name">Spid3r VM</td>
-          <td class="mono">external</td>
-          <td class="mono">31.152&nbsp;ms</td>
-          <td class="mono">28.3%</td>
-          <td class="mono">1.41%</td>
-          <td class="mono">1.83%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">prime</td>
-          <td class="name">Spid3r native (AOT)</td>
-          <td class="mono">external</td>
-          <td class="mono">8.743&nbsp;ms</td>
-          <td class="mono">51.5%</td>
-          <td class="mono">3.63%</td>
-          <td class="mono">1.23%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">prime</td>
-          <td class="name">Node.js (v26.11.1)</td>
-          <td class="mono">internal hr</td>
-          <td class="mono">1.704&nbsp;ms</td>
-          <td class="mono">89.0%</td>
-          <td class="mono">1.17%</td>
-          <td class="mono">0.06%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">prime</td>
-          <td class="name">Rust -O (rustc 1.99.1)</td>
-          <td class="mono">internal hr</td>
-          <td class="mono">1.362&nbsp;ms</td>
-          <td class="mono">83.7%</td>
-          <td class="mono">0.59%</td>
-          <td class="mono">0.29%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">json</td>
-          <td class="name">Spid3r VM</td>
-          <td class="mono">external</td>
-          <td class="mono">167.918&nbsp;ms</td>
-          <td class="mono">7.0%</td>
-          <td class="mono">1.42%</td>
-          <td class="mono">0.39%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">json</td>
-          <td class="name">Spid3r native (AOT)</td>
-          <td class="mono">external</td>
-          <td class="mono">199.051&nbsp;ms</td>
-          <td class="mono">5.5%</td>
-          <td class="mono">0.70%</td>
-          <td class="mono">0.19%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">json</td>
-          <td class="name">Node.js (v26.11.1)</td>
-          <td class="mono">internal hr</td>
-          <td class="mono">17.600&nbsp;ms</td>
-          <td class="mono">60.6%</td>
-          <td class="mono">0.34%</td>
-          <td class="mono">0.78%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">map</td>
-          <td class="name">Spid3r VM</td>
-          <td class="mono">external</td>
-          <td class="mono">21.206&nbsp;ms</td>
-          <td class="mono">35.2%</td>
-          <td class="mono">1.48%</td>
-          <td class="mono">0.78%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">map</td>
-          <td class="name">Spid3r native (AOT)</td>
-          <td class="mono">external</td>
-          <td class="mono">45.171&nbsp;ms</td>
-          <td class="mono">17.6%</td>
-          <td class="mono">0.42%</td>
-          <td class="mono">1.20%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">map</td>
-          <td class="name">Node.js (v26.11.1)</td>
-          <td class="mono">internal hr</td>
-          <td class="mono">1.562&nbsp;ms</td>
-          <td class="mono">91.1%</td>
-          <td class="mono">1.22%</td>
-          <td class="mono">0.13%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr>
+            <tr>
+              <td class="mono">prime</td>
+              <td class="name">Spid3r VM</td>
+              <td class="mono">external</td>
+              <td class="mono">31.152&nbsp;ms</td>
+              <td class="mono">28.3%</td>
+              <td class="mono">1.41%</td>
+              <td class="mono">1.83%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">prime</td>
+              <td class="name">Spid3r native (AOT)</td>
+              <td class="mono">external</td>
+              <td class="mono">8.743&nbsp;ms</td>
+              <td class="mono">51.5%</td>
+              <td class="mono">3.63%</td>
+              <td class="mono">1.23%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">prime</td>
+              <td class="name">Node.js (v26.11.1)</td>
+              <td class="mono">internal hr</td>
+              <td class="mono">1.704&nbsp;ms</td>
+              <td class="mono">89.0%</td>
+              <td class="mono">1.17%</td>
+              <td class="mono">0.06%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">prime</td>
+              <td class="name">Rust -O (rustc 1.99.1)</td>
+              <td class="mono">internal hr</td>
+              <td class="mono">1.362&nbsp;ms</td>
+              <td class="mono">83.7%</td>
+              <td class="mono">0.59%</td>
+              <td class="mono">0.29%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">json</td>
+              <td class="name">Spid3r VM</td>
+              <td class="mono">external</td>
+              <td class="mono">167.918&nbsp;ms</td>
+              <td class="mono">7.0%</td>
+              <td class="mono">1.42%</td>
+              <td class="mono">0.39%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">json</td>
+              <td class="name">Spid3r native (AOT)</td>
+              <td class="mono">external</td>
+              <td class="mono">199.051&nbsp;ms</td>
+              <td class="mono">5.5%</td>
+              <td class="mono">0.70%</td>
+              <td class="mono">0.19%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">json</td>
+              <td class="name">Node.js (v26.11.1)</td>
+              <td class="mono">internal hr</td>
+              <td class="mono">17.600&nbsp;ms</td>
+              <td class="mono">60.6%</td>
+              <td class="mono">0.34%</td>
+              <td class="mono">0.78%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">map</td>
+              <td class="name">Spid3r VM</td>
+              <td class="mono">external</td>
+              <td class="mono">21.206&nbsp;ms</td>
+              <td class="mono">35.2%</td>
+              <td class="mono">1.48%</td>
+              <td class="mono">0.78%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">map</td>
+              <td class="name">Spid3r native (AOT)</td>
+              <td class="mono">external</td>
+              <td class="mono">45.171&nbsp;ms</td>
+              <td class="mono">17.6%</td>
+              <td class="mono">0.42%</td>
+              <td class="mono">1.20%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">map</td>
+              <td class="name">Node.js (v26.11.1)</td>
+              <td class="mono">internal hr</td>
+              <td class="mono">1.562&nbsp;ms</td>
+              <td class="mono">91.1%</td>
+              <td class="mono">1.22%</td>
+              <td class="mono">0.13%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
           </tbody>
         </table>
       </div>
     </details>
 
-    
+
     <h2><span class="num">05</span>Phase 11 P-2: Selfhost toolchain throughput baselines</h2>
     <p class="section-lead">
       Frozen Stage-0 (Rust) vs selfhost (Stage-1 AOT <code>--release</code>) compiler throughput across checksummed
-      workloads in <code>benchmarks/selfhost/</code> under the Phase 0 protocol (9 warmups, 21 measured repeats, 2 passes,
+      workloads in <code>benchmarks/selfhost/</code> under the Phase 0 protocol (9 warmups, 21 measured repeats, 2
+      passes,
       MAD&divide;median &le; 5%, two-pass agreement &le; 3%, core 6; blocking 5% sensitivity self-test
       <code>PASS</code>, numeric band
       <code>PASS</code>). Raw artifact:
@@ -759,37 +1315,41 @@
           </tr>
         </thead>
         <tbody>
-        <tr>
-          <td class="name">Lexer<small>1.02 MB positive corpus</small></td>
-          <td class="mono">16.551&nbsp;MB/s<small>61.4&nbsp;ms</small></td>
-          <td class="mono">0.240&nbsp;MB/s<small>4241.8&nbsp;ms</small></td>
-          <td class="mono">0.015&times; Stage 0</td>
-          <td class="mono">&ge;&nbsp;0.192&nbsp;MB/s</td>
-        </tr><tr>
-          <td class="name">Parser<small>121 corpus files</small></td>
-          <td class="mono">87.4&nbsp;prog/s<small>1385.0&nbsp;ms</small></td>
-          <td class="mono">72.0&nbsp;prog/s<small>1681.5&nbsp;ms</small></td>
-          <td class="mono">0.824&times; Stage 0</td>
-          <td class="mono">&ge;&nbsp;57.6&nbsp;prog/s</td>
-        </tr><tr>
-          <td class="name">Semantic checker<small>121 corpus files</small></td>
-          <td class="mono">91.8&nbsp;prog/s<small>1317.8&nbsp;ms</small></td>
-          <td class="mono">54.0&nbsp;prog/s<small>2242.2&nbsp;ms</small></td>
-          <td class="mono">0.588&times; Stage 0</td>
-          <td class="mono">&ge;&nbsp;43.2&nbsp;prog/s</td>
-        </tr><tr>
-          <td class="name">Self-compile<small>17 modules / 585 KB</small></td>
-          <td class="mono">0.457&nbsp;MB/s<small>1280.4&nbsp;ms</small></td>
-          <td class="mono">0.048&nbsp;MB/s<small>12123.3&nbsp;ms</small></td>
-          <td class="mono">0.106&times; Stage 0</td>
-          <td class="mono">&ge;&nbsp;0.039&nbsp;MB/s</td>
-        </tr><tr>
-          <td class="name">Corpus build<small>6 standalone examples</small></td>
-          <td class="mono">975.7&nbsp;ms (6.15/s)<small>975.7&nbsp;ms</small></td>
-          <td class="mono">2205.9&nbsp;ms (2.72/s)<small>2205.9&nbsp;ms</small></td>
-          <td class="mono">2.26&times; slower</td>
-          <td class="mono">&le;&nbsp;2757.4&nbsp;ms</td>
-        </tr>
+          <tr>
+            <td class="name">Lexer<small>1.02 MB positive corpus</small></td>
+            <td class="mono">16.551&nbsp;MB/s<small>61.4&nbsp;ms</small></td>
+            <td class="mono">0.240&nbsp;MB/s<small>4241.8&nbsp;ms</small></td>
+            <td class="mono">0.015&times; Stage 0</td>
+            <td class="mono">&ge;&nbsp;0.192&nbsp;MB/s</td>
+          </tr>
+          <tr>
+            <td class="name">Parser<small>121 corpus files</small></td>
+            <td class="mono">87.4&nbsp;prog/s<small>1385.0&nbsp;ms</small></td>
+            <td class="mono">72.0&nbsp;prog/s<small>1681.5&nbsp;ms</small></td>
+            <td class="mono">0.824&times; Stage 0</td>
+            <td class="mono">&ge;&nbsp;57.6&nbsp;prog/s</td>
+          </tr>
+          <tr>
+            <td class="name">Semantic checker<small>121 corpus files</small></td>
+            <td class="mono">91.8&nbsp;prog/s<small>1317.8&nbsp;ms</small></td>
+            <td class="mono">54.0&nbsp;prog/s<small>2242.2&nbsp;ms</small></td>
+            <td class="mono">0.588&times; Stage 0</td>
+            <td class="mono">&ge;&nbsp;43.2&nbsp;prog/s</td>
+          </tr>
+          <tr>
+            <td class="name">Self-compile<small>17 modules / 585 KB</small></td>
+            <td class="mono">0.457&nbsp;MB/s<small>1280.4&nbsp;ms</small></td>
+            <td class="mono">0.048&nbsp;MB/s<small>12123.3&nbsp;ms</small></td>
+            <td class="mono">0.106&times; Stage 0</td>
+            <td class="mono">&ge;&nbsp;0.039&nbsp;MB/s</td>
+          </tr>
+          <tr>
+            <td class="name">Corpus build<small>6 standalone examples</small></td>
+            <td class="mono">975.7&nbsp;ms (6.15/s)<small>975.7&nbsp;ms</small></td>
+            <td class="mono">2205.9&nbsp;ms (2.72/s)<small>2205.9&nbsp;ms</small></td>
+            <td class="mono">2.26&times; slower</td>
+            <td class="mono">&le;&nbsp;2757.4&nbsp;ms</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -808,92 +1368,102 @@
             </tr>
           </thead>
           <tbody>
-          <tr>
-          <td class="mono">lex</td>
-          <td class="name">Stage 0 (Rust)</td>
-          <td class="mono">61.44&nbsp;ms</td>
-          <td class="mono">0.80%</td>
-          <td class="mono">0.75%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">lex</td>
-          <td class="name">Selfhost (AOT)</td>
-          <td class="mono">4241.82&nbsp;ms</td>
-          <td class="mono">0.59%</td>
-          <td class="mono">0.13%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">parse</td>
-          <td class="name">Stage 0 (Rust)</td>
-          <td class="mono">1385.00&nbsp;ms</td>
-          <td class="mono">0.78%</td>
-          <td class="mono">0.60%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">parse</td>
-          <td class="name">Selfhost (AOT)</td>
-          <td class="mono">1681.52&nbsp;ms</td>
-          <td class="mono">2.44%</td>
-          <td class="mono">1.70%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">check</td>
-          <td class="name">Stage 0 (Rust)</td>
-          <td class="mono">1317.81&nbsp;ms</td>
-          <td class="mono">0.92%</td>
-          <td class="mono">0.35%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">check</td>
-          <td class="name">Selfhost (AOT)</td>
-          <td class="mono">2242.21&nbsp;ms</td>
-          <td class="mono">2.52%</td>
-          <td class="mono">2.12%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">self_compile</td>
-          <td class="name">Stage 0 (Rust)</td>
-          <td class="mono">1280.35&nbsp;ms</td>
-          <td class="mono">0.99%</td>
-          <td class="mono">0.61%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">self_compile</td>
-          <td class="name">Selfhost (AOT)</td>
-          <td class="mono">12123.26&nbsp;ms</td>
-          <td class="mono">0.61%</td>
-          <td class="mono">0.50%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">corpus_build</td>
-          <td class="name">Stage 0 (Rust)</td>
-          <td class="mono">975.66&nbsp;ms</td>
-          <td class="mono">1.70%</td>
-          <td class="mono">0.05%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr><tr>
-          <td class="mono">corpus_build</td>
-          <td class="name">Selfhost (AOT)</td>
-          <td class="mono">2205.89&nbsp;ms</td>
-          <td class="mono">1.24%</td>
-          <td class="mono">1.25%</td>
-          <td><span class="badge pass">PASS</span></td>
-        </tr>
+            <tr>
+              <td class="mono">lex</td>
+              <td class="name">Stage 0 (Rust)</td>
+              <td class="mono">61.44&nbsp;ms</td>
+              <td class="mono">0.80%</td>
+              <td class="mono">0.75%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">lex</td>
+              <td class="name">Selfhost (AOT)</td>
+              <td class="mono">4241.82&nbsp;ms</td>
+              <td class="mono">0.59%</td>
+              <td class="mono">0.13%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">parse</td>
+              <td class="name">Stage 0 (Rust)</td>
+              <td class="mono">1385.00&nbsp;ms</td>
+              <td class="mono">0.78%</td>
+              <td class="mono">0.60%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">parse</td>
+              <td class="name">Selfhost (AOT)</td>
+              <td class="mono">1681.52&nbsp;ms</td>
+              <td class="mono">2.44%</td>
+              <td class="mono">1.70%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">check</td>
+              <td class="name">Stage 0 (Rust)</td>
+              <td class="mono">1317.81&nbsp;ms</td>
+              <td class="mono">0.92%</td>
+              <td class="mono">0.35%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">check</td>
+              <td class="name">Selfhost (AOT)</td>
+              <td class="mono">2242.21&nbsp;ms</td>
+              <td class="mono">2.52%</td>
+              <td class="mono">2.12%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">self_compile</td>
+              <td class="name">Stage 0 (Rust)</td>
+              <td class="mono">1280.35&nbsp;ms</td>
+              <td class="mono">0.99%</td>
+              <td class="mono">0.61%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">self_compile</td>
+              <td class="name">Selfhost (AOT)</td>
+              <td class="mono">12123.26&nbsp;ms</td>
+              <td class="mono">0.61%</td>
+              <td class="mono">0.50%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">corpus_build</td>
+              <td class="name">Stage 0 (Rust)</td>
+              <td class="mono">975.66&nbsp;ms</td>
+              <td class="mono">1.70%</td>
+              <td class="mono">0.05%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
+            <tr>
+              <td class="mono">corpus_build</td>
+              <td class="name">Selfhost (AOT)</td>
+              <td class="mono">2205.89&nbsp;ms</td>
+              <td class="mono">1.24%</td>
+              <td class="mono">1.25%</td>
+              <td><span class="badge pass">PASS</span></td>
+            </tr>
           </tbody>
         </table>
       </div>
     </details>
 
-    
+
     <h2><span class="num">06</span>Phase 11 P-8: Honest three-way target table (Spid3r-AOT vs Node vs Rust)</h2>
     <p class="section-lead">
-      Every published figure traces directly to a ledger run in <code>full_plan.html</code> (<code>P-1</code>,
+      Every published figure traces directly to recorded Phase 11 runs (<code>P-1</code>,
       <code>P-2</code>, <code>P-3</code>, <code>P-5</code>, and <code>P-6</code>; Core-6 affinity, 9w/21r&times;2,
       blocking 5% sensitivity selftest <code>PASS</code>, <code>ADVISORY_ONLY</code> shared Windows host).
       No target is presented as a promise without its Tier label and recorded measurement:
       <span class="badge pass">Tier A</span> blocking floor &middot;
       <span class="badge info">Tier B</span> measured delta vs frozen baseline &middot;
-      <span class="badge warn">Tier C</span> stretch / structurally gapped (never blocking; retired via <code>docs/PERF_TARGET_RETIREMENT.md</code>).
+      <span class="badge warn">Tier C</span> stretch / structurally gapped (never blocking; retired via
+      <code>docs/PERF_TARGET_RETIREMENT.md</code>).
     </p>
     <div class="table-wrap">
       <table>
@@ -909,92 +1479,115 @@
           </tr>
         </thead>
         <tbody>
-        <tr>
-          <td class="name">HLC <code>prime</code><small>50k primes checksum loop</small></td>
-          <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
-          <td class="mono"><b>5.76&nbsp;ms</b> compute<small>12.85&nbsp;ms wall; &minus;39.0% vs 9.44&nbsp;ms (P-6)</small></td>
-          <td class="mono"><b>1.70&nbsp;ms</b> int<small>V8 JIT (3.38&times; slower)</small></td>
-          <td class="mono"><b>1.36&nbsp;ms</b> int<small>rustc -O (4.23&times; slower)</small></td>
-          <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
-          <td><span class="badge pass">Tier B MET</span><small>Sub-4&times; vs JIT/rustc retired to Tier C (overflow checks + cancel poll)</small></td>
-        </tr>
-<tr>
-          <td class="name">HLC <code>json</code><small>encode/decode workload</small></td>
-          <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
-          <td class="mono"><b>148.82&nbsp;ms</b> compute<small>156.62&nbsp;ms wall; &minus;21.3% vs 189.06&nbsp;ms (P-6)</small></td>
-          <td class="mono"><b>17.60&nbsp;ms</b> int<small>V8 C++/CSA (8.46&times; slower)</small></td>
-          <td class="mono">n/a (absent)<small>not in vendored HLC suite</small></td>
-          <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
-          <td><span class="badge muted">RETIRED (R1)</span><small>Collection-bound: <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> + FFI boxing vs V8 hidden classes</small></td>
-        </tr>
-<tr>
-          <td class="name">HLC <code>map</code><small>100k lookup/insert loop</small></td>
-          <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
-          <td class="mono"><b>28.00&nbsp;ms</b> compute<small>35.70&nbsp;ms wall; &minus;37.3% vs 44.67&nbsp;ms (P-6)</small></td>
-          <td class="mono"><b>1.56&nbsp;ms</b> int<small>V8 IC/SMI (17.93&times; slower)</small></td>
-          <td class="mono">n/a (absent)<small>not in vendored HLC suite</small></td>
-          <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
-          <td><span class="badge muted">RETIRED (R1/R3)</span><small>Dynamic index locks <code>Arc&lt;Mutex&gt;</code> per lookup vs inline V8 cache</small></td>
-        </tr>
-<tr>
-          <td class="name">Selfhost <code>lex</code><small>1.02 MB corpus</small></td>
-          <td><span class="badge pass">Tier A</span> <span class="badge warn">Tier B ret.</span></td>
-          <td class="mono"><b>1387.53&nbsp;ms</b> (0.733&nbsp;MB/s)<small>2.97&times; vs P-2; floor &ge; 0.192&nbsp;MB/s</small></td>
-          <td class="mono">&mdash;</td>
-          <td class="mono"><b>61.18&nbsp;ms</b> (16.62&nbsp;MB/s)<small>Stage-0 Rust (22.7&times; faster)</small></td>
-          <td class="mono">11.6 (P-6) + 1.4</td>
-          <td><span class="badge pass">Tier A PASS</span><small>&ge;1/2 Stage-0 retired (1.4 ledger): raw <code>&amp;[u8]</code> vs dynamic <code>bytes</code> FFI</small></td>
-        </tr>
-<tr>
-          <td class="name">Selfhost <code>parse</code> &amp; <code>check</code><small>121 corpus files</small></td>
-          <td><span class="badge pass">Tier A</span> <span class="badge info">Tier B</span></td>
-          <td class="mono"><b>928.75 / 1081.87&nbsp;ms</b><small>130.3/s &amp; 111.8/s (floors &ge; 57.6 / 43.2)</small></td>
-          <td class="mono">&mdash;</td>
-          <td class="mono">1137.04 / 1213.28&nbsp;ms<small>Selfhost is <b>1.22&times; / 1.12&times; faster</b></small></td>
-          <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
-          <td><span class="badge pass">MET</span><small>Selfhost front-end outpaces Stage-0 Rust CLI batches</small></td>
-        </tr>
-<tr>
-          <td class="name">Selfhost <code>self_compile</code><small>17 modules / 592 KB</small></td>
-          <td><span class="badge pass">Tier A</span> <span class="badge info">Tier B</span></td>
-          <td class="mono"><b>5932.15&nbsp;ms</b> (0.0998&nbsp;MB/s)<small>1.46&times; vs 8674&nbsp;ms; floor &ge; 0.0386&nbsp;MB/s</small></td>
-          <td class="mono">&mdash;</td>
-          <td class="mono"><b>1134.79&nbsp;ms</b> (0.522&nbsp;MB/s)<small>Stage-0 Rust (5.23&times; faster)</small></td>
-          <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
-          <td><span class="badge pass">Tier A/B PASS</span><small>Boxed AST traversal + LLVM-C call marshalling vs Rust native passes</small></td>
-        </tr>
-<tr>
-          <td class="name">Selfhost <code>corpus_build</code><small>6 standalone examples</small></td>
-          <td><span class="badge pass">Tier A</span></td>
-          <td class="mono"><b>673.84&nbsp;ms</b> (8.90/s)<small>floor &le; 2757.4&nbsp;ms</small></td>
-          <td class="mono">&mdash;</td>
-          <td class="mono">678.19&nbsp;ms (8.85/s)<small>Stage-0 Rust (1.01&times; parity)</small></td>
-          <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
-          <td><span class="badge pass">MET</span><small>Stage 1 matches Stage 0 end-to-end build latency</small></td>
-        </tr>
-<tr>
-          <td class="name">Codegen quality &amp; CLI lightness<small>S1/S0 parity + startup + envelope</small></td>
-          <td><span class="badge pass">Tier A</span></td>
-          <td class="mono"><b>1.0007&times;</b> corpus med (max 1.0435&times;)<small>startup <b>8.099&nbsp;ms</b> (&le;8.5); VM 10.27&nbsp;MiB</small></td>
-          <td class="mono">&mdash;</td>
-          <td class="mono">Stage-0 <code>default&lt;O3&gt;</code><small>HLC S1/S0 0.995&times;&ndash;1.007&times;</small></td>
-          <td class="mono">11.3 (P-3) + 11.5 (P-5)</td>
-          <td><span class="badge pass">MET</span><small>Bit-identical Stage 2&harr;3 object; release budgets enforced in CI/local</small></td>
-        </tr>
+          <tr>
+            <td class="name">HLC <code>prime</code><small>50k primes checksum loop</small></td>
+            <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
+            <td class="mono"><b>5.76&nbsp;ms</b> compute<small>12.85&nbsp;ms wall; &minus;39.0% vs 9.44&nbsp;ms
+                (P-6)</small></td>
+            <td class="mono"><b>1.70&nbsp;ms</b> int<small>V8 JIT (3.38&times; slower)</small></td>
+            <td class="mono"><b>1.36&nbsp;ms</b> int<small>rustc -O (4.23&times; slower)</small></td>
+            <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
+            <td><span class="badge pass">Tier B MET</span><small>Sub-4&times; vs JIT/rustc retired to Tier C (overflow
+                checks + cancel poll)</small></td>
+          </tr>
+          <tr>
+            <td class="name">HLC <code>json</code><small>encode/decode workload</small></td>
+            <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
+            <td class="mono"><b>148.82&nbsp;ms</b> compute<small>156.62&nbsp;ms wall; &minus;21.3% vs 189.06&nbsp;ms
+                (P-6)</small></td>
+            <td class="mono"><b>17.60&nbsp;ms</b> int<small>V8 C++/CSA (8.46&times; slower)</small></td>
+            <td class="mono">n/a (absent)<small>not in vendored HLC suite</small></td>
+            <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
+            <td><span class="badge muted">RETIRED (R1)</span><small>Collection-bound:
+                <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> + FFI boxing vs V8 hidden classes</small></td>
+          </tr>
+          <tr>
+            <td class="name">HLC <code>map</code><small>100k lookup/insert loop</small></td>
+            <td><span class="badge info">Tier B</span> <span class="badge warn">Tier C</span></td>
+            <td class="mono"><b>28.00&nbsp;ms</b> compute<small>35.70&nbsp;ms wall; &minus;37.3% vs 44.67&nbsp;ms
+                (P-6)</small></td>
+            <td class="mono"><b>1.56&nbsp;ms</b> int<small>V8 IC/SMI (17.93&times; slower)</small></td>
+            <td class="mono">n/a (absent)<small>not in vendored HLC suite</small></td>
+            <td class="mono">11.6 (P-6) + 11.1 (P-1)</td>
+            <td><span class="badge muted">RETIRED (R1/R3)</span><small>Dynamic index locks <code>Arc&lt;Mutex&gt;</code>
+                per lookup vs inline V8 cache</small></td>
+          </tr>
+          <tr>
+            <td class="name">Selfhost <code>lex</code><small>1.02 MB corpus</small></td>
+            <td><span class="badge pass">Tier A</span> <span class="badge warn">Tier B ret.</span></td>
+            <td class="mono"><b>1387.53&nbsp;ms</b> (0.733&nbsp;MB/s)<small>2.97&times; vs P-2; floor &ge;
+                0.192&nbsp;MB/s</small></td>
+            <td class="mono">&mdash;</td>
+            <td class="mono"><b>61.18&nbsp;ms</b> (16.62&nbsp;MB/s)<small>Stage-0 Rust (22.7&times; faster)</small></td>
+            <td class="mono">11.6 (P-6) + 1.4</td>
+            <td><span class="badge pass">Tier A PASS</span><small>&ge;1/2 Stage-0 retired (1.4 ledger): raw
+                <code>&amp;[u8]</code> vs dynamic <code>bytes</code> FFI</small></td>
+          </tr>
+          <tr>
+            <td class="name">Selfhost <code>parse</code> &amp; <code>check</code><small>121 corpus files</small></td>
+            <td><span class="badge pass">Tier A</span> <span class="badge info">Tier B</span></td>
+            <td class="mono"><b>928.75 / 1081.87&nbsp;ms</b><small>130.3/s &amp; 111.8/s (floors &ge; 57.6 /
+                43.2)</small></td>
+            <td class="mono">&mdash;</td>
+            <td class="mono">1137.04 / 1213.28&nbsp;ms<small>Selfhost is <b>1.22&times; / 1.12&times; faster</b></small>
+            </td>
+            <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
+            <td><span class="badge pass">MET</span><small>Selfhost front-end outpaces Stage-0 Rust CLI batches</small>
+            </td>
+          </tr>
+          <tr>
+            <td class="name">Selfhost <code>self_compile</code><small>17 modules / 592 KB</small></td>
+            <td><span class="badge pass">Tier A</span> <span class="badge info">Tier B</span></td>
+            <td class="mono"><b>5932.15&nbsp;ms</b> (0.0998&nbsp;MB/s)<small>1.46&times; vs 8674&nbsp;ms; floor &ge;
+                0.0386&nbsp;MB/s</small></td>
+            <td class="mono">&mdash;</td>
+            <td class="mono"><b>1134.79&nbsp;ms</b> (0.522&nbsp;MB/s)<small>Stage-0 Rust (5.23&times; faster)</small>
+            </td>
+            <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
+            <td><span class="badge pass">Tier A/B PASS</span><small>Boxed AST traversal + LLVM-C call marshalling vs
+                Rust native passes</small></td>
+          </tr>
+          <tr>
+            <td class="name">Selfhost <code>corpus_build</code><small>6 standalone examples</small></td>
+            <td><span class="badge pass">Tier A</span></td>
+            <td class="mono"><b>673.84&nbsp;ms</b> (8.90/s)<small>floor &le; 2757.4&nbsp;ms</small></td>
+            <td class="mono">&mdash;</td>
+            <td class="mono">678.19&nbsp;ms (8.85/s)<small>Stage-0 Rust (1.01&times; parity)</small></td>
+            <td class="mono">11.6 (P-6) + 11.2 (P-2)</td>
+            <td><span class="badge pass">MET</span><small>Stage 1 matches Stage 0 end-to-end build latency</small></td>
+          </tr>
+          <tr>
+            <td class="name">Codegen quality &amp; CLI lightness<small>S1/S0 parity + startup + envelope</small></td>
+            <td><span class="badge pass">Tier A</span></td>
+            <td class="mono"><b>1.0007&times;</b> corpus med (max 1.0435&times;)<small>startup <b>8.099&nbsp;ms</b>
+                (&le;8.5); VM 10.27&nbsp;MiB</small></td>
+            <td class="mono">&mdash;</td>
+            <td class="mono">Stage-0 <code>default&lt;O3&gt;</code><small>HLC S1/S0
+                0.995&times;&ndash;1.007&times;</small></td>
+            <td class="mono">11.3 (P-3) + 11.5 (P-5)</td>
+            <td><span class="badge pass">MET</span><small>Bit-identical Stage 2&harr;3 object; release budgets enforced
+                in CI/local</small></td>
+          </tr>
         </tbody>
       </table>
     </div>
     <div class="note">
       <b>Why structural gaps exist (JIT vs AOT, boxed vs unboxed):</b>
-      (1) Node&rsquo;s V8 JIT speculatively compiles monomorphic loops into unboxed machine registers with hidden-class inline caches, whereas Spid3r-AOT preserves overflow-checked <code>i64</code> arithmetic, periodic cancellation polling (<code>CANCEL_POLL_INTERVAL=2048</code>), and <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> runtime containers across FFI trampolines.
-      (2) Rust compiles directly to unboxed stack/SSA values with zero runtime type-tag overhead. Targets shown as unreachable under Spid3r&rsquo;s safety/no-new-dependency/engine-contract invariants are retired openly in <code>docs/PERF_TARGET_RETIREMENT.md</code> (&sect;4 &amp; &sect;8, pending owner confirmation) rather than relaxed silently.
+      (1) Node&rsquo;s V8 JIT speculatively compiles monomorphic loops into unboxed machine registers with hidden-class
+      inline caches, whereas Spid3r-AOT preserves overflow-checked <code>i64</code> arithmetic, periodic cancellation
+      polling (<code>CANCEL_POLL_INTERVAL=2048</code>), and <code>Arc&lt;Mutex&lt;MapData&gt;&gt;</code> runtime
+      containers across FFI trampolines.
+      (2) Rust compiles directly to unboxed stack/SSA values with zero runtime type-tag overhead. Targets shown as
+      unreachable under Spid3r&rsquo;s safety/no-new-dependency/engine-contract invariants are retired openly in
+      <code>docs/PERF_TARGET_RETIREMENT.md</code> (&sect;4 &amp; &sect;8, pending owner confirmation) rather than
+      relaxed silently.
     </div>
 
-    
+
     <h2><span class="num">07</span>Phase 11 P-9: Continuous performance log (W-program trajectory)</h2>
     <p class="section-lead">
       End-to-end record from the first selfhost lexer measurement (Phase 1) through compiler hardening and
-      hot-path engineering (P-1&ndash;P-8), mirrored in <code>full_plan.html</code> Appendix B and checked by
+      hot-path engineering (P-1&ndash;P-8), backed by frozen JSON baselines and checked by
       <code>tools/bench_report.py --verify-sync</code>.
     </p>
     <div class="table-wrap">
@@ -1009,69 +1602,91 @@
           </tr>
         </thead>
         <tbody>
-        <tr>
-          <td class="mono">Phase 1.2 / 1.4</td>
-          <td class="mono">2026-11-14</td>
-          <td class="name">Selfhost lexer quadratic fix &amp; baseline</td>
-          <td>Fragment joins + <code>bytes</code> O(1) indexing cut 1 MB lex from 300s+ OOM to 5.4s (<code>0.24 MB/s</code>); Tier-B <code>&ge;1/2 Stage-0</code> (<code>0.005&times;</code>) retired openly to Tier-A floor <code>&ge; 0.19 MB/s</code>.</td>
-          <td class="mono">1.2 / 1.4 ledger</td>
-        </tr>
-<tr>
-          <td class="mono">Phase 11 P-1</td>
-          <td class="mono">2026-11-15</td>
-          <td class="name">Three-way HLC reference locked</td>
-          <td><code>prime</code>: VM 31.15, AOT 8.74, Node 1.70, Rust 1.36 ms; <code>json</code>: VM 167.92, AOT 199.05, Node 17.60 ms; <code>map</code>: VM 21.21, AOT 45.17, Node 1.56 ms (<code>benchmarks/reference.p1.json</code>).</td>
-          <td class="mono">11.1 (P-1)</td>
-        </tr>
-<tr>
-          <td class="mono">Phase 11 P-2</td>
-          <td class="mono">2026-11-16</td>
-          <td class="name">Selfhost toolchain baseline frozen</td>
-          <td>Stage-1 AOT: <code>lex</code> 4241.82 ms (0.240 MB/s), <code>parse</code> 1681.52 ms (72.0/s), <code>check</code> 2242.21 ms (54.0/s), <code>self_compile</code> 12123.26 ms (0.0482 MB/s), <code>corpus_build</code> 2205.89 ms (<code>benchmarks/selfhost/baseline.json</code>).</td>
-          <td class="mono">11.2 (P-2)</td>
-        </tr>
-<tr>
-          <td class="mono">Phase 11 P-3</td>
-          <td class="mono">2026-11-16</td>
-          <td class="name">Stage-1 release <code>&lt;O3&gt;</code> &amp; runtime alignment</td>
-          <td>Fixed debug staticlib lookup + wired LLVM PassBuilder <code>default&lt;O3&gt;</code>: HLC S1/S0 parity 0.995&times;&ndash;1.007&times; (<code>prime</code> 1.237&times; vs unopt IR); 111-corpus median 1.0007&times; (max 1.0435&times; &le; 1.25&times;); <code>self_compile</code> ~16.3 s vs 35.5 s.</td>
-          <td class="mono">11.3 (P-3)</td>
-        </tr>
-<tr>
-          <td class="mono">Phase 11 P-4</td>
-          <td class="mono">2026-11-16</td>
-          <td class="name">ThinLTO + split PGO hardening</td>
-          <td>Replaced <code>process::exit</code> with <code>ExitCode</code> so CRT flushes <code>.profraw</code>: <code>self_compile</code> S0 1313.41 &rarr; 1144.20 ms (&minus;12.88%), S1 9637.79 &rarr; 8901.70 ms (&minus;7.64%, &minus;26.57% vs P-2); binaries &minus;8.6% to &minus;9.6%.</td>
-          <td class="mono">11.4 (P-4)</td>
-        </tr>
-<tr>
-          <td class="mono">Phase 11 P-5</td>
-          <td class="mono">2026-11-16</td>
-          <td class="name">Lazy init &amp; lightness budgets</td>
-          <td>Lazy stdlib/tzdata resolution + single-read CLI: <code>spid3r --version</code> <code>8.099 ms &le; 8.5 ms</code> Tier-A floor; VM 10.27 MiB WS / 2.75 MiB commit; release size ceilings in <code>benchmarks/budgets.p5.json</code>.</td>
-          <td class="mono">11.5 (P-5)</td>
-        </tr>
-<tr>
-          <td class="mono">Phase 11 P-6</td>
-          <td class="mono">2026-11-16</td>
-          <td class="name">W4.1&ndash;W4.3 hot-path backlog</td>
-          <td>W4.1 bump-slab + small-int cache + zero-alloc dispatch, W4.2 lexer <code>BS.slice().to_string()</code> + &lt;18-digit int fast path, W4.3 top-level scalar <code>const</code> propagation: HLC AOT <code>prime</code> 5.76 ms (&minus;39.0%), <code>json</code> 148.82 ms (&minus;21.3%), <code>map</code> 28.00 ms (&minus;37.3%); selfhost <code>lex</code> 1387.53 ms (2.97&times;), <code>parse</code> 928.75 ms (1.22&times; Stage 0), <code>check</code> 1081.87 ms (1.12&times; Stage 0), <code>self_compile</code> 5932.15 ms (1.46&times;).</td>
-          <td class="mono">11.6 (P-6)</td>
-        </tr>
-<tr>
-          <td class="mono">Phase 11 P-7</td>
-          <td class="mono">2026-11-17</td>
-          <td class="name">CI advisory perf tracking</td>
-          <td>Extended Tier-A floors to all 5 selfhost workloads and wired the 2-consecutive-run <code>&gt;1.05&times; &amp;&amp; &gt;3&times; pooled MAD</code> rule + <code>actions/cache@v4</code> deltas into <code>phase0</code> and <code>aot</code> CI jobs; teeth verified red (exit 1) on regressed lex runs.</td>
-          <td class="mono">11.7 (P-7)</td>
-        </tr>
-<tr>
-          <td class="mono">Phase 11 P-8 / P-9</td>
-          <td class="mono">2026-11-17</td>
-          <td class="name">Honest target table &amp; doc sync</td>
-          <td>Published Section 06 three-way Tier A/B/C table, structural-gap notes, <code>docs/PERF_TARGET_RETIREMENT.md</code> &sect;8, and this continuous log synced between <code>benchmark.html</code> and <code>full_plan.html</code> Appendix B.</td>
-          <td class="mono">11.8 &ndash; 11.9</td>
-        </tr>
+          <tr>
+            <td class="mono">Phase 1.2 / 1.4</td>
+            <td class="mono">2026-11-14</td>
+            <td class="name">Selfhost lexer quadratic fix &amp; baseline</td>
+            <td>Fragment joins + <code>bytes</code> O(1) indexing cut 1 MB lex from 300s+ OOM to 5.4s
+              (<code>0.24 MB/s</code>); Tier-B <code>&ge;1/2 Stage-0</code> (<code>0.005&times;</code>) retired openly
+              to Tier-A floor <code>&ge; 0.19 MB/s</code>.</td>
+            <td class="mono">1.2 / 1.4 ledger</td>
+          </tr>
+          <tr>
+            <td class="mono">Phase 11 P-1</td>
+            <td class="mono">2026-11-15</td>
+            <td class="name">Three-way HLC reference locked</td>
+            <td><code>prime</code>: VM 31.15, AOT 8.74, Node 1.70, Rust 1.36 ms; <code>json</code>: VM 167.92, AOT
+              199.05, Node 17.60 ms; <code>map</code>: VM 21.21, AOT 45.17, Node 1.56 ms
+              (<code>benchmarks/reference.p1.json</code>).</td>
+            <td class="mono">11.1 (P-1)</td>
+          </tr>
+          <tr>
+            <td class="mono">Phase 11 P-2</td>
+            <td class="mono">2026-11-16</td>
+            <td class="name">Selfhost toolchain baseline frozen</td>
+            <td>Stage-1 AOT: <code>lex</code> 4241.82 ms (0.240 MB/s), <code>parse</code> 1681.52 ms (72.0/s),
+              <code>check</code> 2242.21 ms (54.0/s), <code>self_compile</code> 12123.26 ms (0.0482 MB/s),
+              <code>corpus_build</code> 2205.89 ms (<code>benchmarks/selfhost/baseline.json</code>).</td>
+            <td class="mono">11.2 (P-2)</td>
+          </tr>
+          <tr>
+            <td class="mono">Phase 11 P-3</td>
+            <td class="mono">2026-11-16</td>
+            <td class="name">Stage-1 release <code>&lt;O3&gt;</code> &amp; runtime alignment</td>
+            <td>Fixed debug staticlib lookup + wired LLVM PassBuilder <code>default&lt;O3&gt;</code>: HLC S1/S0 parity
+              0.995&times;&ndash;1.007&times; (<code>prime</code> 1.237&times; vs unopt IR); 111-corpus median
+              1.0007&times; (max 1.0435&times; &le; 1.25&times;); <code>self_compile</code> ~16.3 s vs 35.5 s.</td>
+            <td class="mono">11.3 (P-3)</td>
+          </tr>
+          <tr>
+            <td class="mono">Phase 11 P-4</td>
+            <td class="mono">2026-11-16</td>
+            <td class="name">ThinLTO + split PGO hardening</td>
+            <td>Replaced <code>process::exit</code> with <code>ExitCode</code> so CRT flushes <code>.profraw</code>:
+              <code>self_compile</code> S0 1313.41 &rarr; 1144.20 ms (&minus;12.88%), S1 9637.79 &rarr; 8901.70 ms
+              (&minus;7.64%, &minus;26.57% vs P-2); binaries &minus;8.6% to &minus;9.6%.</td>
+            <td class="mono">11.4 (P-4)</td>
+          </tr>
+          <tr>
+            <td class="mono">Phase 11 P-5</td>
+            <td class="mono">2026-11-16</td>
+            <td class="name">Lazy init &amp; lightness budgets</td>
+            <td>Lazy stdlib/tzdata resolution + single-read CLI: <code>spid3r --version</code>
+              <code>8.099 ms &le; 8.5 ms</code> Tier-A floor; VM 10.27 MiB WS / 2.75 MiB commit; release size ceilings
+              in <code>benchmarks/budgets.p5.json</code>.</td>
+            <td class="mono">11.5 (P-5)</td>
+          </tr>
+          <tr>
+            <td class="mono">Phase 11 P-6</td>
+            <td class="mono">2026-11-16</td>
+            <td class="name">W4.1&ndash;W4.3 hot-path backlog</td>
+            <td>W4.1 bump-slab + small-int cache + zero-alloc dispatch, W4.2 lexer <code>BS.slice().to_string()</code> +
+              &lt;18-digit int fast path, W4.3 top-level scalar <code>const</code> propagation: HLC AOT
+              <code>prime</code> 5.76 ms (&minus;39.0%), <code>json</code> 148.82 ms (&minus;21.3%), <code>map</code>
+              28.00 ms (&minus;37.3%); selfhost <code>lex</code> 1387.53 ms (2.97&times;), <code>parse</code> 928.75 ms
+              (1.22&times; Stage 0), <code>check</code> 1081.87 ms (1.12&times; Stage 0), <code>self_compile</code>
+              5932.15 ms (1.46&times;).</td>
+            <td class="mono">11.6 (P-6)</td>
+          </tr>
+          <tr>
+            <td class="mono">Phase 11 P-7</td>
+            <td class="mono">2026-11-17</td>
+            <td class="name">CI advisory perf tracking</td>
+            <td>Extended Tier-A floors to all 5 selfhost workloads and wired the 2-consecutive-run
+              <code>&gt;1.05&times; &amp;&amp; &gt;3&times; pooled MAD</code> rule + <code>actions/cache@v4</code>
+              deltas into <code>phase0</code> and <code>aot</code> CI jobs; teeth verified red (exit 1) on regressed lex
+              runs.</td>
+            <td class="mono">11.7 (P-7)</td>
+          </tr>
+          <tr>
+            <td class="mono">Phase 11 P-8 / P-9</td>
+            <td class="mono">2026-11-17</td>
+            <td class="name">Honest target table &amp; doc sync</td>
+            <td>Published Section 06 three-way Tier A/B/C table, structural-gap notes,
+              <code>docs/PERF_TARGET_RETIREMENT.md</code> &sect;8, and this continuous log synced between
+              <code>benchmark.html</code> and frozen JSON baselines.</td>
+            <td class="mono">11.8 &ndash; 11.9</td>
+          </tr>
         </tbody>
       </table>
     </div>

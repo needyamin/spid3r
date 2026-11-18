@@ -114,6 +114,7 @@ pub fn spid3r_eval_json(src: &str, engine: &str) -> String {
                 vis: crate::ast::Vis::Private,
                 is_async: false,
                 is_extern: false,
+                is_variadic: false,
                 name: Some("main".to_string()),
                 params: Vec::new(),
                 ret: None,

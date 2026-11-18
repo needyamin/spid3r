@@ -3,35 +3,42 @@
 Status: **Adopted** (2026-11-14). This is the architecture decision record for
 making Spid3r compile its own compiler, standard library toolchain and core
 build tools through the LLVM Native AOT backend. It defines the vocabulary the
-roadmap (`full_plan.html`) uses: every roadmap checkbox cites one of the
+roadmap (`SH-1`…`SH-8`) uses: every milestone cites one of the
 decision IDs below, and a change to any of them is a new ledger entry, not a
 silent edit.
 
-**Progress (2026-11-15, evidence in the roadmap ledger):** the Spid3r-written
+**Progress (2026-11-18, evidence in the roadmap ledger):** the Spid3r-written
 toolchain covers the lexer, parser, semantic checker (with lint warnings),
-lowering, bytecode compiler + container writer, the LLVM-C codegen (with the
-unboxed-i64 locals system, hybrid compares, and clean C++ resource disposal),
+lowering, bytecode compiler + container writer, the LLVM-C codegen (`--release`
+`default<O3>` pass pipeline, top-level scalar `const` literal folding, the
+unboxed-`i64` locals system, hybrid compares, and clean C++ resource disposal),
 the build driver's link + module-flattening halves, the **Stage-1 / Stage-2
-self-hosting bootstrap**, the core dev tools (`test`, `fmt`, extended
-`check`, `pack`/`unpack`/`verify`/`dist`), SHA-256 runtime pinning
-(`verify-runtime`, `docs/selfhost/RUNTIME_ABI.md`, `tools/runtime_artifact.sh`), and the
-**Phase 10.2 retirement review** (`docs/selfhost/SELFHOST_RETIREMENT.md`) — 33/51 roadmap
-steps (Phases 0–9 + 10.2 closed; 10.1 verified locally on Windows via
-`tools/release_selfhost.sh`, with GitHub CI Linux `aot` + 4-tarball
-`release.yml` verification awaiting push and `workflow_dispatch`/tag run).
+self-hosting bootstrap**, the core dev tools (`test`, `fmt`, extended `check`,
+`pack`/`unpack`/`verify`/`dist`), SHA-256 runtime pinning (`verify-runtime`,
+`docs/selfhost/RUNTIME_ABI.md`, `tools/runtime_artifact.sh`), the **Phase 10.2
+retirement review** (`docs/selfhost/SELFHOST_RETIREMENT.md`), and all of **Phase
+11 (`P-1`–`P-9`)** (ThinLTO + split PGO, lazy builtin initialization, W4.1–W4.3
+arena/`small_int_ptr`/`lexer.matrix`/unboxing speedups, 2-run CI perf tracking,
+and synced `Spid3r-AOT vs Node vs Rust` benchmark reporting) — `42/51` selfhost
+roadmap steps closed (Phases `0–9`, `10.2`, and `11.1–11.9` closed; `10.1`
+verified on Windows via `tools/release_selfhost.sh` and Linux `aot` CI, with
+4-tarball `release.yml` pending `workflow_dispatch`/tag run; `GR-1..4` and
+`SEC-A..D` final sign-off open), alongside **Phases `R0–R8`** of the
+runtime/language program (`75` `spid3r_*` trampolines, `257` stdlib natives,
+verified through commit `c9c4e65`, CI `#141` 10/10 jobs green).
 `spid3r build selfhost/main.matrix -o selfhost/main_native.exe` builds Stage 1
 (`selfhost/main_native.exe`), `selfhost/main_native.exe build
 selfhost/main.matrix` builds Stage 2 with zero Rust compiler invocation, and
-Stage 2 compiles Stage 3 emitting a byte-identical COFF `spid3r_main.o`
-(SHA-256 `03e10595...ce4d2fc` on the Phase 10 17-file closure). Three-way
+Stage 2 compiles Stage 3 emitting a bit-identical COFF `spid3r_main.o`
+(Phase 11 P-6 hardened PGO fixed-point SHA-256
+`aefe3cb1870584f292634eafd1f30d64b351bee09b899d0c85a57bfbd63cf37b`). Three-way
 frozen-corpus parity across Stage 0, Stage 1, and Stage 2
 (`tools/selfhost_bootstrap_parity.sh`: `pass=124 fail=0 skip=10 obj_match=111
-obj_mismatch=0`, PE metadata `ok=226 fail=0`) and Tier-B performance (`0.996×`
-Stage-2 compute geomean vs Stage 0) pass alongside all Phase 8/9 parity
-harnesses (`selfhost_test_parity.sh` 10/10, `selfhost_fmt_check_parity.sh` 17/17
-+ 134/134 corpus byte-identical, `selfhost_pkg_parity.sh` 11/11,
-`selfhost_runtime_parity.sh` 16/16). Next real work: push Phase 10 to verify
-`ci.yml` + `release.yml` (closing `10.1`), then Phase 11.
+obj_mismatch=0`, PE metadata `ok=226 fail=0`) passes alongside all Phase 8/9
+parity harnesses (`selfhost_test_parity.sh` 10/10, `selfhost_fmt_check_parity.sh`
+17/17 + 134/134 corpus byte-identical, `selfhost_pkg_parity.sh` 11/11,
+`selfhost_runtime_parity.sh` 16/16). Remaining work: trigger `release.yml` to
+close `10.1` + final `GR-1..4` / `SEC-A..D` audit.
 
 The ground rule that governs all of it lives in the roadmap and is repeated
 here because everything else depends on it: **a checkbox may be checked only
@@ -107,17 +114,21 @@ selfhost/
   vmc.matrix           Phase 4 — the bytecode compiler (port of the VM's compiler)
   bytecode_matrix      Phase 4 — the v3 checksummed container writer
   llvm.matrix          Phase 5.1 — the LLVM-C extern surface (SH-7) + emission
-  codegen.matrix       Phase 5.2 — the codegen (port of src/native/ir.rs):
-                       the SLOW path plus the unboxed-i64 locals system and
-                       the hybrid compares; driven by `main.matrix native`
-                       (parse → check → lower → LLVM-C codegen → verify →
-                       emit → link.matrix)
+  llvm_min.matrix      the 5.1 gate harness (minimal object emit + verify)
+  codegen.matrix       Phase 5.2 / 11.3 / 11.6 — the codegen (port of src/native/ir.rs):
+                       the SLOW path plus top-level const folding, the unboxed-i64
+                       locals system, hybrid compares, and `--release default<O3>`;
+                       driven by `main.matrix native` (parse → check → lower → LLVM-C
+                       codegen → verify → emit → link.matrix)
   link.matrix          Phase 6.1 — the build driver's linking half (MSVC)
   flatten.matrix       Phase 6.2 — AOT module flattening (plain/aliased/
                        selective imports; __mod_/__sel_ mangling; the
                        no-leak export rule)
+  test_runner.matrix   Phase 8.1 — self-hosted `spid3r test` driver
+  fmt.matrix           Phase 8.2 — canonical formatter (`spid3r fmt`)
+  pkg.matrix           Phase 8.3 — package tooling (`pack`/`unpack`/`verify`/`dist`)
   link_test.matrix     the 6.1 gate harness (exe-exits-42 proof)
-  main.matrix          entry: parity surfaces + `compile` (bytecode) + `native`
+  main.matrix          entry: parity surfaces + dev tools + `compile`/`native`/`build`
   roundtrip_*.matrix   the model round-trip gate tools (2.1)
   corpus/              Phase 0 — the frozen differential corpus (SH-4)
 ```
@@ -172,8 +183,8 @@ parity harness is teeth-proven: deliberately broken once, shown RED, restored.
 
 Self-hosted compilers link the existing runtime as a **prebuilt, versioned,
 SHA-256-pinned staticlib artifact** (`spid3r_lang.lib` / `libspid3r_lang.a`,
-with legacy fallback names `spid3r.lib` / `libspid3r.a`: the 66 AOT trampolines
-plus the 229 stdlib natives). This is what makes "compilers need no Rust"
+with legacy fallback names `spid3r.lib` / `libspid3r.a`: the 75 AOT trampolines
+plus the 257 stdlib natives). This is what makes "compilers need no Rust"
 reachable in one program: rebuilding a compiler never rebuilds the runtime it
 links. The full C ABI and native table specification live in
 [RUNTIME_ABI.md](RUNTIME_ABI.md); `tools/runtime_artifact.sh` packages the versioned
@@ -239,4 +250,4 @@ release by tag before the pipeline switches.
 - [README.md](README.md) & `diagrams/` (self-hosting index + architecture diagrams)
 - [RUNTIME_ABI.md](RUNTIME_ABI.md) (pinned staticlib ABI, provenance & native table)
 - [SELFHOST_RETIREMENT.md](SELFHOST_RETIREMENT.md) (Phase 10.2 retirement boundary, rollback tags & maintenance rules)
-- [ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md) (the three-engine bar) · [NATIVE.md](../NATIVE.md) (AOT subset, memory model, exit codes) · [FFI.md](../FFI.md) (extended by SH-7) · [GC.md](../GC.md) · [SECURITY.md](../SECURITY.md) · [PERF_TARGET_RETIREMENT.md](../PERF_TARGET_RETIREMENT.md) (target discipline) · [full_plan.html](../../full_plan.html) (the roadmap and append-only evidence ledger).
+- [ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md) (the three-engine bar) · [NATIVE.md](../NATIVE.md) (AOT subset, memory model, exit codes) · [FFI.md](../FFI.md) (extended by SH-7) · [GC.md](../GC.md) · [SECURITY.md](../SECURITY.md) · [PERF_TARGET_RETIREMENT.md](../PERF_TARGET_RETIREMENT.md) (target discipline) · [implementation_plan.html](../../implementation_plan.html) (active language/runtime roadmap).

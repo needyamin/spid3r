@@ -660,7 +660,7 @@ impl Parser {
         }
         // `fn first<T>(xs: [T]) -> T` - the names are captured, then erased.
         let type_params = self.parse_type_params()?;
-        let params = self.parse_params()?;
+        let (params, is_variadic) = self.parse_params_inner(is_extern)?;
         let ret = if self.eat(&TokenKind::Arrow) {
             Some(self.parse_type()?)
         } else {
@@ -683,6 +683,7 @@ impl Parser {
             vis,
             is_async,
             is_extern,
+            is_variadic,
             name,
             params,
             ret,
@@ -693,13 +694,38 @@ impl Parser {
     }
 
     fn parse_params(&mut self) -> SpidResult<Vec<Param>> {
+        Ok(self.parse_params_inner(false)?.0)
+    }
+
+    fn parse_params_inner(&mut self, allow_variadic: bool) -> SpidResult<(Vec<Param>, bool)> {
         self.expect(&TokenKind::LParen, "'('")?;
         let mut params = Vec::new();
+        let mut is_variadic = false;
         // Defaults are trailing-only: once `p = v` appears, every parameter
         // after it needs one too (the arity range is otherwise ambiguous).
         let mut seen_default = false;
         if !self.at(&TokenKind::RParen) {
             loop {
+                if self.at(&TokenKind::Dot) {
+                    if !allow_variadic {
+                        return Err(self.err_here(
+                            "variadic '...' is only supported on extern fn declarations",
+                        ));
+                    }
+                    self.expect(&TokenKind::Dot, "'.'")?;
+                    self.expect(&TokenKind::Dot, "'.'")?;
+                    self.expect(&TokenKind::Dot, "'.'")?;
+                    if params.is_empty() {
+                        return Err(self.err_here(
+                            "variadic extern fn requires at least one fixed parameter before '...'",
+                        ));
+                    }
+                    if !self.at(&TokenKind::RParen) {
+                        return Err(self.err_here("variadic '...' must be the last parameter"));
+                    }
+                    is_variadic = true;
+                    break;
+                }
                 let sp = self.span();
                 let (name, _) = self.expect_ident()?;
                 let ty = if self.eat(&TokenKind::Colon) {
@@ -734,7 +760,7 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RParen, "')'")?;
-        Ok(params)
+        Ok((params, is_variadic))
     }
 
     fn parse_single_type(&mut self) -> SpidResult<TypeExpr> {
@@ -911,6 +937,7 @@ impl Parser {
                         vis,
                         is_async,
                         is_extern: false,
+                        is_variadic: false,
                         name: Some(mname),
                         params,
                         ret,
@@ -928,6 +955,7 @@ impl Parser {
                         vis,
                         is_async,
                         is_extern: false,
+                        is_variadic: false,
                         name: Some(mname),
                         params,
                         ret,
@@ -946,6 +974,7 @@ impl Parser {
                     vis,
                     is_async: false,
                     is_extern: false,
+                    is_variadic: false,
                     name: Some("new".to_string()),
                     params,
                     ret: None,
@@ -1052,6 +1081,7 @@ impl Parser {
                     vis: Vis::Public,
                     is_async: false,
                     is_extern: false,
+                    is_variadic: false,
                     name: Some(mname),
                     params,
                     ret,
@@ -2285,6 +2315,7 @@ impl Parser {
             vis: Vis::Private,
             is_async: false,
             is_extern: false,
+            is_variadic: false,
             name: None,
             params: vec![Param {
                 name,
@@ -2314,6 +2345,7 @@ impl Parser {
             vis: Vis::Private,
             is_async: false,
             is_extern: false,
+            is_variadic: false,
             name: None,
             params,
             ret,

@@ -182,6 +182,18 @@ pub struct BuildMeta {
     pub bundle_runtime: bool,
     /// Optional target CPU override (`x86-64`, `x86-64-v2`, `x86-64-v3`, `native`).
     pub target_cpu: Option<String>,
+    /// DP-5: allow runtime `dl_open`/`dl_sym`/`dl_close`/`dl_call` FFI.
+    pub allow_dlopen: bool,
+    /// R12.3: enforce AOT instruction-step budget.
+    pub enforce_budget: Option<i64>,
+    /// R9.4: freestanding profile (no scheduler/net/full stdlib, custom entry).
+    pub freestanding: bool,
+    /// R9.4: custom entry point symbol name for freestanding builds (default `main` on host).
+    pub entry: Option<String>,
+    /// R9.5: explicit sysroot path for cross-compilation.
+    pub sysroot: Option<PathBuf>,
+    /// R9.4/R9.5: emit target object file + `.sha256` without linking.
+    pub emit_obj: bool,
 }
 
 /// The program compiled when `--bytecode` is given.
@@ -281,6 +293,12 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     let mut subsystem = Subsystem::Console;
     let mut allow_gui = false;
     let mut bundle_runtime = false;
+    let mut allow_dlopen = false;
+    let mut enforce_budget: Option<i64> = None;
+    let mut freestanding = false;
+    let mut entry: Option<String> = None;
+    let mut sysroot: Option<PathBuf> = None;
+    let mut emit_obj = false;
     let mut bytecode: Option<PathBuf> = None;
     let mut embed: Vec<String> = Vec::new();
     let mut link_libs: Vec<String> = Vec::new();
@@ -380,6 +398,39 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
             }
             "--allow-gui" => allow_gui = true,
             "--bundle-runtime" => bundle_runtime = true,
+            "--allow-dlopen" => allow_dlopen = true,
+            "--enforce-budget" => {
+                i += 1;
+                let raw = args
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| err("--enforce-budget needs a positive integer step limit"))?;
+                let n: i64 = raw.parse().map_err(|_| {
+                    err(format!("--enforce-budget expects an integer, got '{raw}'"))
+                })?;
+                if n <= 0 {
+                    return Err(err("--enforce-budget must be > 0"));
+                }
+                enforce_budget = Some(n);
+            }
+            "--freestanding" => freestanding = true,
+            "--entry" => {
+                i += 1;
+                entry = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| err("--entry needs a symbol name"))?,
+                );
+            }
+            "--sysroot" => {
+                i += 1;
+                sysroot = Some(PathBuf::from(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| err("--sysroot needs a directory path"))?,
+                ));
+            }
+            "--emit-obj" => emit_obj = true,
             "--bytecode" => {
                 i += 1;
                 bytecode = Some(PathBuf::from(
@@ -537,15 +588,39 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     // confusing linker error after a successful compile.
     let host = default_triple();
     if triple != host {
-        return Err(err(format!(
-            "--target '{}' is not supported: `spid3r build` links for the host \
-             ('{}') only. Build on the target OS instead (see docs/BUILDING.md).",
-            triple, host
-        )));
+        if !(triple.starts_with("x86_64-") || triple.starts_with("aarch64-")) {
+            return Err(err(format!(
+                "--target '{}' is not supported: supported cross architectures are x86_64-* and aarch64-* (host is '{}')",
+                triple, host
+            )));
+        }
+        if !emit_obj && sysroot.is_none() {
+            return Err(err(format!(
+                "--target '{}' requires --sysroot <dir> (or --emit-obj for object-only cross output); host is '{}'",
+                triple, host
+            )));
+        }
     }
-    // `-o app` used to write an extensionless file that Windows will not
-    // launch; `compile` already appends its canonical extension.
-    let out = normalize_exe_path(out.unwrap_or_else(|| default_exe(&stem)), &triple);
+    if let Some(ref sr) = sysroot {
+        if !sr.is_dir() {
+            return Err(err(format!(
+                "--sysroot '{}' does not exist or is not a directory",
+                sr.display()
+            )));
+        }
+    }
+    let out = if emit_obj {
+        out.unwrap_or_else(|| {
+            let ext = if triple.contains("windows") {
+                "obj"
+            } else {
+                "o"
+            };
+            format!("{}.{}", stem, ext)
+        })
+    } else {
+        normalize_exe_path(out.unwrap_or_else(|| default_exe(&stem)), &triple)
+    };
     let out_path = PathBuf::from(&out);
 
     let meta = BuildMeta {
@@ -556,6 +631,12 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
         allow_gui,
         bundle_runtime,
         target_cpu,
+        allow_dlopen,
+        enforce_budget,
+        freestanding,
+        entry,
+        sysroot,
+        emit_obj,
     };
 
     // Collect and validate the payload *before* compiling and linking: a bad
@@ -888,22 +969,50 @@ pub fn build_native(
         ));
     }
     // 1. LLVM IR
-    let module = crate::native::ir::build_module(program, "spid3r_program")
-        .map_err(|e| Diagnostic::new(Phase::Usage, e))?;
+    let module = crate::native::ir::build_module_with_opts(
+        program,
+        "spid3r_program",
+        &crate::native::ir::IrOptions {
+            target_triple: Some(triple.to_string()),
+            allow_dlopen: meta.allow_dlopen,
+            enforce_budget: meta.enforce_budget,
+            freestanding: meta.freestanding,
+            entry_symbol: meta.entry.clone(),
+        },
+    )
+    .map_err(|e| Diagnostic::new(Phase::Usage, e))?;
     if std::env::var_os("SPID3R_DUMP_IR").is_some() {
         eprintln!("{}", module.to_string());
     }
     // 2. object file
+    let obj_target = if meta.emit_obj { out_path } else { obj_path };
     crate::native::llvm::emit_object_with_cpu(
         &module,
         triple,
         meta.target_cpu.as_deref(),
         opt,
-        obj_path,
+        obj_target,
     )
     .map_err(|e| Diagnostic::new(Phase::Usage, e))?;
+    if meta.emit_obj {
+        write_sha256_sidecar(out_path)?;
+        return Ok(format!(
+            "emitted object {} ({} {} bit, {})",
+            out_path.display(),
+            triple,
+            if triple.contains("i686") || triple.contains("i586") {
+                32
+            } else {
+                64
+            },
+            if opt { "release" } else { "debug" }
+        ));
+    }
     // 3. link against the runtime staticlib
     link_executable(obj_path, out_path, triple, meta, opt, tmp)?;
+    if triple != default_triple() {
+        write_sha256_sidecar(out_path)?;
+    }
     Ok(format!(
         "built {} ({} {} bit, {})",
         out_path.display(),
@@ -1173,6 +1282,56 @@ fn llvm_dll_elsewhere() -> Option<String> {
         })
 }
 
+fn write_sha256_sidecar(artifact: &Path) -> Result<(), Diagnostic> {
+    let bytes = std::fs::read(artifact).map_err(|e| {
+        Diagnostic::new(
+            Phase::Build,
+            format!(
+                "cannot read '{}' for sha256 sidecar: {e}",
+                artifact.display()
+            ),
+        )
+    })?;
+    let hex = crate::pkg::sha256_hex(&bytes);
+    let fname = artifact
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact");
+    let sidecar = PathBuf::from(format!("{}.sha256", artifact.display()));
+    std::fs::write(&sidecar, format!("{hex}  {fname}\n")).map_err(|e| {
+        Diagnostic::new(
+            Phase::Build,
+            format!("cannot write '{}': {e}", sidecar.display()),
+        )
+    })?;
+    Ok(())
+}
+
+/// Find `libspid3r.a` / `spid3r.lib` inside an explicit `--sysroot`.
+fn find_sysroot_staticlib(sysroot: &Path, triple: &str) -> Result<PathBuf, Diagnostic> {
+    let lib_name = if triple.contains("windows") {
+        "spid3r_lang.lib"
+    } else {
+        "libspid3r_lang.a"
+    };
+    let candidates = [
+        sysroot.join("lib").join(lib_name),
+        sysroot.join("usr").join("lib").join(lib_name),
+        sysroot.join(lib_name),
+    ];
+    for c in &candidates {
+        if c.is_file() {
+            return Ok(c.clone());
+        }
+    }
+    Err(err(format!(
+        "cross-compile for '{}' requires '{}' inside --sysroot '{}'",
+        triple,
+        lib_name,
+        sysroot.display()
+    )))
+}
+
 /// Find `libspid3r.a` / `spid3r.lib` via environment overrides, sysroot layout,
 /// or Cargo target directories (see [`super::find_staticlib`]).
 fn find_staticlib() -> Result<PathBuf, Diagnostic> {
@@ -1188,6 +1347,40 @@ fn link_executable(
     opt: bool,
     tmp: &Path,
 ) -> Result<(), Diagnostic> {
+    if triple != default_triple() {
+        let sr = meta
+            .sysroot
+            .as_ref()
+            .ok_or_else(|| err(format!("--target '{}' requires --sysroot <dir>", triple)))?;
+        let lib = find_sysroot_staticlib(sr, triple)?;
+        let driver = which_program("clang").ok_or_else(|| {
+            err(format!(
+                "cross-linking '{}' requires 'clang' on PATH",
+                triple
+            ))
+        })?;
+        let mut cmd = std::process::Command::new(driver);
+        cmd.arg(format!("--target={triple}"))
+            .arg(format!("--sysroot={}", sr.display()))
+            .arg(obj)
+            .arg(&lib)
+            .arg("-o")
+            .arg(out);
+        if opt {
+            cmd.arg("-O2");
+        }
+        let status = cmd
+            .output()
+            .map_err(|e| err(format!("cross-link failed: {e}")))?;
+        if !status.status.success() {
+            return Err(err(format!(
+                "cross-link for '{}' failed:\n{}",
+                triple,
+                String::from_utf8_lossy(&status.stderr)
+            )));
+        }
+        return Ok(());
+    }
     let lib = find_staticlib()?;
     if cfg!(windows) {
         link_windows(obj, out, &lib, meta, opt, tmp)

@@ -315,6 +315,12 @@ const CLAIMS = [
     src: 'fn main() { let i = spid3rinfo(); println(i.has("AOT Memory")); return 0; }',
     expect: 'true',
   },
+  {
+    doc: 'doc.html / R9.3 (atomic_int)',
+    claim: 'atomic_int(7) supports atomic load and cas',
+    src: 'fn main() { let a = atomic_int(7); println(type_of(a)); println(a.cas(7, 42)); println(a.load()); return 0; }',
+    expect: 'atomic_int\ntrue\n42',
+  },
 ];
 
 // Constructors: each documented constructor must be callable and must produce

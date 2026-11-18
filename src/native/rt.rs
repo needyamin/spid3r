@@ -2306,6 +2306,27 @@ pub extern "C" fn spid3r_rt_start(entry: extern "C" fn() -> *mut Value) -> i32 {
     ffi_guard("rt_start", |_| 70, || run_program(entry))
 }
 
+/// Minimal freestanding entry (R9.4): skips scheduler, net, tz, and full stdlib,
+/// installing only core console/value primitives (`print`, `println`, `string`, `len`, `type_of`).
+#[no_mangle]
+pub extern "C" fn spid3r_rt_start_freestanding(entry: extern "C" fn() -> *mut Value) -> i32 {
+    {
+        let mut g = globals().lock().unwrap();
+        for (name, func) in crate::stdlib::builtin_defs() {
+            if matches!(
+                name,
+                "print" | "println" | "eprint" | "string" | "len" | "type_of"
+            ) {
+                g.insert(
+                    name.to_string(),
+                    Value::Native(std::sync::Arc::new(crate::value::NativeFn { name, func })),
+                );
+            }
+        }
+    }
+    ffi_guard("rt_start_freestanding", |_| 70, || run_program(entry))
+}
+
 /// Run the compiled entry (class registration + top-level statements) and then
 /// `main`, returning the process exit code. Top-level statements that throw
 /// outside a `try` route to the entry's uncaught block (which exits); an
@@ -2468,6 +2489,188 @@ pub extern "C" fn spid3r_runtime_version() -> *mut c_char {
         Ok(c) => c.into_raw(),
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+/// Box a returned C struct by populating fields on a new instance of `class_name`
+/// without running `new()`.
+#[no_mangle]
+pub extern "C" fn spid3r_struct_box(
+    class_name: *const c_char,
+    count: usize,
+    field_names: *const *const c_char,
+    field_vals: *const *mut Value,
+) -> *mut Value {
+    let cname = cstr(class_name);
+    let cls_val = {
+        let g = globals().lock().unwrap();
+        g.get(&cname).cloned()
+    };
+    let Some(cls_val) = cls_val else {
+        return rt_throw(&format!("unknown struct/class '{}'", cname));
+    };
+    let mut pairs = Vec::with_capacity(count);
+    for i in 0..count {
+        // SAFETY: `field_names` and `field_vals` point to `count`-element arrays
+        // stack-allocated by the AOT caller for the duration of this call.
+        let (fname_ptr, val_ptr) = unsafe { (*field_names.add(i), *field_vals.add(i)) };
+        let fname = cstr(fname_ptr);
+        let val = deref(val_ptr).clone();
+        pairs.push((fname, val));
+    }
+    match cls_val {
+        Value::VClass(cls) => {
+            let mut slots = vec![Value::Null; cls.slot_names.len()];
+            for (fname, val) in pairs {
+                if let Some(&idx) = cls.slot_index.get(&fname) {
+                    if let Some(slot) = slots.get_mut(idx) {
+                        *slot = val;
+                    }
+                }
+            }
+            leak_fast(Value::VInstance(new_ref(crate::value::VmInstanceData {
+                class: cls,
+                slots,
+            })))
+        }
+        Value::CClass(cls) => {
+            let mut fields = HashMap::new();
+            for (fname, val) in pairs {
+                fields.insert(fname, val);
+            }
+            leak_fast(Value::CInstance(new_ref(CompiledInstanceData {
+                class: cls,
+                fields,
+            })))
+        }
+        other => rt_throw(&format!(
+            "'{}' is not a class/struct, found {}",
+            cname,
+            crate::value::type_name(&other)
+        )),
+    }
+}
+
+/// Runtime dynamic library load (`dl_open`, gated by `--allow-dlopen` at build time).
+#[cfg_attr(not(any(windows, unix)), allow(unused_variables))]
+#[no_mangle]
+pub extern "C" fn spid3r_dl_open(path: *mut Value) -> *mut Value {
+    ffi_value("dl_open", || {
+        let s = match deref(path) {
+            Value::Str(s) => s.to_string(),
+            other => {
+                return rt_throw(&format!(
+                    "dl_open expects a string path, found {}",
+                    crate::value::type_name(other)
+                ))
+            }
+        };
+        let Ok(cs) = CString::new(s.as_str()) else {
+            return rt_throw("dl_open: path contains interior NUL byte");
+        };
+        #[cfg(windows)]
+        let handle = {
+            extern "system" {
+                fn LoadLibraryA(lp_lib_file_name: *const c_char) -> *mut c_void;
+            }
+            // SAFETY: `cs.as_ptr()` is a valid NUL-terminated C string for the duration of the call.
+            unsafe { LoadLibraryA(cs.as_ptr()) }
+        };
+        #[cfg(unix)]
+        let handle = {
+            extern "C" {
+                fn dlopen(filename: *const c_char, flag: i32) -> *mut c_void;
+            }
+            const RTLD_LAZY: i32 = 1;
+            // SAFETY: `cs.as_ptr()` is a valid NUL-terminated C string; `RTLD_LAZY` is standard POSIX.
+            unsafe { dlopen(cs.as_ptr(), RTLD_LAZY) }
+        };
+        #[cfg(not(any(windows, unix)))]
+        let handle: *mut c_void = std::ptr::null_mut();
+
+        if handle.is_null() {
+            return rt_throw(&format!("dl_open: failed to load '{}'", s));
+        }
+        leak_fast(Value::Int(handle as usize as i64))
+    })
+}
+
+/// Resolve a symbol from a `dl_open` handle (`dl_sym`, gated by `--allow-dlopen`).
+#[cfg_attr(not(any(windows, unix)), allow(unused_variables))]
+#[no_mangle]
+pub extern "C" fn spid3r_dl_sym(handle_val: *mut Value, sym: *mut Value) -> *mut Value {
+    ffi_value("dl_sym", || {
+        let h = match deref(handle_val) {
+            Value::Int(i) if *i != 0 => *i as usize as *mut c_void,
+            _ => return rt_throw("dl_sym: expected a valid library handle"),
+        };
+        let s = match deref(sym) {
+            Value::Str(s) => s.to_string(),
+            other => {
+                return rt_throw(&format!(
+                    "dl_sym expects a string symbol name, found {}",
+                    crate::value::type_name(other)
+                ))
+            }
+        };
+        let Ok(cs) = CString::new(s.as_str()) else {
+            return rt_throw("dl_sym: symbol name contains interior NUL byte");
+        };
+        #[cfg(windows)]
+        let addr = {
+            extern "system" {
+                fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const u8) -> *mut c_void;
+            }
+            // SAFETY: `h` is a non-null module handle and `cs.as_ptr()` is NUL-terminated.
+            unsafe { GetProcAddress(h, cs.as_ptr() as *const u8) }
+        };
+        #[cfg(unix)]
+        let addr = {
+            extern "C" {
+                fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+            }
+            // SAFETY: `h` is a non-null dlopen handle and `cs.as_ptr()` is NUL-terminated.
+            unsafe { dlsym(h, cs.as_ptr()) }
+        };
+        #[cfg(not(any(windows, unix)))]
+        let addr: *mut c_void = std::ptr::null_mut();
+
+        if addr.is_null() {
+            return rt_throw(&format!("dl_sym: symbol '{}' not found", s));
+        }
+        leak_fast(Value::Int(addr as usize as i64))
+    })
+}
+
+/// Close a `dl_open` handle (`dl_close`, gated by `--allow-dlopen`).
+#[cfg_attr(not(any(windows, unix)), allow(unused_variables))]
+#[no_mangle]
+pub extern "C" fn spid3r_dl_close(handle_val: *mut Value) -> *mut Value {
+    ffi_value("dl_close", || {
+        let h = match deref(handle_val) {
+            Value::Int(i) if *i != 0 => *i as usize as *mut c_void,
+            _ => return rt_throw("dl_close: expected a valid library handle"),
+        };
+        #[cfg(windows)]
+        let ok = {
+            extern "system" {
+                fn FreeLibrary(h_lib_module: *mut c_void) -> i32;
+            }
+            // SAFETY: `h` was checked non-null and came from `dl_open`.
+            unsafe { FreeLibrary(h) != 0 }
+        };
+        #[cfg(unix)]
+        let ok = {
+            extern "C" {
+                fn dlclose(handle: *mut c_void) -> i32;
+            }
+            // SAFETY: `h` was checked non-null and came from `dl_open`.
+            unsafe { dlclose(h) == 0 }
+        };
+        #[cfg(not(any(windows, unix)))]
+        let ok = false;
+
+        leak_fast(Value::Bool(ok))
+    })
 }
 
 // ----------------------------------------------------------------------------

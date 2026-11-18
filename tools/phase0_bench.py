@@ -1192,7 +1192,7 @@ def measure_selfhost_suite(args) -> dict:
         return {
             "schema": "spid3r.selfhost.bench/1",
             "generated_utc": utcnow(),
-            "plan": {"file": "full_plan.html", "phase": "11.P-2", "commit_sha": git_sha()},
+            "plan": {"file": "docs/selfhost/SELFHOST.md", "phase": "11.P-2", "commit_sha": git_sha()},
             "protocol": {
                 "warmup": args.warmup, "repeats": args.repeats, "passes": args.passes,
                 "mad_gate": MAD_GATE, "agreement_band_pass": PASS_BAND,

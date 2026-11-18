@@ -446,8 +446,20 @@ pub fn module_exports_of_in(
     span: &Span,
     extra_dirs: &[std::path::PathBuf],
 ) -> Result<ModuleExports, Diagnostic> {
-    let mut visited = std::collections::HashSet::new();
-    module_exports_inner(path, importer_file, span, extra_dirs, &mut visited, true)
+    let mut visited = std::collections::HashMap::new();
+    let mut visiting = Vec::new();
+    if !importer_file.is_empty() {
+        visiting.push(canonical_key(std::path::Path::new(importer_file)));
+    }
+    module_exports_inner(
+        path,
+        importer_file,
+        span,
+        extra_dirs,
+        &mut visited,
+        &mut visiting,
+        true,
+    )
 }
 
 fn module_exports_inner(
@@ -455,7 +467,8 @@ fn module_exports_inner(
     importer_file: &str,
     span: &Span,
     extra_dirs: &[std::path::PathBuf],
-    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    visited: &mut std::collections::HashMap<(std::path::PathBuf, bool), ModuleExports>,
+    visiting: &mut Vec<std::path::PathBuf>,
     direct: bool,
 ) -> Result<ModuleExports, Diagnostic> {
     let resolved = resolve::resolve_module(importer_file, path, extra_dirs)
@@ -465,18 +478,50 @@ fn module_exports_inner(
         })?
         .path;
     let canon = canonical_key(&resolved);
-    if !visited.insert(canon) {
-        return Ok(ModuleExports::default());
-    }
-    let src = read_module_source(&resolved).map_err(|e| {
-        Diagnostic::at(
+    if let Some(pos) = visiting.iter().position(|p| p == &canon) {
+        let mut chain: Vec<String> = visiting[pos..]
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("module")
+                    .to_string()
+            })
+            .collect();
+        chain.push(path.to_string());
+        return Err(Diagnostic::at(
             Phase::Semantic,
             span.clone(),
-            format!("cannot import '{}': {}", path, e),
-        )
-    })?;
+            format!(
+                "circular import of '{}' (chain: {})",
+                path,
+                chain.join(" -> ")
+            ),
+        ));
+    }
+    if let Some(cached) = visited.get(&(canon.clone(), direct)) {
+        return Ok(cached.clone());
+    }
+    visiting.push(canon.clone());
+    let src = match read_module_source(&resolved) {
+        Ok(s) => s,
+        Err(e) => {
+            visiting.pop();
+            return Err(Diagnostic::at(
+                Phase::Semantic,
+                span.clone(),
+                format!("cannot import '{}': {}", path, e),
+            ));
+        }
+    };
     let file: Arc<str> = Arc::from(resolved.to_string_lossy().to_string());
-    let program = parser::parse_file(&src, file)?;
+    let program = match parser::parse_file(&src, file) {
+        Ok(p) => p,
+        Err(e) => {
+            visiting.pop();
+            return Err(e);
+        }
+    };
     let mod_display = resolved
         .file_name()
         .and_then(|s| s.to_str())
@@ -491,18 +536,24 @@ fn module_exports_inner(
                 alias: None,
                 span: sub_span,
             } => {
-                if let Ok(sub) = module_exports_inner(
+                let sub = match module_exports_inner(
                     sub_path,
                     &resolved_str,
                     sub_span,
                     extra_dirs,
                     visited,
+                    visiting,
                     false,
                 ) {
-                    out.classes.extend(sub.classes);
-                    out.interfaces.extend(sub.interfaces);
-                    out.enums.extend(sub.enums);
-                }
+                    Ok(s) => s,
+                    Err(e) => {
+                        visiting.pop();
+                        return Err(e);
+                    }
+                };
+                out.classes.extend(sub.classes);
+                out.interfaces.extend(sub.interfaces);
+                out.enums.extend(sub.enums);
             }
             crate::ast::Stmt::Fn(f) if direct => {
                 if let Some(n) = &f.name {
@@ -569,6 +620,8 @@ fn module_exports_inner(
             _ => {}
         }
     }
+    visiting.pop();
+    visited.insert((canon, direct), out.clone());
     Ok(out)
 }
 

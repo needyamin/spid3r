@@ -822,6 +822,7 @@ impl Lower {
                 vis: crate::ast::Vis::Private,
                 is_async: false,
                 is_extern: false,
+                is_variadic: false,
                 name: None,
                 params: vec![emit],
                 ret: None,
@@ -1134,6 +1135,7 @@ impl Lower {
                 vis: e.vis,
                 is_async: false,
                 is_extern: false,
+                is_variadic: false,
                 name: Some(v.name.clone()),
                 params: v
                     .fields

@@ -1298,6 +1298,19 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
         }
         Expr::Call { callee, args, span } => {
             if let Expr::Ident(name, _) = &**callee {
+                if matches!(
+                    name.as_str(),
+                    "ffi_callback" | "dl_open" | "dl_sym" | "dl_close" | "dl_call"
+                ) {
+                    return Err(Diagnostic::new(
+                        Phase::Usage,
+                        format!(
+                            "'{}' needs a native executable: the bytecode VM cannot call C. \
+                             Build with `spid3r build`.",
+                            name
+                        ),
+                    ));
+                }
                 if is_constructor(name) {
                     check_argc(span, args.len())?;
                     for a in args {

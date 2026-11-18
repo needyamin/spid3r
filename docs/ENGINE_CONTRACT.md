@@ -82,11 +82,13 @@ conformance test fails:
    (`tests/gc_portability.rs` pins this on all three engines).
 5. **Execution budget** — `Engine::budget` / `spid3r run --budget` is a host
    control, not program semantics: the tree and VM engines enforce it
-   (statement / instruction-poll charging, fatal on exhaustion); the native
-   AOT backend does not (a counter in generated machine code is not free).
-   Untrusted code must run on the tree or VM engine. No program may depend on
-   a budget being enforced, and a run without a budget is identical on all
-   engines (`tests/execution_budget.rs` pins tree/VM parity).
+   (statement / instruction-poll charging, fatal on exhaustion). Native AOT
+   builds do not charge a step budget by default (off-by-default runs emit no
+   counter instructions); passing `--enforce-budget <N>` to `spid3r build`
+   opts into loop-backedge budget checks that abort cleanly with `"execution
+   budget exhausted"` when exceeded (`tests/execution_budget.rs` pins tree/VM
+   and opt-in native behavior). Untrusted code should still run on the tree or
+   VM engine.
 
 ## Rules for backend authors
 

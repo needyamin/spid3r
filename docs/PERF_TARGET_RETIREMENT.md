@@ -216,7 +216,7 @@ review. None of these may proceed by lifting a §9 RED LINE.
 
 ## 8. Phase 11 (`P-8`) AOT-vs-Node / Rust three-way disposition (`pending owner confirmation`, 2026-11-17)
 
-Following Phase 11 `P-1` (`benchmarks/reference.p1.json`), `P-2` (`benchmarks/selfhost/baseline.json`), `P-3` (`47ecb00`), `P-5` (`ddfe14f`), and `P-6` (`4d1238e` — W4.1 bump-slab/small-int cache/zero-alloc dispatch, W4.2 lexer fast paths, W4.3 top-level scalar `const` propagation), every remaining gap between Spid3r-AOT and Node.js V8 / `rustc -O` is grounded in ledger measurements (`full_plan.html`, Core 6 P-core affinity, 9w/21r×2, blocking 5% sensitivity selftest `PASS`, `ADVISORY_ONLY` shared Windows host):
+Following Phase 11 `P-1` (`benchmarks/reference.p1.json`), `P-2` (`benchmarks/selfhost/baseline.json`), `P-3` (`47ecb00`), `P-5` (`ddfe14f`), and `P-6` (`4d1238e` — W4.1 bump-slab/small-int cache/zero-alloc dispatch, W4.2 lexer fast paths, W4.3 top-level scalar `const` propagation), every remaining gap between Spid3r-AOT and Node.js V8 / `rustc -O` is grounded in recorded measurements (Core 6 P-core affinity, 9w/21r×2, blocking 5% sensitivity selftest `PASS`, `ADVISORY_ONLY` shared Windows host):
 
 | Target / Workload | Tier | Measured Spid3r | Reference (`Node` / `Rust`) | Ledger Run | Disposition & Structural Gap |
 | --- | --- | --- | --- | --- | --- |
@@ -229,4 +229,4 @@ Following Phase 11 `P-1` (`benchmarks/reference.p1.json`), `P-2` (`benchmarks/se
 | `Stage 1 == Stage 0 AOT codegen parity` | **Tier A** | `1.0007×` median / `1.0435×` max wall across 111 corpus programs; HLC `0.995×..1.007×` | Gate `<= 1.25×` | `2026-11-16 11.3 (P-3)` | **MET / PASS**: Stage 1 `default<O3>` matches Stage 0 generated native code quality. |
 | `CLI Startup & Memory` | **Tier A** | `spid3r --version` `8.099 ms` (`8.122 ms` P-6) `<= 8.5 ms`; `VM` `10.27 MiB WS / 2.75 MiB commit`; `aot_empty` `5.02 / 0.89 MiB` | Floor `<= 8.5 ms` startup, `<= 16 MiB WS`, release size budgets in `benchmarks/budgets.p5.json` | `2026-11-16 11.5 (P-5)` + `11.6 (P-6)` | **MET / PASS**: Lazy stdlib/tzdata resolution and single-read CLI path hold lightness budgets. |
 
-Status of new Phase 11 `P-8` Tier-C dispositions above: **pending owner confirmation** (Sections 1–6 remain owner-approved from Phase 5). Reversible under `full_plan.html` GR-1 without code changes.
+Status of new Phase 11 `P-8` Tier-C dispositions above: **pending owner confirmation** (Sections 1–6 remain owner-approved from Phase 5), reversible without code changes.

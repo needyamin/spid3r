@@ -3321,6 +3321,14 @@ fn n_url_encode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(str_val(percent_encode(&want_str(&args[0], "url_encode")?)))
 }
 
+/// Fuzzing entry point for chunked HTTP body decoding & URL percent decoding (R12.2).
+pub fn fuzz_parse_http_and_chunked(data: &[u8]) {
+    let cur = std::io::Cursor::new(data);
+    let _ = read_chunked(cur, Vec::new(), "fuzz_chunked");
+    let s = String::from_utf8_lossy(data);
+    let _ = percent_decode(&s, true);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

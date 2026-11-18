@@ -1,0 +1,11 @@
+// Systems-track freestanding example (Phase R9.4).
+// Build: `spid3r build --freestanding examples/freestanding/hello.matrix -o hello_fs`
+
+fn add(a, b) {
+    return a + b;
+}
+
+fn main() {
+    println("freestanding:" + string(add(20, 22)));
+    return 0;
+}

@@ -635,7 +635,7 @@ def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
     j_node = _p1_metric((wl1.get("json") or {}).get("node"))
     m_node = _p1_metric((wl1.get("map") or {}).get("node"))
 
-    # Ledger-recorded Phase 11 P-6 final combined numbers (full_plan.html, 2026-11-16, commit 4d1238e).
+    # Recorded Phase 11 P-6 final combined numbers (2026-11-16, commit 4d1238e).
     p6_prime, p6_json, p6_map = 5.760, 148.823, 28.001
     prime_node_x = f"{p6_prime / p_node['ms']:.2f}&times; slower" if p_node and p_node["ms"] > 0 else "n/a"
     prime_rust_x = f"{p6_prime / p_rust['ms']:.2f}&times; slower" if p_rust and p_rust["ms"] > 0 else "n/a"
@@ -740,7 +740,7 @@ def _render_p8_section(ref_p1, ref_p2, sec_num="06"):
     return f"""
     <h2><span class="num">{sec_num}</span>Phase 11 P-8: Honest three-way target table (Spid3r-AOT vs Node vs Rust)</h2>
     <p class="section-lead">
-      Every published figure traces directly to a ledger run in <code>full_plan.html</code> (<code>P-1</code>,
+      Every published figure traces directly to recorded Phase 11 runs (<code>P-1</code>,
       <code>P-2</code>, <code>P-3</code>, <code>P-5</code>, and <code>P-6</code>; Core-6 affinity, 9w/21r&times;2,
       blocking 5% sensitivity selftest <code>PASS</code>, <code>ADVISORY_ONLY</code> shared Windows host).
       No target is presented as a promise without its Tier label and recorded measurement:
@@ -836,7 +836,7 @@ def _render_p9_section(sec_num="07"):
             "Phase 11 P-8 / P-9",
             "2026-11-17",
             "Honest target table &amp; doc sync",
-            "Published Section 06 three-way Tier A/B/C table, structural-gap notes, <code>docs/PERF_TARGET_RETIREMENT.md</code> &sect;8, and this continuous log synced between <code>benchmark.html</code> and <code>full_plan.html</code> Appendix B.",
+            "Published Section 06 three-way Tier A/B/C table, structural-gap notes, <code>docs/PERF_TARGET_RETIREMENT.md</code> &sect;8, and this continuous log synced between <code>benchmark.html</code> and frozen JSON baselines.",
             "11.8 &ndash; 11.9",
         ),
     ]
@@ -854,7 +854,7 @@ def _render_p9_section(sec_num="07"):
     <h2><span class="num">{sec_num}</span>Phase 11 P-9: Continuous performance log (W-program trajectory)</h2>
     <p class="section-lead">
       End-to-end record from the first selfhost lexer measurement (Phase 1) through compiler hardening and
-      hot-path engineering (P-1&ndash;P-8), mirrored in <code>full_plan.html</code> Appendix B and checked by
+      hot-path engineering (P-1&ndash;P-8), backed by frozen JSON baselines and checked by
       <code>tools/bench_report.py --verify-sync</code>.
     </p>
     <div class="table-wrap">

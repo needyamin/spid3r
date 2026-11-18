@@ -485,6 +485,7 @@ pub enum Value {
     Task(Arc<crate::sched::TaskHandle>),
     Channel(Arc<crate::sched::ChannelData>),
     MutexVal(std::sync::Arc<crate::sched::MutexData>),
+    AtomicInt(std::sync::Arc<std::sync::atomic::AtomicI64>),
     /// A handle to an open SQLite database (`db_open`). Methods
     /// (`query`/`run`/`exec`/`close`) route through the shared dispatcher;
     /// the connection lives in `stdlib::db::DbData` and closes on drop.
@@ -756,6 +757,7 @@ fn ref_id(v: &Value) -> Option<u64> {
         Value::VInstance(r) => ref_id_of!(r),
         Value::CInstance(r) => ref_id_of!(r),
         Value::MutexVal(r) => ref_id_of!(r),
+        Value::AtomicInt(r) => ref_id_of!(r),
         Value::Database(r) => ref_id_of!(r),
         Value::Function(f) => ref_id_of!(f),
         Value::Native(f) => ref_id_of!(f),
@@ -1054,6 +1056,7 @@ fn values_equal_inner(
         (Task(x), Task(y)) => Arc::ptr_eq(x, y),
         (Channel(x), Channel(y)) => Arc::ptr_eq(x, y),
         (MutexVal(x), MutexVal(y)) => arc_id(x) == arc_id(y),
+        (AtomicInt(x), AtomicInt(y)) => arc_id(x) == arc_id(y),
         (Database(x), Database(y)) => arc_id(x) == arc_id(y),
         (Cfn(x), Cfn(y)) => arc_id(x) == arc_id(y),
         (CClass(x), CClass(y)) => arc_id(x) == arc_id(y),
@@ -1120,6 +1123,7 @@ pub fn type_name(v: &Value) -> &'static str {
         Value::Task(_) => "task",
         Value::Channel(_) => "channel",
         Value::MutexVal(_) => "mutex",
+        Value::AtomicInt(_) => "atomic_int",
         Value::Database(_) => "database",
         Value::Cfn(_) => "function",
         Value::CClass(_) => "class",
@@ -1575,6 +1579,10 @@ fn display_value_inner(v: &Value, seen: &mut std::collections::HashSet<u64>) -> 
         Value::Task(t) => format!("<task {}>", t.id),
         Value::Channel(_) => "<channel>".to_string(),
         Value::MutexVal(_) => "<mutex>".to_string(),
+        Value::AtomicInt(a) => format!(
+            "atomic_int({})",
+            a.load(std::sync::atomic::Ordering::SeqCst)
+        ),
         Value::Database(d) => {
             let path = d.lock().map(|g| g.path.clone()).unwrap_or_default();
             format!("<database {}>", path)
@@ -1993,6 +2001,7 @@ fn deep_clone_inner(v: &Value, memo: &mut std::collections::HashMap<u64, Value>)
         | Value::Task(_)
         | Value::Channel(_)
         | Value::MutexVal(_)
+        | Value::AtomicInt(_)
         | Value::Database(_) => v.clone(),
         Value::Option(o) => Value::Option(o.as_ref().map(|v| Box::new(deep_clone_inner(v, memo)))),
         Value::Result(r) => Value::Result(match r {

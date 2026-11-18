@@ -192,7 +192,7 @@ cmd_package() {
   },
   "interface": {
     "trampolines": $tramp_count,
-    "stdlib_natives": 229
+    "stdlib_natives": 257
   },
   "created_at_utc": "$(json_escape "$created_at")"
 }

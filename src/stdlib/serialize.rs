@@ -804,6 +804,17 @@ pub fn native_defs() -> Vec<crate::stdlib::NativeDef> {
     ]
 }
 
+/// Fuzzing entry point for binary decoders (msgpack, CBOR, protobuf) (R12.2).
+pub fn fuzz_decode_all(data: &[u8]) {
+    let mut r1 = Reader::new(data);
+    let _ = msgpack_decode_from(&mut r1, 0);
+    let mut r2 = Reader::new(data);
+    let _ = cbor_decode_from(&mut r2, 0);
+    let mut r3 = Reader::new(data);
+    let mut pb_out = Vec::new();
+    let _ = pb_decode_into(&mut r3, &mut pb_out, 0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

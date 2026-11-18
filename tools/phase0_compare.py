@@ -5,7 +5,7 @@ Supports both ``spid3r.phase0/1`` (``baseline-<sha>.json``,
 ``reference.p1.json``, ``results.phase0.ci-advisory.json``) and
 ``spid3r.selfhost.bench/1`` (``benchmarks/selfhost/baseline.json``).
 
-Regression definition (plan.html section 10 / full_plan.html Phase 11 P-7):
+Regression definition (Phase 11 P-7):
     median compute_ms OR wall_ms on any gated / tracked workload
     > previous median * 1.05
     AND (current - previous) > 3 * pooled_MAD

@@ -81,8 +81,8 @@ if [ -f "$MANIFEST" ] \
    && grep -q '"schema": 1' "$MANIFEST" \
    && grep -q '"git_commit":' "$MANIFEST" \
    && grep -q '"llvm_version":' "$MANIFEST" \
-   && grep -q '"trampolines": 66' "$MANIFEST" \
-   && grep -q '"stdlib_natives": 229' "$MANIFEST"; then
+   && grep -q '"trampolines": 75' "$MANIFEST" \
+   && grep -q '"stdlib_natives": 257' "$MANIFEST"; then
   ok "manifest contains version, provenance (commit/LLVM), and interface counts"
 else
   bad "manifest missing expected fields/provenance"

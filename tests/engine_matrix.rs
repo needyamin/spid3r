@@ -1851,3 +1851,41 @@ fn instance_display_field_order_is_deterministic() {
         }
     }
 }
+
+#[test]
+fn atomic_int_parity_across_engines() {
+    let src = r#"
+fn main() {
+    let a = atomic_int(7);
+    println(type_of(a));
+    println(a.load());
+    println(a.cas(7, 20));
+    println(a.exchange(42));
+    println(a.fetch_add(8));
+    println(a.fetch_sub(10));
+    println(a.load());
+    a.store(99);
+    println(a.load());
+    return 0;
+}
+"#;
+    let expected = "atomic_int\n7\ntrue\n20\n42\n50\n40\n99\n";
+    for engine in ["tree", "vm"] {
+        let (code, out, err) = run_engine(engine, "atomic_int_parity", src);
+        assert_eq!(code, 0, "[{engine}] exit {code}: {err}");
+        assert_eq!(
+            out.replace("\r\n", "\n"),
+            expected,
+            "[{engine}] stdout mismatch"
+        );
+    }
+    #[cfg(feature = "native")]
+    if let Some((code, out, err)) = run_aot("atomic_int_parity", src) {
+        assert_eq!(code, 0, "[native] exit {code}: {err}");
+        assert_eq!(
+            out.replace("\r\n", "\n"),
+            expected,
+            "[native] stdout mismatch"
+        );
+    }
+}

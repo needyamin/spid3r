@@ -48,3 +48,17 @@ path = "fuzz_targets/fuzz_ini_parser.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_serialize"
+path = "fuzz_targets/fuzz_serialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_http_ws"
+path = "fuzz_targets/fuzz_http_ws.rs"
+test = false
+doc = false
+bench = false

@@ -426,6 +426,15 @@ impl Interp {
                 ),
             ));
         }
+        if let Some(name) = find_aot_intrinsic_in_program(program) {
+            return Err(Diagnostic::new(
+                Phase::Usage,
+                format!(
+                    "'{name}' needs a native executable: the tree interpreter cannot call C. \
+                     Build with `spid3r build`."
+                ),
+            ));
+        }
         // On a panic (which unwinds out of the whole run), release every user
         // mutex this interpreter still holds; see `GuardSweep`.
         let _guard_sweep = GuardSweep {
@@ -2342,4 +2351,60 @@ impl Interp {
             Flow::Fatal(d) => Err(Flow::Fatal(d)),
         }
     }
+}
+
+fn find_aot_intrinsic_in_program(program: &Program) -> Option<&'static str> {
+    fn check_block(b: &Block) -> Option<&'static str> {
+        b.stmts.iter().find_map(check_stmt)
+    }
+    fn check_stmt(s: &Stmt) -> Option<&'static str> {
+        match s {
+            Stmt::Expr(e) => check_expr(e),
+            Stmt::Let { value: Some(e), .. } => check_expr(e),
+            Stmt::Return { value: Some(e), .. } => check_expr(e),
+            Stmt::If {
+                cond, then, els, ..
+            } => check_expr(cond)
+                .or_else(|| check_block(then))
+                .or_else(|| els.as_ref().and_then(check_block)),
+            Stmt::While { cond, body, .. } => check_expr(cond).or_else(|| check_block(body)),
+            Stmt::ForIn { iter, body, .. } => check_expr(iter).or_else(|| check_block(body)),
+            Stmt::Block(b) => check_block(b),
+            Stmt::Fn(f) => check_block(&f.body),
+            Stmt::Class(c) => c.methods.iter().find_map(|m| check_block(&m.body)),
+            Stmt::Try {
+                body,
+                catch,
+                finally,
+                ..
+            } => check_block(body)
+                .or_else(|| catch.as_ref().and_then(|c| check_block(&c.body)))
+                .or_else(|| finally.as_ref().and_then(check_block)),
+            _ => None,
+        }
+    }
+    fn check_expr(e: &Expr) -> Option<&'static str> {
+        match e {
+            Expr::Call { callee, args, .. } => {
+                if let Expr::Ident(name, _) = &**callee {
+                    match name.as_str() {
+                        "ffi_callback" => return Some("ffi_callback"),
+                        "dl_open" => return Some("dl_open"),
+                        "dl_sym" => return Some("dl_sym"),
+                        "dl_close" => return Some("dl_close"),
+                        "dl_call" => return Some("dl_call"),
+                        _ => {}
+                    }
+                }
+                check_expr(callee).or_else(|| args.iter().find_map(check_expr))
+            }
+            Expr::Binary { l, r, .. } => check_expr(l).or_else(|| check_expr(r)),
+            Expr::Unary { expr, .. } => check_expr(expr),
+            Expr::Assign { target, value, .. } => check_expr(target).or_else(|| check_expr(value)),
+            Expr::List(xs, _) => xs.iter().find_map(check_expr),
+            Expr::Fn(f) => check_block(&f.body),
+            _ => None,
+        }
+    }
+    program.stmts.iter().find_map(check_stmt)
 }

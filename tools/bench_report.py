@@ -404,23 +404,20 @@ def cpu_name():
 
 
 def verify_doc_sync() -> int:
-    """Verify docs/html/benchmark.html and full_plan.html agree on every published figure."""
-    plan_path = ROOT / "full_plan.html"
-    if not OUT_HTML.is_file() or not plan_path.is_file():
-        print("SYNC FAIL: missing benchmark.html or full_plan.html", file=sys.stderr)
+    """Verify docs/html/benchmark.html and frozen JSON baselines agree on every published figure."""
+    if not OUT_HTML.is_file():
+        print("SYNC FAIL: missing docs/html/benchmark.html", file=sys.stderr)
         return 1
     bench_txt = OUT_HTML.read_text(encoding="utf-8")
-    plan_txt = plan_path.read_text(encoding="utf-8")
     ref_p1 = json.loads(REF_P1_JSON.read_text(encoding="utf-8")) if REF_P1_JSON.is_file() else {}
     ref_p2 = json.loads(REF_P2_JSON.read_text(encoding="utf-8")) if REF_P2_JSON.is_file() else {}
 
-    for label, txt in (("docs/html/benchmark.html", bench_txt), ("full_plan.html", plan_txt)):
-        for tidx, tbl in enumerate(re.findall(r"<table\b[^>]*>.*?</table>", txt, re.S), 1):
-            rows = re.findall(r"<tr\b[^>]*>.*?</tr>", tbl, re.S)
-            counts = [len(re.findall(r"<(?:th|td)\b", r)) for r in rows]
-            if not counts or len(set(counts)) != 1:
-                print(f"SYNC FAIL: {label} table {tidx} column-count drift {counts}", file=sys.stderr)
-                return 1
+    for tidx, tbl in enumerate(re.findall(r"<table\b[^>]*>.*?</table>", bench_txt, re.S), 1):
+        rows = re.findall(r"<tr\b[^>]*>.*?</tr>", tbl, re.S)
+        counts = [len(re.findall(r"<(?:th|td)\b", r)) for r in rows]
+        if not counts or len(set(counts)) != 1:
+            print(f"SYNC FAIL: docs/html/benchmark.html table {tidx} column-count drift {counts}", file=sys.stderr)
+            return 1
 
     wl1 = ref_p1.get("workloads") or {}
     tg2 = ref_p2.get("targets") or {}
@@ -447,10 +444,10 @@ def verify_doc_sync() -> int:
         ("P-6 corpus_build sh", "673.84"),
     ]
     for name, val in pins:
-        if val not in bench_txt or val not in plan_txt:
-            print(f"SYNC FAIL: {name} ({val}) missing in benchmark.html or full_plan.html", file=sys.stderr)
+        if val not in bench_txt:
+            print(f"SYNC FAIL: {name} ({val}) missing in docs/html/benchmark.html", file=sys.stderr)
             return 1
-    print(f"BENCH DOC SYNC PASS: {len(pins)} figures verified across benchmark.html, full_plan.html, and frozen JSONs")
+    print(f"BENCH DOC SYNC PASS: {len(pins)} figures verified across benchmark.html and frozen JSONs")
     return 0
 
 
@@ -483,7 +480,7 @@ def main():
     ap.add_argument("--check-startup-floor", action="store_true",
                     help="Fail non-zero if spid3r startup exceeds STARTUP_FLOOR_MS (8.5 ms).")
     ap.add_argument("--verify-sync", action="store_true",
-                    help="Verify benchmark.html, full_plan.html, and frozen JSON baselines agree on every figure.")
+                    help="Verify benchmark.html and frozen JSON baselines agree on every figure.")
     ap.add_argument("--runs", type=int, default=5, help="spid3r runs (best of N)")
     # 21 is the sample count tools/phase0_bench.py uses. It is not decoration:
     # the reference side of the ratio is a difference of two independently

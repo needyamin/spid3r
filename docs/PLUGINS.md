@@ -311,7 +311,7 @@ are deliberate exclusions rather than gaps.
 | FFI (`extern fn`) | **works** — AOT only; see `docs/FFI.md` |
 | `spid3r plugin abi/list/check` | **works** — `abi` prints the version, `list` reports the search path, `check` validates a directory |
 | `spid3r plugin enable/disable` | not implemented — a plugin is discovered per run, so there is no persistent enable list |
-| Dynamic loading of *native* code (`dlopen`) | deliberately not implemented — no stable ABI to load against |
+| Dynamic loading of *native* host plugins (`dlopen`) | deliberately not implemented for host plugins (no stable ABI over Rust `Value`); AOT C-ABI FFI supports opt-in `--allow-dlopen` (`docs/FFI.md`) |
 
 `spid3r plugin list` prints what the **search path** would load — name, kind and
 function count per directory — which is the question an author actually has. It

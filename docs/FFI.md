@@ -143,23 +143,34 @@ pointer path they cannot gate. Untrusted third-party code belongs in a WASM
 plugin (`kind = "wasm"`): it has no imports, so it has no ambient authority to
 abuse.
 
+## Register-Class POD Structs & Varargs (R9.1)
+
+- **Structs by value:** `class` declarations with no parent and `1` or `2` typed scalar fields (`int`, `float`, `bool`, `usize`, `ptr`) can cross `extern fn` parameters and return values by value (Win64 `i64` / `ptr`+`sret` and SysV `struct` ABI). Non-POD or larger classes are refused at build time.
+- **Varargs:** `extern fn printf(fmt: string, ...) -> int;` accepts trailing variadic arguments (`int`, `float`, `string`, `ptr`; `bool` promoted to `int`).
+
+## C Callbacks into Spid3r (R9.2)
+
+- `ffi_callback(fn_val, "fn(int, int) -> int") -> ptr` emits an `extern "C"` thunk slot holding the Spid3r closure (`int`, `float`, `bool`, `string`, `ptr`, `usize`, `void`).
+- **Lifetime & exceptions:** the callback closure slot lives for the process lifetime in AOT; if a callback executes `throw`, the thunk returns a zero/null sentinel to C and the enclosing `extern fn` call re-raises it through `try`/`catch`. Rejected on `tree` and `vm` with `error[usage]` (`exit 2`).
+
+## Runtime Dynamic Loading (`--allow-dlopen`, DP-5)
+
+- `dl_open(path)`, `dl_sym(lib, symbol)`, `dl_call(fn_ptr, sig, ...args)`, and `dl_close(lib)` are **disabled by default** and require passing `--allow-dlopen` to `spid3r build` (refused at build time otherwise, and rejected on `tree`/`vm`/`--sandbox`).
+
 ## Not implemented
 
 | Feature | Why not |
 | --- | --- |
-| Runtime loading (`dlopen`) | no stable ABI over `Value`; the AOT backend links at build time |
-| Struct passing | needs layout agreement between two compilers |
-| Callbacks into Spidr | a Spidr closure is a GC'd `Value`, not a C function pointer |
+| Non-POD / large structs (>2 scalar fields) | rejected at build time until full target layout tables are added |
 | C++ symbols | name mangling is compiler-specific |
-| Varargs | no way to express them in the declaration |
 | Calling C from `spid3r run` | the tree/VM link nothing — by design |
 
 ## Files
 
 | Path | What |
 | --- | --- |
-| `src/parser/mod.rs` | parses `extern fn …;` (two-token lookahead, `extern` is not a keyword) |
-| `src/native/ir.rs` | `declare_externs` + `compile_extern_call` — the marshalling |
-| `src/native/rt.rs` | `spid3r_to_i64` / `to_f64` / `cstr` / `value_from_cstr` / `to_ptr` / `value_from_ptr` |
-| `src/native/link.rs` | `--link-lib`, and the platform-specific link argument |
-| `tests/ffi.rs` | round trip, engine rejection, missing symbol, bad type |
+| `src/parser/mod.rs` | parses `extern fn …;` and trailing `...` varargs |
+| `src/native/ir.rs` | `declare_externs`, `compile_extern_call`, POD structs, `ffi_callback`, `dl_call` |
+| `src/native/rt.rs` | `spid3r_to_*`, `spid3r_struct_box`, `spid3r_dl_open`/`sym`/`close` |
+| `src/native/link.rs` | `--link-lib`, `--allow-dlopen`, `--freestanding`, `--sysroot`, `--emit-obj` |
+| `tests/ffi.rs` | round trip, POD structs, varargs, callbacks, `dlopen`, engine rejection |

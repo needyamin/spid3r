@@ -683,6 +683,45 @@ pub struct Ir<'ctx> {
     current_class_id_gv: Option<inkwell::values::GlobalValue<'ctx>>,
     /// R3.5: per-module `{ i64 gen, ptr val }` cache slots for globals/builtins.
     global_caches: HashMap<String, inkwell::values::GlobalValue<'ctx>>,
+    /// R9.1: register-class POD struct definitions.
+    pod_structs: HashMap<String, PodStruct>,
+    /// R9.1: target triple for ABI-specific struct-by-value lowering.
+    target_triple: Option<String>,
+    /// R9.1: variable C-ABI type hints for varargs.
+    var_c_hints: HashMap<String, &'static str>,
+    /// R9.2: unique callback slot/thunk counter.
+    cb_counter: usize,
+    /// DP-5: allow `dl_open` / `dl_sym` / `dl_close` / `dl_call` (gated by `--allow-dlopen`).
+    allow_dlopen: bool,
+    /// R12.3: optional instruction-step budget limit enforced in native loops.
+    enforce_budget: Option<i64>,
+    /// R12.3: global step counter when `enforce_budget.is_some()`.
+    budget_counter_gv: Option<inkwell::values::GlobalValue<'ctx>>,
+}
+
+/// Compilation options passed from the CLI / build driver into IR generation.
+#[derive(Clone, Debug, Default)]
+pub struct IrOptions {
+    pub target_triple: Option<String>,
+    pub allow_dlopen: bool,
+    pub enforce_budget: Option<i64>,
+    pub freestanding: bool,
+    pub entry_symbol: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PodFieldTy {
+    Int,
+    Float,
+    Bool,
+    Usize,
+    Ptr,
+}
+
+#[derive(Clone)]
+struct PodStruct {
+    name: String,
+    fields: Vec<(String, PodFieldTy)>,
 }
 
 /// Declared boundary types of one `extern fn` (SH-7). Marshalling dispatches
@@ -693,6 +732,8 @@ pub struct Ir<'ctx> {
 struct ExternSig {
     params: Vec<String>,
     ret: Option<String>,
+    is_variadic: bool,
+    win64_sret: Option<String>,
 }
 
 /// Signature of compiled Spid3r functions.
@@ -723,6 +764,13 @@ impl<'ctx> Ir<'ctx> {
             top_ints: HashMap::new(),
             current_class_id_gv: None,
             global_caches: HashMap::new(),
+            pod_structs: HashMap::new(),
+            target_triple: None,
+            var_c_hints: HashMap::new(),
+            cb_counter: 0,
+            allow_dlopen: false,
+            enforce_budget: None,
+            budget_counter_gv: None,
             is_entry: false,
             strings: HashMap::new(),
             tramps: HashMap::new(),
@@ -1189,6 +1237,39 @@ impl<'ctx> Ir<'ctx> {
         self.throw_guard();
         self.builder.build_unconditional_branch(cont).unwrap();
         self.builder.position_at_end(cont);
+        if let Some(bgv) = self.budget_counter_gv {
+            let bp = bgv.as_pointer_value();
+            let rem = self
+                .builder
+                .build_load(self.i64_ty(), bp, "bud.rem")
+                .unwrap()
+                .into_int_value();
+            let rem1 = self
+                .builder
+                .build_int_sub(rem, self.i64c(1), "bud.dec")
+                .unwrap();
+            self.builder.build_store(bp, rem1).unwrap();
+            let exhausted = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::SLE,
+                    rem1,
+                    self.i64_ty().const_zero(),
+                    "bud.hit",
+                )
+                .unwrap();
+            let bud_fail = self.new_block("bud.fail");
+            let bud_ok = self.new_block("bud.ok");
+            self.builder
+                .build_conditional_branch(exhausted, bud_fail, bud_ok)
+                .unwrap();
+            self.builder.position_at_end(bud_fail);
+            let (msg, _) = self.str_global("execution budget exhausted");
+            let abort_f = self.tramp("spid3r_abort", &[self.ptr_ty().into()], None);
+            self.emit_call(abort_f, &[msg.into()], "bud.abort");
+            self.builder.build_unreachable().unwrap();
+            self.builder.position_at_end(bud_ok);
+        }
     }
 
     fn new_block(&self, name: &str) -> BasicBlock<'ctx> {
@@ -3826,33 +3907,101 @@ impl<'ctx> Ir<'ctx> {
 
     // ------------------------------------------------------------- FFI
 
-    /// LLVM type for a declared C parameter or return type.
-    ///
-    /// Only the six shapes the FFI contract allows cross the boundary:
-    /// `int` (i64), `float` (f64), `bool` (i8 — the C ABI width, not LLVM's
-    /// i1), `string` (`char*`), `ptr` (`void*` — the opaque i64-encoded
-    /// handle of SH-7) and `usize` (`size_t`, ABI-identical to int). Anything
-    /// else is refused with the reason instead of being marshalled as a
-    /// pointer and crashing later.
-    fn c_type(&self, t: &crate::ast::TypeExpr, who: &str) -> IrResult<BasicTypeEnum<'ctx>> {
-        match t.name.as_str() {
+    fn target_is_windows_msvc(&self) -> bool {
+        if let Some(ref t) = self.target_triple {
+            return t.contains("windows-msvc") || t.contains("win32");
+        }
+        cfg!(all(target_os = "windows", target_env = "msvc"))
+    }
+
+    fn pod_field_llvm_ty(&self, ty: PodFieldTy) -> BasicTypeEnum<'ctx> {
+        match ty {
+            PodFieldTy::Int | PodFieldTy::Usize => self.i64_ty().into(),
+            PodFieldTy::Float => self.ctx.f64_type().into(),
+            PodFieldTy::Bool => self.i8_ty().into(),
+            PodFieldTy::Ptr => self.ptr_ty().into(),
+        }
+    }
+
+    fn pod_llvm_struct(&self, pod: &PodStruct) -> inkwell::types::StructType<'ctx> {
+        let field_tys: Vec<BasicTypeEnum<'ctx>> = pod
+            .fields
+            .iter()
+            .map(|(_, ft)| self.pod_field_llvm_ty(*ft))
+            .collect();
+        self.ctx.struct_type(&field_tys, false)
+    }
+
+    fn c_type_name(&self, ty_name: &str, who: &str) -> IrResult<BasicTypeEnum<'ctx>> {
+        match ty_name {
             "int" => Ok(self.i64_ty().into()),
             "float" => Ok(self.ctx.f64_type().into()),
             "bool" => Ok(self.i8_ty().into()),
             "string" => Ok(self.ptr_ty().into()),
             "ptr" => Ok(self.ptr_ty().into()),
             "usize" => Ok(self.i64_ty().into()),
-            other => Err(format!(
-                "extern fn '{who}': cannot pass '{other}' to C (supported: int, float, bool, string, ptr, usize)"
-            )),
+            other => {
+                if let Some(pod) = self.pod_structs.get(other) {
+                    return Ok(self.pod_llvm_struct(pod).into());
+                }
+                Err(format!(
+                    "extern fn '{who}': cannot pass '{other}' to C (supported: int, float, bool, string, ptr, usize, or 1–2 scalar-field POD class)"
+                ))
+            }
+        }
+    }
+
+    fn c_type(&self, t: &crate::ast::TypeExpr, who: &str) -> IrResult<BasicTypeEnum<'ctx>> {
+        self.c_type_name(&t.name, who)
+    }
+
+    fn collect_pod_structs(&mut self, program: &Program) {
+        self.pod_structs.clear();
+        for stmt in &program.stmts {
+            let Stmt::Class(c) = stmt else { continue };
+            if c.parent.is_some() || c.fields.is_empty() || c.fields.len() > 2 {
+                continue;
+            }
+            let mut fields = Vec::with_capacity(c.fields.len());
+            let mut valid = true;
+            for f in &c.fields {
+                let Some(ref te) = f.ty else {
+                    valid = false;
+                    break;
+                };
+                if te.nullable || !te.union.is_empty() {
+                    valid = false;
+                    break;
+                }
+                let pft = match te.name.as_str() {
+                    "int" => PodFieldTy::Int,
+                    "float" => PodFieldTy::Float,
+                    "bool" => PodFieldTy::Bool,
+                    "usize" => PodFieldTy::Usize,
+                    "ptr" => PodFieldTy::Ptr,
+                    _ => {
+                        valid = false;
+                        break;
+                    }
+                };
+                fields.push((f.name.clone(), pft));
+            }
+            if valid {
+                self.pod_structs.insert(
+                    c.name.clone(),
+                    PodStruct {
+                        name: c.name.clone(),
+                        fields,
+                    },
+                );
+            }
         }
     }
 
     /// Declare every `extern fn` in the program as an external symbol.
-    ///
-    /// Declaring up front means a typo'd *type* fails at build time with a
-    /// clear message, rather than at the first call site deep in codegen.
     pub fn declare_externs(&mut self, program: &Program) -> IrResult<()> {
+        self.collect_pod_structs(program);
+        let win64 = self.target_is_windows_msvc();
         for stmt in &program.stmts {
             let Stmt::Fn(f) = stmt else { continue };
             if !f.is_extern {
@@ -3864,17 +4013,48 @@ impl<'ctx> Ir<'ctx> {
             }
             let mut params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = Vec::new();
             let mut param_types: Vec<String> = Vec::new();
+            let mut win64_sret: Option<String> = None;
+
+            if let Some(te) = f.ret.as_ref() {
+                if win64 {
+                    if let Some(pod) = self.pod_structs.get(&te.name) {
+                        if pod.fields.len() == 2 {
+                            params.push(self.ptr_ty().into());
+                            win64_sret = Some(pod.name.clone());
+                        }
+                    }
+                }
+            }
+
             for p in &f.params {
                 let te = p.ty.as_ref().ok_or_else(|| {
                     format!("extern fn '{name}': every parameter needs a type (int, float, bool, string, ptr, usize)")
                 })?;
-                params.push(self.c_type(te, &name)?.into());
+                if let Some(pod) = self.pod_structs.get(&te.name) {
+                    if win64 {
+                        if pod.fields.len() == 1 {
+                            params.push(self.i64_ty().into());
+                        } else {
+                            params.push(self.ptr_ty().into());
+                        }
+                    } else {
+                        params.push(self.pod_llvm_struct(pod).into());
+                    }
+                } else {
+                    params.push(self.c_type(te, &name)?.into());
+                }
                 param_types.push(te.name.clone());
             }
             let ret_type = f.ret.as_ref().map(|te| te.name.clone());
             let ft = match f.ret.as_ref() {
-                Some(te) => self.c_type(te, &name)?.fn_type(&params, false),
-                None => self.ctx.void_type().fn_type(&params, false),
+                Some(_te) if win64_sret.is_some() => {
+                    self.ctx.void_type().fn_type(&params, f.is_variadic)
+                }
+                Some(te) if win64 && self.pod_structs.contains_key(&te.name) => {
+                    self.i64_ty().fn_type(&params, f.is_variadic)
+                }
+                Some(te) => self.c_type(te, &name)?.fn_type(&params, f.is_variadic),
+                None => self.ctx.void_type().fn_type(&params, f.is_variadic),
             };
             let fv = self.module.add_function(&name, ft, Some(Linkage::External));
             self.extern_sigs.insert(
@@ -3882,6 +4062,8 @@ impl<'ctx> Ir<'ctx> {
                 ExternSig {
                     params: param_types,
                     ret: ret_type,
+                    is_variadic: f.is_variadic,
+                    win64_sret,
                 },
             );
             self.externs.insert(name, fv);
@@ -3889,178 +4071,679 @@ impl<'ctx> Ir<'ctx> {
         Ok(())
     }
 
-    /// Marshal the arguments, call the C symbol, free the temporaries and box
-    /// the result back into a Spidr value.
+    fn marshal_c_scalar(
+        &mut self,
+        v: PointerValue<'ctx>,
+        ty_name: &str,
+        who: &str,
+        free_after: &mut Vec<PointerValue<'ctx>>,
+    ) -> IrResult<inkwell::values::BasicMetadataValueEnum<'ctx>> {
+        match ty_name {
+            "int" | "usize" => {
+                let f = self.tramp(
+                    "spid3r_to_i64",
+                    &[self.ptr_ty().into()],
+                    Some(self.i64_ty().into()),
+                );
+                Ok(call_int(self.emit_call(f, &[v.into()], "ffi.i")).into())
+            }
+            "bool" => {
+                let f = self.tramp(
+                    "spid3r_to_i64",
+                    &[self.ptr_ty().into()],
+                    Some(self.i64_ty().into()),
+                );
+                let i = call_int(self.emit_call(f, &[v.into()], "ffi.b"));
+                let b = self
+                    .builder
+                    .build_int_compare(IntPredicate::NE, i, self.i64_ty().const_zero(), "ffi.nz")
+                    .unwrap();
+                Ok(self
+                    .builder
+                    .build_int_z_extend(b, self.i8_ty(), "ffi.b8")
+                    .unwrap()
+                    .into())
+            }
+            "float" => {
+                let f = self.tramp(
+                    "spid3r_to_f64",
+                    &[self.ptr_ty().into()],
+                    Some(self.ctx.f64_type().into()),
+                );
+                Ok(call_float(self.emit_call(f, &[v.into()], "ffi.f")).into())
+            }
+            "ptr" => {
+                let f = self.tramp(
+                    "spid3r_to_ptr",
+                    &[self.ptr_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[v.into()], "ffi.p")).into())
+            }
+            "string" => {
+                let f = self.tramp(
+                    "spid3r_cstr",
+                    &[self.ptr_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                let p = call_ptr(self.emit_call(f, &[v.into()], "ffi.s"));
+                free_after.push(p);
+                Ok(p.into())
+            }
+            other => Err(format!("extern fn '{who}': unsupported C type '{other}'")),
+        }
+    }
+
+    fn box_c_scalar(
+        &mut self,
+        val: inkwell::values::BasicValueEnum<'ctx>,
+        ty_name: &str,
+        who: &str,
+    ) -> IrResult<PointerValue<'ctx>> {
+        match ty_name {
+            "int" | "usize" => {
+                let f = self.tramp(
+                    "spid3r_value_int",
+                    &[self.i64_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxi")))
+            }
+            "bool" => {
+                let f = self.tramp(
+                    "spid3r_value_bool",
+                    &[self.i8_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxb")))
+            }
+            "float" => {
+                let f = self.tramp(
+                    "spid3r_value_float",
+                    &[self.ctx.f64_type().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxf")))
+            }
+            "ptr" => {
+                let f = self.tramp(
+                    "spid3r_value_from_ptr",
+                    &[self.ptr_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxp")))
+            }
+            "string" => {
+                let f = self.tramp(
+                    "spid3r_value_from_cstr",
+                    &[self.ptr_ty().into()],
+                    Some(self.ptr_ty().into()),
+                );
+                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxs")))
+            }
+            other => Err(format!(
+                "extern fn '{who}': unsupported C return type '{other}'"
+            )),
+        }
+    }
+
+    fn pod_field_ty_name(ft: PodFieldTy) -> &'static str {
+        match ft {
+            PodFieldTy::Int => "int",
+            PodFieldTy::Float => "float",
+            PodFieldTy::Bool => "bool",
+            PodFieldTy::Usize => "usize",
+            PodFieldTy::Ptr => "ptr",
+        }
+    }
+
+    fn marshal_pod_struct(
+        &mut self,
+        v: PointerValue<'ctx>,
+        pod: &PodStruct,
+        who: &str,
+        win64: bool,
+        free_after: &mut Vec<PointerValue<'ctx>>,
+    ) -> IrResult<inkwell::values::BasicMetadataValueEnum<'ctx>> {
+        let field_get = self.tramp(
+            "spid3r_field_get",
+            &[self.ptr_ty().into(), self.ptr_ty().into()],
+            Some(self.ptr_ty().into()),
+        );
+        let st_ty = self.pod_llvm_struct(pod);
+        let mut field_vals = Vec::with_capacity(pod.fields.len());
+        for (fname, fty) in &pod.fields {
+            let (np, _) = self.str_global(fname);
+            let fv = call_ptr(self.emit_call(field_get, &[v.into(), np.into()], "pod.f"));
+            let cval = self.marshal_c_scalar(fv, Self::pod_field_ty_name(*fty), who, free_after)?;
+            let bv: inkwell::values::BasicValueEnum<'ctx> = match cval {
+                inkwell::values::BasicMetadataValueEnum::IntValue(x) => x.into(),
+                inkwell::values::BasicMetadataValueEnum::FloatValue(x) => x.into(),
+                inkwell::values::BasicMetadataValueEnum::PointerValue(x) => x.into(),
+                _ => unreachable!(),
+            };
+            field_vals.push(bv);
+        }
+        if win64 && pod.fields.len() == 1 {
+            let bv = field_vals[0];
+            let i64v = match bv {
+                inkwell::values::BasicValueEnum::IntValue(iv) => {
+                    if iv.get_type().get_bit_width() < 64 {
+                        self.builder
+                            .build_int_z_extend(iv, self.i64_ty(), "pod.zext")
+                            .unwrap()
+                    } else {
+                        iv
+                    }
+                }
+                inkwell::values::BasicValueEnum::FloatValue(fv) => self
+                    .builder
+                    .build_bit_cast(fv, self.i64_ty(), "pod.f2i")
+                    .unwrap()
+                    .into_int_value(),
+                inkwell::values::BasicValueEnum::PointerValue(pv) => self
+                    .builder
+                    .build_ptr_to_int(pv, self.i64_ty(), "pod.p2i")
+                    .unwrap(),
+                _ => unreachable!(),
+            };
+            return Ok(i64v.into());
+        }
+        let mut agg = st_ty.get_undef();
+        for (idx, fv) in field_vals.iter().enumerate() {
+            agg = self
+                .builder
+                .build_insert_value(agg, *fv, idx as u32, "pod.ins")
+                .unwrap()
+                .into_struct_value();
+        }
+        if win64 {
+            let slot = self.builder.build_alloca(st_ty, "pod.arg").unwrap();
+            self.builder.build_store(slot, agg).unwrap();
+            return Ok(slot.into());
+        }
+        Ok(agg.into())
+    }
+
+    fn box_pod_struct(
+        &mut self,
+        pod: &PodStruct,
+        field_cvals: &[inkwell::values::BasicValueEnum<'ctx>],
+        who: &str,
+    ) -> IrResult<PointerValue<'ctx>> {
+        let mut boxed_vals = Vec::with_capacity(pod.fields.len());
+        let mut name_ptrs = Vec::with_capacity(pod.fields.len());
+        for ((fname, fty), cval) in pod.fields.iter().zip(field_cvals.iter()) {
+            boxed_vals.push(self.box_c_scalar(*cval, Self::pod_field_ty_name(*fty), who)?);
+            let (np, _) = self.str_global(fname);
+            name_ptrs.push(np);
+        }
+        let names_arr = self.argv_array(&name_ptrs);
+        let vals_arr = self.argv_array(&boxed_vals);
+        let (cn_ptr, _) = self.str_global(&pod.name);
+        let f = self.tramp(
+            "spid3r_struct_box",
+            &[
+                self.ptr_ty().into(),
+                self.i64_ty().into(),
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+            ],
+            Some(self.ptr_ty().into()),
+        );
+        let cnt = self.i64c(pod.fields.len() as i64);
+        Ok(call_ptr(self.emit_call(
+            f,
+            &[cn_ptr.into(), cnt.into(), names_arr.into(), vals_arr.into()],
+            "pod.box",
+        )))
+    }
+
+    fn infer_vararg_c_type(&self, arg: &Expr) -> &'static str {
+        match arg {
+            Expr::Float(_, _) => "float",
+            Expr::Str(_, _) => "string",
+            Expr::Ident(name, _) => self.var_c_hints.get(name).copied().unwrap_or("int"),
+            Expr::Binary { l, r, op, .. } => {
+                if *op == crate::ast::BinOp::Add
+                    && (self.infer_vararg_c_type(l) == "string"
+                        || self.infer_vararg_c_type(r) == "string")
+                {
+                    "string"
+                } else if self.infer_vararg_c_type(l) == "float"
+                    || self.infer_vararg_c_type(r) == "float"
+                {
+                    "float"
+                } else {
+                    "int"
+                }
+            }
+            _ => "int",
+        }
+    }
+
     fn compile_extern_call(
         &mut self,
         name: &str,
         fv: FunctionValue<'ctx>,
         args: &[Expr],
     ) -> IrResult<PointerValue<'ctx>> {
-        let fty = fv.get_type();
-        let ptypes = fty.get_param_types();
-        if args.len() != ptypes.len() {
+        let sig = self
+            .extern_sigs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("missing signature for extern fn '{name}'"))?;
+        let fixed_len = sig.params.len();
+        if (!sig.is_variadic && args.len() != fixed_len)
+            || (sig.is_variadic && args.len() < fixed_len)
+        {
             return Err(format!(
-                "extern fn '{name}' takes {} argument(s), got {}",
-                ptypes.len(),
+                "extern fn '{name}' takes {}{} argument(s), got {}",
+                if sig.is_variadic { "at least " } else { "" },
+                fixed_len,
                 args.len()
             ));
         }
 
-        let sig = self.extern_sigs.get(name).cloned();
-
+        let win64 = self.target_is_windows_msvc();
         let mut raw: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-            Vec::with_capacity(args.len());
-        // C strings handed to the callee must be released after it returns.
+            Vec::with_capacity(args.len() + 1);
+        let mut sret_alloca: Option<(PointerValue<'ctx>, PodStruct)> = None;
+        if let Some(ref sret_name) = sig.win64_sret {
+            let pod = self
+                .pod_structs
+                .get(sret_name)
+                .cloned()
+                .ok_or_else(|| format!("extern fn '{name}': missing sret pod '{sret_name}'"))?;
+            let st_ty = self.pod_llvm_struct(&pod);
+            let slot = self.builder.build_alloca(st_ty, "ffi.sret").unwrap();
+            raw.push(slot.into());
+            sret_alloca = Some((slot, pod));
+        }
+
         let mut free_after: Vec<PointerValue<'ctx>> = Vec::new();
-        for ((i, arg), pt) in args.iter().enumerate().zip(ptypes.iter()) {
+        for (i, arg) in args.iter().enumerate() {
             let v = self.compile_expr(arg)?;
-            // The declared name decides the marshalling shape: `string` and
-            // `ptr` are both LLVM pointers, but only a string is copied into
-            // a C buffer and freed after the call; a `ptr` argument travels
-            // through untouched (SH-7).
             let declared = sig
-                .as_ref()
-                .and_then(|s| s.params.get(i))
-                .map(|t| t.as_str());
-            let meta: inkwell::values::BasicMetadataValueEnum<'ctx> = match pt {
-                inkwell::types::BasicMetadataTypeEnum::IntType(t) if t.get_bit_width() == 64 => {
-                    let f = self.tramp(
-                        "spid3r_to_i64",
-                        &[self.ptr_ty().into()],
-                        Some(self.i64_ty().into()),
-                    );
-                    call_int(self.emit_call(f, &[v.into()], "ffi.i")).into()
-                }
-                inkwell::types::BasicMetadataTypeEnum::IntType(t) if t.get_bit_width() == 8 => {
-                    let f = self.tramp(
-                        "spid3r_to_i64",
-                        &[self.ptr_ty().into()],
-                        Some(self.i64_ty().into()),
-                    );
-                    let i = call_int(self.emit_call(f, &[v.into()], "ffi.b"));
-                    let b = self
-                        .builder
-                        .build_int_compare(
-                            IntPredicate::NE,
-                            i,
-                            self.i64_ty().const_zero(),
-                            "ffi.nz",
-                        )
-                        .unwrap();
-                    self.builder
-                        .build_int_z_extend(b, self.i8_ty(), "ffi.b8")
-                        .unwrap()
-                        .into()
-                }
-                inkwell::types::BasicMetadataTypeEnum::FloatType(_) => {
-                    let f = self.tramp(
-                        "spid3r_to_f64",
-                        &[self.ptr_ty().into()],
-                        Some(self.ctx.f64_type().into()),
-                    );
-                    call_float(self.emit_call(f, &[v.into()], "ffi.f")).into()
-                }
-                inkwell::types::BasicMetadataTypeEnum::PointerType(_)
-                    if declared == Some("ptr") =>
-                {
-                    // An opaque handle passes through: the raw pointer the
-                    // script holds goes to C untouched, and nothing is freed
-                    // after the call — the C side owns the memory (SH-7).
-                    let f = self.tramp(
-                        "spid3r_to_ptr",
-                        &[self.ptr_ty().into()],
-                        Some(self.ptr_ty().into()),
-                    );
-                    call_ptr(self.emit_call(f, &[v.into()], "ffi.p")).into()
-                }
-                inkwell::types::BasicMetadataTypeEnum::PointerType(_) => {
-                    let f = self.tramp(
-                        "spid3r_cstr",
-                        &[self.ptr_ty().into()],
-                        Some(self.ptr_ty().into()),
-                    );
-                    let p = call_ptr(self.emit_call(f, &[v.into()], "ffi.s"));
-                    free_after.push(p);
-                    p.into()
-                }
-                other => {
-                    return Err(format!(
-                        "extern fn '{name}': unsupported parameter type {other:?}"
-                    ))
-                }
+                .params
+                .get(i)
+                .map(|s| s.as_str())
+                .unwrap_or_else(|| self.infer_vararg_c_type(arg));
+            let vararg_ty = if i >= fixed_len && declared == "bool" {
+                "int"
+            } else {
+                declared
+            };
+            let meta = if let Some(pod) = self.pod_structs.get(vararg_ty).cloned() {
+                self.marshal_pod_struct(v, &pod, name, win64, &mut free_after)?
+            } else {
+                self.marshal_c_scalar(v, vararg_ty, name, &mut free_after)?
             };
             raw.push(meta);
         }
 
         let call = self.emit_call(fv, &raw, "ffi.call");
 
-        // Release the C strings before touching the result, so an error path in
-        // the boxing below cannot leak them.
         if !free_after.is_empty() {
             let free = self.tramp("spid3r_cstr_free", &[self.ptr_ty().into()], None);
             for p in free_after {
                 self.emit_call(free, &[p.into()], "ffi.free");
             }
         }
+        self.throw_guard();
 
-        match fty.get_return_type() {
+        if let Some((slot, pod)) = sret_alloca {
+            let st_ty = self.pod_llvm_struct(&pod);
+            let mut cvals = Vec::with_capacity(pod.fields.len());
+            for (idx, (_, fty)) in pod.fields.iter().enumerate() {
+                let gep = self
+                    .builder
+                    .build_struct_gep(st_ty, slot, idx as u32, "sret.f")
+                    .unwrap();
+                let loaded = self
+                    .builder
+                    .build_load(self.pod_field_llvm_ty(*fty), gep, "sret.v")
+                    .unwrap();
+                cvals.push(loaded);
+            }
+            return self.box_pod_struct(&pod, &cvals, name);
+        }
+
+        match sig.ret.as_deref() {
             None => {
                 let f = self.tramp("spid3r_value_null", &[], Some(self.ptr_ty().into()));
                 Ok(call_ptr(self.emit_call(f, &[], "ffi.unit")))
             }
-            Some(BasicTypeEnum::IntType(t)) if t.get_bit_width() == 64 => {
-                let i = call_int(call);
-                let f = self.tramp(
-                    "spid3r_value_int",
-                    &[self.i64_ty().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                Ok(call_ptr(self.emit_call(f, &[i.into()], "ffi.box")))
+            Some(ret_name) => {
+                if let Some(pod) = self.pod_structs.get(ret_name).cloned() {
+                    if win64 && pod.fields.len() == 1 {
+                        let i64v = call_int(call);
+                        let (_, fty) = pod.fields[0];
+                        let cval: inkwell::values::BasicValueEnum<'ctx> = match fty {
+                            PodFieldTy::Int | PodFieldTy::Usize => i64v.into(),
+                            PodFieldTy::Float => self
+                                .builder
+                                .build_bit_cast(i64v, self.ctx.f64_type(), "pod.i2f")
+                                .unwrap(),
+                            PodFieldTy::Bool => self
+                                .builder
+                                .build_int_truncate(i64v, self.i8_ty(), "pod.i2b")
+                                .unwrap()
+                                .into(),
+                            PodFieldTy::Ptr => self
+                                .builder
+                                .build_int_to_ptr(i64v, self.ptr_ty(), "pod.i2p")
+                                .unwrap()
+                                .into(),
+                        };
+                        return self.box_pod_struct(&pod, &[cval], name);
+                    }
+                    let agg = call.try_as_basic_value().unwrap_basic().into_struct_value();
+                    let mut cvals = Vec::with_capacity(pod.fields.len());
+                    for idx in 0..pod.fields.len() {
+                        cvals.push(
+                            self.builder
+                                .build_extract_value(agg, idx as u32, "pod.ext")
+                                .unwrap(),
+                        );
+                    }
+                    return self.box_pod_struct(&pod, &cvals, name);
+                }
+                let bv = call.try_as_basic_value().unwrap_basic();
+                self.box_c_scalar(bv, ret_name, name)
             }
-            Some(BasicTypeEnum::IntType(t)) if t.get_bit_width() == 8 => {
-                let b = call_int(call);
-                let f = self.tramp(
-                    "spid3r_value_bool",
-                    &[self.i8_ty().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                Ok(call_ptr(self.emit_call(f, &[b.into()], "ffi.boxb")))
+        }
+    }
+
+    fn parse_c_fn_sig(&self, sig: &str, who: &str) -> IrResult<(Vec<String>, Option<String>)> {
+        let s = sig.trim();
+        let rest = s
+            .strip_prefix("fn")
+            .ok_or_else(|| {
+                format!("{who}: signature must look like \"fn(int, int) -> int\", got '{sig}'")
+            })?
+            .trim();
+        let lp = rest
+            .find('(')
+            .ok_or_else(|| format!("{who}: missing '(' in '{sig}'"))?;
+        let rp = rest
+            .rfind(')')
+            .ok_or_else(|| format!("{who}: missing ')' in '{sig}'"))?;
+        let params_str = rest[lp + 1..rp].trim();
+        let mut params = Vec::new();
+        if !params_str.is_empty() {
+            for p in params_str.split(',') {
+                let p = p.trim();
+                let ty = match p {
+                    "int" | "float" | "bool" | "string" | "ptr" | "usize" => p.to_string(),
+                    other => {
+                        return Err(format!(
+                            "{who}: unsupported C type '{other}' in '{sig}' (supported: int, float, bool, string, ptr, usize)"
+                        ))
+                    }
+                };
+                params.push(ty);
             }
-            Some(BasicTypeEnum::FloatType(_)) => {
-                let x = call_float(call);
-                let f = self.tramp(
-                    "spid3r_value_float",
-                    &[self.ctx.f64_type().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                Ok(call_ptr(self.emit_call(f, &[x.into()], "ffi.boxf")))
+        }
+        let after = rest[rp + 1..].trim();
+        let ret = if after.is_empty() {
+            None
+        } else if let Some(r) = after.strip_prefix("->") {
+            let r = r.trim();
+            if r == "void" {
+                None
+            } else if matches!(r, "int" | "float" | "bool" | "string" | "ptr" | "usize") {
+                Some(r.to_string())
+            } else {
+                return Err(format!("{who}: unsupported C return type '{r}' in '{sig}'"));
             }
-            Some(BasicTypeEnum::PointerType(_))
-                if sig.as_ref().and_then(|s| s.ret.as_deref()) == Some("ptr") =>
-            {
-                // A `ptr` return boxes the raw pointer as an opaque i64
-                // handle (SH-7): no C-string copy, no ownership taken.
-                let p = call_ptr(call);
-                let f = self.tramp(
-                    "spid3r_value_from_ptr",
-                    &[self.ptr_ty().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                Ok(call_ptr(self.emit_call(f, &[p.into()], "ffi.boxp")))
+        } else {
+            return Err(format!("{who}: invalid return clause '{after}' in '{sig}'"));
+        };
+        Ok((params, ret))
+    }
+
+    fn compile_ffi_callback(&mut self, args: &[Expr]) -> IrResult<PointerValue<'ctx>> {
+        if args.len() != 2 {
+            return Err(format!(
+                "ffi_callback expects 2 arguments (fn, sig_str), got {}",
+                args.len()
+            ));
+        }
+        let sig_str = match &args[1] {
+            Expr::Str(s, _) => s.clone(),
+            _ => {
+                return Err(
+                    "ffi_callback: second argument must be a string literal signature like \"fn(int, int) -> int\""
+                        .to_string(),
+                )
             }
-            Some(BasicTypeEnum::PointerType(_)) => {
-                let p = call_ptr(call);
-                let f = self.tramp(
-                    "spid3r_value_from_cstr",
-                    &[self.ptr_ty().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                Ok(call_ptr(self.emit_call(f, &[p.into()], "ffi.boxs")))
+        };
+        let (param_tys, ret_ty) = self.parse_c_fn_sig(&sig_str, "ffi_callback")?;
+        let closure_v = self.compile_expr(&args[0])?;
+
+        let cb_id = self.cb_counter;
+        self.cb_counter += 1;
+
+        let slot_gv =
+            self.module
+                .add_global(self.ptr_ty(), None, &format!("__spid3r_cb_slot_{cb_id}"));
+        slot_gv.set_initializer(&self.ptr_ty().const_null());
+        slot_gv.set_linkage(Linkage::Internal);
+        self.builder
+            .build_store(slot_gv.as_pointer_value(), closure_v)
+            .unwrap();
+
+        let mut llvm_params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            Vec::with_capacity(param_tys.len());
+        for pt in &param_tys {
+            llvm_params.push(self.c_type_name(pt, "ffi_callback")?.into());
+        }
+        let fn_ty = match ret_ty.as_deref() {
+            Some(rt) => self
+                .c_type_name(rt, "ffi_callback")?
+                .fn_type(&llvm_params, false),
+            None => self.ctx.void_type().fn_type(&llvm_params, false),
+        };
+        let thunk_fn = self.module.add_function(
+            &format!("__spid3r_cb_thunk_{cb_id}"),
+            fn_ty,
+            Some(Linkage::Internal),
+        );
+
+        let saved_bb = self.builder.get_insert_block();
+        let entry_bb = self.ctx.append_basic_block(thunk_fn, "entry");
+        self.builder.position_at_end(entry_bb);
+
+        let saved_exc = std::mem::take(&mut self.exc);
+        let saved_ret_bb = self.ret_bb.take();
+        let saved_ret_slots = std::mem::take(&mut self.ret_slots);
+
+        let clos = self
+            .builder
+            .build_load(self.ptr_ty(), slot_gv.as_pointer_value(), "cb.fn")
+            .unwrap()
+            .into_pointer_value();
+
+        let mut boxed_args = Vec::with_capacity(param_tys.len());
+        for (idx, pt) in param_tys.iter().enumerate() {
+            let pval = thunk_fn.get_nth_param(idx as u32).unwrap();
+            boxed_args.push(self.box_c_scalar(pval, pt, "ffi_callback")?);
+        }
+        let arr = self.argv_array(&boxed_args);
+        let call_tramp = self.tramp(
+            "spid3r_call",
+            &[
+                self.ptr_ty().into(),
+                self.i64_ty().into(),
+                self.ptr_ty().into(),
+            ],
+            Some(self.ptr_ty().into()),
+        );
+        let argc = self.i64c(param_tys.len() as i64);
+        let res_val = self
+            .builder
+            .build_call(
+                call_tramp,
+                &[clos.into(), argc.into(), arr.into()],
+                "cb.res",
+            )
+            .unwrap();
+        let res_ptr = call_ptr(res_val);
+
+        let threw_f = self.tramp("spid3r_threw", &[], Some(self.i8_ty().into()));
+        let threw = call_int(self.builder.build_call(threw_f, &[], "cb.threw").unwrap());
+        let is_threw = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                threw,
+                self.i8_ty().const_zero(),
+                "cb.is_threw",
+            )
+            .unwrap();
+        let err_bb = self.ctx.append_basic_block(thunk_fn, "cb.err");
+        let ok_bb = self.ctx.append_basic_block(thunk_fn, "cb.ok");
+        self.builder
+            .build_conditional_branch(is_threw, err_bb, ok_bb)
+            .unwrap();
+
+        self.builder.position_at_end(err_bb);
+        match ret_ty.as_deref() {
+            None => {
+                self.builder.build_return(None).unwrap();
             }
-            Some(other) => Err(format!(
-                "extern fn '{name}': unsupported return type {other:?}"
-            )),
+            Some("int" | "usize") => {
+                let z = self.i64_ty().const_zero();
+                self.builder.build_return(Some(&z)).unwrap();
+            }
+            Some("bool") => {
+                let z = self.i8_ty().const_zero();
+                self.builder.build_return(Some(&z)).unwrap();
+            }
+            Some("float") => {
+                let z = self.ctx.f64_type().const_zero();
+                self.builder.build_return(Some(&z)).unwrap();
+            }
+            Some("ptr" | "string") => {
+                let z = self.ptr_ty().const_null();
+                self.builder.build_return(Some(&z)).unwrap();
+            }
+            Some(_) => unreachable!(),
+        }
+
+        self.builder.position_at_end(ok_bb);
+        if let Some(rt) = ret_ty.as_deref() {
+            let mut dummy_free = Vec::new();
+            let c_ret = self.marshal_c_scalar(res_ptr, rt, "ffi_callback", &mut dummy_free)?;
+            let bv: inkwell::values::BasicValueEnum<'ctx> = match c_ret {
+                inkwell::values::BasicMetadataValueEnum::IntValue(x) => x.into(),
+                inkwell::values::BasicMetadataValueEnum::FloatValue(x) => x.into(),
+                inkwell::values::BasicMetadataValueEnum::PointerValue(x) => x.into(),
+                _ => unreachable!(),
+            };
+            self.builder.build_return(Some(&bv)).unwrap();
+        } else {
+            self.builder.build_return(None).unwrap();
+        }
+
+        self.exc = saved_exc;
+        self.ret_bb = saved_ret_bb;
+        self.ret_slots = saved_ret_slots;
+        if let Some(bb) = saved_bb {
+            self.builder.position_at_end(bb);
+        }
+
+        let box_ptr = self.tramp(
+            "spid3r_value_from_ptr",
+            &[self.ptr_ty().into()],
+            Some(self.ptr_ty().into()),
+        );
+        let fn_ptr = thunk_fn.as_global_value().as_pointer_value();
+        Ok(call_ptr(self.emit_call(
+            box_ptr,
+            &[fn_ptr.into()],
+            "cb.ptr",
+        )))
+    }
+
+    fn compile_dl_call(&mut self, args: &[Expr]) -> IrResult<PointerValue<'ctx>> {
+        if !self.allow_dlopen {
+            return Err(
+                "'dl_call' requires --allow-dlopen (runtime FFI is disabled by default)"
+                    .to_string(),
+            );
+        }
+        if args.len() < 2 {
+            return Err(format!(
+                "dl_call expects at least 2 arguments (fn_ptr, sig_str, ...), got {}",
+                args.len()
+            ));
+        }
+        let sig_str = match &args[1] {
+            Expr::Str(s, _) => s.clone(),
+            _ => {
+                return Err(
+                    "dl_call: second argument must be a string literal signature like \"fn(int, int) -> int\""
+                        .to_string(),
+                )
+            }
+        };
+        let (param_tys, ret_ty) = self.parse_c_fn_sig(&sig_str, "dl_call")?;
+        let call_args = &args[2..];
+        if call_args.len() != param_tys.len() {
+            return Err(format!(
+                "dl_call '{sig_str}' takes {} argument(s), got {}",
+                param_tys.len(),
+                call_args.len()
+            ));
+        }
+
+        let fp_val = self.compile_expr(&args[0])?;
+        let to_ptr = self.tramp(
+            "spid3r_to_ptr",
+            &[self.ptr_ty().into()],
+            Some(self.ptr_ty().into()),
+        );
+        let fp = call_ptr(self.emit_call(to_ptr, &[fp_val.into()], "dl.fp"));
+
+        let mut llvm_params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            Vec::with_capacity(param_tys.len());
+        let mut raw_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(call_args.len());
+        let mut free_after = Vec::new();
+        for (arg, pt) in call_args.iter().zip(param_tys.iter()) {
+            llvm_params.push(self.c_type_name(pt, "dl_call")?.into());
+            let v = self.compile_expr(arg)?;
+            raw_args.push(self.marshal_c_scalar(v, pt, "dl_call", &mut free_after)?);
+        }
+        let fn_ty = match ret_ty.as_deref() {
+            Some(rt) => self
+                .c_type_name(rt, "dl_call")?
+                .fn_type(&llvm_params, false),
+            None => self.ctx.void_type().fn_type(&llvm_params, false),
+        };
+        let call = self
+            .builder
+            .build_indirect_call(fn_ty, fp, &raw_args, "dl.call")
+            .unwrap();
+        if !free_after.is_empty() {
+            let free = self.tramp("spid3r_cstr_free", &[self.ptr_ty().into()], None);
+            for p in free_after {
+                self.emit_call(free, &[p.into()], "dl.free");
+            }
+        }
+        self.throw_guard();
+
+        match ret_ty.as_deref() {
+            None => {
+                let f = self.tramp("spid3r_value_null", &[], Some(self.ptr_ty().into()));
+                Ok(call_ptr(self.emit_call(f, &[], "dl.unit")))
+            }
+            Some(rt) => {
+                let bv = call.try_as_basic_value().unwrap_basic();
+                self.box_c_scalar(bv, rt, "dl_call")
+            }
         }
     }
 
@@ -4069,6 +4752,66 @@ impl<'ctx> Ir<'ctx> {
         if let Expr::Ident(name, _) = callee {
             if let Some(fv) = self.externs.get(name).copied() {
                 return self.compile_extern_call(name, fv, args);
+            }
+            match name.as_str() {
+                "ffi_callback" => return self.compile_ffi_callback(args),
+                "dl_call" => return self.compile_dl_call(args),
+                "dl_open" => {
+                    if !self.allow_dlopen {
+                        return Err(
+                            "'dl_open' requires --allow-dlopen (runtime FFI is disabled by default)"
+                                .to_string(),
+                        );
+                    }
+                    if args.len() != 1 {
+                        return Err(format!("dl_open expects 1 argument, got {}", args.len()));
+                    }
+                    let v = self.compile_expr(&args[0])?;
+                    let f = self.tramp(
+                        "spid3r_dl_open",
+                        &[self.ptr_ty().into()],
+                        Some(self.ptr_ty().into()),
+                    );
+                    return Ok(call_ptr(self.emit_call(f, &[v.into()], "dl.open")));
+                }
+                "dl_sym" => {
+                    if !self.allow_dlopen {
+                        return Err(
+                            "'dl_sym' requires --allow-dlopen (runtime FFI is disabled by default)"
+                                .to_string(),
+                        );
+                    }
+                    if args.len() != 2 {
+                        return Err(format!("dl_sym expects 2 arguments, got {}", args.len()));
+                    }
+                    let h = self.compile_expr(&args[0])?;
+                    let s = self.compile_expr(&args[1])?;
+                    let f = self.tramp(
+                        "spid3r_dl_sym",
+                        &[self.ptr_ty().into(), self.ptr_ty().into()],
+                        Some(self.ptr_ty().into()),
+                    );
+                    return Ok(call_ptr(self.emit_call(f, &[h.into(), s.into()], "dl.sym")));
+                }
+                "dl_close" => {
+                    if !self.allow_dlopen {
+                        return Err(
+                            "'dl_close' requires --allow-dlopen (runtime FFI is disabled by default)"
+                                .to_string(),
+                        );
+                    }
+                    if args.len() != 1 {
+                        return Err(format!("dl_close expects 1 argument, got {}", args.len()));
+                    }
+                    let h = self.compile_expr(&args[0])?;
+                    let f = self.tramp(
+                        "spid3r_dl_close",
+                        &[self.ptr_ty().into()],
+                        Some(self.ptr_ty().into()),
+                    );
+                    return Ok(call_ptr(self.emit_call(f, &[h.into()], "dl.close")));
+                }
+                _ => {}
             }
         }
         // builtin collection constructors: list(...), map(...), ...
@@ -4885,15 +5628,53 @@ pub fn build_module(
     program: &Program,
     module_name: &str,
 ) -> IrResult<inkwell::module::Module<'static>> {
+    build_module_with_opts(program, module_name, &IrOptions::default())
+}
+
+/// Compile a checked program to an LLVM module with explicit AOT build options.
+pub fn build_module_with_opts(
+    program: &Program,
+    module_name: &str,
+    opts: &IrOptions,
+) -> IrResult<inkwell::module::Module<'static>> {
     // Same seam as the interpreters: the AOT backend lowers before codegen.
     let lowered = crate::lower::lower(program);
     let program = lowered.as_ref();
     let ctx = Box::leak(Box::new(Context::create()));
     let mut ir = Ir::new(ctx, module_name);
-    // top-level functions are globals holding closure values
-    // (compiled as part of the entry statements, like the VM does)
+    ir.target_triple = opts.target_triple.clone();
+    ir.allow_dlopen = opts.allow_dlopen;
+    ir.enforce_budget = opts.enforce_budget;
+    if let Some(limit) = opts.enforce_budget {
+        let gv = ir
+            .module
+            .add_global(ir.i64_ty(), None, "__spid3r_budget_steps");
+        gv.set_initializer(&ir.i64_ty().const_int(limit.max(0) as u64, false));
+        gv.set_linkage(Linkage::Internal);
+        ir.budget_counter_gv = Some(gv);
+    }
     let entry = ir.build_entry(program)?;
-    ir.build_cmain(entry);
+    if opts.freestanding {
+        let entry_name = opts.entry_symbol.as_deref().unwrap_or("main");
+        let i32_ty = ir.ctx.i32_type();
+        let fty = i32_ty.fn_type(&[], false);
+        let entry_fn = ir.module.add_function(entry_name, fty, None);
+        let bb = ir.ctx.append_basic_block(entry_fn, "entry");
+        ir.builder.position_at_end(bb);
+        let f = ir.tramp(
+            "spid3r_rt_start_freestanding",
+            &[ir.ptr_ty().into()],
+            Some(i32_ty.into()),
+        );
+        let r = ir
+            .builder
+            .build_call(f, &[entry.into()], "fs.code")
+            .unwrap();
+        let code = call_int(r);
+        ir.builder.build_return(Some(&code)).unwrap();
+    } else {
+        ir.build_cmain(entry);
+    }
     if let Err(e) = ir.module().verify() {
         return Err(format!("internal error: generated LLVM IR is invalid: {e}"));
     }

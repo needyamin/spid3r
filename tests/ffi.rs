@@ -389,3 +389,302 @@ fn ordinary_programs_are_unaffected() {
     assert_eq!(String::from_utf8_lossy(&o.stdout).trim_end(), "2");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn r9_1_structs_by_value_and_varargs_round_trip() {
+    let Some(compiler) = cc() else {
+        eprintln!("skipping AOT R9.1 test: no C compiler on PATH");
+        return;
+    };
+    let dir = scratch("r9_1");
+    let c_src = r#"
+#include <stdarg.h>
+#include <stdio.h>
+
+typedef struct { long long v; } Box1;
+typedef struct { long long x; long long y; } Point;
+
+Box1 c_inc_box1(Box1 b) {
+    Box1 out;
+    out.v = b.v + 10;
+    return out;
+}
+
+Point c_add_points(Point a, Point b) {
+    Point out;
+    out.x = a.x + b.x;
+    out.y = a.y + b.y;
+    return out;
+}
+
+long long c_sum_varargs(long long count, ...) {
+    va_list ap;
+    va_start(ap, count);
+    long long acc = 0;
+    for (long long i = 0; i < count; i++) {
+        acc += va_arg(ap, long long);
+    }
+    va_end(ap);
+    return acc;
+}
+
+long long c_fmt_varargs(long long a, double b, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char buf[128];
+    int n = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    (void)a; (void)b;
+    return (long long)n;
+}
+"#;
+    write(&dir, "r91.c", c_src);
+    let obj = dir.join("r91.o");
+    let c_out = Command::new(&compiler)
+        .args(["-c", "r91.c", "-o", obj.to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn cc");
+    assert!(c_out.status.success(), "cc failed: {:?}", c_out);
+
+    let prog = r#"
+class Box1 {
+    public let v: int;
+    fn new(v: int) { self.v = v; }
+}
+
+class Point {
+    public let x: int;
+    public let y: int;
+    fn new(x: int, y: int) { self.x = x; self.y = y; }
+}
+
+extern fn c_inc_box1(b: Box1) -> Box1;
+extern fn c_add_points(a: Point, b: Point) -> Point;
+extern fn c_sum_varargs(count: int, ...) -> int;
+extern fn c_fmt_varargs(a: int, b: float, fmt: string, ...) -> int;
+
+fn main() {
+    let b1 = c_inc_box1(Box1(32));
+    println(b1.v);
+    let p = c_add_points(Point(3, 4), Point(7, 16));
+    println(string(p.x) + "," + string(p.y));
+    println(c_sum_varargs(4, 10, 20, 30, 40));
+    println(c_fmt_varargs(1, 2.0, "%s:%lld:%.1f", "hi", 7, 2.5));
+    return 0;
+}
+"#;
+    write(&dir, "app.matrix", prog);
+    let exe = dir.join(format!("app{}", std::env::consts::EXE_SUFFIX));
+    let build = Command::new(bin())
+        .args([
+            "build",
+            "app.matrix",
+            "-o",
+            exe.to_str().unwrap(),
+            "--link-lib",
+            obj.to_str().unwrap(),
+        ])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn spid3r build");
+    assert_eq!(
+        build.status.code(),
+        Some(0),
+        "build failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&exe).current_dir(&dir).output().expect("run");
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
+        "42\n10,20\n100\n8\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn r9_1_non_pod_struct_is_rejected_cleanly() {
+    let dir = scratch("non_pod");
+    write(
+        &dir,
+        "app.matrix",
+        "class Vec3 { public let x: int; public let y: int; public let z: int; }\nextern fn f(v: Vec3) -> int;\nfn main() { return 0; }\n",
+    );
+    let exe = dir.join(format!("app{}", std::env::consts::EXE_SUFFIX));
+    let o = Command::new(bin())
+        .args(["build", "app.matrix", "-o", exe.to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn spid3r build");
+    assert_ne!(o.status.code(), Some(0));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("cannot pass 'Vec3'"), "got: {err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn r9_2_callback_thunks_and_catchability() {
+    let Some(compiler) = cc() else {
+        eprintln!("skipping AOT R9.2 test: no C compiler on PATH");
+        return;
+    };
+    let dir = scratch("r9_2");
+    write(
+        &dir,
+        "cb.c",
+        "long long c_apply2(long long (*fn)(long long, long long), long long a, long long b) { return fn(a, b); }\n",
+    );
+    let obj = dir.join("cb.o");
+    let c_out = Command::new(&compiler)
+        .args(["-c", "cb.c", "-o", obj.to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn cc");
+    assert!(c_out.status.success(), "cc failed: {:?}", c_out);
+
+    let prog = r#"
+extern fn c_apply2(cb: ptr, a: int, b: int) -> int;
+
+fn main() {
+    let offset = 5;
+    let cb = ffi_callback((a, b) => a * b + offset, "fn(int, int) -> int");
+    println(c_apply2(cb, 6, 7));
+
+    let bad = ffi_callback((a, b) => { throw "cb_boom"; }, "fn(int, int) -> int");
+    try {
+        c_apply2(bad, 1, 2);
+        println("unreachable");
+    } catch e {
+        println("caught:" + string(e));
+    }
+    return 0;
+}
+"#;
+    write(&dir, "app.matrix", prog);
+    let exe = dir.join(format!("app{}", std::env::consts::EXE_SUFFIX));
+    let build = Command::new(bin())
+        .args([
+            "build",
+            "app.matrix",
+            "-o",
+            exe.to_str().unwrap(),
+            "--link-lib",
+            obj.to_str().unwrap(),
+        ])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn spid3r build");
+    assert_eq!(
+        build.status.code(),
+        Some(0),
+        "build failed: {}",
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&exe).current_dir(&dir).output().expect("run");
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
+        "47\ncaught:cb_boom\n"
+    );
+
+    // Script engines reject ffi_callback before running.
+    for engine in ["tree", "vm"] {
+        let r = Command::new(bin())
+            .args(["run", "--engine", engine, "app.matrix"])
+            .current_dir(&dir)
+            .output()
+            .expect("run script");
+        assert_eq!(r.status.code(), Some(2), "engine {engine} must exit 2");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dp5_dlopen_requires_flag_and_works_when_allowed() {
+    let Some(compiler) = cc() else {
+        eprintln!("skipping DP-5 dlopen test: no C compiler on PATH");
+        return;
+    };
+    let dir = scratch("dp5");
+    let lib_name = if cfg!(windows) {
+        "dynlib.dll"
+    } else if cfg!(target_os = "macos") {
+        "libdynlib.dylib"
+    } else {
+        "libdynlib.so"
+    };
+    let c_src = if cfg!(windows) {
+        "__declspec(dllexport) long long dyn_mul(long long a, long long b) { return a * b; }\n"
+    } else {
+        "long long dyn_mul(long long a, long long b) { return a * b; }\n"
+    };
+    write(&dir, "dynlib.c", c_src);
+    let lib_path = dir.join(lib_name);
+    let mut cc_args = vec!["-shared"];
+    if !cfg!(windows) {
+        cc_args.push("-fPIC");
+    }
+    cc_args.extend(["dynlib.c", "-o", lib_path.to_str().unwrap()]);
+    let c_out = Command::new(&compiler)
+        .args(&cc_args)
+        .current_dir(&dir)
+        .output()
+        .expect("spawn cc");
+    assert!(c_out.status.success(), "cc shared failed: {:?}", c_out);
+
+    let prog = format!(
+        r#"
+fn main() {{
+    let lib = dl_open("{}");
+    let sym = dl_sym(lib, "dyn_mul");
+    println(dl_call(sym, "fn(int, int) -> int", 6, 7));
+    println(dl_close(lib));
+    return 0;
+}}
+"#,
+        lib_path.to_string_lossy().replace('\\', "\\\\")
+    );
+    write(&dir, "app.matrix", &prog);
+    let exe = dir.join(format!("app{}", std::env::consts::EXE_SUFFIX));
+
+    // Must fail without --allow-dlopen.
+    let denied = Command::new(bin())
+        .args(["build", "app.matrix", "-o", exe.to_str().unwrap()])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn spid3r build");
+    assert_ne!(denied.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&denied.stderr).contains("--allow-dlopen"),
+        "stderr: {}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+
+    // Succeeds with --allow-dlopen.
+    let allowed = Command::new(bin())
+        .args([
+            "build",
+            "app.matrix",
+            "-o",
+            exe.to_str().unwrap(),
+            "--allow-dlopen",
+        ])
+        .current_dir(&dir)
+        .output()
+        .expect("spawn spid3r build");
+    assert_eq!(
+        allowed.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    let run = Command::new(&exe).current_dir(&dir).output().expect("run");
+    assert_eq!(run.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
+        "42\ntrue\n"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

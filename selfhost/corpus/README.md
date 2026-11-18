@@ -1,10 +1,10 @@
 # The frozen self-host corpus (SH-4)
 
 This directory is the **exact program set** every self-host parity gate
-(Phases 1–7 of `full_plan.html`) runs against. `MANIFEST.sha256` pins every
-file; `python tools/corpus_manifest.py verify` re-checks it (CI runs this —
-drift blocks the merge). **Changing a corpus program requires a ledger entry
-in `full_plan.html` stating why.**
+runs against. `MANIFEST.sha256` pins every file;
+`python tools/corpus_manifest.py verify` re-checks it (CI runs this —
+drift blocks the merge). **Changing a corpus program requires an SH-4 note
+in [docs/selfhost/SELFHOST.md](../docs/selfhost/SELFHOST.md) stating why.**
 
 | Directory | Count | Contents |
 |---|---|---|

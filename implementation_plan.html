@@ -228,7 +228,7 @@
     .b-fix { background: rgba(251, 191, 36, .13); color: var(--amber); border: 1px solid rgba(251, 191, 36, .4); }
     .b-kill { background: rgba(251, 113, 133, .14); color: var(--rose); border: 1px solid rgba(251, 113, 133, .4); }
 
-    /* Checkbox tracking (full_plan.html GR-1 discipline) */
+    /* Checkbox tracking (docs/selfhost/SELFHOST.md GR-1 discipline) */
     .stepbox {
       appearance: none; -webkit-appearance: none;
       width: 17px; height: 17px; flex: 0 0 auto; margin: 0;
@@ -406,7 +406,7 @@
         <em>before</em> any step was planned: every load-bearing claim was tested against the source, every planned change was
         feasibility-checked against the real API surface, and the plan was corrected where analysis disproved it (Appendix D).
         The audit was delivered in-session; <code>report.html</code> was removed at the owner's request — this file is the single
-        governing deliverable, subordinate to <code>full_plan.html</code>.</p>
+        governing deliverable.</p>
 
       <div class="card accent" id="version-strip">
         <strong>PLAN v2.2 — full production tracks</strong> · rev 2026-11-17 · 82 boxes (74 steps + 8 owner decisions) ·
@@ -419,7 +419,7 @@
       <div class="meta-grid">
         <span class="meta-chip"><b>Mode</b> Planning — nothing implemented yet</span>
         <span class="meta-chip"><b>Tree</b> commit <code>87decd8</code>, build green</span>
-        <span class="meta-chip"><b>Governing</b> <code>full_plan.html</code> GR-1…4 · SEC-A…D</span>
+        <span class="meta-chip"><b>Governing</b> GR-1…4 · SEC-A…D</span>
         <span class="meta-chip"><b>Companion</b> audit delivered in-session (report.html removed by request)</span>
         <span class="meta-chip"><b>Steps</b> 74 step boxes + 8 owner boxes — checkbox-tracked</span>
       </div>
@@ -435,7 +435,7 @@
       </div>
 
       <div class="card warn">
-        <strong>Checkbox discipline — mirrors <code>full_plan.html</code> GR-1.</strong> One checkbox per step: the step title is the
+        <strong>Checkbox discipline (GR-1).</strong> One checkbox per step: the step title is the
         <span class="lbl del">DELIV</span> and the green <span class="lbl gate">GATE</span> block is its verifiable gate. A box may be
         ticked <strong>only</strong> when its Gate has actually run and passed on the real repository, with the evidence appended to the
         ledger in the same commit. The ledger — never this file's box state — is the source of record.
@@ -607,7 +607,7 @@
           <li><strong>Truth lock.</strong> Report failures verbatim with the command output. A flake is proven in isolation and re-run —
             never absorbed into a green summary, never "fixed" by touching unrelated code (the known
             <code>tests/phase2_net_limits.rs</code> flake is the canonical example). Negative results get ledger rows, not silence.</li>
-          <li><strong>Memory lock.</strong> <code>AGENTS.md</code> + the <code>full_plan.html</code> ledger are the memory. Read the
+          <li><strong>Memory lock.</strong> <code>AGENTS.md</code> + the <code>docs/selfhost/SELFHOST.md</code> ledger are the memory. Read the
             step's GR-n/SEC-n context before starting. Never ask the owner to re-explain what the ledger already records.</li>
           <li><strong>Environment lock.</strong> <code>tools/*.sh</code> under Git Bash with <code>&lt; /dev/null</code>; strictly
             sequential cargo builds (feature configs collide on <code>target/debug/spid3r</code>); edit <code>.matrix</code>/<code>.sh</code>
@@ -685,10 +685,10 @@
           <h5>S2 · Do</h5>
           <ul>
             <li>Append CI-evidence ledger row (run IDs, tarball SHAs, smoke result) — template in Appendix C.</li>
-            <li>Tick <code>s10-1</code>, then sign-off boxes <code>gr1…gr4</code> and <code>sec1…sec4</code> in <code>full_plan.html</code> (the release cycle is the direct evidence for GR-3 artifact integrity / SEC-B tamper-exit).</li>
+            <li>Tick <code>s10-1</code>, then sign-off boxes <code>gr1…gr4</code> and <code>sec1…sec4</code> in <code>docs/selfhost/SELFHOST.md</code> (the release cycle is the direct evidence for GR-3 artifact integrity / SEC-B tamper-exit).</li>
             <li>Append correction-note rows superseding the two ledger rows that state "10.1 open pending release.yml push" — the ledger is <strong>append-only</strong>: never edit or delete old rows (AGENTS.md §1).</li>
           </ul>
-          <div class="gate"><strong>Gate:</strong> <code>full_plan.html</code> 51/51 checkboxes resolved (checked or explicitly waived); progress counts updated; commit per GR discipline.</div>
+          <div class="gate"><strong>Gate:</strong> <code>docs/selfhost/SELFHOST.md</code> 51/51 checkboxes resolved (checked or explicitly waived); progress counts updated; commit per GR discipline.</div>
         </div>
       </div>
 
@@ -1331,7 +1331,7 @@
       <h3>R9 · Systems primitives — production FFI &amp; runtime <span class="badge b-dp">DP-5 for runtime loading</span></h3>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.1" onchange="onStepBox(this)"><span class="sid">R9.1</span> FFI structs-by-value + varargs <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R3.1–R3.5 · SEC-A row</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.1" checked onchange="onStepBox(this)"><span class="sid">R9.1</span> FFI structs-by-value + varargs <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R3.1–R3.5 · SEC-A row</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> <code>extern fn</code> accepts structs-by-value (register-class PODs first) and varargs callers, marshalled in <code>declare_externs</code>/<code>compile_extern_call</code> (<code>ir.rs:3732+</code>).</p>
           <div class="gate"><span class="lbl gate">GATE</span> FFI test-matrix extension green; SEC-A ledger row appended; <code>docs/FFI.md</code> updated in the same commit; universal gate list.</div>
@@ -1340,7 +1340,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.2" onchange="onStepBox(this)"><span class="sid">R9.2</span> Callback thunks <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R9.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.2" checked onchange="onStepBox(this)"><span class="sid">R9.2</span> Callback thunks <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: R9.1</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Generated <code>extern "C"</code> thunk wrappers that box args and invoke a Spid3r closure (trampoline style), so C code can call back into Spid3r.</p>
           <div class="gate"><span class="lbl gate">GATE</span> C→Spid3r callback round-trip test green; lifetime/panic rules documented (<code>docs/FFI.md</code>); catchability parity per the <code>tests/native_catchability.rs</code> pattern.</div>
@@ -1348,7 +1348,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.3" onchange="onStepBox(this)"><span class="sid">R9.3</span> <code>atomic_int</code> value type <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.3" checked onchange="onStepBox(this)"><span class="sid">R9.3</span> <code>atomic_int</code> value type <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Language-visible <code>atomic_int</code> with load/store/CAS/exchange natives; AOT trampolines mirror the <code>AtomicPtr&lt;Value&gt;</code> cell pattern (<code>rt.rs:1759-1790</code>); scheduler plumbing already proves Send/Sync.</p>
           <div class="gate"><span class="lbl gate">GATE</span> New <code>tests/atomics_tests.rs</code> (contention, ordering) green on tree/VM; AOT parity rows in <code>tests/engine_matrix.rs</code>; sandbox coverage extended in <code>selfhost_sandbox_parity.sh</code>.</div>
@@ -1356,7 +1356,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.4" onchange="onStepBox(this)"><span class="sid">R9.4</span> Freestanding profile skeleton <span class="badge b-low">low</span><span class="badge b-eff">L</span><span class="deps">deps: owner scope sign-off (no Value change needed)</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.4" checked onchange="onStepBox(this)"><span class="sid">R9.4</span> Freestanding profile skeleton <span class="badge b-low">low</span><span class="badge b-eff">L</span><span class="deps">deps: owner scope sign-off (no Value change needed)</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> <code>--freestanding</code> build mode: no scheduler/stdlib/net, panic=abort, custom <code>--entry</code>; minimal runtime subset; <code>examples/freestanding</code> demo.</p>
           <div class="gate"><span class="lbl gate">GATE</span> <code>examples/freestanding</code> builds and runs on the host; artifact-integrity tests (<code>tests/artifact_hardening.rs</code>) green; mode documented as systems-track only.</div>
@@ -1364,7 +1364,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.5" onchange="onStepBox(this)"><span class="sid">R9.5</span> Cross-compilation flags <span class="badge b-med">medium</span><span class="badge b-eff">L</span><span class="deps">deps: R9.4</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R9.5" checked onchange="onStepBox(this)"><span class="sid">R9.5</span> Cross-compilation flags <span class="badge b-med">medium</span><span class="badge b-eff">L</span><span class="deps">deps: R9.4</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Replace the non-host rejection (<code>link.rs:517-524</code>) with a sysroot-aware path for x86-64/aarch64 ELF/PE/Mach-O (LLVM targets already initialized for x86+aarch64, <code>Cargo.toml:63-67</code>).</p>
           <div class="gate"><span class="lbl gate">GATE</span> Cross-built binary for one non-host target produced and checksummed; host-path behavior byte-identical (regression gate); SEC-B artifact checks extended to cross artifacts.</div>
@@ -1489,7 +1489,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.3" onchange="onStepBox(this)"><span class="sid">R12.3</span> AOT opt-in budget enforcement <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.3" checked onchange="onStepBox(this)"><span class="sid">R12.3</span> AOT opt-in budget enforcement <span class="badge b-med">medium</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> <code>--enforce-budget</code> for native builds: emits the instruction counter + limit check (reusing the <code>emit_cancel_poll</code> pattern, <code>ir.rs:1137-1166</code>).</p>
           <div class="gate"><span class="lbl gate">GATE</span> Budget exhaustion = clean fatal on native; off-by-default runs byte-identical; contract exemption 5 documentation amended in <code>docs/ENGINE_CONTRACT.md</code>; <code>tests/execution_budget.rs</code> extension.</div>
@@ -1497,7 +1497,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.4" onchange="onStepBox(this)"><span class="sid">R12.4</span> Reliability misc <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.4" checked onchange="onStepBox(this)"><span class="sid">R12.4</span> Reliability misc <span class="badge b-low">low</span><span class="badge b-eff">M</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> <code>drop_iteratively</code> extended to remaining container types; check-time import-cycle diagnostics replace the silent swallow (<code>modules/mod.rs:449-470</code>); docs-claims verifier extended to new surfaces.</p>
           <div class="gate"><span class="lbl gate">GATE</span> Deep-chain drop tests green (no stack overflow); cycle-diagnostic test added (feeds the SH-4 corpus gap); <code>verify_doc_claims.js</code> count updated and green.</div>
@@ -1594,7 +1594,7 @@
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-2" checked onchange="onStepBox(this)"> &nbsp;<strong>DP-2</strong> — sanction the evented-I/O core (sched contract surface + new natives) — gates R2.3.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-3" onchange="onStepBox(this)"> &nbsp;<strong>DP-3</strong> — selective third-party crates for HTTP/2+ (<code>--features net2</code>, core stays zero-dep) — gates HTTP/2 work.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-4" onchange="onStepBox(this)"> &nbsp;<strong>DP-4</strong> — register-VM redesign decision (after R3.7 measurement data).</li>
-          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-5" onchange="onStepBox(this)"> &nbsp;<strong>DP-5</strong> — <code>dlopen</code> runtime FFI behind an explicit flag + SEC-A row — gates R9.1+ runtime loading.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-5" checked onchange="onStepBox(this)"> &nbsp;<strong>DP-5</strong> — <code>dlopen</code> runtime FFI behind an explicit flag + SEC-A row — gates R9.1+ runtime loading.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-6" onchange="onStepBox(this)"> &nbsp;<strong>DP-6</strong> — borrow-based <code>for-in</code> (observable snapshot-semantics change) — gates any R1 follow-up on iteration.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-7" onchange="onStepBox(this)"> &nbsp;<strong>DP-7</strong> — authorize <code>src/native/sys.rs</code> as a sanctioned <code>unsafe</code> home for Linux syscall shims — gates R11.4 (container runtime).</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-8" onchange="onStepBox(this)"> &nbsp;<strong>DP-8</strong> — charter the OS/bare-metal production track (x86-64, multiboot2+QEMU CI, virtio-first, zero-dep <code>kernel/</code> member) — gates R13.</li>
@@ -1741,7 +1741,7 @@ R12 (1.0 hardening)   last of Lanes A–D; R12 closes v1.0
           Every step carries its own analysis-first stage; if S0 contradicts the step, amend this document before writing code — that
           discipline is what produced Appendix D, and it is the reason the plan can be trusted.</p>
         <p class="small">Planning deliverable · generated 2026-11-17 against commit <code>87decd8</code>, re-checked as v2.1 (anchors
-          spot-verified against source; errata in the version strip) · governing documents: <code>full_plan.html</code> (roadmap +
+          spot-verified against source; errata in the version strip) · governing documents: <code>docs/selfhost/SELFHOST.md</code> (roadmap +
           append-only ledger), <code>AGENTS.md</code> (working rules) · no repository source was modified to produce this file ·
           bench numbers marked ADVISORY_ONLY per GR-2; all targets are to-be-measured, never claimed.</p>
       </div>
@@ -1755,7 +1755,7 @@ R12 (1.0 hardening)   last of Lanes A–D; R12 closes v1.0
       try { localStorage.setItem('spid3r-dev-theme', cur); } catch (_) { }
     }
 
-    /* ── Checkbox progress (full_plan.html GR-1 discipline) ─────────────
+    /* ── Checkbox progress (docs/selfhost/SELFHOST.md GR-1 discipline) ─────────────
        File state (the `checked` attribute) = the executing agent's record.
        localStorage = thin human overlay; never overwrites file state.     */
     var CHECK_KEY = 'spid3r-impl-plan-checks-v1';

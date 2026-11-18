@@ -42,6 +42,8 @@ pub struct FnProto {
     /// `extern fn name(a: int) -> int;` — a C function the AOT backend links
     /// against. It has no body; the tree and VM backends reject it outright.
     pub is_extern: bool,
+    /// `extern fn printf(fmt: string, ...) -> int;` — C varargs (`...` trailing).
+    pub is_variadic: bool,
     pub name: Option<String>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,

@@ -18,6 +18,7 @@ let h    = heap("min");
 let mx   = matrix(2, 3, 0.0);
 let rb   = ring_buffer(4);
 let cell = mutex(0);
+let atom = atomic_int(0);
 let ch   = channel();
 let box  = ref(1);             // a shared, interior-mutable cell
 let yes  = some(5);            // option
@@ -296,6 +297,7 @@ and `inverse` throw catchable runtime errors (`"matrix is singular"`).
 | `ref(v)` | Interior-mutable cell: `get()`, `set(v)`. Safe to share across tasks. |
 | `weak(r)` / `deref(w)` | Non-owning weak reference to a `ref(v)`. `deref(w)` returns the value or `null` if the reference target has been collected. |
 | `mutex(v)` | Guarded cell: `m.lock()` returns the value and holds a RAII guard, auto-released on the calling scope's exit. |
+| `atomic_int(init?)` | Lock-free `AtomicI64` cell (`load()`, `store(v)`, `cas(expected, new)`, `exchange(v)`, `fetch_add(d)`, `fetch_sub(d)`). |
 | `channel()` | Unbuffered message channel. `send(v)`, `recv()`, `try_recv()`, `state()`, `len()`. |
 | `task` | Returned by `spawn`. Joined with `await`; `status()` and `join()`. |
 

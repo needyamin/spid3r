@@ -25,9 +25,7 @@ cargo build --release --features native
 built hello (x86_64-pc-windows-msvc 64 bit, debug)
 ```
 
-Flags: `-o <path>` (default: source stem + platform extension), `--target
-<triple>` (default: host triple), `--release` (LLVM `Aggressive` optimizations
-instead of `Default`).
+Flags: `-o <path>` (default: source stem + platform extension), `--target <triple>` (default: host triple; non-host targets require `--sysroot <dir>` or `--emit-obj`), `--target-cpu <x86-64|x86-64-v2|x86-64-v3|native>`, `--release` (LLVM `default<O3>` passes), `--allow-dlopen` (enable runtime `dl_open`/`dl_sym`/`dl_call`/`dl_close`), `--enforce-budget <N>` (loop-backedge step limit), `--freestanding` + `--entry <sym>` (minimal runtime subset, systems track), and `--emit-obj` (object + `.sha256` sidecar).
 
 Without the feature, `spid3r build` fails with a usage error pointing at
 BUILDING.md rather than a confusing linker error.

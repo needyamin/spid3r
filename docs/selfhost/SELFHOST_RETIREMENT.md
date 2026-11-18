@@ -2,7 +2,7 @@
 
 Status: **Adopted** (2026-11-15).
 
-This document is the Phase 10.2 (`SH-8`) architectural retirement review for Spid3r's self-hosting program ([full_plan.html](../../full_plan.html), [SELFHOST.md](SELFHOST.md)). It states honestly what compiler and developer-tool work no longer requires a Rust toolchain, what still requires Rust and why, how rollback works via Stage-0 release tags, and the maintenance rules for the self-hosted compiler going forward.
+This document is the Phase 10.2 (`SH-8`) architectural retirement review for Spid3r's self-hosting program ([SELFHOST.md](SELFHOST.md)). It states honestly what compiler and developer-tool work no longer requires a Rust toolchain, what still requires Rust and why, how rollback works via Stage-0 release tags, and the maintenance rules for the self-hosted compiler going forward.
 
 ![Permanent ownership boundary between pure self-hosted Spid3r and retained Rust Stage 0](diagrams/rust-vs-selfhost-boundary.svg)
 
@@ -41,7 +41,7 @@ Release compiler binaries (`spid3r-self` / `spid3r-self.exe`), `spid3r-self` smo
 Trying to pretend Rust is completely absent would misstate the system architecture. The exact components that still depend on `rustc`/`cargo` are:
 
 ### 3.1 Rebuilding the runtime staticlib (`SH-6`, Phase 9.2 ADR)
-- **Files:** `src/native/rt.rs` (66 `spid3r_*` C-ABI trampolines), `src/stdlib/` (229 native entries), `src/value.rs`, `src/gc/`, `src/scheduler.rs` (`crate-type = ["staticlib"]` → `spid3r_lang.lib` / `libspid3r_lang.a`).
+- **Files:** `src/native/rt.rs` (75 `spid3r_*` C-ABI trampolines), `src/stdlib/` (257 native entries), `src/value.rs`, `src/gc/`, `src/scheduler.rs` (`crate-type = ["staticlib"]` → `spid3r_lang.lib` / `libspid3r_lang.a`).
 - **Why:** By explicit owner-confirmed Phase 9.2 ADR ([SELFHOST.md](SELFHOST.md)), `rt.rs` remains in Rust inside the versioned, SHA-256-pinned runtime archive ([RUNTIME_ABI.md](RUNTIME_ABI.md)) to avoid duplicating low-level runtime internals across a second C ABI and to preserve a single semantic source of truth across tree/VM/AOT.
 - **Impact on compiler work:** Normal compiler edits (`selfhost/*.matrix`) **never** rebuild the runtime staticlib. Rust is only needed when adding/changing stdlib builtins, GC/value internals, or `spid3r_*` trampolines.
 
@@ -52,7 +52,7 @@ Trying to pretend Rust is completely absent would misstate the system architectu
 ### 3.3 Retained Rust-side runtime & optional developer tools (`SH-2`)
 Explicitly excluded from the self-hosting compiler target in [SELFHOST.md](SELFHOST.md):
 - Script engines & runtime commands (`spid3r run` tree/VM interpreters, `exec`, `disasm`)
-- Interactive tools (`repl`, VM line `debug`, `lsp`, `agent`, `control`, `plugin` host, `bench`, `modules`, `init`/`add`/`remove`/`install`/`publish`/`search`)
+- Interactive tools (`repl`, VM line `debug`, `lsp`, `doc`, `agent`, `control`, `plugin` host, `bench`, `modules`, `init`/`add`/`remove`/`install`/`publish`/`search`)
 - GUI host (`gui` feature via `wry`/`tao`, `spid3r-control.exe`) and WASM browser bundle (`wasm32-unknown-unknown` `cdylib` powering `web/`)
 - Cross-target bootstrap convenience: on Linux/macOS, `spid3r-self` links dynamically against `libLLVM-23.so` / `libLLVM.dylib` when compiled natively. End-user release tarballs therefore continue bundling Stage-0 `spid3r` (core VM/interpreter/CLI with zero LLVM runtime dependency) alongside `spid3r-self`, so `install.sh` still works without system LLVM for script execution while compiler/AOT builds use `spid3r-self`. On Windows, the NSIS installer ships `LLVM-C.dll` + `LLVM-C.lib` + SHA-256-pinned `spid3r_lang.lib` beside `spid3r-self.exe`, so `spid3r-self build` works out of the box.
 

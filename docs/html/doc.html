@@ -2385,8 +2385,8 @@
                 <td>not implemented — a plugin is discovered per run, so there is no persistent enable list</td>
               </tr>
               <tr>
-                <td>Dynamic loading of <em>native</em> code (<code>dlopen</code>)</td>
-                <td>deliberately not implemented — there is no stable ABI to load against</td>
+                <td>Dynamic loading of <em>native</em> host plugins (<code>dlopen</code>)</td>
+                <td>deliberately not implemented for host plugins (no stable ABI over Rust <code>Value</code>); AOT C-ABI FFI supports opt-in <code>--allow-dlopen</code> (<code>docs/FFI.md</code>)</td>
               </tr>
             </tbody>
           </table>
@@ -5688,9 +5688,8 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
             (<code>spid3r-self verify-runtime</code>, <a href="../selfhost/RUNTIME_ABI.md">RUNTIME_ABI.md</a>), and
             records frozen Stage-0 vs selfhost throughput baselines in <a href="benchmark.html">Benchmarks</a>. See
             <a href="../selfhost/README.md">the self-hosting hub</a>,
-            <a href="../selfhost/SELFHOST.md">ADR</a>,
-            <a href="../selfhost/SELFHOST_RETIREMENT.md">retirement review</a>, and
-            <a href="../../full_plan.html">the roadmap ledger</a>.
+            <a href="../selfhost/SELFHOST.md">ADR</a>, and
+            <a href="../selfhost/SELFHOST_RETIREMENT.md">retirement review</a>.
           </p>
         </div>
 

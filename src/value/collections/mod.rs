@@ -93,6 +93,13 @@ pub(crate) fn take_children(v: Value, out: &mut Vec<Value>) {
                 out.extend(std::mem::take(&mut d.items).into_iter().map(|it| it.value));
             }
         }
+        Value::Graph(a) => flat!(a, nodes),
+        Value::RefBox(a) => {
+            if let Ok(data) = Arc::try_unwrap(a) {
+                let mut d = data.into_inner().unwrap_or_else(|e| e.into_inner());
+                out.push(std::mem::replace(&mut d.value, Value::Null));
+            }
+        }
         Value::Instance(a) => fields!(a),
         // VM instances hold fields as a slot `Vec` (the class names them), so
         // they drain the whole vector instead of a map's values.
@@ -162,6 +169,7 @@ pub fn is_constructor(name: &str) -> bool {
             | "ref"
             | "channel"
             | "mutex"
+            | "atomic_int"
             | "some"
             | "none"
             | "ok"
@@ -498,6 +506,27 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
         }))),
         "channel" => Ok(Value::Channel(Arc::new(ChannelData::new()))),
         "mutex" => Ok(Value::MutexVal(Arc::new(MutexData::new(one(name, &args)?)))),
+        "atomic_int" => {
+            let init = match args.as_slice() {
+                [] => 0,
+                [Value::Int(n)] => *n,
+                [other] => {
+                    return Err(format!(
+                        "atomic_int expects an int initial value, found {}",
+                        crate::value::type_name(other)
+                    ))
+                }
+                _ => {
+                    return Err(format!(
+                        "atomic_int expects 0 or 1 argument, got {}",
+                        args.len()
+                    ))
+                }
+            };
+            Ok(Value::AtomicInt(Arc::new(
+                std::sync::atomic::AtomicI64::new(init),
+            )))
+        }
         "some" => Ok(Value::Option(Some(Box::new(one(name, &args)?)))),
         "none" => {
             if !args.is_empty() {
@@ -907,6 +936,7 @@ pub fn call_method_host(
         Value::Task(t) => task_method(t, name, &args),
         Value::Channel(c) => channel_method(c, name, args),
         Value::MutexVal(m) => mutex_method(m, name, &args),
+        Value::AtomicInt(a) => atomic_int_method(a, name, &args),
         Value::Database(d) => crate::stdlib::db::database_method(d, name, &args),
         other => Err(format!(
             "{} values have no methods",
@@ -1572,6 +1602,50 @@ fn mutex_method(m: &MutexData, name: &str, args: &[Value]) -> Result<Value, Stri
             Ok(Value::Null)
         }
         _ => Err(unknown(name, "mutex")),
+    }
+}
+
+fn atomic_int_method(
+    a: &std::sync::atomic::AtomicI64,
+    name: &str,
+    args: &[Value],
+) -> Result<Value, String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    match name {
+        "load" => {
+            want(name, args, 0)?;
+            Ok(Value::Int(a.load(SeqCst)))
+        }
+        "store" => {
+            want(name, args, 1)?;
+            let v = want_int(&args[0], "atomic_int.store")?;
+            a.store(v, SeqCst);
+            Ok(Value::Null)
+        }
+        "cas" => {
+            want(name, args, 2)?;
+            let expected = want_int(&args[0], "atomic_int.cas")?;
+            let new = want_int(&args[1], "atomic_int.cas")?;
+            Ok(Value::Bool(
+                a.compare_exchange(expected, new, SeqCst, SeqCst).is_ok(),
+            ))
+        }
+        "exchange" => {
+            want(name, args, 1)?;
+            let v = want_int(&args[0], "atomic_int.exchange")?;
+            Ok(Value::Int(a.swap(v, SeqCst)))
+        }
+        "fetch_add" => {
+            want(name, args, 1)?;
+            let d = want_int(&args[0], "atomic_int.fetch_add")?;
+            Ok(Value::Int(a.fetch_add(d, SeqCst)))
+        }
+        "fetch_sub" => {
+            want(name, args, 1)?;
+            let d = want_int(&args[0], "atomic_int.fetch_sub")?;
+            Ok(Value::Int(a.fetch_sub(d, SeqCst)))
+        }
+        _ => Err(unknown(name, "atomic_int")),
     }
 }
 

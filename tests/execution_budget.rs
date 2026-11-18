@@ -164,3 +164,107 @@ fn zero_budget_stops_even_the_first_statement() {
     assert!(err.diagnostic.message.contains(MSG));
     assert_eq!(err.output, "", "nothing should run under a zero budget");
 }
+
+#[cfg(feature = "native")]
+#[test]
+fn r12_3_native_enforce_budget_stops_runaway_and_default_unaffected() {
+    let exe = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join(format!("spid3r{}", std::env::consts::EXE_SUFFIX));
+    let dir = std::env::temp_dir().join(format!("spid3r_native_bud_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let src_file = dir.join("spin.matrix");
+    std::fs::write(
+        &src_file,
+        "fn main() { let i = 0; while i < 100000 { i = i + 1; } println(i); return 0; }\n",
+    )
+    .expect("write");
+
+    let bud_exe = dir.join(format!("spin_bud{}", std::env::consts::EXE_SUFFIX));
+    let b1 = std::process::Command::new(&exe)
+        .args([
+            "build",
+            "--enforce-budget",
+            "5",
+            src_file.to_str().unwrap(),
+            "-o",
+            bud_exe.to_str().unwrap(),
+        ])
+        .output()
+        .expect("build --enforce-budget");
+    assert_eq!(
+        b1.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&b1.stderr)
+    );
+    let r1 = std::process::Command::new(&bud_exe).output().expect("run");
+    assert_ne!(r1.status.code(), Some(0), "budget must abort runaway loop");
+    assert!(
+        String::from_utf8_lossy(&r1.stderr).contains(MSG),
+        "stderr: {}",
+        String::from_utf8_lossy(&r1.stderr)
+    );
+
+    // Off-by-default finishes cleanly.
+    let def_exe = dir.join(format!("spin_def{}", std::env::consts::EXE_SUFFIX));
+    let b2 = std::process::Command::new(&exe)
+        .args([
+            "build",
+            src_file.to_str().unwrap(),
+            "-o",
+            def_exe.to_str().unwrap(),
+        ])
+        .output()
+        .expect("build default");
+    assert_eq!(b2.status.code(), Some(0));
+    let r2 = std::process::Command::new(&def_exe).output().expect("run");
+    assert_eq!(r2.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&r2.stdout).trim_end(), "100000");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn r12_4_deep_ref_chain_drops_iteratively_and_import_cycle_is_reported() {
+    use spid3r_lang::embed::Engine;
+    let src = r#"
+fn main() {
+    let cur = ref(0);
+    let i = 1;
+    while i < 20000 {
+        cur = ref(cur);
+        i = i + 1;
+    }
+    println("built");
+    return 0;
+}
+"#;
+    let out = Engine::new().run("deep_ref", src).expect("deep ref runs");
+    assert_eq!(out.output, "built\n");
+
+    let dir = std::env::temp_dir().join(format!("spid3r_cycle_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let a = dir.join("a.matrix");
+    let b = dir.join("b.matrix");
+    std::fs::write(&a, "import \"b\";\nfn main() { return 0; }\n").expect("write a");
+    std::fs::write(&b, "import \"a\";\npublic fn f() { return 1; }\n").expect("write b");
+    let prog = parser::parse_file(
+        &std::fs::read_to_string(&a).unwrap(),
+        Arc::from(a.to_string_lossy().to_string()),
+    )
+    .expect("parse");
+    let err = semantic::check_file(&prog, true, a.to_str().unwrap())
+        .expect_err("import cycle must be diagnosed");
+    assert!(
+        err.message.contains("circular import"),
+        "expected circular import error, got: {}",
+        err.message
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

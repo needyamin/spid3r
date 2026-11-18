@@ -2,7 +2,7 @@
 //!
 //! Deterministic JSON dumps of the stage-0 front end's internal state — the
 //! token stream and the checked-AST-shape parse tree — consumed by the
-//! self-host parity harness (Phases 1–2 of `full_plan.html`) and CI. This is
+//! self-host parity harness (`docs/selfhost/SELFHOST.md`) and CI. This is
 //! **bootstrap tooling**: it exists so the Spid3r-written lexer and parser can
 //! be diffed against the Rust oracle, and it must never change user-visible
 //! behavior. Exit codes stay on the standard 0/1/2/4 contract.

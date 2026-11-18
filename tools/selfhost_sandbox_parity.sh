@@ -244,6 +244,27 @@ else
   fail=$((fail + 1))
 fi
 
+# --------------------------------------------- D: atomic_int safe under --sandbox; dl_open rejected
+cat > "$OUT/atom_sbx.matrix" <<'EOF'
+fn main() {
+    let a = atomic_int(5);
+    a.fetch_add(37);
+    println(a.load());
+    return 0;
+}
+EOF
+for eng in tree vm; do
+  "$ORACLE" run --engine "$eng" --sandbox "$OUT/atom_sbx.matrix" > "$OUT/atom_${eng}.txt" 2>&1
+  arc=$?
+  if [ "$arc" = 0 ] && [ "$(cat "$OUT/atom_${eng}.txt" | tr -d '\r\n')" = "42" ]; then
+    pass=$((pass + 1))
+  else
+    echo "FAIL  atomic_int --sandbox/$eng (rc=$arc)"
+    cat "$OUT/atom_${eng}.txt"
+    fail=$((fail + 1))
+  fi
+done
+
 echo "sandbox parity: pass=$pass fail=$fail"
 if [ "$fail" != 0 ]; then
   exit 1

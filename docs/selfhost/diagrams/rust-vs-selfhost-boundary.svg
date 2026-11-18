@@ -67,7 +67,7 @@
 
 <rect x="544" y="294" width="288" height="82" rx="6" fill="#FFFFFF" stroke="#FDE68A" stroke-width="1"/>
 <text x="556" y="314" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" font-weight="600" fill="#78350F">Excluded Engines, Host &amp; Harnesses</text>
-<text x="556" y="332" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#334155">• tree/VM runner, repl, debug, lsp, agent</text>
+<text x="556" y="332" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#334155">• tree/VM runner, repl, debug, lsp, doc, agent</text>
 <text x="556" y="348" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#334155">• gui (WebView), wasm32, plugin, Rust FFI</text>
 <text x="556" y="364" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10.5" fill="#334155">• tools/*.sh, *.py, *.js parity/bench harnesses</text>
 </svg>

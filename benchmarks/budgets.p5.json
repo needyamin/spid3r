@@ -2,7 +2,7 @@
   "schema": "spid3r.p5.budgets/1",
   "recorded_utc": "2026-11-16T14:10:00Z",
   "plan": {
-    "file": "full_plan.html",
+    "file": "docs/selfhost/SELFHOST.md",
     "phase": "11.P-5",
     "base_commit": "3e9aae8"
   },

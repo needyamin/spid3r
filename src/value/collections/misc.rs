@@ -363,6 +363,12 @@ pub struct GraphData {
     pub adj: Vec<Vec<Edge>>,
 }
 
+impl Drop for GraphData {
+    fn drop(&mut self) {
+        super::drop_iteratively(std::mem::take(&mut self.nodes));
+    }
+}
+
 impl GraphData {
     pub fn new(directed: bool) -> Self {
         GraphData {
@@ -2509,6 +2515,15 @@ impl BagData {
 #[derive(Debug)]
 pub struct RefBoxData {
     pub value: Value,
+}
+
+impl Drop for RefBoxData {
+    fn drop(&mut self) {
+        let inner = std::mem::replace(&mut self.value, Value::Null);
+        if !matches!(inner, Value::Null) {
+            super::drop_iteratively(vec![inner]);
+        }
+    }
 }
 
 impl Default for RefBoxData {

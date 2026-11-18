@@ -39,6 +39,7 @@ struct FuncInfo {
     /// Smallest accepted argument count (constant defaults are trailing-only,
     /// parser-enforced). `== arity` when no parameter has a default.
     min_arity: usize,
+    is_variadic: bool,
     params: Vec<Option<TypeExpr>>,
     /// Parameter names in declaration order (for named arguments).
     param_names: Vec<String>,
@@ -591,6 +592,7 @@ const BUILTIN_CONSTRUCTORS: &[&str] = &[
     "ref",
     "channel",
     "mutex",
+    "atomic_int",
     "some",
     "none",
     "ok",
@@ -1133,6 +1135,7 @@ impl Checker {
                             FuncInfo {
                                 arity: v.fields.len(),
                                 min_arity: v.fields.len(),
+                                is_variadic: false,
                                 params: v.fields.iter().map(|_| None).collect(),
                                 param_names: v.fields.clone(),
                                 ret: Some(TypeExpr {
@@ -1193,6 +1196,7 @@ impl Checker {
                         FuncInfo {
                             arity: f.params.len(),
                             min_arity: f.min_arity(),
+                            is_variadic: f.is_variadic,
                             params: f.params.iter().map(|p| p.ty.clone()).collect(),
                             param_names: f.params.iter().map(|p| p.name.clone()).collect(),
                             ret: f.ret.clone(),
@@ -1259,12 +1263,18 @@ impl Checker {
                     } else {
                         self.source_file.as_str()
                     };
-                    if let Ok(exports) = crate::modules::module_exports_of_in(
+                    let exports_res = crate::modules::module_exports_of_in(
                         path,
                         src_file,
                         span,
                         &self.module_dirs,
-                    ) {
+                    );
+                    if let Err(ref e) = exports_res {
+                        if e.message.contains("circular import") {
+                            return Err(e.clone());
+                        }
+                    }
+                    if let Ok(exports) = exports_res {
                         for i in exports.interfaces {
                             if seen.contains(&i.name) || self.interfaces.contains_key(&i.name) {
                                 continue;
@@ -1346,6 +1356,7 @@ impl Checker {
                                     .or_insert_with(|| FuncInfo {
                                         arity: v.fields.len(),
                                         min_arity: v.fields.len(),
+                                        is_variadic: false,
                                         params: v.fields.iter().map(|_| None).collect(),
                                         param_names: v.fields.clone(),
                                         ret: Some(TypeExpr {
@@ -1679,6 +1690,10 @@ impl Checker {
             || name == "none"
             || BUILTIN_CONSTRUCTORS.contains(&name)
             || BUILTIN_FUNCTIONS.contains(&name)
+            || matches!(
+                name,
+                "ffi_callback" | "dl_open" | "dl_sym" | "dl_close" | "dl_call"
+            )
             || gui_builtins().contains(&name)
     }
 
@@ -3032,7 +3047,7 @@ impl Checker {
             | "doubly_linked_list" | "map" | "set" | "tuple" | "binary_tree" | "bst" | "heap"
             | "priority_queue" | "graph" | "hash_table" | "trie" | "matrix" | "vector"
             | "bytes" | "ring_buffer" | "bag" | "ref" | "option" | "result" | "task"
-            | "channel" | "mutex" | "some" | "none" | "ok" | "err" => {
+            | "channel" | "mutex" | "atomic_int" | "some" | "none" | "ok" | "err" => {
                 let elem = t.arg.as_ref().map(|a| Box::new(self.resolve_type(a)));
                 Ty::Coll(lower, elem)
             }
@@ -3601,6 +3616,7 @@ impl Checker {
             "task",
             "channel",
             "mutex",
+            "atomic_int",
             "any",
         ];
         if TYPES.iter().any(|t| t.eq_ignore_ascii_case(name))
@@ -3947,8 +3963,12 @@ impl Checker {
                     if let Some(fi) = self.funcs.get(name).cloned() {
                         if Self::has_named_args(args) {
                             self.check_named_args(args, &fi.param_names, fi.min_arity, name, span)?;
-                        } else if args.len() < fi.min_arity || args.len() > fi.arity {
-                            let want = if fi.min_arity == fi.arity {
+                        } else if args.len() < fi.min_arity
+                            || (!fi.is_variadic && args.len() > fi.arity)
+                        {
+                            let want = if fi.is_variadic {
+                                format!("at least {} argument(s)", fi.min_arity)
+                            } else if fi.min_arity == fi.arity {
                                 format!("{} argument(s)", fi.arity)
                             } else {
                                 format!("{} to {} argument(s)", fi.min_arity, fi.arity)
