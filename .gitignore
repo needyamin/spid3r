@@ -113,3 +113,5 @@ __pycache__/
 # snapshot is benchmarks/results.phase0.json (which IS committed).
 /benchmarks/results.phase0.ci-advisory.json
 /task.html
+
+/kernel/target/

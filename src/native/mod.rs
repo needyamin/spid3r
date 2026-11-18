@@ -27,6 +27,9 @@ pub mod modules;
 #[cfg(feature = "native")]
 pub mod llvm;
 
+#[cfg(all(target_os = "linux", feature = "container"))]
+pub mod sys;
+
 use crate::diagnostics::{Diagnostic, Phase};
 use std::path::{Path, PathBuf};
 

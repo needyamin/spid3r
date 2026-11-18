@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 310" width="880" height="310" role="img">
+<title>Spid3rOS bare-metal x86-64 kernel architecture</title>
+<desc>Zero-dependency kernel workspace member booting via Multiboot2 and COM1 serial, with physical frame allocator, GDT/IDT, ELF64 loader, freestanding Spid3r init, and virtio drivers.</desc>
+<defs>
+<marker id="arr-os" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="880" height="310" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+
+<text x="440" y="28" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#0F172A">R13 · Spid3rOS Bare-Metal Architecture (x86_64-unknown-none, DP-8)</text>
+
+<rect x="28" y="54" width="250" height="104" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+<text x="153" y="76" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">Boot &amp; Console (R13.1 / R13.4)</text>
+<text x="153" y="96" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#334155">• Multiboot2 header (0xE85250D6) at 1 MiB</text>
+<text x="153" y="114" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#334155">• COM1 (0x3F8) serial + VGA text console</text>
+<text x="153" y="132" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#334155">• PS/2 set-1 keymap + help/ps/meminfo shell</text>
+
+<path d="M278 106 L310 106" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-os)"/>
+
+<rect x="316" y="54" width="250" height="104" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
+<text x="441" y="76" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#134E4A">CPU, Memory &amp; Sched (R13.2–5)</text>
+<text x="441" y="96" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• 64-bit GDT/IDT + #DE/#PF/#GP handlers</text>
+<text x="441" y="114" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• Bitmap 4K frame allocator + bump heap</text>
+<text x="441" y="132" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• Round-robin TCB run-queue</text>
+
+<path d="M566 106 L598 106" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-os)"/>
+
+<rect x="604" y="54" width="248" height="104" rx="8" fill="#EEF2FF" stroke="#6366F1" stroke-width="1"/>
+<text x="728" y="76" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#312E81">Userland &amp; Virtio (R13.6–7)</text>
+<text x="728" y="96" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#4338CA">• ELF64 validator + SYS_WRITE/EXIT/GETPID</text>
+<text x="728" y="114" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#4338CA">• Freestanding Spid3r init (R9.4 + R9.5)</text>
+<text x="728" y="132" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#4338CA">• PCI 0xCF8 + virtio-net / virtio-blk</text>
+
+<rect x="28" y="186" width="824" height="96" rx="8" fill="#FFFBEB" stroke="#F59E0B" stroke-width="1"/>
+<text x="440" y="210" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#92400E">Toolchain &amp; Verification (spid3r kernel build)</text>
+<text x="440" y="232" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#B45309">cargo test --manifest-path kernel/Cargo.toml   |   spid3r kernel build -&gt; kernel/build/kernel.bin + .sha256</text>
+<text x="440" y="254" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#B45309">Zero external crates · no red-zone · QEMU x86_64 CI build &amp; boot check</text>
+</svg>

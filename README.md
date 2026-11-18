@@ -94,6 +94,18 @@ Examples: [`hello-host`](examples/plugins/hello-host) · [`hello-wasm`](examples
 
 - **Runtime config:** `spid3r.ini` precedence layers, the encrypted `spid3r-agent/1` wire protocol, role-checked ops, and atomic saves — see [Runtime management](docs/AGENT.md).
 
+## Generics & unboxing
+
+![Generics, monomorphization, and unboxed containers in Spid3r](docs/diagrams/generics-unboxing.svg)
+
+- **Generics & unboxing (`R10`):** multi-arg type parameters (`<K, V>`, `<T: Numeric>`), explicit call/constructor instantiation (`identity<int>(x)`, `new Box<int>(v)`), erased `<T>` back-compat, AOT function monomorphization (`spid3r_mono_*`), and unboxed `list<int>` / `list<float>` storage ([Generics design](docs/GENERICS_DESIGN.md)).
+
+## OCI containers
+
+![Spid3r OCI container engine architecture](docs/diagrams/containers-oci.svg)
+
+- **OCI containers (`R11`):** Registry v2 pull with SHA-256 verification, `.wh.` whiteout layer cache, copy-up / Linux `overlayfs` rootfs snapshotter, IPAM networking, and `--features container` Linux namespace shims ([OCI containers](docs/CONTAINERS.md)).
+
 ## Self-hosted compiler architecture
 
 ![Stage 0 to Stage 1, Stage 2, and Stage 3 bit-identical fixed point](docs/selfhost/diagrams/bootstrap-stages.svg)
@@ -114,7 +126,7 @@ See [docs/selfhost/](docs/selfhost/README.md) for ADRs, runtime ABI, and retirem
 | **Implementation** | `102,312` lines of Rust (`src/`, zero dependencies in `--no-default-features`) + `17` self-hosted compiler & CLI modules (`selfhost/`, `21` `.matrix` files / `19,304` lines) |
 | **Engines** | tree · bytecode VM · LLVM 23 AOT · WebAssembly |
 | **Bytecode** | 60 opcodes · `.matrixc` container with SHA-256 integrity |
-| **Standard library** | `29` `.matrix` modules + `257` built-in native entries (linked via `75` AOT C-ABI trampolines) |
+| **Standard library** | `29` `.matrix` modules + `257` built-in native entries (linked via `87` AOT C-ABI trampolines) |
 | **Tests** | `1,394` Rust/integration tests (`1,367` core · `13` GUI · `14` native AOT) · 3-engine differential + `134`-program frozen selfhost corpus |
 | **Self-hosting** | Stage 1 → Stage 2 → Stage 3 `spid3r_main.o` bit-identical fixed point & SHA-256 runtime pin ([docs/selfhost/](docs/selfhost/README.md)) |
 | **Benchmarks** | Phase 11 compute reference (`VM`, `native`, `Node.js`, `Rust -O`) & Stage-0 vs selfhost throughput ([benchmark.html](docs/html/benchmark.html) · [selfhost baselines](benchmarks/selfhost/README.md)) |
@@ -168,7 +180,8 @@ cargo install --path . --no-default-features
 | `spid3r doc [--json] [--private] [-o PATH]` | generate HTML or JSON documentation from doc comments |
 | `spid3r test` | differential run across engines |
 | `spid3r lsp` | editor server (diagnostics, hover, rename, code actions) |
-| `spid3r build` | LLVM AOT native executable |
+| `spid3r build` | LLVM AOT native executable (`--freestanding`, `--target`, `--emit-obj`, `--enforce-budget`, `--allow-dlopen`) |
+| `spid3r container` | OCI image pull/verify, rootfs snapshotter, and container lifecycle (`pull`, `create`, `run`, `ps`, `inspect`, `rm`, `gc`) |
 | `spid3r bundle --target wasm` | offline web app |
 | `spid3r init` · `install` · `dist` | projects, dependencies, release build |
 | `spid3r add` · `remove` · `tree` · `verify` | declare, inspect, and checksum-verify dependencies |
@@ -207,6 +220,7 @@ cargo install --path . --no-default-features
 | [Bytecode & VM](docs/BYTECODE.md) | `.matrixc` format, opcodes, scheduler |
 | [Garbage collection](docs/GC.md) | cycle collector design |
 | [Native backend](docs/NATIVE.md) · [Runtime ABI](docs/selfhost/RUNTIME_ABI.md) · [FFI](docs/FFI.md) | LLVM AOT · SHA-256 runtime contract · C FFI (`extern fn`) |
+| [Generics design](docs/GENERICS_DESIGN.md) · [OCI containers](docs/CONTAINERS.md) | `DP-1` monomorphization/unboxing · OCI pull, whiteouts, `DP-7` container runtime |
 | [GUI](docs/GUI.md) · [Embedding](docs/EMBEDDING.md) | desktop apps · Rust host embedding |
 | [Environment](docs/ENVIRONMENT.md) | `SPID3R_*` environment variables |
 | [Runtime management](docs/AGENT.md) | `spid3r.ini`, `spid3rinfo()`, encrypted remote agent |

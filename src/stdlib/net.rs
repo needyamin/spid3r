@@ -3321,10 +3321,54 @@ fn n_url_encode(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
     Ok(str_val(percent_encode(&want_str(&args[0], "url_encode")?)))
 }
 
-/// Fuzzing entry point for chunked HTTP body decoding & URL percent decoding (R12.2).
+fn read_exact_from<R: std::io::Read>(r: &mut R, n: usize) -> Result<Vec<u8>, String> {
+    let mut buf = vec![0u8; n];
+    r.read_exact(&mut buf)
+        .map_err(|_| "websocket: connection closed mid-frame".to_string())?;
+    Ok(buf)
+}
+
+fn read_ws_frame_from<R: std::io::Read>(r: &mut R) -> Result<(bool, u8, Vec<u8>), String> {
+    let header = read_exact_from(r, 2)?;
+    let fin = header[0] & 0x80 != 0;
+    let opcode = header[0] & 0x0f;
+    let masked = header[1] & 0x80 != 0;
+    let len7 = (header[1] & 0x7f) as u64;
+    let len = match len7 {
+        126 => {
+            let ext = read_exact_from(r, 2)?;
+            u64::from(u16::from_be_bytes([ext[0], ext[1]]))
+        }
+        127 => {
+            let ext = read_exact_from(r, 8)?;
+            u64::from_be_bytes(ext.try_into().unwrap())
+        }
+        n => n,
+    };
+    if len > DEFAULT_BODY_BYTES as u64 {
+        return Err("websocket: frame exceeds the 8 MiB limit".to_string());
+    }
+    let mask = if masked {
+        let m = read_exact_from(r, 4)?;
+        [m[0], m[1], m[2], m[3]]
+    } else {
+        [0u8; 4]
+    };
+    let mut payload = read_exact_from(r, len as usize)?;
+    if masked {
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b ^= mask[i % 4];
+        }
+    }
+    Ok((fin, opcode, payload))
+}
+
+/// Fuzzing entry point for chunked HTTP body decoding, URL percent decoding, & WebSocket frame decoding (R12.2).
 pub fn fuzz_parse_http_and_chunked(data: &[u8]) {
     let cur = std::io::Cursor::new(data);
     let _ = read_chunked(cur, Vec::new(), "fuzz_chunked");
+    let mut ws_cur = std::io::Cursor::new(data);
+    let _ = read_ws_frame_from(&mut ws_cur);
     let s = String::from_utf8_lossy(data);
     let _ = percent_decode(&s, true);
 }

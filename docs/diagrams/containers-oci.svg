@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 320" width="880" height="320" role="img">
+<title>Spid3r OCI container engine architecture</title>
+<desc>OCI Registry v2 pull and verification pipeline, snapshotter with overlayfs and copy-up fallback, runtime state machine, and DP-7 Linux syscall shims.</desc>
+<defs>
+<marker id="arr-c" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="#94A3B8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<rect x="0" y="0" width="880" height="320" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+
+<text x="440" y="28" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="14" font-weight="700" fill="#0F172A">R11 · OCI Container Engine Architecture (DP-7)</text>
+
+<!-- CLI -->
+<rect x="28" y="56" width="160" height="106" rx="8" fill="#F1F5F9" stroke="#94A3B8" stroke-width="1"/>
+<text x="108" y="78" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#0F172A">spid3r container</text>
+<text x="108" y="100" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#334155">pull · create · run</text>
+<text x="108" y="118" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#334155">start · stop · kill</text>
+<text x="108" y="136" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#334155">ps · inspect · rm · gc</text>
+
+<path d="M188 109 L220 109" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-c)"/>
+
+<!-- src/oci/ -->
+<rect x="226" y="52" width="300" height="118" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1"/>
+<text x="376" y="74" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#134E4A">src/oci/ — Image &amp; Layer Pipeline</text>
+<text x="376" y="94" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• Registry v2 GET + Bearer token + multi-arch index</text>
+<text x="376" y="112" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• SHA-256 verify before cache/extract (exit 4 on mismatch)</text>
+<text x="376" y="130" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• Ed25519 manifest policy (--require-sig --pubkey)</text>
+<text x="376" y="148" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• 64 MiB cap gunzip + ustar traversal refusal + .wh.</text>
+
+<path d="M526 109 L558 109" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-c)"/>
+
+<!-- src/container/ -->
+<rect x="564" y="52" width="288" height="118" rx="8" fill="#EEF2FF" stroke="#6366F1" stroke-width="1"/>
+<text x="708" y="74" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#312E81">src/container/ — Runtime &amp; Store</text>
+<text x="708" y="94" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#4338CA">• Snapshotter: overlayfs (Linux) / copy-up + GC</text>
+<text x="708" y="112" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#4338CA">• Atomic WAL state.txt + OCI config.json bundle</text>
+<text x="708" y="130" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#4338CA">• IPAM pool (10.88.0.0/16) + cgroups v2 limits</text>
+<text x="708" y="148" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#4338CA">• Structured container.log + daemon recovery</text>
+
+<!-- Arrow down to sys.rs -->
+<path d="M708 170 L708 198" fill="none" stroke="#94A3B8" stroke-width="1.5" marker-end="url(#arr-c)"/>
+
+<!-- src/native/sys.rs -->
+<rect x="28" y="204" width="824" height="92" rx="8" fill="#FEF2F2" stroke="#DC2626" stroke-width="1"/>
+<text x="440" y="226" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600" fill="#991B1B">src/native/sys.rs (DP-7) — #[cfg(all(target_os = "linux", feature = "container"))]</text>
+<text x="440" y="248" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" fill="#B91C1C">unshare · setns · mount / umount2 · pivot_root · chroot · sethostname · PR_SET_NO_NEW_PRIVS · setuid/setgid · fork/waitpid/kill</text>
+<text x="440" y="272" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#7F1D1D">Zero external crates · Written SAFETY comments &amp; errno-mapped errors · Gated out of core (--no-default-features) &amp; wasm32 builds</text>
+</svg>

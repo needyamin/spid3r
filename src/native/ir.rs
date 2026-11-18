@@ -50,10 +50,20 @@ enum VarLoc<'ctx> {
     Local(PointerValue<'ctx>),
     /// Stack slot holding an unboxed 64-bit integer.
     LocalInt(PointerValue<'ctx>),
+    /// R10.3: stack slot holding a raw `Vec<i64>` handle (`list<int>`).
+    UListI64(PointerValue<'ctx>),
+    /// R10.3: stack slot holding a raw `Vec<f64>` handle (`list<float>`).
+    UListF64(PointerValue<'ctx>),
     /// Stack slot holding an upvalue-cell pointer.
     Cell(PointerValue<'ctx>),
     /// Index of the captured cell inside this function's environment.
     Upvalue(usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UnboxedElem {
+    I64,
+    F64,
 }
 
 struct Scope<'ctx> {
@@ -697,7 +707,17 @@ pub struct Ir<'ctx> {
     enforce_budget: Option<i64>,
     /// R12.3: global step counter when `enforce_budget.is_some()`.
     budget_counter_gv: Option<inkwell::values::GlobalValue<'ctx>>,
+    /// R10.3: unboxed `list<int>` / `list<float>` locals in the current function.
+    unboxed_lists: Option<HashMap<String, UnboxedElem>>,
+    /// R10.3: generic top-level functions available for monomorphization.
+    generic_fns: HashMap<String, FnProto>,
+    /// R10.3: already-emitted monomorphized specializations.
+    mono_fns: HashMap<String, MonoFnSig<'ctx>>,
+    /// R10.3: unboxed i64 return slot when compiling an `-> int` monomorphized fn.
+    mono_ret_int_slot: Option<PointerValue<'ctx>>,
 }
+
+type MonoFnSig<'ctx> = (FunctionValue<'ctx>, Option<String>, Vec<Option<String>>);
 
 /// Compilation options passed from the CLI / build driver into IR generation.
 #[derive(Clone, Debug, Default)]
@@ -771,6 +791,10 @@ impl<'ctx> Ir<'ctx> {
             allow_dlopen: false,
             enforce_budget: None,
             budget_counter_gv: None,
+            unboxed_lists: None,
+            generic_fns: HashMap::new(),
+            mono_fns: HashMap::new(),
+            mono_ret_int_slot: None,
             is_entry: false,
             strings: HashMap::new(),
             tramps: HashMap::new(),
@@ -1961,6 +1985,277 @@ fn analyze_int_locals(proto: &FnProto, boxed: &HashSet<String>) -> HashSet<Strin
     int_vars
 }
 
+/// R10.3: collect local `let xs: list<int> = ...` / `list<float>` variables
+/// that are never reassigned, never captured, and never escape as whole-list
+/// values (only `.push`, `.len()`, `.pop()`, `xs[i]`, `xs[i] = v`).
+fn analyze_unboxed_lists(proto: &FnProto, boxed: &HashSet<String>) -> HashMap<String, UnboxedElem> {
+    let mut cands: HashMap<String, UnboxedElem> = HashMap::new();
+    let mut shadowed: HashSet<String> = HashSet::new();
+    let mut non_escaping_idents: HashSet<usize> = HashSet::new();
+
+    fn record_cands(
+        stmts: &[Stmt],
+        boxed: &HashSet<String>,
+        cands: &mut HashMap<String, UnboxedElem>,
+        shadowed: &mut HashSet<String>,
+    ) {
+        for s in stmts {
+            match s {
+                Stmt::Let {
+                    name,
+                    ty: Some(te),
+                    value,
+                    ..
+                } => {
+                    if cands.contains_key(name) {
+                        shadowed.insert(name.clone());
+                        continue;
+                    }
+                    if !boxed.contains(name)
+                        && te.name.eq_ignore_ascii_case("list")
+                        && te.args.len() == 1
+                        && !te.nullable
+                        && te.union.is_empty()
+                    {
+                        let elem_te = &te.args[0];
+                        if elem_te.args.is_empty() && !elem_te.nullable && elem_te.union.is_empty()
+                        {
+                            let elem = if elem_te.name == "int" {
+                                Some(UnboxedElem::I64)
+                            } else if elem_te.name == "float" {
+                                Some(UnboxedElem::F64)
+                            } else {
+                                None
+                            };
+                            let init_ok = match value {
+                                None => true,
+                                Some(Expr::List(..)) => true,
+                                Some(Expr::Call { callee, args, .. })
+                                    if matches!(&**callee, Expr::Ident(n, _) if n == "list")
+                                        && args.is_empty() =>
+                                {
+                                    true
+                                }
+                                _ => false,
+                            };
+                            if let (Some(el), true) = (elem, init_ok) {
+                                cands.insert(name.clone(), el);
+                            }
+                        }
+                    }
+                }
+                Stmt::Let { name, .. } | Stmt::Const { name, .. } => {
+                    if cands.contains_key(name) {
+                        shadowed.insert(name.clone());
+                    }
+                }
+                Stmt::If {
+                    then, elifs, els, ..
+                } => {
+                    record_cands(&then.stmts, boxed, cands, shadowed);
+                    for (_, b) in elifs {
+                        record_cands(&b.stmts, boxed, cands, shadowed);
+                    }
+                    if let Some(b) = els {
+                        record_cands(&b.stmts, boxed, cands, shadowed);
+                    }
+                }
+                Stmt::While { body, .. } => {
+                    record_cands(&body.stmts, boxed, cands, shadowed);
+                }
+                Stmt::Block(b) => {
+                    record_cands(&b.stmts, boxed, cands, shadowed);
+                }
+                Stmt::ForIn { var, body, .. } => {
+                    if cands.contains_key(var) {
+                        shadowed.insert(var.clone());
+                    }
+                    record_cands(&body.stmts, boxed, cands, shadowed);
+                }
+                Stmt::Try {
+                    body,
+                    catch,
+                    finally,
+                    ..
+                } => {
+                    record_cands(&body.stmts, boxed, cands, shadowed);
+                    if let Some(c) = catch {
+                        if cands.contains_key(&c.name) {
+                            shadowed.insert(c.name.clone());
+                        }
+                        record_cands(&c.body.stmts, boxed, cands, shadowed);
+                    }
+                    if let Some(f) = finally {
+                        record_cands(&f.stmts, boxed, cands, shadowed);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn scan_expr(
+        e: &Expr,
+        cands: &HashMap<String, UnboxedElem>,
+        escaped: &mut HashSet<String>,
+        allowed_id_ptr: &mut HashSet<usize>,
+    ) {
+        match e {
+            Expr::Ident(name, _) => {
+                let ptr = e as *const Expr as usize;
+                if cands.contains_key(name) && !allowed_id_ptr.contains(&ptr) {
+                    escaped.insert(name.clone());
+                }
+            }
+            Expr::Unary { expr, .. } | Expr::Await(expr, _) => {
+                scan_expr(expr, cands, escaped, allowed_id_ptr);
+            }
+            Expr::Binary { l, r, .. } | Expr::Logical { l, r, .. } => {
+                scan_expr(l, cands, escaped, allowed_id_ptr);
+                scan_expr(r, cands, escaped, allowed_id_ptr);
+            }
+            Expr::Index { object, index, .. } => {
+                if let Expr::Ident(name, _) = &**object {
+                    if cands.contains_key(name) {
+                        allowed_id_ptr.insert(&**object as *const Expr as usize);
+                    }
+                }
+                scan_expr(object, cands, escaped, allowed_id_ptr);
+                scan_expr(index, cands, escaped, allowed_id_ptr);
+            }
+            Expr::Method {
+                object, name, args, ..
+            } => {
+                if let Expr::Ident(vname, _) = &**object {
+                    if cands.contains_key(vname)
+                        && ((name == "push" && args.len() == 1)
+                            || ((name == "len" || name == "pop") && args.is_empty()))
+                    {
+                        allowed_id_ptr.insert(&**object as *const Expr as usize);
+                    }
+                }
+                scan_expr(object, cands, escaped, allowed_id_ptr);
+                for a in args {
+                    scan_expr(a, cands, escaped, allowed_id_ptr);
+                }
+            }
+            Expr::Assign {
+                target, op, value, ..
+            } => {
+                if let Expr::Index { object, index, .. } = target.as_ref() {
+                    if *op == AssignOp::Assign {
+                        if let Expr::Ident(vname, _) = &**object {
+                            if cands.contains_key(vname) {
+                                allowed_id_ptr.insert(&**object as *const Expr as usize);
+                            }
+                        }
+                    }
+                    scan_expr(object, cands, escaped, allowed_id_ptr);
+                    scan_expr(index, cands, escaped, allowed_id_ptr);
+                } else {
+                    scan_expr(target, cands, escaped, allowed_id_ptr);
+                }
+                scan_expr(value, cands, escaped, allowed_id_ptr);
+            }
+            Expr::Call { callee, args, .. } => {
+                scan_expr(callee, cands, escaped, allowed_id_ptr);
+                for a in args {
+                    scan_expr(a, cands, escaped, allowed_id_ptr);
+                }
+            }
+            Expr::New { args, .. } | Expr::SuperCall { args, .. } | Expr::List(args, _) => {
+                for a in args {
+                    scan_expr(a, cands, escaped, allowed_id_ptr);
+                }
+            }
+            Expr::Field { object, .. } | Expr::OptField { object, .. } => {
+                scan_expr(object, cands, escaped, allowed_id_ptr);
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_stmts(
+        stmts: &[Stmt],
+        cands: &HashMap<String, UnboxedElem>,
+        escaped: &mut HashSet<String>,
+        allowed_id_ptr: &mut HashSet<usize>,
+    ) {
+        for s in stmts {
+            match s {
+                Stmt::Let { value: Some(v), .. } | Stmt::Const { value: v, .. } => {
+                    scan_expr(v, cands, escaped, allowed_id_ptr);
+                }
+                Stmt::Expr(e)
+                | Stmt::Return { value: Some(e), .. }
+                | Stmt::Throw { value: e, .. } => {
+                    scan_expr(e, cands, escaped, allowed_id_ptr);
+                }
+                Stmt::If {
+                    cond,
+                    then,
+                    elifs,
+                    els,
+                    ..
+                } => {
+                    scan_expr(cond, cands, escaped, allowed_id_ptr);
+                    scan_stmts(&then.stmts, cands, escaped, allowed_id_ptr);
+                    for (c, b) in elifs {
+                        scan_expr(c, cands, escaped, allowed_id_ptr);
+                        scan_stmts(&b.stmts, cands, escaped, allowed_id_ptr);
+                    }
+                    if let Some(b) = els {
+                        scan_stmts(&b.stmts, cands, escaped, allowed_id_ptr);
+                    }
+                }
+                Stmt::While { cond, body, .. } => {
+                    scan_expr(cond, cands, escaped, allowed_id_ptr);
+                    scan_stmts(&body.stmts, cands, escaped, allowed_id_ptr);
+                }
+                Stmt::ForIn { iter, body, .. } => {
+                    scan_expr(iter, cands, escaped, allowed_id_ptr);
+                    scan_stmts(&body.stmts, cands, escaped, allowed_id_ptr);
+                }
+                Stmt::Block(b) => scan_stmts(&b.stmts, cands, escaped, allowed_id_ptr),
+                Stmt::Try {
+                    body,
+                    catch,
+                    finally,
+                    ..
+                } => {
+                    scan_stmts(&body.stmts, cands, escaped, allowed_id_ptr);
+                    if let Some(c) = catch {
+                        scan_stmts(&c.body.stmts, cands, escaped, allowed_id_ptr);
+                    }
+                    if let Some(f) = finally {
+                        scan_stmts(&f.stmts, cands, escaped, allowed_id_ptr);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    record_cands(&proto.body.stmts, boxed, &mut cands, &mut shadowed);
+    for s in shadowed {
+        cands.remove(&s);
+    }
+    if cands.is_empty() {
+        return cands;
+    }
+    let mut escaped = HashSet::new();
+    scan_stmts(
+        &proto.body.stmts,
+        &cands,
+        &mut escaped,
+        &mut non_escaping_idents,
+    );
+    for e in escaped {
+        cands.remove(&e);
+    }
+    cands
+}
+
 // ---------------------------------------------------------------------------
 // statement + expression compilation
 // ---------------------------------------------------------------------------
@@ -1985,6 +2280,54 @@ impl<'ctx> Ir<'ctx> {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
                 ) && self.is_int_expr(l)
                     && self.is_int_expr(r)
+            }
+            Expr::Index { object, index, .. } => {
+                if let Expr::Ident(name, _) = &**object {
+                    if matches!(self.lookup(name), Some(VarLoc::UListI64(_)))
+                        && self.is_int_expr(index)
+                    {
+                        return true;
+                    }
+                }
+                false
+            }
+            Expr::Method {
+                object, name, args, ..
+            } => {
+                if let Expr::Ident(vname, _) = &**object {
+                    if args.is_empty() {
+                        match self.lookup(vname) {
+                            Some(VarLoc::UListI64(_)) if name == "len" || name == "pop" => {
+                                return true;
+                            }
+                            Some(VarLoc::UListF64(_)) if name == "len" => return true,
+                            _ => {}
+                        }
+                    }
+                }
+                false
+            }
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } if !type_args.is_empty() => {
+                if let Expr::Ident(name, _) = &**callee {
+                    if let Some(proto) = self.generic_fns.get(name) {
+                        if proto.type_params.len() == type_args.len()
+                            && proto.params.len() == args.len()
+                            && !proto.is_async
+                        {
+                            return Self::subst_scalar_type(
+                                proto.ret.as_ref(),
+                                &proto.type_params,
+                                type_args,
+                            ) == Some("int");
+                        }
+                    }
+                }
+                false
             }
             _ => false,
         }
@@ -2625,6 +2968,91 @@ impl<'ctx> Ir<'ctx> {
                 let b = self.compile_expr_i64(r)?;
                 self.emit_i64_binop(a, b, *op)
             }
+            Expr::Index { object, index, .. } => {
+                if let Expr::Ident(name, _) = &**object {
+                    if let Some(VarLoc::UListI64(slot)) = self.lookup(name) {
+                        let ptr = self
+                            .builder
+                            .build_load(self.ptr_ty(), slot, "ul")
+                            .unwrap()
+                            .into_pointer_value();
+                        let idx = self.compile_expr_i64(index)?;
+                        let f = self.tramp(
+                            "spid3r_ulist_i64_get",
+                            &[self.ptr_ty().into(), self.i64_ty().into()],
+                            Some(self.i64_ty().into()),
+                        );
+                        return Ok(call_int(self.emit_call(
+                            f,
+                            &[ptr.into(), idx.into()],
+                            "ul.get",
+                        )));
+                    }
+                }
+                panic!("compile_expr_i64 called on non-int index")
+            }
+            Expr::Method { object, name, .. } => {
+                if let Expr::Ident(vname, _) = &**object {
+                    match (self.lookup(vname), name.as_str()) {
+                        (Some(VarLoc::UListI64(slot)), "len") => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let f = self.tramp(
+                                "spid3r_ulist_i64_len",
+                                &[self.ptr_ty().into()],
+                                Some(self.i64_ty().into()),
+                            );
+                            let r = self.builder.build_call(f, &[ptr.into()], "ul.len").unwrap();
+                            return Ok(call_int(r));
+                        }
+                        (Some(VarLoc::UListF64(slot)), "len") => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let f = self.tramp(
+                                "spid3r_ulist_f64_len",
+                                &[self.ptr_ty().into()],
+                                Some(self.i64_ty().into()),
+                            );
+                            let r = self.builder.build_call(f, &[ptr.into()], "ul.len").unwrap();
+                            return Ok(call_int(r));
+                        }
+                        (Some(VarLoc::UListI64(slot)), "pop") => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let f = self.tramp(
+                                "spid3r_ulist_i64_pop",
+                                &[self.ptr_ty().into()],
+                                Some(self.i64_ty().into()),
+                            );
+                            return Ok(call_int(self.emit_call(f, &[ptr.into()], "ul.pop")));
+                        }
+                        _ => {}
+                    }
+                }
+                panic!("compile_expr_i64 called on non-int method")
+            }
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => {
+                if let Expr::Ident(name, _) = &**callee {
+                    if let Some(val) = self.try_compile_mono_call(name, type_args, args)? {
+                        return Ok(val.into_int_value());
+                    }
+                }
+                panic!("compile_expr_i64 called on non-int call")
+            }
             _ => panic!("compile_expr_i64 called on non-int expr"),
         }
     }
@@ -2667,6 +3095,78 @@ impl<'ctx> Ir<'ctx> {
             )),
             Stmt::Let { name, value, .. } => {
                 let in_entry_root = self.is_entry && self.scopes.len() == 1;
+                let ulist_elem = if in_entry_root {
+                    None
+                } else {
+                    self.unboxed_lists
+                        .as_ref()
+                        .and_then(|m| m.get(name).copied())
+                };
+                if let Some(elem) = ulist_elem {
+                    let new_name = match elem {
+                        UnboxedElem::I64 => "spid3r_ulist_i64_new",
+                        UnboxedElem::F64 => "spid3r_ulist_f64_new",
+                    };
+                    let nf = self.tramp(new_name, &[], Some(self.ptr_ty().into()));
+                    let ptr = call_ptr(self.builder.build_call(nf, &[], "ul.new").unwrap());
+                    if let Some(Expr::List(items, _)) = value {
+                        match elem {
+                            UnboxedElem::I64 => {
+                                let pf = self.tramp(
+                                    "spid3r_ulist_i64_push",
+                                    &[self.ptr_ty().into(), self.i64_ty().into()],
+                                    None,
+                                );
+                                for it in items {
+                                    let iv = if self.is_int_expr(it) {
+                                        self.compile_expr_i64(it)?
+                                    } else {
+                                        let bv = self.compile_expr(it)?;
+                                        self.call1p_to_i64("spid3r_to_i64", bv)
+                                    };
+                                    self.builder
+                                        .build_call(pf, &[ptr.into(), iv.into()], "")
+                                        .unwrap();
+                                }
+                            }
+                            UnboxedElem::F64 => {
+                                let f64_t = self.ctx.f64_type();
+                                let pf = self.tramp(
+                                    "spid3r_ulist_f64_push",
+                                    &[self.ptr_ty().into(), f64_t.into()],
+                                    None,
+                                );
+                                let tof = self.tramp(
+                                    "spid3r_to_f64",
+                                    &[self.ptr_ty().into()],
+                                    Some(f64_t.into()),
+                                );
+                                for it in items {
+                                    let bv = self.compile_expr(it)?;
+                                    let call_r =
+                                        self.builder.build_call(tof, &[bv.into()], "f64").unwrap();
+                                    let fv = match call_r.try_as_basic_value() {
+                                        inkwell::values::ValueKind::Basic(v) => {
+                                            v.into_float_value()
+                                        }
+                                        _ => unreachable!(),
+                                    };
+                                    self.builder
+                                        .build_call(pf, &[ptr.into(), fv.into()], "")
+                                        .unwrap();
+                                }
+                            }
+                        }
+                    }
+                    let slot = self.alloca_entry_ty(self.ptr_ty(), "ul");
+                    self.builder.build_store(slot, ptr).unwrap();
+                    let loc = match elem {
+                        UnboxedElem::I64 => VarLoc::UListI64(slot),
+                        UnboxedElem::F64 => VarLoc::UListF64(slot),
+                    };
+                    self.declare(name, loc);
+                    return Ok(());
+                }
                 let is_int = !in_entry_root
                     && self
                         .int_locals
@@ -2683,6 +3183,19 @@ impl<'ctx> Ir<'ctx> {
                     self.declare(name, VarLoc::LocalInt(slot));
                     Ok(())
                 } else {
+                    if let Some(slot) = self.mono_ret_int_slot {
+                        let iv = match value {
+                            Some(e) if self.is_int_expr(e) => self.compile_expr_i64(e)?,
+                            Some(e) => {
+                                let bv = self.compile_expr(e)?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            }
+                            None => self.i64c(0),
+                        };
+                        self.builder.build_store(slot, iv).unwrap();
+                        self.br_to(self.ret_bb.expect("ret_bb"));
+                        return Ok(());
+                    }
                     let v = match value {
                         Some(e) => self.compile_expr(e)?,
                         None => self.v_null(),
@@ -2928,6 +3441,19 @@ impl<'ctx> Ir<'ctx> {
                 Ok(())
             }
             Stmt::Return { value, .. } => {
+                if let Some(slot) = self.mono_ret_int_slot {
+                    let iv = match value {
+                        Some(e) if self.is_int_expr(e) => self.compile_expr_i64(e)?,
+                        Some(e) => {
+                            let bv = self.compile_expr(e)?;
+                            self.call1p_to_i64("spid3r_to_i64", bv)
+                        }
+                        None => self.i64c(0),
+                    };
+                    self.builder.build_store(slot, iv).unwrap();
+                    self.br_to(self.ret_bb.expect("ret_bb"));
+                    return Ok(());
+                }
                 let v = match value {
                     Some(e) => self.compile_expr(e)?,
                     None => self.v_null(),
@@ -3619,10 +4145,142 @@ impl<'ctx> Ir<'ctx> {
             Expr::Assign {
                 target, op, value, ..
             } => self.compile_assign(target, *op, value),
-            Expr::Call { callee, args, .. } => self.compile_call(callee, args),
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => self.compile_call_with_types(callee, type_args, args),
             Expr::Method {
                 object, name, args, ..
             } => {
+                if let Expr::Ident(vname, _) = &**object {
+                    match (self.lookup(vname), name.as_str()) {
+                        (Some(VarLoc::UListI64(slot)), "push") if args.len() == 1 => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let iv = if self.is_int_expr(&args[0]) {
+                                self.compile_expr_i64(&args[0])?
+                            } else {
+                                let bv = self.compile_expr(&args[0])?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            };
+                            let f = self.tramp(
+                                "spid3r_ulist_i64_push",
+                                &[self.ptr_ty().into(), self.i64_ty().into()],
+                                None,
+                            );
+                            self.builder
+                                .build_call(f, &[ptr.into(), iv.into()], "")
+                                .unwrap();
+                            return Ok(self.v_null());
+                        }
+                        (Some(VarLoc::UListI64(slot)), "len") if args.is_empty() => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let f = self.tramp(
+                                "spid3r_ulist_i64_len",
+                                &[self.ptr_ty().into()],
+                                Some(self.i64_ty().into()),
+                            );
+                            let iv = call_int(
+                                self.builder.build_call(f, &[ptr.into()], "ul.len").unwrap(),
+                            );
+                            return Ok(self.v_int_from_i64(iv));
+                        }
+                        (Some(VarLoc::UListI64(slot)), "pop") if args.is_empty() => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let f = self.tramp(
+                                "spid3r_ulist_i64_pop",
+                                &[self.ptr_ty().into()],
+                                Some(self.i64_ty().into()),
+                            );
+                            let iv = call_int(self.emit_call(f, &[ptr.into()], "ul.pop"));
+                            return Ok(self.v_int_from_i64(iv));
+                        }
+                        (Some(VarLoc::UListF64(slot)), "push") if args.len() == 1 => {
+                            let f64_t = self.ctx.f64_type();
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let bv = self.compile_expr(&args[0])?;
+                            let tof = self.tramp(
+                                "spid3r_to_f64",
+                                &[self.ptr_ty().into()],
+                                Some(f64_t.into()),
+                            );
+                            let call_r = self.builder.build_call(tof, &[bv.into()], "f64").unwrap();
+                            let fv = match call_r.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
+                                _ => unreachable!(),
+                            };
+                            let f = self.tramp(
+                                "spid3r_ulist_f64_push",
+                                &[self.ptr_ty().into(), f64_t.into()],
+                                None,
+                            );
+                            self.builder
+                                .build_call(f, &[ptr.into(), fv.into()], "")
+                                .unwrap();
+                            return Ok(self.v_null());
+                        }
+                        (Some(VarLoc::UListF64(slot)), "len") if args.is_empty() => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let f = self.tramp(
+                                "spid3r_ulist_f64_len",
+                                &[self.ptr_ty().into()],
+                                Some(self.i64_ty().into()),
+                            );
+                            let iv = call_int(
+                                self.builder.build_call(f, &[ptr.into()], "ul.len").unwrap(),
+                            );
+                            return Ok(self.v_int_from_i64(iv));
+                        }
+                        (Some(VarLoc::UListF64(slot)), "pop") if args.is_empty() => {
+                            let f64_t = self.ctx.f64_type();
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let f = self.tramp(
+                                "spid3r_ulist_f64_pop",
+                                &[self.ptr_ty().into()],
+                                Some(f64_t.into()),
+                            );
+                            let call_r = self.emit_call(f, &[ptr.into()], "ul.pop");
+                            let fv = match call_r.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
+                                _ => unreachable!(),
+                            };
+                            let bf = self.tramp(
+                                "spid3r_value_float",
+                                &[f64_t.into()],
+                                Some(self.ptr_ty().into()),
+                            );
+                            return Ok(call_ptr(
+                                self.builder.build_call(bf, &[fv.into()], "bf").unwrap(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
                 let obj = self.compile_expr(object)?;
                 let mut argv: Vec<PointerValue<'ctx>> = Vec::with_capacity(args.len());
                 for a in args {
@@ -3728,6 +4386,64 @@ impl<'ctx> Ir<'ctx> {
                 Ok(call_ptr(r))
             }
             Expr::Index { object, index, .. } => {
+                if let Expr::Ident(name, _) = &**object {
+                    match self.lookup(name) {
+                        Some(VarLoc::UListI64(slot)) => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let idx = if self.is_int_expr(index) {
+                                self.compile_expr_i64(index)?
+                            } else {
+                                let bv = self.compile_expr(index)?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            };
+                            let f = self.tramp(
+                                "spid3r_ulist_i64_get",
+                                &[self.ptr_ty().into(), self.i64_ty().into()],
+                                Some(self.i64_ty().into()),
+                            );
+                            let iv =
+                                call_int(self.emit_call(f, &[ptr.into(), idx.into()], "ul.get"));
+                            return Ok(self.v_int_from_i64(iv));
+                        }
+                        Some(VarLoc::UListF64(slot)) => {
+                            let f64_t = self.ctx.f64_type();
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let idx = if self.is_int_expr(index) {
+                                self.compile_expr_i64(index)?
+                            } else {
+                                let bv = self.compile_expr(index)?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            };
+                            let f = self.tramp(
+                                "spid3r_ulist_f64_get",
+                                &[self.ptr_ty().into(), self.i64_ty().into()],
+                                Some(f64_t.into()),
+                            );
+                            let call_r = self.emit_call(f, &[ptr.into(), idx.into()], "ul.get");
+                            let fv = match call_r.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
+                                _ => unreachable!(),
+                            };
+                            let bf = self.tramp(
+                                "spid3r_value_float",
+                                &[f64_t.into()],
+                                Some(self.ptr_ty().into()),
+                            );
+                            return Ok(call_ptr(
+                                self.builder.build_call(bf, &[fv.into()], "bf").unwrap(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
                 let obj = self.compile_expr(object)?;
                 let idx = self.compile_expr(index)?;
                 Ok(self.call2p("spid3r_index_get", obj, idx))
@@ -3767,7 +4483,9 @@ impl<'ctx> Ir<'ctx> {
                 phi.add_incoming(&[(&n, null_from), (&r, r_from)]);
                 Ok(phi.as_basic_value().into_pointer_value())
             }
-            Expr::New { class, args, span } => {
+            Expr::New {
+                class, args, span, ..
+            } => {
                 // Resolve the class name like any identifier: locals first,
                 // then globals. A class value can sit in a local (`let C =
                 // Pt; new C(9)`, or a class pulled out of a module namespace:
@@ -3846,6 +4564,9 @@ impl<'ctx> Ir<'ctx> {
                 Ok(self.call1p("spid3r_cell_get", cell))
             }
             Some(VarLoc::Upvalue(i)) => Ok(self.read_upvalue(i)),
+            Some(VarLoc::UListI64(_)) | Some(VarLoc::UListF64(_)) => {
+                Err(self.err("internal: unboxed list identifier escaped"))
+            }
             None => {
                 if let Some(c) = self.top_consts.get(name).cloned() {
                     self.const_expr_value(&c)
@@ -4747,6 +5468,353 @@ impl<'ctx> Ir<'ctx> {
         }
     }
 
+    fn subst_scalar_type(
+        te: Option<&crate::ast::TypeExpr>,
+        tparams: &[String],
+        targs: &[crate::ast::TypeExpr],
+    ) -> Option<&'static str> {
+        let te = te?;
+        if !te.union.is_empty() || te.nullable {
+            return None;
+        }
+        let resolved_name = if let Some(pos) = tparams.iter().position(|p| p == &te.name) {
+            let ta = &targs[pos];
+            if !ta.union.is_empty() || ta.nullable || !ta.args.is_empty() {
+                return None;
+            }
+            ta.name.as_str()
+        } else {
+            if !te.args.is_empty() {
+                return None;
+            }
+            te.name.as_str()
+        };
+        match resolved_name {
+            "int" | "usize" => Some("int"),
+            "float" => Some("float"),
+            "bool" => Some("bool"),
+            _ => None,
+        }
+    }
+
+    fn mangle_type_args(targs: &[crate::ast::TypeExpr]) -> String {
+        targs
+            .iter()
+            .map(|t| {
+                if t.args.is_empty() {
+                    t.name.clone()
+                } else {
+                    let sub: Vec<String> = t.args.iter().map(|a| a.name.clone()).collect();
+                    format!("{}_{}", t.name, sub.join("_"))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("_")
+    }
+
+    fn try_compile_mono_call(
+        &mut self,
+        name: &str,
+        type_args: &[crate::ast::TypeExpr],
+        args: &[Expr],
+    ) -> IrResult<Option<inkwell::values::BasicValueEnum<'ctx>>> {
+        if type_args.is_empty() {
+            return Ok(None);
+        }
+        let Some(proto) = self.generic_fns.get(name).cloned() else {
+            return Ok(None);
+        };
+        if proto.type_params.len() != type_args.len()
+            || proto.params.len() != args.len()
+            || proto.is_async
+        {
+            return Ok(None);
+        }
+        let mangled = format!(
+            "spid3r_mono_{}__{}",
+            name,
+            Self::mangle_type_args(type_args)
+        );
+        let (fv, ret_sc, param_scs) = if let Some(cached) = self.mono_fns.get(&mangled).cloned() {
+            cached
+        } else {
+            if self.mono_fns.len() >= 64 {
+                return Ok(None);
+            }
+            let ret_sc = Self::subst_scalar_type(proto.ret.as_ref(), &proto.type_params, type_args)
+                .map(|s| s.to_string());
+            let param_scs: Vec<Option<String>> = proto
+                .params
+                .iter()
+                .map(|p| {
+                    Self::subst_scalar_type(p.ty.as_ref(), &proto.type_params, type_args)
+                        .map(|s| s.to_string())
+                })
+                .collect();
+            let f64_t = self.ctx.f64_type();
+            let llvm_params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = param_scs
+                .iter()
+                .map(|sc| match sc.as_deref() {
+                    Some("int") => self.i64_ty().into(),
+                    Some("float") => f64_t.into(),
+                    Some("bool") => self.ctx.bool_type().into(),
+                    _ => self.ptr_ty().into(),
+                })
+                .collect();
+            let fty = match ret_sc.as_deref() {
+                Some("int") => self.i64_ty().fn_type(&llvm_params, false),
+                Some("float") => f64_t.fn_type(&llvm_params, false),
+                Some("bool") => self.ctx.bool_type().fn_type(&llvm_params, false),
+                _ => self.ptr_ty().fn_type(&llvm_params, false),
+            };
+            let fv = self.module.add_function(&mangled, fty, None);
+            self.mono_fns
+                .insert(mangled.clone(), (fv, ret_sc.clone(), param_scs.clone()));
+
+            let caller_bb = self.builder.get_insert_block();
+            let entry_bb = self.ctx.append_basic_block(fv, "entry");
+            let ret_bb = self.ctx.append_basic_block(fv, "ret");
+            let propagate_bb = self.ctx.append_basic_block(fv, "propagate");
+            self.builder.position_at_end(entry_bb);
+
+            let ret_int_slot = if ret_sc.as_deref() == Some("int") {
+                Some(self.builder.build_alloca(self.i64_ty(), "mret.i").unwrap())
+            } else {
+                None
+            };
+            let ret_val_slot = self.builder.build_alloca(self.ptr_ty(), "mret").unwrap();
+            {
+                self.builder.position_at_end(propagate_bb);
+                if let Some(rs) = ret_int_slot {
+                    self.builder.build_store(rs, self.i64c(0)).unwrap();
+                }
+                self.builder
+                    .build_store(ret_val_slot, self.ptr_ty().const_null())
+                    .unwrap();
+                self.builder.build_unconditional_branch(ret_bb).unwrap();
+                self.builder.position_at_end(entry_bb);
+            }
+
+            let boxed_set = boxing_set(&proto);
+            let int_locals = analyze_int_locals(&proto, &boxed_set);
+            let ulists = analyze_unboxed_lists(&proto, &boxed_set);
+            let saved = (
+                self.env_param.take(),
+                self.ret_bb.replace(ret_bb),
+                std::mem::take(&mut self.ret_slots),
+                std::mem::take(&mut self.caps),
+                self.boxed.replace(boxed_set.clone()),
+                std::mem::take(&mut self.scopes),
+                std::mem::take(&mut self.loops),
+                std::mem::take(&mut self.exc),
+                std::mem::take(&mut self.finally_stack),
+                self.is_entry,
+                self.int_locals.replace(int_locals),
+                self.unboxed_lists.replace(ulists),
+                std::mem::replace(&mut self.mono_ret_int_slot, ret_int_slot),
+            );
+            self.ret_slots.push(ret_val_slot);
+            self.exc = vec![propagate_bb];
+            self.is_entry = false;
+            self.push_scope();
+            for (i, p) in proto.params.iter().enumerate() {
+                let raw = fv.get_nth_param(i as u32).unwrap();
+                if param_scs[i].as_deref() == Some("int") && !boxed_set.contains(&p.name) {
+                    let slot = self.builder.build_alloca(self.i64_ty(), "mp.i").unwrap();
+                    self.builder
+                        .build_store(slot, raw.into_int_value())
+                        .unwrap();
+                    self.declare(&p.name, VarLoc::LocalInt(slot));
+                } else {
+                    let pv = match param_scs[i].as_deref() {
+                        Some("int") => self.v_int_from_i64(raw.into_int_value()),
+                        Some("float") => {
+                            let bf = self.tramp(
+                                "spid3r_value_float",
+                                &[f64_t.into()],
+                                Some(self.ptr_ty().into()),
+                            );
+                            call_ptr(self.builder.build_call(bf, &[raw.into()], "bf").unwrap())
+                        }
+                        Some("bool") => self.v_bool_from_i1(raw.into_int_value()),
+                        _ => raw.into_pointer_value(),
+                    };
+                    if boxed_set.contains(&p.name) {
+                        let cell = self.call1p("spid3r_cell_new", pv);
+                        let slot = self.builder.build_alloca(self.ptr_ty(), "mpc").unwrap();
+                        self.builder.build_store(slot, cell).unwrap();
+                        self.declare(&p.name, VarLoc::Cell(slot));
+                    } else {
+                        let slot = self.builder.build_alloca(self.ptr_ty(), "mp").unwrap();
+                        self.builder.build_store(slot, pv).unwrap();
+                        self.declare(&p.name, VarLoc::Local(slot));
+                    }
+                }
+            }
+            self.compile_block(&proto.body.stmts)?;
+            self.pop_scope();
+            self.ensure_open();
+            if let Some(rs) = ret_int_slot {
+                self.builder.build_store(rs, self.i64c(0)).unwrap();
+            }
+            let null = self.v_null();
+            self.builder.build_store(ret_val_slot, null).unwrap();
+            self.builder.build_unconditional_branch(ret_bb).unwrap();
+            self.builder.position_at_end(ret_bb);
+            match ret_sc.as_deref() {
+                Some("int") => {
+                    let iv = self
+                        .builder
+                        .build_load(self.i64_ty(), ret_int_slot.unwrap(), "mret.iv")
+                        .unwrap()
+                        .into_int_value();
+                    self.builder.build_return(Some(&iv)).unwrap();
+                }
+                Some("float") => {
+                    let rv = self
+                        .builder
+                        .build_load(self.ptr_ty(), ret_val_slot, "mret.v")
+                        .unwrap()
+                        .into_pointer_value();
+                    let tof =
+                        self.tramp("spid3r_to_f64", &[self.ptr_ty().into()], Some(f64_t.into()));
+                    let call_r = self
+                        .builder
+                        .build_call(tof, &[rv.into()], "mret.f")
+                        .unwrap();
+                    let fval = match call_r.try_as_basic_value() {
+                        inkwell::values::ValueKind::Basic(v) => v,
+                        _ => unreachable!(),
+                    };
+                    self.builder.build_return(Some(&fval)).unwrap();
+                }
+                Some("bool") => {
+                    let rv = self
+                        .builder
+                        .build_load(self.ptr_ty(), ret_val_slot, "mret.v")
+                        .unwrap()
+                        .into_pointer_value();
+                    let tf = self.tramp(
+                        "spid3r_truthy",
+                        &[self.ptr_ty().into()],
+                        Some(self.ctx.bool_type().into()),
+                    );
+                    let b = call_int(self.builder.build_call(tf, &[rv.into()], "b").unwrap());
+                    self.builder.build_return(Some(&b)).unwrap();
+                }
+                _ => {
+                    let rv = self
+                        .builder
+                        .build_load(self.ptr_ty(), ret_val_slot, "mret.v")
+                        .unwrap()
+                        .into_pointer_value();
+                    self.builder.build_return(Some(&rv)).unwrap();
+                }
+            }
+
+            self.mono_ret_int_slot = saved.12;
+            self.unboxed_lists = saved.11;
+            self.int_locals = saved.10;
+            self.is_entry = saved.9;
+            self.finally_stack = saved.8;
+            self.exc = saved.7;
+            self.loops = saved.6;
+            self.scopes = saved.5;
+            self.boxed = saved.4;
+            self.caps = saved.3;
+            self.ret_slots = saved.2;
+            self.ret_bb = saved.1;
+            self.env_param = saved.0;
+            if let Some(bb) = caller_bb {
+                self.builder.position_at_end(bb);
+            }
+            (fv, ret_sc, param_scs)
+        };
+
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            match param_scs[i].as_deref() {
+                Some("int") => {
+                    let iv = if self.is_int_expr(a) {
+                        self.compile_expr_i64(a)?
+                    } else {
+                        let bv = self.compile_expr(a)?;
+                        self.call1p_to_i64("spid3r_to_i64", bv)
+                    };
+                    call_args.push(iv.into());
+                }
+                Some("float") => {
+                    let f64_t = self.ctx.f64_type();
+                    let bv = self.compile_expr(a)?;
+                    let tof =
+                        self.tramp("spid3r_to_f64", &[self.ptr_ty().into()], Some(f64_t.into()));
+                    let call_r = self.builder.build_call(tof, &[bv.into()], "farg").unwrap();
+                    let fval = match call_r.try_as_basic_value() {
+                        inkwell::values::ValueKind::Basic(v) => v,
+                        _ => unreachable!(),
+                    };
+                    call_args.push(fval.into());
+                }
+                Some("bool") => {
+                    let bv = self.compile_expr(a)?;
+                    let tf = self.tramp(
+                        "spid3r_truthy",
+                        &[self.ptr_ty().into()],
+                        Some(self.ctx.bool_type().into()),
+                    );
+                    let b = call_int(self.builder.build_call(tf, &[bv.into()], "b").unwrap());
+                    call_args.push(b.into());
+                }
+                _ => {
+                    call_args.push(self.compile_expr(a)?.into());
+                }
+            }
+        }
+        let call = self.emit_call(fv, &call_args, "mono");
+        let _ = ret_sc;
+        Ok(match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(v) => Some(v),
+            _ => None,
+        })
+    }
+
+    fn compile_call_with_types(
+        &mut self,
+        callee: &Expr,
+        type_args: &[crate::ast::TypeExpr],
+        args: &[Expr],
+    ) -> IrResult<PointerValue<'ctx>> {
+        if !type_args.is_empty() {
+            if let Expr::Ident(name, _) = callee {
+                if let Some(raw_ret) = self.try_compile_mono_call(name, type_args, args)? {
+                    let ret_sc = self.generic_fns.get(name).and_then(|p| {
+                        Self::subst_scalar_type(p.ret.as_ref(), &p.type_params, type_args)
+                    });
+                    return Ok(match ret_sc {
+                        Some("int") => self.v_int_from_i64(raw_ret.into_int_value()),
+                        Some("float") => {
+                            let f64_t = self.ctx.f64_type();
+                            let bf = self.tramp(
+                                "spid3r_value_float",
+                                &[f64_t.into()],
+                                Some(self.ptr_ty().into()),
+                            );
+                            call_ptr(
+                                self.builder
+                                    .build_call(bf, &[raw_ret.into()], "bf")
+                                    .unwrap(),
+                            )
+                        }
+                        Some("bool") => self.v_bool_from_i1(raw_ret.into_int_value()),
+                        _ => raw_ret.into_pointer_value(),
+                    });
+                }
+            }
+        }
+        self.compile_call(callee, args)
+    }
+
     fn compile_call(&mut self, callee: &Expr, args: &[Expr]) -> IrResult<PointerValue<'ctx>> {
         // `extern fn` — a direct C call, marshalled explicitly.
         if let Expr::Ident(name, _) = callee {
@@ -4882,6 +5950,77 @@ impl<'ctx> Ir<'ctx> {
                 return Ok(self.v_int_from_i64(iv));
             }
         }
+        if let Expr::Index { object, index, .. } = target {
+            if op == AssignOp::Assign {
+                if let Expr::Ident(name, _) = &**object {
+                    match self.lookup(name) {
+                        Some(VarLoc::UListI64(slot)) => {
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let idx = if self.is_int_expr(index) {
+                                self.compile_expr_i64(index)?
+                            } else {
+                                let bv = self.compile_expr(index)?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            };
+                            let iv = if self.is_int_expr(value) {
+                                self.compile_expr_i64(value)?
+                            } else {
+                                let bv = self.compile_expr(value)?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            };
+                            let f = self.tramp(
+                                "spid3r_ulist_i64_set",
+                                &[
+                                    self.ptr_ty().into(),
+                                    self.i64_ty().into(),
+                                    self.i64_ty().into(),
+                                ],
+                                None,
+                            );
+                            self.emit_call(f, &[ptr.into(), idx.into(), iv.into()], "");
+                            return Ok(self.v_int_from_i64(iv));
+                        }
+                        Some(VarLoc::UListF64(slot)) => {
+                            let f64_t = self.ctx.f64_type();
+                            let ptr = self
+                                .builder
+                                .build_load(self.ptr_ty(), slot, "ul")
+                                .unwrap()
+                                .into_pointer_value();
+                            let idx = if self.is_int_expr(index) {
+                                self.compile_expr_i64(index)?
+                            } else {
+                                let bv = self.compile_expr(index)?;
+                                self.call1p_to_i64("spid3r_to_i64", bv)
+                            };
+                            let bv = self.compile_expr(value)?;
+                            let tof = self.tramp(
+                                "spid3r_to_f64",
+                                &[self.ptr_ty().into()],
+                                Some(f64_t.into()),
+                            );
+                            let call_r = self.builder.build_call(tof, &[bv.into()], "f64").unwrap();
+                            let fv = match call_r.try_as_basic_value() {
+                                inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
+                                _ => unreachable!(),
+                            };
+                            let f = self.tramp(
+                                "spid3r_ulist_f64_set",
+                                &[self.ptr_ty().into(), self.i64_ty().into(), f64_t.into()],
+                                None,
+                            );
+                            self.emit_call(f, &[ptr.into(), idx.into(), fv.into()], "");
+                            return Ok(bv);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         // compound assignment: x += e  ==>  x = x + e
         if op != AssignOp::Assign {
             let bin = match op {
@@ -4945,6 +6084,9 @@ impl<'ctx> Ir<'ctx> {
                         .build_call(f, &[slot.into(), v.into()], "")
                         .unwrap();
                     Ok(v)
+                }
+                Some(VarLoc::UListI64(_)) | Some(VarLoc::UListF64(_)) => {
+                    Err(self.err("internal: cannot reassign unboxed list"))
                 }
                 None => {
                     let (np, _) = self.str_global(name);
@@ -5052,19 +6194,22 @@ impl<'ctx> Ir<'ctx> {
             self.builder.build_unconditional_branch(ret_bb).unwrap();
             self.builder.position_at_end(entry_bb);
         }
-        let int_locals = analyze_int_locals(proto, &boxing_set(proto));
+        let boxed_set = boxing_set(proto);
+        let int_locals = analyze_int_locals(proto, &boxed_set);
+        let unboxed_lists = analyze_unboxed_lists(proto, &boxed_set);
         let saved = (
             self.env_param.replace(env),
             self.ret_bb.replace(ret_bb),
             std::mem::take(&mut self.ret_slots),
             std::mem::replace(&mut self.caps, caps),
-            self.boxed.replace(boxing_set(proto)),
+            self.boxed.replace(boxed_set),
             std::mem::take(&mut self.scopes),
             std::mem::take(&mut self.loops),
             std::mem::take(&mut self.exc),
             std::mem::take(&mut self.finally_stack),
             self.is_entry,
             self.int_locals.replace(int_locals),
+            self.unboxed_lists.replace(unboxed_lists),
         );
         self.ret_slots.push(ret_slot);
         self.exc = vec![propagate_bb];
@@ -5172,6 +6317,7 @@ impl<'ctx> Ir<'ctx> {
         self.builder.position_at_end(ret_bb);
 
         // restore
+        self.unboxed_lists = saved.11;
         self.int_locals = saved.10;
         self.is_entry = saved.9;
         self.finally_stack = saved.8;
@@ -5211,7 +6357,7 @@ impl<'ctx> Ir<'ctx> {
                     caps.push(name.clone());
                     env_sources.push(loc);
                 }
-                None => {} // global: read via the global table
+                None | Some(VarLoc::UListI64(_)) | Some(VarLoc::UListF64(_)) => {} // global or uncaptured unboxed list
             }
         }
         let name_hint = proto.name.clone().unwrap_or_else(|| "anon".to_string());
@@ -5262,6 +6408,7 @@ impl<'ctx> Ir<'ctx> {
                         let env = self.cur_env();
                         self.call_env_slot(env, *j)
                     }
+                    VarLoc::UListI64(_) | VarLoc::UListF64(_) => unreachable!(),
                 };
                 self.call_env_set_slot(env, i, cell);
             }
@@ -5378,10 +6525,21 @@ impl<'ctx> Ir<'ctx> {
             self.int_locals.take(),
             std::mem::take(&mut self.top_consts),
             std::mem::take(&mut self.top_ints),
+            self.unboxed_lists.take(),
+            std::mem::take(&mut self.generic_fns),
         );
         let (tc, ti) = collect_top_const_maps(program);
         self.top_consts = tc;
         self.top_ints = ti;
+        for s in &program.stmts {
+            if let Stmt::Fn(f) = s {
+                if !f.type_params.is_empty() && !f.is_extern && !f.is_async {
+                    if let Some(ref name) = f.name {
+                        self.generic_fns.insert(name.clone(), f.clone());
+                    }
+                }
+            }
+        }
         self.is_entry = true;
         // Bottom exception-handler frame for top-level statements: a `throw`
         // outside any `try` is an uncaught program error.
@@ -5443,6 +6601,8 @@ impl<'ctx> Ir<'ctx> {
         let null = self.v_null();
         self.builder.build_return(Some(&null)).unwrap();
 
+        self.generic_fns = saved.14;
+        self.unboxed_lists = saved.13;
         self.top_ints = saved.12;
         self.top_consts = saved.11;
         self.int_locals = saved.10;

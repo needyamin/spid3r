@@ -829,7 +829,7 @@ pub use sha512::{sha512_bytes, sha512_hex};
 
 // ------------------------------------------------------------------ ed25519
 
-mod ed25519;
+pub mod ed25519;
 pub use ed25519::{keypair_from_seed, sign as ed25519_sign, verify as ed25519_verify};
 
 /// Inspect/edit half of the package manager: `verify`, `tree`, `add`,

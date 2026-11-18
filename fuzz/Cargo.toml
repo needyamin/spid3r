@@ -62,3 +62,10 @@ path = "fuzz_targets/fuzz_http_ws.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_oci_manifest"
+path = "fuzz_targets/fuzz_oci_manifest.rs"
+test = false
+doc = false
+bench = false

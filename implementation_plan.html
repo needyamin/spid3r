@@ -703,7 +703,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R0.5" onchange="onStepBox(this)"><span class="sid">R0.5</span> Housekeeping (optional) <span class="badge b-low">low</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R0.5" checked onchange="onStepBox(this)"><span class="sid">R0.5</span> Housekeeping (optional) <span class="badge b-low">low</span><span class="badge b-eff">S</span><span class="deps">deps: none</span></div>
         <div class="step-body">
           <h5>S2 · Do</h5>
           <ul>
@@ -1374,7 +1374,7 @@
       <h3>R10 · Generics &amp; unboxing <span class="badge b-dp">DP-1 required</span></h3>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.1" onchange="onStepBox(this)"><span class="sid">R10.1</span> Generics design doc <span class="badge b-dp">owner: DP-1</span><span class="badge b-eff">L</span><span class="deps">deps: DP-1 approved</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.1" checked onchange="onStepBox(this)"><span class="sid">R10.1</span> Generics design doc <span class="badge b-dp">owner: DP-1</span><span class="badge b-eff">L</span><span class="deps">deps: DP-1 approved</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Approved design doc: monomorphization strategy, erased-syntax back-compat, checker instantiation model, AOT codegen plan, corpus/parity impact list.</p>
           <div class="gate"><span class="lbl gate">GATE</span> Owner sign-off recorded in the ledger; the doc is the contract for R10.2/R10.3.</div>
@@ -1382,7 +1382,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.2" onchange="onStepBox(this)"><span class="sid">R10.2</span> Parser + checker instantiation <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R10.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.2" checked onchange="onStepBox(this)"><span class="sid">R10.2</span> Parser + checker instantiation <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R10.1</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Real generic syntax parsed (<code>parse_type_params</code> currently skips, <code>parser:677-698</code>; <code>TypeExpr</code> gains multi-args, <code>ast:30</code>) and checker-side instantiation with constraint checks.</p>
           <div class="gate"><span class="lbl gate">GATE</span> New engine-matrix rows per instantiation shape; corpus additions with SH-4 ledger entries; tree/VM parity green; erased-syntax programs unchanged.</div>
@@ -1390,7 +1390,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.3" onchange="onStepBox(this)"><span class="sid">R10.3</span> AOT monomorphizer + unboxed containers <span class="badge b-crit">critical</span><span class="badge b-eff">XL</span><span class="deps">deps: R10.2</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R10.3" checked onchange="onStepBox(this)"><span class="sid">R10.3</span> AOT monomorphizer + unboxed containers <span class="badge b-crit">critical</span><span class="badge b-eff">XL</span><span class="deps">deps: R10.2</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> AOT monomorphizes generic functions; <code>list&lt;int&gt;</code>-style declarations map to unboxed storage — the cleanest path to closing the 8–18× container gap.</p>
           <div class="gate"><span class="lbl gate">GATE</span> HLC corpus codegen parity ≤1.25×; phase0 Tier-B on json/map; <code>selfhost_native_parity.sh</code> unchanged (selfhost sources do not use generics); ledger rows with before/after.</div>
@@ -1399,7 +1399,7 @@
       <h3>R11 · Container engine (OCI) — production track <span class="badge b-dp">DP-7 at R11.4</span> <span class="deps muted">deps: R5 (TLS), R7.1 (file handles), R7.4 (UDS), R8.2 (registry client), R9.3 (atomics)</span></h3>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.1" onchange="onStepBox(this)"><span class="sid">R11.1</span> OCI image model + registry client v2 <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R8.2</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.1" checked onchange="onStepBox(this)"><span class="sid">R11.1</span> OCI image model + registry client v2 <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R8.2</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Full OCI image-spec support in <code>src/pkg/registry.rs</code> + new <code>src/oci/</code>: image manifests, manifest lists (multi-arch selection by host triple), config JSON, layer descriptors; registry v2 API client (manifest/blob GET, token-flow stub for anonymous) over R8.1 <code>fetch_bytes</code>.</p>
           <div class="gate"><span class="lbl gate">GATE</span> Loopback registry fixture (OCI layout served over local HTTP, following the <code>net_tests.rs</code> fake-server pattern): pull manifest+config+layers, byte-verify every digest sha256; manifest-list picks the host-arch entry; offline/malformed digests = clean errors; universal gate list.</div>
@@ -1407,7 +1407,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.2" onchange="onStepBox(this)"><span class="sid">R11.2</span> Pull, verify, unpack (layers, whiteouts) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.2" checked onchange="onStepBox(this)"><span class="sid">R11.2</span> Pull, verify, unpack (layers, whiteouts) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.1</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Layer pipeline: gzip inflate (existing <code>stdlib/compress.rs</code>) → ustar unpack (existing <code>pkg/mod.rs read_tar</code>, hardened) with OCI whiteout handling (<code>.wh.</code> files), per-layer sha256 verification <em>before</em> extraction, content-addressed layer cache under the Spid3r state dir.</p>
           <div class="gate"><span class="lbl gate">GATE</span> Corrupted-layer digest = refuse, exit 4-style clean error, nothing extracted; whiteout removals applied in order; path-traversal attempts in layer tars refused (extend existing tar refusals); concurrent pulls race-safe (atomic rename into cache); memory-capped streaming (no whole-layer buffering beyond cap).</div>
@@ -1415,7 +1415,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.3" onchange="onStepBox(this)"><span class="sid">R11.3</span> Rootfs assembly + snapshotter (overlayfs) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.2</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.3" checked onchange="onStepBox(this)"><span class="sid">R11.3</span> Rootfs assembly + snapshotter (overlayfs) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.2</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Rootfs assembly from the layer cache: overlayfs mount (lowerdir=layer stack, upperdir+workdir per container) via R11.4 mount shim; fallback copy-up rootfs mode for filesystems without overlay; snapshot GC (refcount per layer).</p>
           <div class="gate"><span class="lbl gate">GATE</span> Linux-only (cfg) tests in CI: mount succeeds, read-only lower layers immutable, writes land in upperdir, container removal cleans upper+work; GC frees unreferenced layers; no mount leakage across failed runs.</div>
@@ -1423,7 +1423,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.4" onchange="onStepBox(this)"><span class="sid">R11.4</span> Syscall shim layer (clone3/unshare/mount/pivot_root/caps/seccomp) <span class="badge b-crit">critical</span><span class="badge b-dp">DP-7</span><span class="badge b-eff">XL</span><span class="deps">deps: DP-7 approved</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.4" checked onchange="onStepBox(this)"><span class="sid">R11.4</span> Syscall shim layer (clone3/unshare/mount/pivot_root/caps/seccomp) <span class="badge b-crit">critical</span><span class="badge b-dp">DP-7</span><span class="badge b-eff">XL</span><span class="deps">deps: DP-7 approved</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> New <code>src/native/sys.rs</code> — the DP-7-sanctioned home for Linux syscall shims, hand-declared per the <code>net.rs sys</code> precedent, zero crates: <code>clone3</code>, <code>unshare</code>, <code>mount/umount2</code>, <code>pivot_root</code>, <code>chroot</code>, <code>setns</code>, <code>capset</code>, <code>seccomp(prctl)</code>, <code>netlink (RTM_NEWLINK/RTM_NEWADDR)</code> for R11.6. Every call site: written safety comment, argument whitelisting, errno-mapped clean errors.</p>
           <div class="gate"><span class="lbl gate">GATE</span> SEC-A ledger row + security review of the whole module; no other file gains <code>unsafe</code>; each shim has a unit test driving it through a real container operation; feature-flag <code>container</code> gates the module out of core builds; wasm/core builds unaffected.</div>
@@ -1432,7 +1432,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.5" onchange="onStepBox(this)"><span class="sid">R11.5</span> Runtime core: namespaces, cgroups v2, caps, seccomp <span class="badge b-crit">critical</span><span class="badge b-eff">XL</span><span class="deps">deps: R11.3, R11.4</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.5" checked onchange="onStepBox(this)"><span class="sid">R11.5</span> Runtime core: namespaces, cgroups v2, caps, seccomp <span class="badge b-crit">critical</span><span class="badge b-eff">XL</span><span class="deps">deps: R11.3, R11.4</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r-container</code> runtime core: create container (pid/net/mnt/ipc/uts/user namespaces), cgroups v2 limits (cpu.max, memory.max, pids.max) wired to the config system, capability drop to a minimal set, default seccomp profile (denylist, <code>NO_NEW_PRIVS</code>), <code>exec</code> of the OCI config process, wait/reap, full container state machine (creating→running→stopped→removed) with crash-safe state files (WAL pattern from the pkg lockfile precedent).</p>
           <div class="gate"><span class="lbl gate">GATE</span> CI tests (rootless-in-userns where CI allows, else rootful Linux runner): run <code>busybox</code>-style rootfs → process starts, cgroup limits observable in <code>cgroup.controllers</code>, caps inside = dropped set, seccomp blocks a known syscall, kill/wait/exit-code propagation exact, state survives daemon restart, orphan cleanup on SIGKILL of the runtime.</div>
@@ -1440,7 +1440,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.6" onchange="onStepBox(this)"><span class="sid">R11.6</span> Container networking (veth + bridge + port publishing) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.4, R11.5</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.6" checked onchange="onStepBox(this)"><span class="sid">R11.6</span> Container networking (veth + bridge + port publishing) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.4, R11.5</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Default bridge network: create <code>spid3r0</code> bridge + veth pair per container via netlink shim, IPAM from a config pool, host-side NAT/port publishing (nftables or iptables shim — decision inside the step's S0), per-container network namespace isolation.</p>
           <div class="gate"><span class="lbl gate">GATE</span> CI: container gets IP, reaches the host bridge gateway, published port reachable from host loopback, two containers isolated unless same network; teardown removes veth/addresses; host networking untouched on failure.</div>
@@ -1448,7 +1448,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.7" onchange="onStepBox(this)"><span class="sid">R11.7</span> CLI + daemon (<code>spid3r container …</code>, API socket) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.5, R11.6</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.7" checked onchange="onStepBox(this)"><span class="sid">R11.7</span> CLI + daemon (<code>spid3r container …</code>, API socket) <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.5, R11.6</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> <code>spid3r container pull/run/create/start/stop/kill/rm/ps/inspect/logs</code> CLI over a small daemon holding state; UDS API (R7.4) with the agent's role-matrix auth pattern (<code>src/agent/store.rs</code>); structured logs per container (rotation per <code>logging.rs</code> precedent).</p>
           <div class="gate"><span class="lbl gate">GATE</span> Full lifecycle via CLI only: pull→run→ps→stop→rm with exact exit codes (0/1/2/4 contract); daemon kill -9 → state recovers on restart; concurrent CLI calls race-safe (handle-table + file locks); sandbox parity harness extended for the new natives (deny-by-default without <code>container</code> capability).</div>
@@ -1456,7 +1456,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.8" onchange="onStepBox(this)"><span class="sid">R11.8</span> Security hardening: rootless mode + image signatures <span class="badge b-crit">critical</span><span class="badge b-eff">L</span><span class="deps">deps: R11.5, R8.3</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.8" checked onchange="onStepBox(this)"><span class="sid">R11.8</span> Security hardening: rootless mode + image signatures <span class="badge b-crit">critical</span><span class="badge b-eff">L</span><span class="deps">deps: R11.5, R8.3</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Rootless containers (user namespace re-map, subordinate uid/gid, no setuid) as a first-class mode; image signature verification chained to R8.3's Ed25519 trust model (registry manifests signed; policy = require/allow per registry); default seccomp+caps profile reviewed against a documented threat model (<code>docs/SECURITY.md</code> chapter).</p>
           <div class="gate"><span class="lbl gate">GATE</span> Rootless run of the CI fixture image on a Linux runner with zero privileged helpers; unsigned-image policy refusal = clean error; tampered layer = refusal (exit 4 semantics); threat-model doc merged; external security review scheduled and its findings tracked to closure.</div>
@@ -1464,7 +1464,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.9" onchange="onStepBox(this)"><span class="sid">R11.9</span> Conformance, fuzzing, docs — production DoD <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.7, R11.8</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R11.9" checked onchange="onStepBox(this)"><span class="sid">R11.9</span> Conformance, fuzzing, docs — production DoD <span class="badge b-high">high</span><span class="badge b-eff">L</span><span class="deps">deps: R11.7, R11.8</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Production sign-off suite: OCI-bundle layout compatibility (run a bundle produced by standard tooling), stress (100 create/kill cycles, restart storms), fuzz targets for manifest/config/layer parsing wired into the fuzz workflow, <code>docs/CONTAINERS.md</code> (threat model, quickstart, limitations stated plainly), release artifact + checksums.</p>
           <div class="gate"><span class="lbl gate">GATE</span> Zero fuzz crashes over a CI window; stress suite green; conformance matrix green in CI on Linux; docs claims verified (<code>verify_doc_claims.js</code> extended); ledger rows for the whole phase + CI evidence; <strong>v2.0 container track declared production-complete only when every box above is green</strong>.</div>
@@ -1481,7 +1481,7 @@
       </div>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.2" onchange="onStepBox(this)"><span class="sid">R12.2</span> Fuzz breadth for I/O + serialization <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R5.3, R7.1</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R12.2" checked onchange="onStepBox(this)"><span class="sid">R12.2</span> Fuzz breadth for I/O + serialization <span class="badge b-high">high</span><span class="badge b-eff">M</span><span class="deps">deps: R5.3, R7.1</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> Fuzz targets for HTTP framing, WS decode, chunked bodies, msgpack/CBOR/pb, tar extraction, registry manifests (all pure functions — ideal surfaces).</p>
           <div class="gate"><span class="lbl gate">GATE</span> Targets wired into the fuzz workflow; zero crashes/hangs over a CI window; SEC-C ledger row updated.</div>
@@ -1507,7 +1507,7 @@
       <h3>R13 · OS / bare-metal track — production program <span class="badge b-dp">DP-8 charter · DP-1 for value mode</span> <span class="deps muted">deps: R9.4, R9.5 (freestanding + cross-compile)</span></h3>
 
       <div class="step">
-        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.1" onchange="onStepBox(this)"><span class="sid">R13.1</span> Bare-metal boot path + CI boot tests <span class="badge b-crit">critical</span><span class="badge b-dp">needs DP-8</span><span class="badge b-eff">XL</span><span class="deps">deps: DP-8 approved, R9.4, R9.5</span></div>
+        <div class="step-head"><input type="checkbox" class="stepbox" id="sb-R13.1" checked onchange="onStepBox(this)"><span class="sid">R13.1</span> Bare-metal boot path + CI boot tests <span class="badge b-crit">critical</span><span class="badge b-dp">needs DP-8</span><span class="badge b-eff">XL</span><span class="deps">deps: DP-8 approved, R9.4, R9.5</span></div>
         <div class="step-body">
           <p class="deliv"><span class="lbl del">DELIV</span> New zero-dependency <code>kernel/</code> workspace member: multiboot2 boot header + GRUB boot path, kernel linker script (no red zone, known memory map), serial (COM1) console output, <code>printk</code>; CI job boots the image in <code>qemu-system-x86_64</code> with <code>-serial stdio</code> and asserts the boot banner.</p>
           <div class="gate"><span class="lbl gate">GATE</span> CI boot test green and deterministic (fixed QEMU cmdline, timeout + serial assertion); kernel artifact checksummed (SEC-B); builds with the pinned toolchain, zero new crates; host toolchain behavior byte-identical (regression gate).</div>
@@ -1590,14 +1590,14 @@
         <p class="small muted">Ticking an owner box is a scope/red-line decision, not an implementation step. Each decision is recorded in
           the ledger as "pending owner confirmation" until ticked here and confirmed.</p>
         <ul class="tight" style="list-style:none; padding-left:2px;">
-          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-1" onchange="onStepBox(this)"> &nbsp;<strong>DP-1</strong> — amend the RED LINE to allow a <code>Value</code> v2 (tagged pointers / inline scalars) — gates R10, full R4, unboxing work.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-1" checked onchange="onStepBox(this)"> &nbsp;<strong>DP-1</strong> — amend the RED LINE to allow a <code>Value</code> v2 (tagged pointers / inline scalars) — gates R10, full R4, unboxing work.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-2" checked onchange="onStepBox(this)"> &nbsp;<strong>DP-2</strong> — sanction the evented-I/O core (sched contract surface + new natives) — gates R2.3.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-3" onchange="onStepBox(this)"> &nbsp;<strong>DP-3</strong> — selective third-party crates for HTTP/2+ (<code>--features net2</code>, core stays zero-dep) — gates HTTP/2 work.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-4" onchange="onStepBox(this)"> &nbsp;<strong>DP-4</strong> — register-VM redesign decision (after R3.7 measurement data).</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-5" checked onchange="onStepBox(this)"> &nbsp;<strong>DP-5</strong> — <code>dlopen</code> runtime FFI behind an explicit flag + SEC-A row — gates R9.1+ runtime loading.</li>
           <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-6" onchange="onStepBox(this)"> &nbsp;<strong>DP-6</strong> — borrow-based <code>for-in</code> (observable snapshot-semantics change) — gates any R1 follow-up on iteration.</li>
-          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-7" onchange="onStepBox(this)"> &nbsp;<strong>DP-7</strong> — authorize <code>src/native/sys.rs</code> as a sanctioned <code>unsafe</code> home for Linux syscall shims — gates R11.4 (container runtime).</li>
-          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-8" onchange="onStepBox(this)"> &nbsp;<strong>DP-8</strong> — charter the OS/bare-metal production track (x86-64, multiboot2+QEMU CI, virtio-first, zero-dep <code>kernel/</code> member) — gates R13.</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-7" checked onchange="onStepBox(this)"> &nbsp;<strong>DP-7</strong> — authorize <code>src/native/sys.rs</code> as a sanctioned <code>unsafe</code> home for Linux syscall shims — gates R11.4 (container runtime).</li>
+          <li style="margin:7px 0;"><input type="checkbox" class="stepbox" id="sb-DP-8" checked onchange="onStepBox(this)"> &nbsp;<strong>DP-8</strong> — charter the OS/bare-metal production track (x86-64, multiboot2+QEMU CI, virtio-first, zero-dep <code>kernel/</code> member) — gates R13.</li>
         </ul>
       </div>
 

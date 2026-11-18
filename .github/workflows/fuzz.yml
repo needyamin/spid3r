@@ -35,7 +35,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [fuzz_lexer, fuzz_parser, fuzz_bytecode, fuzz_agent_frame, fuzz_ini_parser, fuzz_serialize, fuzz_http_ws]
+        target: [fuzz_lexer, fuzz_parser, fuzz_bytecode, fuzz_agent_frame, fuzz_ini_parser, fuzz_serialize, fuzz_http_ws, fuzz_oci_manifest]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7

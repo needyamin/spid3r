@@ -241,7 +241,8 @@
       ],
       "variant_kind": "aot",
       "status": "not_measured",
-      "reason": "The locally available binary has no native backend ('the native backend is not enabled in this build'). AOT requires LLVM 18.1+ and a runtime compilation step that is not compute. Frozen from the external report instead; no AOT claim is made."
+      "reason": "The locally available binary has no native backend ('the native backend is not enabled in this build'). AOT requires LLVM 18.1+ and a runtime compilation step that is not compute. Frozen from the external report instead; no AOT claim is made.",
+      "correction_note": "Historical snapshot from Phase 0; native AOT (LLVM 23.1.0) was subsequently measured directly in Phase 11 P-1/P-3/P-6 (see docs/html/benchmark.html Sections 04-07)."
     }
   ],
   "asserted_result_pins": {

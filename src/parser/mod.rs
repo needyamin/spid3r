@@ -1,4 +1,4 @@
-//! Recursive-descent parser with Pratt-style expression precedence.
+//! Recursive-descent parser with explicit precedence-level helpers.
 
 use crate::ast::*;
 use crate::diagnostics::{err_at, Phase, Span, SpidResult};
@@ -360,6 +360,7 @@ impl Parser {
                         let sp = self.prev_span();
                         let call = Expr::Call {
                             callee: Box::new(dec),
+                            type_args: Vec::new(),
                             args: vec![Expr::Ident(name.clone(), sp.clone())],
                             span: sp.clone(),
                         };
@@ -450,6 +451,7 @@ impl Parser {
                 let span = join(sp, self.prev_span());
                 dec = Expr::Call {
                     callee: Box::new(dec),
+                    type_args: Vec::new(),
                     args,
                     span,
                 };
@@ -658,8 +660,7 @@ impl Parser {
         if name.is_none() && !allow_anon {
             return Err(self.err_here("a function declaration needs a name"));
         }
-        // `fn first<T>(xs: [T]) -> T` - the names are captured, then erased.
-        let type_params = self.parse_type_params()?;
+        let (type_params, type_bounds) = self.parse_type_params()?;
         let (params, is_variadic) = self.parse_params_inner(is_extern)?;
         let ret = if self.eat(&TokenKind::Arrow) {
             Some(self.parse_type()?)
@@ -688,6 +689,7 @@ impl Parser {
             params,
             ret,
             type_params,
+            type_bounds,
             body,
             span,
         })
@@ -763,6 +765,34 @@ impl Parser {
         Ok((params, is_variadic))
     }
 
+    fn expect_type_gt(&mut self) -> SpidResult<()> {
+        if self.eat(&TokenKind::Gt) {
+            return Ok(());
+        }
+        if self.at(&TokenKind::Shr) {
+            self.toks[self.pos].kind = TokenKind::Gt;
+            let tok = self.toks[self.pos].clone();
+            self.toks.insert(self.pos + 1, tok);
+            self.pos += 1;
+            return Ok(());
+        }
+        self.expect(&TokenKind::Gt, "'>'")
+    }
+
+    fn parse_type_arg_list(&mut self) -> SpidResult<Vec<TypeExpr>> {
+        let mut args = Vec::new();
+        if !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Shr) {
+            loop {
+                args.push(self.parse_type()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect_type_gt()?;
+        Ok(args)
+    }
+
     fn parse_single_type(&mut self) -> SpidResult<TypeExpr> {
         let (name, span) = match self.kind().clone() {
             TokenKind::Kw(Keyword::Null) => {
@@ -772,17 +802,15 @@ impl Parser {
             }
             _ => self.expect_ident()?,
         };
-        let arg = if self.eat(&TokenKind::Lt) {
-            let t = self.parse_type()?;
-            self.expect(&TokenKind::Gt, "'>'")?;
-            Some(Box::new(t))
+        let args = if self.eat(&TokenKind::Lt) {
+            self.parse_type_arg_list()?
         } else {
-            None
+            Vec::new()
         };
         let nullable = self.eat(&TokenKind::Question);
         Ok(TypeExpr {
             name,
-            arg,
+            args,
             nullable,
             union: Vec::new(),
             span,
@@ -812,39 +840,36 @@ impl Parser {
 
     // ---- classes and interfaces ----------------------------------------
 
-    /// Skip a `<T, U>` type-parameter list (erased: Spid3r is dynamically
-    /// typed, so parameters document intent and the checker records nothing).
-    /// `fn first<T>(xs)` - the names are captured (and then erased) so the
-    /// checker can resolve `-> T` as a type name. Nested angle brackets
-    /// (`Map<K, V>`) are balanced, not parsed as constraints.
-    fn parse_type_params(&mut self) -> SpidResult<Vec<String>> {
-        if !self.at(&TokenKind::Lt) {
-            return Ok(Vec::new());
+    /// Parse `<T, U: Bound>` type parameters and optional constraint bounds.
+    fn parse_type_params(&mut self) -> SpidResult<(Vec<String>, Vec<Option<String>>)> {
+        if !self.eat(&TokenKind::Lt) {
+            return Ok((Vec::new(), Vec::new()));
         }
-        self.pos += 1;
         let mut names = Vec::new();
-        let mut depth = 1usize;
-        while depth > 0 {
-            match self.kind() {
-                TokenKind::Lt => depth += 1,
-                TokenKind::Gt => depth -= 1,
-                TokenKind::Comma if depth == 1 => {}
-                TokenKind::Ident(name) if depth == 1 => names.push(name.clone()),
-                TokenKind::Eof => {
-                    return Err(self.err_here("unterminated type parameter list"));
+        let mut bounds = Vec::new();
+        if !self.at(&TokenKind::Gt) {
+            loop {
+                let (name, _) = self.expect_ident()?;
+                let bound = if self.eat(&TokenKind::Colon) {
+                    Some(self.expect_ident()?.0)
+                } else {
+                    None
+                };
+                names.push(name);
+                bounds.push(bound);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
                 }
-                _ => {}
             }
-            self.pos += 1;
         }
-        Ok(names)
+        self.expect(&TokenKind::Gt, "'>'")?;
+        Ok((names, bounds))
     }
 
     fn parse_class(&mut self, vis: Vis, is_abstract: bool) -> SpidResult<ClassDecl> {
         let start = self.expect_kw(Keyword::Class)?;
         let (name, _) = self.expect_ident()?;
-        // `class Box<T>` - the names are captured, then erased.
-        let type_params = self.parse_type_params()?;
+        let (type_params, type_bounds) = self.parse_type_params()?;
         let parent = if self.eat_kw(Keyword::Extends) {
             Some(self.expect_ident()?.0)
         } else {
@@ -942,6 +967,7 @@ impl Parser {
                         params,
                         ret,
                         type_params: Vec::new(),
+                        type_bounds: Vec::new(),
                         body: Block {
                             stmts: Vec::new(),
                             span: semi.clone(),
@@ -960,6 +986,7 @@ impl Parser {
                         params,
                         ret,
                         type_params: Vec::new(),
+                        type_bounds: Vec::new(),
                         body,
                         span: join(mspan, body_span),
                     });
@@ -979,6 +1006,7 @@ impl Parser {
                     params,
                     ret: None,
                     type_params: Vec::new(),
+                    type_bounds: Vec::new(),
                     body,
                     span: join(sp, body_span),
                 });
@@ -998,6 +1026,7 @@ impl Parser {
             parent,
             interfaces,
             type_params,
+            type_bounds,
             fields,
             methods,
             span: join(start, end),
@@ -1086,6 +1115,7 @@ impl Parser {
                     params,
                     ret,
                     type_params: Vec::new(),
+                    type_bounds: Vec::new(),
                     body,
                     span: join(mspan, body_span),
                 });
@@ -1168,6 +1198,7 @@ impl Parser {
                     let span = join(sp.clone(), self.prev_span());
                     return Ok(Stmt::Expr(Expr::Call {
                         callee: Box::new(Expr::Ident("yield".to_string(), sp)),
+                        type_args: Vec::new(),
                         args: Vec::new(),
                         span,
                     }));
@@ -1934,6 +1965,7 @@ impl Parser {
             let span = join(left.span().clone(), self.prev_span());
             left = Expr::Call {
                 callee: Box::new(Expr::Ident(ty, span.clone())),
+                type_args: Vec::new(),
                 args: vec![left],
                 span,
             };
@@ -2001,15 +2033,59 @@ impl Parser {
         self.parse_postfix()
     }
 
+    /// Speculatively parse `<T1, T2, ...>` right before `(` on a call site
+    /// (`identity<int>(7)`). Restores parser position untouched if it does not
+    /// form a valid `<type, ...>(` sequence (so `a < b` stays a comparison).
+    fn try_parse_call_type_args(&mut self) -> Option<Vec<TypeExpr>> {
+        if !self.at(&TokenKind::Lt) {
+            return None;
+        }
+        let saved_pos = self.pos;
+        let saved_toks_len = self.toks.len();
+        self.pos += 1;
+        if let Ok(targs) = self.parse_type_arg_list() {
+            if !targs.is_empty() && self.at(&TokenKind::LParen) {
+                return Some(targs);
+            }
+        }
+        if self.toks.len() > saved_toks_len {
+            // Undo any `>>` split performed inside `expect_type_gt`.
+            let split_at = self.pos.saturating_sub(1);
+            if split_at < self.toks.len() && matches!(self.toks[split_at].kind, TokenKind::Gt) {
+                self.toks[split_at].kind = TokenKind::Shr;
+                if split_at + 1 < self.toks.len() {
+                    self.toks.remove(split_at + 1);
+                }
+            }
+        }
+        self.pos = saved_pos;
+        None
+    }
+
     fn parse_postfix(&mut self) -> SpidResult<Expr> {
         let mut e = self.parse_primary()?;
         loop {
             match self.kind() {
+                TokenKind::Lt if matches!(e, Expr::Ident(..)) => {
+                    if let Some(type_args) = self.try_parse_call_type_args() {
+                        let args = self.parse_args()?;
+                        let span = join(e.span().clone(), self.prev_span());
+                        e = Expr::Call {
+                            callee: Box::new(e),
+                            type_args,
+                            args,
+                            span,
+                        };
+                    } else {
+                        return Ok(e);
+                    }
+                }
                 TokenKind::LParen => {
                     let args = self.parse_args()?;
                     let span = join(e.span().clone(), self.prev_span());
                     e = Expr::Call {
                         callee: Box::new(e),
+                        type_args: Vec::new(),
                         args,
                         span,
                     };
@@ -2243,9 +2319,19 @@ impl Parser {
             TokenKind::Kw(Keyword::New) => {
                 self.pos += 1;
                 let (class, _) = self.expect_ident()?;
+                let type_args = if self.eat(&TokenKind::Lt) {
+                    self.parse_type_arg_list()?
+                } else {
+                    Vec::new()
+                };
                 let args = self.parse_args()?;
                 let span = join(sp, self.prev_span());
-                Ok(Expr::New { class, args, span })
+                Ok(Expr::New {
+                    class,
+                    type_args,
+                    args,
+                    span,
+                })
             }
             TokenKind::Kw(Keyword::Fn) | TokenKind::Kw(Keyword::Async) => self.parse_fn_expr(),
             TokenKind::LBrace => self.parse_map_literal(sp),
@@ -2265,6 +2351,7 @@ impl Parser {
                     let span = join(sp, self.prev_span());
                     return Ok(Expr::Call {
                         callee: Box::new(Expr::Ident("tuple".to_string(), span.clone())),
+                        type_args: Vec::new(),
                         args: Vec::new(),
                         span,
                     });
@@ -2283,6 +2370,7 @@ impl Parser {
                     let span = join(sp.clone(), self.prev_span());
                     Ok(Expr::Call {
                         callee: Box::new(Expr::Ident("yield".to_string(), sp)),
+                        type_args: Vec::new(),
                         args: Vec::new(),
                         span,
                     })
@@ -2325,6 +2413,7 @@ impl Parser {
             }],
             ret: None,
             type_params: Vec::new(),
+            type_bounds: Vec::new(),
             body,
             span,
         })))
@@ -2350,6 +2439,7 @@ impl Parser {
             params,
             ret,
             type_params: Vec::new(),
+            type_bounds: Vec::new(),
             body,
             span,
         })))
@@ -2380,6 +2470,7 @@ impl Parser {
         let span = join(sp, end);
         Ok(Expr::Call {
             callee: Box::new(Expr::Ident("map".to_string(), span.clone())),
+            type_args: Vec::new(),
             args,
             span,
         })
@@ -2420,6 +2511,7 @@ impl Parser {
         let span = join(sp, self.prev_span());
         Ok(Expr::Call {
             callee: Box::new(Expr::Ident("tuple".to_string(), span.clone())),
+            type_args: Vec::new(),
             args: items,
             span,
         })
@@ -2550,6 +2642,7 @@ fn bit_call(name: &str, l: Expr, r: Expr) -> Expr {
     let span = join(l.span().clone(), r.span().clone());
     Expr::Call {
         callee: Box::new(Expr::Ident(name.to_string(), span.clone())),
+        type_args: Vec::new(),
         args: vec![l, r],
         span,
     }
@@ -2596,6 +2689,7 @@ impl Parser {
                     }
                     parts.push(Expr::Call {
                         callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
+                        type_args: Vec::new(),
                         args: vec![path],
                         span: sp.clone(),
                     });
@@ -2640,6 +2734,7 @@ impl Parser {
                     }
                     parts.push(Expr::Call {
                         callee: Box::new(Expr::Ident("string".to_string(), sp.clone())),
+                        type_args: Vec::new(),
                         args: vec![expr],
                         span: sp.clone(),
                     });

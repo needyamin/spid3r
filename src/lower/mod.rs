@@ -524,6 +524,7 @@ impl Lower {
             Stmt::Yield { value, span } => {
                 let call = Expr::Call {
                     callee: Box::new(Expr::Ident("emit".to_string(), span.clone())),
+                    type_args: Vec::new(),
                     args: vec![(**value).clone()],
                     span: span.clone(),
                 };
@@ -687,6 +688,7 @@ impl Lower {
 
                     let call_type_of = Expr::Call {
                         callee: Box::new(Expr::Ident("type_of".to_string(), span.clone())),
+                        type_args: Vec::new(),
                         args: vec![Expr::Ident(src.clone(), span.clone())],
                         span: span.clone(),
                     };
@@ -827,6 +829,7 @@ impl Lower {
                 params: vec![emit],
                 ret: None,
                 type_params: Vec::new(),
+                type_bounds: Vec::new(),
                 body,
                 span: f.span.clone(),
             }));
@@ -1092,6 +1095,7 @@ impl Lower {
                 ty: None,
                 value: Some(Expr::Call {
                     callee: Box::new(Expr::Ident("map".to_string(), span.clone())),
+                    type_args: Vec::new(),
                     args: Vec::new(),
                     span: span.clone(),
                 }),
@@ -1149,6 +1153,7 @@ impl Lower {
                     .collect(),
                 ret: None,
                 type_params: Vec::new(),
+                type_bounds: Vec::new(),
                 body: Block {
                     stmts: body,
                     span: span.clone(),
@@ -1282,6 +1287,7 @@ impl Lower {
         pre.push(Stmt::If {
             cond: Expr::Call {
                 callee: Box::new(Expr::Ident("is_failure".to_string(), span.clone())),
+                type_args: Vec::new(),
                 args: vec![Expr::Ident(v.clone(), vspan.clone())],
                 span: span.clone(),
             },
@@ -1486,7 +1492,12 @@ impl Lower {
                 value,
                 span,
             } => self.assign(target, *op, value, span),
-            Expr::Call { callee, args, span } => {
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                span,
+            } => {
                 // `super(args)` — the parent class's constructor.
                 if let Expr::Super { .. } = &**callee {
                     // `super(...)` — reorder against the parent's constructor.
@@ -1536,6 +1547,7 @@ impl Lower {
                 (
                     Expr::Call {
                         callee: Box::new(callee),
+                        type_args: type_args.clone(),
                         args: it.collect(),
                         span: span.clone(),
                     },
@@ -1616,7 +1628,12 @@ impl Lower {
                     pre,
                 )
             }
-            Expr::New { class, args, span } => {
+            Expr::New {
+                class,
+                type_args,
+                args,
+                span,
+            } => {
                 let args: Vec<Expr> = if args.iter().any(|a| matches!(a, Expr::NamedArg { .. })) {
                     match self.resolve_ctor_params(class) {
                         Some(params) => self
@@ -1631,6 +1648,7 @@ impl Lower {
                 (
                     Expr::New {
                         class: class.clone(),
+                        type_args: type_args.clone(),
                         args,
                         span: span.clone(),
                     },
@@ -1948,6 +1966,7 @@ fn replace_yields(stmts: Vec<Stmt>) -> Vec<Stmt> {
         .map(|s| match s {
             Stmt::Yield { value, span } => Stmt::Expr(Expr::Call {
                 callee: Box::new(Expr::Ident("emit".to_string(), span.clone())),
+                type_args: Vec::new(),
                 args: vec![*value],
                 span,
             }),

@@ -258,6 +258,7 @@ fn build_namespace_const(alias: &str, own: &OwnTops, span: &Span) -> Stmt {
         ty: None,
         value: Expr::Call {
             callee: Box::new(Expr::Ident("module_namespace".to_string(), span.clone())),
+            type_args: Vec::new(),
             args: map_args,
             span: span.clone(),
         },
@@ -642,7 +643,12 @@ fn rewrite_expr(
             value: Box::new(rewrite_expr(value, prefix, top_names, scopes)),
             span: span.clone(),
         },
-        Expr::Call { callee, args, span } => {
+        Expr::Call {
+            callee,
+            type_args,
+            args,
+            span,
+        } => {
             let callee = match callee.as_ref() {
                 Expr::Ident(name, _) if crate::value::collections::is_constructor(name) => {
                     callee.clone()
@@ -651,6 +657,7 @@ fn rewrite_expr(
             };
             Expr::Call {
                 callee,
+                type_args: type_args.clone(),
                 args: args
                     .iter()
                     .map(|a| rewrite_expr(a, prefix, top_names, scopes))
@@ -686,7 +693,12 @@ fn rewrite_expr(
             name: name.clone(),
             span: span.clone(),
         },
-        Expr::New { class, args, span } => {
+        Expr::New {
+            class,
+            type_args,
+            args,
+            span,
+        } => {
             let class = if !is_shadowed(class, scopes) && top_names.contains(class) {
                 format!("{}{}", prefix, class)
             } else {
@@ -694,6 +706,7 @@ fn rewrite_expr(
             };
             Expr::New {
                 class,
+                type_args: type_args.clone(),
                 args: args
                     .iter()
                     .map(|a| rewrite_expr(a, prefix, top_names, scopes))

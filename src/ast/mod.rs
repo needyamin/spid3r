@@ -27,7 +27,8 @@ pub struct Param {
 #[derive(Clone, Debug)]
 pub struct TypeExpr {
     pub name: String,
-    pub arg: Option<Box<TypeExpr>>,
+    /// Generic type arguments (`list<int>`, `map<string, int>`, `result<int, string>`).
+    pub args: Vec<TypeExpr>,
     pub nullable: bool,
     pub union: Vec<TypeExpr>,
     pub span: Span,
@@ -47,9 +48,10 @@ pub struct FnProto {
     pub name: Option<String>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
-    /// Erased generic parameter names (`fn first<T>(xs)`). They drive no static
-    /// check; the checker only needs them so `-> T` resolves as a type name.
+    /// Generic parameter names (`fn first<T>(xs)`).
     pub type_params: Vec<String>,
+    /// Optional constraint bounds parallel to `type_params` (`<T: Comparable>`).
+    pub type_bounds: Vec<Option<String>>,
     pub body: Block,
     pub span: Span,
 }
@@ -144,8 +146,10 @@ pub struct ClassDecl {
     pub abstracts: Vec<String>,
     pub parent: Option<String>,
     pub interfaces: Vec<String>,
-    /// Erased generic parameter names (`class Box<T>`). See `FnProto`.
+    /// Generic parameter names (`class Box<T>`). See `FnProto`.
     pub type_params: Vec<String>,
+    /// Optional constraint bounds parallel to `type_params`.
+    pub type_bounds: Vec<Option<String>>,
     pub fields: Vec<FieldDecl>,
     pub methods: Vec<FnProto>,
     pub span: Span,
@@ -339,6 +343,7 @@ pub enum Expr {
     },
     Call {
         callee: Box<Expr>,
+        type_args: Vec<TypeExpr>,
         args: Vec<Expr>,
         span: Span,
     },
@@ -360,6 +365,7 @@ pub enum Expr {
     },
     New {
         class: String,
+        type_args: Vec<TypeExpr>,
         args: Vec<Expr>,
         span: Span,
     },

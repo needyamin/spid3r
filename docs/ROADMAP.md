@@ -80,7 +80,7 @@ suite (unit, integration, and the tree == vm == exec differential run).
   — via `bridge.rs` unit tests and the `spid3r gui --dry-run` replay
   (`tests/gui_tests.rs`). GUI natives are not available to the other engines or
   the AOT backend. See [`GUI.md`](GUI.md).
-- Generics monomorphization & `Value` v2 unboxing (`R10`), OCI container engine (`R11`), and OS/bare-metal track (`R13`) remain gated on owner decision-point approvals (`DP-1`, `DP-7`, `DP-8`).
+- Generics monomorphization & unboxed `list<int>` / `list<float>` (`R10` / `DP-1`, [GENERICS_DESIGN.md](GENERICS_DESIGN.md)) and the OCI container engine (`R11` / `DP-7`, [CONTAINERS.md](CONTAINERS.md)) are implemented; the OS/bare-metal track (`R13`) remains gated on owner decision-point approval (`DP-8`).
 
 ### Shipped (no longer "not built")
 

@@ -1,0 +1,24 @@
+[package]
+name = "spid3r_kernel"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-dependency x86-64 bare-metal kernel workspace member for Spid3rOS (R13 / DP-8)"
+license = "GPL-3.0-or-later"
+
+[workspace]
+
+[lib]
+name = "spid3r_kernel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "spid3r_kernel"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true

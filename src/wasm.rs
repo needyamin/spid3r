@@ -119,6 +119,7 @@ pub fn spid3r_eval_json(src: &str, engine: &str) -> String {
                 params: Vec::new(),
                 ret: None,
                 type_params: Vec::new(),
+                type_bounds: Vec::new(),
                 body: crate::ast::Block {
                     stmts: Vec::new(),
                     span: sp.clone(),

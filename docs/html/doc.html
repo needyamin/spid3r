@@ -1397,6 +1397,7 @@
           <a href="#oop-super" class="sb-link"><span>`super` Delegation</span></a>
           <a href="#oop-interfaces" class="sb-link"><span>Interfaces (`implements`)</span></a>
           <a href="#oop-abstract" class="sb-link"><span>Abstract Classes</span></a>
+          <a href="#oop-generics" class="sb-link"><span>Generics &amp; Constraints</span><span class="sb-tag">R10</span></a>
         </div>
       </div>
 
@@ -1441,6 +1442,7 @@
           <a href="#async-await" class="sb-link"><span>Async / Await</span></a>
           <a href="#channels" class="sb-link"><span>Channels (`channel`)</span></a>
           <a href="#mutex" class="sb-link"><span>Mutex &amp; Shared Refs</span></a>
+          <a href="#atomic-int" class="sb-link"><span>Atomic Int (`atomic_int`)</span></a>
         </div>
       </div>
 
@@ -1487,6 +1489,9 @@
           <a href="#selfhost-arch" class="sb-link"><span>Self-Hosted Compiler</span><span class="sb-tag">SH</span></a>
           <a href="#gc" class="sb-link"><span>Garbage Collector</span></a>
           <a href="#wasm-arch" class="sb-link"><span>WebAssembly Integration</span></a>
+          <a href="#systems-ffi" class="sb-link"><span>Systems FFI &amp; Freestanding</span></a>
+          <a href="#containers" class="sb-link"><span>OCI Containers</span><span class="sb-tag">R11</span></a>
+          <a href="#os-kernel" class="sb-link"><span>Bare-Metal Kernel</span><span class="sb-tag">R13</span></a>
         </div>
       </div>
 
@@ -1832,7 +1837,8 @@
                 <td><code>spid3r build app.matrix --release</code></td>
                 <td>Compile into a standalone native machine-code executable for your operating system. Flags:
                   <code>--release</code>, <code>-o &lt;path&gt;</code>, <code>--target &lt;triple&gt;</code>,
-                  <code>--icon app.ico</code>, <code>--subsystem console|windows</code>, <code>--allow-gui</code>,
+                  <code>--icon app.ico</code>, <code>--subsystem console|windows</code>,
+                  <code>--link-lib &lt;name|path&gt;</code>, <code>--allow-gui</code>,
                   <code>--embed &lt;path&gt;</code>, <code>--bytecode &lt;file.matrixc&gt;</code>,
                   <code>--bundle-runtime</code>, <code>--product-name</code>, <code>--version</code>.
                 </td>
@@ -2056,6 +2062,23 @@
                 <td><code>spid3r pack -o dist/app.tar</code></td>
                 <td>Archive <code>spider.toml</code> + <code>src/</code> into a tarball, and extract one again with
                   <code>spid3r unpack &lt;archive&gt; [dir]</code>.
+                </td>
+              </tr>
+              <tr>
+                <td><code>spid3r container &lt;subcmd&gt;</code></td>
+                <td><code>spid3r container run alpine:latest /bin/sh</code></td>
+                <td>OCI container engine (built with <code>--features container</code>; Linux runtime isolation).
+                  Subcommands: <code>pull [--require-sig --pubkey &lt;hex&gt;]</code>, <code>create [--name ID]</code>,
+                  <code>start</code>, <code>run</code>, <code>stop</code>, <code>kill</code>, <code>rm</code>,
+                  <code>ps</code>, <code>inspect</code>, <code>logs</code>, <code>gc</code>.
+                </td>
+              </tr>
+              <tr>
+                <td><code>spid3r kernel build</code></td>
+                <td><code>spid3r kernel build --out kernel.bin</code></td>
+                <td>Build the zero-dependency <code>no_std</code> <code>x86_64-unknown-none</code> kernel crate
+                  (<code>kernel/Cargo.toml</code>) via <code>cargo build --release</code> and copy the ELF binary to
+                  <code>--out</code> (default <code>kernel/build/kernel.bin</code>).
                 </td>
               </tr>
               <tr>
@@ -3780,6 +3803,28 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           </div>
         </div>
 
+        <h3 class="section-h3" id="oop-generics">Generics, Constraints &amp; AOT Monomorphization</h3>
+        <p>
+          Functions, classes, and interfaces support multi-argument generic type parameters (such as
+          <code>&lt;T&gt;</code> or <code>&lt;K, V&gt;</code>) with optional trait/interface constraints:
+        </p>
+        <ul>
+          <li><strong>Built-in &amp; Interface Constraints:</strong> <code>&lt;T: Numeric&gt;</code>,
+            <code>&lt;T: Comparable&gt;</code>, <code>&lt;T: Printable&gt;</code>, any declared interface
+            <code>&lt;T: Drawable&gt;</code>, or intersection bounds with <code>+</code>
+            (<code>&lt;T: Numeric + Comparable&gt;</code>).</li>
+          <li><strong>Explicit &amp; Inferred Type Arguments:</strong> Call sites and constructors accept explicit
+            type arguments (<code>identity&lt;int&gt;(42)</code>, <code>new Box&lt;string&gt;("hi")</code>) or
+            infer them from value arguments. Unannotated generic parameters stay backward-compatible via type
+            erasure in the Tree and VM engines.</li>
+          <li><strong>AOT Monomorphization &amp; Unboxed Collections:</strong> When compiling natively with
+            <code>spid3r build</code>, concrete generic specializations are monomorphized
+            (<code>spid3r_mono_*</code>) and homogeneous numeric lists (<code>list&lt;int&gt;</code>,
+            <code>list&lt;float&gt;</code>) use unboxed <code>i64</code>/<code>f64</code> storage backed by 12
+            specialized runtime trampolines (<code>spid3r_ulist_i64_*</code>, <code>spid3r_ulist_f64_*</code>).
+            See <code>docs/GENERICS_DESIGN.md</code> for the full specification.</li>
+        </ul>
+
       </section>
 
       <!-- CHAPTER 11: COLLECTIONS & DATA STRUCTURES -->
@@ -4137,6 +4182,11 @@ println(" Sum via reduce: " + string(sum_all));      // 21
             available. Values are dynamically typed, like every other Spid3r binding.</li>
           <li id="mutex"><strong>Mutex:</strong> <code>let mu = mutex(initial_value);</code> guards critical sections
             with <code>mu.lock()</code> and <code>mu.unlock()</code>.</li>
+          <li id="atomic-int"><strong>Atomic Integers:</strong> <code>let a = atomic_int(0);</code> (argument
+            defaults to <code>0</code>) provides lock-free 64-bit atomic operations across tasks:
+            <code>.load()</code>, <code>.store(val)</code>, <code>.exchange(val)</code>,
+            <code>.cas(expected, desired)</code>, <code>.fetch_add(delta)</code>, and
+            <code>.fetch_sub(delta)</code>.</li>
         </ul>
 
         <!-- Example Card 15 -->
@@ -4550,6 +4600,18 @@ println(" Sum via reduce: " + string(sum_all));      // 21
               </tr>
             </tbody>
           </table>
+        </div>
+
+        <div class="callout warn">
+          <div class="callout-header">⚠️ Cryptography Trust Statement (<code>R12.1</code>)</div>
+          <p>
+            Spid3r's cryptographic primitives (<code>sha256</code>, <code>sha512</code>, <code>hmac_sha256</code>,
+            <code>pbkdf2_sha256</code>, <code>ed25519_*</code>, <code>bcrypt_*</code>, <code>argon2</code>) and
+            TLS 1.3 client in <code>src/stdlib/net.rs</code> are self-contained pure-Rust implementations with zero
+            external dependencies, and have <strong>not yet undergone an independent third-party cryptographic
+            audit</strong>. For high-stakes production workloads or side-channel-hostile environments, terminate TLS
+            or run secret-key operations behind an audited reverse proxy or HSM (see <code>docs/SECURITY.md</code>).
+          </p>
         </div>
 
         <h3 class="section-h3" id="stdlib-formats">Serialization, Compression &amp; Regular Expressions</h3>
@@ -5698,7 +5760,7 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           Rebuilding <code>selfhost/</code> or running compiler and dev-CLI commands with <code>spid3r-self</code>
           requires zero <code>cargo</code> or <code>rustc</code> calls. Rust Stage 0 (<code>src/</code>) stays in
           place permanently as the cold bootstrap seed, differential oracle (<code>src/oracle.rs</code>), pinned
-          runtime staticlib (70 <code>spid3r_*</code> trampolines + 257 stdlib natives), and host for non-AOT
+          runtime staticlib (87 <code>spid3r_*</code> trampolines + 257 stdlib natives), and host for non-AOT
           engines/tools (<code>tree</code>, <code>vm</code>, <code>repl</code>, <code>debug</code>, <code>lsp</code>,
           <code>agent</code>, <code>gui</code>, <code>wasm32</code>, <code>plugin</code>).
         </p>
@@ -5720,9 +5782,25 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
 
         <figure class="diagram">
           <img src="../selfhost/diagrams/rust-vs-selfhost-boundary.svg"
-            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned runtime staticlib ABI (70 trampolines, 257 natives), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
+            alt="Ownership boundary between pure self-hosted compiler/CLI builds (zero cargo/rustc), the SHA-256-pinned runtime staticlib ABI (87 trampolines, 257 natives), and permanently retained Rust Stage 0 oracle, runtime, and non-AOT tooling.">
           <figcaption>Pure self-hosted compiler work vs permanently retained Rust Stage 0 (SH-2 · SH-6 · SH-8),
             coupled only through the SHA-256-verified <code>spid3r_lang</code> runtime staticlib ABI.</figcaption>
+        </figure>
+
+        <figure class="diagram">
+          <img src="../diagrams/generics-unboxing.svg"
+            alt="Generics, constraint bounds, AOT monomorphization, and unboxed list&lt;int&gt; / list&lt;float&gt; specialization in Spid3r.">
+          <figcaption>Generics &amp; unboxing (R10 · DP-1): multi-arg type parameters, constraint checking,
+            AOT function specialization (<code>spid3r_mono_*</code>), and unboxed <code>list&lt;int&gt;</code> /
+            <code>list&lt;float&gt;</code> storage.</figcaption>
+        </figure>
+
+        <figure class="diagram">
+          <img src="../diagrams/containers-oci.svg"
+            alt="Spid3r OCI container engine architecture: Registry v2 pull, SHA-256 verification, whiteout layer cache, snapshotter, and DP-7 Linux syscall shims.">
+          <figcaption>OCI container engine (R11 · DP-7): Registry v2 pull + SHA-256 verification,
+            <code>.wh.</code> whiteout layer pipeline, copy-up / <code>overlayfs</code> snapshotter,
+            and <code>--features container</code> Linux syscall shims.</figcaption>
         </figure>
 
         <table>
@@ -6017,6 +6095,62 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
             The <code>let is_item = ...; if not is_item</code> workaround is still correct — just no longer necessary.
           </p>
         </div>
+
+        <h3 class="section-h3" id="systems-ffi">Systems FFI, POD Structs &amp; Freestanding AOT</h3>
+        <p>
+          The LLVM AOT backend (<code>src/native/ir.rs</code>) supports systems-level C interop and bare-metal
+          code generation:
+        </p>
+        <ul>
+          <li><strong>Static &amp; Shared Linking:</strong> Pass <code>--link-lib &lt;name|path&gt;</code> to
+            <code>spid3r build</code> (repeatable) so <code>extern fn</code> declarations resolve against system
+            libraries (<code>-l&lt;name&gt;</code> on Unix, <code>&lt;name&gt;.lib</code> under MSVC).</li>
+          <li><strong>Variadic FFI, Callbacks &amp; POD Structs:</strong> <code>extern fn</code> supports C
+            variadics, <code>ffi_callback(fn, "fn(...)-&gt;...")</code> generates C-ABI trampolines for passing
+            Spid3r functions to C APIs, and POD structs marshal by value across the FFI boundary.</li>
+          <li><strong>Runtime <code>dlopen</code> Gate &amp; Freestanding Mode:</strong> In
+            <code>BuildOptions</code>, dynamic loading primitives (<code>dl_open</code>, <code>dl_sym</code>,
+            <code>dl_close</code>, <code>dl_call</code>) are gated off by default unless
+            <code>allow_dlopen</code> is enabled, and <code>freestanding</code> emits host-independent IR without
+            linking the standard runtime.</li>
+        </ul>
+
+        <h3 class="section-h3" id="containers">OCI Container Engine (<code>spid3r container</code>)</h3>
+        <p>
+          Built behind the <code>container</code> Cargo feature (<code>--features container</code>), Spid3r
+          includes an OCI Image &amp; Container engine (<code>src/oci/</code> and <code>src/container/</code>,
+          documented in <code>docs/CONTAINERS.md</code>):
+        </p>
+        <ul>
+          <li><strong>OCI Image Pull &amp; Verification:</strong> <code>src/oci/</code> implements OCI Distribution
+            pulls, SHA-256 manifest and layer digest verification, optional Ed25519 signature enforcement
+            (<code>--require-sig --pubkey &lt;hex&gt;</code>), and OCI <code>.wh.</code> whiteout layer
+            extraction.</li>
+          <li><strong>Linux Isolation:</strong> <code>src/native/sys.rs</code> (Linux-only, gated behind
+            <code>#[cfg(all(target_os = "linux", feature = "container"))]</code>) provides namespace isolation,
+            <code>pivot_root</code>, cgroups v2 resource limits, and veth/NAT networking for
+            <code>spid3r container &lt;pull|create|start|run|stop|kill|rm|ps|inspect|logs|gc&gt;</code>.</li>
+        </ul>
+
+        <h3 class="section-h3" id="os-kernel">Bare-Metal Kernel Track (<code>spid3r kernel build</code>)</h3>
+        <p>
+          The <code>kernel/</code> workspace member is a zero-dependency <code>no_std</code>
+          <code>x86_64-unknown-none</code> kernel foundation (documented in <code>docs/OS_TRACK.md</code>):
+        </p>
+        <ul>
+          <li><strong>Boot &amp; Core Subsystems:</strong> Multiboot2 header + <code>kernel/link.ld</code>, GDT/IDT,
+            PIC/PIT timer, 4-level paging, bump + slab allocators, serial/VGA console, cooperative/preemptive task
+            scheduler, syscall dispatch, and initrd loader stubs.</li>
+          <li><strong>Toolchain Integration:</strong> Run <code>spid3r kernel build [--out &lt;path&gt;]</code> to
+            build <code>kernel/Cargo.toml</code> for <code>x86_64-unknown-none --release</code> (requires
+            <code>rustup target add x86_64-unknown-none</code>).</li>
+        </ul>
+        <figure class="diagram">
+          <img src="../diagrams/os-baremetal.svg"
+            alt="Bare-metal x86_64 kernel architecture: Multiboot2 boot, GDT/IDT, paging, allocators, serial/VGA console, scheduler, syscalls, and initrd.">
+          <figcaption>Bare-metal kernel architecture (<code>kernel/</code>, <code>x86_64-unknown-none</code>, zero
+            external crate dependencies).</figcaption>
+        </figure>
       </section>
 
     </main>

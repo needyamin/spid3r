@@ -552,7 +552,7 @@ fn type_json(t: &TypeExpr, out: &mut String) {
         "{{\"node\":\"Type\",\"name\":{},\"arg\":",
         jstr(&t.name)
     ));
-    match t.arg.as_ref() {
+    match t.args.first() {
         None => out.push_str("null"),
         Some(a) => type_json(a, out),
     }
@@ -697,7 +697,9 @@ fn expr_json(e: &Expr, out: &mut String) {
             expr_json(value, out);
             span_out(span, out);
         }
-        Expr::Call { callee, args, span } => {
+        Expr::Call {
+            callee, args, span, ..
+        } => {
             out.push_str("\"Call\",\"callee\":");
             expr_json(callee, out);
             out.push_str(",\"args\":[");
@@ -734,7 +736,9 @@ fn expr_json(e: &Expr, out: &mut String) {
             expr_json(object, out);
             span_out(span, out);
         }
-        Expr::New { class, args, span } => {
+        Expr::New {
+            class, args, span, ..
+        } => {
             out.push_str(&format!("\"New\",\"class\":{},\"args\":[", jstr(class)));
             expr_list(args, out);
             out.push(']');

@@ -84,9 +84,10 @@ fn format_type_expr(t: &ast::TypeExpr) -> String {
         };
     }
     let mut s = t.name.clone();
-    if let Some(arg) = &t.arg {
+    if !t.args.is_empty() {
         s.push('<');
-        s.push_str(&format_type_expr(arg));
+        let rendered: Vec<String> = t.args.iter().map(format_type_expr).collect();
+        s.push_str(&rendered.join(", "));
         s.push('>');
     }
     if t.nullable {

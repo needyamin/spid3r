@@ -1314,7 +1314,9 @@ impl Interp {
                     _ => Err(self.rt(span, "invalid assignment target")),
                 }
             }
-            Expr::Call { callee, args, span } => {
+            Expr::Call {
+                callee, args, span, ..
+            } => {
                 if let Expr::Ident(name, _) = &**callee {
                     if collections::is_constructor(name) {
                         let mut vals = Vec::with_capacity(args.len());
@@ -1441,7 +1443,9 @@ impl Interp {
                 span,
                 "super must be called: write super(...) or super.method(...)",
             )),
-            Expr::New { class, args, span } => {
+            Expr::New {
+                class, args, span, ..
+            } => {
                 let c = match environment::get(env, class) {
                     Some(Value::Class(c)) => c,
                     Some(_) => return Err(self.rt(span, format!("'{}' is not a class", class))),

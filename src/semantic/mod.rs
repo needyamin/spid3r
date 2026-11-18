@@ -44,6 +44,8 @@ struct FuncInfo {
     /// Parameter names in declaration order (for named arguments).
     param_names: Vec<String>,
     ret: Option<TypeExpr>,
+    type_params: Vec<String>,
+    type_bounds: Vec<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -57,6 +59,8 @@ struct ClassInfo {
     /// Methods declared `abstract fn m();` here; a concrete subclass must
     /// provide them.
     abstracts: Vec<String>,
+    type_params: Vec<String>,
+    type_bounds: Vec<Option<String>>,
 }
 
 #[derive(Default)]
@@ -1140,11 +1144,13 @@ impl Checker {
                                 param_names: v.fields.clone(),
                                 ret: Some(TypeExpr {
                                     name: e.name.clone(),
-                                    arg: None,
+                                    args: Vec::new(),
                                     nullable: false,
                                     union: Vec::new(),
                                     span: v.span.clone(),
                                 }),
+                                type_params: Vec::new(),
+                                type_bounds: Vec::new(),
                             },
                         );
                     }
@@ -1200,6 +1206,8 @@ impl Checker {
                             params: f.params.iter().map(|p| p.ty.clone()).collect(),
                             param_names: f.params.iter().map(|p| p.name.clone()).collect(),
                             ret: f.ret.clone(),
+                            type_params: f.type_params.clone(),
+                            type_bounds: f.type_bounds.clone(),
                         },
                     );
                     // F12 (REPL direction): an earlier chunk may have imported
@@ -1333,6 +1341,8 @@ impl Checker {
                                 methods,
                                 is_abstract: c.is_abstract,
                                 abstracts: c.abstracts.clone(),
+                                type_params: c.type_params.clone(),
+                                type_bounds: c.type_bounds.clone(),
                             };
                             if let Some(sel) = &selections {
                                 for (exp, loc) in sel {
@@ -1361,11 +1371,13 @@ impl Checker {
                                         param_names: v.fields.clone(),
                                         ret: Some(TypeExpr {
                                             name: e.name.clone(),
-                                            arg: None,
+                                            args: Vec::new(),
                                             nullable: false,
                                             union: Vec::new(),
                                             span: v.span.clone(),
                                         }),
+                                        type_params: Vec::new(),
+                                        type_bounds: Vec::new(),
                                     });
                             }
                             self.enums.insert(e.name.clone(), vnames);
@@ -1472,6 +1484,8 @@ impl Checker {
                         methods,
                         is_abstract: c.is_abstract,
                         abstracts: c.abstracts.clone(),
+                        type_params: c.type_params.clone(),
+                        type_bounds: c.type_bounds.clone(),
                     },
                 );
             }
@@ -3048,7 +3062,7 @@ impl Checker {
             | "priority_queue" | "graph" | "hash_table" | "trie" | "matrix" | "vector"
             | "bytes" | "ring_buffer" | "bag" | "ref" | "option" | "result" | "task"
             | "channel" | "mutex" | "atomic_int" | "some" | "none" | "ok" | "err" => {
-                let elem = t.arg.as_ref().map(|a| Box::new(self.resolve_type(a)));
+                let elem = t.args.first().map(|a| Box::new(self.resolve_type(a)));
                 Ty::Coll(lower, elem)
             }
             _ => {
@@ -3358,9 +3372,27 @@ impl Checker {
             },
             Expr::Logical { .. } => Ty::Bool,
             Expr::Super { .. } | Expr::SuperCall { .. } => Ty::Any,
-            Expr::Call { callee, args, .. } => {
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                ..
+            } => {
                 if let Expr::Ident(name, _) = &**callee {
                     if let Some(fi) = self.funcs.get(name) {
+                        if !type_args.is_empty() && type_args.len() == fi.type_params.len() {
+                            let subst: HashMap<String, Ty> = fi
+                                .type_params
+                                .iter()
+                                .zip(type_args.iter())
+                                .map(|(p, ta)| (p.clone(), self.resolve_type(ta)))
+                                .collect();
+                            return fi
+                                .ret
+                                .as_ref()
+                                .map(|t| self.resolve_type_with_subst(t, &subst))
+                                .unwrap_or(Ty::Any);
+                        }
                         return fi
                             .ret
                             .as_ref()
@@ -3566,16 +3598,102 @@ impl Checker {
 
     fn check_type_expr(&self, t: &TypeExpr) -> SpidResult<()> {
         self.check_type_name(&t.name, &t.span)?;
-        if let Some(arg) = &t.arg {
+        for arg in &t.args {
             self.check_type_expr(arg)?;
         }
         for u in &t.union {
             self.check_type_name(&u.name, &u.span)?;
-            if let Some(arg) = &u.arg {
+            for arg in &u.args {
                 self.check_type_expr(arg)?;
             }
         }
         Ok(())
+    }
+
+    fn resolve_type_with_subst(&self, t: &TypeExpr, subst: &HashMap<String, Ty>) -> Ty {
+        if t.union.is_empty() && t.args.is_empty() {
+            if let Some(bound_ty) = subst.get(&t.name) {
+                return if t.nullable {
+                    Ty::Nullable(Box::new(bound_ty.clone()))
+                } else {
+                    bound_ty.clone()
+                };
+            }
+        }
+        if !t.args.is_empty() {
+            let lower = t.name.to_ascii_lowercase();
+            let elem = Box::new(self.resolve_type_with_subst(&t.args[0], subst));
+            let base = Ty::Coll(lower, Some(elem));
+            return if t.nullable {
+                Ty::Nullable(Box::new(base))
+            } else {
+                base
+            };
+        }
+        self.resolve_type(t)
+    }
+
+    fn satisfies_type_bound(&self, ty: &Ty, bound: &str) -> bool {
+        match bound {
+            "Numeric" => matches!(ty, Ty::Int | Ty::Float | Ty::Any),
+            "Comparable" => matches!(ty, Ty::Int | Ty::Float | Ty::Str | Ty::Bool | Ty::Any),
+            "Printable" => true,
+            _ => match ty {
+                Ty::Any => true,
+                Ty::Class(cls) => self.implements(cls, bound),
+                Ty::Interface(iface) => iface == bound,
+                _ => false,
+            },
+        }
+    }
+
+    fn check_generic_instantiation(
+        &self,
+        kind: &str,
+        name: &str,
+        tparams: &[String],
+        tbounds: &[Option<String>],
+        type_args: &[TypeExpr],
+        span: &Span,
+    ) -> SpidResult<HashMap<String, Ty>> {
+        for ta in type_args {
+            self.check_type_expr(ta)?;
+        }
+        if type_args.is_empty() {
+            return Ok(HashMap::new());
+        }
+        if tparams.len() != type_args.len() {
+            return Err(self.err(
+                span,
+                format!(
+                    "{} '{}' expects {} type argument(s), got {}",
+                    kind,
+                    name,
+                    tparams.len(),
+                    type_args.len()
+                ),
+            ));
+        }
+        let mut subst = HashMap::new();
+        for (i, (tp, ta)) in tparams.iter().zip(type_args.iter()).enumerate() {
+            let resolved = self.resolve_type(ta);
+            if let Some(Some(bound)) = tbounds.get(i) {
+                if !self.satisfies_type_bound(&resolved, bound) {
+                    return Err(self.err(
+                        &ta.span,
+                        format!(
+                            "type argument {} ('{}') for '{}' does not satisfy constraint '{}'",
+                            resolved.name(),
+                            tp,
+                            name,
+                            bound
+                        ),
+                    ));
+                }
+            }
+            subst.insert(tp.clone(), resolved);
+        }
+        Ok(subst)
     }
 
     fn check_type_name(&self, name: &str, span: &Span) -> SpidResult<()> {
@@ -3946,7 +4064,12 @@ impl Checker {
                 }
                 Ok(())
             }
-            Expr::Call { callee, args, span } => {
+            Expr::Call {
+                callee,
+                type_args,
+                args,
+                span,
+            } => {
                 // `super(args)` — the parent class's constructor.
                 if let Expr::Super { .. } = &**callee {
                     self.check_super(span, None, args)?;
@@ -3961,6 +4084,14 @@ impl Checker {
                     // in a variable and then called.
                     self.mark_used(name);
                     if let Some(fi) = self.funcs.get(name).cloned() {
+                        let subst = self.check_generic_instantiation(
+                            "function",
+                            name,
+                            &fi.type_params,
+                            &fi.type_bounds,
+                            type_args,
+                            span,
+                        )?;
                         if Self::has_named_args(args) {
                             self.check_named_args(args, &fi.param_names, fi.min_arity, name, span)?;
                         } else if args.len() < fi.min_arity
@@ -3980,7 +4111,11 @@ impl Checker {
                         }
                         for (i, a) in args.iter().enumerate() {
                             if let Some(Some(pt)) = fi.params.get(i) {
-                                let want = self.resolve_type(pt);
+                                let want = if subst.is_empty() {
+                                    self.resolve_type(pt)
+                                } else {
+                                    self.resolve_type_with_subst(pt, &subst)
+                                };
                                 let got = self.type_of(a);
                                 if !self.assignable(&got, &want) {
                                     return Err(self.err(
@@ -4185,7 +4320,12 @@ impl Checker {
                 }
                 Ok(())
             }
-            Expr::New { class, args, span } => {
+            Expr::New {
+                class,
+                type_args,
+                args,
+                span,
+            } => {
                 // An imported public name (e.g. a class re-exported by a
                 // module) is in scope as a variable even though its class body
                 // is not in this file; accept it as constructible. Locally
@@ -4197,13 +4337,16 @@ impl Checker {
                 if !known {
                     return Err(self.err(span, format!("unknown class '{}'", class)));
                 }
-                if self.classes.contains_key(class) {
-                    if self
-                        .classes
-                        .get(class)
-                        .map(|c| c.is_abstract)
-                        .unwrap_or(false)
-                    {
+                if let Some(ci) = self.classes.get(class).cloned() {
+                    let _ = self.check_generic_instantiation(
+                        "class",
+                        class,
+                        &ci.type_params,
+                        &ci.type_bounds,
+                        type_args,
+                        span,
+                    )?;
+                    if ci.is_abstract {
                         return Err(self.err(
                             span,
                             format!(

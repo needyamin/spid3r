@@ -2677,6 +2677,149 @@ pub extern "C" fn spid3r_dl_close(handle_val: *mut Value) -> *mut Value {
 // unit tests
 // ----------------------------------------------------------------------------
 
+#[inline]
+fn resolve_ulist_index(len: usize, idx: i64) -> Result<usize, String> {
+    let i = if idx < 0 {
+        (len as i128) + (idx as i128)
+    } else {
+        idx as i128
+    };
+    if i < 0 || i >= (len as i128) {
+        Err(format!(
+            "index {} out of bounds for list of len {}",
+            idx, len
+        ))
+    } else {
+        Ok(i as usize)
+    }
+}
+
+/// R10.3: allocate an unboxed `list<int>` backing buffer (`Vec<i64>`).
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_i64_new() -> *mut c_void {
+    Box::into_raw(Box::new(Vec::<i64>::new())) as *mut c_void
+}
+
+/// R10.3: push an unboxed `i64` onto a `Vec<i64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_i64_push(p: *mut c_void, val: i64) {
+    // SAFETY: `p` was allocated by `spid3r_ulist_i64_new` and is only accessed on the owning thread.
+    let v = unsafe { &mut *(p as *mut Vec<i64>) };
+    v.push(val);
+}
+
+/// R10.3: read an unboxed `i64` element from a `Vec<i64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_i64_get(p: *mut c_void, idx: i64) -> i64 {
+    // SAFETY: `p` was allocated by `spid3r_ulist_i64_new`.
+    let v = unsafe { &*(p as *const Vec<i64>) };
+    match resolve_ulist_index(v.len(), idx) {
+        Ok(i) => v[i],
+        Err(msg) => {
+            rt_throw(&msg);
+            0
+        }
+    }
+}
+
+/// R10.3: write an unboxed `i64` element into a `Vec<i64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_i64_set(p: *mut c_void, idx: i64, val: i64) {
+    // SAFETY: `p` was allocated by `spid3r_ulist_i64_new`.
+    let v = unsafe { &mut *(p as *mut Vec<i64>) };
+    match resolve_ulist_index(v.len(), idx) {
+        Ok(i) => v[i] = val,
+        Err(msg) => {
+            rt_throw(&msg);
+        }
+    }
+}
+
+/// R10.3: length of an unboxed `Vec<i64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_i64_len(p: *mut c_void) -> i64 {
+    // SAFETY: `p` was allocated by `spid3r_ulist_i64_new`.
+    let v = unsafe { &*(p as *const Vec<i64>) };
+    v.len() as i64
+}
+
+/// R10.3: pop the last element from an unboxed `Vec<i64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_i64_pop(p: *mut c_void) -> i64 {
+    // SAFETY: `p` was allocated by `spid3r_ulist_i64_new`.
+    let v = unsafe { &mut *(p as *mut Vec<i64>) };
+    match v.pop() {
+        Some(x) => x,
+        None => {
+            rt_throw("pop from empty list");
+            0
+        }
+    }
+}
+
+/// R10.3: allocate an unboxed `list<float>` backing buffer (`Vec<f64>`).
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_f64_new() -> *mut c_void {
+    Box::into_raw(Box::new(Vec::<f64>::new())) as *mut c_void
+}
+
+/// R10.3: push an unboxed `f64` onto a `Vec<f64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_f64_push(p: *mut c_void, val: f64) {
+    // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
+    let v = unsafe { &mut *(p as *mut Vec<f64>) };
+    v.push(val);
+}
+
+/// R10.3: read an unboxed `f64` element from a `Vec<f64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_f64_get(p: *mut c_void, idx: i64) -> f64 {
+    // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
+    let v = unsafe { &*(p as *const Vec<f64>) };
+    match resolve_ulist_index(v.len(), idx) {
+        Ok(i) => v[i],
+        Err(msg) => {
+            rt_throw(&msg);
+            0.0
+        }
+    }
+}
+
+/// R10.3: write an unboxed `f64` element into a `Vec<f64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_f64_set(p: *mut c_void, idx: i64, val: f64) {
+    // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
+    let v = unsafe { &mut *(p as *mut Vec<f64>) };
+    match resolve_ulist_index(v.len(), idx) {
+        Ok(i) => v[i] = val,
+        Err(msg) => {
+            rt_throw(&msg);
+        }
+    }
+}
+
+/// R10.3: length of an unboxed `Vec<f64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_f64_len(p: *mut c_void) -> i64 {
+    // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
+    let v = unsafe { &*(p as *const Vec<f64>) };
+    v.len() as i64
+}
+
+/// R10.3: pop the last element from an unboxed `Vec<f64>` handle.
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_f64_pop(p: *mut c_void) -> f64 {
+    // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
+    let v = unsafe { &mut *(p as *mut Vec<f64>) };
+    match v.pop() {
+        Some(x) => x,
+        None => {
+            rt_throw("pop from empty list");
+            0.0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -363,9 +363,11 @@ fn type_str(ty: &Option<ast::TypeExpr>) -> String {
     match ty {
         Some(t) => {
             let mut s = t.name.clone();
-            if let Some(arg) = &t.arg {
+            if !t.args.is_empty() {
                 s.push('<');
-                s.push_str(&type_str(&Some((**arg).clone())));
+                let rendered: Vec<String> =
+                    t.args.iter().map(|a| type_str(&Some(a.clone()))).collect();
+                s.push_str(&rendered.join(", "));
                 s.push('>');
             }
             s

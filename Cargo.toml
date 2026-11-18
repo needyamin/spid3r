@@ -46,6 +46,8 @@ tls = ["dep:native-tls"]
 # wasmtime (JIT): ~100 MB less build output, and a plugin does not need speed.
 # Optional, so `--no-default-features` stays zero-dependency.
 plugins-wasm = ["dep:wasmi"]
+# OCI container runtime Linux syscall shims (DP-7 / R11.4). Zero-dependency.
+container = []
 
 [dependencies]
 # inkwell is a BUILD-TIME dependency of the native backend only. It requires

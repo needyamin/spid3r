@@ -1296,7 +1296,9 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
                 "super must be called: write super(...) or super.method(...)",
             ));
         }
-        Expr::Call { callee, args, span } => {
+        Expr::Call {
+            callee, args, span, ..
+        } => {
             if let Expr::Ident(name, _) = &**callee {
                 if matches!(
                     name.as_str(),
@@ -1365,7 +1367,9 @@ fn compile_expr(compilers: &mut Vec<Compiler>, ci: usize, e: &Expr) -> Result<()
             let idx = compilers[ci].chunk.emit_str_const(name);
             compilers[ci].chunk.emit_u16(OpCode::FieldGet, idx);
         }
-        Expr::New { class, args, span } => {
+        Expr::New {
+            class, args, span, ..
+        } => {
             // `Call` pops the argument(s) first, then the callee, so the class
             // (the callee) must be pushed *before* its arguments.
             emit_get(compilers, ci, class);

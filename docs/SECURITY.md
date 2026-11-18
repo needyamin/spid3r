@@ -364,6 +364,25 @@ These are known and not yet fixed. They are listed so nobody assumes otherwise:
   behaviour — call `run_payload_strict()` in that case if the build is meant to
   be self-contained. Corrupt-but-present payloads are rejected either way.
 
+## Hand-rolled cryptography (R12.1 status)
+
+Spid3r implements its core cryptographic primitives in-tree with zero external
+crypto crates:
+
+- `src/pkg/ed25519.rs` — Ed25519 signature verification (`cswap` Montgomery-style
+  ladder in `scalarmult`, canonical `S < L` malleability rejection, and
+  small-order public-key rejection).
+- `src/stdlib/argon2.rs` — Argon2id password hashing.
+- `src/stdlib/bcrypt.rs` — bcrypt password hashing.
+- `src/crypto/mod.rs` — SHA-256, HMAC-SHA256, and ChaCha20-Poly1305.
+
+**Honest trust statement:** these primitives are verified by internal RFC test
+vectors and negative/malleability tests, but **have not yet undergone an
+external third-party cryptographic audit and are not formally proven
+side-channel hardened** (`R12.1` remains open pending an external review
+report). Do not treat them as side-channel-hardened for hostile local-timing
+adversaries until an external audit closes `R12.1`.
+
 ## Reporting
 
 Security issues should go to the maintainers privately rather than in a public

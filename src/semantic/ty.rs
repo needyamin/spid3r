@@ -20,9 +20,8 @@ pub enum Ty {
     Null,
     /// A collection or other nominal type. The string is the (lowercased)
     /// builtin/collection name (`list`, `map`, `option`, ...). The optional
-    /// element type is tracked best-effort for diagnostics but is *erased* when
-    /// deciding assignability (gradual typing does not deeply check element
-    /// types in this version).
+    /// element type is checked covariantly during assignability when both sides
+    /// carry an element annotation (unannotated `Any` stays gradual).
     Coll(String, Option<Box<Ty>>),
     Class(String),
     Interface(String),

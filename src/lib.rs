@@ -11,6 +11,8 @@ pub mod budget;
 pub mod bundle;
 pub mod cli;
 pub mod config;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod container;
 // `spid3r control` CLI + the shared control-op layer. Not on the wasm target:
 // it reads spid3r.ini and the agent state from disk.
 #[cfg(not(target_arch = "wasm32"))]
@@ -27,6 +29,8 @@ pub mod logging;
 pub mod lower;
 pub mod lsp;
 pub mod modules;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod oci;
 pub mod oracle;
 pub mod parser;
 pub mod pkg;

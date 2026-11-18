@@ -451,6 +451,8 @@ fn dispatch(cmd: String, rest: Vec<String>, json: bool) -> Result<i32, Diagnosti
         "dist" => cmd_project_build(&rest),
         "pack" => cmd_pack(&rest),
         "unpack" => cmd_unpack(&rest),
+        "container" => cmd_container(&rest),
+        "kernel" => cmd_kernel(&rest),
         "debug" => cmd_debug(&rest),
         other => {
             // `spidr-<name>` extension tools. Checked before the usage error so
@@ -3567,6 +3569,327 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
         }
         println!("perf gate passed");
     }
+    Ok(EXIT_OK)
+}
+
+fn container_err(msg: String) -> Diagnostic {
+    Diagnostic::new(Phase::Runtime, msg)
+}
+
+fn cmd_container(args: &[String]) -> Result<i32, Diagnostic> {
+    let Some(sub) = args.first().map(|s| s.as_str()) else {
+        eprintln!(
+            "usage: spid3r container <pull|create|start|run|stop|kill|rm|ps|inspect|logs|gc> ..."
+        );
+        return Ok(EXIT_USAGE);
+    };
+    let oci_dir = crate::oci::default_oci_store();
+    let c_dir = crate::container::default_container_dir();
+    match sub {
+        "pull" => {
+            let mut image_spec = None;
+            let mut pubkey = None;
+            let mut require_sig = false;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--require-sig" => require_sig = true,
+                    "--pubkey" => {
+                        i += 1;
+                        pubkey = args.get(i).cloned();
+                    }
+                    other if !other.starts_with('-') && image_spec.is_none() => {
+                        image_spec = Some(other.to_string());
+                    }
+                    other => {
+                        return Err(Diagnostic::new(
+                            Phase::Usage,
+                            format!("container pull: unexpected argument '{other}'"),
+                        ));
+                    }
+                }
+                i += 1;
+            }
+            let Some(spec) = image_spec else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container pull <image> [--require-sig --pubkey <hex>]",
+                ));
+            };
+            let policy = if require_sig {
+                crate::oci::manifest::SignaturePolicy::RequireSigned
+            } else {
+                crate::oci::manifest::SignaturePolicy::AllowUnsigned
+            };
+            let pulled = crate::oci::client::pull_image(&spec, &oci_dir, policy, pubkey.as_deref())
+                .map_err(container_err)?;
+            println!(
+                "pulled {} ({}, {} layer(s))",
+                pulled.reference,
+                pulled.manifest_digest,
+                pulled.layer_dirs.len()
+            );
+            Ok(EXIT_OK)
+        }
+        "create" => {
+            let mut id = None;
+            let mut image_spec = None;
+            let mut cmd_override = Vec::new();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--name" => {
+                        i += 1;
+                        id = args.get(i).cloned();
+                    }
+                    other if image_spec.is_none() && !other.starts_with('-') => {
+                        image_spec = Some(other.to_string());
+                    }
+                    other => {
+                        cmd_override = args[i..].to_vec();
+                        let _ = other;
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            let Some(spec) = image_spec else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container create [--name <id>] <image> [cmd...]",
+                ));
+            };
+            let pulled = crate::oci::client::pull_image(
+                &spec,
+                &oci_dir,
+                crate::oci::manifest::SignaturePolicy::AllowUnsigned,
+                None,
+            )
+            .map_err(container_err)?;
+            let cid = id.unwrap_or_else(|| format!("ctr-{}", std::process::id()));
+            let ov = if cmd_override.is_empty() {
+                None
+            } else {
+                Some(cmd_override)
+            };
+            let rec = crate::container::runtime::create_container(&c_dir, &cid, &pulled, ov)
+                .map_err(container_err)?;
+            println!("{}", rec.id);
+            Ok(EXIT_OK)
+        }
+        "start" => {
+            let Some(id) = args.get(1) else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container start <id>",
+                ));
+            };
+            let code = crate::container::runtime::start_container(
+                &c_dir,
+                id,
+                &crate::container::runtime::ResourceLimits::default(),
+            )
+            .map_err(container_err)?;
+            Ok(code)
+        }
+        "run" => {
+            let mut id = None;
+            let mut image_spec = None;
+            let mut cmd_override = Vec::new();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--name" => {
+                        i += 1;
+                        id = args.get(i).cloned();
+                    }
+                    other if image_spec.is_none() && !other.starts_with('-') => {
+                        image_spec = Some(other.to_string());
+                    }
+                    _ => {
+                        cmd_override = args[i..].to_vec();
+                        break;
+                    }
+                }
+                i += 1;
+            }
+            let Some(spec) = image_spec else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container run [--name <id>] <image> [cmd...]",
+                ));
+            };
+            let pulled = crate::oci::client::pull_image(
+                &spec,
+                &oci_dir,
+                crate::oci::manifest::SignaturePolicy::AllowUnsigned,
+                None,
+            )
+            .map_err(container_err)?;
+            let cid = id.unwrap_or_else(|| format!("ctr-{}", std::process::id()));
+            let ov = if cmd_override.is_empty() {
+                None
+            } else {
+                Some(cmd_override)
+            };
+            let _ = crate::container::runtime::create_container(&c_dir, &cid, &pulled, ov)
+                .map_err(container_err)?;
+            let code = crate::container::runtime::start_container(
+                &c_dir,
+                &cid,
+                &crate::container::runtime::ResourceLimits::default(),
+            )
+            .map_err(container_err)?;
+            Ok(code)
+        }
+        "stop" => {
+            let Some(id) = args.get(1) else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container stop <id>",
+                ));
+            };
+            crate::container::runtime::stop_or_kill_container(&c_dir, id, 15)
+                .map_err(container_err)?;
+            Ok(EXIT_OK)
+        }
+        "kill" => {
+            let Some(id) = args.get(1) else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container kill <id>",
+                ));
+            };
+            crate::container::runtime::stop_or_kill_container(&c_dir, id, 9)
+                .map_err(container_err)?;
+            Ok(EXIT_OK)
+        }
+        "rm" => {
+            let Some(id) = args.get(1) else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container rm <id>",
+                ));
+            };
+            crate::container::runtime::remove_container(&c_dir, id).map_err(container_err)?;
+            let _ = crate::container::net::release_ip(&c_dir, id);
+            Ok(EXIT_OK)
+        }
+        "ps" => {
+            let rows = crate::container::runtime::list_containers(&c_dir).map_err(container_err)?;
+            for r in rows {
+                println!("{}\t{}\t{}", r.id, r.status.as_str(), r.image);
+            }
+            Ok(EXIT_OK)
+        }
+        "inspect" => {
+            let Some(id) = args.get(1) else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container inspect <id>",
+                ));
+            };
+            let txt = crate::container::daemon::inspect_text(&c_dir, id).map_err(container_err)?;
+            println!("{txt}");
+            Ok(EXIT_OK)
+        }
+        "logs" => {
+            let Some(id) = args.get(1) else {
+                return Err(Diagnostic::new(
+                    Phase::Usage,
+                    "usage: spid3r container logs <id>",
+                ));
+            };
+            let log_p = c_dir.join(id).join("container.log");
+            let txt = std::fs::read_to_string(&log_p)
+                .map_err(|e| Diagnostic::new(Phase::Runtime, format!("cannot read log: {e}")))?;
+            print!("{txt}");
+            Ok(EXIT_OK)
+        }
+        "gc" => {
+            let n = crate::container::snapshot::gc_unreferenced_layers(&oci_dir, &c_dir)
+                .map_err(container_err)?;
+            println!("removed {n} unreferenced layer(s)");
+            Ok(EXIT_OK)
+        }
+        other => Err(Diagnostic::new(
+            Phase::Usage,
+            format!("container: unknown subcommand '{other}'"),
+        )),
+    }
+}
+
+fn cmd_kernel(args: &[String]) -> Result<i32, Diagnostic> {
+    let Some(sub) = args.first().map(|s| s.as_str()) else {
+        eprintln!("usage: spid3r kernel build [--out <path>]");
+        return Ok(EXIT_USAGE);
+    };
+    if sub != "build" {
+        return Err(Diagnostic::new(
+            Phase::Usage,
+            format!("kernel: unknown subcommand '{sub}' (expected 'build')"),
+        ));
+    }
+    let mut out_path = std::path::PathBuf::from("kernel/build/kernel.bin");
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--out" {
+            i += 1;
+            let Some(p) = args.get(i) else {
+                return Err(Diagnostic::new(Phase::Usage, "--out needs a file path"));
+            };
+            out_path = std::path::PathBuf::from(p);
+        } else {
+            return Err(Diagnostic::new(
+                Phase::Usage,
+                format!("kernel build: unexpected argument '{}'", args[i]),
+            ));
+        }
+        i += 1;
+    }
+    let manifest = std::path::Path::new("kernel/Cargo.toml");
+    if !manifest.is_file() {
+        return Err(Diagnostic::new(
+            Phase::Usage,
+            "kernel/Cargo.toml not found in current working directory",
+        ));
+    }
+    let st = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "--manifest-path",
+            "kernel/Cargo.toml",
+            "--target",
+            "x86_64-unknown-none",
+            "--release",
+        ])
+        .status()
+        .map_err(|e| Diagnostic::new(Phase::Usage, format!("failed to run cargo: {e}")))?;
+    if !st.success() {
+        return Err(Diagnostic::new(
+            Phase::Runtime,
+            "kernel build failed (ensure `rustup target add x86_64-unknown-none` is installed)",
+        ));
+    }
+    let built = std::path::Path::new("kernel/target/x86_64-unknown-none/release/spid3r_kernel");
+    if let Some(p) = out_path.parent() {
+        std::fs::create_dir_all(p)
+            .map_err(|e| Diagnostic::new(Phase::Runtime, format!("mkdir {}: {e}", p.display())))?;
+    }
+    let bytes = std::fs::read(built)
+        .map_err(|e| Diagnostic::new(Phase::Runtime, format!("read {}: {e}", built.display())))?;
+    std::fs::write(&out_path, &bytes).map_err(|e| {
+        Diagnostic::new(Phase::Runtime, format!("write {}: {e}", out_path.display()))
+    })?;
+    let sha = crate::pkg::sha256_hex(&bytes);
+    let sidecar = std::path::PathBuf::from(format!("{}.sha256", out_path.display()));
+    let fname = out_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("kernel.bin");
+    std::fs::write(&sidecar, format!("{sha}  {fname}\n"))
+        .map_err(|e| Diagnostic::new(Phase::Runtime, format!("write sha256: {e}")))?;
+    println!("built {} (sha256={sha})", out_path.display());
     Ok(EXIT_OK)
 }
 
