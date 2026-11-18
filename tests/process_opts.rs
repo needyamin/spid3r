@@ -172,8 +172,8 @@ fn unix_sighup_and_sigusr1_set_signal_requested() {
         &script,
         r#"fn main() {
     // Install handlers by polling once
-    let _ = signal_requested("SIGHUP");
-    let _ = signal_requested("SIGUSR1");
+    signal_requested("SIGHUP");
+    signal_requested("SIGUSR1");
     println("READY");
     let got_hup = false;
     let got_usr1 = false;
