@@ -140,8 +140,8 @@ mod loader {
 
     #[cfg_attr(target_os = "linux", link(name = "dl"))]
     extern "C" {
-        fn dlopen(filename: *const u8, flag: i32) -> Handle;
-        fn dlsym(handle: Handle, symbol: *const u8) -> Handle;
+        fn dlopen(filename: *const std::ffi::c_char, flag: i32) -> Handle;
+        fn dlsym(handle: Handle, symbol: *const std::ffi::c_char) -> Handle;
     }
 
     pub fn library_names() -> &'static [&'static str] {
@@ -155,7 +155,7 @@ mod loader {
     pub fn open(path: &std::path::Path) -> Result<Handle, String> {
         let c = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| "library path contains a NUL byte".to_string())?;
-        let h = unsafe { dlopen(c.as_ptr() as *const u8, 2) }; // RTLD_NOW
+        let h = unsafe { dlopen(c.as_ptr(), 2) }; // RTLD_NOW
         if h.is_null() {
             Err(std::io::Error::last_os_error().to_string())
         } else {
@@ -165,7 +165,7 @@ mod loader {
 
     pub fn symbol(h: Handle, name: &str) -> Option<*mut c_void> {
         let c = CString::new(name).ok()?;
-        let p = unsafe { dlsym(h, c.as_ptr() as *const u8) };
+        let p = unsafe { dlsym(h, c.as_ptr()) };
         if p.is_null() {
             None
         } else {
