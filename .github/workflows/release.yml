@@ -43,7 +43,7 @@ jobs:
             os: macos-latest
           - target: x86_64-apple-darwin
             os: macos-15-intel
-            extra_env: "CARGO_PROFILE_RELEASE_LTO=false"
+            extra_env: "CARGO_PROFILE_RELEASE_LTO=false CFLAGS=-arch\\ x86_64"
 
     steps:
       - name: Checkout repository
@@ -86,11 +86,12 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if [ -n "${{ matrix.extra_env }}" ]; then
-            export ${{ matrix.extra_env }}
+          if [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+            export CARGO_PROFILE_RELEASE_LTO=false
+            export CFLAGS="-arch x86_64"
           fi
           if ! cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features native 2>&1 | tee cargo_build.log; then
-            tail -n 25 cargo_build.log | while IFS= read -r line; do
+            (grep -E 'warning: ignoring file|ld: |error(\[|:)' cargo_build.log | head -n 8; tail -n 6 cargo_build.log) | while IFS= read -r line; do
               echo "::error::${line}"
             done
             exit 101
@@ -107,7 +108,7 @@ jobs:
             --staticlib "target/${{ matrix.target }}/release/libspid3r_lang.a" \
             --out-dir release-out \
             --skip-installer 2>&1 | tee release_selfhost.log; then
-            tail -n 20 release_selfhost.log | while IFS= read -r line; do
+            tail -n 8 release_selfhost.log | while IFS= read -r line; do
               echo "::error::${line}"
             done
             exit 2

@@ -344,9 +344,11 @@ fn link_llvm_library_absent(msg) {
 
 // macOS / Linux linking — port of src/native/link.rs::link_plain.
 fn link_unix(obj_path, out_path, staticlib_path, triple, opt) {
-    let is_macos = triple != null and (
-        triple.contains("apple") or triple.contains("darwin")
-    );
+    let is_macos = (
+        triple != null and (
+            triple.contains("apple") or triple.contains("darwin")
+        )
+    ) or (triple == null and is_dir("/System/Library"));
     let cc = "clang";
     if is_macos {
         if not link_which_unix("clang") {
