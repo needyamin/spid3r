@@ -290,7 +290,21 @@ pub fn emit_object_with_cpu(
     opt: bool,
     out: &std::path::Path,
 ) -> Result<(), String> {
-    Target::initialize_all(&InitializationConfig::default());
+    // Initialize the two AOT target architectures directly (matching the
+    // `target-x86` + `target-aarch64` features in Cargo.toml) instead of
+    // `Target::initialize_all`, which calls `llvm-sys`'s `LLVM_InitializeAll*`
+    // C wrappers that fail to link on `x86_64-apple-darwin` under
+    // `llvm23-1-no-llvm-linking`.
+    let init_cfg = InitializationConfig {
+        asm_parser: false,
+        asm_printer: true,
+        base: true,
+        disassembler: false,
+        info: true,
+        machine_code: true,
+    };
+    Target::initialize_x86(&init_cfg);
+    Target::initialize_aarch64(&init_cfg);
     let triple_val = inkwell::targets::TargetTriple::create(triple);
     let target = Target::from_triple(&triple_val)
         .map_err(|e| format!("unknown target '{triple}': {e:?}"))?;

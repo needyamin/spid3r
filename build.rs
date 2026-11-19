@@ -518,6 +518,21 @@ fn windows_llvm() {
 }
 
 fn unix_llvm() {
+    // Respect explicit environment overrides first (same precedence as Windows).
+    if let Some(dir) = env::var_os("SPID3R_LLVM_LIB_DIR") {
+        let p = PathBuf::from(&dir);
+        if p.is_dir() {
+            emit_unix_llvm_link(&p.display().to_string());
+            return;
+        }
+    }
+    if let Some(prefix) = env::var_os("LLVM_SYS_231_PREFIX") {
+        let p = PathBuf::from(&prefix).join("lib");
+        if p.is_dir() {
+            emit_unix_llvm_link(&p.display().to_string());
+            return;
+        }
+    }
     // Prefer llvm-config when available. Probe the distro wrapper and the
     // Debian version-suffixed binary, each by its LITERAL name (parameter-list
     // invocation, no shell, no interpolated program path).
