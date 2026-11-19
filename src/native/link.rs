@@ -1948,7 +1948,7 @@ fn link_plain(
         if !args.contains(&flag) {
             args.push(flag);
         }
-        if !cfg!(windows) && !cfg!(target_os = "macos") {
+        if !cfg!(windows) {
             let rpath = format!("-Wl,-rpath,{}", dir.display());
             if !args.contains(&rpath) {
                 args.push(rpath);

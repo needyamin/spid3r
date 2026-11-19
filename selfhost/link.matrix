@@ -418,11 +418,9 @@ fn link_unix(obj_path, out_path, staticlib_path, triple, opt) {
         if not link_contains_str(args, lflag) {
             args.push(lflag);
         }
-        if not is_macos {
-            let rflag = "-Wl,-rpath," + llvm_dir;
-            if not link_contains_str(args, rflag) {
-                args.push(rflag);
-            }
+        let rflag = "-Wl,-rpath," + llvm_dir;
+        if not link_contains_str(args, rflag) {
+            args.push(rflag);
         }
     }
 
