@@ -148,15 +148,25 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
   <button data-tab="config">Configuration</button>
   <button data-tab="agent">Agent</button>
   <button data-tab="devices">Devices</button>
-  <button data-tab="audit">Audit log</button>
+  <button data-tab="remote">Remote hosts</button>
+  <button data-tab="audit">Logs &amp; Audit</button>
   <div class="nav-danger">Every change on this panel is validated against the
     schema and written to the audit log.</div>
 </nav>
 <main>
   <section id="tab-overview">
     <h1>Overview</h1>
-    <p class="sub">Runtime status for this machine.</p>
+    <p class="sub">Runtime status and quick operations for this machine.</p>
     <div class="card" id="overview-cards"></div>
+    <div class="card" style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="act" onclick="reloadIni()">Reload spid3r.ini</button>
+      <button class="ghost" onclick="runLocalOp('self_test')">Self-test</button>
+      <button class="ghost" onclick="runLocalOp('gc_collect')">GC collect</button>
+      <button class="ghost" onclick="runLocalOp('rotate_log')">Rotate logs</button>
+      <button class="ghost" onclick="runLocalOp('dump_diagnostics')">Dump diagnostics</button>
+      <button class="ghost" onclick="refreshOverview()">Refresh</button>
+    </div>
+    <pre id="overview-op-out" class="hidden"></pre>
   </section>
   <section id="tab-language" class="hidden">
     <h1>Language</h1>
@@ -227,21 +237,43 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
     <p class="sub" id="config-sub">spid3r.ini — grouped by section. Boolean and
        enum keys save immediately; text and number keys save on Set. Secret
        values are shown redacted.</p>
-    <div style="margin-bottom:10px">
+    <div style="margin-bottom:10px;display:flex;gap:8px;flex-wrap:wrap">
       <input type="text" id="cfg-filter" placeholder="filter keys…" style="width:260px">
-      <button class="ghost" onclick="loadConfig()">Reload</button>
+      <button class="ghost" onclick="reloadIni().then(loadConfig)">Reload spid3r.ini</button>
+      <button class="ghost" onclick="resetAllConfig()">Reset all to defaults</button>
     </div>
     <div id="config-groups"></div>
   </section>
   <section id="tab-agent" class="hidden">
     <h1>Management agent</h1>
-    <p class="sub">The local agent answers on [agent] bind:port from spid3r.ini.
-       Remote hosts pair with <code>spid3r admin pair</code>; this panel only
-       manages the agent on THIS machine.</p>
+    <p class="sub">The local agent answers on [agent] bind:port from spid3r.ini
+       over encrypted <code>spid3r-agent/1</code>. Create one-time pairing codes
+       here or manage remote machines in the <b>Remote hosts</b> tab.</p>
     <div class="card" id="agent-status"></div>
-    <button class="act" onclick="agentStart()">Start agent</button>
-    <button class="ghost" onclick="agentStop()">Stop agent</button>
-    <button class="ghost" onclick="showAgent()">Refresh</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      <button class="act" onclick="agentStart()">Start agent</button>
+      <button class="ghost" onclick="agentStop()">Stop agent</button>
+      <button class="ghost" onclick="runLocalOp('restart_runtime')">Restart agent</button>
+      <button class="ghost" onclick="showAgent()">Refresh</button>
+    </div>
+    <div class="sec-title">Create one-time pairing code</div>
+    <div class="card">
+      <div class="item">
+        <div class="info"><b>Role &amp; label</b>
+          <div class="desc">Codes expire automatically after TTL seconds and can be used once.</div></div>
+        <div class="ctl">
+          <select id="pair-role">
+            <option value="viewer">viewer</option>
+            <option value="operator" selected>operator</option>
+            <option value="admin">admin</option>
+          </select>
+          <input type="text" id="pair-name" placeholder="device label (optional)" style="width:180px">
+          <input type="number" id="pair-ttl" placeholder="TTL sec" style="width:90px">
+          <button class="act" onclick="createPairCode()">Create code</button>
+        </div>
+      </div>
+      <pre id="pair-out" class="hidden"></pre>
+    </div>
   </section>
   <section id="tab-devices" class="hidden">
     <h1>Paired devices</h1>
@@ -255,11 +287,68 @@ const CONTROL_PAGE: &str = r##"<!doctype html>
       </table>
     </div>
   </section>
+  <section id="tab-remote" class="hidden">
+    <h1>Remote hosts</h1>
+    <p class="sub">Manage paired remote Spid3r hosts over encrypted
+       <code>spid3r-agent/1</code> (predefined, role-checked ops only — never an
+       unrestricted shell).</p>
+    <div class="card">
+      <div class="item">
+        <div class="info"><b>Pair a remote host</b>
+          <div class="desc">Enter the remote agent's <code>host:port</code> and one-time 48-hex pairing code.</div></div>
+        <div class="ctl" style="flex-wrap:wrap">
+          <input type="text" id="rem-name" placeholder="name (e.g. prod-1)" style="width:140px">
+          <input type="text" id="rem-addr" placeholder="127.0.0.1:9527" style="width:160px">
+          <input type="text" id="rem-code" placeholder="48-hex pairing code" style="width:220px">
+          <button class="act" onclick="remotePair()">Pair host</button>
+        </div>
+      </div>
+    </div>
+    <div class="sec-title">Paired remote hosts</div>
+    <div class="card" style="padding:0">
+      <div style="padding:12px 16px" id="rem-empty">…</div>
+      <table id="rem-table" style="display:none">
+        <thead><tr><th>Name</th><th>Address</th><th>Device ID</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="sec-title">Dispatch remote operation</div>
+    <div class="card">
+      <div class="item">
+        <div class="info"><b>Target host &amp; operation</b>
+          <div class="desc">Select a paired host and predefined <code>spid3r-agent/1</code> op.</div></div>
+        <div class="ctl" style="flex-wrap:wrap">
+          <select id="rem-host"></select>
+          <select id="rem-op">
+            <option value="status">status</option>
+            <option value="ping">ping</option>
+            <option value="info">info</option>
+            <option value="config.get">config.get</option>
+            <option value="config.set">config.set</option>
+            <option value="config.reload">config.reload</option>
+            <option value="logs.tail">logs.tail</option>
+            <option value="modules.list">modules.list</option>
+            <option value="devices.list">devices.list</option>
+            <option value="ops.list">ops.list</option>
+            <option value="ops.run">ops.run</option>
+          </select>
+          <input type="text" id="rem-key" placeholder="key / op name (optional)" style="width:180px">
+          <input type="text" id="rem-val" placeholder="value (for config.set)" style="width:160px">
+          <button class="act" onclick="remoteCall()">Send</button>
+        </div>
+      </div>
+    </div>
+    <pre id="rem-out">(select a host and send an operation)</pre>
+  </section>
   <section id="tab-audit" class="hidden">
-    <h1>Audit log</h1>
-    <p class="sub">Panel and remote-agent actions. Enabled by
-       <code>logging.audit</code> in spid3r.ini.</p>
-    <button class="ghost" onclick="loadAudit()">Refresh</button>
+    <h1>Logs &amp; Audit</h1>
+    <p class="sub">Inspect <code>audit.log</code> (panel &amp; remote actions)
+       and <code>spid3r.log</code> (runtime diagnostics, controlled by
+       <code>[logging]</code> &amp; <code>[debug]</code> in spid3r.ini).</p>
+    <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <button class="act" onclick="loadAudit('audit')">Audit log</button>
+      <button class="ghost" onclick="loadAudit('diag')">Diagnostic log (spid3r.log)</button>
+    </div>
     <pre id="audit-text"></pre>
   </section>
 </main>
@@ -298,7 +387,7 @@ async function refreshOverview() {
     : '<span class="bad">not listening</span> on ' + esc(s.agent_addr);
   document.getElementById('overview-cards').innerHTML =
     '<div class="row"><span class="k">Spid3r</span><span class="v">v' + esc(s.version) +
-      ' (language ' + esc(s.language) + ')</span></div>' +
+      ' (language ' + esc(s.language) + ' · env: ' + esc(s.env || 'default') + ')</span></div>' +
     '<div class="row"><span class="k">spid3r.ini</span><span class="v">' + esc(s.ini_path) + ' — ' + ini + '</span></div>' +
     '<div class="row"><span class="k">Agent</span><span class="v">' + agent + '</span></div>' +
     '<div class="row"><span class="k">Devices</span><span class="v">' + esc(s.devices) +
@@ -306,6 +395,24 @@ async function refreshOverview() {
     '<div class="row"><span class="k">Audit log</span><span class="v">' + esc(s.audit_lines) +
       ' lines · ' + esc(s.audit_path) + '</span></div>' +
     '<div class="row"><span class="k">State dir</span><span class="v">' + esc(s.state_dir) + '</span></div>';
+}
+async function reloadIni() {
+  try { const r = await call('config_reload'); toast(r.message); await refreshOverview(); }
+  catch (e) { handleErr(e); }
+}
+async function runLocalOp(name) {
+  try {
+    const r = await call('ops_run', { name });
+    toast(r.message);
+    const out = document.getElementById('overview-op-out');
+    if (out) { out.classList.remove('hidden'); out.textContent = name + ': ' + (r.result || r.message); }
+    await refreshOverview(); await showAgent();
+  } catch (e) { handleErr(e); }
+}
+async function resetAllConfig() {
+  if (!confirm('Reset ALL spid3r.ini keys to their schema defaults?')) return;
+  try { const r = await call('config_reset_all', { section: '' }); toast(r.message); await loadConfig(); await refreshOverview(); }
+  catch (e) { handleErr(e); }
 }
 async function initIni() {
   try { const r = await call('ini_init', { force: false }); toast(r.message); await refreshOverview(); }
@@ -371,9 +478,13 @@ async function toggleSafety(key, wantOpen) {
 
 // ---------------------------------------------------------------- config --
 const SECTION_TITLES = {
-  spid3r: 'Runtime', memory: 'Resource limits', debug: 'Debugging',
-  logging: 'Logging', modules: 'Plugins', security: 'Security',
-  agent: 'Management agent',
+  spid3r: 'Core & Scheduler [spid3r]', runtime: 'Execution & Timezone [runtime]',
+  net: 'Networking [net]', memory: 'Resource Limits [memory]',
+  debug: 'Debugging [debug]', errors: 'Diagnostics [errors]',
+  logging: 'Logging & Audit [logging]', modules: 'Modules & Plugins [modules]',
+  security: 'Security & Sandbox [security]', packages: 'Package Manager [packages]',
+  paths: 'Host Paths [paths]', cache: 'Bytecode Cache [cache]',
+  agent: 'Management Agent [agent]',
 };
 async function loadConfig() {
   const filter = document.getElementById('cfg-filter').value.toLowerCase();
@@ -381,11 +492,11 @@ async function loadConfig() {
   const groups = {};
   for (const row of s.keys.split('\n')) {
     if (!row) continue;
-    const [key, kind, value, def, desc, options] = row.split('|');
+    const [key, kind, value, def, desc, options, reload, frozen] = row.split('|');
     if (filter && !key.toLowerCase().includes(filter) &&
         !desc.toLowerCase().includes(filter)) continue;
     const sec = key.split('.')[0];
-    (groups[sec] = groups[sec] || []).push({ key, kind, value, def, desc, options });
+    (groups[sec] = groups[sec] || []).push({ key, kind, value, def, desc, options, reload, frozen });
   }
   const root = document.getElementById('config-groups');
   root.innerHTML = '';
@@ -419,6 +530,8 @@ async function loadConfig() {
       row.innerHTML =
         '<div class="info"><b>' + esc(k.desc) + '</b>' +
           '<div class="key">' + esc(k.key) +
+          (k.reload === 'live' ? ' · live' : ' · startup') +
+          (k.frozen === 'true' ? ' · host-only' : '') +
           (modified ? ' <span class="mod-chip">modified · default: ' + esc(k.def) +
             ' <a href="#" data-reset="' + esc(k.key) + '">reset</a></span>' : '') +
           '</div></div>' +
@@ -589,10 +702,90 @@ document.getElementById('lang-src').addEventListener('keydown', (ev) => {
   if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') { ev.preventDefault(); langSave(); }
 });
 
+async function createPairCode() {
+  try {
+    const r = await call('pair_create', {
+      role: document.getElementById('pair-role').value,
+      name: document.getElementById('pair-name').value.trim(),
+      ttl: document.getElementById('pair-ttl').value.trim(),
+    });
+    const out = document.getElementById('pair-out');
+    out.classList.remove('hidden');
+    out.textContent = 'Pairing code (' + r.role + ', ' + r.ttl + 's):\n' + r.code +
+      '\n\nOn the remote machine run:\n  spid3r admin pair ' + r.addr + ' ' + r.code;
+    toast(r.message);
+    await refreshOverview();
+  } catch (e) { handleErr(e); }
+}
+
+// --------------------------------------------------------------- remote --
+async function loadRemote() {
+  const s = await call('remote_list');
+  const empty = document.getElementById('rem-empty');
+  const table = document.getElementById('rem-table');
+  const sel = document.getElementById('rem-host');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  if (!s.hosts) {
+    table.style.display = 'none';
+    empty.style.display = 'block';
+    empty.textContent = 'No remote hosts paired yet.';
+    return;
+  }
+  empty.style.display = 'none';
+  table.style.display = 'table';
+  const tb = table.querySelector('tbody'); tb.innerHTML = '';
+  for (const row of s.hosts.split('\n')) {
+    if (!row) continue;
+    const [name, addr, dev] = row.split('|');
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td><b>' + esc(name) + '</b></td><td>' + esc(addr) + '</td><td><code>' + esc(dev) + '</code></td>' +
+      '<td><button class="ghost" data-rem-rm="' + esc(name) + '">Remove</button></td>';
+    tb.appendChild(tr);
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name + ' (' + addr + ')';
+    sel.appendChild(opt);
+  }
+  if (prev) sel.value = prev;
+}
+async function remotePair() {
+  try {
+    const r = await call('remote_pair', {
+      name: document.getElementById('rem-name').value.trim(),
+      addr: document.getElementById('rem-addr').value.trim(),
+      code: document.getElementById('rem-code').value.trim(),
+    });
+    toast(r.message);
+    document.getElementById('rem-code').value = '';
+    await loadRemote();
+  } catch (e) { handleErr(e); }
+}
+async function remoteCall() {
+  const host = document.getElementById('rem-host').value;
+  const op = document.getElementById('rem-op').value;
+  const key = document.getElementById('rem-key').value.trim();
+  const value = document.getElementById('rem-val').value;
+  if (!host) { toast('Pair a remote host first.', true); return; }
+  const params = { host, op };
+  if (op === 'ops.run') params.name = key;
+  else if (op === 'config.get' || op === 'config.set') params.key = key;
+  if (op === 'config.set') params.value = value;
+  const out = document.getElementById('rem-out');
+  out.textContent = 'Calling ' + op + ' on ' + host + '…';
+  try {
+    const r = await call('remote_call', params);
+    try { out.textContent = JSON.stringify(JSON.parse(r.response), null, 2); }
+    catch (_) { out.textContent = r.response; }
+  } catch (e) { out.textContent = String(e); handleErr(e); }
+}
+
 // ---------------------------------------------------------------- audit --
-async function loadAudit() {
-  const s = await call('audit_tail', { n: 100 });
-  document.getElementById('audit-text').textContent = s.text || '(empty — nothing audited yet)';
+let _logMode = 'audit';
+async function loadAudit(mode) {
+  if (mode) _logMode = mode;
+  const s = await call(_logMode === 'diag' ? 'logs_tail' : 'audit_tail', { n: 100 });
+  document.getElementById('audit-text').textContent =
+    (s.path ? '# ' + s.path + '\n' : '') + (s.text || '(empty)');
 }
 
 // Delegated listeners: rows are rebuilt on every refresh, so handlers live on
@@ -607,6 +800,15 @@ document.getElementById('dev-table').addEventListener('click', (ev) => {
       .catch(handleErr);
   }
 });
+document.getElementById('rem-table').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-rem-rm]');
+  if (!btn) return;
+  if (confirm('Remove paired remote host ' + btn.dataset.remRm + '?')) {
+    call('remote_remove', { name: btn.dataset.remRm })
+      .then(r => { toast(r.message); return loadRemote(); })
+      .catch(handleErr);
+  }
+});
 document.querySelectorAll('nav button').forEach(b => b.addEventListener('click', () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
   document.querySelectorAll('main section').forEach(s => s.classList.add('hidden'));
@@ -618,6 +820,7 @@ document.querySelectorAll('nav button').forEach(b => b.addEventListener('click',
   if (tab === 'config') loadConfig();
   if (tab === 'agent') showAgent();
   if (tab === 'devices') loadDevices();
+  if (tab === 'remote') loadRemote();
   if (tab === 'audit') loadAudit();
 }));
 document.getElementById('cfg-filter').addEventListener('input', loadConfig);

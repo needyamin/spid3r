@@ -132,6 +132,9 @@ COMMANDS:
     control [status|ini|agent|devices|audit]
                                             Runtime control surface (this machine)
     admin --host NAME <op> [flags]          Remote administration client
+    container <pull|images|run|ps|stop|rm|logs>
+                                           OCI container engine (Linux)
+    kernel build                           Build the bare-metal no_std kernel crate
     version                                Print version information
     help                                   Print this help
 
@@ -145,13 +148,30 @@ EXTERNAL COMMANDS:
                                            dispatched (never .bat/.cmd).
 
 EXIT CODES:
-    0 success, 1 program error (compile or runtime), 2 usage error,
-    4 invalid bytecode
+    0                                      Success
+    1                                      Program error (compile, runtime, or
+                                           broken SPID3R_INI configuration pin)
+    2                                      Usage or build-driver error
+                                           (`error[usage]`)
+    4                                      Invalid, corrupt, or tampered `.matrixc`
+                                           bytecode / artifact
 ";
 
 pub fn version_text() -> String {
     format!(
-        "spid3r {} (language {})\nRust host, no runtime dependencies.",
+        "\n  ███████╗██████╗ ██╗██████╗ ██████╗ ██████╗\n\
+         \x20 ██╔════╝██╔══██╗██║██╔══██╗╚════██╗██╔══██╗\n\
+         \x20 ███████╗██████╔╝██║██║  ██║ █████╔╝██████╔╝\n\
+         \x20 ╚════██║██╔═══╝ ██║██║  ██║ ╚═══██╗██╔══██╗\n\
+         \x20 ███████║██║     ██║██████╔╝██████╔╝██║  ██║\n\
+         \x20 ╚══════╝╚═╝     ╚═╝╚═════╝ ╚═════╝ ╚═╝  ╚═╝\n\n\
+         \x20 SPID3R PROGRAMMING LANGUAGE\n\n\
+         \x20 Version       {}\n\
+         \x20 Language      {}\n\
+         \x20 Compiler      Self-hosted (LLVM 23 AOT)\n\
+         \x20 Host          Rust (Stage 0)\n\
+         \x20 Runtime       No external dependencies\n\n\
+         \x20 Developed by ANSNEW TECH",
         VERSION, LANGUAGE_VERSION
     )
 }
@@ -211,6 +231,8 @@ pub fn run(args: Vec<String>) -> i32 {
             | "publish"
             | "add"
             | "remove"
+            | "container"
+            | "kernel"
     ) {
         if let Some(message) = crate::stdlib::fs_policy::execution_refusal() {
             eprintln!("error[config]: {}", message);
@@ -234,6 +256,7 @@ pub fn run(args: Vec<String>) -> i32 {
             | "magic"
     ) {
         load_plugins();
+        crate::stdlib::apply_config_plugin_capabilities();
     }
     // `--json` makes the error printer emit one JSON object instead of the
     // human form. It is a *diagnostic* flag, so it is consumed here rather than
@@ -1313,7 +1336,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     if budget.is_some() && max_steps.is_some() {
         return Err(usage("specify only one of --budget and --max-steps"));
     }
-    let budget = budget.or(max_steps);
+    let mut budget = budget.or(max_steps);
     // Arm the sandbox before any engine installs its globals: both engines
     // build their natives from stdlib::native_defs(), so arming here covers
     // the main engine, every imported module and every spawned task. The
@@ -1344,6 +1367,12 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
         crate::logging::record("config", note);
     }
     let run_limits = crate::budget::run_limits(&cfg);
+    if budget.is_none() {
+        budget = crate::budget::configured_max_steps(&cfg);
+    }
+    if max_call_depth.is_none() {
+        max_call_depth = crate::budget::configured_max_call_depth(&cfg);
+    }
     // The `spid3r.engine` config key ("Default engine for `spid3r run` when
     // --engine is omitted", per the schema) was historically declared but
     // never read — the CLI used its own default regardless. An explicit
@@ -2105,9 +2134,17 @@ fn cmd_exec(args: &[String]) -> Result<i32, Diagnostic> {
             crate::plugin::deny_capability(cap);
         }
     }
+    let cfg = crate::config::snapshot();
+    let run_limits = crate::budget::run_limits(&cfg);
     let file_arc: Arc<str> = Arc::from(file.as_str());
     let dirs = modules::default_module_dirs();
     let mut vm = Vm::new(file_arc, dirs);
+    vm.set_budget(crate::budget::configured_max_steps(&cfg).map(crate::budget::Budget::new));
+    if let Some(n) = crate::budget::configured_max_call_depth(&cfg) {
+        vm.set_max_call_depth(n);
+    }
+    vm.set_wall_clock(run_limits.0.clone());
+    vm.set_mem_limit(run_limits.1.clone());
     vm.run_compiled(Arc::new(script))
 }
 
@@ -2588,8 +2625,16 @@ fn cmd_debug(args: &[String]) -> Result<i32, Diagnostic> {
     let program = parser::parse_file(&src, file_name.clone())?;
     semantic::check_file(&program, true, &file)?;
 
+    let cfg = crate::config::snapshot();
+    let run_limits = crate::budget::run_limits(&cfg);
     let dirs = modules::default_module_dirs();
     let mut vm = Vm::new(file_name.clone(), dirs);
+    vm.set_budget(crate::budget::configured_max_steps(&cfg).map(crate::budget::Budget::new));
+    if let Some(n) = crate::budget::configured_max_call_depth(&cfg) {
+        vm.set_max_call_depth(n);
+    }
+    vm.set_wall_clock(run_limits.0.clone());
+    vm.set_mem_limit(run_limits.1.clone());
     let state = crate::vm::DebugState::new(source, breakpoints, commands);
     let interactive = state.interactive;
     vm.enable_debug(state);
@@ -3580,6 +3625,7 @@ fn bench_floor(stem: &str) -> Option<u64> {
 /// performance harness that doubles as a differential test.
 fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
     let mut engine = "vm";
+    let mut engine_set = false;
     let mut runs: usize = 3;
     let mut compare = false;
     let mut no_opt = false;
@@ -3591,7 +3637,10 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
             "--engine" => {
                 i += 1;
                 match args.get(i) {
-                    Some(e) if e == "tree" || e == "vm" => engine = e,
+                    Some(e) if e == "tree" || e == "vm" => {
+                        engine = e;
+                        engine_set = true;
+                    }
                     Some(e) => return Err(usage(&format!("unknown engine '{}'", e))),
                     None => return Err(usage("--engine needs a value")),
                 }
@@ -3614,6 +3663,14 @@ fn cmd_bench(args: &[String]) -> Result<i32, Diagnostic> {
             a => files.push(a.to_string()),
         }
         i += 1;
+    }
+    let cfg = crate::config::snapshot();
+    if !engine_set {
+        match cfg.get("spid3r.engine") {
+            Some("tree") => engine = "tree",
+            Some("vm") => engine = "vm",
+            _ => {}
+        }
     }
     if files.is_empty() {
         let dir = PathBuf::from("benchmarks");

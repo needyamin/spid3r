@@ -93,6 +93,34 @@ pub fn search_roots() -> Vec<(PathBuf, ModuleOrigin)> {
             }
         }
     }
+    if let Some(path) = crate::config::get("modules.path") {
+        if !path.trim().is_empty() {
+            for part in path.split(';') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                for d in std::env::split_paths(part) {
+                    let s = d.to_string_lossy();
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty() {
+                        let p = PathBuf::from(trimmed);
+                        if !roots.iter().any(|(existing, _)| existing == &p) {
+                            roots.push((p, ModuleOrigin::Disk));
+                        }
+                    }
+                }
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let p = PathBuf::from(part);
+                    if !roots.iter().any(|(existing, _)| existing == &p) {
+                        roots.push((p, ModuleOrigin::Disk));
+                    }
+                }
+            }
+        }
+    }
     roots.push((PathBuf::from("stdlib"), ModuleOrigin::Disk));
     // The stdlib shipped beside the executable (installer / release tarball
     // layout) or in an ancestor directory (development layout, e.g.

@@ -265,9 +265,13 @@ fn apply_policy_to_defs(defs: &mut [NativeDef], sandboxed: bool) {
             }
         }
     }
-    if sandboxed {
+    let deny_fs = sandboxed || pol.deny_filesystem;
+    let deny_net = sandboxed || pol.deny_network;
+    let deny_proc = sandboxed || pol.deny_process;
+    let deny_env = sandboxed || pol.deny_environment;
+    if deny_fs || deny_net || deny_proc || deny_env {
         for (name, func) in defs.iter_mut() {
-            if let Some(stub) = sandbox_stub(name) {
+            if let Some(stub) = capability_stub(name, deny_fs, deny_net, deny_proc, deny_env) {
                 *func = stub;
             }
         }
@@ -5230,11 +5234,35 @@ fn sandbox_env_stub(_ctx: &NativeCtx, _args: Vec<Value>) -> Result<Value, String
     Err("sandboxed: environment access denied".to_string())
 }
 
-/// The stub that answers for a sandboxed native, or `None` when the name is
-/// pure computation and stays callable. The deny groups reuse the embedding
+/// Propagate any `[security] deny_*` switches baked from `spid3r.ini` to the
+/// plugin capability table so plugins cannot bypass `spid3r.ini` denials.
+pub fn apply_config_plugin_capabilities() {
+    let pol = fs_policy::policy();
+    if pol.deny_filesystem {
+        crate::plugin::deny_capability(crate::embed::Capability::FileSystem);
+    }
+    if pol.deny_network {
+        crate::plugin::deny_capability(crate::embed::Capability::Network);
+    }
+    if pol.deny_process {
+        crate::plugin::deny_capability(crate::embed::Capability::Process);
+    }
+    if pol.deny_environment {
+        crate::plugin::deny_capability(crate::embed::Capability::Environment);
+    }
+}
+
+/// The stub that answers for a sandboxed or `security.deny_*`-blocked native,
+/// or `None` when the name is permitted. The deny groups reuse the embedding
 /// API's capability lists, plus the database natives (TCP connections and a
 /// local-database file handle) which are network/filesystem access too.
-fn sandbox_stub(name: &str) -> Option<crate::vm::NativeImpl> {
+fn capability_stub(
+    name: &str,
+    deny_fs: bool,
+    deny_net: bool,
+    deny_proc: bool,
+    deny_env: bool,
+) -> Option<crate::vm::NativeImpl> {
     use crate::embed::Capability;
     const DB_NET: &[&str] = &[
         "mysql_connect",
@@ -5249,16 +5277,16 @@ fn sandbox_stub(name: &str) -> Option<crate::vm::NativeImpl> {
         "redis_command",
         "redis_close",
     ];
-    if Capability::FileSystem.natives().contains(&name) || name == "db_open" {
+    if deny_fs && (Capability::FileSystem.natives().contains(&name) || name == "db_open") {
         return Some(sandbox_fs_stub);
     }
-    if Capability::Network.natives().contains(&name) || DB_NET.contains(&name) {
+    if deny_net && (Capability::Network.natives().contains(&name) || DB_NET.contains(&name)) {
         return Some(sandbox_net_stub);
     }
-    if Capability::Process.natives().contains(&name) {
+    if deny_proc && Capability::Process.natives().contains(&name) {
         return Some(sandbox_process_stub);
     }
-    if Capability::Environment.natives().contains(&name) {
+    if deny_env && Capability::Environment.natives().contains(&name) {
         return Some(sandbox_env_stub);
     }
     None

@@ -250,4 +250,4 @@ release by tag before the pipeline switches.
 - [README.md](README.md) & `diagrams/` (self-hosting index + architecture diagrams)
 - [RUNTIME_ABI.md](RUNTIME_ABI.md) (pinned staticlib ABI, provenance & native table)
 - [SELFHOST_RETIREMENT.md](SELFHOST_RETIREMENT.md) (Phase 10.2 retirement boundary, rollback tags & maintenance rules)
-- [ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md) (the three-engine bar) · [NATIVE.md](../NATIVE.md) (AOT subset, memory model, exit codes) · [FFI.md](../FFI.md) (extended by SH-7) · [GC.md](../GC.md) · [SECURITY.md](../SECURITY.md) · [PERF_TARGET_RETIREMENT.md](../PERF_TARGET_RETIREMENT.md) (target discipline) · [implementation_plan.html](../../implementation_plan.html) (active language/runtime roadmap).
+- [ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md) (the three-engine bar) · [NATIVE.md](../NATIVE.md) (AOT subset, memory model, exit codes) · [FFI.md](../FFI.md) (extended by SH-7) · [GC.md](../GC.md) · [SECURITY.md](../SECURITY.md) · [PERF_TARGET_RETIREMENT.md](../PERF_TARGET_RETIREMENT.md) (target discipline).

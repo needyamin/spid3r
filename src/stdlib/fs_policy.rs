@@ -54,6 +54,13 @@ pub struct Policy {
     /// Sticky indicator: if this process baked policy while an explicit pin
     /// was broken, a later reload cannot safely widen the cached policy.
     pub(crate) pin_failed_at_initialization: bool,
+    /// Per-category capability denials from `[security] deny_*` in `spid3r.ini`.
+    /// Baked once per process alongside `basedir` and `disable_natives` so a
+    /// script cannot widen its own permissions mid-run via `config_set`.
+    pub(crate) deny_filesystem: bool,
+    pub(crate) deny_process: bool,
+    pub(crate) deny_network: bool,
+    pub(crate) deny_environment: bool,
 }
 
 static POLICY: OnceLock<Policy> = OnceLock::new();
@@ -92,11 +99,19 @@ impl Policy {
         let disabled_natives = split_list(cfg.get("security.disable_natives").unwrap_or(""));
         let disabled_modules = split_list(cfg.get("modules.disable").unwrap_or(""));
         let pin_failed_at_initialization = crate::config::pin_failed(&cfg);
+        let deny_filesystem = cfg.bool_of("security.deny_filesystem");
+        let deny_process = cfg.bool_of("security.deny_process");
+        let deny_network = cfg.bool_of("security.deny_network");
+        let deny_environment = cfg.bool_of("security.deny_environment");
         Policy {
             basedir,
             disabled_natives,
             disabled_modules,
             pin_failed_at_initialization,
+            deny_filesystem,
+            deny_process,
+            deny_network,
+            deny_environment,
         }
     }
 }
@@ -444,9 +459,7 @@ mod tests {
         let pol = Policy {
             // Entries resolve STRICTLY, exactly like Policy::from_config.
             basedir: entries.iter().map(|e| resolve_entry_strict(e)).collect(),
-            disabled_natives: Vec::new(),
-            disabled_modules: Vec::new(),
-            pin_failed_at_initialization: false,
+            ..Policy::default()
         };
         match resolve_for_compare(target) {
             Some(resolved) => pol
@@ -683,10 +696,8 @@ mod tests {
         // same file as "mathx" there and must be denied too; POSIX
         // file names really differ by case, so it stays exact.
         let pol = Policy {
-            basedir: Vec::new(),
-            disabled_natives: Vec::new(),
             disabled_modules: vec!["json".to_string()],
-            pin_failed_at_initialization: false,
+            ..Policy::default()
         };
         assert!(module_disabled_in(&pol, "json").is_some());
         assert!(module_disabled_in(&pol, "json.matrix").is_some());

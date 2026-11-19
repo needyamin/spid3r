@@ -1,8 +1,8 @@
 # Spid3r — agent rules (self-hosting program)
 
 Project: **Spid3r**, a programming language (`.matrix` sources) with a Rust implementation (v1.1.0, LLVM 23.1.0 AOT backend).
-Active program: **make Spid3r compile its own compiler** (self-hosting) and v1.0 runtime roadmap (`implementation_plan.html`). Architecture decisions: `docs/selfhost/SELFHOST.md` (SH-1…SH-8).
-Read both before changing anything. If this file and `implementation_plan.html` / `docs/selfhost/SELFHOST.md` disagree, fix this file.
+Active program: **make Spid3r compile its own compiler** (self-hosting). Architecture decisions: `docs/selfhost/SELFHOST.md` (SH-1…SH-8).
+Read `docs/selfhost/SELFHOST.md` before changing anything. If this file and `docs/selfhost/SELFHOST.md` disagree, fix this file.
 
 ## 1. Current state (update when a phase moves)
 
@@ -19,7 +19,7 @@ As of 2026-11-17 (last commit pushed: `874d9b6`, Phase 11 P-7):
 - Phase 11.8 (`P-8`) highlights (`tools/bench_report_render.py`, `docs/html/benchmark.html`, `docs/PERF_TARGET_RETIREMENT.md`, `docs/selfhost/SELFHOST.md` Appendix B): published Section 06 three-way target table (`Spid3r-AOT vs Node vs Rust`) with explicit `Tier A`/`Tier B`/`Tier C` labels, structural-gap disclosures (JIT vs AOT, checked overflow + cancel polls + `Arc<Mutex<MapData>>` + FFI boxing vs V8/rustc SSA), ledger-traced numbers (`P-1`/`P-2`/`P-3`/`P-5`/`P-6`), and &sect;8 retirement addendum (pending owner confirmation).
 - Phase 11.9 (`P-9`) highlights (`tools/{bench_report_render,bench_report}.py`, `docs/html/benchmark.html`, `docs/selfhost/SELFHOST.md` Appendix B): closed the continuous W-program documentation loop (Section 07 in `benchmark.html` + synced trajectory table in `docs/selfhost/SELFHOST.md` Appendix B from Phase 1.2/1.4 through `P-8`), added `python tools/bench_report.py --verify-sync` (`20` synced figures across JSON/HTML), verified `verify_doc_claims.js` (37/0), `verify_dev_snippets.js` (19/0), and `--verify-sync` teeth on injected drift.
 - Roadmap progress: 42/51 checkboxes (Phase 11 closed `9/9`; `s10-1` open pending `release.yml` `workflow_dispatch` / tag run; `gr1..4` and `sec1..4` sign-off checkboxes await final closure). Next work: trigger `release.yml` to close `10.1` + final `GR-1..4` / `SEC-A..D` audit.
-- Post-Phase 11 runtime roadmap (`implementation_plan.html`): 67/82 checkboxes closed (`R1–R12.4`, `R0.5`, `R10` [`DP-1` multi-arg generics + constraint checking + `spid3r_mono_*` AOT monomorphization + 12 `spid3r_ulist_i64_*`/`f64_*` trampolines], `R11` [`DP-7` OCI container engine `src/oci/` + `src/container/` + `src/native/sys.rs`], `R12.2` [WS frame fuzzing + `tests/r12_fuzz_smoke.rs`], `R13.1` [`DP-8` zero-dependency `no_std` `kernel/` workspace crate + `spid3r kernel build`]; remaining 15: `R0.1`–`R0.4`, `R12.1`, `R13.2`–`R13.8`, `DP-3`, `DP-4`, `DP-6`). CI #143 / Pages #144 green on `7001811` (post-`7001811` `R0.5` + `R10`–`R13.1` + docs changes are in the working tree).
+- Post-Phase 11 runtime & speed work completed: generics (`DP-1`), OCI container engine (`DP-7`), WS fuzzing (`R12.2`), `no_std` `kernel/` (`DP-8`), Tracks 1–6 speed parity (AOT, Selfhost, Runtime, VM, Tree-walk, WASM), and full 60/60 `spid3r.ini` + `spid3r-control.exe` local/remote management.
 - Stale ledger row: the 2026-11-14 `5.3 OPEN` row is superseded by the 2026-11-15 `5.3` PASS row (a correction note row exists). The ledger is append-only, so never delete rows. Add a note instead.
 - Known gap: the cycle-diagnostic case (a↔b import) is not in the frozen corpus; adding it needs its own SH-4 ledger entry.
 - Untracked or ignored build artifacts live in `selfhost/` (`main_native.exe`, `llvm_min.exe`, `spid3r_main.o` if emitted alongside `main_native.exe`). Do not commit them.

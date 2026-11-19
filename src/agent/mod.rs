@@ -777,6 +777,20 @@ pub const OP_NAMES: &[&str] = &[
     "restart_runtime",
 ];
 
+/// Run one predefined operational action locally and return its JSON payload.
+/// Used by `src/control/ops.rs` so the local panel and CLI share the exact
+/// same implementation as the remote agent.
+pub(crate) fn run_local_op(name: &str) -> Result<String, String> {
+    let v = run_op(name);
+    let text = crate::stdlib::json_write_text(&v)?;
+    if json_bool_field(&v, "ok") == Some(false) {
+        let err = json_str_field(&v, "error").unwrap_or_else(|| text.clone());
+        Err(err)
+    } else {
+        Ok(text)
+    }
+}
+
 fn run_op(name: &str) -> Value {
     match name {
         "ping" => ok_json(vec![(MapKey::Str("pong".into()), Value::Bool(true))]),

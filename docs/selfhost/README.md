@@ -21,7 +21,6 @@ Everything documenting Spid3r's self-hosted compiler (`selfhost/`) lives in this
 | [RUNTIME_ABI.md](RUNTIME_ABI.md) | Formal interface specification (`SH-6`, `SEC-B`): versioned `spid3r-runtime-<ver>-<target>.tar.gz` bundle, schema-1 provenance manifest, SHA-256 verification/exit-4 contract, 75 `spid3r_*` trampolines, and 257 stdlib natives |
 
 Related cross-project references outside this folder:
-- [../../implementation_plan.html](../../implementation_plan.html) — Active implementation roadmap & decision-point sign-offs
 - [../NATIVE.md](../NATIVE.md) — Shared Rust & self-hosted LLVM AOT backend overview
 - [../BUILDING.md](../BUILDING.md) — Building Stage 0 (`spid3r`) and bootstrapping Stage 1 (`selfhost/main_native.exe`)
 - [../ENGINE_CONTRACT.md](../ENGINE_CONTRACT.md) — Three-engine semantic contract (`tree`, `vm`, `native`)

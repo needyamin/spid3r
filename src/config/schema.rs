@@ -465,7 +465,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Plugin search path (defaults to SPID3R_PLUGINS)."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "modules",
         "allow_wasm",
         ConfigValue::Bool,
@@ -474,7 +474,7 @@ pub static KEYS: &[KeySpec] = &[
         None,
         "Allow loading sandboxed .wasm plugins."
     ),
-    key_startup!(
+    key_frozen_startup!(
         "modules",
         "allow_host",
         ConfigValue::Bool,
@@ -1301,6 +1301,8 @@ mod tests {
             "agent.role_operator",
             "agent.role_admin",
             // New in phase 3.
+            "modules.allow_wasm",
+            "modules.allow_host",
             "modules.disable",
             "packages.allow_insecure_git",
             "packages.allow_local_git",

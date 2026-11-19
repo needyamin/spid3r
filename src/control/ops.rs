@@ -30,13 +30,22 @@ pub fn dispatch(op: &str, params: &str) -> Result<String, String> {
         "config_get" => op_config_get(params),
         "config_set" => op_config_set(params),
         "config_reset" => op_config_reset(params),
+        "config_reset_all" => op_config_reset_all(params),
+        "config_reload" => op_config_reload(),
         "config_validate" => op_config_validate(),
         "agent_status" => op_agent_status(),
         "agent_start" => op_agent_start(),
         "agent_stop" => op_agent_stop(),
         "devices_list" => op_devices_list(),
         "devices_revoke" => op_devices_revoke(params),
+        "pair_create" => op_pair_create(params),
+        "ops_run" => op_ops_run(params),
+        "logs_tail" => op_logs_tail(params),
         "audit_tail" => op_audit_tail(params),
+        "remote_list" => op_remote_list(),
+        "remote_pair" => op_remote_pair(params),
+        "remote_remove" => op_remote_remove(params),
+        "remote_call" => op_remote_call(params),
         "lang_info" => super::lang::op_lang_info(),
         "lang_exec" => super::lang::op_lang_exec(params),
         "lang_terminal" => super::lang::op_lang_terminal(params),
@@ -396,12 +405,14 @@ fn op_status(_params: &str) -> Result<String, String> {
         .unwrap_or(0);
     Ok(format!(
         "{{\"version\":{},\"language\":{},\
+         \"env\":{},\
          \"ini_path\":{},\"ini_exists\":{},\"ini_valid\":{},\"ini_errors\":{},\
          \"agent_addr\":{},\"agent_enabled\":{},\"agent_listening\":{},\"agent_pid\":{},\
          \"devices\":\"{}\",\"pairings\":\"{}\",\
          \"audit_path\":{},\"audit_lines\":\"{}\",\"state_dir\":{}}}",
         jstr(crate::VERSION),
         jstr(crate::LANGUAGE_VERSION),
+        jstr(&config::get("spid3r.env").unwrap_or_else(|| "default".into())),
         jstr(&ini_display),
         jstr(if ini_exists { "true" } else { "false" }),
         jstr(if errors.is_empty() { "true" } else { "false" }),
@@ -484,20 +495,26 @@ fn op_config_list() -> Result<String, String> {
             .map(str::to_string)
             .unwrap_or_else(|| k.default.to_string());
         let redacted = crate::runtime_info::redact_value(&dotted, &value);
-        // Row: key|kind|value|default|description|enum-options
+        // Row: key|kind|value|default|description|enum-options|reload|frozen
         // Enum options drive the panel's dropdown; empty for other kinds.
         let options = match k.kind {
             crate::config::schema::ConfigValue::Enum(opts) => opts.join(","),
             _ => String::new(),
         };
+        let reload = match k.reload {
+            crate::config::schema::ReloadSafety::Live => "live",
+            crate::config::schema::ReloadSafety::StartupOnly => "startup",
+        };
         rows.push(format!(
-            "{}|{:?}|{}|{}|{}|{}",
+            "{}|{:?}|{}|{}|{}|{}|{}|{}",
             dotted,
             k.kind,
             redacted.replace('|', "/").replace('\n', " "),
             k.default.replace('|', "/").replace('\n', " "),
             k.description.replace('|', "/").replace('\n', " "),
             options,
+            reload,
+            if k.frozen { "true" } else { "false" },
         ));
     }
     Ok(format!(
@@ -829,6 +846,258 @@ fn op_audit_tail(params: &str) -> Result<String, String> {
         "{{\"path\":{},\"text\":{}}}",
         jstr(&path.display().to_string()),
         jstr(&lines[start..].join("\n")),
+    ))
+}
+
+fn op_config_reload() -> Result<String, String> {
+    let cfg = config::reload();
+    let path = cfg
+        .path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "(defaults)".into());
+    store::audit("control", "admin", "config.reload", true, "local", &path);
+    Ok(format!(
+        "{{\"path\":{},\"notes\":{},\"message\":{}}}",
+        jstr(&path),
+        jstr(&cfg.notes.join("\n")),
+        jstr(&format!("reloaded {}", path)),
+    ))
+}
+
+fn op_config_reset_all(params: &str) -> Result<String, String> {
+    let section = field(params, "section").unwrap_or_default();
+    let section = section.trim().to_string();
+    let _ = ensure_writable_ini()?;
+    let mut count = 0usize;
+    for k in crate::config::schema::KEYS {
+        if !section.is_empty() && k.section != section {
+            continue;
+        }
+        config::set_live(&k.dotted(), k.default)?;
+        count += 1;
+    }
+    if count == 0 {
+        return Err(format!("unknown config section '{}'", section));
+    }
+    let path = config::save(&config::snapshot())?;
+    let scope = if section.is_empty() {
+        "all".to_string()
+    } else {
+        format!("[{}]", section)
+    };
+    store::audit(
+        "control",
+        "admin",
+        "config.reset_all",
+        true,
+        "local",
+        &scope,
+    );
+    Ok(format!(
+        "{{\"count\":\"{}\",\"path\":{},\"message\":{}}}",
+        count,
+        jstr(&path.display().to_string()),
+        jstr(&format!(
+            "reset {} key(s) in {} to defaults — saved to {}",
+            count,
+            scope,
+            path.display()
+        )),
+    ))
+}
+
+fn op_pair_create(params: &str) -> Result<String, String> {
+    let role = field(params, "role").unwrap_or_else(|| "operator".into());
+    let role = if role.trim().is_empty() {
+        "operator".to_string()
+    } else {
+        role.trim().to_string()
+    };
+    let name = field(params, "name").unwrap_or_default();
+    let ttl: i64 = field(params, "ttl")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| {
+            config::get("agent.pairing_ttl_sec")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300)
+        });
+    let code = {
+        let _guard = store::lock();
+        let mut st = Store::open();
+        let code = st.create_pairing(&role, &name, ttl)?;
+        st.save()?;
+        code
+    };
+    store::audit(
+        "control",
+        "admin",
+        "pair.create",
+        true,
+        "local",
+        &format!("role={} name={} ttl={}", role, name, ttl),
+    );
+    Ok(format!(
+        "{{\"code\":{},\"role\":{},\"name\":{},\"ttl\":\"{}\",\"addr\":{},\"message\":{}}}",
+        jstr(&code),
+        jstr(&role),
+        jstr(&name),
+        ttl,
+        jstr(&agent_addr()),
+        jstr(&format!(
+            "pairing code created for role '{}' (valid {}s)",
+            role, ttl
+        )),
+    ))
+}
+
+fn op_ops_run(params: &str) -> Result<String, String> {
+    let Some(name) = field(params, "name") else {
+        return Err("ops_run needs \"name\"".into());
+    };
+    if name == "restart_runtime" {
+        // From the local panel/CLI, restart the detached agent instead of
+        // terminating the panel process itself.
+        let _ = op_agent_stop();
+        return op_agent_start();
+    }
+    let result_json = crate::agent::run_local_op(&name)?;
+    store::audit("control", "admin", "ops.run", true, "local", &name);
+    Ok(format!(
+        "{{\"name\":{},\"result\":{},\"message\":{}}}",
+        jstr(&name),
+        jstr(&result_json),
+        jstr(&format!("op '{}' completed", name)),
+    ))
+}
+
+fn op_logs_tail(params: &str) -> Result<String, String> {
+    let n: usize = field(params, "n")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+        .clamp(1, 1000);
+    let path = crate::logging::path();
+    let Some(path) = path else {
+        return Ok("{\"path\":\"\",\"text\":\"\"}".to_string());
+    };
+    let mut text = String::new();
+    if let Ok(mut f) = std::fs::File::open(&path) {
+        let _ = f.read_to_string(&mut text);
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    Ok(format!(
+        "{{\"path\":{},\"text\":{}}}",
+        jstr(&path.display().to_string()),
+        jstr(&lines[start..].join("\n")),
+    ))
+}
+
+fn op_remote_list() -> Result<String, String> {
+    let book = store::ClientBook::open();
+    let mut rows = Vec::new();
+    for h in book.hosts.values() {
+        rows.push(format!(
+            "{}|{}|{}",
+            h.name.replace('|', "/"),
+            h.addr.replace('|', "/"),
+            h.device_id.replace('|', "/"),
+        ));
+    }
+    Ok(format!(
+        "{{\"count\":\"{}\",\"hosts\":{}}}",
+        rows.len(),
+        jstr(&rows.join("\n")),
+    ))
+}
+
+fn op_remote_pair(params: &str) -> Result<String, String> {
+    let Some(addr) = field(params, "addr").filter(|s| !s.trim().is_empty()) else {
+        return Err("remote_pair needs \"addr\"".into());
+    };
+    let Some(code) = field(params, "code").filter(|s| !s.trim().is_empty()) else {
+        return Err("remote_pair needs \"code\"".into());
+    };
+    let name = field(params, "name").unwrap_or_default();
+    let host = crate::agent::pair(addr.trim(), code.trim(), name.trim(), "")?;
+    store::audit(
+        "control",
+        "admin",
+        "remote.pair",
+        true,
+        "local",
+        &format!("{} ({})", host.name, host.addr),
+    );
+    Ok(format!(
+        "{{\"name\":{},\"addr\":{},\"device_id\":{},\"message\":{}}}",
+        jstr(&host.name),
+        jstr(&host.addr),
+        jstr(&host.device_id),
+        jstr(&format!("paired host '{}' at {}", host.name, host.addr)),
+    ))
+}
+
+fn op_remote_remove(params: &str) -> Result<String, String> {
+    let Some(name) = field(params, "name").filter(|s| !s.trim().is_empty()) else {
+        return Err("remote_remove needs \"name\"".into());
+    };
+    let mut book = store::ClientBook::open();
+    if book.hosts.remove(name.trim()).is_some() {
+        book.save()?;
+        store::audit(
+            "control",
+            "admin",
+            "remote.remove",
+            true,
+            "local",
+            name.trim(),
+        );
+        Ok(format!(
+            "{{\"message\":{}}}",
+            jstr(&format!("removed remote host '{}'", name.trim())),
+        ))
+    } else {
+        Err(format!("no paired host named '{}'", name.trim()))
+    }
+}
+
+fn op_remote_call(params: &str) -> Result<String, String> {
+    use crate::value::{MapKey, Value};
+    let Some(host_spec) = field(params, "host").filter(|s| !s.trim().is_empty()) else {
+        return Err("remote_call needs \"host\"".into());
+    };
+    let Some(op) = field(params, "op").filter(|s| !s.trim().is_empty()) else {
+        return Err("remote_call needs \"op\"".into());
+    };
+    let host = crate::agent::resolve_host(host_spec.trim())?;
+    let mut extra: Vec<(MapKey, Value)> = Vec::new();
+    for k in ["key", "value", "device_id", "role", "name"] {
+        if let Some(v) = field(params, k) {
+            if !v.is_empty() || k == "value" {
+                extra.push((MapKey::Str(k.into()), Value::Str(v.into())));
+            }
+        }
+    }
+    for k in ["lines", "ttl"] {
+        if let Some(v) = field(params, k).and_then(|s| s.trim().parse::<i64>().ok()) {
+            extra.push((MapKey::Str(k.into()), Value::Int(v)));
+        }
+    }
+    let resp = crate::agent::call(&host, op.trim(), extra)?;
+    let text = crate::stdlib::json_write_text(&resp)?;
+    store::audit(
+        "control",
+        "admin",
+        "remote.call",
+        true,
+        &host.name,
+        op.trim(),
+    );
+    Ok(format!(
+        "{{\"host\":{},\"op\":{},\"response\":{}}}",
+        jstr(&host.name),
+        jstr(op.trim()),
+        jstr(&text),
     ))
 }
 

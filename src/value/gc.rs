@@ -800,27 +800,45 @@ static NEXT_GC: AtomicUsize = AtomicUsize::new(1024);
 /// plus the 8192 baseline (F-4).
 static PRUNE_AT: AtomicUsize = AtomicUsize::new(8192);
 
-/// Is automatic collection enabled? **On by default**; `SPID3R_GC=0` disables it.
+/// Is automatic collection enabled? **On by default**; `SPID3R_GC=0` or
+/// `spid3r.gc = false` in `spid3r.ini` disables it.
 fn auto_enabled() -> bool {
     static E: OnceLock<bool> = OnceLock::new();
-    *E.get_or_init(|| std::env::var("SPID3R_GC").map(|v| v != "0").unwrap_or(true))
+    *E.get_or_init(|| {
+        if let Ok(v) = std::env::var("SPID3R_GC") {
+            return v != "0";
+        }
+        crate::config::get("spid3r.gc")
+            .map(|v| crate::config::schema::parse_bool(&v))
+            .unwrap_or(true)
+    })
+}
+
+/// Configured `memory.gc_threshold` from `spid3r.ini` (`0` = default amortized backoff).
+fn gc_threshold() -> usize {
+    static T: OnceLock<usize> = OnceLock::new();
+    *T.get_or_init(|| {
+        crate::config::get("memory.gc_threshold")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+    })
 }
 
 /// Called at interpreter statement boundaries. Collects once at least
 /// `NEXT_GC` tracked cells have been allocated since the last collection
-/// (1024 at first, then the previous pass's surviving cell count — amortized
-/// exponential backoff, see F-4), and only while this thread is the only one
-/// executing Spid3r code (`sched::gc_quiescent`): a thread that is running or
-/// allocating can move a tracked value between the strong-count read and the
-/// mark phase, which could sweep live memory. Threads parked in
-/// recv/join/mutex/sleep are *not* running and hold their values on their own
-/// stacks, so they do not block a collection (audit A-4).
+/// (or when `memory.gc_threshold > 0` and `ALLOCS >= gc_threshold()`),
+/// and only while this thread is the only one executing Spid3r code
+/// (`sched::gc_quiescent`).
 #[inline]
 pub fn maybe_collect() {
-    if ALLOCS.load(Ordering::Relaxed) >= NEXT_GC.load(Ordering::Relaxed)
-        && auto_enabled()
-        && crate::sched::gc_quiescent()
-    {
+    let allocs = ALLOCS.load(Ordering::Relaxed);
+    let thresh = gc_threshold();
+    let due = if thresh > 0 {
+        allocs >= thresh || allocs >= NEXT_GC.load(Ordering::Relaxed)
+    } else {
+        allocs >= NEXT_GC.load(Ordering::Relaxed)
+    };
+    if due && auto_enabled() && crate::sched::gc_quiescent() {
         collect();
     }
 }

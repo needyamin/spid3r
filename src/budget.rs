@@ -215,6 +215,47 @@ pub fn run_limits(cfg: &crate::config::Config) -> (Option<WallClock>, Option<Mem
     )
 }
 
+/// Configured step budget from `memory.max_steps` (`0` = unlimited).
+pub fn configured_max_steps(cfg: &crate::config::Config) -> Option<u64> {
+    cfg.get("memory.max_steps")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+}
+
+/// Configured call-depth limit from `memory.max_call_depth` (clamped `>= 16`).
+pub fn configured_max_call_depth(cfg: &crate::config::Config) -> Option<usize> {
+    cfg.get("memory.max_call_depth")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n >= 16)
+}
+
+/// Soft cap on a single allocation in bytes from `memory.allocation_cap_mb`
+/// (`0` = unlimited).
+pub fn allocation_cap_bytes() -> Option<usize> {
+    let mb = crate::config::get("memory.allocation_cap_mb")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    if mb == 0 {
+        None
+    } else {
+        Some((mb as usize).saturating_mul(1024 * 1024))
+    }
+}
+
+/// Enforce `memory.allocation_cap_mb` before a single large buffer/string/list
+/// allocation. Returns a catchable runtime error when `bytes` exceeds the cap.
+pub fn check_single_allocation(bytes: usize) -> Result<(), String> {
+    if let Some(cap) = allocation_cap_bytes() {
+        if bytes > cap {
+            return Err(format!(
+                "allocation limit exceeded: requested {} bytes, memory.allocation_cap_mb allows at most {} bytes",
+                bytes, cap
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Apply the configured wall-clock / memory limits to the active run's
 /// handles (if any). Called by `config reload`; a run that started without a
 /// limit cannot gain one this way, and a limit that was removed stays armed

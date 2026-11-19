@@ -264,3 +264,202 @@ fn admin_unknown_host_fails() {
     assert_ne!(code, 0);
     assert!(stderr.contains("unknown host") || stderr.contains("no paired"));
 }
+
+fn run_with_ini(
+    tag: &str,
+    ini_body: &str,
+    script_body: &str,
+    extra_args: &[&str],
+) -> (i32, String, String) {
+    let dir = std::env::temp_dir().join(format!("spid3r-ini-teeth-{}-{}", tag, std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ini = dir.join("spid3r.ini");
+    let script = dir.join("prog.matrix");
+    std::fs::write(&ini, ini_body).unwrap();
+    std::fs::write(&script, script_body).unwrap();
+
+    let mut cmd = Command::new(bin());
+    cmd.args(extra_args)
+        .arg(&script)
+        .env("SPID3R_INI", &ini)
+        .env("SPID3R_STATE_DIR", dir.join("state"));
+    let out = cmd.output().expect("run spid3r with ini");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let _ = std::fs::remove_dir_all(&dir);
+    (code, stdout, stderr)
+}
+
+#[test]
+fn ini_security_deny_filesystem_blocks_vm_tree_and_exec() {
+    let ini = "[security]\ndeny_filesystem = true\n";
+    let prog = "fn main() { try { read_file(\"Cargo.toml\"); println(\"ALLOWED\"); } catch (e) { println(\"DENIED:\" + string(e)); } }\n";
+
+    // VM engine
+    let (code, out, err) = run_with_ini("deny-fs-vm", ini, prog, &["run", "--engine", "vm"]);
+    assert_eq!(code, 0, "vm stderr: {err}");
+    assert!(
+        out.contains("DENIED:sandboxed: filesystem access denied"),
+        "vm out: {out}"
+    );
+
+    // Tree engine
+    let (code, out, err) = run_with_ini("deny-fs-tree", ini, prog, &["run", "--engine", "tree"]);
+    assert_eq!(code, 0, "tree stderr: {err}");
+    assert!(
+        out.contains("DENIED:sandboxed: filesystem access denied"),
+        "tree out: {out}"
+    );
+
+    // Compiled .matrixc via `spid3r exec`
+    let dir = std::env::temp_dir().join(format!("spid3r-ini-exec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let ini_path = dir.join("spid3r.ini");
+    let src_path = dir.join("p.matrix");
+    let bc_path = dir.join("p.matrixc");
+    std::fs::write(&ini_path, ini).unwrap();
+    std::fs::write(&src_path, prog).unwrap();
+    let c = Command::new(bin())
+        .args([
+            "compile",
+            src_path.to_str().unwrap(),
+            "-o",
+            bc_path.to_str().unwrap(),
+        ])
+        .env("SPID3R_INI", &ini_path)
+        .output()
+        .unwrap();
+    assert!(
+        c.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&c.stderr)
+    );
+    let ex = Command::new(bin())
+        .args(["exec", bc_path.to_str().unwrap()])
+        .env("SPID3R_INI", &ini_path)
+        .output()
+        .unwrap();
+    let ex_out = String::from_utf8_lossy(&ex.stdout);
+    assert!(
+        ex.status.success(),
+        "exec failed: {}",
+        String::from_utf8_lossy(&ex.stderr)
+    );
+    assert!(
+        ex_out.contains("DENIED:sandboxed: filesystem access denied"),
+        "exec out: {ex_out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ini_security_deny_process_network_and_env_block_matching_natives() {
+    let ini = "[security]\ndeny_process = true\ndeny_network = true\ndeny_environment = true\n";
+    let prog = r#"
+fn main() {
+    try { exec_capture("echo", ["hi"]); println("PROC:OK"); } catch (e) { println("PROC:" + string(e)); }
+    try { tcp_connect("127.0.0.1:1"); println("NET:OK"); } catch (e) { println("NET:" + string(e)); }
+    try { env("PATH"); println("ENV:OK"); } catch (e) { println("ENV:" + string(e)); }
+}
+"#;
+    let (code, out, err) = run_with_ini("deny-pne", ini, prog, &["run"]);
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(
+        out.contains("PROC:sandboxed: process access denied"),
+        "out: {out}"
+    );
+    assert!(
+        out.contains("NET:sandboxed: network access denied"),
+        "out: {out}"
+    );
+    assert!(
+        out.contains("ENV:sandboxed: environment access denied"),
+        "out: {out}"
+    );
+}
+
+#[test]
+fn ini_memory_limits_enforce_steps_depth_and_allocation_cap() {
+    // memory.max_steps aborts infinite loop
+    let (code, _, err) = run_with_ini(
+        "max-steps",
+        "[memory]\nmax_steps = 500\n",
+        "fn main() { let i = 0; while (true) { i = i + 1; } }\n",
+        &["run"],
+    );
+    assert_ne!(code, 0, "expected budget error");
+    assert!(
+        err.to_lowercase().contains("budget") || err.to_lowercase().contains("step"),
+        "unexpected stderr: {err}"
+    );
+
+    // memory.max_call_depth aborts deep recursion
+    let (code, _, err) = run_with_ini(
+        "max-depth",
+        "[memory]\nmax_call_depth = 20\n",
+        "fn f(n) { if (n <= 0) { return 0; } return f(n - 1); }\nfn main() { f(50); }\n",
+        &["run"],
+    );
+    assert_ne!(code, 0, "expected recursion limit error");
+    assert!(
+        err.to_lowercase().contains("depth") || err.to_lowercase().contains("recursion"),
+        "unexpected stderr: {err}"
+    );
+
+    // memory.allocation_cap_mb rejects a >1 MiB single allocation as a catchable error
+    let (code, out, err) = run_with_ini(
+        "alloc-cap",
+        "[memory]\nallocation_cap_mb = 1\n",
+        "fn main() { try { let b = bytes(2 * 1024 * 1024); println(\"ALLOC:OK\"); } catch (e) { println(\"ALLOC:\" + string(e)); } }\n",
+        &["run"],
+    );
+    assert_eq!(code, 0, "stderr: {err}");
+    assert!(
+        out.contains("ALLOC:allocation limit exceeded"),
+        "out: {out}"
+    );
+}
+
+#[test]
+fn ini_modules_path_resolves_custom_directory() {
+    let dir = std::env::temp_dir().join(format!("spid3r-ini-modpath-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mod_dir = dir.join("custom_mods");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("greet_cfg.matrix"),
+        "public fn hi() { return \"from_ini_path\"; }\n",
+    )
+    .unwrap();
+    let ini = dir.join("spid3r.ini");
+    std::fs::write(
+        &ini,
+        format!(
+            "[modules]\npath = \"{}\"\n",
+            mod_dir.display().to_string().replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+    let script = dir.join("main.matrix");
+    std::fs::write(
+        &script,
+        "import \"greet_cfg\";\nfn main() { println(hi()); }\n",
+    )
+    .unwrap();
+
+    let out = Command::new(bin())
+        .args(["run", script.to_str().unwrap()])
+        .env("SPID3R_INI", &ini)
+        .env_remove("SPID3R_PATH")
+        .env_remove("SPID3R_MODULES_PATH")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(stdout.contains("from_ini_path"), "stdout: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

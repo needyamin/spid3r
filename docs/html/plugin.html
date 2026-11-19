@@ -781,8 +781,19 @@
         <p>Then any program that can see the plugin calls them like builtins:</p>
 
         <div class="code">
+          <div class="bar"><span>app.matrix</span><span class="lang">spid3r</span></div>
+          <pre><code><span class="k">fn</span> <span class="f">main</span>() {
+    <span class="f">println</span>(<span class="f">greet</span>(<span class="s">"Ada"</span>));
+    <span class="f">println</span>(<span class="f">sum_to</span>(<span class="n">10</span>));
+}
+</code></pre>
+        </div>
+
+        <div class="code">
           <div class="bar"><span>shell</span><span class="lang">bash</span></div>
-          <pre><code><span class="k">export</span> SPID3R_PLUGINS=./plugins     <span class="c"># the directory containing greetings/</span>
+          <pre><code><span class="c"># point at the directory containing greetings/ (or set [modules] plugins in spid3r.ini)</span>
+<span class="k">export</span> SPID3R_PLUGINS=./plugins
+spid3r plugin check ./plugins/greetings
 spid3r run app.matrix
 <span class="c"># Hello, Ada!</span>
 <span class="c"># 55</span>
@@ -888,9 +899,9 @@ spid3r run app.matrix
 <span class="k">name</span> = <span class="s">"hello"</span>                 <span class="c"># unique across the process</span>
 <span class="k">version</span> = <span class="s">"0.1.0"</span>
 <span class="k">abi</span> = <span class="s">"spid3r-plugin-abi-1"</span>  <span class="c"># exact match, or registration fails</span>
-<span class="k">kind</span> = <span class="s">"host"</span>                <span class="c"># "host" or "wasm"</span>
+<span class="k">kind</span> = <span class="s">"matrix"</span>              <span class="c"># "matrix", "wasm", or "host"</span>
 <span class="k">capabilities</span> = [<span class="s">"environment"</span>] <span class="c"># everything the plugin may declare</span>
-<span class="c"># entry = "plugin.wasm"          # required for kind = "wasm"</span>
+<span class="c"># entry = "plugin.wasm"          # required for kind = "wasm"; optional for "matrix"</span>
 
 <span class="c"># One block per function. The name is what a script calls.</span>
 [[<span class="f">function</span>]]
@@ -932,7 +943,7 @@ spid3r run app.matrix
               <tr>
                 <td><code>kind</code></td>
                 <td>no</td>
-                <td><code>host</code> (default) or <code>wasm</code>.</td>
+                <td><code>matrix</code> (Spid3r source), <code>wasm</code> (sandboxed WebAssembly), or <code>host</code> (Rust, parser default when omitted).</td>
               </tr>
               <tr>
                 <td><code>capabilities</code></td>
@@ -943,7 +954,7 @@ spid3r run app.matrix
               <tr>
                 <td><code>entry</code></td>
                 <td>for wasm</td>
-                <td>The <code>.wasm</code> file name, relative to the manifest.</td>
+                <td>The <code>.wasm</code> file name (required for <code>wasm</code>) or <code>.matrix</code> file name (optional for <code>matrix</code>; defaults to <code>&lt;name&gt;.matrix</code>), relative to the manifest.</td>
               </tr>
               <tr>
                 <td><code>[[function]].name</code></td>
@@ -1055,8 +1066,9 @@ spid3r plugin check examples/plugins/hello-wasm
               one definition per declared function.</p>
             <div class="code">
               <div class="bar"><span>src/lib.rs</span><span class="lang">rust</span></div>
-              <pre><code><span class="k">use</span> spid3r_lang::plugin::{PluginFnDef, PluginHost, PluginManifest};
-<span class="k">use</span> spid3r_lang::value::{NativeCtx, Value};
+              <pre><code><span class="k">use</span> std::sync::<span class="t">Arc</span>;
+<span class="k">use</span> spid3r_lang::plugin::{<span class="t">PluginFnDef</span>, <span class="t">PluginHost</span>, <span class="t">PluginManifest</span>};
+<span class="k">use</span> spid3r_lang::value::{<span class="t">NativeCtx</span>, <span class="t">Value</span>};
 
 <span class="k">pub struct</span> <span class="t">Hello</span>;
 
@@ -1100,7 +1112,9 @@ spid3r plugin check examples/plugins/hello-wasm
               from. Doing it after the engine exists is too late.</p>
             <div class="code">
               <div class="bar"><span>src/main.rs</span><span class="lang">rust</span></div>
-              <pre><code><span class="f">spid3r_lang::plugin::register</span>(<span class="t">Box</span>::<span class="f">new</span>(<span class="t">Hello</span>))?;
+              <pre><code><span class="k">use</span> spid3r_lang::embed::<span class="t">Engine</span>;
+
+<span class="f">spid3r_lang::plugin::register</span>(<span class="t">Box</span>::<span class="f">new</span>(<span class="t">Hello</span>))?;
 
 <span class="k">let</span> engine = <span class="t">Engine</span>::<span class="f">new</span>();
 <span class="k">let</span> out = engine.<span class="f">run</span>(<span class="s">"app.matrix"</span>, &amp;source)?;
@@ -1173,7 +1187,7 @@ spid3r plugin check examples/plugins/hello-wasm
       <!-- ================================================================ 5 -->
       <section id="wasm">
         <h2><span class="num">06</span> WASM plugins</h2>
-        <p class="subtitle">The kind the <code>spidr</code> CLI can use without being rebuilt.</p>
+        <p class="subtitle">Sandboxed plugins loaded from disk without rebuilding <code>spid3r</code>.</p>
 
         <p>
           A WASM plugin is a directory: <code>plugin.toml</code> plus a <code>.wasm</code> module. The toolchain reads
@@ -1322,7 +1336,7 @@ spid3r plugin check examples/plugins/hello-wasm
     <span class="k">let mut</span> buf: <span class="t">Vec</span>&lt;<span class="t">u8</span>&gt; = <span class="t">Vec</span>::<span class="f">with_capacity</span>(len <span class="k">as</span> <span class="t">usize</span>);
     buf.<span class="f">resize</span>(len <span class="k">as</span> <span class="t">usize</span>, <span class="n">0</span>);
     <span class="k">let</span> ptr = buf.<span class="f">as_mut_ptr</span>() <span class="k">as</span> <span class="t">u32</span>;
-    <span class="t">mem</span>::<span class="f">forget</span>(buf);
+    std::mem::<span class="f">forget</span>(buf);
     ptr
 }
 
@@ -1567,16 +1581,21 @@ value := u8 tag, payload
               </tr>
               <tr>
                 <td>2</td>
+                <td><code>[modules] plugins</code> in <code>spid3r.ini</code></td>
+                <td>a <code>;</code>-separated list of plugin parent directories configured persistently in <code>spid3r.ini</code> (or via <code>spid3r-control.exe</code>)</td>
+              </tr>
+              <tr>
+                <td>3</td>
                 <td><code>./plugins</code></td>
                 <td>a project-local set, committed with the project</td>
               </tr>
               <tr>
-                <td>3</td>
+                <td>4</td>
                 <td><code>&lt;exe&gt;/plugins</code></td>
-                <td>the installed layout, next to <code>spidr.exe</code></td>
+                <td>the installed layout, next to <code>spid3r.exe</code></td>
               </tr>
               <tr>
-                <td>4</td>
+                <td>5</td>
                 <td><code>~/.spidr/plugins</code></td>
                 <td>a per-user set</td>
               </tr>
@@ -1586,8 +1605,8 @@ value := u8 tag, payload
 
         <div class="code">
           <div class="bar"><span>shell</span><span class="lang">bash</span></div>
-          <pre><code><span class="c"># a directory that contains plugin directories</span>
-<span class="k">export</span> SPID3R_PLUGINS=./plugins:/opt/spidr/plugins
+          <pre><code><span class="c"># a semicolon-separated list of directories that contain plugin directories</span>
+<span class="k">export</span> SPID3R_PLUGINS=<span class="s">"./plugins;/opt/spid3r/plugins"</span>
 
 <span class="c"># then any program can call the plugin's functions</span>
 spid3r run app.matrix
@@ -1603,7 +1622,7 @@ spid3r run app.matrix
               </tr>
             </thead>
             <tbody>
-              <tr><td><code>run</code>, <code>check</code>, <code>compile</code>, <code>exec</code>, <code>test</code>, <code>bench</code>, <code>debug</code>, <code>gui</code>, <code>repl</code></td><td>yes</td></tr>
+              <tr><td><code>run</code>, <code>check</code>, <code>compile</code>, <code>exec</code>, <code>test</code>, <code>bench</code>, <code>debug</code>, <code>gui</code>, <code>repl</code>, <code>magic</code></td><td>yes</td></tr>
               <tr><td><code>build</code>, <code>dist</code></td><td><strong>no</strong> — a native executable cannot link one</td></tr>
               <tr><td><code>fmt</code>, <code>version</code>, <code>lsp</code>, package commands</td><td>no — they never run a program</td></tr>
             </tbody>
@@ -1637,11 +1656,15 @@ spid3r run app.matrix
         <h2><span class="num">10</span> Permissions &amp; fuel</h2>
         <p class="subtitle">What a filter can do, and what only a sandbox can do.</p>
 
-        <h3>The permission gate</h3>
+        <h3>The permission gate &amp; <code>spid3r.ini</code></h3>
         <p>
           A function may declare a <code>permission</code>. A host that calls
-          <code>Engine::deny(Capability::Environment)</code> replaces every function declaring
-          <code>environment</code> — builtin <em>or plugin</em> — with a stub that returns a catchable error.
+          <code>Engine::deny(Capability::Environment)</code> — or a host configured with
+          <code>[security] deny_environment = true</code> (or <code>--sandbox</code>) — replaces every function declaring
+          <code>environment</code>, builtin <em>or plugin</em>, with a stub that returns a catchable error.
+          In <code>spid3r.ini</code> (and the <strong>Safety</strong> tab of <code>spid3r-control.exe</code>),
+          <code>modules.allow_wasm = false</code> disables loading <code>.wasm</code> plugins from disk and
+          <code>modules.allow_host = false</code> disables registering Rust host plugins; both keys are frozen against remote changes.
         </p>
 
         <div class="code">
@@ -1711,8 +1734,8 @@ spid3r run app.matrix
                 </td>
               </tr>
               <tr>
-                <td>The <code>spidr</code> binary ships with no host plugins</td>
-                <td><code>spid3r run</code> can use WASM plugins only. A host plugin needs a binary that registers it.</td>
+                <td>The <code>spid3r</code> binary ships with no host plugins</td>
+                <td><code>spid3r run</code> loads <code>matrix</code> and <code>wasm</code> plugins from disk. A <code>host</code> plugin needs a Rust binary that registers it.</td>
               </tr>
               <tr>
                 <td>A WASM guest cannot import anything</td>
@@ -1734,7 +1757,7 @@ spid3r run app.matrix
               <tr>
                 <td>FFI is <strong>AOT-only</strong></td>
                 <td><code>extern fn</code> resolves at link time, so <code>spid3r run</code> rejects it with
-                  <code>error[usage]</code>. Only int, float, bool and string cross the boundary</td>
+                  <code>error[usage]</code>. <code>int</code>, <code>float</code>, <code>bool</code>, <code>string</code>, <code>ptr</code>, and <code>usize</code> cross the boundary (see <code>docs/FFI.md</code>)</td>
               </tr>
             </tbody>
           </table>
@@ -1801,6 +1824,7 @@ spid3r run app.matrix
               <tr><td><code>src/plugin/manifest.rs</code></td><td>the <code>plugin.toml</code> parser</td></tr>
               <tr><td><code>src/plugin/abi.rs</code></td><td>the wire format</td></tr>
               <tr><td><code>src/plugin/wasm.rs</code></td><td>the <code>wasmi</code> host: sandbox, fuel, calls</td></tr>
+              <tr><td><code>examples/plugins/hello-matrix</code></td><td>Spid3r-source (<code>kind = "matrix"</code>) plugin sample</td></tr>
               <tr><td><code>examples/plugins/hello-host</code></td><td>host plugin sample</td></tr>
               <tr><td><code>examples/plugins/hello-wasm</code></td><td>WASM plugin sample, with its built module</td></tr>
               <tr><td><code>tests/plugin_api.rs</code></td><td>registration, lifecycle, permission gate</td></tr>
@@ -1858,7 +1882,11 @@ spid3r run app.matrix
               <tr>
                 <td><code>kind = "host" must be compiled into its host</code></td>
                 <td>A host plugin was placed on the disk search path. Host plugins are Rust; only
-                  <code>kind = "wasm"</code> loads from disk.</td>
+                  <code>kind = "matrix"</code> and <code>kind = "wasm"</code> load from disk.</td>
+              </tr>
+              <tr>
+                <td><code>disabled by configuration (modules.allow_wasm = false)</code></td>
+                <td>WASM (or host) plugins are restricted in <code>spid3r.ini</code> or the <strong>Safety</strong> tab of <code>spid3r-control.exe</code>. Enable <code>modules.allow_wasm = true</code> / <code>modules.allow_host = true</code> on the host.</td>
               </tr>
               <tr>
                 <td><code>would shadow a builtin</code></td>

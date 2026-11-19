@@ -59,17 +59,25 @@ pub fn cmd_control(args: &[String]) -> i32 {
         "config" => cmd_config(&args[1.min(args.len())..]),
         "agent" => cmd_agent(&args[1.min(args.len())..]),
         "devices" => cmd_devices(&args[1.min(args.len())..]),
+        "pair" => cmd_pair(&args[1.min(args.len())..]),
+        "ops" => cmd_ops(&args[1.min(args.len())..]),
+        "logs" => cmd_logs(&args[1.min(args.len())..]),
         "audit" => cmd_audit(&args[1.min(args.len())..]),
+        "remote" => cmd_remote(&args[1.min(args.len())..]),
         "--help" | "help" | "-h" => {
             print!(
                 "USAGE:\n    \
                  spid3r control [status]        Machine-wide runtime dashboard\n    \
                  spid3r control safety          Capability switches (deny_* / remote / plugins)\n    \
-                 spid3r control config set KEY VALUE | get KEY | reset KEY | validate | list\n    \
+                 spid3r control config set KEY VALUE | get KEY | reset KEY | reset-all [SEC] | reload | validate | list\n    \
                  spid3r control ini [--init] [--force]\n    \
                  spid3r control agent start|stop|status\n    \
                  spid3r control devices [list] | revoke <id>\n    \
-                 spid3r control audit [N]       Tail the audit log (default 20)\n"
+                 spid3r control pair [--role viewer|operator|admin] [--name LABEL] [--ttl SEC]\n    \
+                 spid3r control ops [list | run NAME]\n    \
+                 spid3r control logs [N]        Tail the diagnostic log (default 50)\n    \
+                 spid3r control audit [N]       Tail the audit log (default 20)\n    \
+                 spid3r control remote list | pair ADDR CODE [--name NAME] | remove NAME | call HOST OP\n"
             );
             0
         }
@@ -270,6 +278,14 @@ fn cmd_config(args: &[String]) -> i32 {
             Some(key) => ops::dispatch("config_reset", &format!("{{\"key\":{}}}", ops::jstr(key))),
             None => return usage_err("control config reset needs KEY"),
         },
+        "reset-all" => {
+            let sec = rest.first().map(String::as_str).unwrap_or("");
+            ops::dispatch(
+                "config_reset_all",
+                &format!("{{\"section\":{}}}", ops::jstr(sec)),
+            )
+        }
+        "reload" => ops::dispatch("config_reload", "{}"),
         "validate" => ops::dispatch("config_validate", "{}"),
         "list" => ops::dispatch("config_list", "{}"),
         "--help" | "help" | "-h" => {
@@ -278,6 +294,8 @@ fn cmd_config(args: &[String]) -> i32 {
                  spid3r control config set KEY VALUE\n    \
                  spid3r control config get KEY\n    \
                  spid3r control config reset KEY        Restore the schema default\n    \
+                 spid3r control config reset-all [SEC]  Restore all defaults (or one section)\n    \
+                 spid3r control config reload           Reload spid3r.ini live\n    \
                  spid3r control config validate\n    \
                  spid3r control config list\n"
             );
@@ -352,5 +370,192 @@ fn cmd_audit(args: &[String]) -> i32 {
             eprintln!("error[control]: {}", e);
             1
         }
+    }
+}
+
+fn cmd_logs(args: &[String]) -> i32 {
+    let n: usize = args.first().and_then(|a| a.parse().ok()).unwrap_or(50);
+    let params = format!("{{\"n\":\"{}\"}}", n);
+    match ops::dispatch("logs_tail", &params) {
+        Ok(json) => {
+            if let Some(p) = ops::field(&json, "path") {
+                if !p.is_empty() {
+                    println!("# {}", p);
+                }
+            }
+            if let Some(text) = ops::field(&json, "text") {
+                for line in text.lines() {
+                    println!("{}", line);
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error[control]: {}", e);
+            1
+        }
+    }
+}
+
+fn cmd_pair(args: &[String]) -> i32 {
+    let mut role = "operator".to_string();
+    let mut name = String::new();
+    let mut ttl = String::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--role" if i + 1 < args.len() => {
+                role = args[i + 1].clone();
+                i += 2;
+            }
+            "--name" if i + 1 < args.len() => {
+                name = args[i + 1].clone();
+                i += 2;
+            }
+            "--ttl" if i + 1 < args.len() => {
+                ttl = args[i + 1].clone();
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+    let params = format!(
+        "{{\"role\":{},\"name\":{},\"ttl\":{}}}",
+        ops::jstr(&role),
+        ops::jstr(&name),
+        ops::jstr(&ttl),
+    );
+    match ops::dispatch("pair_create", &params) {
+        Ok(json) => {
+            println!("code: {}", ops::field(&json, "code").unwrap_or_default());
+            println!("role: {}", ops::field(&json, "role").unwrap_or_default());
+            println!("addr: {}", ops::field(&json, "addr").unwrap_or_default());
+            0
+        }
+        Err(e) => {
+            eprintln!("error[control]: {}", e);
+            1
+        }
+    }
+}
+
+fn cmd_ops(args: &[String]) -> i32 {
+    let sub = args.first().map(String::as_str).unwrap_or("list");
+    match sub {
+        "list" => {
+            for op in crate::agent::OP_NAMES {
+                println!("{}", op);
+            }
+            0
+        }
+        "run" => {
+            let Some(name) = args.get(1) else {
+                return usage_err("control ops run needs an operation name");
+            };
+            match ops::dispatch("ops_run", &format!("{{\"name\":{}}}", ops::jstr(name))) {
+                Ok(json) => {
+                    println!(
+                        "{}",
+                        ops::field(&json, "result")
+                            .or_else(|| ops::field(&json, "message"))
+                            .unwrap_or_default()
+                    );
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error[control]: {}", e);
+                    1
+                }
+            }
+        }
+        other => usage_err(&format!("unknown ops subcommand '{}'", other)),
+    }
+}
+
+fn cmd_remote(args: &[String]) -> i32 {
+    let sub = args.first().map(String::as_str).unwrap_or("list");
+    match sub {
+        "list" => match ops::dispatch("remote_list", "{}") {
+            Ok(json) => {
+                let hosts = ops::field(&json, "hosts").unwrap_or_default();
+                if hosts.is_empty() {
+                    println!("no remote hosts paired");
+                } else {
+                    for row in hosts.lines() {
+                        let p: Vec<&str> = row.splitn(3, '|').collect();
+                        if p.len() == 3 {
+                            println!("{:<18} {:<24} {}", p[0], p[1], p[2]);
+                        }
+                    }
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("error[control]: {}", e);
+                1
+            }
+        },
+        "pair" => {
+            let (Some(addr), Some(code)) = (args.get(1), args.get(2)) else {
+                return usage_err("control remote pair needs ADDR CODE [--name NAME]");
+            };
+            let name = args
+                .iter()
+                .position(|a| a == "--name")
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+                .unwrap_or_default();
+            let params = format!(
+                "{{\"addr\":{},\"code\":{},\"name\":{}}}",
+                ops::jstr(addr),
+                ops::jstr(code),
+                ops::jstr(&name)
+            );
+            match ops::dispatch("remote_pair", &params) {
+                Ok(json) => {
+                    println!("{}", ops::field(&json, "message").unwrap_or_default());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error[control]: {}", e);
+                    1
+                }
+            }
+        }
+        "remove" => {
+            let Some(name) = args.get(1) else {
+                return usage_err("control remote remove needs NAME");
+            };
+            match ops::dispatch(
+                "remote_remove",
+                &format!("{{\"name\":{}}}", ops::jstr(name)),
+            ) {
+                Ok(json) => {
+                    println!("{}", ops::field(&json, "message").unwrap_or_default());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error[control]: {}", e);
+                    1
+                }
+            }
+        }
+        "call" => {
+            let (Some(host), Some(op)) = (args.get(1), args.get(2)) else {
+                return usage_err("control remote call needs HOST OP");
+            };
+            let params = format!("{{\"host\":{},\"op\":{}}}", ops::jstr(host), ops::jstr(op));
+            match ops::dispatch("remote_call", &params) {
+                Ok(json) => {
+                    println!("{}", ops::field(&json, "response").unwrap_or_default());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error[control]: {}", e);
+                    1
+                }
+            }
+        }
+        other => usage_err(&format!("unknown remote subcommand '{}'", other)),
     }
 }

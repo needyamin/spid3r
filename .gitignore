@@ -1,3 +1,5 @@
+/spid3r_web/
+
 # --- Rust build output -------------------------------------------------------
 # Full build tree (debug + release, ~5 GB with the optional features).
 /target/
@@ -112,6 +114,5 @@ __pycache__/
 # file is ADVISORY ONLY and must never be committed. The frozen, pinned-host
 # snapshot is benchmarks/results.phase0.json (which IS committed).
 /benchmarks/results.phase0.ci-advisory.json
-/task.html
 
 /kernel/target/

@@ -24,8 +24,17 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// Rotate once the log passes this size.
-const MAX_BYTES: u64 = 1024 * 1024;
+/// Default rotation ceiling (1 MiB) when `logging.rotate_mb` is unset.
+const DEFAULT_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Configured log rotation size in bytes (`logging.rotate_mb`, 1..=1024 MiB).
+fn rotate_max_bytes() -> u64 {
+    let mb = crate::config::get("logging.rotate_mb")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(1)
+        .clamp(1, 1024);
+    mb.saturating_mul(DEFAULT_MAX_BYTES)
+}
 
 /// A single line is capped here (a diagnostic can embed a source excerpt).
 const MAX_LINE: usize = 8 * 1024;
@@ -105,6 +114,8 @@ pub enum Level {
     Error,
     Warn,
     Info,
+    Debug,
+    Trace,
 }
 
 impl Level {
@@ -113,7 +124,35 @@ impl Level {
             Level::Error => 0,
             Level::Warn => 1,
             Level::Info => 2,
+            Level::Debug => 3,
+            Level::Trace => 4,
         }
+    }
+}
+
+/// Configured `[debug] enabled` switch.
+pub fn debug_enabled() -> bool {
+    crate::config::get("debug.enabled")
+        .map(|v| crate::config::schema::parse_bool(&v))
+        .unwrap_or(false)
+}
+
+/// Configured `[debug] log_level` (`error|warn|info|debug|trace`, default `info`).
+fn configured_log_level() -> Level {
+    match crate::config::get("debug.log_level").as_deref() {
+        Some("error") => Level::Error,
+        Some("warn") => Level::Warn,
+        Some("debug") => Level::Debug,
+        Some("trace") => Level::Trace,
+        _ => Level::Info,
+    }
+}
+
+/// Record a debug-level line (only emitted when `debug.enabled = true` and
+/// `debug.log_level` is `debug` or `trace`).
+pub fn record_debug(scope: &str, message: &str) {
+    if debug_enabled() {
+        record_at(scope, message, Level::Debug);
     }
 }
 
@@ -207,6 +246,9 @@ fn record_at(scope: &str, message: &str, severity: Level) {
     if !enabled() {
         return;
     }
+    if severity.rank() > configured_log_level().rank() {
+        return;
+    }
     let Some(file) = path() else { return };
     let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -260,8 +302,9 @@ fn record_at(scope: &str, message: &str, severity: Level) {
 /// Keep the log bounded: rename to `<name>.1` once it is too big. Best effort;
 /// a failure here only means the file keeps growing.
 fn rotate_if_needed(file: &std::path::Path) {
+    let limit = rotate_max_bytes();
     let too_big = std::fs::metadata(file)
-        .map(|m| m.len() > MAX_BYTES)
+        .map(|m| m.len() > limit)
         .unwrap_or(false);
     if !too_big {
         return;

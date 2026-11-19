@@ -32,15 +32,48 @@ use super::ops::{field, jstr};
 /// this whitelist against `spid3r --help` so a new CLI command cannot ship
 /// without a panel decision.
 const ALLOWED: &[&str] = &[
-    "run", "check", "compile", "build", "test", "fmt", "doc", "disasm", "exec", "modules", "init",
-    "install", "pack", "unpack", "dist", "bench", "plugin", "info", "version", "magic", "bundle",
+    "run",
+    "check",
+    "compile",
+    "build",
+    "test",
+    "fmt",
+    "doc",
+    "disasm",
+    "exec",
+    "modules",
+    "init",
+    "install",
+    "pack",
+    "unpack",
+    "dist",
+    "bench",
+    "plugin",
+    "info",
+    "version",
+    "magic",
+    "bundle",
     // Package / registry one-shots and module tooling (parity with the CLI).
-    "add", "publish", "remove", "search", "verify", "tree",
+    "add",
+    "publish",
+    "remove",
+    "search",
+    "verify",
+    "tree",
     // Device-pairing and remote administration one-shots.
-    "admin", "agent", "help",
+    "admin",
+    "agent",
+    "help",
     // Stage-0 oracle dumps (SH-5): deterministic captured-output one-shots,
     // same shape as `disasm`.
-    "tokens", "parse",
+    "tokens",
+    "parse",
+    // Container engine and bare-metal kernel builder.
+    "container",
+    "kernel",
+    // Container engine and bare-metal kernel builder.
+    "container",
+    "kernel",
 ];
 
 /// Commands that run interactively in their own console / window instead of
@@ -316,7 +349,17 @@ pub fn op_lang_info() -> Result<String, String> {
         .stdin(std::process::Stdio::null())
         .output()
         .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        .filter(|o| o.status.success())
+        .map(|o| {
+            let raw = String::from_utf8_lossy(&o.stdout);
+            if let Some(v_line) = raw.lines().find(|l| l.trim_start().starts_with("Version")) {
+                let v = v_line.trim().split_whitespace().nth(1).unwrap_or("");
+                if !v.is_empty() {
+                    return format!("spid3r {} (language {})", v, crate::LANGUAGE_VERSION);
+                }
+            }
+            raw.lines().next().unwrap_or("").trim().to_string()
+        });
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();

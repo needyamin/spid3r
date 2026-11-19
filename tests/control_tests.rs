@@ -423,3 +423,188 @@ fn every_cli_command_is_panel_decidable() {
         );
     }
 }
+
+#[test]
+fn control_pair_create_ops_run_logs_and_config_reload_work() {
+    let sb = sandbox("ops-extended");
+
+    // config_reload
+    let out = sb
+        .command(&["control", "config", "reload"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("reloaded"));
+
+    // pair_create
+    let out = sb
+        .command(&[
+            "control", "pair", "--role", "operator", "--name", "ci-box", "--ttl", "120",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("code: "), "missing code: {stdout}");
+    assert!(stdout.contains("role: operator"), "missing role: {stdout}");
+
+    // ops_run self_test
+    let out = sb
+        .command(&["control", "ops", "run", "self_test"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("passed"));
+
+    // logs_tail & remote_list (empty)
+    let out = sb.command(&["control", "logs", "10"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = sb.command(&["control", "remote", "list"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("no remote hosts paired"));
+
+    // config_reset_all on a single section
+    let out = sb
+        .command(&["control", "config", "set", "agent.name", "custom-node"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out = sb
+        .command(&["control", "config", "reset-all", "agent"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = sb
+        .command(&["control", "config", "get", "agent.name"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "agent.name =");
+}
+
+#[test]
+fn control_remote_pair_and_call_roundtrip_over_encrypted_agent() {
+    let sb = sandbox("remote-roundtrip");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    std::fs::write(
+        ini_in(&sb),
+        format!(
+            "[agent]\nenabled = true\nbind = 127.0.0.1\nport = {}\nname = ctrl-node\n",
+            port
+        ),
+    )
+    .unwrap();
+
+    // Create pairing code via `spid3r control pair`
+    let pair_out = sb
+        .command(&[
+            "control",
+            "pair",
+            "--role",
+            "admin",
+            "--name",
+            "ctrl-client",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        pair_out.status.success(),
+        "pair_create failed: {}",
+        String::from_utf8_lossy(&pair_out.stderr)
+    );
+    let code = String::from_utf8_lossy(&pair_out.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("code: "))
+        .expect("pairing code")
+        .trim()
+        .to_string();
+
+    // Spawn the agent
+    let agent = sb
+        .command(&["agent", "start"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    struct Kill(std::process::Child);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _guard = Kill(agent);
+
+    let addr = format!("127.0.0.1:{}", port);
+    for _ in 0..40 {
+        if std::net::TcpStream::connect(&addr).is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Pair via `spid3r control remote pair`
+    let p = sb
+        .command(&["control", "remote", "pair", &addr, &code, "--name", "lab"])
+        .output()
+        .unwrap();
+    assert!(
+        p.status.success(),
+        "remote pair failed: {}",
+        String::from_utf8_lossy(&p.stderr)
+    );
+
+    // Call `status` via `spid3r control remote call`
+    let c = sb
+        .command(&["control", "remote", "call", "lab", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        c.status.success(),
+        "remote call failed: {}",
+        String::from_utf8_lossy(&c.stderr)
+    );
+    let resp = String::from_utf8_lossy(&c.stdout);
+    assert!(
+        resp.contains("ctrl-node"),
+        "unexpected status response: {resp}"
+    );
+
+    // Remove via `spid3r control remote remove`
+    let r = sb
+        .command(&["control", "remote", "remove", "lab"])
+        .output()
+        .unwrap();
+    assert!(
+        r.status.success(),
+        "remote remove failed: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+}

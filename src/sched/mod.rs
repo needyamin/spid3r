@@ -656,8 +656,14 @@ impl Scheduler {
     fn start() -> Arc<Scheduler> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let max_workers = env_usize("SPID3R_MAX_WORKERS", DEFAULT_MAX_WORKERS).max(1);
-            let queue_cap = env_usize("SPID3R_QUEUE_CAP", DEFAULT_QUEUE_CAP).max(1);
+            let max_workers = env_or_cfg_usize(
+                "SPID3R_MAX_WORKERS",
+                "spid3r.max_workers",
+                DEFAULT_MAX_WORKERS,
+            )
+            .max(1);
+            let queue_cap =
+                env_or_cfg_usize("SPID3R_QUEUE_CAP", "spid3r.queue_cap", DEFAULT_QUEUE_CAP).max(1);
             let base = thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1)
@@ -1079,11 +1085,14 @@ impl Scheduler {
 pub const DEFAULT_DRAIN_MS: u64 = 2000;
 
 /// Configured drain deadline in milliseconds (`SPID3R_TASK_DRAIN_MS`, else
-/// [`DEFAULT_DRAIN_MS`]).
+/// `spid3r.task_drain_ms` from `spid3r.ini`, else [`DEFAULT_DRAIN_MS`]).
 fn drain_ms() -> u64 {
     std::env::var("SPID3R_TASK_DRAIN_MS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
+        .or_else(|| {
+            crate::config::get("spid3r.task_drain_ms").and_then(|v| v.trim().parse::<u64>().ok())
+        })
         .unwrap_or(DEFAULT_DRAIN_MS)
 }
 
@@ -1266,21 +1275,30 @@ fn watchdog_loop(inner: Arc<SchedInner>) {
 }
 
 /// Should a detected deadlock abort the process? Default yes; an embedding
-/// host that supervises its own waits sets `SPID3R_DEADLOCK_ABORT=0`.
+/// host that supervises its own waits sets `SPID3R_DEADLOCK_ABORT=0` or
+/// `spid3r.deadlock_abort = false` in `spid3r.ini`.
 #[cfg(not(target_arch = "wasm32"))]
 fn deadlock_abort_enabled() -> bool {
-    std::env::var("SPID3R_DEADLOCK_ABORT")
-        .map(|v| !v.is_empty() && v != "0")
+    if let Ok(v) = std::env::var("SPID3R_DEADLOCK_ABORT") {
+        return !v.is_empty() && v != "0";
+    }
+    crate::config::get("spid3r.deadlock_abort")
+        .map(|v| crate::config::schema::parse_bool(&v))
         .unwrap_or(true)
 }
 
-/// Read a positive `usize` from the environment, falling back to `default`.
+/// Read a positive `usize` from the environment, else `spid3r.ini`, else `default`.
 #[cfg(not(target_arch = "wasm32"))]
-fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
+fn env_or_cfg_usize(env_key: &str, cfg_key: &str, default: usize) -> usize {
+    std::env::var(env_key)
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|n| *n > 0)
+        .or_else(|| {
+            crate::config::get(cfg_key)
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .filter(|n| *n > 0)
+        })
         .unwrap_or(default)
 }
 

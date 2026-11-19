@@ -282,6 +282,17 @@ pub fn register(host: Box<dyn PluginHost>) -> Result<(), String> {
         });
     }
 
+    if manifest.kind == PluginKind::Host
+        && !crate::config::get("modules.allow_host")
+            .map(|v| crate::config::schema::parse_bool(&v))
+            .unwrap_or(true)
+    {
+        return Err(format!(
+            "plugin '{}': host plugins are disabled by configuration (modules.allow_host = false)",
+            manifest.name
+        ));
+    }
+
     let functions = host.functions();
 
     // A declared function may only use a capability the manifest announced.
@@ -588,6 +599,17 @@ pub fn default_plugin_dirs() -> Vec<PathBuf> {
             }
         }
     }
+    if let Some(list) = crate::config::get("modules.plugins") {
+        for part in list.split(';') {
+            let part = part.trim();
+            if !part.is_empty() {
+                let p = PathBuf::from(part);
+                if !dirs.contains(&p) {
+                    dirs.push(p);
+                }
+            }
+        }
+    }
     dirs.push(PathBuf::from("plugins"));
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -680,14 +702,32 @@ pub fn declared_on_disk() -> Vec<String> {
     names
 }
 
-/// Load a WASM plugin when the feature is compiled in; explain when it is not.
+/// Load a WASM plugin when the feature is compiled in and `modules.allow_wasm` is true.
 #[cfg(feature = "plugins-wasm")]
-fn register_wasm_if_enabled(dir: &Path, _name: &str) -> Result<(), String> {
+fn register_wasm_if_enabled(dir: &Path, name: &str) -> Result<(), String> {
+    if !crate::config::get("modules.allow_wasm")
+        .map(|v| crate::config::schema::parse_bool(&v))
+        .unwrap_or(true)
+    {
+        return Err(format!(
+            "plugin '{}': WASM plugins are disabled by configuration (modules.allow_wasm = false)",
+            name
+        ));
+    }
     register_wasm(dir)
 }
 
 #[cfg(not(feature = "plugins-wasm"))]
 fn register_wasm_if_enabled(_dir: &Path, name: &str) -> Result<(), String> {
+    if !crate::config::get("modules.allow_wasm")
+        .map(|v| crate::config::schema::parse_bool(&v))
+        .unwrap_or(true)
+    {
+        return Err(format!(
+            "plugin '{}': WASM plugins are disabled by configuration (modules.allow_wasm = false)",
+            name
+        ));
+    }
     Err(format!(
         "plugin '{}' is a WASM plugin, but this build was compiled without the `plugins-wasm` feature",
         name

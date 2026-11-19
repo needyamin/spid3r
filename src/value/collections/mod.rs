@@ -402,6 +402,7 @@ pub fn construct(name: &str, args: Vec<Value>) -> Result<Value, String> {
                         if nu > 16_777_216 {
                             return Err(format!("bytes size {} is too large (max 16777216)", nu));
                         }
+                        crate::budget::check_single_allocation(nu)?;
                         Ok(Value::Bytes(new_ref(vec![0u8; nu])))
                     }
                     Value::List(l) | Value::VecDyn(l) => {
@@ -1205,9 +1206,12 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
             }
             const MAX_STR_BYTES: usize = 64 * 1024 * 1024;
             let count = usize::try_from(n).map_err(|_| "repeat count is too large".to_string())?;
-            if s.len().checked_mul(count).is_none_or(|b| b > MAX_STR_BYTES) {
-                return Err("repeat result exceeds maximum string size".to_string());
-            }
+            let total_bytes = s
+                .len()
+                .checked_mul(count)
+                .filter(|&b| b <= MAX_STR_BYTES)
+                .ok_or_else(|| "repeat result exceeds maximum string size".to_string())?;
+            crate::budget::check_single_allocation(total_bytes)?;
             Ok(Value::Str(s.repeat(count).into()))
         }
         "ltrim" => {
