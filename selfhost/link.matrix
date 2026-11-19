@@ -32,20 +32,23 @@ public fn find_msvc_link_exe() {
             continue;
         }
         let entries = lr.unwrap();
+        let editions = ["BuildTools", "Enterprise", "Professional", "Community"];
         for e in entries {
-            let vc = base + "/" + e + "/BuildTools/VC/Tools/MSVC";
-            if not is_dir(vc) {
-                continue;
-            }
-            let vr = list_dir(vc);
-            if vr.is_err() {
-                continue;
-            }
-            let versions = vr.unwrap();
-            // newest last (lexicographic sort like the oracle's dirs.sort())
-            versions.sort();
-            if versions.len() > 0 {
-                roots.push(vc + "/" + versions[versions.len() - 1]);
+            for ed in editions {
+                let vc = base + "/" + e + "/" + ed + "/VC/Tools/MSVC";
+                if not is_dir(vc) {
+                    continue;
+                }
+                let vr = list_dir(vc);
+                if vr.is_err() {
+                    continue;
+                }
+                let versions = vr.unwrap();
+                // newest last (lexicographic sort like the oracle's dirs.sort())
+                versions.sort();
+                if versions.len() > 0 {
+                    roots.push(vc + "/" + versions[versions.len() - 1]);
+                }
             }
         }
     }

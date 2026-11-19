@@ -1446,17 +1446,14 @@ fn vs_roots() -> Vec<PathBuf> {
         let p = PathBuf::from(base);
         if let Ok(entries) = std::fs::read_dir(&p) {
             for e in entries.flatten() {
-                let vc = e
-                    .path()
-                    .join("BuildTools")
-                    .join("VC")
-                    .join("Tools")
-                    .join("MSVC");
-                if let Ok(versions) = std::fs::read_dir(&vc) {
-                    let mut dirs: Vec<PathBuf> = versions.flatten().map(|v| v.path()).collect();
-                    dirs.sort();
-                    if let Some(latest) = dirs.last() {
-                        roots.push(latest.clone());
+                for edition in ["BuildTools", "Enterprise", "Professional", "Community"] {
+                    let vc = e.path().join(edition).join("VC").join("Tools").join("MSVC");
+                    if let Ok(versions) = std::fs::read_dir(&vc) {
+                        let mut dirs: Vec<PathBuf> = versions.flatten().map(|v| v.path()).collect();
+                        dirs.sort();
+                        if let Some(latest) = dirs.last() {
+                            roots.push(latest.clone());
+                        }
                     }
                 }
             }
@@ -1681,9 +1678,12 @@ fn link_windows(
         }
     }
     if link_exe.is_none() {
-        // fall back to a link.exe on PATH that is not Git's coreutils shim
+        // fall back to a link.exe on PATH that is not Git/MSYS coreutils' link shim
         if let Some(p) = which_program("link") {
-            link_exe = Some(p);
+            let lower = p.to_string_lossy().to_ascii_lowercase();
+            if !lower.contains("\\usr\\bin\\link") && !lower.contains("/usr/bin/link") {
+                link_exe = Some(p);
+            }
         }
     }
     let link_exe = link_exe.ok_or_else(|| {

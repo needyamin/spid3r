@@ -67,12 +67,8 @@ jobs:
           brew install llvm || brew upgrade llvm
           PREFIX="$(brew --prefix llvm)"
           "$PREFIX/bin/llvm-config" --version
-          SDK="$(xcrun --show-sdk-path)"
           echo "LLVM_SYS_231_PREFIX=$PREFIX" >> "$GITHUB_ENV"
           echo "SPID3R_LLVM_LIB_DIR=$PREFIX/lib" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
-          echo "SDKROOT=$SDK" >> "$GITHUB_ENV"
-          echo "CC=/usr/bin/clang" >> "$GITHUB_ENV"
           echo "$PREFIX/bin" >> "$GITHUB_PATH"
 
       # Pinned to the same toolchain as rust-toolchain.toml and ci.yml (1.99.1).
@@ -84,7 +80,15 @@ jobs:
 
       - name: Build Stage-0 bootstrap & pinned runtime staticlib
         timeout-minutes: 45
-        run: cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features native
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features native 2>&1 | tee cargo_build.log; then
+            tail -n 25 cargo_build.log | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 101
+          fi
 
       - name: Build & verify self-hosted release tarball (Stage 1 -> Stage 2 -> Stage 3)
         timeout-minutes: 25
