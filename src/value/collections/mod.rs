@@ -7,7 +7,7 @@ pub mod misc;
 pub mod nodes;
 pub mod seq;
 
-pub use fxhash::{FxHashMap, FxHashSet, FxHasher};
+pub use fxhash::{fx_hash_map_key, fx_hash_str, FxHashMap, FxHashSet, FxHasher};
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -1703,7 +1703,13 @@ pub fn index_get(obj: &Value, idx: &Value) -> Result<Value, String> {
             h.get(&k)
         }
         Value::Map(d) => {
-            let d = d.lock().unwrap();
+            let d = crate::value::lock_ref(d);
+            if let Value::Str(s) = idx {
+                return match d.find_str(s.as_ref()) {
+                    Some(i) => Ok(d.entries[i].1.clone()),
+                    None => Err(format!("missing key {}", s)),
+                };
+            }
             let k = as_map_key(idx)?;
             match d.find(&k) {
                 Some(i) => Ok(d.entries[i].1.clone()),

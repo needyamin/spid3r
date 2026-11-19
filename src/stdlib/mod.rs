@@ -3091,8 +3091,16 @@ fn json_write_capacity(v: &Value) -> usize {
 }
 
 fn n_json_parse(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    let s = want_str(&one("json_parse", &args)?, "json_parse")?;
-    json_parse_str(&s)
+    if args.len() != 1 {
+        return Err(format!("json_parse expects 1 argument, got {}", args.len()));
+    }
+    match &args[0] {
+        Value::Str(s) => json_parse_str(s.as_ref()),
+        other => Err(format!(
+            "json_parse expects string, found {}",
+            crate::value::type_name(other)
+        )),
+    }
 }
 
 fn n_json_write(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
@@ -3140,6 +3148,8 @@ struct JsonParser<'a> {
     b: &'a [u8],
     pos: usize,
     depth: usize,
+    /// Small per-parse intern cache for repeated object keys (Track 3 RT-4).
+    key_intern: Vec<(&'a str, Arc<str>)>,
 }
 
 /// One shared entry point behind the `json_parse` builtin and the host-side
@@ -3150,6 +3160,7 @@ fn json_parse_str(s: &str) -> Result<Value, String> {
         b: s.as_bytes(),
         pos: 0,
         depth: 0,
+        key_intern: Vec::new(),
     };
     let v = parser.parse_value()?;
     parser.skip_ws();
@@ -3201,7 +3212,7 @@ impl JsonParser<'_> {
         match self.peek() {
             Some(b'{') => self.parse_object(),
             Some(b'[') => self.parse_array(),
-            Some(b'"') => Ok(Value::Str(self.parse_string()?.into())),
+            Some(b'"') => Ok(Value::Str(self.parse_string_arc(false)?)),
             Some(b't') => self.expect_word("true", Value::Bool(true)),
             Some(b'f') => self.expect_word("false", Value::Bool(false)),
             Some(b'n') => self.expect_word("null", Value::Null),
@@ -3317,9 +3328,40 @@ impl JsonParser<'_> {
             }
         }
     }
-    fn parse_string(&mut self) -> Result<String, String> {
+    fn parse_string_arc(&mut self, intern_key: bool) -> Result<Arc<str>, String> {
         self.pos += 1; // opening quote
-        let mut out: Vec<u8> = Vec::new();
+        let start = self.pos;
+        while self.pos < self.b.len() {
+            let c = self.b[self.pos];
+            if c == b'"' {
+                let end = self.pos;
+                self.pos += 1;
+                let raw = std::str::from_utf8(&self.b[start..end])
+                    .map_err(|_| "json_parse: invalid string encoding".to_string())?;
+                if intern_key {
+                    for (k, arc) in &self.key_intern {
+                        if *k == raw {
+                            return Ok(arc.clone());
+                        }
+                    }
+                    let arc: Arc<str> = Arc::from(raw);
+                    if self.key_intern.len() < 16 {
+                        self.key_intern.push((raw, arc.clone()));
+                    }
+                    return Ok(arc);
+                }
+                return Ok(Arc::from(raw));
+            }
+            if c == b'\\' {
+                let mut out: Vec<u8> = Vec::with_capacity((self.pos - start) + 16);
+                out.extend_from_slice(&self.b[start..self.pos]);
+                return self.parse_string_escaped(out).map(Arc::from);
+            }
+            self.pos += 1;
+        }
+        Err("json_parse: unterminated string".to_string())
+    }
+    fn parse_string_escaped(&mut self, mut out: Vec<u8>) -> Result<String, String> {
         loop {
             match self.peek() {
                 None => return Err("json_parse: unterminated string".to_string()),
@@ -3449,24 +3491,24 @@ impl JsonParser<'_> {
     }
     fn parse_object(&mut self) -> Result<Value, String> {
         self.pos += 1;
-        let mut entries: Vec<(crate::value::MapKey, Value)> = Vec::new();
         self.skip_ws();
         if self.peek() == Some(b'}') {
             self.pos += 1;
             return Ok(Value::Map(crate::value::new_ref(
-                crate::value::collections::seq::MapData::from_entries(entries),
+                crate::value::collections::seq::MapData::from_entries(Vec::new()),
             )));
         }
+        let mut entries: Vec<(crate::value::MapKey, Value)> = Vec::with_capacity(4);
         loop {
             self.skip_ws();
-            let key = self.parse_string()?;
+            let key = self.parse_string_arc(true)?;
             self.skip_ws();
             if self.peek() != Some(b':') {
                 return Err("json_parse: expected ':'".to_string());
             }
             self.pos += 1;
             let value = self.parse_value()?;
-            let mk = crate::value::MapKey::Str(key.into());
+            let mk = crate::value::MapKey::Str(key);
             if let Some(pos) = entries.iter().position(|(k, _)| k == &mk) {
                 entries[pos].1 = value;
             } else {
@@ -3990,22 +4032,68 @@ mod json_byte_parity_tests {
 /// of a stack overflow / deadlock.
 const JSON_MAX_DEPTH: usize = 512;
 
+/// Fast zero-dependency decimal i64 formatter into an output `String` (Track 3 RT-4).
+#[inline]
+fn push_i64_decimal(n: i64, out: &mut String) {
+    if (0..10).contains(&n) {
+        out.push((b'0' + n as u8) as char);
+        return;
+    }
+    let mut buf = [0u8; 24];
+    let mut pos = buf.len();
+    let neg = n < 0;
+    let mut u = n.unsigned_abs();
+    while u >= 100 {
+        let rem = (u % 100) as usize;
+        u /= 100;
+        pos -= 2;
+        buf[pos] = b'0' + (rem / 10) as u8;
+        buf[pos + 1] = b'0' + (rem % 10) as u8;
+    }
+    if u >= 10 {
+        pos -= 2;
+        buf[pos] = b'0' + (u / 10) as u8;
+        buf[pos + 1] = b'0' + (u % 10) as u8;
+    } else {
+        pos -= 1;
+        buf[pos] = b'0' + u as u8;
+    }
+    if neg {
+        pos -= 1;
+        buf[pos] = b'-';
+    }
+    if let Ok(s) = std::str::from_utf8(&buf[pos..]) {
+        out.push_str(s);
+    }
+}
+
 /// JSON string body escaper, shared by string values and map keys (keys were
 /// previously written raw, so a key containing `"` produced invalid JSON).
+/// Uses a byte-slice scan with bulk `push_str` copies for clean runs (Track 3 RT-4).
 fn write_json_str(s: &str, out: &mut String) {
     out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b < 0x20 || b == b'"' || b == b'\\' {
+            if start < i {
+                out.push_str(&s[start..i]);
             }
-            c => out.push(c),
+            match b {
+                b'"' => out.push_str("\\\""),
+                b'\\' => out.push_str("\\\\"),
+                b'\n' => out.push_str("\\n"),
+                b'\t' => out.push_str("\\t"),
+                b'\r' => out.push_str("\\r"),
+                _ => {
+                    let _ = write!(out, "\\u{:04x}", b as u32);
+                }
+            }
+            start = i + 1;
         }
+    }
+    if start < bytes.len() {
+        out.push_str(&s[start..]);
     }
     out.push('"');
 }
@@ -4023,7 +4111,7 @@ fn write_json_key(k: &MapKey, out: &mut String) {
         MapKey::Bool(b) => out.push_str(if *b { "\"true\"" } else { "\"false\"" }),
         MapKey::Int(i) => {
             out.push('"');
-            let _ = write!(out, "{}", i);
+            push_i64_decimal(*i, out);
             out.push('"');
         }
     }
@@ -4059,9 +4147,7 @@ fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Int(i) => {
-            // `write!` into the output buffer emits exactly `i.to_string()`
-            // without allocating a temporary String per scalar.
-            let _ = write!(out, "{}", i);
+            push_i64_decimal(*i, out);
         }
         Value::Float(f) => {
             // `{:?}` is the shortest round-tripping form and keeps a decimal
@@ -4091,7 +4177,7 @@ fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
             // the lock released. Removing that clone outright would
             // reintroduce the documented non-reentrant-Mutex deadlock on
             // self-referential containers, so the fallback is retained.
-            let guard = d.lock().unwrap();
+            let guard = crate::value::lock_ref(d);
             if guard.items.iter().all(json_is_scalar) {
                 out.push('[');
                 for (i, item) in guard.items.iter().enumerate() {
@@ -4117,7 +4203,7 @@ fn write_json(v: &Value, out: &mut String, depth: usize) -> Result<(), String> {
         Value::Map(d) => {
             // Same scalar-only fast path for maps. `write_json_key` only
             // writes scalar `MapKey` spellings, so it never takes a lock.
-            let guard = d.lock().unwrap();
+            let guard = crate::value::lock_ref(d);
             if guard.entries.iter().all(|(_, v)| json_is_scalar(v)) {
                 out.push('{');
                 for (i, (k, val)) in guard.entries.iter().enumerate() {

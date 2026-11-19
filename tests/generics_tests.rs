@@ -236,3 +236,175 @@ fn main() {
         e3.message
     );
 }
+
+#[test]
+fn unboxed_list_indexed_and_forin_accumulators_match_all_engines() {
+    let src = r#"
+fn accum_f64(n: int) -> float {
+    let xs: list<float> = [];
+    let i = 0;
+    while i < n {
+        xs.push(i * 1.5);
+        i += 1;
+    }
+    let acc = 0.0;
+    let j = 0;
+    while j < n {
+        acc = acc + xs[j];
+        j += 1;
+    }
+    for x in xs {
+        acc += x;
+    }
+    return acc;
+}
+
+fn accum_i64() -> int {
+    let ys = [10, 20, 30, 40];
+    let sum = 0;
+    for v in ys {
+        sum += v;
+    }
+    let min_i = -9223372036854775807 - 1;
+    let min_rem = min_i % -1;
+    return sum + min_rem;
+}
+
+fn main() {
+    println(accum_f64(6));
+    println(accum_i64());
+    return 0;
+}
+"#;
+    assert_all_engines("unboxed_accumulators", src, "45.0\n100\n");
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn aot_div_mod_edge_traps_match_runtime_errors() {
+    let dir = std::env::temp_dir().join(format!("spid3r_aot_traps_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+
+    let cases = [
+        (
+            "div_zero",
+            "fn main() { let a = 10; let b = 0; println(a / b); return 0; }\n",
+            "division by zero",
+        ),
+        (
+            "mod_zero",
+            "fn main() { let a = 10; let b = 0; println(a % b); return 0; }\n",
+            "modulo by zero",
+        ),
+        (
+            "min_div_m1",
+            "fn main() { let a = -9223372036854775807 - 1; let b = -1; println(a / b); return 0; }\n",
+            "integer overflow: -9223372036854775808 / -1",
+        ),
+    ];
+
+    for (name, src, needle) in cases {
+        let file = dir.join(format!("{name}.matrix"));
+        let exe = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&file, src).expect("write");
+        let b = Command::new(bin())
+            .args([
+                "build",
+                "--release",
+                file.to_str().unwrap(),
+                "-o",
+                exe.to_str().unwrap(),
+            ])
+            .output()
+            .expect("build native");
+        assert_eq!(
+            b.status.code(),
+            Some(0),
+            "[{name}] build stderr: {}",
+            String::from_utf8_lossy(&b.stderr)
+        );
+        let r = Command::new(&exe).output().expect("run trap exe");
+        assert_eq!(r.status.code(), Some(1), "[{name}] expected exit 1");
+        let err = String::from_utf8_lossy(&r.stderr);
+        assert!(
+            err.contains(needle),
+            "[{name}] expected stderr containing '{needle}', got '{err}'"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn aot_run_native_cache_sandbox_and_tamper() {
+    let dir = std::env::temp_dir().join(format!("spid3r_aot_cache_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let cache_dir = dir.join("cache");
+    std::fs::create_dir_all(&cache_dir).expect("mkdir");
+    let script = dir.join("hello.matrix");
+    std::fs::write(&script, "fn main() { println(\"CACHE_OK\"); return 0; }\n").expect("write");
+
+    let miss = Command::new(bin())
+        .args(["run", "--native", script.to_str().unwrap()])
+        .env("SPID3R_AOT_CACHE_DIR", &cache_dir)
+        .output()
+        .expect("run --native miss");
+    assert_eq!(
+        miss.status.code(),
+        Some(0),
+        "miss stderr: {}",
+        String::from_utf8_lossy(&miss.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&miss.stdout).replace("\r\n", "\n"),
+        "CACHE_OK\n"
+    );
+
+    let hit = Command::new(bin())
+        .args(["run", "--native", script.to_str().unwrap()])
+        .env("SPID3R_AOT_CACHE_DIR", &cache_dir)
+        .output()
+        .expect("run --native hit");
+    assert_eq!(hit.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&hit.stdout).replace("\r\n", "\n"),
+        "CACHE_OK\n"
+    );
+
+    let sbox = Command::new(bin())
+        .args(["run", "--native", "--sandbox", script.to_str().unwrap()])
+        .env("SPID3R_AOT_CACHE_DIR", &cache_dir)
+        .output()
+        .expect("run --native --sandbox");
+    assert_eq!(sbox.status.code(), Some(2));
+
+    let cached_exe = std::fs::read_dir(&cache_dir)
+        .expect("read cache dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().is_none_or(|ext| ext != "sha256"))
+        .expect("cached exe in dir");
+    let mut bytes = std::fs::read(&cached_exe).expect("read cached exe");
+    bytes.push(0);
+    std::fs::write(&cached_exe, &bytes).expect("tamper cached exe");
+
+    let tampered = Command::new(bin())
+        .args(["run", "--native", script.to_str().unwrap()])
+        .env("SPID3R_AOT_CACHE_DIR", &cache_dir)
+        .output()
+        .expect("run --native tampered");
+    assert_eq!(tampered.status.code(), Some(4));
+    assert!(
+        tampered.stdout.is_empty(),
+        "tampered binary must not execute"
+    );
+    assert!(
+        String::from_utf8_lossy(&tampered.stderr).contains("failed SHA-256 verification"),
+        "stderr: {}",
+        String::from_utf8_lossy(&tampered.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

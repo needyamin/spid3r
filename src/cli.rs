@@ -550,7 +550,8 @@ USAGE:
     spid3r run [options] <file.matrix> [args...]
 
 OPTIONS:
-    --engine <tree|vm>     Execution engine: bytecode VM (default) or the tree-walk oracle
+    --engine <e>           Execution engine: tree, vm (default), or native
+    --native               Compile and run via cached AOT native executable
     --prof                 Print per-opcode VM execution counts (requires --engine vm)
     --no-opt               Disable bytecode optimizer + VM runtime peeks
                                (VM engine; inline caches stay on)
@@ -604,6 +605,8 @@ OPTIONS:
                            platform suffix: `-o app` writes `app.exe`)
     --target <triple>      Target triple; must be the host's (cross-linking is not
                            supported — build on the target OS)
+    --target-cpu <cpu>     LLVM target CPU: x86-64, x86-64-v2, x86-64-v3, or native
+                           (--release defaults to x86-64-v3 on AVX2/BMI2/FMA hosts)
     --release              Compile with optimizations
     --icon <path>          Application icon (.ico); a missing or unreadable file is
                            an error, not a silently skipped step
@@ -1102,7 +1105,7 @@ fn cmd_magic(rest: &[String]) -> Result<i32, Diagnostic> {
                 run_args.push("--coverage-out".to_string());
                 run_args.push(val.to_string());
             }
-            "--prof" | "--coverage" | "--no-opt" => {
+            "--native" | "--prof" | "--coverage" | "--no-opt" => {
                 run_args.push(arg.clone());
             }
             _ => {
@@ -1153,6 +1156,10 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             continue;
         }
         match args[i].as_str() {
+            "--native" => {
+                engine = "native";
+                engine_set = true;
+            }
             "--no-opt" => no_opt = true,
             "--prof" => prof = true,
             "--coverage" => coverage = true,
@@ -1256,7 +1263,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             "--engine" => {
                 i += 1;
                 match args.get(i) {
-                    Some(e) if e == "tree" || e == "vm" => {
+                    Some(e) if e == "tree" || e == "vm" || e == "native" => {
                         engine = e;
                         engine_set = true;
                     }
@@ -1266,7 +1273,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             }
             a if a.starts_with("--engine=") => {
                 let e = a.strip_prefix("--engine=").unwrap();
-                if e == "tree" || e == "vm" {
+                if e == "tree" || e == "vm" || e == "native" {
                     engine = e;
                     engine_set = true;
                 } else {
@@ -1299,7 +1306,7 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
     let (src, file_arc) = read_source(&file)?;
     reject_gui_source(&file, &src, file_arc.clone())?;
     // `args()` must see the program's arguments, not the interpreter's argv.
-    crate::stdlib::set_script_args(script_args);
+    crate::stdlib::set_script_args(script_args.clone());
     // `--max-steps` is a documented alias of `--budget`: one feature, two
     // spellings (the VM poll-batch budget on both engines). Passing both is
     // ambiguous, so it is a usage error.
@@ -1449,7 +1456,201 @@ fn cmd_run(args: &[String]) -> Result<i32, Diagnostic> {
             }
             result
         }
+        "native" => {
+            if sandbox {
+                return Err(usage(
+                    "--sandbox is not supported with --native (AOT executables run with full host authority; see docs/FFI.md)",
+                ));
+            }
+            if prof {
+                return Err(usage(
+                    "--prof is a VM-engine feature; rerun with --engine vm",
+                ));
+            }
+            if coverage {
+                return Err(usage(
+                    "--coverage is a VM-engine feature; rerun with --engine vm",
+                ));
+            }
+            run_native_cached(&file, &src, file_arc, budget, &script_args)
+        }
         _ => unreachable!(),
+    }
+}
+
+#[cfg(not(feature = "native"))]
+fn run_native_cached(
+    _file: &str,
+    _src: &str,
+    _file_arc: Arc<str>,
+    _budget: Option<u64>,
+    _script_args: &[String],
+) -> Result<i32, Diagnostic> {
+    Err(usage(
+        "--native requires a toolchain built with --features native",
+    ))
+}
+
+#[cfg(feature = "native")]
+fn run_native_cached(
+    file: &str,
+    src: &str,
+    file_arc: Arc<str>,
+    budget: Option<u64>,
+    script_args: &[String],
+) -> Result<i32, Diagnostic> {
+    let mut key_buf = Vec::with_capacity(src.len() + 256);
+    key_buf.extend_from_slice(b"spid3r-aot-cache-v1\0");
+    key_buf.extend_from_slice(env!("CARGO_PKG_VERSION").as_bytes());
+    key_buf.push(0);
+    if let Ok(exe) = std::env::current_exe() {
+        key_buf.extend_from_slice(exe.to_string_lossy().as_bytes());
+        if let Ok(meta) = std::fs::metadata(&exe) {
+            key_buf.extend_from_slice(&meta.len().to_le_bytes());
+            if let Ok(mtime) = meta.modified() {
+                if let Ok(d) = mtime.duration_since(std::time::UNIX_EPOCH) {
+                    key_buf.extend_from_slice(&d.as_nanos().to_le_bytes());
+                }
+            }
+        }
+    }
+    key_buf.push(0);
+    let canon = std::fs::canonicalize(file).unwrap_or_else(|_| PathBuf::from(file));
+    key_buf.extend_from_slice(canon.to_string_lossy().as_bytes());
+    key_buf.push(0);
+    if let Some(b) = budget {
+        key_buf.extend_from_slice(&b.to_le_bytes());
+    }
+    key_buf.push(0);
+    key_buf.extend_from_slice(src.as_bytes());
+    let key = crate::pkg::sha256_hex(&key_buf);
+
+    let cache_dir = std::env::var_os("SPID3R_AOT_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("spid3r-aot-cache"));
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let cached_exe = cache_dir.join(format!("{key}{suffix}"));
+    let sidecar = cache_dir.join(format!("{key}{suffix}.sha256"));
+
+    if cached_exe.is_file() || sidecar.is_file() {
+        let exe_bytes = match std::fs::read(&cached_exe) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "error[bytecode]: cannot read cached AOT binary '{}': {}",
+                    cached_exe.display(),
+                    e
+                );
+                return Ok(EXIT_BYTECODE);
+            }
+        };
+        let sidecar_txt = match std::fs::read_to_string(&sidecar) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!(
+                    "error[bytecode]: missing or unreadable checksum sidecar '{}'",
+                    sidecar.display()
+                );
+                return Ok(EXIT_BYTECODE);
+            }
+        };
+        let expected = sidecar_txt.split_whitespace().next().unwrap_or("");
+        let actual = crate::pkg::sha256_hex(&exe_bytes);
+        if actual != expected {
+            eprintln!(
+                "error[bytecode]: cached AOT binary '{}' failed SHA-256 verification",
+                cached_exe.display()
+            );
+            return Ok(EXIT_BYTECODE);
+        }
+    } else {
+        std::fs::create_dir_all(&cache_dir).map_err(|e| {
+            Diagnostic::new(
+                Phase::Build,
+                format!(
+                    "cannot create AOT cache dir '{}': {}",
+                    cache_dir.display(),
+                    e
+                ),
+            )
+        })?;
+        let (program, _) = front_end_source(file, src, file_arc)?;
+        let stem = Path::new(file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("program");
+        let tmp_exe = cache_dir.join(format!("{key}.{}.tmp{suffix}", std::process::id()));
+        let enforce = budget.map(|b| i64::try_from(b).unwrap_or(i64::MAX).max(1));
+        crate::native::link::build_program_aot(&program, stem, &tmp_exe, true, enforce)?;
+        let bytes = std::fs::read(&tmp_exe).map_err(|e| {
+            Diagnostic::new(
+                Phase::Build,
+                format!(
+                    "cannot read built AOT binary '{}': {}",
+                    tmp_exe.display(),
+                    e
+                ),
+            )
+        })?;
+        let hex = crate::pkg::sha256_hex(&bytes);
+        let fname = cached_exe
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("cached");
+        let _ = std::fs::rename(&tmp_exe, &cached_exe);
+        if !cached_exe.is_file() {
+            std::fs::copy(&tmp_exe, &cached_exe).map_err(|e| {
+                Diagnostic::new(
+                    Phase::Build,
+                    format!(
+                        "cannot populate AOT cache '{}': {}",
+                        cached_exe.display(),
+                        e
+                    ),
+                )
+            })?;
+            let _ = std::fs::remove_file(&tmp_exe);
+        }
+        std::fs::write(&sidecar, format!("{hex}  {fname}\n")).map_err(|e| {
+            Diagnostic::new(
+                Phase::Build,
+                format!(
+                    "cannot write AOT cache checksum '{}': {}",
+                    sidecar.display(),
+                    e
+                ),
+            )
+        })?;
+    }
+
+    let mut cmd = std::process::Command::new(&cached_exe);
+    cmd.args(script_args);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = cmd.exec();
+        Err(Diagnostic::new(
+            Phase::Runtime,
+            format!(
+                "cannot exec cached AOT binary '{}': {}",
+                cached_exe.display(),
+                err
+            ),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = cmd.status().map_err(|e| {
+            Diagnostic::new(
+                Phase::Runtime,
+                format!(
+                    "cannot run cached AOT binary '{}': {}",
+                    cached_exe.display(),
+                    e
+                ),
+            )
+        })?;
+        Ok(status.code().unwrap_or(EXIT_USER_ERROR))
     }
 }
 

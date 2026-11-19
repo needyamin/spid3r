@@ -305,7 +305,23 @@ pub fn emit_object_with_cpu(
             TargetMachine::get_host_cpu_features().to_string(),
         ),
         Some(c) => (c.to_string(), String::new()),
-        None => (cpu_for_triple(triple), String::new()),
+        None => {
+            #[allow(unused_mut)]
+            let mut default_cpu = cpu_for_triple(triple);
+            if opt
+                && std::env::var_os("SPID3R_PORTABLE_CPU").is_none()
+                && triple == crate::native::link::default_triple()
+            {
+                #[cfg(target_arch = "x86_64")]
+                if std::arch::is_x86_feature_detected!("avx2")
+                    && std::arch::is_x86_feature_detected!("bmi2")
+                    && std::arch::is_x86_feature_detected!("fma")
+                {
+                    default_cpu = "x86-64-v3".to_string();
+                }
+            }
+            (default_cpu, String::new())
+        }
     };
     let tm: TargetMachine = target
         .create_target_machine(

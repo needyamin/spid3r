@@ -766,6 +766,40 @@ pub fn cmd_build(args: &[String]) -> Result<i32, Diagnostic> {
     Ok(0)
 }
 
+/// Compile a parsed, checked program to an AOT native executable at `out_path`
+/// without printing CLI build banners (used by `spid3r run --native` cache).
+pub fn build_program_aot(
+    program: &Program,
+    stem: &str,
+    out_path: &Path,
+    release: bool,
+    enforce_budget: Option<i64>,
+) -> Result<(), Diagnostic> {
+    if has_gui_natives(program) {
+        return Err(Diagnostic::new(
+            Phase::Build,
+            "program uses GUI natives; the AOT backend does not link the WebView bridge — run it with `spid3r gui`",
+        ));
+    }
+    let triple = default_triple();
+    let build_dir = TempBuildDir::new()?;
+    let obj_path = build_dir.path().join(format!("spid3r_{}.o", stem));
+    let meta = BuildMeta {
+        enforce_budget,
+        ..BuildMeta::default()
+    };
+    let _ = build_native(
+        program,
+        &triple,
+        release,
+        &obj_path,
+        out_path,
+        &meta,
+        build_dir.path(),
+    )?;
+    Ok(())
+}
+
 /// Ceilings for one `--embed` walk.
 ///
 /// `Path::is_dir()` follows reparse points and `mklink /J` needs no privileges,

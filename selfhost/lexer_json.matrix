@@ -29,62 +29,39 @@ fn joined() {
 }
 
 public fn tokens_json(file, toks) {
-    OUT = [];
-    emit("{\"file\":");
-    emit(jstr(file));
-    emit(",\"count\":");
-    emit_int(toks.len());
-    emit(",\"tokens\":[");
+    let out = [
+        "{\"file\":" + jstr(file) + ",\"count\":" + string(toks.len()) + ",\"tokens\":["
+    ];
     let n = toks.len();
     let i = 0;
     while i < n {
+        let t = toks[i];
+        let kind = t[0];
+        let pfx = "{\"kind\":\"";
         if i > 0 {
-            emit(",");
+            pfx = ",{\"kind\":\"";
         }
-        token_json(toks[i]);
+        let name = KIND_NAMES[kind];
+        let tail = ",\"line\":" + string(t[2]) + ",\"col\":" + string(t[3]) + ",\"len\":" + string(t[4]) + "}";
+        if kind == K_IDENT or kind == K_KW {
+            out.push(pfx + name + "\",\"value\":\"" + t[1] + "\"" + tail);
+        } else if kind == K_INT {
+            out.push(pfx + name + "\",\"value\":" + string(t[1]) + tail);
+        } else if kind == K_STR or kind == K_BIGINT {
+            out.push(pfx + name + "\",\"value\":" + jstr(t[1]) + tail);
+        } else if kind == K_FLOAT {
+            out.push(pfx + name + "\",\"value\":" + rust_float(t[1]) + tail);
+        } else if kind == K_INTERP {
+            OUT = [];
+            pieces_json(t[1]);
+            out.push(pfx + name + "\",\"pieces\":" + OUT.join("") + tail);
+        } else {
+            out.push(pfx + name + "\"" + tail);
+        }
         i += 1;
     }
-    emit("]}\n");
-    return joined();
-}
-
-fn token_json(t) {
-    let kind = t[0];
-    let name = kind_name(kind);
-    emit("{\"kind\":\"");
-    emit(name);
-    emit("\"");
-    if kind == K_INT {
-        emit(",\"value\":");
-        emit_int(t[1]);
-    } else if kind == K_BIGINT {
-        emit(",\"value\":");
-        emit(jstr(t[1]));
-    } else if kind == K_FLOAT {
-        emit(",\"value\":");
-        emit(rust_float(t[1]));
-    } else if kind == K_STR {
-        emit(",\"value\":");
-        emit(jstr(t[1]));
-    } else if kind == K_IDENT {
-        emit(",\"value\":");
-        emit(jstr(t[1]));
-    } else if kind == K_KW {
-        emit(",\"value\":");
-        emit(jstr(t[1]));
-    } else if kind == K_INTERP {
-        emit(",\"pieces\":");
-        pieces_json(t[1]);
-    }
-    // IntMinMagnitude and the punctuation kinds carry no payload, matching
-    // the oracle's token_json.
-    emit(",\"line\":");
-    emit_int(t[2]);
-    emit(",\"col\":");
-    emit_int(t[3]);
-    emit(",\"len\":");
-    emit_int(t[4]);
-    emit("}");
+    out.push("]}\n");
+    return out.join("");
 }
 
 fn pieces_json(pieces) {

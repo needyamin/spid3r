@@ -30,7 +30,7 @@ fn tk(st) {
     return st[0][st[1]];
 }
 
-fn kd(st) {
+fn kd(st) -> int {
     return st[0][st[1]][0];
 }
 
@@ -43,7 +43,7 @@ fn tsp(st) {
     return [t[2], t[3], t[4]];
 }
 
-fn tok_at(st, i) {
+fn tok_at(st, i: int) {
     let n = st[0].len();
     if i < 0 {
         i = 0;
@@ -55,11 +55,11 @@ fn tok_at(st, i) {
 }
 
 // peek_kind: clamped to the last token (EOF), exactly like the oracle.
-fn pkd(st, n) {
+fn pkd(st, n: int) -> int {
     return tok_at(st, st[1] + n)[0];
 }
 
-fn pkv(st, n) {
+fn pkv(st, n: int) {
     return tok_at(st, st[1] + n)[1];
 }
 
@@ -67,11 +67,11 @@ fn p_adv(st) {
     st[1] += 1;
 }
 
-fn at_kw(st, name) {
+fn at_kw(st, name) -> bool {
     return kd(st) == K_KW and kv(st) == name;
 }
 
-fn eat_kw(st, name) {
+fn eat_kw(st, name) -> bool {
     if at_kw(st, name) {
         p_adv(st);
         return true;
@@ -79,11 +79,11 @@ fn eat_kw(st, name) {
     return false;
 }
 
-fn at_c(st, code) {
+fn at_c(st, code: int) -> bool {
     return kd(st) == code;
 }
 
-fn eat_c(st, code) {
+fn eat_c(st, code: int) -> bool {
     if kd(st) == code {
         p_adv(st);
         return true;

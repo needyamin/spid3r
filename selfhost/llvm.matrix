@@ -92,6 +92,8 @@ public extern fn LLVMBuildFAdd(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
 public extern fn LLVMBuildFSub(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
 public extern fn LLVMBuildFMul(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
 public extern fn LLVMBuildFDiv(b: ptr, lhs: ptr, rhs: ptr, name: string) -> ptr;
+public extern fn LLVMBuildFNeg(b: ptr, v: ptr, name: string) -> ptr;
+public extern fn LLVMBuildSIToFP(b: ptr, val: ptr, dest_ty: ptr, name: string) -> ptr;
 public extern fn LLVMBuildICmp(b: ptr, pred: int, lhs: ptr, rhs: ptr, name: string) -> ptr;
 public extern fn LLVMBuildFCmp(b: ptr, pred: int, lhs: ptr, rhs: ptr, name: string) -> ptr;
 public extern fn LLVMBuildRet(b: ptr, v: ptr) -> ptr;
@@ -127,6 +129,11 @@ public extern fn LLVMBuildUnreachable(b: ptr) -> ptr;
 public extern fn LLVMBuildPhi(b: ptr, ty: ptr, name: string) -> ptr;
 public extern fn LLVMBuildSwitch(b: ptr, val: ptr, default_bb: ptr, case_count: int) -> ptr;
 public extern fn LLVMBuildExtractValue(b: ptr, agg: ptr, index: int, name: string) -> ptr;
+public extern fn LLVMBuildInsertValue(b: ptr, agg: ptr, elt: ptr, index: int, name: string) -> ptr;
+public extern fn LLVMGetUndef(ty: ptr) -> ptr;
+public extern fn LLVMGetEnumAttributeKindForName(name: string, slen: usize) -> int;
+public extern fn LLVMCreateEnumAttribute(ctx: ptr, kind_id: int, val: usize) -> ptr;
+public extern fn LLVMAddAttributeAtIndex(f: ptr, idx: int, a: ptr);
 
 // ------------------------------------------------- 5.2 codegen extensions
 
@@ -161,6 +168,7 @@ public extern fn LLVMVerifyFunction(fn_val: ptr, action: int) -> int;
 public extern fn LLVMVerifyModule(m: ptr, action: int, msg_out: ptr) -> int;
 public extern fn LLVMGetDefaultTargetTriple() -> string;
 public extern fn LLVMGetHostCPUName() -> string;
+public extern fn LLVMGetHostCPUFeatures() -> string;
 public extern fn LLVMGetFirstTarget() -> ptr;
 public extern fn LLVMGetTargetName(target: ptr) -> string;
 public extern fn LLVMGetNextTarget(target: ptr) -> ptr;
@@ -321,6 +329,12 @@ public fn emit_module_object_opts(m, out_path, target_triple, opt) {
     let level = OPT_NONE;
     if opt {
         level = OPT_AGGRESSIVE;
+        if triple == host_triple and want == "x86-64" and env("SPID3R_PORTABLE_CPU").is_none() {
+            let feats = LLVMGetHostCPUFeatures();
+            if feats.contains("+avx2") and feats.contains("+bmi2") and feats.contains("+fma") {
+                cpu = "x86-64-v3";
+            }
+        }
     }
     let tm = LLVMCreateTargetMachine(
         target,

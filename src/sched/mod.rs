@@ -778,6 +778,7 @@ impl Scheduler {
 
     /// Queue a job. Returns the task handle; the caller can `join` it.
     pub fn spawn_job(&self, job: Job) -> Arc<TaskHandle> {
+        crate::value::mark_multithreaded();
         let id = {
             let mut n = self.inner.next_id.lock().unwrap();
             let id = *n;

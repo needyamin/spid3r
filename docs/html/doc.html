@@ -723,6 +723,52 @@
       margin-bottom: 0;
     }
 
+    /* Collapsible deep-dive blocks: the main narrative stays short; dense
+       reference detail is one click away instead of a wall of text. */
+    details.deep {
+      border: 1px solid var(--border-line);
+      border-radius: 8px;
+      background: var(--bg-card);
+      margin: 14px 0 22px;
+      overflow: hidden;
+    }
+
+    details.deep>summary {
+      cursor: pointer;
+      padding: 12px 18px;
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--w3-green);
+      background: var(--bg-code);
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+    }
+
+    details.deep>summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details.deep>summary::before {
+      content: "\25B8";
+      font-family: var(--font-mono);
+      transition: transform 0.15s ease;
+    }
+
+    details.deep[open]>summary::before {
+      transform: rotate(90deg);
+    }
+
+    details.deep>summary:hover {
+      color: var(--fg-primary);
+    }
+
+    details.deep .deep-body {
+      padding: 6px 18px 14px;
+    }
+
     /* Tables */
     .table-wrap {
       overflow-x: auto;
@@ -1549,9 +1595,19 @@
           channels, and an instant WebAssembly compiler that lets you run complete programs inside any browser.
         </p>
 
+        <div class="callout">
+          <div class="callout-header">📖 How to read this manual</div>
+          <p>
+            Each chapter gives you the essentials up front — what it is, how to use it, and what matters. Dense
+            reference material (full contracts, wire formats, security models, build internals) is collapsed into
+            <strong>deep-dive</strong> blocks marked <em>▸ Deep dive — …</em>: the main topic stays visible, and the
+            complete detail is one click away. Nothing is left out; it is just not in your face. All code samples are
+            runnable as shown.
+          </p>
+        </div>
+
         <div class="callout tip">
-          <div class="callout-header">💡 Key Design Tenets</div>
-          <ul>
+          <div class="callout-header">💡 Key Design Tenets</div>          <ul>
             <li><strong>Zero External Dependencies:</strong> The entire compiler, bytecode virtual machine, AST
               interpreter, standard library (including cryptographic primitives, regex engines, date-time calendars, and
               compression algorithms) is written in pure, self-contained Rust.</li>
@@ -2258,8 +2314,88 @@
           across both single-project and workspace dependency graphs, and <strong>never executes package code</strong>.
           Note: release tarballs built without <code>tls</code> support <code>http://</code> mirrors and local
           directories; enable <code>--features tls</code> (included in Windows installers) for <code>https://</code>
-          registries. See <code>docs/REGISTRY.md</code>.
+          registries.
         </p>
+        <details class="deep">
+          <summary>Registry deep dive — resolution, layout, integrity, remote mirrors &amp; signing</summary>
+          <div class="deep-body">
+            <p>
+              <strong>The full registry contract:</strong> a registry dependency pulls a package by name + version
+          constraint (<code>strlib = { version = "^1.2" }</code>, optionally
+          <code>registry = "internal"</code>), reusing the same vendoring and <code>spider.lock</code> machinery
+          as path/git dependencies — only resolution is new. <code>spid3r install</code> vendors the resolved
+          <code>src/</code> tree into <code>vendor/&lt;name&gt;/</code> and pins
+          <code>source = "registry+&lt;resolved-version&gt;"</code> plus the content SHA-256; re-running install
+          is idempotent. A registry is a directory named by <code>SPID3R_REGISTRY</code> (or
+          <code>packages.registry</code>) — local files, a committed index, or a shared drive; there is no default
+          remote registry in the base build, and an unset variable fails with a message telling you to set it.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Version constraint</th>
+                <th>Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>^1.2</code> / <code>^1.2.3</code></td>
+                <td>same major, at least the given minor/patch</td>
+              </tr>
+              <tr>
+                <td><code>&gt;=1.2.3</code></td>
+                <td>at least this version</td>
+              </tr>
+              <tr>
+                <td><code>=1.2.3</code> or bare <code>1.2.3</code></td>
+                <td>exactly this version</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          The chosen directory's <code>spider.toml</code> version must also satisfy the constraint (checked after
+          resolution). The layout is <code>$SPID3R_REGISTRY/&lt;name&gt;/&lt;version&gt;/</code> with a
+          <code>spider.toml</code>, a <code>src/</code> tree, and a required <code>sha256.txt</code>; version
+          directories are <code>major.minor.patch</code> (or <code>major.minor</code>) and the highest satisfying
+          version wins. Named sub-registries put packages under
+          <code>$SPID3R_REGISTRY/&lt;name-from-registry-key&gt;/&lt;package&gt;/&lt;version&gt;/</code>. The
+          <code>sha256.txt</code> hash covers <strong>every</strong> file under <code>src/</code> over raw bytes —
+          for each file in sorted order, <code>relative/path</code> + <code>0x00</code> + contents +
+          <code>0x00</code>, concatenated and hashed once, with <code>/</code> separators on every platform — and
+          install refuses a missing, unreadable, empty or mismatched file. <code>spid3r publish --to-dir
+          &lt;dir&gt;</code> writes the layout offline and <strong>refuses</strong> to republish an existing
+          name/version (a registry entry is immutable; bump the version instead).
+        </p>
+        <p>
+          <strong>Integrity:</strong> <code>spid3r verify</code> re-hashes every vendored tree against the
+          <code>sha256</code> in <code>spider.lock</code> — a lock entry with no recorded hash also fails, and so
+          does an undeclared directory under <code>vendor/</code>. Editing one vendored file therefore fails the
+          build gate (exit 1) instead of being silently compiled. <code>spid3r search &lt;query&gt; --local</code>
+          matches package names in <code>SPID3R_REGISTRY</code> and <code>vendor/</code> without network access.
+        </p>
+        <p>
+          <strong>Remote registries, signing &amp; dependency unification (R8.1–R8.4):</strong>
+          <code>SPID3R_REGISTRY</code> / <code>packages.registry</code> also accept <code>http://</code> /
+          <code>https://</code> URLs serving <code>&lt;base&gt;/&lt;name&gt;/index.txt</code>,
+          <code>package.tar</code> and <code>sha256.txt</code>, cached under
+          <code>.spid3r/registry/&lt;url-hash&gt;/&lt;name&gt;/&lt;version&gt;/</code> after verifying tree hashes and
+          path-traversal safety. Portable Unix tarballs are built without <code>tls</code> (so they support
+          <code>http://</code> mirrors and local directories but diagnose <code>https://</code> clearly); Windows
+          installers enable <code>tls</code>. <code>publish --to-dir</code> writes an Ed25519
+          <code>sha256.txt.sig</code> plus <code>registry.key</code>/<code>registry.pub</code>; when
+          <code>packages.trust_pk</code> / <code>SPID3R_TRUST_PK</code> is set, install verifies the signature and
+          refuses unsigned or tampered packages, otherwise it verifies against <code>registry.pub</code> or warns.
+          Diamond dependencies across single-project and <code>[workspace]</code> manifests intersect all semver
+          constraints per package name and re-select the highest satisfying version (e.g. <code>^1.0</code> +
+          <code>=1.2.0</code> → <code>1.2.0</code>), reporting conflicts cleanly. No semver pre-releases or build
+          metadata — plain <code>major.minor.patch</code>. A <code>spider.lock</code> entry records
+          <code>name</code>, <code>version</code>, <code>source</code>, <code>used-by</code> (the workspace
+          members that depend on it), <code>files</code> and <code>sha256</code>.
+        </p>
+            </div>
+        </details>
         <figure class="diagram">
           <img src="../diagrams/packages.svg"
             alt="Package flow: spider.toml plus src tree, spid3r add vendors and pins it in spider.lock, spid3r verify re-hashes every file against the lock so hand edits fail, publish --to-dir writes package.tar, index.txt, sha256.txt and Ed25519 sha256.txt.sig, spid3r install supports local or HTTP(S) registries with signature verification and diamond semver unification. Installing never executes package code.">
@@ -2329,9 +2465,122 @@
         </p>
         <p>
           A complete sample lives at <code>examples/plugins/hello-host/</code> — a manifest, a <code>PluginHost</code>
-          implementation, a host binary and two scripts, including one that demonstrates the gate. See
-          <code>docs/PLUGINS.md</code> for the full contract.
+          implementation, a host binary and two scripts, including one that demonstrates the gate.
+          <strong>The full plugin contract:</strong> status is <em>every route works</em> — Spid3r-source, WASM and
+          host plugins plus native FFI — full contract in the deep dive below.
         </p>
+        <details class="deep">
+          <summary>Plugin deep dive — three kinds, manifest contract, lifecycle, WASM guest ABI, status</summary>
+          <div class="deep-body">
+            <p>
+              <strong>The three kinds and their trust stories:</strong>
+            </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th><code>kind</code></th>
+                <th>How it loads</th>
+                <th>Trust</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>matrix</code></td>
+                <td>a <code>.matrix</code> file the toolchain loads and runs</td>
+                <td><strong>script code</strong> — the authority a script has</td>
+              </tr>
+              <tr>
+                <td><code>wasm</code></td>
+                <td>a <code>.wasm</code> module loaded and interpreted by <code>wasmi</code></td>
+                <td><strong>sandboxed</strong> — no imports, so no ambient authority</td>
+              </tr>
+              <tr>
+                <td><code>host</code></td>
+                <td>compiled into a Rust host that calls <code>plugin::register</code></td>
+                <td><strong>trusted native code</strong> — same address space and authority</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          <code>matrix</code> is the default (write <code>public fn</code>s, declare them, done); <code>wasm</code>
+          is for code you did not write; <code>host</code> is for a Rust host exposing its own internals. A host
+          plugin cannot be loaded from disk — a native function is
+          <code>(&amp;'static str, fn(&amp;NativeCtx, Vec&lt;Value&gt;) -&gt; Result&lt;Value, String&gt;)</code>,
+          and <code>Value</code> is a reference-counted enum with no stable C ABI, so dynamic loading would need a
+          serialisation hop or handle table plus <code>dlopen</code>, which ABI v1 deliberately does not do. The
+          <code>spid3r</code> binary itself registers no plugins, so <code>spid3r run</code> cannot call a host
+          plugin function; an embedding binary calls <code>plugin::register(Box::new(Hello))?</code> at startup,
+          before creating an engine.
+        </p>
+        <p>
+          <strong>Manifest contract.</strong> <code>[plugin]</code> carries <code>name</code>,
+          <code>version</code>, an exact <code>abi = "spid3r-plugin-abi-1"</code>, <code>kind</code>
+          (<code>host</code>|<code>wasm</code>), and <code>capabilities</code>. Each <code>[[function]]</code> declares
+          <code>name</code>, <code>arity</code> and an optional <code>permission</code>. <code>register</code> rejects
+          <em>before any plugin code runs</em>: a non-exact <code>abi</code>; a function the manifest does not
+          declare; a disagreeing arity; a permission the <code>capabilities</code> list omits; a duplicate
+          plugin/function name or one that shadows a builtin (<code>write_file</code> must not be interceptable).
+        </p>
+        <p>
+          <strong>Lifecycle.</strong> <code>Loaded —start()→ Started —stop()→ Stopped</code>, with a failed
+          <code>start()</code> moving to <code>Failed</code>. <code>start</code> runs during <code>register</code>
+          with the registry lock released (so it may open a pool or read config) and a failure is recorded but
+          never offered — the host keeps running. <code>stop</code> runs in <code>plugin::shutdown_all()</code>,
+          must tolerate being called twice, and returns errors rather than failing fast so one bad teardown cannot
+          leave the rest running. Enforcement of <code>permission</code> happens <strong>at call time</strong> for
+          all three kinds, so it does not matter whether the plugin was registered before or after
+          <code>deny()</code> was configured; a pure function with no declared permission still runs under
+          <code>deny_all</code>.
+        </p>
+        <p>
+          <strong>Spid3r-source plugins.</strong> A directory with <code>plugin.toml</code> (<code>kind =
+          "matrix"</code>, optional <code>entry</code> defaulting to <code>&lt;name&gt;.matrix</code>) and a
+          <code>.matrix</code> file. The loader parses and checks it with the ordinary front end, runs it as a
+          module (no <code>fn main</code> required), wraps each declared global function as a native closure, and
+          registers it. Each plugin gets its own interpreter and globals (it cannot clobber the caller's), can call
+          the whole standard library, and a <code>throw</code> reaches the caller's <code>catch</code> intact.
+          Trust is tier T1 script authority; no feature flag is needed. Sample:
+          <code>examples/plugins/hello-matrix/</code>.
+        </p>
+        <p>
+          <strong>WASM plugins.</strong> Discovery order: <code>SPID3R_PLUGINS</code> (<code>;</code>-separated
+          directories containing plugin directories), <code>./plugins</code>, <code>&lt;exe&gt;/plugins</code>,
+          <code>~/.spidr/plugins</code>; the load order is sorted so a name clash reports the same plugin every
+          time. <code>run</code>, <code>check</code>, <code>compile</code>, <code>exec</code>, <code>test</code>,
+          <code>bench</code>, <code>debug</code>, <code>gui</code>, <code>magic</code> and <code>repl</code> load
+          plugins; <code>build</code> and <code>dist</code> do not (a standalone binary cannot link one, so such a
+          call is rejected at compile time). A plugin that fails to load is a warning, not a fatal error. The guest
+          exports <code>memory</code>, <code>alloc(i32)-&gt;i32</code>, optional
+          <code>dealloc(i32,i32)</code>, and one <code>(i32,i32)-&gt;i64</code> per function, named exactly as in
+          the manifest (no dispatch table). Wire format (little-endian, defined in <code>src/plugin/abi.rs</code>):
+          <code>request := u8 argc, argc × value</code>;
+          <code>response := value | (0xFF, u32 len, utf8 message)</code>;
+          <code>value := u8 tag, payload</code> with <code>0 null · 1 i64 · 2 f64 · 3 u8 bool · 4 (u32 len, utf8) · 5 (u32 count, values)</code>.
+          A map, class instance or closure is refused rather than coerced. The host builds an <strong>empty</strong>
+          <code>Linker</code> — a module importing anything (WASI, a clock, randomness) fails to instantiate; the
+          capability never existed, it is not revoked. Every call gets a fuel budget (<code>DEFAULT_FUEL</code>,
+          50M instructions, or a tighter host limit), so <code>loop {}</code> traps as a catchable script error.
+          Sample: <code>examples/plugins/hello-wasm/</code>.
+        </p>
+        <p>
+          <strong>Status of every route.</strong> Spid3r plugins (<code>kind = "matrix"</code>): works, no feature
+          flag or build step. Host plugins: works. WASM plugins (<code>kind = "wasm"</code>, disk-loaded): works,
+          <code>wasmi</code> behind the default <code>plugins-wasm</code> feature (without it, a wasm plugin
+          reports the missing feature rather than being silently ignored). FFI (<code>extern fn</code>): works,
+          AOT only. <code>spid3r plugin abi|list|check</code>: works — <code>abi</code> prints the version,
+          <code>list</code> reports the search path (name, kind and function count per directory, not what is
+          registered in this process), <code>check</code> validates a directory with the loader's own code path.
+          <code>enable/disable</code> is not implemented (discovery is per run, so there is no persistent enable
+          list) and native <code>dlopen</code> of host plugins is deliberately absent. To write one: copy
+          <code>examples/plugins/hello-host</code>, edit <code>plugin.toml</code> (names are
+          <code>&amp;'static str</code> compile-time constants), implement <code>PluginHost</code> with
+          <code>manifest()</code> using <code>include_str!</code> so the shipped manifest cannot drift, return one
+          <code>PluginFnDef</code> per declared function, and register before creating the engine.
+        </p>
+            </div>
+        </details>
         <h5 id="wasm-plugins"
           style="font-size: 0.98rem; font-weight: 600; margin: 20px 0 8px; color: var(--fg-primary);">WASM plugins: the
           sandboxed route</h5>
@@ -2409,11 +2658,58 @@
               </tr>
               <tr>
                 <td>Dynamic loading of <em>native</em> host plugins (<code>dlopen</code>)</td>
-                <td>deliberately not implemented for host plugins (no stable ABI over Rust <code>Value</code>); AOT C-ABI FFI supports opt-in <code>--allow-dlopen</code> (<code>docs/FFI.md</code>)</td>
+                <td>deliberately not implemented for host plugins (no stable ABI over Rust <code>Value</code>);
+                  AOT C-ABI FFI is the opt-in native route — see the FFI deep dive below.</td>
               </tr>
             </tbody>
           </table>
         </div>
+        <details class="deep">
+          <summary>FFI deep dive — <code>extern fn</code> types, marshalling, linking, callbacks, <code>--allow-dlopen</code></summary>
+          <div class="deep-body">
+            <p>
+              <strong>The native C route (AOT only).</strong> <code>extern fn</code> declarations name the C symbol
+              verbatim — no mangling, no aliasing — and only six types cross the boundary:
+              <code>int</code> → <code>int64_t</code>, <code>float</code> → <code>double</code> (an
+              <code>int</code> argument is widened), <code>bool</code> → 1-byte <code>_Bool</code>,
+              <code>string</code> → UTF-8 NUL-terminated <code>const char*</code>, <code>ptr</code> → opaque
+              <code>void*</code> handle, <code>usize</code> → 64-bit <code>size_t</code>. Lists, maps, classes and
+              closures are refused <strong>at build time</strong> with the type named; an untyped parameter is an
+              error (C has none). A <code>ptr</code> is a boxed address — nothing is copied or freed around it, and
+              passing a handle C did not hand you is undefined behavior on the C side.
+            </p>
+            <p>
+              <strong>Marshalling &amp; linking.</strong> Every call copies string arguments into temporary C
+              buffers and frees them when the call returns; a string <em>returned</em> from C is copied into a
+              Spid3r string and the C buffer is not freed — a C function must not retain a pointer to a string
+              argument. <code>--link-lib</code> is repeatable: a bare name becomes <code>-l&lt;name&gt;</code> on
+              Unix and <code>&lt;name&gt;.lib</code> under MSVC; paths ending in
+              <code>.a</code>/<code>.lib</code>/<code>.so</code>/<code>.dylib</code> pass through as given. A
+              missing symbol is a link error, so no binary is produced — a bad symbol can never reach a user as a
+              crash.
+            </p>
+            <p>
+              <strong>Where it runs &amp; trust.</strong> The tree interpreter and bytecode VM reject
+              <code>extern fn</code> outright (exit 2, before any statement runs) because they link nothing.
+              AOT FFI is tier-T5 trusted code: a C function runs with full process authority, no sandbox can
+              exist at this layer, and <code>--sandbox</code> does not apply to a compiled executable. Untrusted
+              third-party code belongs in a WASM plugin.
+            </p>
+            <p>
+              <strong>Extensions.</strong> POD structs (parent-less classes with 1–2 scalar fields) marshal by
+              value (Win64/SysV ABIs); larger or non-POD classes are refused at build time. Variadics work
+              (<code>extern fn printf(fmt: string, ...) -&gt; int;</code>, <code>bool</code> promoted to
+              <code>int</code>). <code>ffi_callback(fn_val, "fn(int, int) -&gt; int")</code> emits a C-ABI thunk
+              for passing Spid3r closures to C APIs — the slot lives for the process lifetime, a
+              <code>throw</code> inside returns a zero/null sentinel to C and re-raises through
+              <code>try</code>/<code>catch</code>. Runtime dynamic loading —
+              <code>dl_open</code>/<code>dl_sym</code>/<code>dl_call</code>/<code>dl_close</code> — is
+              <strong>disabled by default</strong> and requires <code>spid3r build --allow-dlopen</code> (refused
+              at build time otherwise, and rejected on <code>tree</code>/<code>vm</code>/<code>--sandbox</code>).
+              C++ symbols (name mangling) and non-POD/large structs are not implemented.
+            </p>
+          </div>
+        </details>
         <p>
           The distinction that matters: a host plugin is <em>trusted code</em> — same address space, same authority, and
           no filter can revoke what it already has. A WASM plugin is the only route that can be sandboxed, and it is
@@ -2422,7 +2718,7 @@
         </p>
         <p>
           The full developer guide &mdash; the manifest contract, the guest ABI, the wire format and a
-          troubleshooting table &mdash; is its own page:/r
+          troubleshooting table &mdash; is its own page:
           <a href="plugin.html"><strong>Writing Spid3r Plugins &rarr;</strong></a>
         </p>
 
@@ -3821,9 +4117,110 @@ println(" Sum via reduce: " + string(sum_all));      // 21
             <code>spid3r build</code>, concrete generic specializations are monomorphized
             (<code>spid3r_mono_*</code>) and homogeneous numeric lists (<code>list&lt;int&gt;</code>,
             <code>list&lt;float&gt;</code>) use unboxed <code>i64</code>/<code>f64</code> storage backed by 12
-            specialized runtime trampolines (<code>spid3r_ulist_i64_*</code>, <code>spid3r_ulist_f64_*</code>).
-            See <code>docs/GENERICS_DESIGN.md</code> for the full specification.</li>
+            specialized runtime trampolines (<code>spid3r_ulist_i64_*</code>, <code>spid3r_ulist_f64_*</code>).</li>
         </ul>
+
+        <details class="deep">
+          <summary>Generics design spec (R10.1 / DP-1) — Value v2, monomorphization &amp; unboxed containers</summary>
+          <div class="deep-body">
+        <p>
+          <strong>Status:</strong> approved — contract for parser/checker instantiation and the AOT monomorphizer +
+          unboxed containers. The RED LINE was amended to permit a <em>Value v2</em> representation alongside AOT
+          monomorphization: a compact 64-bit tagged value (NaN-boxed or low-tag <code>u64</code> inline scalars for
+          small <code>Int</code>, <code>Float</code>, <code>Bool</code>, <code>Null</code>, tagged pointers for heap
+          objects) that removes <code>Box&lt;Value&gt;</code> allocations for scalars; typed container annotations
+          lowering to unboxed backing buffers (<code>Vec&lt;i64&gt;</code>, <code>Vec&lt;f64&gt;</code>, typed hash
+          map) without per-element boxing or <code>Mutex</code> locking on unshared paths, with identical language
+          semantics; and safety guardrails that confine all <code>unsafe</code> pointer/tag operations to
+          <code>src/native/rt.rs</code> (and <code>src/value/</code> if inline-tagged <code>Value</code> v2 uses
+          <code>NonNull</code>/<code>usize</code> bitpacking), each with a written <code>// SAFETY:</code> invariant,
+          with the runtime ABI version bumping cleanly if trampoline signatures change. This targets the 8–18×
+          container gap on <code>json</code>/<code>map</code> versus Node/Rust caused by boxing +
+          <code>Arc&lt;Mutex&lt;…&gt;&gt;</code> overhead.
+        </p>
+        <p>
+          <strong>Erased-syntax backward compatibility.</strong> Existing programs use erased generic syntax with
+          no explicit type arguments (<code>class Box&lt;T&gt;</code>, <code>fn first&lt;T&gt;(xs)</code>,
+          <code>fn identity&lt;T&gt;(x)</code>, <code>fn head&lt;T&gt;(xs) -&gt; T</code>). Type arguments at call
+          and construction sites (<code>identity&lt;int&gt;(7)</code>, <code>new Box&lt;int&gt;(7)</code>) remain
+          optional; when omitted the checker infers concrete arguments from call arguments where possible or falls
+          back to <code>Any</code> (dynamic <code>Value</code>). Unconstrained <code>&lt;T&gt;</code> with untyped
+          parameters keeps type-checking and executing identically across Tree, VM, WASM and AOT.
+        </p>
+        <p>
+          <strong>Parser &amp; AST.</strong> <code>TypeExpr.arg: Option&lt;Box&lt;TypeExpr&gt;&gt;</code> becomes
+          <code>args: Vec&lt;TypeExpr&gt;</code> so multi-parameter types
+          (<code>map&lt;string, int&gt;</code>, <code>result&lt;int, string&gt;</code>,
+          <code>Pair&lt;int, bool&gt;</code>) are represented directly; a
+          <code>TypeParam { name, bound, span }</code> replaces the bare name list, with a <code>.names()</code>
+          helper for a minimal diff. <code>parse_type_params()</code> parses comma-separated parameters with
+          optional bounds (<code>&lt;T&gt;</code>, <code>&lt;T: Comparable&gt;</code>, <code>&lt;K, V&gt;</code>),
+          <code>parse_single_type()</code> parses <code>&lt;T1, T2, …&gt;</code>, and explicit arguments on calls and
+          constructors are disambiguated from less-than by lookahead (<code>&lt;</code> followed by a type list then
+          <code>&gt;(</code>).
+        </p>
+        <p>
+          <strong>Checker instantiation &amp; constraints.</strong> Declared <code>TypeParam</code>s bind with their
+          optional <code>Comparable</code>/<code>Numeric</code>/<code>Printable</code>/interface bound during
+          function/class checking; at instantiation the checker verifies each concrete type satisfies the bound and
+          emits a <code>Phase::Semantic</code> diagnostic on mismatch or wrong arity. A deduplicated
+          <code>InstantiationSet</code> records <code>MonoFnKey { name, type_args }</code>,
+          <code>MonoClassKey { name, type_args }</code> and typed container annotations propagated to local,
+          parameter and return type tables. Tree and VM execute generics polymorphically on <code>Value</code> with
+          zero behavioral divergence from AOT monomorphized code.
+        </p>
+        <p>
+          <strong>AOT monomorphization &amp; unboxed containers.</strong> For each <code>MonoFnKey</code> whose type
+          args are scalar/known, emit a specialized <code>spid3r_mono_&lt;fn&gt;__&lt;mangled&gt;</code> taking and
+          returning unboxed LLVM types (<code>i64</code>, <code>double</code>, <code>i1</code>, typed pointer) where
+          safe, with bounded depth (e.g. 64 specializations) and automatic fallback to the generic
+          <code>*mut Value</code> entry on overflow or <code>Any</code>/heterogeneous types. Typed-buffer handles or
+          specialized <code>ListI64</code>/<code>ListF64</code>/<code>MapStrI64</code> trampolines are used only when
+          the checker proves the value never escapes to untyped <code>Value</code> contexts (auto-boxing on escape);
+          <code>xs[i]</code>, <code>.push(v)</code>, <code>.len()</code> and <code>for x in xs</code> lower to direct
+          unboxed loads/stores. Gates: HLC corpus codegen parity ≤ 1.25×, a Tier-B improvement on <code>json</code>
+          and <code>map</code>, and unchanged selfhost native parity (selfhost sources use no generics).
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Surface</th>
+                <th>Impact</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>selfhost/corpus/</code> (134 programs)</td>
+                <td>0 existing programs use <code>&lt;T&gt;</code></td>
+                <td>Frozen corpus parity unchanged; add generic instantiation cases under the SH-4 ledger entry</td>
+              </tr>
+              <tr>
+                <td><code>selfhost/*.matrix</code> (17 modules)</td>
+                <td>0 modules use generics</td>
+                <td>All selfhost parity scripts stay green without syntax changes</td>
+              </tr>
+              <tr>
+                <td><code>tests/constructs.rs</code> (<code>GENERICS</code>)</td>
+                <td>uses erased <code>Box&lt;T&gt;</code>, <code>first&lt;T&gt;</code>, <code>identity&lt;T&gt;</code>, <code>head&lt;T&gt;</code></td>
+                <td>Must keep passing identically in Tree, VM and AOT</td>
+              </tr>
+              <tr>
+                <td><code>tests/engine_matrix.rs</code></td>
+                <td>needs new instantiation &amp; constraint rows</td>
+                <td>Add tree == vm == native parity rows</td>
+              </tr>
+              <tr>
+                <td><code>RUNTIME_ABI.md</code></td>
+                <td>new <code>spid3r_list_i64_*</code> / <code>spid3r_map_str_i64_*</code> trampolines</td>
+                <td>Update trampoline counts &amp; ABI docs when the AOT stage lands</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+          </div>
+        </details>
 
       </section>
 
@@ -3954,8 +4351,8 @@ println(" Sum via reduce: " + string(sum_all));      // 21
                   <code>binary_tree()</code>, <code>priority_queue()</code>, <code>vec()</code>,
                   <code>singly_linked_list()</code>, <code>doubly_linked_list()</code>
                 </td>
-                <td>See <code>docs/DATA_STRUCTURES.md</code></td>
-                <td>Same native containers as the highlighter; omitted from this table in earlier drafts</td>
+                <td><code>linked_list()</code>: <code>push_back/front</code>, <code>pop_front/back</code>, <code>get</code>, <code>remove</code>, <code>to_list</code> · <code>hash_table()</code>: 8 growing buckets, <code>bucket_count</code>, <code>load_factor</code> · <code>bst()</code>/<code>binary_tree()</code>: <code>insert</code>, <code>inorder/preorder/postorder</code>, <code>root</code> · <code>priority_queue()</code> (heap-backed) · <code>vec()</code> · <code>singly_linked_list()</code> / <code>doubly_linked_list()</code> — see the full data-structures reference below</td>
+                <td>Same native containers as the highlighter; constructor details and the complete method vocabulary follow</td>
               </tr>
             </tbody>
           </table>
@@ -3970,6 +4367,159 @@ println(" Sum via reduce: " + string(sum_all));      // 21
           algebra, so use <code>set</code> when you need <code>union</code> or
           <code>difference</code>.
         </p>
+
+        <details class="deep">
+          <summary>Data-structures deep dive — complete constructor &amp; method reference, comparator sorting, float precision</summary>
+          <div class="deep-body">
+        <h4 id="ds-vocabulary" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Constructor &amp; Method Reference (Complete)</h4>
+        <p>
+          Every container is a value created by a constructor function — ordinary globals that can be shadowed —
+          and all share a common vocabulary: <code>len</code>, <code>is_empty</code>, <code>clear</code>, plus
+          <code>push</code>/<code>pop</code>/<code>peek</code>/<code>get</code>/<code>contains</code> where they make
+          sense. Methods use dot syntax; a wrong argument type throws a descriptive, catchable runtime error.
+          Constructors take initial elements where natural:
+        </p>
+        <div
+          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; white-space: pre; overflow-x: auto;">
+let xs   = list(10, 20, 30);
+let m    = map("a", 1, "b", 2);
+let q    = queue();
+let g    = graph("undirected");
+let h    = heap("min");
+let mx   = matrix(2, 3, 0.0);
+let rb   = ring_buffer(4);
+let cell = mutex(0);
+let atom = atomic_int(0);
+let ch   = channel();
+let box  = ref(1);             // a shared, interior-mutable cell
+let yes  = some(5);            // option
+let no   = none;
+let okv  = ok(1);  let errv = err("bad");   // result</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Group</th>
+                <th>Constructors and methods</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Sequences</strong></td>
+                <td><code>list(a, b, …)</code> (indexable; <code>get/set</code>, <code>push/pop</code>,
+                  <code>remove/remove_at</code>, <code>contains</code>, <code>sort/reverse</code> +
+                  <code>sorted/reversed</code>, <code>slice</code>, <code>join(sep)</code>,
+                  <code>append</code>, <code>index_of</code>, higher-order <code>map/filter/reduce/for_each/all/any</code>,
+                  <code>sort_by/sorted_by/argsort</code>) · <code>vec()</code> (<code>clone</code>) ·
+                  <code>deque()</code> (<code>push_front/back</code>, <code>pop_front/back</code>,
+                  <code>peek_front</code>) · <code>tuple(a, b, …)</code> (fixed, immutable length) ·
+                  <code>bytes(...)</code> (<code>slice</code>, <code>to_list/string</code>,
+                  <code>to_hex/from_hex</code>, <code>to_base64/from_base64</code>, <code>copy</code>) ·
+                  <code>ring_buffer(n)</code> (overwrites the oldest when full)</td>
+              </tr>
+              <tr>
+                <td><strong>Stacks &amp; queues</strong></td>
+                <td><code>stack()</code> (LIFO; <code>pop</code> on empty throws) · <code>queue()</code> (FIFO) ·
+                  <code>priority_queue("min"|"max")</code> (heap-backed)</td>
+              </tr>
+              <tr>
+                <td><strong>Strings</strong></td>
+                <td>Immutable, with <code>len/is_empty</code>, character-indexed <code>slice</code>,
+                  <code>upper/lower/trim/ltrim/rtrim</code>, <code>split/join</code>,
+                  <code>contains/starts_with/ends_with/index_of</code> (<code>-1</code> when absent),
+                  <code>replace/repeat/reverse/chars</code>, <code>pad_left/pad_right</code>,
+                  <code>format(args…)</code> with <code>{}</code> and <code>{{</code>/<code>}}</code> escapes plus
+                  precision <code>{:.N}</code></td>
+              </tr>
+              <tr>
+                <td><strong>Associative</strong></td>
+                <td><code>map(k, v, …)</code> (insertion-order; index-assign <code>m[k] = v</code>,
+                  <code>remove/delete</code>, <code>keys/values/items</code>) · <code>set(a, b, …)</code>
+                  (<code>union/intersection/difference</code>, <code>is_subset/is_superset</code>) ·
+                  <code>bag()</code> (multiset: <code>add/count_of/remove</code>) · <code>hash_table()</code>
+                  (separate chaining, no constructor args, <code>bucket_count/load_factor</code>)</td>
+              </tr>
+              <tr>
+                <td><strong>Linked nodes</strong></td>
+                <td><code>linked_list()</code> / <code>singly_linked_list()</code> ·
+                  <code>doubly_linked_list()</code> (fast <code>pop_back</code>, both-end push)</td>
+              </tr>
+              <tr>
+                <td><strong>Trees &amp; heaps</strong></td>
+                <td><code>binary_tree(a, b, …)</code> (level-order constructor, traversals) · <code>bst()</code>
+                  (<code>insert/remove/contains</code>, traversals) · <code>trie()</code>
+                  (<code>with_prefix/all_words</code>) · <code>heap("min"|"max")</code>
+                  (<code>change_priority/merge</code>)</td>
+              </tr>
+              <tr>
+                <td><strong>Numeric</strong></td>
+                <td><code>vector(n, fill)</code> / <code>vector(list)</code> and
+                  <code>matrix(rows, cols, fill)</code> / <code>matrix(rows_list)</code> — contiguous 64-bit float
+                  storage capped at 16,777,216 elements; elementwise arithmetic, reductions, linear algebra
+                  (<code>dot/norm/solve/inverse/det/eigen_sym</code>). See the Linear Algebra chapter.</td>
+              </tr>
+              <tr>
+                <td><strong>Graphs</strong></td>
+                <td><code>graph("directed"|"undirected")</code> — adjacency map (may be cyclic):
+                  <code>add/remove_node</code>, <code>add/remove_edge</code>, <code>neighbors</code>,
+                  <code>n_nodes/n_edges</code>, <code>bfs/dfs</code>, <code>path_exists/find_path</code>,
+                  <code>is_connected/cycle</code>, <code>replace/clear</code></td>
+              </tr>
+              <tr>
+                <td><strong>Shared state</strong></td>
+                <td><code>ref(v)</code> (<code>get/set</code>, safe across tasks) · <code>weak(r)</code>/<code>deref(w)</code>
+                  (non-owning; <code>null</code> if collected) · <code>mutex(v)</code> (RAII <code>lock()</code>) ·
+                  <code>atomic_int(init?)</code> (<code>load/store/cas/exchange/fetch_add/fetch_sub</code>) ·
+                  <code>channel()</code> (<code>send/recv/try_recv/state/len</code>) · <code>task</code> (from
+                  <code>spawn</code>, joined with <code>await</code>)</td>
+              </tr>
+              <tr>
+                <td><strong>Sum types</strong></td>
+                <td><code>option</code> (<code>some/none</code>, <code>unwrap/unwrap_or</code>) ·
+                  <code>result</code> (<code>ok/err</code>, <code>unwrap/unwrap_err</code>) ·
+                  <code>enum Name { Variant1, Variant2(field) }</code> — each variant lowers to an ordinary public
+                  constructor function (works across <code>import</code>); a value is a map carrying
+                  <code>__tag</code>, <code>__fields</code> and one key per payload field; <code>match</code> arms
+                  use the bare variant name</td>
+              </tr>
+              <tr>
+                <td><strong>Binary I/O &amp; formats</strong></td>
+                <td><code>read_bytes/write_bytes</code> · <code>save_npy/load_npy</code> (NumPy v1.0 little-endian
+                  <code>&lt;f8</code>) · <code>parse_csv/read_csv/write_csv</code> (RFC-4180, quoted fields,
+                  type inference) · <code>regex_match/find/find_all/replace</code> (Thompson NFA) ·
+                  <code>unix_time/unix_ms/datetime_parts/datetime_from_parts/format_datetime</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4 id="ds-sorting" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Sorting with a Comparator &amp; Float Precision</h4>
+        <p>
+          <code>xs.sort_by(cmp)</code> sorts in place (returns <code>null</code>), <code>xs.sorted_by(cmp)</code>
+          returns a new list, and <code>xs.argsort()</code> returns the original indices in ascending order
+          (<code>list(30, 10, 20).argsort()</code> → <code>[1, 2, 0]</code>). A comparator <code>cmp(a, b)</code>
+          returns either a <code>bool</code> (<code>true</code> = <code>a</code> before <code>b</code>) or a
+          number (negative/0/positive = before/equal/after). Sorts are <strong>stable</strong>: the list is
+          snapshotted before comparison, no lock is held while a comparator runs, and the sorted snapshot is
+          written back after the last call — so a comparator that throws, mutates the receiver or touches a
+          self-referential list gets a clean result, never a deadlock or host panic. Because <code>false</code>
+          cannot distinguish "after" from "equal", the mirrored question <code>cmp(b, a)</code> is asked
+          whenever <code>cmp(a, b)</code> is false; keep comparators side-effect free. Non-bool/int/float or
+          <code>NaN</code> returns throw a catchable error.
+        </p>
+        <p>
+          A <code>format</code> placeholder may carry precision <code>{:.N}</code> for <code>N</code> in
+          <code>0..=15</code> — <code>"{:.2}".format(88.6875)</code> → <code>"88.69"</code>,
+          <code>"{:.0}".format(2.5)</code> → <code>"2"</code> (tie-to-even, unlike <code>round(x)</code>, which
+          rounds halves away from zero). An int is widened to fixed point; precision &gt; 15, a non-number
+          placeholder, or a malformed spec such as <code>{:.}</code>/<code>{:x}</code> is a catchable error.
+          Methods validate arguments and throw on violation (empty <code>stack.pop()</code>, out-of-range
+          <code>get(i)</code>, a method the collection does not have); these are ordinary catchable thrown values.
+        </p>
+          </div>
+        </details>
 
         <!-- Example Card 13 -->
         <div class="w3-card-example" id="ex-collections">
@@ -4609,8 +5159,16 @@ println(" Sum via reduce: " + string(sum_all));      // 21
             <code>pbkdf2_sha256</code>, <code>ed25519_*</code>, <code>bcrypt_*</code>, <code>argon2</code>) and
             TLS 1.3 client in <code>src/stdlib/net.rs</code> are self-contained pure-Rust implementations with zero
             external dependencies, and have <strong>not yet undergone an independent third-party cryptographic
-            audit</strong>. For high-stakes production workloads or side-channel-hostile environments, terminate TLS
-            or run secret-key operations behind an audited reverse proxy or HSM (see <code>docs/SECURITY.md</code>).
+            audit</strong>. The primitives are verified by internal RFC test vectors and negative/malleability tests
+            — Ed25519 uses a constant-time <code>cswap</code> Montgomery ladder with canonical <code>S &lt; L</code>
+            and small-order-key rejection — but are <strong>not formally proven side-channel hardened</strong>, and
+            <code>R12.1</code> remains open pending an external review report. For high-stakes production workloads
+            or side-channel-hostile environments, terminate TLS or run secret-key operations behind an audited
+            reverse proxy or HSM. Cryptographic randomness comes only from <code>random_bytes(n)</code> (OS CSPRNG:
+            <code>/dev/urandom</code>, <code>RtlGenRandom</code>); <code>random_int</code>/<code>random_float</code>/<code>random_normal</code>
+            are clock-seeded xorshift and never suitable for tokens. <code>jwt_verify</code> is constant-time with a
+            60-second <code>exp</code>/<code>nbf</code> skew but checks <code>HS256</code> only and does not pin
+            <code>alg</code> to a policy — do not feed it tokens from an issuer you do not control.
           </p>
         </div>
 
@@ -5332,7 +5890,13 @@ agent.bind = 0.0.0.0
                   touch paths inside these directories (<code>;</code> or <code>,</code> separated). Symlinks and
                   junctions are resolved before comparing, the match is component-wise (never a raw string prefix),
                   and unresolvable paths are rejected. Denials are catchable
-                  (<code>path outside basedir: …</code>); see <code>docs/SECURITY.md</code> for the honest limits.
+                  (<code>path outside basedir: …</code>), raised before the filesystem is touched. Honest limits:
+                  the check canonicalizes the nearest existing ancestor for not-yet-created write targets, matches
+                  component-wise (case-insensitive on Windows), resolves symlinks/junctions, and refuses a basedir
+                  entry that does not exist; <strong>TOCTOU is inherent</strong> (a file or link swapped between check
+                  and open is not covered — an empirical 200,000-iteration race produced 0 escapes, an observation
+                  not a guarantee), hard links already pointing outside are indistinguishable, and the policy is a
+                  per-process filter over built-in natives, not a kernel privilege boundary or a resource limit.
                   <strong>basedir alone is not a jail</strong>: Process natives
                   (<code>spawn_process</code>/<code>exec_capture</code>) reach any path the OS user can — pair with
                   <code>disable_natives = spawn_process, exec_capture, run_payload, run_payload_strict</code> or run
@@ -5714,9 +6278,124 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
           natives (<code>disable_natives = spawn_process, exec_capture, run_payload, run_payload_strict</code>) or
           run under <code>--sandbox</code> for a meaningful jail.
         </p>
+        <details class="deep">
+          <summary>Operator deep dive — run-time &amp; HTTP limits, diagnostics, audit records, cross-platform paths</summary>
+          <div class="deep-body">
+        <h4 id="agent-config-limits" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Operator Reference: Limits, Audit and Cross-Platform Details</h4>
         <p>
-          Full operator manual: <code>docs/AGENT.md</code>.
+          <strong>Run-time limits.</strong> <code>runtime.wall_clock_limit_ms</code> arms a wall-clock deadline for
+          <code>spid3r run</code> — expiry is a <strong>fatal, uncatchable</strong>
+          <code>wall-clock limit exceeded (N ms)</code> error on the tree and VM engines, checked at statement
+          boundaries, at the VM's instruction poll, and around blocking native calls (residual granularity is one
+          blocking operation). The native AOT backend is not wired to it. Deadline and cap are Arc-shared with
+          spawned tasks and module interpreters, and <code>config reload</code> applies new values live.
+          <code>runtime.memory_limit_mb</code> is a <strong>catchable</strong> soft cap on total script-value heap
+          (<code>out of memory: script exceeded memory_limit_mb (N)</code> — a program may catch it, drop the
+          offending container, and continue). Accounting covers every tracked heap cell (containers, instances,
+          closures, classes), counts strings by byte length and containers by element count, ignores free-standing
+          scalars/strings in untracked environments, and refreshes at most every 25 ms — so the cap is approximate by
+          design. <code>runtime.timezone</code> sets the datetime default: <code>UTC</code>, a fixed offset like
+          <code>+06:00</code>, or an IANA name from <code>tz_names()</code>; anything else is rejected at load with a
+          note and UTC stays in effect.
         </p>
+        <p>
+          <strong>HTTP serving limits.</strong> <code>net.timeout_ms</code> is the per-connection framing deadline
+          (slowloris guard; <code>0</code> disables; alias <code>SPID3R_NET_TIMEOUT_MS</code>);
+          <code>net.max_body</code> caps the request body (larger → <code>413</code> before the handler runs);
+          <code>net.max_headers</code> caps header count (larger → <code>431</code>);
+          <code>net.keepalive_ms</code> is the idle window between keep-alive requests (<code>0</code> closes after
+          each response). A server may override all four per listen via its options map
+          (<code>timeout_ms</code>, <code>max_body_bytes</code>, <code>max_headers</code>,
+          <code>idle_timeout_ms</code>); an explicit option beats the INI default, and all four are re-read per
+          accepted connection so <code>config reload</code> applies to later connections.
+        </p>
+        <p>
+          <strong>Diagnostics and script policy.</strong> <code>errors.level</code>
+          (<code>error|warn|info</code>, default <code>info</code>) gates the script-visible diagnostics channel;
+          <code>errors.display</code> mirrors diagnostic log lines to stderr (canonical spelling of the
+          <code>debug.log_stdout</code> alias); <code>errors.log_file</code> routes error-level diagnostics to a
+          dedicated file when set. <code>security.disable_natives</code> replaces named natives with a catchable
+          <code>disabled by configuration</code> denial (unknown names noted and ignored);
+          <code>modules.disable</code> makes importing a named module fail with
+          <code>module disabled by configuration: '…'</code> under the platform's default filename case rules
+          (case-insensitive on Windows/macOS, case-sensitive on Linux); <code>modules.assert_active = false</code>
+          turns <code>assert()</code>/<code>assert_eq()</code> into no-ops returning <code>true</code>. The policy
+          keys (<code>security.basedir</code>, <code>security.disable_natives</code>, <code>modules.disable</code>)
+          are read once per process (a script cannot widen them mid-run with <code>config_set</code>) and are frozen
+          for remote <code>config.set</code>. <code>packages.registry</code> is the canonical home of
+          <code>SPID3R_REGISTRY</code>; <code>packages.allow_insecure_git</code> /
+          <code>packages.allow_local_git</code> are the canonical homes of their env aliases. Scripts read and write
+          live values with <code>config_get</code>, <code>config_set</code> and <code>config_reload()</code>;
+          sensitive-looking values are redacted on read unless the caller is local. The
+          <code>config.set</code> freeze set is derived from the schema (<code>frozen</code> on each
+          <code>KeySpec</code> in <code>src/config/schema.rs</code>) — a single enforcement point, not a
+          hand-written deny list. <code>packages.registry</code> is deliberately remote-settable: a compromised
+          channel could redirect the install source, and a <strong>first</strong> install from a redirected registry
+          trusts its <code>sha256.txt</code> (<code>spider.lock</code> protects re-installs only); operators who
+          reject that trade-off should restrict <code>config.set</code> in <code>agent.role_operator</code>.
+        </p>
+        <p>
+          <strong>Audit record.</strong> Every accepted or rejected operation is one JSON line in
+          <code>&lt;state&gt;/audit.log</code>, e.g.
+          <code>{"ts":1762252800,"device":"laptop-1","role":"operator","op":"config.set","ok":true,"peer":"192.168.1.4:51000","detail":""}</code>.
+          The audit log rotates at 1 MiB (current file renamed to <code>audit.log.1</code>, a fresh
+          <code>audit.log</code> starts). <code>rotate_log</code> rotates both <code>spid3r.log</code> and
+          <code>audit.log</code> immediately (each renamed to <code>&lt;name&gt;.1</code>, replacing any previous
+          <code>.1</code>) and returns both new paths in its response. A stolen <code>devices.json</code> is game
+          over for that host: rotate by revoking the device and re-pairing, and keep the file off unencrypted
+          backups.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Concern</th>
+                <th>Windows</th>
+                <th>Linux</th>
+                <th>macOS</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Config dir</td>
+                <td><code>%APPDATA%\Spid3r</code></td>
+                <td><code>$XDG_CONFIG_HOME/spid3r</code></td>
+                <td><code>~/.config/spid3r</code></td>
+              </tr>
+              <tr>
+                <td>State dir</td>
+                <td><code>%LOCALAPPDATA%\Spid3r\state</code></td>
+                <td><code>$XDG_STATE_HOME/spid3r</code></td>
+                <td><code>~/.local/state/spid3r</code></td>
+              </tr>
+              <tr>
+                <td>Reload</td>
+                <td><code>config reload</code> / agent</td>
+                <td><code>SIGHUP</code> + those</td>
+                <td><code>SIGHUP</code> + those</td>
+              </tr>
+              <tr>
+                <td>CSPRNG</td>
+                <td><code>RtlGenRandom</code></td>
+                <td><code>/dev/urandom</code></td>
+                <td><code>/dev/urandom</code></td>
+              </tr>
+              <tr>
+                <td>Memory info</td>
+                <td><code>GlobalMemoryStatusEx</code></td>
+                <td><code>/proc/meminfo</code></td>
+                <td><code>sysctl hw.memsize</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          No third-party crates were added for the management plane: the agent, INI parser, ChaCha20, HMAC, HKDF
+          and Poly1305 (unused, kept with a vector) are all in-tree.
+        </p>
+            </div>
+        </details>
 
       </section>
 
@@ -6118,8 +6797,11 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
         <h3 class="section-h3" id="containers">OCI Container Engine (<code>spid3r container</code>)</h3>
         <p>
           Built behind the <code>container</code> Cargo feature (<code>--features container</code>), Spid3r
-          includes an OCI Image &amp; Container engine (<code>src/oci/</code> and <code>src/container/</code>,
-          documented in <code>docs/CONTAINERS.md</code>):
+          includes an OCI Image &amp; Container engine (<code>src/oci/</code> and <code>src/container/</code>).
+          Status: <code>R11.1</code>–<code>R11.9</code> implemented across <code>src/oci/</code>,
+          <code>src/container/</code>, <code>src/native/sys.rs</code> (<code>DP-7</code>) and
+          <code>spid3r container</code>; Linux kernel namespace/overlayfs/cgroup execution is gated behind
+          <code>#[cfg(all(target_os = "linux", feature = "container"))]</code>.
         </p>
         <ul>
           <li><strong>OCI Image Pull &amp; Verification:</strong> <code>src/oci/</code> implements OCI Distribution
@@ -6131,20 +6813,115 @@ magic "SPID3R01" | version | kind | device[16] | nonce[12] | len u32 | payload
             <code>pivot_root</code>, cgroups v2 resource limits, and veth/NAT networking for
             <code>spid3r container &lt;pull|create|start|run|stop|kill|rm|ps|inspect|logs|gc&gt;</code>.</li>
         </ul>
+        <details class="deep">
+          <summary>Container deep dive — quickstart commands, module architecture &amp; security model</summary>
+          <div class="deep-body">
+        <h4 id="container-quickstart" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Quickstart</h4>
+        <div
+          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; white-space: pre; overflow-x: auto;">
+# Pull an OCI image (verifies manifest, config, and every layer SHA-256)
+spid3r container pull http://127.0.0.1:5000/app/demo:v1
+
+# Create &amp; inspect a container bundle
+spid3r container create --name web http://127.0.0.1:5000/app/demo:v1
+spid3r container ps
+spid3r container inspect web
+
+# Run on Linux (built with --features container)
+spid3r container run --name web http://127.0.0.1:5000/app/demo:v1 /bin/echo ok
+
+# Stop, remove, and garbage-collect unreferenced layers
+spid3r container stop web
+spid3r container rm web
+spid3r container gc</div>
+        <h4 id="container-architecture" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Architecture</h4>
+        <ul>
+          <li><strong><code>src/oci/</code></strong> — Cross-platform OCI Image Spec v1 parser
+            (<code>manifest.rs</code>), Registry v2 HTTP(S) client with anonymous Bearer token flow and multi-arch
+            host selection (<code>client.rs</code>), and hardened gzip/ustar layer pipeline with <code>.wh.</code>
+            whiteouts, path-traversal refusal, and atomic cache commits (<code>layers.rs</code>).</li>
+          <li><strong><code>src/container/</code></strong> — Snapshotter (<code>snapshot.rs</code>: Linux
+            <code>overlayfs</code> + copy-up fallback + refcounted GC), runtime state machine &amp; OCI
+            <code>config.json</code> bundle loader (<code>runtime.rs</code>), <code>spid3r0</code> bridge IPAM pool
+            (<code>net.rs</code>), and daemon state recovery (<code>daemon.rs</code>).</li>
+          <li><strong><code>src/native/sys.rs</code> (<code>DP-7</code>)</strong> — Sanctioned <code>unsafe</code>
+            home for Linux syscall shims (<code>unshare</code>, <code>setns</code>, <code>mount</code>,
+            <code>umount2</code>, <code>pivot_root</code>, <code>chroot</code>, <code>sethostname</code>,
+            <code>prctl(PR_SET_NO_NEW_PRIVS)</code>, <code>fork</code>, <code>waitpid</code>, <code>kill</code>,
+            <code>setuid</code>/<code>setgid</code>). Zero external crates; gated out of
+            <code>--no-default-features</code> and <code>wasm32</code> builds.</li>
+        </ul>
+        <h4 id="container-security" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Security Model &amp; Honest Limitations</h4>
+        <ul>
+          <li><strong>Digest &amp; signature verification:</strong> Every config and layer blob is SHA-256 verified
+            before caching or extraction; mismatches fail closed with exit code <code>4</code>. Optional Ed25519
+            manifest signature enforcement (<code>--require-sig --pubkey &lt;hex&gt;</code>) reuses
+            <code>crate::pkg::ed25519</code>.</li>
+          <li><strong>Tar hardening:</strong> Absolute paths, drive prefixes, and <code>..</code> components are
+            refused before writing any file. Uncompressed layer buffering is capped at 64 MiB
+            (<code>MAX_LAYER_TAR_BYTES</code>).</li>
+          <li><strong>Platform scope:</strong> Image pull, verification, whiteout assembly, IPAM, OCI bundle
+            creation, and CLI management (<code>pull</code>/<code>create</code>/<code>ps</code>/<code>inspect</code>/<code>logs</code>/<code>rm</code>/<code>gc</code>)
+            run on Windows, macOS, and Linux. Kernel namespace/cgroup/overlayfs execution
+            (<code>spid3r container start</code>/<code>run</code>) requires Linux built with
+            <code>--features container</code>.</li>
+        </ul>
+          </div>
+        </details>
 
         <h3 class="section-h3" id="os-kernel">Bare-Metal Kernel Track (<code>spid3r kernel build</code>)</h3>
         <p>
           The <code>kernel/</code> workspace member is a zero-dependency <code>no_std</code>
-          <code>x86_64-unknown-none</code> kernel foundation (documented in <code>docs/OS_TRACK.md</code>):
+          <code>x86_64-unknown-none</code> kernel foundation (<code>R13</code> / <code>DP-8</code>). Status:
+          <code>DP-8</code> chartered and the <code>R13.1</code> bare-metal <code>kernel/</code> foundation +
+          host-testable subsystems implemented; QEMU 10m/30m soak tests (<code>R13.2</code>/<code>R13.5</code>),
+          live ring-3 <code>sysret</code> execution (<code>R13.6</code>), virtio-tap packet roundtrip
+          (<code>R13.7</code>), and external <code>unsafe</code> review (<code>R13.8</code>) remain open until run
+          on Linux QEMU CI.
         </p>
+        <details class="deep">
+          <summary>Kernel deep dive — boot &amp; core subsystems, build &amp; verify commands</summary>
+          <div class="deep-body">
+        <h4 id="kernel-boot" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Boot &amp; Core Subsystems</h4>
         <ul>
-          <li><strong>Boot &amp; Core Subsystems:</strong> Multiboot2 header + <code>kernel/link.ld</code>, GDT/IDT,
-            PIC/PIT timer, 4-level paging, bump + slab allocators, serial/VGA console, cooperative/preemptive task
-            scheduler, syscall dispatch, and initrd loader stubs.</li>
+          <li><strong>Boot:</strong> The 24-byte Multiboot2 header (<code>0xE85250D6</code>) is embedded in
+            <code>.multiboot2</code>; COM1 (<code>0x3F8</code>) serial UART is initialized,
+            <code>Spid3rOS v0.1 (x86_64 multiboot2) ready</code> is emitted, and the CPU idles via <code>hlt</code>.</li>
+          <li><strong>Memory:</strong> An audited 4 KiB physical bitmap frame allocator (double-free refusal, exact
+            frame accounting) plus a checked-arithmetic bump heap (<code>KernelBumpHeap</code>, clean error on
+            exhaustion without integer wrap).</li>
+          <li><strong>Interrupts &amp; Console:</strong> 64-bit GDT/IDT descriptors, exception vector table
+            (<code>#DE</code>, <code>#UD</code>, <code>#DF</code>, <code>#GP</code>, <code>#PF</code>), PS/2
+            scancode set 1 decoder, and <code>help</code>/<code>ps</code>/<code>meminfo</code> shell commands.</li>
+          <li><strong>Userland &amp; Syscall ABI:</strong> ELF64 x86-64 validator (<code>0x7F ELF</code>,
+            <code>ELFCLASS64</code>, <code>EM_X86_64</code>) with documented syscall numbers
+            (<code>SYS_WRITE = 1</code>, <code>SYS_GETPID = 39</code>, <code>SYS_EXIT = 60</code>);
+            <code>kernel/init/init.matrix</code> targets the <code>R9.4</code> freestanding Spid3r build profile
+            (<code>--freestanding --entry _start --target x86_64-unknown-none --emit-obj</code>).</li>
+          <li><strong>Drivers:</strong> PCI Type-0 configuration address encoder (<code>0xCF8</code>) and modern
+            virtio device classification (<code>virtio-net = 0x1041</code>, <code>virtio-blk = 0x1042</code>).</li>
           <li><strong>Toolchain Integration:</strong> Run <code>spid3r kernel build [--out &lt;path&gt;]</code> to
             build <code>kernel/Cargo.toml</code> for <code>x86_64-unknown-none --release</code> (requires
-            <code>rustup target add x86_64-unknown-none</code>).</li>
+            <code>rustup target add x86_64-unknown-none</code>). The 24-byte Multiboot2 header and
+            <code>kernel/link.ld</code> link at 1 MiB physical with <code>-C disable-redzone=yes</code> and
+            <code>-C relocation-model=static</code>; zero external crate dependencies.</li>
         </ul>
+        <h4 id="kernel-build" style="font-size: 1.05rem; font-weight: 600; margin: 22px 0 10px; color: var(--fg-primary);">
+          Build &amp; Verify</h4>
+        <div
+          style="background: var(--bg-code); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-line); margin: 16px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; white-space: pre; overflow-x: auto;">
+# Host unit tests for all kernel subsystems (Windows / Linux / macOS)
+cargo test --manifest-path kernel/Cargo.toml
+
+# Bare-metal x86_64-unknown-none kernel build + SHA-256 sidecar
+rustup target add x86_64-unknown-none
+spid3r kernel build</div>
+          </div>
+        </details>
         <figure class="diagram">
           <img src="../diagrams/os-baremetal.svg"
             alt="Bare-metal x86_64 kernel architecture: Multiboot2 boot, GDT/IDT, paging, allocators, serial/VGA console, scheduler, syscalls, and initrd.">

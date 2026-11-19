@@ -655,20 +655,33 @@ impl DequeData {
 
 // --------------------------------------------------------------------- map
 
+/// Inline tag capacity for small maps (`entries.len() <= SMALL_MAP_MAX`) before
+/// lazily allocating the open-addressed `slots` table (Track 3 RT-3).
+const SMALL_MAP_MAX: usize = 16;
+
+#[inline]
+fn map_tag(hash: u64) -> u8 {
+    (hash >> 56) as u8
+}
+
 /// Insertion-ordered map. Keys are null, bool, int, or string; floats are
 /// rejected. Missing keys are errors, not silent nulls.
 ///
 /// Storage is an insertion-ordered `Vec` (what `display`, iteration and
-/// `keys`/`values`/`items` walk) plus a side `HashMap` index for O(1)
-/// `find` — without it every `get`/`set`/`remove` was a linear scan and map
-/// benchmarks degraded quadratically. The index is rebuilt on structural
-/// removals (rare relative to lookups).
+/// `keys`/`values`/`items` walk) plus a lightweight index for O(1) `find` and
+/// zero-allocation `find_str`:
+/// - For `entries.len() <= 16` (`slots.is_empty()`), a 16-byte inline hash-tag
+///   array avoids any heap allocation (huge win for small JSON objects).
+/// - Above 16 entries, a flat open-addressed `(hash, entry_idx + 1)` table
+///   (`0` = empty) stores only indices without cloning `MapKey`s.
 #[derive(Debug, Default)]
 pub struct MapData {
     pub entries: Vec<(super::MapKey, Value)>,
-    /// key -> position in `entries`. Kept in sync by `find`-adjacent
-    /// mutations; rebuilt wholesale when entries shift.
-    index: super::FxHashMap<super::MapKey, usize>,
+    /// 1-byte hash tags used when `slots.is_empty()` (`entries.len() <= 16`).
+    small_tags: [u8; SMALL_MAP_MAX],
+    /// Open-addressed linear-probing index `(hash, entry_idx + 1)` (`0` = empty).
+    /// Capacity is always 0 or a power of two.
+    slots: Vec<(u64, u32)>,
     /// True when this map is a **module namespace** — the value bound to an
     /// import alias (`import "m" as mu`). Such a map is a read-only view of
     /// the module's exports: it cannot be mutated, and an exported name
@@ -700,18 +713,49 @@ impl MapData {
     /// Build a map from entries (last duplicate wins, like the `map(...)`
     /// constructor). The only sanctioned way to construct `MapData`.
     pub fn from_entries(entries: Vec<(super::MapKey, Value)>) -> MapData {
-        let mut index =
-            super::FxHashMap::with_capacity_and_hasher(entries.len(), Default::default());
-        for (i, (k, _)) in entries.iter().enumerate() {
-            index.insert(k.clone(), i);
-        }
-        MapData {
+        let mut m = MapData {
             entries,
-            index,
+            small_tags: [0; SMALL_MAP_MAX],
+            slots: Vec::new(),
             namespace: false,
             frozen: super::FxHashSet::default(),
             generation: 0,
+        };
+        if m.entries.len() <= SMALL_MAP_MAX {
+            for (i, (k, _)) in m.entries.iter().enumerate() {
+                m.small_tags[i] = map_tag(super::fx_hash_map_key(k));
+            }
+        } else {
+            m.rebuild_slots();
         }
+        m
+    }
+
+    /// Rebuild the open-addressed `slots` table from `self.entries`.
+    fn rebuild_slots(&mut self) {
+        let cap = (self.entries.len().saturating_mul(2))
+            .next_power_of_two()
+            .max(32);
+        let mut slots = vec![(0u64, 0u32); cap];
+        let mask = cap - 1;
+        for (i, (k, _)) in self.entries.iter().enumerate() {
+            let h = super::fx_hash_map_key(k);
+            let mut pos = (h as usize) & mask;
+            loop {
+                let (sh, idx1) = slots[pos];
+                if idx1 == 0 {
+                    slots[pos] = (h, (i + 1) as u32);
+                    break;
+                }
+                if sh == h && self.entries[(idx1 - 1) as usize].0 == *k {
+                    // Last duplicate wins, matching previous FxHashMap::insert.
+                    slots[pos].1 = (i + 1) as u32;
+                    break;
+                }
+                pos = (pos + 1) & mask;
+            }
+        }
+        self.slots = slots;
     }
 
     /// Invalidate any cached resolution for this map. Called from every
@@ -763,28 +807,123 @@ impl MapData {
 
     #[inline]
     pub fn find(&self, k: &super::MapKey) -> Option<usize> {
-        self.index.get(k).copied()
+        let h = super::fx_hash_map_key(k);
+        if self.slots.is_empty() {
+            let tag = map_tag(h);
+            for i in (0..self.entries.len()).rev() {
+                if self.small_tags[i] == tag && self.entries[i].0 == *k {
+                    return Some(i);
+                }
+            }
+            return None;
+        }
+        let mask = self.slots.len() - 1;
+        let mut pos = (h as usize) & mask;
+        loop {
+            let (sh, idx1) = self.slots[pos];
+            if idx1 == 0 {
+                return None;
+            }
+            if sh == h && self.entries[(idx1 - 1) as usize].0 == *k {
+                return Some((idx1 - 1) as usize);
+            }
+            pos = (pos + 1) & mask;
+        }
     }
+
+    /// Zero-allocation lookup for string keys (Track 3 RT-3).
+    #[inline]
+    pub fn find_str(&self, s: &str) -> Option<usize> {
+        let h = super::fx_hash_str(s);
+        if self.slots.is_empty() {
+            let tag = map_tag(h);
+            for i in (0..self.entries.len()).rev() {
+                if self.small_tags[i] == tag {
+                    if let super::MapKey::Str(k) = &self.entries[i].0 {
+                        if k.as_ref() == s {
+                            return Some(i);
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+        let mask = self.slots.len() - 1;
+        let mut pos = (h as usize) & mask;
+        loop {
+            let (sh, idx1) = self.slots[pos];
+            if idx1 == 0 {
+                return None;
+            }
+            if sh == h {
+                if let super::MapKey::Str(k) = &self.entries[(idx1 - 1) as usize].0 {
+                    if k.as_ref() == s {
+                        return Some((idx1 - 1) as usize);
+                    }
+                }
+            }
+            pos = (pos + 1) & mask;
+        }
+    }
+
     #[inline]
     pub fn set_key(&mut self, k: super::MapKey, val: Value) {
         self.bump_generation();
-        match self.find(&k) {
-            Some(i) => self.entries[i].1 = val,
-            None => {
-                self.index.insert(k.clone(), self.entries.len());
-                self.entries.push((k, val));
+        let h = super::fx_hash_map_key(&k);
+        if self.slots.is_empty() {
+            let tag = map_tag(h);
+            for i in (0..self.entries.len()).rev() {
+                if self.small_tags[i] == tag && self.entries[i].0 == k {
+                    self.entries[i].1 = val;
+                    return;
+                }
             }
+            let idx = self.entries.len();
+            self.entries.push((k, val));
+            if idx < SMALL_MAP_MAX {
+                self.small_tags[idx] = tag;
+            } else {
+                self.rebuild_slots();
+            }
+            return;
+        }
+        let mask = self.slots.len() - 1;
+        let mut pos = (h as usize) & mask;
+        loop {
+            let (sh, idx1) = self.slots[pos];
+            if idx1 == 0 {
+                let idx = self.entries.len();
+                self.entries.push((k, val));
+                if self.entries.len() * 10 >= self.slots.len() * 7 {
+                    self.rebuild_slots();
+                } else {
+                    self.slots[pos] = (h, (idx + 1) as u32);
+                }
+                return;
+            }
+            if sh == h && self.entries[(idx1 - 1) as usize].0 == k {
+                self.entries[(idx1 - 1) as usize].1 = val;
+                return;
+            }
+            pos = (pos + 1) & mask;
         }
     }
+
     /// Remove entry `i` (preserving insertion order of remaining entries) and
-    /// patch `self.index` in place without rehashing or cloning keys.
-    fn remove_at(&mut self, k: &super::MapKey, i: usize) -> Value {
+    /// update the inline tags or open-addressed index.
+    fn remove_at(&mut self, _k: &super::MapKey, i: usize) -> Value {
         let v = self.entries.remove(i).1;
-        self.index.remove(k);
-        for pos in self.index.values_mut() {
-            if *pos > i {
-                *pos -= 1;
+        if self.slots.is_empty() {
+            for j in i..self.entries.len() {
+                self.small_tags[j] = self.small_tags[j + 1];
             }
+        } else if self.entries.len() <= SMALL_MAP_MAX {
+            self.slots.clear();
+            for (j, (ek, _)) in self.entries.iter().enumerate() {
+                self.small_tags[j] = map_tag(super::fx_hash_map_key(ek));
+            }
+        } else {
+            self.rebuild_slots();
         }
         self.bump_generation();
         v
@@ -805,7 +944,7 @@ impl MapData {
                     return Err(e);
                 }
                 self.entries.clear();
-                self.index.clear();
+                self.slots.clear();
                 self.bump_generation();
                 Ok(Value::Null)
             }

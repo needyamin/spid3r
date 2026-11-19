@@ -36,30 +36,45 @@ import "vmc";
 const ICMP_EQ = 32;
 const ICMP_NE = 33;
 const ICMP_UGE = 35;
+const ICMP_ULT = 36;
 const ICMP_SGT = 38;
 const ICMP_LE = 41;
 const ICMP_SGE = 39;
 const ICMP_SLT = 40;
 const ICMP_SLE = 41;
 
+// FCmp predicate codes (LLVM-C LLVMRealPredicate).
+const FCMP_OEQ = 1;
+const FCMP_OGT = 2;
+const FCMP_OGE = 3;
+const FCMP_OLT = 4;
+const FCMP_OLE = 5;
+const FCMP_UNE = 13;
+
+// LLVM-C LLVMLinkage::LLVMInternalLinkage.
+const LINKAGE_INTERNAL = 8;
+
 // Build a C array of 8-byte values (LLVM handles, type handles, i64 GEP
 // indices — in Spid3r space all are Ints). Returns the raw base address.
 // Negative i64s walk out as their two's-complement bytes: peel the low byte
 // with mod-256 arithmetic (truncating division would corrupt negatives).
+fn cg_write_ptr(slot: int, val: int) {
+    let m = val;
+    let j = 0;
+    while j < 8 {
+        let b = ((m % 256) + 256) % 256;
+        memset(slot + j, b, 1);
+        m = (m - b) / 256;
+        j += 1;
+    }
+}
+
 fn carr(vals) {
     let n = vals.len();
     let base = malloc(n * 8 + 8);
     let i = 0;
     while i < n {
-        let m = vals[i];
-        let slot = base + i * 8;
-        let j = 0;
-        while j < 8 {
-            let b = ((m % 256) + 256) % 256;
-            memset(slot + j, b, 1);
-            m = (m - b) / 256;
-            j += 1;
-        }
+        cg_write_ptr(base + i * 8, vals[i]);
         i += 1;
     }
     return base;
@@ -86,9 +101,17 @@ public fn new_codegen() {
     st["fn_counter"] = 0;
     st["str_counter"] = 0;
     st["int_locals"] = null;
+    st["float_locals"] = null;
+    st["unboxed_lists"] = null;
     st["hybrid_off"] = false;
     st["top_consts"] = map();
     st["top_ints"] = map();
+    st["raw_fns"] = map();
+    st["raw_compiled"] = map();
+    st["raw_ret_int"] = null;
+    st["raw_ret_float"] = null;
+    st["raw_ret_bool"] = null;
+    st["raw_ret_threw"] = null;
     return st;
 }
 
@@ -126,6 +149,46 @@ fn tmp_name(st, kind) {
 
 // ----------------------------------------------------- trampolines
 
+fn cg_add_fn_attr(st, fn_val, name) {
+    let kind = LLVMGetEnumAttributeKindForName(name, name.len()) & 4294967295;
+    if kind != 0 {
+        let attr = LLVMCreateEnumAttribute(st["ctx"], kind, 0);
+        LLVMAddAttributeAtIndex(fn_val, -1, attr);
+    }
+    return;
+}
+
+fn cg_is_cold_tramp(name) {
+    return name == "spid3r_i64_add"
+        or name == "spid3r_i64_sub"
+        or name == "spid3r_i64_mul"
+        or name == "spid3r_i64_div"
+        or name == "spid3r_i64_mod"
+        or name == "spid3r_i64_neg"
+        or name == "spid3r_cancel_check"
+        or name == "spid3r_budget_exhausted"
+        or name == "spid3r_uncaught"
+        or name == "spid3r_abort";
+}
+
+fn cg_expect_i1(st, cond, expected) {
+    let name = "llvm.expect.i1";
+    let fpair = null;
+    if st["tramps"].has(name) {
+        fpair = st["tramps"][name];
+    } else {
+        let ft = LLVMFunctionType(st["i1"], carr([st["i1"], st["i1"]]), 2, 0);
+        let f = LLVMAddFunction(st["module"], name, ft);
+        fpair = [f, ft];
+        st["tramps"][name] = fpair;
+    }
+    let exp_bit = 0;
+    if expected {
+        exp_bit = 1;
+    }
+    return emit_call(st, fpair, [cond, LLVMConstInt(st["i1"], exp_bit, 0)], "exp");
+}
+
 // Declare (or fetch) a runtime trampoline: an external function in the
 // target module resolved against the runtime staticlib at link time.
 // Cached as [fn_val, fn_ty].
@@ -140,6 +203,9 @@ fn tramp(st, name, param_tys, ret_ty) {
     let n = param_tys.len();
     let ft = LLVMFunctionType(r, carr(param_tys), n, 0);
     let f = LLVMAddFunction(st["module"], name, ft);
+    if cg_is_cold_tramp(name) {
+        cg_add_fn_attr(st, f, "cold");
+    }
     let pair = [f, ft];
     st["tramps"][name] = pair;
     return pair;
@@ -230,6 +296,12 @@ fn v_int_from_i64(st, iv) {
     return emit_call(st, f, [iv], "vi");
 }
 
+// Box a RUNTIME f64 (the float-locals fast path's exit).
+fn v_float_from_f64(st, fv) {
+    let f = tramp(st, "spid3r_value_float", [st["f64"]], st["ptr"]);
+    return emit_call(st, f, [fv], "vf");
+}
+
 // Box an i1 comparison result.
 fn v_bool_from_i1(st, b) {
     let b8 = LLVMBuildZExt(st["builder"], b, st["i8"], "b8");
@@ -256,7 +328,8 @@ const I64_MIN = -9223372036854775808;
 
 // Inline i64 negation: only i64::MIN takes the trampoline.
 fn emit_i64_neg(st, a) {
-    let is_min = LLVMBuildICmp(st["builder"], ICMP_EQ, a, i64c(st, I64_MIN), "negchk");
+    let is_min_raw = LLVMBuildICmp(st["builder"], ICMP_EQ, a, i64c(st, I64_MIN), "negchk");
+    let is_min = cg_expect_i1(st, is_min_raw, false);
     let fast_bb = new_block(st, "neg.fast");
     let slow_bb = new_block(st, "neg.slow");
     let cont_bb = new_block(st, "neg.cont");
@@ -304,7 +377,8 @@ fn emit_i64_binop(st, lhs, rhs, op) {
         let ovf_f = overflow_intrinsic(st, intrinsic);
         let call = emit_call(st, ovf_f, [lhs, rhs], "ovf");
         let fast = LLVMBuildExtractValue(st["builder"], call, 0, "ovf.res");
-        let overflowed = LLVMBuildExtractValue(st["builder"], call, 1, "ovf.bit");
+        let overflowed_raw = LLVMBuildExtractValue(st["builder"], call, 1, "ovf.bit");
+        let overflowed = cg_expect_i1(st, overflowed_raw, false);
         let entry_bb = cur_block(st);
         let slow_bb = new_block(st, "i64op.slow");
         let cont_bb = new_block(st, "i64op.cont");
@@ -327,7 +401,8 @@ fn emit_i64_binop(st, lhs, rhs, op) {
         let lhs_is_min = LLVMBuildICmp(st["builder"], ICMP_EQ, lhs, i64c(st, I64_MIN), "divmin");
         let rhs_is_m1 = LLVMBuildICmp(st["builder"], ICMP_EQ, rhs, i64c(st, -1), "divm1");
         let both = LLVMBuildAnd(st["builder"], lhs_is_min, rhs_is_m1, "divovf");
-        let bad = LLVMBuildOr(st["builder"], is_zero, both, "divslow");
+        let bad_raw = LLVMBuildOr(st["builder"], is_zero, both, "divslow");
+        let bad = cg_expect_i1(st, bad_raw, false);
         let fast_bb = new_block(st, "div.fast");
         let slow_bb = new_block(st, "div.slow");
         let cont_bb = new_block(st, "div.cont");
@@ -349,7 +424,8 @@ fn emit_i64_binop(st, lhs, rhs, op) {
         // (Rust wrapping_rem's value, where LLVM srem would be undefined).
         // Every edge lands in a FRESH merge block so the slow edge never
         // re-enters the checks.
-        let is_zero = LLVMBuildICmp(st["builder"], ICMP_EQ, rhs, i64c(st, 0), "modz");
+        let is_zero_raw = LLVMBuildICmp(st["builder"], ICMP_EQ, rhs, i64c(st, 0), "modz");
+        let is_zero = cg_expect_i1(st, is_zero_raw, false);
         let slow_bb = new_block(st, "mod.slow");
         let check_bb = new_block(st, "mod.chk");
         let zero_bb = new_block(st, "mod.zero");
@@ -404,11 +480,39 @@ fn cg_compile_expr_i64(st, e) {
         let b = cg_compile_expr_i64(st, e[3]);
         return emit_i64_binop(st, a, b, e[1]);
     }
+    if t == "Index" and e[1][0] == "Ident" {
+        let loc = cg_lookup(st, e[1][1]);
+        if loc != null and loc[0] == "UI" {
+            let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+            let idx = cg_compile_expr_i64(st, e[2]);
+            return cg_emit_ulist_i64_get_inline(st, ul_ptr, idx);
+        }
+    }
+    if t == "Method" and e[2][0] == "Ident" and e[3].len() == 0 {
+        let loc = cg_lookup(st, e[2][1]);
+        if loc != null and (loc[0] == "UI" or loc[0] == "UF") and e[1] == "len" {
+            let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+            return cg_emit_ulist_len(st, ul_ptr);
+        }
+        if loc != null and loc[0] == "UI" and e[1] == "pop" {
+            let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+            let f = tramp(st, "spid3r_ulist_i64_pop", [st["ptr"]], st["i64"]);
+            let out = emit_call(st, f, [ul_ptr], "ul.pop");
+            throw_guard(st);
+            return out;
+        }
+    }
+    if t == "Call" and e[1][0] == "Ident" {
+        let rv = cg_try_compile_raw_call(st, e[1][1], e[2]);
+        if rv != null {
+            return rv[0];
+        }
+    }
     throw ["internal error: compile_expr_i64 on a non-int expression", 0, 0, 0, "native"];
 }
 
 // Ident-only form of is_int_expr (the oracle's self.is_int_expr at the
-// current scope state): Int literals, LocalInt idents, Neg, int binops.
+// current scope state): Int literals, LocalInt idents, Neg, int binops, UList, raw int calls.
 fn is_int_expr_now(st, e) {
     let t = e[0];
     if t == "Int" {
@@ -430,6 +534,24 @@ fn is_int_expr_now(st, e) {
             return is_int_expr_now(st, e[2]) and is_int_expr_now(st, e[3]);
         }
     }
+    if t == "Index" and e[1][0] == "Ident" {
+        let loc = cg_lookup(st, e[1][1]);
+        if loc != null and loc[0] == "UI" and is_int_expr_now(st, e[2]) {
+            return true;
+        }
+    }
+    if t == "Method" and e[2][0] == "Ident" and e[3].len() == 0 {
+        let loc = cg_lookup(st, e[2][1]);
+        if loc != null and loc[0] == "UI" and (e[1] == "len" or e[1] == "pop") {
+            return true;
+        }
+        if loc != null and loc[0] == "UF" and e[1] == "len" {
+            return true;
+        }
+    }
+    if t == "Call" and e[1][0] == "Ident" {
+        return cg_can_direct_raw_call(st, e[1][1], e[2]) == "int";
+    }
     return false;
 }
 
@@ -445,6 +567,329 @@ fn is_int_compare_now(st, e) {
         }
     }
     return null;
+}
+
+// --------------------------------------------------- unboxed f64 fast path
+
+fn cg_fcmp_pred_for(op) {
+    if op == "Lt" { return FCMP_OLT; }
+    if op == "Le" { return FCMP_OLE; }
+    if op == "Gt" { return FCMP_OGT; }
+    if op == "Ge" { return FCMP_OGE; }
+    if op == "Eq" { return FCMP_OEQ; }
+    return FCMP_UNE;
+}
+
+fn cg_emit_f64_binop(st, lhs, rhs, op) {
+    if op == "Add" {
+        return LLVMBuildFAdd(st["builder"], lhs, rhs, "fadd");
+    }
+    if op == "Sub" {
+        return LLVMBuildFSub(st["builder"], lhs, rhs, "fsub");
+    }
+    if op == "Mul" {
+        return LLVMBuildFMul(st["builder"], lhs, rhs, "fmul");
+    }
+    if op == "Div" {
+        let zero = LLVMConstReal(st["f64"], 0.0);
+        let is_zero_raw = LLVMBuildFCmp(st["builder"], FCMP_OEQ, rhs, zero, "fdivz");
+        let is_zero = cg_expect_i1(st, is_zero_raw, false);
+        let fast_bb = new_block(st, "fdiv.fast");
+        let slow_bb = new_block(st, "fdiv.slow");
+        let cont_bb = new_block(st, "fdiv.cont");
+        LLVMBuildCondBr(st["builder"], is_zero, slow_bb, fast_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+        let fast = LLVMBuildFDiv(st["builder"], lhs, rhs, "fdiv");
+        br_to(st, cont_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+        let bl = v_float_from_f64(st, lhs);
+        let br = v_float_from_f64(st, rhs);
+        call_binop(st, bl, br, 3);
+        throw_guard(st);
+        let slow_def_bb = cur_block(st);
+        br_to(st, cont_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+        let merged = LLVMBuildPhi(st["builder"], st["f64"], "fdiv.phi");
+        add_incoming(st, merged, [fast, zero], [fast_bb, slow_def_bb]);
+        return merged;
+    }
+    throw ["internal error: unsupported f64 binop " + op, 0, 0, 0, "native"];
+}
+
+fn is_float_expr_now(st, e) {
+    let t = e[0];
+    if t == "Float" {
+        return true;
+    }
+    if t == "Ident" {
+        let loc = cg_lookup(st, e[1]);
+        return loc != null and loc[0] == "F";
+    }
+    if t == "Unary" and e[1] == "Neg" {
+        return is_float_expr_now(st, e[2]);
+    }
+    if t == "Binary" {
+        let op = e[1];
+        if op == "Add" or op == "Sub" or op == "Mul" or op == "Div" {
+            let lf = is_float_expr_now(st, e[2]);
+            let rf = is_float_expr_now(st, e[3]);
+            let li = is_int_expr_now(st, e[2]);
+            let ri = is_int_expr_now(st, e[3]);
+            return (lf and (rf or ri)) or (li and rf);
+        }
+    }
+    if t == "Index" and e[1][0] == "Ident" {
+        let loc = cg_lookup(st, e[1][1]);
+        if loc != null and loc[0] == "UF" and is_int_expr_now(st, e[2]) {
+            return true;
+        }
+    }
+    if t == "Method" and e[2][0] == "Ident" and e[3].len() == 0 and e[1] == "pop" {
+        let loc = cg_lookup(st, e[2][1]);
+        if loc != null and loc[0] == "UF" {
+            return true;
+        }
+    }
+    if t == "Call" and e[1][0] == "Ident" {
+        return cg_can_direct_raw_call(st, e[1][1], e[2]) == "float";
+    }
+    return false;
+}
+
+fn is_float_compare_now(st, e) {
+    if e[0] == "Binary" {
+        let op = e[1];
+        if op == "Lt" or op == "Le" or op == "Gt" or op == "Ge" or op == "Eq" or op == "Ne" {
+            let lf = is_float_expr_now(st, e[2]);
+            let rf = is_float_expr_now(st, e[3]);
+            if (lf and (rf or is_int_expr_now(st, e[3]))) or (is_int_expr_now(st, e[2]) and rf) {
+                return [op, e[2], e[3]];
+            }
+        }
+    }
+    return null;
+}
+
+fn cg_compile_expr_f64(st, e) {
+    let t = e[0];
+    if t == "Float" {
+        return LLVMConstReal(st["f64"], e[1]);
+    }
+    if t == "Int" {
+        return LLVMConstReal(st["f64"], float(e[1]));
+    }
+    if t == "Ident" {
+        let loc = cg_lookup(st, e[1]);
+        if loc != null and loc[0] == "F" {
+            return LLVMBuildLoad2(st["builder"], st["f64"], loc[1], "fv");
+        }
+        if loc != null and loc[0] == "I" {
+            let iv = LLVMBuildLoad2(st["builder"], st["i64"], loc[1], "iv");
+            return LLVMBuildSIToFP(st["builder"], iv, st["f64"], "i2f");
+        }
+        if loc == null and st["top_ints"].has(e[1]) {
+            return LLVMConstReal(st["f64"], float(st["top_ints"][e[1]]));
+        }
+        throw ["internal error: compile_expr_f64 on non-float ident", 0, 0, 0, "native"];
+    }
+    if t == "Unary" and e[1] == "Neg" {
+        if is_int_expr_now(st, e) {
+            let iv = cg_compile_expr_i64(st, e);
+            return LLVMBuildSIToFP(st["builder"], iv, st["f64"], "i2f");
+        }
+        let inner = cg_compile_expr_f64(st, e[2]);
+        return LLVMBuildFNeg(st["builder"], inner, "fneg");
+    }
+    if t == "Binary" {
+        if is_int_expr_now(st, e) {
+            let iv = cg_compile_expr_i64(st, e);
+            return LLVMBuildSIToFP(st["builder"], iv, st["f64"], "i2f");
+        }
+        let lhs = null;
+        if is_float_expr_now(st, e[2]) {
+            lhs = cg_compile_expr_f64(st, e[2]);
+        } else {
+            let li = cg_compile_expr_i64(st, e[2]);
+            lhs = LLVMBuildSIToFP(st["builder"], li, st["f64"], "i2f");
+        }
+        let rhs = null;
+        if is_float_expr_now(st, e[3]) {
+            rhs = cg_compile_expr_f64(st, e[3]);
+        } else {
+            let ri = cg_compile_expr_i64(st, e[3]);
+            rhs = LLVMBuildSIToFP(st["builder"], ri, st["f64"], "i2f");
+        }
+        return cg_emit_f64_binop(st, lhs, rhs, e[1]);
+    }
+    if t == "Index" and e[1][0] == "Ident" {
+        let loc = cg_lookup(st, e[1][1]);
+        if loc != null and loc[0] == "UF" {
+            let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+            let idx = cg_compile_expr_i64(st, e[2]);
+            return cg_emit_ulist_f64_get_inline(st, ul_ptr, idx);
+        }
+        if is_int_expr_now(st, e) {
+            let iv = cg_compile_expr_i64(st, e);
+            return LLVMBuildSIToFP(st["builder"], iv, st["f64"], "i2f");
+        }
+    }
+    if t == "Method" {
+        if e[2][0] == "Ident" and e[3].len() == 0 and e[1] == "pop" {
+            let loc = cg_lookup(st, e[2][1]);
+            if loc != null and loc[0] == "UF" {
+                let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+                let f = tramp(st, "spid3r_ulist_f64_pop", [st["ptr"]], st["f64"]);
+                let out = emit_call(st, f, [ul_ptr], "ul.pop");
+                throw_guard(st);
+                return out;
+            }
+        }
+        if is_int_expr_now(st, e) {
+            let iv = cg_compile_expr_i64(st, e);
+            return LLVMBuildSIToFP(st["builder"], iv, st["f64"], "i2f");
+        }
+    }
+    if t == "Call" and e[1][0] == "Ident" {
+        if is_int_expr_now(st, e) {
+            let iv = cg_compile_expr_i64(st, e);
+            return LLVMBuildSIToFP(st["builder"], iv, st["f64"], "i2f");
+        }
+        let rv = cg_try_compile_raw_call(st, e[1][1], e[2]);
+        if rv != null {
+            return rv[0];
+        }
+    }
+    throw ["internal error: compile_expr_f64 on non-float expr", 0, 0, 0, "native"];
+}
+
+// ----------------------------------------- AOT-6 inline RawUList<T> helpers
+
+fn cg_ulist_header_ty(st) {
+    return LLVMStructTypeInContext(st["ctx"], carr([st["ptr"], st["i64"]]), 2, 0);
+}
+
+fn cg_emit_ulist_len(st, ul_ptr) {
+    let hty = cg_ulist_header_ty(st);
+    let len_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 1)]), 2, "ul.lenp");
+    return LLVMBuildLoad2(st["builder"], st["i64"], len_ptr, "ul.len");
+}
+
+fn cg_emit_ulist_i64_get_inline(st, ul_ptr, idx) {
+    let hty = cg_ulist_header_ty(st);
+    let len_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 1)]), 2, "ul.lenp");
+    let len = LLVMBuildLoad2(st["builder"], st["i64"], len_ptr, "ul.len");
+    let in_bounds_raw = LLVMBuildICmp(st["builder"], ICMP_ULT, idx, len, "ul.ib");
+    let in_bounds = cg_expect_i1(st, in_bounds_raw, true);
+    let fast_bb = new_block(st, "ul.fast");
+    let slow_bb = new_block(st, "ul.slow");
+    let cont_bb = new_block(st, "ul.cont");
+    LLVMBuildCondBr(st["builder"], in_bounds, fast_bb, slow_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+    let data_ptr_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 0)]), 2, "ul.dp");
+    let data_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], data_ptr_ptr, "ul.data");
+    let elem_ptr = LLVMBuildInBoundsGEP2(st["builder"], st["i64"], data_ptr, carr([idx]), 1, "ul.ep");
+    let fast_v = LLVMBuildLoad2(st["builder"], st["i64"], elem_ptr, "ul.v");
+    br_to(st, cont_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+    let f = tramp(st, "spid3r_ulist_i64_get", [st["ptr"], st["i64"]], st["i64"]);
+    let slow_v = emit_call(st, f, [ul_ptr, idx], "ul.get");
+    throw_guard(st);
+    let slow_def_bb = cur_block(st);
+    br_to(st, cont_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+    let phi = LLVMBuildPhi(st["builder"], st["i64"], "ul.phi");
+    add_incoming(st, phi, [fast_v, slow_v], [fast_bb, slow_def_bb]);
+    return phi;
+}
+
+fn cg_emit_ulist_i64_set_inline(st, ul_ptr, idx, val) {
+    let hty = cg_ulist_header_ty(st);
+    let len_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 1)]), 2, "ul.lenp");
+    let len = LLVMBuildLoad2(st["builder"], st["i64"], len_ptr, "ul.len");
+    let in_bounds_raw = LLVMBuildICmp(st["builder"], ICMP_ULT, idx, len, "ul.ib");
+    let in_bounds = cg_expect_i1(st, in_bounds_raw, true);
+    let fast_bb = new_block(st, "uls.fast");
+    let slow_bb = new_block(st, "uls.slow");
+    let cont_bb = new_block(st, "uls.cont");
+    LLVMBuildCondBr(st["builder"], in_bounds, fast_bb, slow_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+    let data_ptr_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 0)]), 2, "ul.dp");
+    let data_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], data_ptr_ptr, "ul.data");
+    let elem_ptr = LLVMBuildInBoundsGEP2(st["builder"], st["i64"], data_ptr, carr([idx]), 1, "ul.ep");
+    LLVMBuildStore(st["builder"], val, elem_ptr);
+    br_to(st, cont_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+    let f = tramp(st, "spid3r_ulist_i64_set", [st["ptr"], st["i64"], st["i64"]], null);
+    emit_call(st, f, [ul_ptr, idx, val], "");
+    throw_guard(st);
+    br_to(st, cont_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+    return;
+}
+
+fn cg_emit_ulist_f64_get_inline(st, ul_ptr, idx) {
+    let hty = cg_ulist_header_ty(st);
+    let len_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 1)]), 2, "ul.lenp");
+    let len = LLVMBuildLoad2(st["builder"], st["i64"], len_ptr, "ul.len");
+    let in_bounds_raw = LLVMBuildICmp(st["builder"], ICMP_ULT, idx, len, "ul.ib");
+    let in_bounds = cg_expect_i1(st, in_bounds_raw, true);
+    let fast_bb = new_block(st, "ul.fast");
+    let slow_bb = new_block(st, "ul.slow");
+    let cont_bb = new_block(st, "ul.cont");
+    LLVMBuildCondBr(st["builder"], in_bounds, fast_bb, slow_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+    let data_ptr_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 0)]), 2, "ul.dp");
+    let data_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], data_ptr_ptr, "ul.data");
+    let elem_ptr = LLVMBuildInBoundsGEP2(st["builder"], st["f64"], data_ptr, carr([idx]), 1, "ul.ep");
+    let fast_v = LLVMBuildLoad2(st["builder"], st["f64"], elem_ptr, "ul.v");
+    br_to(st, cont_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+    let f = tramp(st, "spid3r_ulist_f64_get", [st["ptr"], st["i64"]], st["f64"]);
+    let slow_v = emit_call(st, f, [ul_ptr, idx], "ul.get");
+    throw_guard(st);
+    let slow_def_bb = cur_block(st);
+    br_to(st, cont_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+    let phi = LLVMBuildPhi(st["builder"], st["f64"], "ul.phi");
+    add_incoming(st, phi, [fast_v, slow_v], [fast_bb, slow_def_bb]);
+    return phi;
+}
+
+fn cg_emit_ulist_f64_set_inline(st, ul_ptr, idx, val) {
+    let hty = cg_ulist_header_ty(st);
+    let len_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 1)]), 2, "ul.lenp");
+    let len = LLVMBuildLoad2(st["builder"], st["i64"], len_ptr, "ul.len");
+    let in_bounds_raw = LLVMBuildICmp(st["builder"], ICMP_ULT, idx, len, "ul.ib");
+    let in_bounds = cg_expect_i1(st, in_bounds_raw, true);
+    let fast_bb = new_block(st, "uls.fast");
+    let slow_bb = new_block(st, "uls.slow");
+    let cont_bb = new_block(st, "uls.cont");
+    LLVMBuildCondBr(st["builder"], in_bounds, fast_bb, slow_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], fast_bb);
+    let data_ptr_ptr = LLVMBuildInBoundsGEP2(st["builder"], hty, ul_ptr, carr([i32c(st, 0), i32c(st, 0)]), 2, "ul.dp");
+    let data_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], data_ptr_ptr, "ul.data");
+    let elem_ptr = LLVMBuildInBoundsGEP2(st["builder"], st["f64"], data_ptr, carr([idx]), 1, "ul.ep");
+    LLVMBuildStore(st["builder"], val, elem_ptr);
+    br_to(st, cont_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], slow_bb);
+    let f = tramp(st, "spid3r_ulist_f64_set", [st["ptr"], st["i64"], st["f64"]], null);
+    emit_call(st, f, [ul_ptr, idx, val], "");
+    throw_guard(st);
+    br_to(st, cont_bb);
+
+    LLVMPositionBuilderAtEnd(st["builder"], cont_bb);
+    return;
 }
 
 // ------------------------------------------------- hybrid int compares
@@ -850,8 +1295,25 @@ fn throw_guard(st) {
     let handler = st["exc"][st["exc"].len() - 1];
     let f = tramp(st, "spid3r_threw", [], st["i8"]);
     let r = emit_call(st, f, [], "threw");
-    let is = LLVMBuildICmp(st["builder"], ICMP_NE, r, i8c(st, 0), "exc");
+    let is_raw = LLVMBuildICmp(st["builder"], ICMP_NE, r, i8c(st, 0), "exc");
+    let is = cg_expect_i1(st, is_raw, false);
     let cont = new_block(st, "ok");
+    LLVMBuildCondBr(st["builder"], is, handler, cont);
+    LLVMPositionBuilderAtEnd(st["builder"], cont);
+    return;
+}
+
+fn cg_throw_guard_i1(st, threw_i1) {
+    if st["exc"].len() == 0 {
+        return;
+    }
+    let b = cur_block(st);
+    if b == 0 or LLVMGetBasicBlockTerminator(b) != 0 {
+        return;
+    }
+    let handler = st["exc"][st["exc"].len() - 1];
+    let is = cg_expect_i1(st, threw_i1, false);
+    let cont = new_block(st, "raw.ok");
     LLVMBuildCondBr(st["builder"], is, handler, cont);
     LLVMPositionBuilderAtEnd(st["builder"], cont);
     return;
@@ -1397,6 +1859,10 @@ fn compile_ident(st, name) {
             let iv = LLVMBuildLoad2(st["builder"], st["i64"], loc[1], "iv");
             return v_int_from_i64(st, iv);
         }
+        if loc[0] == "F" {
+            let fv = LLVMBuildLoad2(st["builder"], st["f64"], loc[1], "fv");
+            return v_float_from_f64(st, fv);
+        }
         if loc[0] == "L" {
             return LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], tmp_name(st, "v"));
         }
@@ -1536,6 +2002,16 @@ fn compile_expr_inner(st, e) {
         return compile_closure(st, e[1]);
     }
     if tag == "Unary" {
+        if e[1] == "Neg" {
+            if is_int_expr_now(st, e[2]) {
+                let iv = cg_compile_expr_i64(st, e);
+                return v_int_from_i64(st, iv);
+            }
+            if is_float_expr_now(st, e[2]) {
+                let fv = cg_compile_expr_f64(st, e);
+                return v_float_from_f64(st, fv);
+            }
+        }
         let inner = cg_compile_expr(st, e[2]);
         let code = 0;
         if e[1] == "Neg" {
@@ -1544,7 +2020,7 @@ fn compile_expr_inner(st, e) {
         return call1p_i64(st, "spid3r_unop", inner, code);
     }
     if tag == "Binary" {
-        // Unboxed i64 locals: inline register arithmetic / comparison.
+        // Unboxed i64 / f64 locals: inline register arithmetic / comparison.
         let op = e[1];
         if op == "Add" or op == "Sub" or op == "Mul" or op == "Div" or op == "Mod" {
             if is_int_expr_now(st, e) {
@@ -1552,11 +2028,24 @@ fn compile_expr_inner(st, e) {
                 return v_int_from_i64(st, iv);
             }
         }
+        if op == "Add" or op == "Sub" or op == "Mul" or op == "Div" {
+            if is_float_expr_now(st, e) {
+                let fv = cg_compile_expr_f64(st, e);
+                return v_float_from_f64(st, fv);
+            }
+        }
         if op == "Lt" or op == "Le" or op == "Gt" or op == "Ge" or op == "Eq" or op == "Ne" {
             if is_int_expr_now(st, e[2]) and is_int_expr_now(st, e[3]) {
                 let a = cg_compile_expr_i64(st, e[2]);
                 let b = cg_compile_expr_i64(st, e[3]);
                 let c = LLVMBuildICmp(st["builder"], icmp_pred_for(op), a, b, "cmp");
+                return v_bool_from_i1(st, c);
+            }
+            let fc = is_float_compare_now(st, e);
+            if fc != null {
+                let a = cg_compile_expr_f64(st, fc[1]);
+                let b = cg_compile_expr_f64(st, fc[2]);
+                let c = LLVMBuildFCmp(st["builder"], cg_fcmp_pred_for(fc[0]), a, b, "fcmp");
                 return v_bool_from_i1(st, c);
             }
             let hc = is_hybrid_int_compare_now(st, e);
@@ -1597,10 +2086,69 @@ fn compile_expr_inner(st, e) {
         return compile_call(st, e);
     }
     if tag == "Method" {
+        if e[2][0] == "Ident" {
+            let loc = cg_lookup(st, e[2][1]);
+            if loc != null and loc[0] == "UI" {
+                let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+                if e[1] == "push" and e[3].len() == 1 {
+                    let iv = null;
+                    if is_int_expr_now(st, e[3][0]) {
+                        iv = cg_compile_expr_i64(st, e[3][0]);
+                    } else {
+                        let bv = cg_compile_expr(st, e[3][0]);
+                        let tf = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                        iv = emit_call(st, tf, [bv], "i64");
+                    }
+                    let pf = tramp(st, "spid3r_ulist_i64_push", [st["ptr"], st["i64"]], null);
+                    emit_call(st, pf, [ul_ptr, iv], "");
+                    return v_null(st);
+                }
+                if e[1] == "len" and e[3].len() == 0 {
+                    return v_int_from_i64(st, cg_emit_ulist_len(st, ul_ptr));
+                }
+                if e[1] == "pop" and e[3].len() == 0 {
+                    let pf = tramp(st, "spid3r_ulist_i64_pop", [st["ptr"]], st["i64"]);
+                    let iv = emit_call(st, pf, [ul_ptr], "ul.pop");
+                    throw_guard(st);
+                    return v_int_from_i64(st, iv);
+                }
+            }
+            if loc != null and loc[0] == "UF" {
+                let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+                if e[1] == "push" and e[3].len() == 1 {
+                    let fv = null;
+                    if is_float_expr_now(st, e[3][0]) or is_int_expr_now(st, e[3][0]) {
+                        fv = cg_compile_expr_f64(st, e[3][0]);
+                    } else {
+                        let bv = cg_compile_expr(st, e[3][0]);
+                        let tf = tramp(st, "spid3r_to_f64", [st["ptr"]], st["f64"]);
+                        fv = emit_call(st, tf, [bv], "f64");
+                    }
+                    let pf = tramp(st, "spid3r_ulist_f64_push", [st["ptr"], st["f64"]], null);
+                    emit_call(st, pf, [ul_ptr, fv], "");
+                    return v_null(st);
+                }
+                if e[1] == "len" and e[3].len() == 0 {
+                    return v_int_from_i64(st, cg_emit_ulist_len(st, ul_ptr));
+                }
+                if e[1] == "pop" and e[3].len() == 0 {
+                    let pf = tramp(st, "spid3r_ulist_f64_pop", [st["ptr"]], st["f64"]);
+                    let fv = emit_call(st, pf, [ul_ptr], "ul.pop");
+                    throw_guard(st);
+                    return v_float_from_f64(st, fv);
+                }
+            }
+        }
         let obj = cg_compile_expr(st, e[2]);
         let vals = [];
         for a in e[3] {
             vals.push(cg_compile_expr(st, a));
+        }
+        if e[1] == "len" and vals.len() == 0 {
+            return call1p(st, "spid3r_list_len", obj);
+        }
+        if e[1] == "push" and vals.len() == 1 {
+            return call2p(st, "spid3r_list_push", obj, vals[0]);
         }
         let np = str_global(st, e[1]);
         let arr = argv_array(st, vals);
@@ -1608,7 +2156,42 @@ fn compile_expr_inner(st, e) {
         return emit_call(st, f, [obj, np, i64c(st, vals.len()), arr], "m");
     }
     if tag == "Index" {
+        if e[1][0] == "Ident" {
+            let loc = cg_lookup(st, e[1][1]);
+            if loc != null and loc[0] == "UI" {
+                let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+                let idx = null;
+                if is_int_expr_now(st, e[2]) {
+                    idx = cg_compile_expr_i64(st, e[2]);
+                } else {
+                    let bv = cg_compile_expr(st, e[2]);
+                    let tf = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                    idx = emit_call(st, tf, [bv], "i64");
+                }
+                let iv = cg_emit_ulist_i64_get_inline(st, ul_ptr, idx);
+                return v_int_from_i64(st, iv);
+            }
+            if loc != null and loc[0] == "UF" {
+                let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+                let idx = null;
+                if is_int_expr_now(st, e[2]) {
+                    idx = cg_compile_expr_i64(st, e[2]);
+                } else {
+                    let bv = cg_compile_expr(st, e[2]);
+                    let tf = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                    idx = emit_call(st, tf, [bv], "i64");
+                }
+                let fv = cg_emit_ulist_f64_get_inline(st, ul_ptr, idx);
+                return v_float_from_f64(st, fv);
+            }
+        }
         let obj = cg_compile_expr(st, e[1]);
+        if e[2][0] == "Str" {
+            let kp = str_global(st, e[2][1]);
+            let klen = bytes(e[2][1]).len();
+            let f = tramp(st, "spid3r_map_get_str", [st["ptr"], st["ptr"], st["i64"]], st["ptr"]);
+            return emit_call(st, f, [obj, kp, i64c(st, klen)], "mget");
+        }
         let idx = cg_compile_expr(st, e[2]);
         return call2p(st, "spid3r_index_get", obj, idx);
     }
@@ -1716,6 +2299,18 @@ fn cg_compile_assign(st, target, op, value) {
             LLVMBuildStore(st["builder"], res, slot);
             return v_int_from_i64(st, res);
         }
+        if loc0 != null and loc0[0] == "F" {
+            let slot = loc0[1];
+            let rhs = cg_compile_expr_f64(st, value);
+            if op == "Assign" {
+                LLVMBuildStore(st["builder"], rhs, slot);
+                return v_float_from_f64(st, rhs);
+            }
+            let cur = LLVMBuildLoad2(st["builder"], st["f64"], slot, "fcur");
+            let res = cg_emit_f64_binop(st, cur, rhs, assign_binop_op(op));
+            LLVMBuildStore(st["builder"], res, slot);
+            return v_float_from_f64(st, res);
+        }
         let v = cg_compile_expr(st, value);
         if op != "Assign" {
             let cur = compile_ident(st, name);
@@ -1741,6 +2336,51 @@ fn cg_compile_assign(st, target, op, value) {
         return v;
     }
     if ttag == "Index" {
+        if op == "Assign" and target[1][0] == "Ident" {
+            let loc = cg_lookup(st, target[1][1]);
+            if loc != null and loc[0] == "UI" {
+                let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+                let idx = null;
+                if is_int_expr_now(st, target[2]) {
+                    idx = cg_compile_expr_i64(st, target[2]);
+                } else {
+                    let bv = cg_compile_expr(st, target[2]);
+                    let tf = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                    idx = emit_call(st, tf, [bv], "i64");
+                }
+                let iv = null;
+                if is_int_expr_now(st, value) {
+                    iv = cg_compile_expr_i64(st, value);
+                } else {
+                    let bv = cg_compile_expr(st, value);
+                    let tf = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                    iv = emit_call(st, tf, [bv], "i64");
+                }
+                cg_emit_ulist_i64_set_inline(st, ul_ptr, idx, iv);
+                return v_int_from_i64(st, iv);
+            }
+            if loc != null and loc[0] == "UF" {
+                let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], "ul");
+                let idx = null;
+                if is_int_expr_now(st, target[2]) {
+                    idx = cg_compile_expr_i64(st, target[2]);
+                } else {
+                    let bv = cg_compile_expr(st, target[2]);
+                    let tf = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                    idx = emit_call(st, tf, [bv], "i64");
+                }
+                let fv = null;
+                if is_float_expr_now(st, value) or is_int_expr_now(st, value) {
+                    fv = cg_compile_expr_f64(st, value);
+                } else {
+                    let bv = cg_compile_expr(st, value);
+                    let tf = tramp(st, "spid3r_to_f64", [st["ptr"]], st["f64"]);
+                    fv = emit_call(st, tf, [bv], "f64");
+                }
+                cg_emit_ulist_f64_set_inline(st, ul_ptr, idx, fv);
+                return v_float_from_f64(st, fv);
+            }
+        }
         let v = cg_compile_expr(st, value);
         let obj = cg_compile_expr(st, target[1]);
         let idx = cg_compile_expr(st, target[2]);
@@ -1782,6 +2422,22 @@ fn compile_call(st, e) {
             let np = str_global(st, n);
             let f = tramp(st, "spid3r_construct", [st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
             return emit_call(st, f, [np, i64c(st, vals.len()), arr], "ctor");
+        }
+        let raw_r = cg_try_compile_raw_call(st, n, args);
+        if raw_r != null {
+            let val = raw_r[0];
+            let rsc = raw_r[1];
+            if rsc == "int" {
+                return v_int_from_i64(st, val);
+            }
+            if rsc == "float" {
+                return v_float_from_f64(st, val);
+            }
+            if rsc == "bool" {
+                let c = LLVMBuildICmp(st["builder"], ICMP_NE, val, i8c(st, 0), "rb");
+                return v_bool_from_i1(st, c);
+            }
+            return val;
         }
     }
     let cv = cg_compile_expr(st, callee);
@@ -1961,14 +2617,72 @@ fn cg_compile_stmt(st, s) {
                 LLVMBuildStore(st["builder"], res, slot);
                 return;
             }
+            if loc != null and loc[0] == "F" {
+                let slot = loc[1];
+                let rhs = cg_compile_expr_f64(st, e[3]);
+                if e[1] == "Assign" {
+                    LLVMBuildStore(st["builder"], rhs, slot);
+                    return;
+                }
+                let cur = LLVMBuildLoad2(st["builder"], st["f64"], slot, "fcur");
+                let res = cg_emit_f64_binop(st, cur, rhs, assign_binop_op(e[1]));
+                LLVMBuildStore(st["builder"], res, slot);
+                return;
+            }
         }
         cg_compile_expr(st, e);
         return;
     }
     if tag == "Let" {
-        // An int-local candidate binds an unboxed i64 slot. Top-level lets
-        // stay globals; null inits stay boxed.
+        // An unboxed list, int-local, or float-local candidate binds an unboxed slot.
+        // Top-level lets stay globals; null inits stay boxed.
         let in_entry_root = st["is_entry"] and st["scopes"].len() == 1;
+        if (not in_entry_root) and st["unboxed_lists"] != null and st["unboxed_lists"].has(s[2]) {
+            let elem = st["unboxed_lists"][s[2]];
+            let new_name = "spid3r_ulist_i64_new";
+            if elem == "F64" {
+                new_name = "spid3r_ulist_f64_new";
+            }
+            let nf = tramp(st, new_name, [], st["ptr"]);
+            let ul_ptr = emit_call(st, nf, [], "ul.new");
+            if s[4] != null and s[4][0] == "List" {
+                if elem == "I64" {
+                    let pf = tramp(st, "spid3r_ulist_i64_push", [st["ptr"], st["i64"]], null);
+                    for it in s[4][1] {
+                        let iv = null;
+                        if is_int_expr_now(st, it) {
+                            iv = cg_compile_expr_i64(st, it);
+                        } else {
+                            let bv = cg_compile_expr(st, it);
+                            let tf = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                            iv = emit_call(st, tf, [bv], "i64");
+                        }
+                        emit_call(st, pf, [ul_ptr, iv], "");
+                    }
+                } else {
+                    let pf = tramp(st, "spid3r_ulist_f64_push", [st["ptr"], st["f64"]], null);
+                    for it in s[4][1] {
+                        let fv = null;
+                        if is_float_expr_now(st, it) or is_int_expr_now(st, it) {
+                            fv = cg_compile_expr_f64(st, it);
+                        } else {
+                            let bv = cg_compile_expr(st, it);
+                            let tf = tramp(st, "spid3r_to_f64", [st["ptr"]], st["f64"]);
+                            fv = emit_call(st, tf, [bv], "f64");
+                        }
+                        emit_call(st, pf, [ul_ptr, fv], "");
+                    }
+                }
+            }
+            let slot = alloca_entry_ty(st, st["ptr"], "ul");
+            LLVMBuildStore(st["builder"], ul_ptr, slot);
+            if elem == "I64" {
+                cg_declare(st, s[2], ["UI", slot]);
+            } else {
+                cg_declare(st, s[2], ["UF", slot]);
+            }
+            return;
+        }
         if (not in_entry_root) and st["int_locals"] != null and st["int_locals"].has(s[2]) {
             let iv = i64c(st, 0);
             if s[4] != null {
@@ -1977,6 +2691,16 @@ fn cg_compile_stmt(st, s) {
             let slot = alloca_entry_ty(st, st["i64"], "li");
             LLVMBuildStore(st["builder"], iv, slot);
             cg_declare(st, s[2], ["I", slot]);
+            return;
+        }
+        if (not in_entry_root) and st["float_locals"] != null and st["float_locals"].has(s[2]) {
+            let fv = LLVMConstReal(st["f64"], 0.0);
+            if s[4] != null {
+                fv = cg_compile_expr_f64(st, s[4]);
+            }
+            let slot = alloca_entry_ty(st, st["f64"], "lf");
+            LLVMBuildStore(st["builder"], fv, slot);
+            cg_declare(st, s[2], ["F", slot]);
             return;
         }
         let v = v_null(st);
@@ -1993,6 +2717,13 @@ fn cg_compile_stmt(st, s) {
             let slot = alloca_entry_ty(st, st["i64"], "ci");
             LLVMBuildStore(st["builder"], iv, slot);
             cg_declare(st, s[2], ["I", slot]);
+            return;
+        }
+        if (not in_entry_root) and st["float_locals"] != null and st["float_locals"].has(s[2]) {
+            let fv = cg_compile_expr_f64(st, s[4]);
+            let slot = alloca_entry_ty(st, st["f64"], "cf");
+            LLVMBuildStore(st["builder"], fv, slot);
+            cg_declare(st, s[2], ["F", slot]);
             return;
         }
         let v = cg_compile_expr(st, s[4]);
@@ -2035,6 +2766,48 @@ fn cg_compile_stmt(st, s) {
         return;
     }
     if tag == "Return" {
+        if st["fstack"].len() == 0 {
+            if st["raw_ret_int"] != null {
+                let iv = i64c(st, 0);
+                if s[1] != null {
+                    if is_int_expr_now(st, s[1]) {
+                        iv = cg_compile_expr_i64(st, s[1]);
+                    } else {
+                        let bv = cg_compile_expr(st, s[1]);
+                        let f = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                        iv = emit_call(st, f, [bv], "to_i64");
+                    }
+                }
+                LLVMBuildStore(st["builder"], iv, st["raw_ret_int"]);
+                br_to(st, st["ret_bb"]);
+                return;
+            }
+            if st["raw_ret_float"] != null {
+                let fv = LLVMConstReal(st["f64"], 0.0);
+                if s[1] != null {
+                    if is_float_expr_now(st, s[1]) or is_int_expr_now(st, s[1]) {
+                        fv = cg_compile_expr_f64(st, s[1]);
+                    } else {
+                        let bv = cg_compile_expr(st, s[1]);
+                        let f = tramp(st, "spid3r_to_f64", [st["ptr"]], st["f64"]);
+                        fv = emit_call(st, f, [bv], "to_f64");
+                    }
+                }
+                LLVMBuildStore(st["builder"], fv, st["raw_ret_float"]);
+                br_to(st, st["ret_bb"]);
+                return;
+            }
+            if st["raw_ret_bool"] != null {
+                let b8 = i8c(st, 0);
+                if s[1] != null {
+                    let c1 = cg_compile_cond_i1(st, s[1]);
+                    b8 = LLVMBuildZExt(st["builder"], c1, st["i8"], "rb8");
+                }
+                LLVMBuildStore(st["builder"], b8, st["raw_ret_bool"]);
+                br_to(st, st["ret_bb"]);
+                return;
+            }
+        }
         let v = v_null(st);
         if s[1] != null {
             v = cg_compile_expr(st, s[1]);
@@ -2101,6 +2874,27 @@ fn bind_declaration(st, name, v) {
 }
 
 fn store_return(st, v) {
+    if st["raw_ret_int"] != null {
+        let f = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+        let iv = emit_call(st, f, [v], "to_i64");
+        LLVMBuildStore(st["builder"], iv, st["raw_ret_int"]);
+        br_to(st, st["ret_bb"]);
+        return;
+    }
+    if st["raw_ret_float"] != null {
+        let f = tramp(st, "spid3r_to_f64", [st["ptr"]], st["f64"]);
+        let fv = emit_call(st, f, [v], "to_f64");
+        LLVMBuildStore(st["builder"], fv, st["raw_ret_float"]);
+        br_to(st, st["ret_bb"]);
+        return;
+    }
+    if st["raw_ret_bool"] != null {
+        let f = tramp(st, "spid3r_truthy", [st["ptr"]], st["i8"]);
+        let b8 = emit_call(st, f, [v], "rb");
+        LLVMBuildStore(st["builder"], b8, st["raw_ret_bool"]);
+        br_to(st, st["ret_bb"]);
+        return;
+    }
     LLVMBuildStore(st["builder"], v, st["ret_slot"]);
     br_to(st, st["ret_bb"]);
     return;
@@ -2133,8 +2927,44 @@ fn cg_compile_if(st, s) {
     return;
 }
 
-// Conditions take the generic route (compile + truthy): the int-compare and
-// hybrid fast paths are the perf program's scope.
+fn cg_compile_cond_i1(st, cond) {
+    if cond[0] == "Bool" {
+        let bit = 0;
+        if cond[1] {
+            bit = 1;
+        }
+        return LLVMConstInt(st["i1"], bit, 0);
+    }
+    let ic = is_int_compare_now(st, cond);
+    if ic != null {
+        let a = cg_compile_expr_i64(st, ic[1]);
+        let b = cg_compile_expr_i64(st, ic[2]);
+        return LLVMBuildICmp(st["builder"], icmp_pred_for(ic[0]), a, b, "cmp");
+    }
+    let fc = is_float_compare_now(st, cond);
+    if fc != null {
+        let a = cg_compile_expr_f64(st, fc[1]);
+        let b = cg_compile_expr_f64(st, fc[2]);
+        return LLVMBuildFCmp(st["builder"], cg_fcmp_pred_for(fc[0]), a, b, "fcmp");
+    }
+    if cond[0] == "Unary" and cond[1] == "Not" {
+        let inner = cg_compile_cond_i1(st, cond[2]);
+        return LLVMBuildICmp(st["builder"], ICMP_EQ, inner, LLVMConstInt(st["i1"], 0, 0), "not");
+    }
+    if cond[0] == "Call" and cond[1][0] == "Ident" {
+        if cg_can_direct_raw_call(st, cond[1][1], cond[2]) == "bool" {
+            let rv = cg_try_compile_raw_call(st, cond[1][1], cond[2]);
+            if rv != null {
+                return LLVMBuildICmp(st["builder"], ICMP_NE, rv[0], i8c(st, 0), "rawb");
+            }
+        }
+    }
+    let v = cg_compile_expr(st, cond);
+    return cond_i1(st, v);
+}
+
+// Conditions take the unboxed fast paths when available, falling back to
+// compile + spid3r_truthy otherwise.
 fn emit_cond_branch(st, cond, then_bb, else_bb) {
     // Pure-int compares branch on the register icmp directly.
     let ic = is_int_compare_now(st, cond);
@@ -2144,6 +2974,24 @@ fn emit_cond_branch(st, cond, then_bb, else_bb) {
         let c = LLVMBuildICmp(st["builder"], icmp_pred_for(ic[0]), a, b, "cmp");
         LLVMBuildCondBr(st["builder"], c, then_bb, else_bb);
         return;
+    }
+    let fc = is_float_compare_now(st, cond);
+    if fc != null {
+        let a = cg_compile_expr_f64(st, fc[1]);
+        let b = cg_compile_expr_f64(st, fc[2]);
+        let c = LLVMBuildFCmp(st["builder"], cg_fcmp_pred_for(fc[0]), a, b, "fcmp");
+        LLVMBuildCondBr(st["builder"], c, then_bb, else_bb);
+        return;
+    }
+    if cond[0] == "Call" and cond[1][0] == "Ident" {
+        if cg_can_direct_raw_call(st, cond[1][1], cond[2]) == "bool" {
+            let rv = cg_try_compile_raw_call(st, cond[1][1], cond[2]);
+            if rv != null {
+                let c = LLVMBuildICmp(st["builder"], ICMP_NE, rv[0], i8c(st, 0), "rawb");
+                LLVMBuildCondBr(st["builder"], c, then_bb, else_bb);
+                return;
+            }
+        }
     }
     // Hybrid compares: boxed leaves checked and extracted, registers on the
     // fast arm, the generic recompile on the slow arm.
@@ -2183,7 +3031,8 @@ fn emit_cancel_poll(st, counter) {
     let cur = LLVMBuildLoad2(st["builder"], st["i64"], counter, "cancel.n");
     let next = LLVMBuildAdd(st["builder"], cur, i64c(st, 1), "cancel.n1");
     LLVMBuildStore(st["builder"], next, counter);
-    let hit = LLVMBuildICmp(st["builder"], ICMP_UGE, next, i64c(st, CANCEL_POLL_INTERVAL), "cancel.hit");
+    let hit_raw = LLVMBuildICmp(st["builder"], ICMP_UGE, next, i64c(st, CANCEL_POLL_INTERVAL), "cancel.hit");
+    let hit = cg_expect_i1(st, hit_raw, false);
     let cont = new_block(st, "cancel.cont");
     let check = new_block(st, "cancel.check");
     LLVMBuildCondBr(st["builder"], hit, check, cont);
@@ -2199,6 +3048,84 @@ fn emit_cancel_poll(st, counter) {
 
 fn compile_forin(st, s) {
     let var = s[1];
+    let var2 = s[2];
+    let iter = s[3];
+    let body_stmts = s[4][1];
+    if var2 == null and iter[0] == "Ident" {
+        let ul_name = iter[1];
+        let ul_loc = cg_lookup(st, ul_name);
+        if ul_loc != null and (ul_loc[0] == "UI" or ul_loc[0] == "UF") and (not cg_ulist_mutated_in_stmts(body_stmts, ul_name)) {
+            let ul_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], ul_loc[1], "fi.ul");
+            let len = cg_emit_ulist_len(st, ul_ptr);
+            let idx_slot = alloca_entry_ty(st, st["i64"], "fi.idx");
+            LLVMBuildStore(st["builder"], i64c(st, 0), idx_slot);
+            let head_bb = new_block(st, "forin.head");
+            let body_bb = new_block(st, "forin.body");
+            let step_bb = new_block(st, "forin.step");
+            let end_bb = new_block(st, "forin.end");
+            br_to(st, head_bb);
+            LLVMPositionBuilderAtEnd(st["builder"], head_bb);
+            let idx = LLVMBuildLoad2(st["builder"], st["i64"], idx_slot, "fi.i");
+            let more = LLVMBuildICmp(st["builder"], ICMP_SLT, idx, len, "fi.more");
+            LLVMBuildCondBr(st["builder"], more, body_bb, end_bb);
+            LLVMPositionBuilderAtEnd(st["builder"], body_bb);
+            let counter = alloca_entry_ty(st, st["i64"], "cancel.counter");
+            init_entry_slot(st, counter, i64c(st, 0));
+            emit_cancel_poll(st, counter);
+            let var_boxed = st["boxed"].has(var);
+            let var_assigned = cg_stmts_mention_assign(body_stmts, var);
+            cg_push_scope(st);
+            if ul_loc[0] == "UI" {
+                let iv = cg_emit_ulist_i64_get_inline(st, ul_ptr, idx);
+                if (not var_boxed) and (not var_assigned) {
+                    let vslot = alloca_entry_ty(st, st["i64"], "fi.vi");
+                    LLVMBuildStore(st["builder"], iv, vslot);
+                    cg_declare(st, var, ["I", vslot]);
+                } else {
+                    let bv = v_int_from_i64(st, iv);
+                    if var_boxed {
+                        let cell = call1p(st, "spid3r_cell_new", bv);
+                        let cslot = alloca_entry(st, "forin.cell");
+                        LLVMBuildStore(st["builder"], cell, cslot);
+                        cg_declare(st, var, ["C", cslot]);
+                    } else {
+                        let lslot = temp_slot(st, bv);
+                        cg_declare(st, var, ["L", lslot]);
+                    }
+                }
+            } else {
+                let fv = cg_emit_ulist_f64_get_inline(st, ul_ptr, idx);
+                if (not var_boxed) and (not var_assigned) {
+                    let vslot = alloca_entry_ty(st, st["f64"], "fi.vf");
+                    LLVMBuildStore(st["builder"], fv, vslot);
+                    cg_declare(st, var, ["F", vslot]);
+                } else {
+                    let bv = v_float_from_f64(st, fv);
+                    if var_boxed {
+                        let cell = call1p(st, "spid3r_cell_new", bv);
+                        let cslot = alloca_entry(st, "forin.cell");
+                        LLVMBuildStore(st["builder"], cell, cslot);
+                        cg_declare(st, var, ["C", cslot]);
+                    } else {
+                        let lslot = temp_slot(st, bv);
+                        cg_declare(st, var, ["L", lslot]);
+                    }
+                }
+            }
+            st["loops"].push([end_bb, step_bb]);
+            cg_compile_block(st, body_stmts);
+            let _lf = st["loops"].pop();
+            cg_pop_scope(st);
+            br_to(st, step_bb);
+            LLVMPositionBuilderAtEnd(st["builder"], step_bb);
+            let cur_i = LLVMBuildLoad2(st["builder"], st["i64"], idx_slot, "fi.ci");
+            let next_i = LLVMBuildAdd(st["builder"], cur_i, i64c(st, 1), "fi.ni");
+            LLVMBuildStore(st["builder"], next_i, idx_slot);
+            br_to(st, head_bb);
+            LLVMPositionBuilderAtEnd(st["builder"], end_bb);
+            return;
+        }
+    }
     let obj = cg_compile_expr(st, s[3]);
     let iter_slot = alloca_entry(st, "forin.iter");
     let it = call1p(st, "spid3r_forin_start", obj);
@@ -2245,6 +3172,9 @@ fn compile_forc(st, s) {
     LLVMPositionBuilderAtEnd(st["builder"], cond_bb);
     emit_cond_branch(st, s[2], body_bb, end_bb);
     LLVMPositionBuilderAtEnd(st["builder"], body_bb);
+    let counter = alloca_entry_ty(st, st["i64"], "cancel.counter");
+    init_entry_slot(st, counter, i64c(st, 0));
+    emit_cancel_poll(st, counter);
     st["loops"].push([end_bb, post_bb]);
     cg_compile_block(st, s[4][1]);
     let _lf = st["loops"].pop();
@@ -2454,6 +3384,8 @@ fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
         hint = "anon";
     }
     let f = LLVMAddFunction(st["module"], "spid3r_fn." + string(st["fn_counter"]) + "." + hint, fn_ty);
+    cg_add_fn_attr(st, f, "nounwind");
+    cg_add_fn_attr(st, f, "willreturn");
     let saved_bb = cur_block(st);
     let entry_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "entry");
     LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
@@ -2477,10 +3409,14 @@ fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
 
     let boxed = boxing_set(proto);
     let int_locals = analyze_int_locals(proto, boxed);
+    let float_locals = cg_analyze_float_locals(proto, boxed, int_locals, map());
+    let ulists = cg_analyze_unboxed_lists(proto, boxed, int_locals);
     // Save the enclosing frame.
     let saved = [st["env"], st["ret_slot"], st["ret_bb"], st["caps"], st["boxed"],
                  st["scopes"], st["loops"], st["exc"], st["fstack"], st["is_entry"],
-                 st["int_locals"]];
+                 st["int_locals"], st["float_locals"], st["raw_ret_int"],
+                 st["raw_ret_float"], st["raw_ret_bool"], st["raw_ret_threw"],
+                 st["unboxed_lists"]];
     st["env"] = env;
     st["ret_slot"] = ret_slot;
     st["ret_bb"] = ret_bb;
@@ -2491,6 +3427,12 @@ fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
     st["exc"] = [propagate_bb];
     st["fstack"] = [];
     st["int_locals"] = int_locals;
+    st["float_locals"] = float_locals;
+    st["raw_ret_int"] = null;
+    st["raw_ret_float"] = null;
+    st["raw_ret_bool"] = null;
+    st["raw_ret_threw"] = null;
+    st["unboxed_lists"] = ulists;
 
     cg_push_scope(st);
     let i = 0;
@@ -2567,6 +3509,12 @@ fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
     st["fstack"] = saved[8];
     st["is_entry"] = saved[9];
     st["int_locals"] = saved[10];
+    st["float_locals"] = saved[11];
+    st["raw_ret_int"] = saved[12];
+    st["raw_ret_float"] = saved[13];
+    st["raw_ret_bool"] = saved[14];
+    st["raw_ret_threw"] = saved[15];
+    st["unboxed_lists"] = saved[16];
     if saved_bb != 0 {
         LLVMPositionBuilderAtEnd(st["builder"], saved_bb);
     }
@@ -2838,6 +3786,8 @@ fn build_entry(st, prog) {
     let ptr_ty = st["ptr"];
     let fn_ty = LLVMFunctionType(ptr_ty, carr([]), 0, 0);
     let entry = LLVMAddFunction(st["module"], "spid3r_entry", fn_ty);
+    cg_add_fn_attr(st, entry, "nounwind");
+    cg_add_fn_attr(st, entry, "willreturn");
     let bb = LLVMAppendBasicBlockInContext(st["ctx"], entry, "entry");
     LLVMPositionBuilderAtEnd(st["builder"], bb);
     let saved_exc = st["exc"];
@@ -2847,9 +3797,13 @@ fn build_entry(st, prog) {
     let saved_is_entry = st["is_entry"];
     let saved_top_consts = st["top_consts"];
     let saved_top_ints = st["top_ints"];
+    let saved_raw_fns = st["raw_fns"];
+    let saved_raw_compiled = st["raw_compiled"];
     let top_pair = cg_collect_top_consts(prog[0]);
     st["top_consts"] = top_pair[0];
     st["top_ints"] = top_pair[1];
+    st["raw_fns"] = cg_collect_raw_fns(prog[0]);
+    st["raw_compiled"] = map();
     st["is_entry"] = true;
     // Bottom handler for top-level statements: an uncaught throw is a
     // program error.
@@ -2897,6 +3851,8 @@ fn build_entry(st, prog) {
     st["is_entry"] = saved_is_entry;
     st["top_consts"] = saved_top_consts;
     st["top_ints"] = saved_top_ints;
+    st["raw_fns"] = saved_raw_fns;
+    st["raw_compiled"] = saved_raw_compiled;
     return entry;
 }
 
@@ -3175,16 +4131,29 @@ fn ia_expr(e, assignments, invalid) {
 }
 
 // Locals that may live in unboxed i64 slots: declared exactly once, not
-// boxed/captured, never a param, every init and assignment pure-int — a
-// fixpoint (a var dropped from the set can invalidate another).
+// boxed/captured, every init and assignment pure-int — a fixpoint.
 fn analyze_int_locals(proto, boxed) {
+    return analyze_int_locals_with_params(proto, boxed, map());
+}
+
+fn analyze_int_locals_with_params(proto, boxed, int_params) {
     let decl_counts = map();
     let candidates = map();
     let invalid = map();
     let inits = [];
     let assignments = [];
     for pp in proto[5] {
-        invalid[pp[1]] = 1;
+        let pname = pp[1];
+        if int_params.has(pname) and not boxed.has(pname) {
+            if decl_counts.has(pname) {
+                decl_counts[pname] = decl_counts[pname] + 1;
+            } else {
+                decl_counts[pname] = 1;
+            }
+            candidates[pname] = 1;
+        } else {
+            invalid[pname] = 1;
+        }
     }
     for b in boxed {
         invalid[b] = 1;
@@ -3204,8 +4173,6 @@ fn analyze_int_locals(proto, boxed) {
     let changed = true;
     while changed {
         changed = false;
-        // Rebuild the survivor set against the CURRENT int_vars (a dropped
-        // var can invalidate another, so iterate to a fixpoint).
         let keep = map();
         for name in int_vars {
             let ok = true;
@@ -3230,4 +4197,1046 @@ fn analyze_int_locals(proto, boxed) {
         int_vars = keep;
     }
     return int_vars;
+}
+
+fn cg_pure_float_expr(e, float_vars, int_vars) {
+    let t = e[0];
+    if t == "Float" { return true; }
+    if t == "Ident" { return float_vars.has(e[1]); }
+    if t == "Unary" and e[1] == "Neg" { return cg_pure_float_expr(e[2], float_vars, int_vars); }
+    if t == "Binary" {
+        let op = e[1];
+        if op == "Add" or op == "Sub" or op == "Mul" or op == "Div" {
+            let lf = cg_pure_float_expr(e[2], float_vars, int_vars);
+            let rf = cg_pure_float_expr(e[3], float_vars, int_vars);
+            let li = ia_pure_int_expr(e[2], int_vars);
+            let ri = ia_pure_int_expr(e[3], int_vars);
+            return (lf and (rf or ri)) or (li and rf);
+        }
+    }
+    return false;
+}
+
+fn cg_analyze_float_locals(proto, boxed, int_locals, float_params) {
+    let has_fp = false;
+    for _k in float_params {
+        has_fp = true;
+        break;
+    }
+    if (not has_fp) and (not cg_stmts_have_float(proto[8][1])) {
+        return map();
+    }
+    let decl_counts = map();
+    let candidates = map();
+    let invalid = map();
+    let inits = [];
+    let assignments = [];
+    for pp in proto[5] {
+        let pname = pp[1];
+        if float_params.has(pname) and (not boxed.has(pname)) and (not int_locals.has(pname)) {
+            if decl_counts.has(pname) {
+                decl_counts[pname] = decl_counts[pname] + 1;
+            } else {
+                decl_counts[pname] = 1;
+            }
+            candidates[pname] = 1;
+        } else {
+            invalid[pname] = 1;
+        }
+    }
+    for b in boxed {
+        invalid[b] = 1;
+    }
+    for iv in int_locals {
+        invalid[iv] = 1;
+    }
+    ia_stmts(proto[8][1], boxed, decl_counts, candidates, invalid, inits, assignments);
+    for name in decl_counts {
+        if decl_counts[name] > 1 {
+            invalid[name] = 1;
+        }
+    }
+    let float_vars = map();
+    for name in candidates {
+        if not invalid.has(name) {
+            float_vars[name] = 1;
+        }
+    }
+    let changed = true;
+    while changed {
+        changed = false;
+        let keep = map();
+        for name in float_vars {
+            let ok = true;
+            for entry in inits {
+                if entry[0] == name and not cg_pure_float_expr(entry[1], float_vars, int_locals) {
+                    ok = false;
+                }
+            }
+            if ok {
+                for entry in assignments {
+                    if entry[0] == name {
+                        if entry[1] == "ModAssign" or not cg_pure_float_expr(entry[2], float_vars, int_locals) {
+                            ok = false;
+                        }
+                    }
+                }
+            }
+            if ok {
+                keep[name] = 1;
+            } else {
+                changed = true;
+            }
+        }
+        float_vars = keep;
+    }
+    return float_vars;
+}
+
+// -------------------------------------------- AOT-5 raw typed direct calls
+
+fn cg_scalar_type_name(te) {
+    if te == null {
+        return null;
+    }
+    // ["Type", name, arg, nullable, union, sp]
+    if te[2] != null or te[3] or te[4].len() > 0 {
+        return null;
+    }
+    let n = te[1];
+    if n == "int" or n == "usize" { return "int"; }
+    if n == "float" { return "float"; }
+    if n == "bool" { return "bool"; }
+    return null;
+}
+
+fn cg_expr_mentions_assign(e, target_name) {
+    let t = e[0];
+    if t == "Assign" {
+        if e[2][0] == "Ident" and e[2][1] == target_name {
+            return true;
+        }
+        return cg_expr_mentions_assign(e[2], target_name) or cg_expr_mentions_assign(e[3], target_name);
+    }
+    if t == "Unary" { return cg_expr_mentions_assign(e[2], target_name); }
+    if t == "Binary" or t == "Logical" or t == "Coalesce" {
+        return cg_expr_mentions_assign(e[2], target_name) or cg_expr_mentions_assign(e[3], target_name);
+    }
+    if t == "Call" {
+        if cg_expr_mentions_assign(e[1], target_name) { return true; }
+        for a in e[2] {
+            if cg_expr_mentions_assign(a, target_name) { return true; }
+        }
+        return false;
+    }
+    if t == "Method" {
+        if cg_expr_mentions_assign(e[2], target_name) { return true; }
+        for a in e[3] {
+            if cg_expr_mentions_assign(a, target_name) { return true; }
+        }
+        return false;
+    }
+    if t == "Index" {
+        return cg_expr_mentions_assign(e[1], target_name) or cg_expr_mentions_assign(e[2], target_name);
+    }
+    if t == "FieldE" or t == "OptField" { return cg_expr_mentions_assign(e[2], target_name); }
+    if t == "List" {
+        for it in e[1] {
+            if cg_expr_mentions_assign(it, target_name) { return true; }
+        }
+        return false;
+    }
+    if t == "New" {
+        for a in e[2] {
+            if cg_expr_mentions_assign(a, target_name) { return true; }
+        }
+        return false;
+    }
+    if t == "SuperCall" {
+        for a in e[3] {
+            if cg_expr_mentions_assign(a, target_name) { return true; }
+        }
+        return false;
+    }
+    if t == "Fn" {
+        return cg_stmts_mention_assign(e[1][8][1], target_name);
+    }
+    if t == "Await" or t == "Spawn" or t == "Propagate" or t == "NamedArg" {
+        return cg_expr_mentions_assign(e[1], target_name);
+    }
+    return false;
+}
+
+fn cg_stmts_mention_assign(stmts, target_name) {
+    for s in stmts {
+        if cg_stmt_mentions_assign(s, target_name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn cg_stmt_mentions_assign(s, target_name) {
+    let t = s[0];
+    if t == "ExprStmt" or t == "Throw" or t == "Spawn" {
+        return cg_expr_mentions_assign(s[1], target_name);
+    }
+    if t == "Return" {
+        return s[1] != null and cg_expr_mentions_assign(s[1], target_name);
+    }
+    if t == "Let" or t == "Const" {
+        return s[4] != null and cg_expr_mentions_assign(s[4], target_name);
+    }
+    if t == "Fn" {
+        return cg_stmts_mention_assign(s[1][8][1], target_name);
+    }
+    if t == "Class" {
+        for m in s[9] {
+            if cg_stmts_mention_assign(m[8][1], target_name) { return true; }
+        }
+        return false;
+    }
+    if t == "If" {
+        if cg_expr_mentions_assign(s[1], target_name) or cg_stmts_mention_assign(s[2][1], target_name) {
+            return true;
+        }
+        for el in s[3] {
+            if cg_expr_mentions_assign(el[1], target_name) or cg_stmts_mention_assign(el[2][1], target_name) {
+                return true;
+            }
+        }
+        return s[4] != null and cg_stmts_mention_assign(s[4][1], target_name);
+    }
+    if t == "While" {
+        return cg_expr_mentions_assign(s[1], target_name) or cg_stmts_mention_assign(s[2][1], target_name);
+    }
+    if t == "ForIn" {
+        return cg_expr_mentions_assign(s[3], target_name) or cg_stmts_mention_assign(s[4][1], target_name);
+    }
+    if t == "ForC" {
+        return cg_stmt_mentions_assign(s[1], target_name)
+            or cg_expr_mentions_assign(s[2], target_name)
+            or cg_expr_mentions_assign(s[3], target_name)
+            or cg_stmts_mention_assign(s[4][1], target_name);
+    }
+    if t == "BlockStmt" {
+        return cg_stmts_mention_assign(s[1][1], target_name);
+    }
+    if t == "Try" {
+        if cg_stmts_mention_assign(s[1][1], target_name) { return true; }
+        if s[2] != null and cg_stmts_mention_assign(s[2][2][1], target_name) { return true; }
+        if s[3] != null and cg_stmts_mention_assign(s[3][1], target_name) { return true; }
+        return false;
+    }
+    return false;
+}
+
+fn cg_expr_has_float(e) {
+    let t = e[0];
+    if t == "Float" { return true; }
+    if t == "Unary" { return cg_expr_has_float(e[2]); }
+    if t == "Binary" or t == "Logical" or t == "Coalesce" {
+        return cg_expr_has_float(e[2]) or cg_expr_has_float(e[3]);
+    }
+    if t == "Assign" { return cg_expr_has_float(e[3]); }
+    return false;
+}
+
+fn cg_stmts_have_float(stmts) {
+    for s in stmts {
+        let t = s[0];
+        if t == "Let" or t == "Const" {
+            if s[4] != null and cg_expr_has_float(s[4]) { return true; }
+        } else if t == "ExprStmt" {
+            if cg_expr_has_float(s[1]) { return true; }
+        } else if t == "If" {
+            if cg_stmts_have_float(s[2][1]) { return true; }
+            for el in s[3] {
+                if cg_stmts_have_float(el[2][1]) { return true; }
+            }
+            if s[4] != null and cg_stmts_have_float(s[4][1]) { return true; }
+        } else if t == "While" {
+            if cg_stmts_have_float(s[2][1]) { return true; }
+        } else if t == "ForIn" or t == "ForC" {
+            if cg_stmts_have_float(s[4][1]) { return true; }
+        } else if t == "BlockStmt" {
+            if cg_stmts_have_float(s[1][1]) { return true; }
+        } else if t == "Try" {
+            if cg_stmts_have_float(s[1][1]) { return true; }
+            if s[2] != null and cg_stmts_have_float(s[2][2][1]) { return true; }
+            if s[3] != null and cg_stmts_have_float(s[3][1]) { return true; }
+        }
+    }
+    return false;
+}
+
+fn cg_collect_assigned_expr(e, out) {
+    let t = e[0];
+    if t == "Assign" {
+        if e[2][0] == "Ident" {
+            out[e[2][1]] = 1;
+        }
+        cg_collect_assigned_expr(e[2], out);
+        cg_collect_assigned_expr(e[3], out);
+        return;
+    }
+    if t == "Unary" { cg_collect_assigned_expr(e[2], out); return; }
+    if t == "Binary" or t == "Logical" or t == "Coalesce" {
+        cg_collect_assigned_expr(e[2], out);
+        cg_collect_assigned_expr(e[3], out);
+        return;
+    }
+    if t == "Call" {
+        cg_collect_assigned_expr(e[1], out);
+        for a in e[2] { cg_collect_assigned_expr(a, out); }
+        return;
+    }
+    if t == "Method" {
+        cg_collect_assigned_expr(e[2], out);
+        for a in e[3] { cg_collect_assigned_expr(a, out); }
+        return;
+    }
+    if t == "Index" {
+        cg_collect_assigned_expr(e[1], out);
+        cg_collect_assigned_expr(e[2], out);
+        return;
+    }
+    if t == "FieldE" or t == "OptField" { cg_collect_assigned_expr(e[2], out); return; }
+    if t == "List" {
+        for it in e[1] { cg_collect_assigned_expr(it, out); }
+        return;
+    }
+    if t == "New" {
+        for a in e[2] { cg_collect_assigned_expr(a, out); }
+        return;
+    }
+    if t == "SuperCall" {
+        for a in e[3] { cg_collect_assigned_expr(a, out); }
+        return;
+    }
+    if t == "Fn" { cg_collect_assigned_stmts(e[1][8][1], out); return; }
+    if t == "Await" or t == "Spawn" or t == "Propagate" or t == "NamedArg" {
+        cg_collect_assigned_expr(e[1], out);
+        return;
+    }
+    return;
+}
+
+fn cg_collect_assigned_stmts(stmts, out) {
+    for s in stmts {
+        let t = s[0];
+        if t == "ExprStmt" or t == "Throw" or t == "Spawn" {
+            cg_collect_assigned_expr(s[1], out);
+        } else if t == "Return" {
+            if s[1] != null { cg_collect_assigned_expr(s[1], out); }
+        } else if t == "Let" or t == "Const" {
+            if s[4] != null { cg_collect_assigned_expr(s[4], out); }
+        } else if t == "Fn" {
+            cg_collect_assigned_stmts(s[1][8][1], out);
+        } else if t == "Class" {
+            for m in s[9] { cg_collect_assigned_stmts(m[8][1], out); }
+        } else if t == "If" {
+            cg_collect_assigned_expr(s[1], out);
+            cg_collect_assigned_stmts(s[2][1], out);
+            for el in s[3] {
+                cg_collect_assigned_expr(el[1], out);
+                cg_collect_assigned_stmts(el[2][1], out);
+            }
+            if s[4] != null { cg_collect_assigned_stmts(s[4][1], out); }
+        } else if t == "While" {
+            cg_collect_assigned_expr(s[1], out);
+            cg_collect_assigned_stmts(s[2][1], out);
+        } else if t == "ForIn" {
+            cg_collect_assigned_expr(s[3], out);
+            cg_collect_assigned_stmts(s[4][1], out);
+        } else if t == "ForC" {
+            cg_collect_assigned_stmts([s[1]], out);
+            cg_collect_assigned_expr(s[2], out);
+            cg_collect_assigned_expr(s[3], out);
+            cg_collect_assigned_stmts(s[4][1], out);
+        } else if t == "BlockStmt" {
+            cg_collect_assigned_stmts(s[1][1], out);
+        } else if t == "Try" {
+            cg_collect_assigned_stmts(s[1][1], out);
+            if s[2] != null { cg_collect_assigned_stmts(s[2][2][1], out); }
+            if s[3] != null { cg_collect_assigned_stmts(s[3][1], out); }
+        }
+    }
+    return;
+}
+
+fn cg_collect_raw_fns(stmts) {
+    let counts = map();
+    let protos = map();
+    for s in stmts {
+        let t = s[0];
+        let bname = null;
+        if t == "Fn" {
+            bname = s[1][4];
+        } else if t == "Let" or t == "Const" or t == "Class" {
+            bname = s[2];
+        }
+        if bname != null {
+            if counts.has(bname) {
+                counts[bname] = counts[bname] + 1;
+            } else {
+                counts[bname] = 1;
+            }
+        }
+        if t == "Fn" {
+            let p = s[1];
+            // not async, not extern, non-generic, named, not main
+            if (not p[2]) and (not p[3]) and p[7].len() == 0 and p[4] != null and p[4] != "main" {
+                let has_default = false;
+                let has_scalar = cg_scalar_type_name(p[6]) != null;
+                for pp in p[5] {
+                    if pp[3] != null {
+                        has_default = true;
+                    }
+                    if cg_scalar_type_name(pp[2]) != null {
+                        has_scalar = true;
+                    }
+                }
+                if (not has_default) and has_scalar {
+                    protos[p[4]] = p;
+                }
+            }
+        }
+    }
+    let has_any = false;
+    for _k in protos {
+        has_any = true;
+        break;
+    }
+    if not has_any {
+        return map();
+    }
+    let assigned = map();
+    cg_collect_assigned_stmts(stmts, assigned);
+    let out = map();
+    for name in protos {
+        if counts.has(name) and counts[name] == 1 and (not assigned.has(name)) {
+            out[name] = protos[name];
+        }
+    }
+    return out;
+}
+
+fn cg_can_direct_raw_call(st, name, args) {
+    if not st["raw_fns"].has(name) {
+        return null;
+    }
+    if cg_lookup(st, name) != null {
+        return null;
+    }
+    let proto = st["raw_fns"][name];
+    if proto[5].len() != args.len() {
+        return null;
+    }
+    let rsc = cg_scalar_type_name(proto[6]);
+    if rsc == null {
+        return "any";
+    }
+    return rsc;
+}
+
+fn cg_try_compile_raw_call(st, name, args) {
+    let rsc_check = cg_can_direct_raw_call(st, name, args);
+    if rsc_check == null {
+        return null;
+    }
+    let entry = null;
+    if st["raw_compiled"].has(name) {
+        entry = st["raw_compiled"][name];
+    } else {
+        let proto = st["raw_fns"][name];
+        let ret_sc = cg_scalar_type_name(proto[6]);
+        let param_scs = [];
+        let llvm_params = [];
+        for pp in proto[5] {
+            let psc = cg_scalar_type_name(pp[2]);
+            param_scs.push(psc);
+            if psc == "int" {
+                llvm_params.push(st["i64"]);
+            } else if psc == "float" {
+                llvm_params.push(st["f64"]);
+            } else if psc == "bool" {
+                llvm_params.push(st["i8"]);
+            } else {
+                llvm_params.push(st["ptr"]);
+            }
+        }
+        let base_ret_ty = st["ptr"];
+        if ret_sc == "int" {
+            base_ret_ty = st["i64"];
+        } else if ret_sc == "float" {
+            base_ret_ty = st["f64"];
+        } else if ret_sc == "bool" {
+            base_ret_ty = st["i8"];
+        }
+        let ret_struct_ty = LLVMStructTypeInContext(st["ctx"], carr([base_ret_ty, st["i1"]]), 2, 0);
+        let fty = LLVMFunctionType(ret_struct_ty, carr(llvm_params), llvm_params.len(), 0);
+        let fv = LLVMAddFunction(st["module"], "spid3r_fn_raw__" + name, fty);
+        LLVMSetLinkage(fv, LINKAGE_INTERNAL);
+        cg_add_fn_attr(st, fv, "nounwind");
+        cg_add_fn_attr(st, fv, "willreturn");
+        cg_add_fn_attr(st, fv, "inlinehint");
+        entry = [fv, fty, ret_sc, param_scs];
+        st["raw_compiled"][name] = entry;
+
+        let caller_bb = cur_block(st);
+        let entry_bb = LLVMAppendBasicBlockInContext(st["ctx"], fv, "entry");
+        let ret_bb = LLVMAppendBasicBlockInContext(st["ctx"], fv, "ret");
+        let propagate_bb = LLVMAppendBasicBlockInContext(st["ctx"], fv, "propagate");
+        LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
+
+        let ret_int_slot = null;
+        let ret_float_slot = null;
+        let ret_bool_slot = null;
+        if ret_sc == "int" {
+            ret_int_slot = LLVMBuildAlloca(st["builder"], st["i64"], "rret.i");
+        } else if ret_sc == "float" {
+            ret_float_slot = LLVMBuildAlloca(st["builder"], st["f64"], "rret.f");
+        } else if ret_sc == "bool" {
+            ret_bool_slot = LLVMBuildAlloca(st["builder"], st["i8"], "rret.b");
+        }
+        let ret_val_slot = LLVMBuildAlloca(st["builder"], st["ptr"], "rret.v");
+        let ret_threw_slot = LLVMBuildAlloca(st["builder"], st["i8"], "rret.ex");
+        LLVMBuildStore(st["builder"], i8c(st, 0), ret_threw_slot);
+
+        LLVMPositionBuilderAtEnd(st["builder"], propagate_bb);
+        if ret_int_slot != null {
+            LLVMBuildStore(st["builder"], i64c(st, 0), ret_int_slot);
+        }
+        if ret_float_slot != null {
+            LLVMBuildStore(st["builder"], LLVMConstReal(st["f64"], 0.0), ret_float_slot);
+        }
+        if ret_bool_slot != null {
+            LLVMBuildStore(st["builder"], i8c(st, 0), ret_bool_slot);
+        }
+        LLVMBuildStore(st["builder"], null_ptr(st), ret_val_slot);
+        LLVMBuildStore(st["builder"], i8c(st, 1), ret_threw_slot);
+        LLVMBuildBr(st["builder"], ret_bb);
+        LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
+
+        let boxed = boxing_set(proto);
+        let int_params = map();
+        let float_params = map();
+        let pi = 0;
+        while pi < proto[5].len() {
+            if param_scs[pi] == "int" {
+                int_params[proto[5][pi][1]] = 1;
+            } else if param_scs[pi] == "float" {
+                float_params[proto[5][pi][1]] = 1;
+            }
+            pi += 1;
+        }
+        let int_locals = analyze_int_locals_with_params(proto, boxed, int_params);
+        let float_locals = cg_analyze_float_locals(proto, boxed, int_locals, float_params);
+        let ulists = cg_analyze_unboxed_lists(proto, boxed, int_locals);
+
+        let saved = [st["env"], st["ret_slot"], st["ret_bb"], st["caps"], st["boxed"],
+                     st["scopes"], st["loops"], st["exc"], st["fstack"], st["is_entry"],
+                     st["int_locals"], st["float_locals"], st["raw_ret_int"],
+                     st["raw_ret_float"], st["raw_ret_bool"], st["raw_ret_threw"],
+                     st["unboxed_lists"]];
+        st["env"] = null;
+        st["ret_slot"] = ret_val_slot;
+        st["ret_bb"] = ret_bb;
+        st["caps"] = [];
+        st["boxed"] = boxed;
+        st["scopes"] = [];
+        st["loops"] = [];
+        st["exc"] = [propagate_bb];
+        st["fstack"] = [];
+        st["is_entry"] = false;
+        st["int_locals"] = int_locals;
+        st["float_locals"] = float_locals;
+        st["raw_ret_int"] = ret_int_slot;
+        st["raw_ret_float"] = ret_float_slot;
+        st["raw_ret_bool"] = ret_bool_slot;
+        st["raw_ret_threw"] = ret_threw_slot;
+        st["unboxed_lists"] = ulists;
+
+        cg_push_scope(st);
+        pi = 0;
+        while pi < proto[5].len() {
+            let pname = proto[5][pi][1];
+            let psc = param_scs[pi];
+            let raw_p = LLVMGetParam(fv, pi);
+            if int_locals.has(pname) {
+                let slot = alloca_entry_ty(st, st["i64"], "pi");
+                LLVMBuildStore(st["builder"], raw_p, slot);
+                cg_declare(st, pname, ["I", slot]);
+            } else if float_locals.has(pname) {
+                let slot = alloca_entry_ty(st, st["f64"], "pf");
+                LLVMBuildStore(st["builder"], raw_p, slot);
+                cg_declare(st, pname, ["F", slot]);
+            } else {
+                let bv = raw_p;
+                if psc == "int" {
+                    bv = v_int_from_i64(st, raw_p);
+                } else if psc == "float" {
+                    bv = v_float_from_f64(st, raw_p);
+                } else if psc == "bool" {
+                    let b1 = LLVMBuildICmp(st["builder"], ICMP_NE, raw_p, i8c(st, 0), "pb");
+                    bv = v_bool_from_i1(st, b1);
+                }
+                if boxed.has(pname) {
+                    let cell = call1p(st, "spid3r_cell_new", bv);
+                    let slot = alloca_entry(st, "pcell");
+                    LLVMBuildStore(st["builder"], cell, slot);
+                    cg_declare(st, pname, ["C", slot]);
+                } else {
+                    let slot = alloca_entry(st, "p");
+                    LLVMBuildStore(st["builder"], bv, slot);
+                    cg_declare(st, pname, ["L", slot]);
+                }
+            }
+            pi += 1;
+        }
+        cg_compile_block(st, proto[8][1]);
+        cg_pop_scope(st);
+        ensure_open(st);
+        if ret_int_slot != null {
+            LLVMBuildStore(st["builder"], i64c(st, 0), ret_int_slot);
+        } else if ret_float_slot != null {
+            LLVMBuildStore(st["builder"], LLVMConstReal(st["f64"], 0.0), ret_float_slot);
+        } else if ret_bool_slot != null {
+            LLVMBuildStore(st["builder"], i8c(st, 0), ret_bool_slot);
+        } else {
+            let nv = v_null(st);
+            LLVMBuildStore(st["builder"], nv, ret_val_slot);
+        }
+        LLVMBuildBr(st["builder"], ret_bb);
+
+        LLVMPositionBuilderAtEnd(st["builder"], ret_bb);
+        let rv_val = null;
+        if ret_int_slot != null {
+            rv_val = LLVMBuildLoad2(st["builder"], st["i64"], ret_int_slot, "rri");
+        } else if ret_float_slot != null {
+            rv_val = LLVMBuildLoad2(st["builder"], st["f64"], ret_float_slot, "rrf");
+        } else if ret_bool_slot != null {
+            rv_val = LLVMBuildLoad2(st["builder"], st["i8"], ret_bool_slot, "rrb");
+        } else {
+            rv_val = LLVMBuildLoad2(st["builder"], st["ptr"], ret_val_slot, "rrv");
+        }
+        let ex_i8 = LLVMBuildLoad2(st["builder"], st["i8"], ret_threw_slot, "rrex");
+        let ex_i1 = LLVMBuildICmp(st["builder"], ICMP_NE, ex_i8, i8c(st, 0), "rrexb");
+        let agg0 = LLVMGetUndef(ret_struct_ty);
+        let agg1 = LLVMBuildInsertValue(st["builder"], agg0, rv_val, 0, "rr0");
+        let agg2 = LLVMBuildInsertValue(st["builder"], agg1, ex_i1, 1, "rr1");
+        LLVMBuildRet(st["builder"], agg2);
+
+        st["env"] = saved[0];
+        st["ret_slot"] = saved[1];
+        st["ret_bb"] = saved[2];
+        st["caps"] = saved[3];
+        st["boxed"] = saved[4];
+        st["scopes"] = saved[5];
+        st["loops"] = saved[6];
+        st["exc"] = saved[7];
+        st["fstack"] = saved[8];
+        st["is_entry"] = saved[9];
+        st["int_locals"] = saved[10];
+        st["float_locals"] = saved[11];
+        st["raw_ret_int"] = saved[12];
+        st["raw_ret_float"] = saved[13];
+        st["raw_ret_bool"] = saved[14];
+        st["raw_ret_threw"] = saved[15];
+        st["unboxed_lists"] = saved[16];
+        if caller_bb != 0 {
+            LLVMPositionBuilderAtEnd(st["builder"], caller_bb);
+        }
+    }
+
+    let fv = entry[0];
+    let fty = entry[1];
+    let ret_sc = entry[2];
+    let param_scs = entry[3];
+    let call_args = [];
+    let ai = 0;
+    while ai < args.len() {
+        let a = args[ai];
+        let psc = param_scs[ai];
+        if psc == "int" {
+            if is_int_expr_now(st, a) {
+                call_args.push(cg_compile_expr_i64(st, a));
+            } else {
+                let bv = cg_compile_expr(st, a);
+                let f = tramp(st, "spid3r_to_i64", [st["ptr"]], st["i64"]);
+                call_args.push(emit_call(st, f, [bv], "to_i64"));
+            }
+        } else if psc == "float" {
+            if is_float_expr_now(st, a) or is_int_expr_now(st, a) {
+                call_args.push(cg_compile_expr_f64(st, a));
+            } else {
+                let bv = cg_compile_expr(st, a);
+                let f = tramp(st, "spid3r_to_f64", [st["ptr"]], st["f64"]);
+                call_args.push(emit_call(st, f, [bv], "to_f64"));
+            }
+        } else if psc == "bool" {
+            let c1 = cg_compile_cond_i1(st, a);
+            call_args.push(LLVMBuildZExt(st["builder"], c1, st["i8"], "ab8"));
+        } else {
+            call_args.push(cg_compile_expr(st, a));
+        }
+        ai += 1;
+    }
+    let res_agg = LLVMBuildCall2(st["builder"], fty, fv, carr(call_args), call_args.len(), "rawc");
+    let val = LLVMBuildExtractValue(st["builder"], res_agg, 0, "rawv");
+    let threw_i1 = LLVMBuildExtractValue(st["builder"], res_agg, 1, "rawex");
+    cg_throw_guard_i1(st, threw_i1);
+    return [val, ret_sc];
+}
+
+// ----------------------------------------- AOT-6 unboxed list analysis
+
+fn cg_ulist_mutated_expr(e, name) {
+    let t = e[0];
+    if t == "Method" {
+        if e[2][0] == "Ident" and e[2][1] == name and (e[1] == "push" or e[1] == "pop") {
+            return true;
+        }
+        if cg_ulist_mutated_expr(e[2], name) { return true; }
+        for a in e[3] {
+            if cg_ulist_mutated_expr(a, name) { return true; }
+        }
+        return false;
+    }
+    if t == "Assign" {
+        if e[2][0] == "Index" and e[2][1][0] == "Ident" and e[2][1][1] == name {
+            return true;
+        }
+        return cg_ulist_mutated_expr(e[2], name) or cg_ulist_mutated_expr(e[3], name);
+    }
+    if t == "Unary" { return cg_ulist_mutated_expr(e[2], name); }
+    if t == "Binary" or t == "Logical" {
+        return cg_ulist_mutated_expr(e[2], name) or cg_ulist_mutated_expr(e[3], name);
+    }
+    if t == "Call" {
+        if cg_ulist_mutated_expr(e[1], name) { return true; }
+        for a in e[2] {
+            if cg_ulist_mutated_expr(a, name) { return true; }
+        }
+        return false;
+    }
+    if t == "Index" {
+        return cg_ulist_mutated_expr(e[1], name) or cg_ulist_mutated_expr(e[2], name);
+    }
+    if t == "List" {
+        for it in e[1] {
+            if cg_ulist_mutated_expr(it, name) { return true; }
+        }
+        return false;
+    }
+    if t == "Await" { return cg_ulist_mutated_expr(e[1], name); }
+    return false;
+}
+
+fn cg_ulist_mutated_in_stmts(stmts, name) {
+    for s in stmts {
+        let t = s[0];
+        if t == "ExprStmt" or t == "Throw" {
+            if cg_ulist_mutated_expr(s[1], name) { return true; }
+        } else if t == "Return" {
+            if s[1] != null and cg_ulist_mutated_expr(s[1], name) { return true; }
+        } else if t == "Let" or t == "Const" {
+            if s[4] != null and cg_ulist_mutated_expr(s[4], name) { return true; }
+        } else if t == "If" {
+            if cg_ulist_mutated_expr(s[1], name) or cg_ulist_mutated_in_stmts(s[2][1], name) {
+                return true;
+            }
+            for el in s[3] {
+                if cg_ulist_mutated_expr(el[1], name) or cg_ulist_mutated_in_stmts(el[2][1], name) {
+                    return true;
+                }
+            }
+            if s[4] != null and cg_ulist_mutated_in_stmts(s[4][1], name) { return true; }
+        } else if t == "While" {
+            if cg_ulist_mutated_expr(s[1], name) or cg_ulist_mutated_in_stmts(s[2][1], name) {
+                return true;
+            }
+        } else if t == "ForIn" {
+            if cg_ulist_mutated_expr(s[3], name) or cg_ulist_mutated_in_stmts(s[4][1], name) {
+                return true;
+            }
+        } else if t == "ForC" {
+            if cg_ulist_mutated_in_stmts([s[1]], name)
+                or cg_ulist_mutated_expr(s[2], name)
+                or cg_ulist_mutated_expr(s[3], name)
+                or cg_ulist_mutated_in_stmts(s[4][1], name) {
+                return true;
+            }
+        } else if t == "BlockStmt" {
+            if cg_ulist_mutated_in_stmts(s[1][1], name) { return true; }
+        } else if t == "Try" {
+            if cg_ulist_mutated_in_stmts(s[1][1], name) { return true; }
+            if s[2] != null and cg_ulist_mutated_in_stmts(s[2][2][1], name) { return true; }
+            if s[3] != null and cg_ulist_mutated_in_stmts(s[3][1], name) { return true; }
+        }
+    }
+    return false;
+}
+
+fn cg_ul_record_cands(stmts, boxed, int_locals, cands, shadowed, inferred_ints) {
+    for s in stmts {
+        let t = s[0];
+        if t == "Let" {
+            let name = s[2];
+            let ty = s[3];
+            let val = s[4];
+            if cands.has(name) {
+                shadowed[name] = 1;
+                continue;
+            }
+            if ty != null {
+                // ["Type", name, arg, nullable, union, sp]
+                if (not boxed.has(name)) and (ty[1] == "list" or ty[1] == "List") and ty[2] != null and (not ty[3]) and ty[4].len() == 0 {
+                    let elem_ty = ty[2];
+                    if elem_ty[2] == null and (not elem_ty[3]) and elem_ty[4].len() == 0 {
+                        let elem = null;
+                        if elem_ty[1] == "int" {
+                            elem = "I64";
+                        } else if elem_ty[1] == "float" {
+                            elem = "F64";
+                        }
+                        let init_ok = val == null
+                            or val[0] == "List"
+                            or (val[0] == "Call" and val[1][0] == "Ident" and val[1][1] == "list" and val[2].len() == 0);
+                        if elem != null and init_ok {
+                            cands[name] = elem;
+                        }
+                    }
+                }
+            } else if val != null and val[0] == "List" and val[1].len() > 0 and (not boxed.has(name)) {
+                let all_int = true;
+                for it in val[1] {
+                    if not ia_pure_int_expr(it, int_locals) {
+                        all_int = false;
+                    }
+                }
+                if all_int {
+                    cands[name] = "I64";
+                    inferred_ints[name] = 1;
+                }
+            }
+        } else if t == "Const" {
+            if cands.has(s[2]) {
+                shadowed[s[2]] = 1;
+            }
+        } else if t == "If" {
+            cg_ul_record_cands(s[2][1], boxed, int_locals, cands, shadowed, inferred_ints);
+            for el in s[3] {
+                cg_ul_record_cands(el[2][1], boxed, int_locals, cands, shadowed, inferred_ints);
+            }
+            if s[4] != null {
+                cg_ul_record_cands(s[4][1], boxed, int_locals, cands, shadowed, inferred_ints);
+            }
+        } else if t == "While" {
+            cg_ul_record_cands(s[2][1], boxed, int_locals, cands, shadowed, inferred_ints);
+        } else if t == "BlockStmt" {
+            cg_ul_record_cands(s[1][1], boxed, int_locals, cands, shadowed, inferred_ints);
+        } else if t == "ForC" {
+            cg_ul_record_cands([s[1]], boxed, int_locals, cands, shadowed, inferred_ints);
+            cg_ul_record_cands(s[4][1], boxed, int_locals, cands, shadowed, inferred_ints);
+        } else if t == "ForIn" {
+            if cands.has(s[1]) {
+                shadowed[s[1]] = 1;
+            }
+            cg_ul_record_cands(s[4][1], boxed, int_locals, cands, shadowed, inferred_ints);
+        } else if t == "Try" {
+            cg_ul_record_cands(s[1][1], boxed, int_locals, cands, shadowed, inferred_ints);
+            if s[2] != null {
+                if cands.has(s[2][1]) {
+                    shadowed[s[2][1]] = 1;
+                }
+                cg_ul_record_cands(s[2][2][1], boxed, int_locals, cands, shadowed, inferred_ints);
+            }
+            if s[3] != null {
+                cg_ul_record_cands(s[3][1], boxed, int_locals, cands, shadowed, inferred_ints);
+            }
+        }
+    }
+    return;
+}
+
+fn cg_ul_scan_expr(e, cands, inferred_ints, int_locals, escaped) {
+    let t = e[0];
+    if t == "Ident" {
+        if cands.has(e[1]) {
+            escaped[e[1]] = 1;
+        }
+        return;
+    }
+    if t == "Unary" {
+        cg_ul_scan_expr(e[2], cands, inferred_ints, int_locals, escaped);
+        return;
+    }
+    if t == "Await" or t == "Spawn" or t == "Propagate" or t == "NamedArg" {
+        cg_ul_scan_expr(e[1], cands, inferred_ints, int_locals, escaped);
+        return;
+    }
+    if t == "Binary" or t == "Logical" or t == "Coalesce" {
+        cg_ul_scan_expr(e[2], cands, inferred_ints, int_locals, escaped);
+        cg_ul_scan_expr(e[3], cands, inferred_ints, int_locals, escaped);
+        return;
+    }
+    if t == "Index" {
+        if not (e[1][0] == "Ident" and cands.has(e[1][1])) {
+            cg_ul_scan_expr(e[1], cands, inferred_ints, int_locals, escaped);
+        }
+        cg_ul_scan_expr(e[2], cands, inferred_ints, int_locals, escaped);
+        return;
+    }
+    if t == "Method" {
+        let allowed = false;
+        if e[2][0] == "Ident" and cands.has(e[2][1]) {
+            let vname = e[2][1];
+            let mname = e[1];
+            let margs = e[3];
+            if mname == "push" and margs.len() == 1 and ((not inferred_ints.has(vname)) or ia_pure_int_expr(margs[0], int_locals)) {
+                allowed = true;
+            } else if (mname == "len" or mname == "pop") and margs.len() == 0 {
+                allowed = true;
+            }
+        }
+        if not allowed {
+            cg_ul_scan_expr(e[2], cands, inferred_ints, int_locals, escaped);
+        }
+        for a in e[3] {
+            cg_ul_scan_expr(a, cands, inferred_ints, int_locals, escaped);
+        }
+        return;
+    }
+    if t == "Assign" {
+        if e[2][0] == "Index" and e[1] == "Assign" {
+            let allowed = false;
+            if e[2][1][0] == "Ident" and cands.has(e[2][1][1]) {
+                let vname = e[2][1][1];
+                if (not inferred_ints.has(vname)) or ia_pure_int_expr(e[3], int_locals) {
+                    allowed = true;
+                }
+            }
+            if not allowed {
+                cg_ul_scan_expr(e[2][1], cands, inferred_ints, int_locals, escaped);
+            }
+            cg_ul_scan_expr(e[2][2], cands, inferred_ints, int_locals, escaped);
+        } else {
+            cg_ul_scan_expr(e[2], cands, inferred_ints, int_locals, escaped);
+        }
+        cg_ul_scan_expr(e[3], cands, inferred_ints, int_locals, escaped);
+        return;
+    }
+    if t == "Call" {
+        cg_ul_scan_expr(e[1], cands, inferred_ints, int_locals, escaped);
+        for a in e[2] {
+            cg_ul_scan_expr(a, cands, inferred_ints, int_locals, escaped);
+        }
+        return;
+    }
+    if t == "List" {
+        for it in e[1] {
+            cg_ul_scan_expr(it, cands, inferred_ints, int_locals, escaped);
+        }
+        return;
+    }
+    if t == "New" {
+        for a in e[2] {
+            cg_ul_scan_expr(a, cands, inferred_ints, int_locals, escaped);
+        }
+        return;
+    }
+    if t == "SuperCall" {
+        for a in e[3] {
+            cg_ul_scan_expr(a, cands, inferred_ints, int_locals, escaped);
+        }
+        return;
+    }
+    if t == "FieldE" or t == "OptField" {
+        cg_ul_scan_expr(e[2], cands, inferred_ints, int_locals, escaped);
+        return;
+    }
+    return;
+}
+
+fn cg_ul_scan_stmts(stmts, cands, inferred_ints, int_locals, escaped) {
+    for s in stmts {
+        let t = s[0];
+        if t == "Let" or t == "Const" {
+            if s[4] != null {
+                cg_ul_scan_expr(s[4], cands, inferred_ints, int_locals, escaped);
+            }
+        } else if t == "ExprStmt" or t == "Throw" or t == "Spawn" {
+            cg_ul_scan_expr(s[1], cands, inferred_ints, int_locals, escaped);
+        } else if t == "Return" {
+            if s[1] != null {
+                cg_ul_scan_expr(s[1], cands, inferred_ints, int_locals, escaped);
+            }
+        } else if t == "If" {
+            cg_ul_scan_expr(s[1], cands, inferred_ints, int_locals, escaped);
+            cg_ul_scan_stmts(s[2][1], cands, inferred_ints, int_locals, escaped);
+            for el in s[3] {
+                cg_ul_scan_expr(el[1], cands, inferred_ints, int_locals, escaped);
+                cg_ul_scan_stmts(el[2][1], cands, inferred_ints, int_locals, escaped);
+            }
+            if s[4] != null {
+                cg_ul_scan_stmts(s[4][1], cands, inferred_ints, int_locals, escaped);
+            }
+        } else if t == "While" {
+            cg_ul_scan_expr(s[1], cands, inferred_ints, int_locals, escaped);
+            cg_ul_scan_stmts(s[2][1], cands, inferred_ints, int_locals, escaped);
+        } else if t == "ForC" {
+            cg_ul_scan_stmts([s[1]], cands, inferred_ints, int_locals, escaped);
+            cg_ul_scan_expr(s[2], cands, inferred_ints, int_locals, escaped);
+            cg_ul_scan_expr(s[3], cands, inferred_ints, int_locals, escaped);
+            cg_ul_scan_stmts(s[4][1], cands, inferred_ints, int_locals, escaped);
+        } else if t == "ForIn" {
+            let allowed_iter = s[2] == null and s[3][0] == "Ident" and cands.has(s[3][1]) and (not cg_ulist_mutated_in_stmts(s[4][1], s[3][1]));
+            if not allowed_iter {
+                cg_ul_scan_expr(s[3], cands, inferred_ints, int_locals, escaped);
+            }
+            cg_ul_scan_stmts(s[4][1], cands, inferred_ints, int_locals, escaped);
+        } else if t == "BlockStmt" {
+            cg_ul_scan_stmts(s[1][1], cands, inferred_ints, int_locals, escaped);
+        } else if t == "Try" {
+            cg_ul_scan_stmts(s[1][1], cands, inferred_ints, int_locals, escaped);
+            if s[2] != null {
+                cg_ul_scan_stmts(s[2][2][1], cands, inferred_ints, int_locals, escaped);
+            }
+            if s[3] != null {
+                cg_ul_scan_stmts(s[3][1], cands, inferred_ints, int_locals, escaped);
+            }
+        }
+    }
+    return;
+}
+
+fn cg_analyze_unboxed_lists(proto, boxed, int_locals) {
+    let cands = map();
+    let shadowed = map();
+    let inferred_ints = map();
+    cg_ul_record_cands(proto[8][1], boxed, int_locals, cands, shadowed, inferred_ints);
+    let active = map();
+    for name in cands {
+        if not shadowed.has(name) {
+            active[name] = cands[name];
+        }
+    }
+    let has_any = false;
+    for _k in active {
+        has_any = true;
+    }
+    if not has_any {
+        return active;
+    }
+    let escaped = map();
+    cg_ul_scan_stmts(proto[8][1], active, inferred_ints, int_locals, escaped);
+    let out = map();
+    for name in active {
+        if not escaped.has(name) {
+            out[name] = active[name];
+        }
+    }
+    return out;
 }

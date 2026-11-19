@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 430" width="880" height="430" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 360" width="880" height="360" role="img">
 <title>Spid3r self-hosting bootstrap stages and fixed-point verification</title>
-<desc>Stage 0 (the Rust spid3r binary in src/) compiles selfhost/main.matrix to produce Stage 1 (spid3r-self). Stage 1 compiles selfhost/main.matrix with zero Cargo or rustc invocations to produce Stage 2. Stage 2 compiles selfhost/main.matrix again for Stage 3, emitting a bit-identical spid3r_main.o object file verified across the 134-program frozen corpus.</desc>
+<desc>Stage 0 (the Rust spid3r binary) compiles selfhost/main.matrix to produce Stage 1 (spid3r-self). From Stage 1 onward there are zero cargo/rustc calls: Stage 1 compiles Stage 2, Stage 2 compiles Stage 3, and the Stage 3 object is bit-identical (SHA-256) to Stage 2's. A frozen corpus of 134 programs verifies three-way parity across stages.</desc>
 <defs>
 <marker id="arr-slate" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
 <path d="M2 1L8 5L2 9" fill="none" stroke="#64748B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -13,77 +13,58 @@
 </marker>
 </defs>
 
-<rect x="0" y="0" width="880" height="430" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
+<rect x="0" y="0" width="880" height="360" rx="12" fill="#FFFFFF" stroke="#E2E8F0" stroke-width="1"/>
 
-<text x="32" y="34" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#0F172A">Stage 0 → Stage 1 → Stage 2 → Stage 3 Bootstrap Chain (SH-1 · SH-5 · SH-8)</text>
-<text x="32" y="54" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#64748B">Rust Stage 0 seeds Stage 1; Stage 1 onward builds compiler &amp; release binaries with zero cargo/rustc calls</text>
+<text x="32" y="34" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#0F172A">Bootstrap Chain: Stage 0 → Stage 1 → Stage 2 → Stage 3</text>
+<text x="32" y="54" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#64748B">Rust Stage 0 seeds Stage 1; from there on, zero cargo/rustc calls</text>
 
-<!-- Shared source + pinned runtime bar across top -->
-<rect x="32" y="72" width="400" height="46" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<text x="48" y="91" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#0F172A">selfhost/main.matrix (+ 16 modules)</text>
-<text x="48" y="107" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">Self-hosted compiler sources under one flat module root</text>
+<!-- Shared inputs -->
+<rect x="32" y="72" width="400" height="42" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+<text x="48" y="94" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#0F172A">selfhost/main.matrix</text>
+<text x="48" y="108" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">the compiler, written in Spid3r</text>
 
-<rect x="448" y="72" width="400" height="46" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
-<text x="464" y="91" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#78350F">spid3r_lang.lib / libspid3r_lang.a</text>
-<text x="464" y="107" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">Prebuilt SHA-256-pinned runtime staticlib (SH-6)</text>
+<rect x="448" y="72" width="400" height="42" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1"/>
+<text x="464" y="94" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="600" fill="#78350F">libspid3r_lang.a</text>
+<text x="464" y="108" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">SHA-256-pinned runtime staticlib</text>
 
-<!-- Stage 0 -->
-<rect x="32" y="146" width="182" height="128" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1.2"/>
-<text x="46" y="168" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#B45309">STAGE 0 · SEED &amp; ORACLE</text>
+<!-- Stages -->
+<rect x="32" y="142" width="182" height="110" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1.2"/>
+<text x="46" y="164" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#B45309">STAGE 0 · SEED</text>
 <text x="46" y="190" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#78350F">spid3r (Rust)</text>
-<text x="46" y="210" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">• Implemented in src/</text>
-<text x="46" y="226" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">• Cold bootstrap seed</text>
-<text x="46" y="242" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">• Parity dump oracle</text>
-<text x="46" y="258" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">• Rollback tag: v1.1.0</text>
+<text x="46" y="216" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">cold bootstrap seed</text>
+<text x="46" y="234" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#92400E">parity oracle · rollback v1.1.0</text>
 
-<!-- Arrow 0 -> 1 -->
-<path d="M214 210 L248 210" fill="none" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr-slate)"/>
-<text x="231" y="196" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#475569">AOT</text>
+<path d="M214 197 L248 197" fill="none" stroke="#64748B" stroke-width="1.5" marker-end="url(#arr-slate)"/>
+<text x="231" y="186" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#475569">AOT</text>
 
-<!-- Stage 1 -->
-<rect x="252" y="146" width="182" height="128" rx="8" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2"/>
-<text x="266" y="168" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#0369A1">STAGE 1 · BUILT BY STAGE 0</text>
+<rect x="252" y="142" width="182" height="110" rx="8" fill="#E0F2FE" stroke="#0284C7" stroke-width="1.2"/>
+<text x="266" y="164" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#0369A1">STAGE 1</text>
 <text x="266" y="190" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#0C4A6E">spid3r-self</text>
-<text x="266" y="210" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#075985">• selfhost/main_native.exe</text>
-<text x="266" y="226" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#075985">• Linked via pinned runtime</text>
-<text x="266" y="242" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#075985">• Emits LLVM-C + -O3 IR</text>
-<text x="266" y="258" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#075985">• Zero cargo from here on</text>
+<text x="266" y="216" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#075985">built by Stage 0</text>
+<text x="266" y="234" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#075985">zero cargo from here on</text>
 
-<!-- Arrow 1 -> 2 -->
-<path d="M434 210 L468 210" fill="none" stroke="#0D9488" stroke-width="1.5" marker-end="url(#arr-teal)"/>
-<text x="451" y="196" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#0F766E">no Rust</text>
+<path d="M434 197 L468 197" fill="none" stroke="#0D9488" stroke-width="1.5" marker-end="url(#arr-teal)"/>
+<text x="451" y="186" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#0F766E">no Rust</text>
 
-<!-- Stage 2 -->
-<rect x="472" y="146" width="182" height="128" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1.2"/>
-<text x="486" y="168" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#0F766E">STAGE 2 · SELF-COMPILED</text>
+<rect x="472" y="142" width="182" height="110" rx="8" fill="#F0FDFA" stroke="#0D9488" stroke-width="1.2"/>
+<text x="486" y="164" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#0F766E">STAGE 2</text>
 <text x="486" y="190" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#134E4A">spid3r-self-2</text>
-<text x="486" y="210" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• Built by Stage 1 AOT</text>
-<text x="486" y="226" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• Ships in release tarballs</text>
-<text x="486" y="242" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• Same CLI + dev tools</text>
-<text x="486" y="258" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">• Compiles Stage 3 object</text>
+<text x="486" y="216" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">built by Stage 1</text>
+<text x="486" y="234" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#0F766E">ships in release tarballs</text>
 
-<!-- Arrow 2 -> 3 -->
-<path d="M654 210 L688 210" fill="none" stroke="#059669" stroke-width="1.5" marker-end="url(#arr-green)"/>
-<text x="671" y="196" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#047857">verify</text>
+<path d="M654 197 L688 197" fill="none" stroke="#059669" stroke-width="1.5" marker-end="url(#arr-green)"/>
+<text x="671" y="186" text-anchor="middle" font-family="ui-sans-serif, system-ui, sans-serif" font-size="10" fill="#047857">verify</text>
 
-<!-- Stage 3 Fixed Point -->
-<rect x="692" y="146" width="156" height="128" rx="8" fill="#ECFDF5" stroke="#059669" stroke-width="1.5"/>
-<text x="706" y="168" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#047857">STAGE 3 · FIXED POINT</text>
+<rect x="692" y="142" width="156" height="110" rx="8" fill="#ECFDF5" stroke="#059669" stroke-width="1.5"/>
+<text x="706" y="164" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" font-weight="700" fill="#047857">STAGE 3 · FIXED POINT</text>
 <text x="706" y="190" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" font-weight="600" fill="#064E3B">spid3r_main.o</text>
-<text x="706" y="210" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#065F46">• Bit-identical SHA-256</text>
-<text x="706" y="226" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#065F46">  Stage 2 == Stage 3</text>
-<text x="706" y="242" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#065F46">• Determinism proved</text>
-<text x="706" y="258" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#065F46">  under -O3 + PGO</text>
+<text x="706" y="216" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#065F46">bit-identical to Stage 2</text>
+<text x="706" y="234" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#065F46">determinism proved</text>
 
-<!-- Fixed-point equivalence arc -->
-<path d="M563 274 L563 296 L770 296 L770 274" fill="none" stroke="#059669" stroke-width="1.2" stroke-dasharray="4 3"/>
-<rect x="596" y="286" width="142" height="20" rx="4" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
-<text x="667" y="299" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="10.5" font-weight="600" fill="#047857">SHA-256(S2.o) == SHA-256(S3.o)</text>
+<rect x="596" y="272" width="248" height="24" rx="4" fill="#ECFDF5" stroke="#A7F3D0" stroke-width="1"/>
+<text x="720" y="284" text-anchor="middle" dominant-baseline="central" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="600" fill="#047857">SHA-256(S2.o) == SHA-256(S3.o)</text>
 
-<!-- Bottom parity bar -->
-<rect x="32" y="324" width="816" height="84" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
-<text x="48" y="346" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="700" fill="#0F172A">Three-Way Corpus Parity &amp; Verification Gates (SH-4 · SH-5)</text>
-<text x="48" y="366" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#334155">• Frozen corpus: 134 programs / 135 files pinned by selfhost/corpus/MANIFEST.sha256 (corpus_manifest.py verify)</text>
-<text x="48" y="384" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11.5" fill="#334155">• Stage 0 == Stage 1 == Stage 2 (selfhost_bootstrap_parity.sh): 124 pass · 0 fail · 10 skip · 111/111 obj match · 226/226 PE ok</text>
-<text x="48" y="400" font-family="ui-sans-serif, system-ui, sans-serif" font-size="11" fill="#64748B">• Separate harnesses cover lex, parse, semantic, lower, compile (.matrixc), sandbox (13), test (10), fmt (17+134), pkg (11), runtime (16)</text>
+<!-- Parity bar -->
+<rect x="32" y="312" width="816" height="32" rx="8" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1"/>
+<text x="440" y="328" text-anchor="middle" dominant-baseline="central" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" fill="#0F172A">Three-way parity gate: Stage 0 == Stage 1 == Stage 2 over the frozen 134-program corpus (SH-4 · SH-5)</text>
 </svg>

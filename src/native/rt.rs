@@ -940,13 +940,20 @@ pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mu
     }
     if let (Value::Str(a), Value::Str(b)) = (l_ref, r_ref) {
         if op == BinOp::Add {
-            // N2.2: Str+Str concat with the exact `vm_eval_binary` spelling —
-            // skips the `to_owned` clones and the generic dispatcher hop.
-            // `native_try_operator` fires only for Map / instance receivers,
-            // so concrete `Str` operands can never carry an overload, and any
-            // non-Add op on Str operands keeps the generic path (identical
-            // error text).
-            let mut s = String::with_capacity(a.len() + b.len());
+            // N2.2 + Track 3 RT-4: Str+Str concat with a 128-byte stack buffer
+            // fast path so short concats (e.g. `"k" + string(i)`) do a single
+            // `Arc<str>` allocation instead of `String` + `Arc<str>`.
+            let total = a.len() + b.len();
+            if total <= 128 {
+                let mut buf = [0u8; 128];
+                buf[..a.len()].copy_from_slice(a.as_bytes());
+                buf[a.len()..total].copy_from_slice(b.as_bytes());
+                // `a` and `b` are valid UTF-8, so their concatenation is valid UTF-8.
+                if let Ok(s) = std::str::from_utf8(&buf[..total]) {
+                    return leak(Value::Str(std::sync::Arc::from(s)));
+                }
+            }
+            let mut s = String::with_capacity(total);
             s.push_str(a);
             s.push_str(b);
             return leak(Value::Str(s.into()));
@@ -1194,6 +1201,12 @@ fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Valu
             r
         }
         Value::Native(n) => {
+            if n.name == "string" && argc == 1 {
+                // SAFETY: `argc == 1` guarantees `argv` has at least 1 valid pointer.
+                if let Value::Int(i) = deref(unsafe { *argv }) {
+                    return leak(Value::Str(crate::stdlib::int_to_string_value(*i)));
+                }
+            }
             let func = n.func;
             let args = unsafe { args_vec(argc, argv) };
             let ctx = NativeCtx {
@@ -1707,26 +1720,26 @@ pub extern "C" fn spid3r_index_get(obj: *const Value, idx: *const Value) -> *mut
     // shape keeps the generic path (identical behaviour by construction).
     let res = match (object, idx) {
         (Value::Map(m), Value::Str(k)) => {
-            let guard = m.lock().unwrap();
-            match guard.find(&crate::value::MapKey::Str(k.clone())) {
+            let guard = crate::value::lock_ref(m);
+            match guard.find_str(k.as_ref()) {
                 Some(i) => Ok(guard.entries[i].1.clone()),
                 None => Err(format!("missing key {}", k)),
             }
         }
         (Value::Map(m), Value::Int(n)) => {
-            let guard = m.lock().unwrap();
+            let guard = crate::value::lock_ref(m);
             match guard.find(&crate::value::MapKey::Int(*n)) {
                 Some(i) => Ok(guard.entries[i].1.clone()),
                 None => Err(format!("missing key {}", n)),
             }
         }
         (Value::List(d) | Value::VecDyn(d), _) => {
-            let guard = d.lock().unwrap();
+            let guard = crate::value::lock_ref(d);
             crate::value::collections::seq::resolve_index(idx, guard.items.len(), "index")
                 .map(|i| guard.items[i].clone())
         }
         (Value::Bytes(b), Value::Int(i)) => {
-            let guard = b.lock().unwrap();
+            let guard = crate::value::lock_ref(b);
             let len = guard.len();
             let resolved = if *i < 0 { len as i64 + *i } else { *i };
             if resolved >= 0 && (resolved as usize) < len {
@@ -1738,6 +1751,94 @@ pub extern "C" fn spid3r_index_get(obj: *const Value, idx: *const Value) -> *mut
         _ => collections::index_get(object, idx),
     };
     match res {
+        Ok(v) => leak_fast(v),
+        Err(msg) => rt_throw(&msg),
+    }
+}
+
+/// Direct trampoline for `obj.len()` (Track 3 RT-5). Handles `List`/`VecDyn`,
+/// `Str`, non-namespace `Map`, and `Bytes` inline without C-string conversion
+/// or `argv` marshalling; falls back to `spid3r_method_inner` for all other
+/// receivers (including user classes and module namespaces).
+#[no_mangle]
+pub extern "C" fn spid3r_list_len(obj: *mut Value) -> *mut Value {
+    ffi_value("list_len", || match deref(obj) {
+        Value::List(d) | Value::VecDyn(d) => leak_int(crate::value::lock_ref(d).items.len() as i64),
+        Value::Str(s) => {
+            let n = if s.is_ascii() {
+                s.len()
+            } else {
+                s.chars().count()
+            };
+            leak_int(n as i64)
+        }
+        Value::Map(m) => {
+            let guard = crate::value::lock_ref(m);
+            if !guard.namespace {
+                return leak_int(guard.entries.len() as i64);
+            }
+            drop(guard);
+            cancel_guard(spid3r_method_inner(
+                obj,
+                c"len".as_ptr(),
+                0,
+                std::ptr::null(),
+            ))
+        }
+        Value::Bytes(b) => leak_int(crate::value::lock_ref(b).len() as i64),
+        _ => cancel_guard(spid3r_method_inner(
+            obj,
+            c"len".as_ptr(),
+            0,
+            std::ptr::null(),
+        )),
+    })
+}
+
+/// Direct trampoline for `obj.push(val)` (Track 3 RT-5). Handles `List`/`VecDyn`
+/// inline without C-string conversion or `argv` marshalling; falls back to
+/// `spid3r_method_inner` for all other receivers (`Deque`, `Stack`, classes).
+#[no_mangle]
+pub extern "C" fn spid3r_list_push(obj: *mut Value, val: *mut Value) -> *mut Value {
+    ffi_value("list_push", || match deref(obj) {
+        Value::List(d) | Value::VecDyn(d) => {
+            crate::value::lock_ref(d).items.push(to_owned(val));
+            leak_fast(Value::Null)
+        }
+        _ => {
+            let argv = [val];
+            cancel_guard(spid3r_method_inner(obj, c"push".as_ptr(), 1, argv.as_ptr()))
+        }
+    })
+}
+
+/// Direct trampoline for `obj["literal_key"]` (Track 3 RT-5). Probes `MapData`
+/// with `find_str` directly using the compiler-emitted UTF-8 slice, skipping
+/// `Value::Str` / `Arc<str>` / `MapKey` allocation; falls back to
+/// `collections::index_get` for non-Map receivers.
+#[no_mangle]
+pub extern "C" fn spid3r_map_get_str(
+    obj: *const Value,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> *mut Value {
+    let object = deref(obj);
+    // SAFETY: `key_ptr` points to a compiler-emitted static valid UTF-8 string
+    // literal of `key_len` bytes (non-null when `key_len > 0`).
+    let key = if key_len == 0 {
+        ""
+    } else {
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) }
+    };
+    if let Value::Map(m) = object {
+        let guard = crate::value::lock_ref(m);
+        return match guard.find_str(key) {
+            Some(i) => leak_fast(guard.entries[i].1.clone()),
+            None => rt_throw(&format!("missing key {}", key)),
+        };
+    }
+    let idx_val = Value::Str(std::sync::Arc::from(key));
+    match collections::index_get(object, &idx_val) {
         Ok(v) => leak_fast(v),
         Err(msg) => rt_throw(&msg),
     }
@@ -2407,6 +2508,7 @@ unsafe impl Send for SendCfn {}
 /// "task failed: <message>". A non-callable argument throws.
 #[no_mangle]
 pub extern "C" fn spid3r_spawn(f: *mut Value) -> *mut Value {
+    crate::value::mark_multithreaded();
     match to_owned(f) {
         Value::Cfn(c) => {
             let cfn = SendCfn {
@@ -2685,36 +2787,56 @@ fn resolve_ulist_index(len: usize, idx: i64) -> Result<usize, String> {
         idx as i128
     };
     if i < 0 || i >= (len as i128) {
-        Err(format!(
-            "index {} out of bounds for list of len {}",
-            idx, len
-        ))
+        Err(format!("index {} out of bounds for length {}", idx, len))
     } else {
         Ok(i as usize)
     }
 }
 
-/// R10.3: allocate an unboxed `list<int>` backing buffer (`Vec<i64>`).
-#[no_mangle]
-pub extern "C" fn spid3r_ulist_i64_new() -> *mut c_void {
-    Box::into_raw(Box::new(Vec::<i64>::new())) as *mut c_void
+/// C-ABI header layout shared with AOT inline `UList` indexing: field 0 is
+/// the data pointer and field 1 is the current element count.
+#[repr(C)]
+struct RawUList<T> {
+    data: *mut T,
+    len: i64,
+    vec: Vec<T>,
 }
 
-/// R10.3: push an unboxed `i64` onto a `Vec<i64>` handle.
+impl<T> RawUList<T> {
+    fn new_ptr() -> *mut c_void {
+        let mut vec = Vec::<T>::new();
+        let data = vec.as_mut_ptr();
+        Box::into_raw(Box::new(RawUList { data, len: 0, vec })) as *mut c_void
+    }
+
+    fn sync(&mut self) {
+        self.data = self.vec.as_mut_ptr();
+        self.len = self.vec.len() as i64;
+    }
+}
+
+/// R10.3: allocate an unboxed `list<int>` backing buffer (`RawUList<i64>`).
+#[no_mangle]
+pub extern "C" fn spid3r_ulist_i64_new() -> *mut c_void {
+    RawUList::<i64>::new_ptr()
+}
+
+/// R10.3: push an unboxed `i64` onto a `RawUList<i64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_i64_push(p: *mut c_void, val: i64) {
     // SAFETY: `p` was allocated by `spid3r_ulist_i64_new` and is only accessed on the owning thread.
-    let v = unsafe { &mut *(p as *mut Vec<i64>) };
-    v.push(val);
+    let u = unsafe { &mut *(p as *mut RawUList<i64>) };
+    u.vec.push(val);
+    u.sync();
 }
 
-/// R10.3: read an unboxed `i64` element from a `Vec<i64>` handle.
+/// R10.3: read an unboxed `i64` element from a `RawUList<i64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_i64_get(p: *mut c_void, idx: i64) -> i64 {
     // SAFETY: `p` was allocated by `spid3r_ulist_i64_new`.
-    let v = unsafe { &*(p as *const Vec<i64>) };
-    match resolve_ulist_index(v.len(), idx) {
-        Ok(i) => v[i],
+    let u = unsafe { &*(p as *const RawUList<i64>) };
+    match resolve_ulist_index(u.vec.len(), idx) {
+        Ok(i) => u.vec[i],
         Err(msg) => {
             rt_throw(&msg);
             0
@@ -2722,33 +2844,35 @@ pub extern "C" fn spid3r_ulist_i64_get(p: *mut c_void, idx: i64) -> i64 {
     }
 }
 
-/// R10.3: write an unboxed `i64` element into a `Vec<i64>` handle.
+/// R10.3: write an unboxed `i64` element into a `RawUList<i64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_i64_set(p: *mut c_void, idx: i64, val: i64) {
     // SAFETY: `p` was allocated by `spid3r_ulist_i64_new`.
-    let v = unsafe { &mut *(p as *mut Vec<i64>) };
-    match resolve_ulist_index(v.len(), idx) {
-        Ok(i) => v[i] = val,
+    let u = unsafe { &mut *(p as *mut RawUList<i64>) };
+    match resolve_ulist_index(u.vec.len(), idx) {
+        Ok(i) => u.vec[i] = val,
         Err(msg) => {
             rt_throw(&msg);
         }
     }
 }
 
-/// R10.3: length of an unboxed `Vec<i64>` handle.
+/// R10.3: length of an unboxed `RawUList<i64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_i64_len(p: *mut c_void) -> i64 {
     // SAFETY: `p` was allocated by `spid3r_ulist_i64_new`.
-    let v = unsafe { &*(p as *const Vec<i64>) };
-    v.len() as i64
+    let u = unsafe { &*(p as *const RawUList<i64>) };
+    u.vec.len() as i64
 }
 
-/// R10.3: pop the last element from an unboxed `Vec<i64>` handle.
+/// R10.3: pop the last element from an unboxed `RawUList<i64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_i64_pop(p: *mut c_void) -> i64 {
     // SAFETY: `p` was allocated by `spid3r_ulist_i64_new`.
-    let v = unsafe { &mut *(p as *mut Vec<i64>) };
-    match v.pop() {
+    let u = unsafe { &mut *(p as *mut RawUList<i64>) };
+    let out = u.vec.pop();
+    u.sync();
+    match out {
         Some(x) => x,
         None => {
             rt_throw("pop from empty list");
@@ -2757,27 +2881,28 @@ pub extern "C" fn spid3r_ulist_i64_pop(p: *mut c_void) -> i64 {
     }
 }
 
-/// R10.3: allocate an unboxed `list<float>` backing buffer (`Vec<f64>`).
+/// R10.3: allocate an unboxed `list<float>` backing buffer (`RawUList<f64>`).
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_f64_new() -> *mut c_void {
-    Box::into_raw(Box::new(Vec::<f64>::new())) as *mut c_void
+    RawUList::<f64>::new_ptr()
 }
 
-/// R10.3: push an unboxed `f64` onto a `Vec<f64>` handle.
+/// R10.3: push an unboxed `f64` onto a `RawUList<f64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_f64_push(p: *mut c_void, val: f64) {
     // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
-    let v = unsafe { &mut *(p as *mut Vec<f64>) };
-    v.push(val);
+    let u = unsafe { &mut *(p as *mut RawUList<f64>) };
+    u.vec.push(val);
+    u.sync();
 }
 
-/// R10.3: read an unboxed `f64` element from a `Vec<f64>` handle.
+/// R10.3: read an unboxed `f64` element from a `RawUList<f64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_f64_get(p: *mut c_void, idx: i64) -> f64 {
     // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
-    let v = unsafe { &*(p as *const Vec<f64>) };
-    match resolve_ulist_index(v.len(), idx) {
-        Ok(i) => v[i],
+    let u = unsafe { &*(p as *const RawUList<f64>) };
+    match resolve_ulist_index(u.vec.len(), idx) {
+        Ok(i) => u.vec[i],
         Err(msg) => {
             rt_throw(&msg);
             0.0
@@ -2785,33 +2910,35 @@ pub extern "C" fn spid3r_ulist_f64_get(p: *mut c_void, idx: i64) -> f64 {
     }
 }
 
-/// R10.3: write an unboxed `f64` element into a `Vec<f64>` handle.
+/// R10.3: write an unboxed `f64` element into a `RawUList<f64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_f64_set(p: *mut c_void, idx: i64, val: f64) {
     // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
-    let v = unsafe { &mut *(p as *mut Vec<f64>) };
-    match resolve_ulist_index(v.len(), idx) {
-        Ok(i) => v[i] = val,
+    let u = unsafe { &mut *(p as *mut RawUList<f64>) };
+    match resolve_ulist_index(u.vec.len(), idx) {
+        Ok(i) => u.vec[i] = val,
         Err(msg) => {
             rt_throw(&msg);
         }
     }
 }
 
-/// R10.3: length of an unboxed `Vec<f64>` handle.
+/// R10.3: length of an unboxed `RawUList<f64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_f64_len(p: *mut c_void) -> i64 {
     // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
-    let v = unsafe { &*(p as *const Vec<f64>) };
-    v.len() as i64
+    let u = unsafe { &*(p as *const RawUList<f64>) };
+    u.vec.len() as i64
 }
 
-/// R10.3: pop the last element from an unboxed `Vec<f64>` handle.
+/// R10.3: pop the last element from an unboxed `RawUList<f64>` handle.
 #[no_mangle]
 pub extern "C" fn spid3r_ulist_f64_pop(p: *mut c_void) -> f64 {
     // SAFETY: `p` was allocated by `spid3r_ulist_f64_new`.
-    let v = unsafe { &mut *(p as *mut Vec<f64>) };
-    match v.pop() {
+    let u = unsafe { &mut *(p as *mut RawUList<f64>) };
+    let out = u.vec.pop();
+    u.sync();
+    match out {
         Some(x) => x,
         None => {
             rt_throw("pop from empty list");

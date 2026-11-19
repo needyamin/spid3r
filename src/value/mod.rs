@@ -17,6 +17,37 @@ use crate::value::gc::GcTrace;
 
 pub type Ref<T> = Arc<Mutex<T>>;
 
+/// Flipped permanently to `true` when the first background task is spawned
+/// (`Scheduler::spawn_job` / `spid3r_spawn`). While `false`, the process is
+/// single-threaded and `lock_ref` uses `try_lock()` first to stay on the
+/// uncontended fast path (Track 3 RT-1).
+static MULTITHREADED_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Permanently mark the process as multithreaded.
+#[inline]
+pub fn mark_multithreaded() {
+    MULTITHREADED_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Returns `true` once any background task has been spawned.
+#[inline]
+pub fn is_multithreaded() -> bool {
+    MULTITHREADED_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Lock a `Ref<T>` (`Arc<Mutex<T>>`), preferring the uncontended `try_lock()`
+/// fast path while the process is single-threaded.
+#[inline]
+pub fn lock_ref<T>(r: &Ref<T>) -> std::sync::MutexGuard<'_, T> {
+    if !is_multithreaded() {
+        if let Ok(g) = r.try_lock() {
+            return g;
+        }
+    }
+    r.lock().unwrap()
+}
+
 pub fn new_ref<T: gc::GcTrace + Send + 'static>(v: T) -> Ref<T> {
     gc::track(Arc::new(Mutex::new(v)))
 }

@@ -78,3 +78,34 @@ impl Hasher for FxHasher {
 
 pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 pub type FxHashSet<T> = HashSet<T, BuildHasherDefault<FxHasher>>;
+
+/// Fast FxHash of a string key, matching `fx_hash_map_key(&MapKey::Str(..))`.
+#[inline]
+pub fn fx_hash_str(s: &str) -> u64 {
+    let mut h = FxHasher::default();
+    h.write_u8(3);
+    h.write(s.as_bytes());
+    h.finish()
+}
+
+/// Fast FxHash of a `MapKey` without going through `std::hash::Hash`.
+#[inline]
+pub fn fx_hash_map_key(k: &crate::value::MapKey) -> u64 {
+    let mut h = FxHasher::default();
+    match k {
+        crate::value::MapKey::Null => h.write_u8(0),
+        crate::value::MapKey::Bool(b) => {
+            h.write_u8(1);
+            h.write_u8(*b as u8);
+        }
+        crate::value::MapKey::Int(i) => {
+            h.write_u8(2);
+            h.write_u64(*i as u64);
+        }
+        crate::value::MapKey::Str(s) => {
+            h.write_u8(3);
+            h.write(s.as_bytes());
+        }
+    }
+    h.finish()
+}

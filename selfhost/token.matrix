@@ -98,7 +98,7 @@ public fn kind_name(k) {
 
 // UTF-8 byte width of one character codepoint — lets the char-level scanner
 // reproduce the oracle's byte-based lengths (string/raw-string token spans).
-public fn utf8_width(cp) {
+public fn utf8_width(cp: int) -> int {
     if cp < 0x80 { return 1; }
     if cp < 0x800 { return 2; }
     if cp < 0x10000 { return 3; }
@@ -107,37 +107,58 @@ public fn utf8_width(cp) {
 
 // JSON string escaping, byte-identical to the oracle's `jstr`
 // (src/oracle.rs): quotes, backslashes, \n \r \t, and \u00xx for the C0
-// controls; everything else passes through as raw UTF-8. Accumulates into a
-// fragment list and joins once — string += on immutable Spid3r strings is
-// quadratic, and a long string value would crawl (see json.matrix PERF NOTE).
+// controls; everything else passes through as raw UTF-8. Scans UTF-8 bytes in
+// O(n) (all escape targets are ASCII < 0x80) and slices clean runs directly.
 public fn jstr(s) {
-    let frags = ["\""];
-    let n = s.len();
+    let bs = bytes(s);
+    let n = bs.len();
     let i = 0;
+    let first_esc = -1;
     while i < n {
-        let cp = ord(s[i]);
-        if cp == 34 {
-            frags.push("\\\"");
-        } else if cp == 92 {
-            frags.push("\\\\");
-        } else if cp == 10 {
-            frags.push("\\n");
-        } else if cp == 13 {
-            frags.push("\\r");
-        } else if cp == 9 {
-            frags.push("\\t");
-        } else if cp < 0x20 {
-            frags.push("\\u00" + hex2(cp));
-        } else {
-            frags.push(s[i]);
+        let b = bs[i];
+        if b < 32 or b == 34 or b == 92 {
+            first_esc = i;
+            break;
         }
         i += 1;
+    }
+    if first_esc < 0 {
+        return "\"" + s + "\"";
+    }
+    let frags = ["\""];
+    let run_start = 0;
+    i = first_esc;
+    while i < n {
+        let b = bs[i];
+        if b < 32 or b == 34 or b == 92 {
+            if i > run_start {
+                frags.push(bs.slice(run_start, i).to_string().unwrap());
+            }
+            if b == 34 {
+                frags.push("\\\"");
+            } else if b == 92 {
+                frags.push("\\\\");
+            } else if b == 10 {
+                frags.push("\\n");
+            } else if b == 13 {
+                frags.push("\\r");
+            } else if b == 9 {
+                frags.push("\\t");
+            } else {
+                frags.push("\\u00" + hex2(b));
+            }
+            run_start = i + 1;
+        }
+        i += 1;
+    }
+    if run_start < n {
+        frags.push(bs.slice(run_start, n).to_string().unwrap());
     }
     frags.push("\"");
     return frags.join("");
 }
 
-public fn hex2(v) {
+public fn hex2(v: int) {
     let digits = "0123456789abcdef";
     return digits.slice((v / 16) % 16, (v / 16) % 16 + 1) + digits.slice(v % 16, v % 16 + 1);
 }
