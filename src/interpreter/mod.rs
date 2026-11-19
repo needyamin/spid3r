@@ -1,6 +1,8 @@
 //! The reference runner: a tree-walk interpreter over the checked AST.
 //! It stays the oracle for the bytecode virtual machine.
 
+mod fast;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,7 +12,7 @@ use crate::ast::*;
 use crate::diagnostics::{Diagnostic, Phase, Span};
 use crate::environment::{self, Env};
 use crate::sched::Scheduler;
-use crate::value::collections;
+use crate::value::collections::{self, FxHashMap};
 use crate::value::{FunctionData, InstanceData, Value};
 
 /// Maximum Spid3r call depth before the interpreter reports a stack overflow.
@@ -32,16 +34,18 @@ const RUN_STACK_BYTES: usize = 256 * 1024 * 1024;
 pub const REPL_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 /// Result of executing a statement: a value, a control-flow signal, or an error.
+/// Errors are boxed (`Box<Diagnostic>`) so `Flow` and `Result<Value, Flow>` stay
+/// compact (32 bytes) on every recursive `eval`/`exec_stmt` frame (Track 5 TW-3).
 pub enum Flow {
     Value(Value),
     Return(Value),
     Break,
     Continue,
-    Error(Diagnostic),
+    Error(Box<Diagnostic>),
     /// An error no `try`/`catch` may intercept — currently only execution
     /// budget exhaustion. It propagates exactly like `Error` except that the
     /// `try` statement does not match it.
-    Fatal(Diagnostic),
+    Fatal(Box<Diagnostic>),
 }
 
 /// Public sweep handle for other crates in this workspace (`modules`) that
@@ -89,6 +93,7 @@ impl Drop for GuardSweep<'_> {
 #[derive(Clone)]
 enum TraceCallee {
     Func(Option<String>),
+    FuncArc(Arc<FunctionData>),
     Method(Arc<crate::value::ClassData>, Arc<FunctionData>),
     Ctor(Arc<crate::value::ClassData>),
 }
@@ -97,6 +102,7 @@ impl TraceCallee {
     fn to_name(&self) -> Option<String> {
         match self {
             TraceCallee::Func(n) => n.clone(),
+            TraceCallee::FuncArc(fd) => fd.proto.name.clone(),
             TraceCallee::Method(c, fd) => Some(format!(
                 "{}::{}",
                 c.name,
@@ -356,7 +362,7 @@ impl Interp {
         for stmt in &lowered.as_ref().stmts {
             match self.exec_stmt(stmt, &env) {
                 Flow::Value(_) => {}
-                Flow::Error(d) | Flow::Fatal(d) => return Err(d),
+                Flow::Error(d) | Flow::Fatal(d) => return Err(*d),
                 other => return Err(self.invalid_flow(&other, stmt.span())),
             }
         }
@@ -453,8 +459,8 @@ impl Interp {
         for stmt in &program.stmts {
             match self.exec_stmt(stmt, &env) {
                 Flow::Value(_) => {}
-                Flow::Error(d) => return Err(d),
-                Flow::Fatal(d) => return Err(d),
+                Flow::Error(d) => return Err(*d),
+                Flow::Fatal(d) => return Err(*d),
                 other => return Err(self.invalid_flow(&other, stmt.span())),
             }
         }
@@ -475,10 +481,10 @@ impl Interp {
             }
         };
         let span = main.proto.span.clone();
-        let v = match self.call_function(&main, Vec::new(), &span) {
+        let v = match self.call_function_arc(&main, Vec::new(), &span) {
             Ok(v) => v,
-            Err(Flow::Error(d)) => return Err(d),
-            Err(Flow::Fatal(d)) => return Err(d),
+            Err(Flow::Error(d)) => return Err(*d),
+            Err(Flow::Fatal(d)) => return Err(*d),
             Err(_) => {
                 return Err(Diagnostic::new(
                     Phase::Runtime,
@@ -510,18 +516,18 @@ impl Interp {
     /// multiplies directly into the recursion stack budget.
     #[inline(never)]
     pub fn rt(&self, span: &Span, msg: impl Into<String>) -> Flow {
-        Flow::Error(
+        Flow::Error(Box::new(
             Diagnostic::at(Phase::Runtime, span.clone(), msg).with_trace(self.trace_frames(span)),
-        )
+        ))
     }
 
     /// Build a fatal runtime error: same shape as [`Interp::rt`], but no
     /// `try`/`catch` may intercept it. Used for execution-budget exhaustion.
     #[inline(never)]
     pub fn fatal(&self, span: &Span, msg: impl Into<String>) -> Flow {
-        Flow::Fatal(
+        Flow::Fatal(Box::new(
             Diagnostic::at(Phase::Runtime, span.clone(), msg).with_trace(self.trace_frames(span)),
-        )
+        ))
     }
 
     /// Charge one budget unit; returns the fatal flow when the budget is
@@ -685,18 +691,20 @@ impl Interp {
             ),
             // `crate::lower` turns an enum into constructor functions; a backend
             // must never see the declaration itself.
-            Stmt::LetTuple { span, .. } => Flow::Error(crate::diagnostics::Diagnostic::at(
-                crate::diagnostics::Phase::Runtime,
-                span.clone(),
-                "internal error: a destructuring `let` reached the interpreter without \
+            Stmt::LetTuple { span, .. } => {
+                Flow::Error(Box::new(crate::diagnostics::Diagnostic::at(
+                    crate::diagnostics::Phase::Runtime,
+                    span.clone(),
+                    "internal error: a destructuring `let` reached the interpreter without \
                  lowering (this is a bug in spid3r)",
-            )),
-            Stmt::Enum(e) => Flow::Error(crate::diagnostics::Diagnostic::at(
+                )))
+            }
+            Stmt::Enum(e) => Flow::Error(Box::new(crate::diagnostics::Diagnostic::at(
                 crate::diagnostics::Phase::Runtime,
                 e.span.clone(),
                 "internal error: an enum declaration reached the interpreter without \
                  lowering (this is a bug in spid3r)",
-            )),
+            ))),
             Stmt::Import { path, alias, span } => match crate::modules::load(self, path, span) {
                 Ok(names) => {
                     if let Some(selections) = alias
@@ -759,7 +767,7 @@ impl Interp {
                             return self.fatal(s.span(), wc.message());
                         }
                     }
-                    Flow::Error(d)
+                    Flow::Error(Box::new(d))
                 }
             },
             Stmt::Fn(proto) => {
@@ -1145,7 +1153,7 @@ impl Interp {
                 let mut d = Diagnostic::at(Phase::Runtime, span.clone(), "uncaught throw")
                     .with_trace(self.trace_frames(span));
                 d.thrown = Some(v);
-                Flow::Error(d)
+                Flow::Error(Box::new(d))
             }
         }
     }
@@ -1407,7 +1415,7 @@ impl Interp {
                         if let Some(v) = crate::sched::take_error_thrown() {
                             d.thrown = Some(v);
                         }
-                        Err(Flow::Error(d))
+                        Err(Flow::Error(Box::new(d)))
                     }
                 }
             }
@@ -1543,7 +1551,7 @@ impl Interp {
                             if let Some(v) = t.thrown_value() {
                                 d.thrown = Some(v);
                             }
-                            Err(Flow::Error(d))
+                            Err(Flow::Error(Box::new(d)))
                         }
                     },
                     Value::Channel(c) => Ok(c.recv()),
@@ -1869,7 +1877,7 @@ impl Interp {
 
     pub fn call_value(&self, f: Value, args: Vec<Value>, span: &Span) -> Result<Value, Flow> {
         match f {
-            Value::Function(fd) => self.call_function(&fd, args, span),
+            Value::Function(fd) => self.call_function_arc(&fd, args, span),
             Value::Native(n) => {
                 let ctx = crate::value::NativeCtx {
                     sched: self.sched.clone(),
@@ -1899,6 +1907,56 @@ impl Interp {
                 format!("{} is not callable", crate::value::type_name(&other)),
             )),
         }
+    }
+
+    pub(crate) fn call_function_arc(
+        &self,
+        fd: &Arc<FunctionData>,
+        args: Vec<Value>,
+        span: &Span,
+    ) -> Result<Value, Flow> {
+        let depth = self.depth.fetch_add(1, Ordering::Relaxed);
+        if depth >= self.max_call_depth {
+            self.depth.fetch_sub(1, Ordering::Relaxed);
+            return Err(self.depth_error(span));
+        }
+        self.call_stack
+            .lock()
+            .unwrap()
+            .push((TraceCallee::FuncArc(fd.clone()), span.clone()));
+        let result = if let Some(rfn) = fast::get_or_resolve(fd) {
+            self.exec_resolved_fn(fd, &rfn, args, span)
+        } else {
+            self.call_function_inner(fd, args, span)
+        };
+        self.call_stack.lock().unwrap().pop();
+        self.depth.fetch_sub(1, Ordering::Relaxed);
+        result
+    }
+
+    pub(crate) fn call_function_arc_1(
+        &self,
+        fd: &Arc<FunctionData>,
+        arg0: Value,
+        span: &Span,
+    ) -> Result<Value, Flow> {
+        let depth = self.depth.fetch_add(1, Ordering::Relaxed);
+        if depth >= self.max_call_depth {
+            self.depth.fetch_sub(1, Ordering::Relaxed);
+            return Err(self.depth_error(span));
+        }
+        self.call_stack
+            .lock()
+            .unwrap()
+            .push((TraceCallee::FuncArc(fd.clone()), span.clone()));
+        let result = if let Some(rfn) = fast::get_or_resolve(fd) {
+            self.exec_resolved_fn_1(fd, &rfn, arg0, span)
+        } else {
+            self.call_function_inner(fd, vec![arg0], span)
+        };
+        self.call_stack.lock().unwrap().pop();
+        self.depth.fetch_sub(1, Ordering::Relaxed);
+        result
     }
 
     pub fn call_function(
@@ -1982,7 +2040,8 @@ impl Interp {
             ));
         }
         let argc = args.len();
-        let mut vars = HashMap::with_capacity(fd.proto.params.len());
+        let mut vars =
+            FxHashMap::with_capacity_and_hasher(fd.proto.params.len(), Default::default());
         for (p, v) in fd.proto.params.iter().zip(args) {
             vars.insert(p.name.clone(), v);
         }
@@ -2107,7 +2166,10 @@ impl Interp {
                 .lock()
                 .unwrap()
                 .push((TraceCallee::Ctor(class.clone()), span.clone()));
-            let mut vars = HashMap::with_capacity(ctor.proto.params.len() + 1);
+            let mut vars = FxHashMap::with_capacity_and_hasher(
+                ctor.proto.params.len() + 1,
+                Default::default(),
+            );
             vars.insert("self".to_string(), obj.clone());
             let argc = args.len();
             for (p, v) in ctor.proto.params.iter().zip(args) {
@@ -2264,7 +2326,8 @@ impl Interp {
             .lock()
             .unwrap()
             .push((TraceCallee::Ctor(class.clone()), span.clone()));
-        let mut vars = HashMap::with_capacity(ctor.proto.params.len() + 1);
+        let mut vars =
+            FxHashMap::with_capacity_and_hasher(ctor.proto.params.len() + 1, Default::default());
         vars.insert("self".to_string(), Value::Instance(inst.clone()));
         let argc = args.len();
         for (p, v) in ctor.proto.params.iter().zip(args) {
@@ -2330,7 +2393,8 @@ impl Interp {
             .unwrap()
             .push((TraceCallee::Method(class.clone(), fd.clone()), span.clone()));
         let obj = recv;
-        let mut vars = HashMap::with_capacity(fd.proto.params.len());
+        let mut vars =
+            FxHashMap::with_capacity_and_hasher(fd.proto.params.len(), Default::default());
         vars.insert("self".to_string(), obj);
         let argc = args.len();
         for (p, v) in fd.proto.params.iter().skip(1).zip(args) {

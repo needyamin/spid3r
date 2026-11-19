@@ -2,19 +2,35 @@
 //! be shared between tasks on different OS threads (the scheduler requires
 //! this; `Rc` would not be `Send`).
 
-use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::value::collections::{FxHashMap, FxHashSet};
 use crate::value::gc::{self, GcTrace};
-use crate::value::Value;
+use crate::value::{lock_ref, Value};
+
+/// Generation counter bumped whenever any root/global environment is mutated
+/// (Track 5 TW-2). Lets the tree-walk interpreter cache resolved global/builtin
+/// lookups without locking the global environment on every loop iteration.
+static ENV_GLOBAL_GEN: AtomicU64 = AtomicU64::new(1);
+
+#[inline]
+pub fn global_gen() -> u64 {
+    ENV_GLOBAL_GEN.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub fn bump_global_gen() {
+    ENV_GLOBAL_GEN.fetch_add(1, Ordering::Relaxed);
+}
 
 #[derive(Default)]
 pub struct EnvironmentData {
-    pub vars: HashMap<String, Value>,
+    pub vars: FxHashMap<String, Value>,
     /// Bindings declared with `const`. Assigning to one is a runtime error
     /// (the semantic pass already rejects the statically detectable cases;
     /// this set is the defense for dynamically imported bindings).
-    pub consts: HashSet<String>,
+    pub consts: FxHashSet<String>,
     pub parent: Option<Env>,
     /// True only on root environments created via [`new_global`], enabling
     /// lazy fallback to builtin natives without duplicating ~230 entries upfront.
@@ -24,12 +40,13 @@ pub struct EnvironmentData {
 pub type Env = Arc<Mutex<EnvironmentData>>;
 
 pub fn new_global() -> Env {
+    bump_global_gen();
     // Every environment is a tracked cell (audit A-13): a closure bound in
     // the scope it captures forms `env -> closure -> env`, and the collector
     // can only reclaim it when both ends are cells.
     gc::track(Arc::new(Mutex::new(EnvironmentData {
-        vars: HashMap::new(),
-        consts: HashSet::new(),
+        vars: FxHashMap::default(),
+        consts: FxHashSet::default(),
         parent: None,
         is_global: true,
     })))
@@ -37,17 +54,17 @@ pub fn new_global() -> Env {
 
 pub fn child(parent: &Env) -> Env {
     gc::track(Arc::new(Mutex::new(EnvironmentData {
-        vars: HashMap::new(),
-        consts: HashSet::new(),
+        vars: FxHashMap::default(),
+        consts: FxHashSet::default(),
         parent: Some(parent.clone()),
         is_global: false,
     })))
 }
 
-pub fn child_with_vars(parent: &Env, vars: HashMap<String, Value>) -> Env {
+pub fn child_with_vars(parent: &Env, vars: FxHashMap<String, Value>) -> Env {
     gc::track(Arc::new(Mutex::new(EnvironmentData {
         vars,
-        consts: HashSet::new(),
+        consts: FxHashSet::default(),
         parent: Some(parent.clone()),
         is_global: false,
     })))
@@ -77,7 +94,7 @@ impl EnvironmentData {
             return Some(v.clone());
         }
         match &self.parent {
-            Some(p) => p.lock().unwrap().get(name),
+            Some(p) => lock_ref(p).get(name),
             None if self.is_global => {
                 crate::stdlib::resolve_builtin_native(name).map(Value::Native)
             }
@@ -94,12 +111,16 @@ impl EnvironmentData {
                 return Err(AssignError::Const(name.to_string()));
             }
             *slot = value;
+            if self.is_global {
+                bump_global_gen();
+            }
             return Ok(());
         }
         match &self.parent {
-            Some(p) => p.lock().unwrap().assign(name, value),
+            Some(p) => lock_ref(p).assign(name, value),
             None if self.is_global && crate::stdlib::resolve_builtin_native(name).is_some() => {
                 self.vars.insert(name.to_string(), value);
+                bump_global_gen();
                 Ok(())
             }
             None => Err(AssignError::Unbound(name.to_string())),
@@ -108,11 +129,12 @@ impl EnvironmentData {
 
     /// Define in the global (root) environment, whatever `self` is.
     pub fn set_global(env: &Env, name: &str, value: Value) {
-        let parent = env.lock().unwrap().parent.clone();
+        let parent = lock_ref(env).parent.clone();
         match parent {
             Some(p) => Self::set_global(&p, name, value),
             None => {
-                env.lock().unwrap().vars.insert(name.to_string(), value);
+                bump_global_gen();
+                lock_ref(env).vars.insert(name.to_string(), value);
             }
         }
     }
@@ -128,16 +150,23 @@ pub enum AssignError {
 }
 
 pub fn get(env: &Env, name: &str) -> Option<Value> {
-    env.lock().unwrap().get(name)
+    lock_ref(env).get(name)
 }
 
 pub fn define(env: &Env, name: &str, value: Value) {
-    env.lock().unwrap().vars.insert(name.to_string(), value);
+    let mut e = lock_ref(env);
+    if e.is_global {
+        bump_global_gen();
+    }
+    e.vars.insert(name.to_string(), value);
 }
 
 /// Define an immutable (`const`) binding in the current environment.
 pub fn define_const(env: &Env, name: &str, value: Value) {
-    let mut e = env.lock().unwrap();
+    let mut e = lock_ref(env);
+    if e.is_global {
+        bump_global_gen();
+    }
     e.vars.insert(name.to_string(), value);
     e.consts.insert(name.to_string());
 }
@@ -145,7 +174,7 @@ pub fn define_const(env: &Env, name: &str, value: Value) {
 /// Mark an existing binding (defined elsewhere, e.g. by a module import) as
 /// `const` in the environment that now holds it. No-op when unbound.
 pub fn mark_const(env: &Env, name: &str) {
-    let mut e = env.lock().unwrap();
+    let mut e = lock_ref(env);
     if e.vars.contains_key(name) {
         e.consts.insert(name.to_string());
     }
@@ -154,5 +183,5 @@ pub fn mark_const(env: &Env, name: &str) {
 /// Assign through the chain. `Err` carries the reason: a `const` violation or
 /// an unbound name (the caller turns that into its usual diagnostic).
 pub fn assign(env: &Env, name: &str, value: Value) -> Result<(), AssignError> {
-    env.lock().unwrap().assign(name, value)
+    lock_ref(env).assign(name, value)
 }

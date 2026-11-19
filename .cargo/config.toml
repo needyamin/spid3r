@@ -19,3 +19,9 @@
 # diagnosed from the app.
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Track 6 WASM-2: Enable modern WebAssembly baseline instructions (+simd128,
+# +bulk-memory, +mutable-globals, +nontrapping-fptoint, +sign-ext), supported
+# by Chrome 91+, Firefox 89+, Safari 16.4+, and Node 18+.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128,+bulk-memory,+mutable-globals,+nontrapping-fptoint,+sign-ext"]

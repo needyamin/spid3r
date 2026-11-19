@@ -331,7 +331,7 @@ pub fn load(
         // Fatal (budget exhaustion) propagates like an error here; the
         // importer re-raises it as fatal (see `Stmt::Import`).
         if let Flow::Error(d) | Flow::Fatal(d) = minterp.exec_stmt(stmt, &minterp.globals) {
-            result = Err(d);
+            result = Err(*d);
             break;
         }
     }

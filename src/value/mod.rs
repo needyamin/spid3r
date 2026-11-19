@@ -21,24 +21,41 @@ pub type Ref<T> = Arc<Mutex<T>>;
 /// (`Scheduler::spawn_job` / `spid3r_spawn`). While `false`, the process is
 /// single-threaded and `lock_ref` uses `try_lock()` first to stay on the
 /// uncontended fast path (Track 3 RT-1).
+#[cfg(not(target_arch = "wasm32"))]
 static MULTITHREADED_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Permanently mark the process as multithreaded.
+#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 pub fn mark_multithreaded() {
     MULTITHREADED_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
     crate::value::gc::flush_local_registry();
 }
 
+/// Permanently mark the process as multithreaded (no-op on single-threaded `wasm32`).
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub fn mark_multithreaded() {}
+
 /// Returns `true` once any background task has been spawned.
+#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 pub fn is_multithreaded() -> bool {
     MULTITHREADED_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// Returns `false` unconditionally on single-threaded `wasm32-unknown-unknown`
+/// so LLVM constant-folds every multithreaded branch out (Track 6 WASM-1).
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub const fn is_multithreaded() -> bool {
+    false
+}
+
 /// Lock a `Ref<T>` (`Arc<Mutex<T>>`), preferring the uncontended `try_lock()`
 /// fast path while the process is single-threaded.
+#[cfg(not(target_arch = "wasm32"))]
 #[inline]
 pub fn lock_ref<T>(r: &Ref<T>) -> std::sync::MutexGuard<'_, T> {
     if !is_multithreaded() {
@@ -46,6 +63,16 @@ pub fn lock_ref<T>(r: &Ref<T>) -> std::sync::MutexGuard<'_, T> {
             return g;
         }
     }
+    r.lock().unwrap()
+}
+
+/// Lock a `Ref<T>` on single-threaded `wasm32-unknown-unknown`: bypasses the
+/// `MULTITHREADED_ACTIVE` atomic load and redundant `try_lock()` check since
+/// `std::sync::Mutex` on `wasm32` uses Rust's lock-free `no_threads` cell
+/// (Track 6 WASM-1).
+#[cfg(target_arch = "wasm32")]
+#[inline]
+pub fn lock_ref<T>(r: &Ref<T>) -> std::sync::MutexGuard<'_, T> {
     r.lock().unwrap()
 }
 

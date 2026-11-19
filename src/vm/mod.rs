@@ -243,13 +243,34 @@ pub struct Vm {
     /// an `Arc`, with no `&mut` path). Redefining a class produces a new
     /// `Arc<VmClass>`, hence a new identity, hence a miss.
     invoke_cache: Vec<Option<InvokeCache>>,
-    /// Phase 5 monomorphic inline cache for `FieldGet` / `FieldGetSoft` on
-    /// maps: (chunk address, instruction offset) → resolved entry index.
-    /// The name is a compile-time constant at such a site, so it is genuinely
-    /// monomorphic. Every hit is re-validated under the map lock (identity,
-    /// name, generation and the key at the cached index) and the value is
-    /// read fresh, so correctness never depends on the cache.
-    map_cache: HashMap<(usize, usize), MapFieldCache>,
+    /// Direct-mapped monomorphic inline cache for `FieldGet` / `FieldGetSoft` /
+    /// `FieldSet` on class instances (`Value::VInstance`): `(chunk_ptr, ip,
+    /// class_ptr)` -> resolved field slot index. Eliminates the per-access
+    /// `VmClass::slot_index` SipHash lookup on hot instance methods.
+    instance_field_cache: Vec<Option<InstanceFieldCache>>,
+    /// Direct-mapped monomorphic inline cache for `FieldGet` / `FieldGetSoft` on
+    /// maps: `(chunk address, instruction offset)` → resolved entry index.
+    /// Every hit is re-validated under the map lock (identity, name, generation
+    /// and the key at the cached index) and the value is read fresh, so
+    /// correctness never depends on the cache.
+    map_cache: Vec<Option<MapFieldCache>>,
+    /// Direct-mapped generation-guarded cache for `GetGlobal`: `(globals_ptr,
+    /// chunk_ptr, const_idx, VM_GLOBAL_GEN)` → resolved `Value`. Bypasses the
+    /// `globals` mutex lock and `HashMap` lookup while no global binding has
+    /// changed.
+    global_cache: Vec<Option<GlobalCacheEntry>>,
+    /// 64-slot ring cache for `try_fused_prefix_string` (`prefix + string(i)`
+    /// where `0 <= i < 64`), avoiding repeated formatting and `Arc<str>` heap
+    /// allocation when keys cycle (e.g. `r % 64`).
+    prefix_str_cache: Vec<Option<(usize, i64, Arc<str>)>>,
+    /// Cached `(globals_ptr, gidx, gen, is_string_native)` check for
+    /// `try_fused_prefix_string`.
+    prefix_global_cache: (usize, u16, u64, bool),
+    /// 1-slot cache for non-escaping 1-upvalue closures (`make_closure`):
+    /// `(fproto_ptr, globals_ptr, cell0_ptr, Arc<VmFunc>)`, reused only when
+    /// `Arc::strong_count == 1` so identity comparisons (`f1 == f2`) on live
+    /// closures remain 100% distinct.
+    closure_cache: Option<(usize, usize, usize, Arc<VmFunc>)>,
     /// Master switch for the Phase 1 runtime superinstruction peeks. `true`
     /// by default; `spid3r run --engine vm --no-opt` sets it to `false` so
     /// `--no-opt` really disables every optimizer (compile-time pass AND
@@ -277,6 +298,40 @@ pub struct Vm {
     pending_str: Option<(usize, usize, String)>,
 }
 
+/// Global mutation generation counter for `Vm::global_cache` (Track 4 VM-4).
+/// Bumped whenever any global binding is inserted or modified.
+static VM_GLOBAL_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// True once any closure in the process has executed `OpCode::SetUpvalue`.
+/// As long as this is `false`, a frame's `slots[s]` and `*captured[s]` are
+/// guaranteed to hold the exact same value whenever `SetLocal` / fused writes
+/// update both.
+static UPVALUE_MUTATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[inline]
+fn bump_global_gen() {
+    VM_GLOBAL_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+const GLOBAL_CACHE_SLOTS: usize = 256;
+
+#[derive(Clone)]
+struct GlobalCacheEntry {
+    globals_ptr: usize,
+    chunk_ptr: usize,
+    const_idx: u16,
+    gen: u64,
+    val: Value,
+}
+
+#[derive(Clone, Copy)]
+struct InstanceFieldCache {
+    chunk_ptr: usize,
+    ip: usize,
+    class_ptr: usize,
+    slot_idx: usize,
+}
+
 /// One inline-cache entry: the class the method was resolved on (by `Arc`
 /// identity, so redefining a class invalidates the entry) and the method.
 ///
@@ -293,7 +348,60 @@ struct InvokeCache {
     chunk_ptr: usize,
     ip: usize,
     class: usize,
+    class_arc: Arc<VmClass>,
+    method_name: Arc<str>,
     func: Arc<VmFunc>,
+    /// Pre-decoded 0-arg leaf increment method pattern:
+    /// `self.<field> = self.<field> + <int_const>; return self.<field>;`
+    /// Stored as `Some((field_slot_idx, delta))`.
+    leaf_bump: Option<(usize, i64)>,
+}
+
+/// Detect whether a 1-param (`self`) method chunk is the exact 23-byte leaf
+/// `self.<f> = self.<f> + <const_int>; return self.<f>;` pattern.
+fn detect_leaf_bump_method(class: &VmClass, fd: &VmFunc) -> Option<(usize, i64)> {
+    if fd.arity != 1 || fd.min_arity != 1 || fd.own_upvalues != 0 {
+        return None;
+    }
+    let code = &fd.chunk.code;
+    if code.len() != 23 {
+        return None;
+    }
+    if code[0] != OpCode::GetLocal as u8
+        || code[1] != 0
+        || code[2] != OpCode::FieldGet as u8
+        || code[5] != OpCode::Constant as u8
+        || code[8] != OpCode::Add as u8
+        || code[9] != OpCode::GetLocal as u8
+        || code[10] != 0
+        || code[11] != OpCode::Rotate as u8
+        || code[12] != 2
+        || code[13] != OpCode::FieldSet as u8
+        || code[16] != OpCode::Pop as u8
+        || code[17] != OpCode::GetLocal as u8
+        || code[18] != 0
+        || code[19] != OpCode::FieldGet as u8
+        || code[22] != OpCode::Return as u8
+    {
+        return None;
+    }
+    let f0 = u16::from_le_bytes([code[3], code[4]]);
+    let f1 = u16::from_le_bytes([code[14], code[15]]);
+    let f2 = u16::from_le_bytes([code[20], code[21]]);
+    if f0 != f1 || f0 != f2 {
+        return None;
+    }
+    let fname = match fd.chunk.constants.get(f0 as usize) {
+        Some(Value::Str(s)) => s,
+        _ => return None,
+    };
+    let &slot_idx = class.slot_index.get(fname.as_ref())?;
+    let cidx = u16::from_le_bytes([code[6], code[7]]) as usize;
+    let delta = match fd.chunk.constants.get(cidx) {
+        Some(Value::Int(d)) => *d,
+        _ => return None,
+    };
+    Some((slot_idx, delta))
 }
 
 /// Slots in the direct-mapped invoke cache. Must be a power of two. 1024
@@ -313,8 +421,11 @@ fn invoke_cache_index(chunk_ptr: usize, ip: usize) -> usize {
 /// `InvokeCache`: it keeps the cached site's chunk alive so the
 /// `(chunk address, ip)` key can never be confused with a freed chunk whose
 /// address was reused. `map` is a strong `Arc` pin used for identity checks.
+#[derive(Clone)]
 struct MapFieldCache {
     _chunk: Arc<Chunk>,
+    chunk_ptr: usize,
+    ip: usize,
     map: Arc<Mutex<collections::MapData>>,
     name: Arc<str>,
     generation: u64,
@@ -518,7 +629,12 @@ impl Vm {
             coverage: None,
             prof: None,
             invoke_cache: vec![None; INVOKE_CACHE_SLOTS],
-            map_cache: HashMap::new(),
+            instance_field_cache: vec![None; INVOKE_CACHE_SLOTS],
+            map_cache: vec![None; INVOKE_CACHE_SLOTS],
+            global_cache: vec![None; GLOBAL_CACHE_SLOTS],
+            prefix_str_cache: vec![None; 64],
+            prefix_global_cache: (0, 0, 0, false),
+            closure_cache: None,
             opt_enabled: true,
             slot_pool: Vec::with_capacity(16),
             budget: None,
@@ -612,7 +728,12 @@ impl Vm {
             coverage: None,
             prof: None,
             invoke_cache: vec![None; INVOKE_CACHE_SLOTS],
-            map_cache: HashMap::new(),
+            instance_field_cache: vec![None; INVOKE_CACHE_SLOTS],
+            map_cache: vec![None; INVOKE_CACHE_SLOTS],
+            global_cache: vec![None; GLOBAL_CACHE_SLOTS],
+            prefix_str_cache: vec![None; 64],
+            prefix_global_cache: (0, 0, 0, false),
+            closure_cache: None,
             opt_enabled: true,
             slot_pool: Vec::with_capacity(8),
             budget: None,
@@ -648,19 +769,25 @@ impl Vm {
         map: &Arc<Mutex<collections::MapData>>,
         name: &Arc<str>,
     ) -> Option<Value> {
-        let site = (Arc::as_ptr(&self.frames[nf].func.chunk) as usize, ip);
-        let guard = map.lock().unwrap();
-        let mk = crate::value::MapKey::Str(name.clone());
-        let hit: Option<Option<usize>> = self.map_cache.get(&site).and_then(|c| {
-            if !Arc::ptr_eq(&c.map, map) || c.name != *name || c.generation != guard.generation {
+        let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
+        let slot_idx = invoke_cache_index(chunk_ptr, ip);
+        let guard = crate::value::lock_ref(map);
+        let hit: Option<Option<usize>> = self.map_cache[slot_idx].as_ref().and_then(|c| {
+            if c.chunk_ptr != chunk_ptr
+                || c.ip != ip
+                || !Arc::ptr_eq(&c.map, map)
+                || c.name.as_ref() != name.as_ref()
+                || c.generation != guard.generation
+            {
                 return None;
             }
             match c.index {
                 Some(i)
-                    if guard
-                        .entries
-                        .get(i)
-                        .is_some_and(|(k, _): &(crate::value::MapKey, Value)| *k == mk) =>
+                    if guard.entries.get(i).is_some_and(
+                        |(k, _): &(crate::value::MapKey, Value)| {
+                            matches!(k, crate::value::MapKey::Str(s) if s.as_ref() == name.as_ref())
+                        },
+                    ) =>
                 {
                     Some(Some(i))
                 }
@@ -671,22 +798,17 @@ impl Vm {
         let index: Option<usize> = match hit {
             Some(v) => v,
             None => {
-                let found = guard.find(&mk);
-                // Bounded, exactly like `invoke_cache`.
-                if self.map_cache.len() > 4096 {
-                    self.map_cache.clear();
-                }
+                let found = guard.find_str(name.as_ref());
                 let chunk = self.frames[nf].func.chunk.clone();
-                self.map_cache.insert(
-                    site,
-                    MapFieldCache {
-                        _chunk: chunk,
-                        map: map.clone(),
-                        name: name.clone(),
-                        generation: guard.generation,
-                        index: found,
-                    },
-                );
+                self.map_cache[slot_idx] = Some(MapFieldCache {
+                    _chunk: chunk,
+                    chunk_ptr,
+                    ip,
+                    map: map.clone(),
+                    name: name.clone(),
+                    generation: guard.generation,
+                    index: found,
+                });
                 found
             }
         };
@@ -694,6 +816,7 @@ impl Vm {
     }
 
     fn install_stdlib(&mut self) {
+        bump_global_gen();
         for (name, func) in crate::stdlib::plugin_native_defs() {
             let native = NativeFn { name, func };
             self.globals
@@ -959,6 +1082,7 @@ impl Vm {
     /// lives in `crate::gui` and registers itself through this hook, exactly as
     /// it does for the tree interpreter via `gui::install(&interp.globals)`.
     pub fn define_natives(&mut self, defs: &[(&'static str, NativeImpl)]) {
+        bump_global_gen();
         let mut globals = self.globals.lock().unwrap();
         for (name, func) in defs {
             let native = NativeFn { name, func: *func };
@@ -1270,8 +1394,7 @@ impl Vm {
                         && self.pending_str.is_none()
                         && self.frames[nf].captured.is_empty()
                     {
-                        if let Some((s, next)) = self.try_fused_prefix_string(nf, ip, idx) {
-                            self.frames[nf].slots.push(Value::Str(s));
+                        if let Some(next) = self.try_fused_prefix_string(nf, ip, idx) {
                             self.frames[nf].ip = next;
                             continue;
                         }
@@ -1318,14 +1441,20 @@ impl Vm {
                         && self.debug.is_none()
                         && self.prof.is_none()
                         && self.coverage.is_none()
-                        && self.frames[nf].captured.is_empty()
+                        && (self.frames[nf].captured.is_empty()
+                            || !UPVALUE_MUTATED.load(std::sync::atomic::Ordering::Relaxed))
                     {
                         let code = &self.frames[nf].func.chunk.code;
                         if let Some(&next_op) = code.get(ip + 2) {
                             if next_op == OpCode::GetLocal as u8 {
                                 let slot_b = code[ip + 3] as usize;
                                 if let Some(&op2) = code.get(ip + 4) {
-                                    if op2 == OpCode::Less as u8
+                                    if (op2 == OpCode::Less as u8
+                                        || op2 == OpCode::LessEq as u8
+                                        || op2 == OpCode::Greater as u8
+                                        || op2 == OpCode::GreaterEq as u8
+                                        || op2 == OpCode::Equal as u8
+                                        || op2 == OpCode::NotEqual as u8)
                                         && matches!(
                                             code.get(ip + 5),
                                             Some(&b)
@@ -1338,15 +1467,8 @@ impl Vm {
                                         // body, so the emitted jump is
                                         // JumpIfTrue (back to the body)
                                         // rather than JumpIfFalse (exit).
-                                        // Fuse both polarities here exactly
-                                        // as the Mul arm below does. Before
-                                        // this, every rotated loop paid the
-                                        // generic 4-instruction condition --
-                                        // and, worse, the generic GetLocal
-                                        // path flushed `pending_str` on each
-                                        // of those reads, which is what kept
-                                        // string building O(n^2) even though
-                                        // the append arm already existed.
+                                        // Fuse both polarities here across all
+                                        // integer comparisons.
                                         let inverted =
                                             code.get(ip + 5) == Some(&(OpCode::JumpIfTrue as u8));
                                         if let (Some(&Value::Int(a)), Some(&Value::Int(b))) = (
@@ -1357,10 +1479,23 @@ impl Vm {
                                                 (code.get(ip + 6), code.get(ip + 7))
                                             {
                                                 let off = i16::from_le_bytes([lo, hi]);
+                                                let cond = if op2 == OpCode::Less as u8 {
+                                                    a < b
+                                                } else if op2 == OpCode::LessEq as u8 {
+                                                    a <= b
+                                                } else if op2 == OpCode::Greater as u8 {
+                                                    a > b
+                                                } else if op2 == OpCode::GreaterEq as u8 {
+                                                    a >= b
+                                                } else if op2 == OpCode::Equal as u8 {
+                                                    a == b
+                                                } else {
+                                                    a != b
+                                                };
                                                 // JumpIfFalse jumps when the
                                                 // condition is FALSE;
                                                 // JumpIfTrue when TRUE.
-                                                let take_branch = (a < b) == inverted;
+                                                let take_branch = cond == inverted;
                                                 let next = if !take_branch {
                                                     Some(ip + 8)
                                                 } else {
@@ -1387,6 +1522,83 @@ impl Vm {
                                         && code.get(ip + 7) == Some(&(OpCode::Pop as u8))
                                     {
                                         let dst = code[ip + 6] as usize;
+                                        // VM-1 + VM-2: Batched unboxed `i64`
+                                        // accumulator range loop:
+                                        //   s = s + i; i = i + 1; while i < n
+                                        if op2 == OpCode::Add as u8
+                                            && dst == slot
+                                            && slot != slot_b
+                                            && self.pending_str.is_none()
+                                            && ip + 25 <= code.len()
+                                            && code[ip + 8] == OpCode::GetLocal as u8
+                                            && code[ip + 9] as usize == slot_b
+                                            && code[ip + 10] == OpCode::Constant as u8
+                                            && code[ip + 13] == OpCode::Add as u8
+                                            && code[ip + 14] == OpCode::SetLocal as u8
+                                            && code[ip + 15] as usize == slot_b
+                                            && code[ip + 16] == OpCode::Pop as u8
+                                            && code[ip + 17] == OpCode::GetLocal as u8
+                                            && code[ip + 18] as usize == slot_b
+                                            && code[ip + 19] == OpCode::GetLocal as u8
+                                            && code[ip + 21] == OpCode::Less as u8
+                                            && code[ip + 22] == OpCode::JumpIfTrue as u8
+                                            && i16::from_le_bytes([code[ip + 23], code[ip + 24]])
+                                                == -25
+                                        {
+                                            let slot_n = code[ip + 20] as usize;
+                                            let step_cidx =
+                                                u16::from_le_bytes([code[ip + 11], code[ip + 12]])
+                                                    as usize;
+                                            if slot_n != slot
+                                                && slot_n != slot_b
+                                                && matches!(
+                                                    self.frames[nf]
+                                                        .func
+                                                        .chunk
+                                                        .constants
+                                                        .get(step_cidx),
+                                                    Some(Value::Int(1))
+                                                )
+                                            {
+                                                if let (
+                                                    Some(&Value::Int(mut s_cur)),
+                                                    Some(&Value::Int(mut i_cur)),
+                                                    Some(&Value::Int(n_lim)),
+                                                ) = (
+                                                    self.frames[nf].slots.get(slot),
+                                                    self.frames[nf].slots.get(slot_b),
+                                                    self.frames[nf].slots.get(slot_n),
+                                                ) {
+                                                    let mut steps = 0u32;
+                                                    while steps < 64 {
+                                                        let (Some(ns), Some(ni)) = (
+                                                            s_cur.checked_add(i_cur),
+                                                            i_cur.checked_add(1),
+                                                        ) else {
+                                                            break;
+                                                        };
+                                                        s_cur = ns;
+                                                        i_cur = ni;
+                                                        steps += 1;
+                                                        if i_cur >= n_lim {
+                                                            break;
+                                                        }
+                                                    }
+                                                    if steps > 0 {
+                                                        self.frames[nf].slots[slot] =
+                                                            Value::Int(s_cur);
+                                                        self.frames[nf].slots[slot_b] =
+                                                            Value::Int(i_cur);
+                                                        self.frames[nf].ip = if i_cur < n_lim {
+                                                            ip
+                                                        } else {
+                                                            ip + 25
+                                                        };
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                        }
                                         // N3 back-edge fold, computed BEFORE the
                                         // mutable slot write so the immutable
                                         // `code` borrow never overlaps it: fold
@@ -1451,6 +1663,11 @@ impl Vm {
                                                     ) {
                                                         self.pending_str = None;
                                                     }
+                                                    if let Some(Some(c)) =
+                                                        self.frames[nf].captured.get(dst)
+                                                    {
+                                                        *crate::value::lock_ref(c) = Value::Int(v);
+                                                    }
                                                     self.frames[nf].slots[dst] = Value::Int(v);
                                                     self.frames[nf].ip = folded.unwrap_or(ip + 8);
                                                     continue;
@@ -1459,33 +1676,7 @@ impl Vm {
                                         }
                                         // W3.2: extend the pending-string
                                         // append to the two-local shape
-                                        // (`s = s + t`). The buffer only
-                                        // matched `local + constant`, so
-                                        // this shape ran the generic Add,
-                                        // which allocates a fresh String
-                                        // and re-copies the accumulated
-                                        // length on every append — O(n^2)
-                                        // over a loop (measured 26.2 ms at
-                                        // 30k appends, 2.63x per doubling;
-                                        // see VM_NOTES.md).
-                                        //
-                                        // The buffer discipline is the
-                                        // constant arm's, with one extra
-                                        // rule the constant arm never needs:
-                                        // a pending buffer for the RHS slot
-                                        // holds a NEWER value than the slot
-                                        // itself does, so it is materialized
-                                        // before the rhs is read. The
-                                        // interleaved `s = s + t; t = t +
-                                        // "!"` loop caught the first draft
-                                        // cloning from the stale slot, and
-                                        // every `!` went missing (17 chars
-                                        // short at i == 17).
-                                        //
-                                        // `s = s + s` (slot_b == slot) stays
-                                        // generic: the rhs must observe the
-                                        // materialized lhs, and the generic
-                                        // path's flush guarantees it.
+                                        // (`s = s + t`).
                                         else if op2 == OpCode::Add as u8
                                             && dst == slot
                                             && slot_b != slot
@@ -1523,34 +1714,172 @@ impl Vm {
                                                 continue;
                                             }
                                         }
+                                    } else if op2 == OpCode::IndexGet as u8
+                                        && self.pending_str.is_none()
+                                    {
+                                        // VM-1: Fused `GetLocal(arr) + GetLocal(idx) + IndexGet`
+                                        // (+ optional `Add; SetLocal dst; Pop`).
+                                        let elem: Option<Value> = match (
+                                            self.frames[nf].slots.get(slot),
+                                            self.frames[nf].slots.get(slot_b),
+                                        ) {
+                                            (Some(Value::Map(m)), Some(Value::Str(k))) => {
+                                                let guard = crate::value::lock_ref(m);
+                                                guard
+                                                    .find_str(k.as_ref())
+                                                    .map(|i| guard.entries[i].1.clone())
+                                            }
+                                            (Some(Value::Map(m)), Some(Value::Int(n))) => {
+                                                let guard = crate::value::lock_ref(m);
+                                                guard
+                                                    .find(&crate::value::MapKey::Int(*n))
+                                                    .map(|i| guard.entries[i].1.clone())
+                                            }
+                                            (
+                                                Some(Value::List(d) | Value::VecDyn(d)),
+                                                Some(Value::Int(n)),
+                                            ) => {
+                                                let guard = crate::value::lock_ref(d);
+                                                let len = guard.items.len();
+                                                let resolved =
+                                                    if *n < 0 { len as i64 + *n } else { *n };
+                                                if resolved >= 0 && (resolved as usize) < len {
+                                                    Some(guard.items[resolved as usize].clone())
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            _ => None,
+                                        };
+                                        if let Some(val) = elem {
+                                            if let Value::Int(v_int) = val {
+                                                if code.get(ip + 5) == Some(&(OpCode::Add as u8))
+                                                    && code.get(ip + 6)
+                                                        == Some(&(OpCode::SetLocal as u8))
+                                                    && code.get(ip + 8)
+                                                        == Some(&(OpCode::Pop as u8))
+                                                {
+                                                    let dst = code[ip + 7] as usize;
+                                                    let slen = self.frames[nf].slots.len();
+                                                    if slen > 0 && dst < slen - 1 {
+                                                        if let Some(&Value::Int(acc_int)) =
+                                                            self.frames[nf].slots.last()
+                                                        {
+                                                            if let Some(sum) =
+                                                                acc_int.checked_add(v_int)
+                                                            {
+                                                                self.frames[nf].slots.pop();
+                                                                self.frames[nf].slots[dst] =
+                                                                    Value::Int(sum);
+                                                                self.frames[nf].ip = ip + 9;
+                                                                continue;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            self.frames[nf].slots.push(val);
+                                            self.frames[nf].ip = ip + 5;
+                                            continue;
+                                        }
+                                    } else if op2 == OpCode::Invoke as u8
+                                        && self.pending_str.is_none()
+                                        && ip + 8 < code.len()
+                                    {
+                                        // VM-1: Fused `GetLocal(xs) + GetLocal(v) + Invoke("push", 1) + Pop`
+                                        // and `GetLocal(acc) + GetLocal(xs) + Invoke("pop", 0) + Add + SetLocal(acc) + Pop`.
+                                        let m_idx = u16::from_le_bytes([code[ip + 5], code[ip + 6]])
+                                            as usize;
+                                        let argc = code[ip + 7];
+                                        if argc == 1 && code[ip + 8] == OpCode::Pop as u8 {
+                                            let is_push = matches!(
+                                                self.frames[nf].func.chunk.constants.get(m_idx),
+                                                Some(Value::Str(s)) if s.as_ref() == "push"
+                                            );
+                                            if is_push {
+                                                let pushed = match (
+                                                    self.frames[nf].slots.get(slot),
+                                                    self.frames[nf].slots.get(slot_b),
+                                                ) {
+                                                    (
+                                                        Some(Value::List(d) | Value::VecDyn(d)),
+                                                        Some(v),
+                                                    ) => {
+                                                        let v = v.clone();
+                                                        crate::value::lock_ref(d).items.push(v);
+                                                        true
+                                                    }
+                                                    _ => false,
+                                                };
+                                                if pushed {
+                                                    self.frames[nf].ip = ip + 9;
+                                                    continue;
+                                                }
+                                            }
+                                        } else if argc == 0
+                                            && ip + 11 < code.len()
+                                            && code[ip + 8] == OpCode::Add as u8
+                                            && code[ip + 9] == OpCode::SetLocal as u8
+                                            && code[ip + 10] as usize == slot
+                                            && code[ip + 11] == OpCode::Pop as u8
+                                        {
+                                            let is_pop = matches!(
+                                                self.frames[nf].func.chunk.constants.get(m_idx),
+                                                Some(Value::Str(s)) if s.as_ref() == "pop"
+                                            );
+                                            if is_pop {
+                                                let folded_pop: Option<usize> = {
+                                                    let n0 = ip + 12;
+                                                    if code.get(n0) == Some(&(OpCode::Jump as u8)) {
+                                                        match (code.get(n0 + 1), code.get(n0 + 2)) {
+                                                            (Some(&lo), Some(&hi)) => {
+                                                                let t = (n0 as i64 + 3)
+                                                                    + i16::from_le_bytes([lo, hi])
+                                                                        as i64;
+                                                                (t >= 0
+                                                                    && (t as usize) < code.len())
+                                                                .then_some(t as usize)
+                                                            }
+                                                            _ => None,
+                                                        }
+                                                    } else {
+                                                        None
+                                                    }
+                                                };
+                                                let new_acc = match (
+                                                    self.frames[nf].slots.get(slot),
+                                                    self.frames[nf].slots.get(slot_b),
+                                                ) {
+                                                    (
+                                                        Some(&Value::Int(acc)),
+                                                        Some(Value::List(d) | Value::VecDyn(d)),
+                                                    ) => {
+                                                        let mut guard = crate::value::lock_ref(d);
+                                                        match guard.items.last() {
+                                                            Some(&Value::Int(last_i)) => {
+                                                                if let Some(sum) =
+                                                                    acc.checked_add(last_i)
+                                                                {
+                                                                    guard.items.pop();
+                                                                    Some(sum)
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            }
+                                                            _ => None,
+                                                        }
+                                                    }
+                                                    _ => None,
+                                                };
+                                                if let Some(sum) = new_acc {
+                                                    self.frames[nf].slots[slot] = Value::Int(sum);
+                                                    self.frames[nf].ip =
+                                                        folded_pop.unwrap_or(ip + 12);
+                                                    continue;
+                                                }
+                                            }
+                                        }
                                     // Phase 1 fused superinstructions.
-                                    //
-                                    // These are RUNTIME pattern peeks over the
-                                    // EXISTING opcode bytes only: no new OpCode,
-                                    // no Chunk field, no .matrixc / bytecode
-                                    // format change, no optimiser edit. Both
-                                    // sequences have a NET-ZERO stack effect,
-                                    // so the fused path must not push or pop
-                                    // anything - it only reads local slots and
-                                    // sets `ip`, then `continue`s to the loop
-                                    // head (preserving the 2048-dispatch
-                                    // budget / wall / heap / cancel / GC poll
-                                    // cadence exactly like :881-1019).
-                                    //
-                                    // Instrumentation is deliberately excluded:
-                                    // --prof counts, --coverage line hits and
-                                    // debug stepping must still observe every
-                                    // original opcode. `pending_str` is
-                                    // excluded so its generic flush is never
-                                    // skipped. Every arithmetic result uses
-                                    // checked_* and FALLS THROUGH to generic
-                                    // dispatch on None, so overflow / modulo-
-                                    // by-zero / i64::MIN % -1 produce the exact
-                                    // pre-existing error or result. Non-Int
-                                    // operands also fall through, preserving
-                                    // float comparison, overloaded operators
-                                    // and values_equal's cross-type rules.
-                                    //
                                     // A: GetLocal a; GetLocal b; Mul;
                                     //    GetLocal c; LessEq; JumpIfFalse off
                                     //    (e.g. `while d * d <= n`). 11 bytes.
@@ -1567,16 +1896,6 @@ impl Vm {
                                                     || b == OpCode::JumpIfTrue as u8
                                         )
                                     {
-                                        // Phase 2: the optimizer rotates
-                                        // `while` back-edges, so this fused
-                                        // condition can also be followed by
-                                        // `JumpIfTrue` (loop back to the body)
-                                        // instead of `JumpIfFalse` (exit).
-                                        // Handle both polarities here so
-                                        // rotation never disables fusion A.
-                                        // Still a generic runtime pattern
-                                        // peek, disabled under prof /
-                                        // coverage / debug like the rest.
                                         let inverted =
                                             code.get(ip + 8) == Some(&(OpCode::JumpIfTrue as u8));
                                         if let (Some(&sc), Some(&lo), Some(&hi)) =
@@ -1592,12 +1911,135 @@ impl Vm {
                                                 self.frames[nf].slots.get(slot_b),
                                                 self.frames[nf].slots.get(slot_c),
                                             ) {
+                                                // VM-1: Batched unboxed `i64` trial-division
+                                                // inner loop (`while d * d <= n { if n % d == 0 { return false; } d = d + 1; }`).
+                                                // Matches both unrotated (`off == 26`, `Jump -37`)
+                                                // and rotated (`off == 34`, `GetLocal d; GetLocal d; Mul; GetLocal n; LessEq; JumpIfTrue -34`).
+                                                let off = i16::from_le_bytes([lo, hi]);
+                                                let exit_ip_opt: Option<usize> = if !inverted
+                                                    && slot == slot_b
+                                                    && slot != slot_c
+                                                    && a > 0
+                                                    && c >= 0
+                                                    && ip + 34 <= code.len()
+                                                    && code[ip + 11] == OpCode::GetLocal as u8
+                                                    && code[ip + 12] as usize == slot_c
+                                                    && code[ip + 13] == OpCode::GetLocal as u8
+                                                    && code[ip + 14] as usize == slot
+                                                    && code[ip + 15] == OpCode::Mod as u8
+                                                    && code[ip + 16] == OpCode::Constant as u8
+                                                    && code[ip + 19] == OpCode::Equal as u8
+                                                    && code[ip + 20] == OpCode::JumpIfFalse as u8
+                                                    && i16::from_le_bytes([
+                                                        code[ip + 21],
+                                                        code[ip + 22],
+                                                    ]) == 2
+                                                    && code[ip + 23] == OpCode::False as u8
+                                                    && code[ip + 24] == OpCode::Return as u8
+                                                    && code[ip + 25] == OpCode::GetLocal as u8
+                                                    && code[ip + 26] as usize == slot
+                                                    && code[ip + 27] == OpCode::Constant as u8
+                                                    && code[ip + 30] == OpCode::Add as u8
+                                                    && code[ip + 31] == OpCode::SetLocal as u8
+                                                    && code[ip + 32] as usize == slot
+                                                    && code[ip + 33] == OpCode::Pop as u8
+                                                {
+                                                    if off == 26
+                                                        && ip + 37 <= code.len()
+                                                        && code[ip + 34] == OpCode::Jump as u8
+                                                        && i16::from_le_bytes([
+                                                            code[ip + 35],
+                                                            code[ip + 36],
+                                                        ]) == -37
+                                                    {
+                                                        Some(ip + 37)
+                                                    } else if off == 34
+                                                        && ip + 45 <= code.len()
+                                                        && code[ip + 34] == OpCode::GetLocal as u8
+                                                        && code[ip + 35] as usize == slot
+                                                        && code[ip + 36] == OpCode::GetLocal as u8
+                                                        && code[ip + 37] as usize == slot
+                                                        && code[ip + 38] == OpCode::Mul as u8
+                                                        && code[ip + 39] == OpCode::GetLocal as u8
+                                                        && code[ip + 40] as usize == slot_c
+                                                        && code[ip + 41] == OpCode::LessEq as u8
+                                                        && code[ip + 42] == OpCode::JumpIfTrue as u8
+                                                        && i16::from_le_bytes([
+                                                            code[ip + 43],
+                                                            code[ip + 44],
+                                                        ]) == -34
+                                                    {
+                                                        Some(ip + 45)
+                                                    } else {
+                                                        None
+                                                    }
+                                                } else {
+                                                    None
+                                                };
+                                                if let Some(exit_ip) = exit_ip_opt {
+                                                    let c0 = u16::from_le_bytes([
+                                                        code[ip + 17],
+                                                        code[ip + 18],
+                                                    ])
+                                                        as usize;
+                                                    let c1 = u16::from_le_bytes([
+                                                        code[ip + 28],
+                                                        code[ip + 29],
+                                                    ])
+                                                        as usize;
+                                                    let consts =
+                                                        &self.frames[nf].func.chunk.constants;
+                                                    if matches!(consts.get(c0), Some(Value::Int(0)))
+                                                        && matches!(
+                                                            consts.get(c1),
+                                                            Some(Value::Int(1))
+                                                        )
+                                                    {
+                                                        let mut d_cur = a;
+                                                        let mut steps = 0u32;
+                                                        let mut target_ip = ip;
+                                                        while steps < 64 {
+                                                            let Some(prod) =
+                                                                d_cur.checked_mul(d_cur)
+                                                            else {
+                                                                break;
+                                                            };
+                                                            if prod > c {
+                                                                target_ip = exit_ip;
+                                                                steps += 1;
+                                                                break;
+                                                            }
+                                                            if c % d_cur == 0 {
+                                                                target_ip = ip + 23;
+                                                                steps += 1;
+                                                                break;
+                                                            }
+                                                            let Some(next_d) = d_cur.checked_add(1)
+                                                            else {
+                                                                break;
+                                                            };
+                                                            d_cur = next_d;
+                                                            steps += 1;
+                                                        }
+                                                        if steps > 0 {
+                                                            if let Some(Some(cap)) =
+                                                                self.frames[nf].captured.get(slot)
+                                                            {
+                                                                *crate::value::lock_ref(cap) =
+                                                                    Value::Int(d_cur);
+                                                            }
+                                                            self.frames[nf].slots[slot] =
+                                                                Value::Int(d_cur);
+                                                            self.frames[nf].ip = target_ip;
+                                                            continue;
+                                                        }
+                                                    }
+                                                }
                                                 // Mirrors generic Mul (:1392).
                                                 // None => fall through so
                                                 // vm_eval_binary raises the
                                                 // identical overflow error.
                                                 if let Some(prod) = a.checked_mul(b) {
-                                                    let off = i16::from_le_bytes([lo, hi]);
                                                     // JumpIfFalse jumps when
                                                     // the condition is FALSE;
                                                     // JumpIfTrue when TRUE.
@@ -1748,6 +2190,177 @@ impl Vm {
                                                 ) {
                                                     self.pending_str = None;
                                                 }
+                                                // VM-1: `IncLocalJumpIfLess` — fold rotated
+                                                // loop back-edge `[Pop..]; GetLocal dst;
+                                                // (GetLocal lim | Constant lim); Less; JumpIfTrue off`
+                                                // directly into the increment.
+                                                if folded.is_none()
+                                                    && dst == slot
+                                                    && self.pending_str.is_none()
+                                                {
+                                                    let n0 = ip + 9;
+                                                    let mut p = n0;
+                                                    while p < n0 + 4
+                                                        && code.get(p) == Some(&(OpCode::Pop as u8))
+                                                    {
+                                                        p += 1;
+                                                    }
+                                                    let pops = p - n0;
+                                                    let slen = self.frames[nf].slots.len();
+                                                    if slen >= pops
+                                                        && dst < slen - pops
+                                                        && code.get(p)
+                                                            == Some(&(OpCode::GetLocal as u8))
+                                                        && code.get(p + 1) == Some(&(dst as u8))
+                                                    {
+                                                        if code.get(p + 2)
+                                                            == Some(&(OpCode::GetLocal as u8))
+                                                            && code.get(p + 4)
+                                                                == Some(&(OpCode::Less as u8))
+                                                            && code.get(p + 5)
+                                                                == Some(&(OpCode::JumpIfTrue as u8))
+                                                        {
+                                                            if let (
+                                                                Some(&lim_s),
+                                                                Some(&lo),
+                                                                Some(&hi),
+                                                            ) = (
+                                                                code.get(p + 3),
+                                                                code.get(p + 6),
+                                                                code.get(p + 7),
+                                                            ) {
+                                                                let lim_slot = lim_s as usize;
+                                                                if lim_slot < slen - pops {
+                                                                    let lim_opt = if lim_slot == dst
+                                                                    {
+                                                                        Some(v)
+                                                                    } else {
+                                                                        match self.frames[nf]
+                                                                            .slots
+                                                                            .get(lim_slot)
+                                                                        {
+                                                                            Some(&Value::Int(
+                                                                                l,
+                                                                            )) => Some(l),
+                                                                            _ => None,
+                                                                        }
+                                                                    };
+                                                                    if let Some(lim) = lim_opt {
+                                                                        let off =
+                                                                            i16::from_le_bytes([
+                                                                                lo, hi,
+                                                                            ]);
+                                                                        let next = if v < lim {
+                                                                            let t = (p + 8) as i64
+                                                                                + off as i64;
+                                                                            (t >= 0
+                                                                                && (t as usize)
+                                                                                    < code.len())
+                                                                            .then_some(t as usize)
+                                                                        } else {
+                                                                            Some(p + 8)
+                                                                        };
+                                                                        if let Some(next_ip) = next
+                                                                        {
+                                                                            if pops > 0 {
+                                                                                self.frames[nf]
+                                                                                    .slots
+                                                                                    .truncate(
+                                                                                        slen - pops,
+                                                                                    );
+                                                                            }
+                                                                            if let Some(Some(cap)) =
+                                                                                self.frames[nf]
+                                                                                    .captured
+                                                                                    .get(dst)
+                                                                            {
+                                                                                *crate::value::lock_ref(cap) =
+                                                                                    Value::Int(v);
+                                                                            }
+                                                                            self.frames[nf].slots
+                                                                                [dst] =
+                                                                                Value::Int(v);
+                                                                            self.frames[nf].ip =
+                                                                                next_ip;
+                                                                            continue;
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        } else if code.get(p + 2)
+                                                            == Some(&(OpCode::Constant as u8))
+                                                            && code.get(p + 5)
+                                                                == Some(&(OpCode::Less as u8))
+                                                            && code.get(p + 6)
+                                                                == Some(&(OpCode::JumpIfTrue as u8))
+                                                        {
+                                                            if let (
+                                                                Some(&c0),
+                                                                Some(&c1),
+                                                                Some(&lo),
+                                                                Some(&hi),
+                                                            ) = (
+                                                                code.get(p + 3),
+                                                                code.get(p + 4),
+                                                                code.get(p + 7),
+                                                                code.get(p + 8),
+                                                            ) {
+                                                                let lim_cidx =
+                                                                    u16::from_le_bytes([c0, c1])
+                                                                        as usize;
+                                                                if let Some(&Value::Int(lim)) = self
+                                                                    .frames[nf]
+                                                                    .func
+                                                                    .chunk
+                                                                    .constants
+                                                                    .get(lim_cidx)
+                                                                {
+                                                                    let off = i16::from_le_bytes([
+                                                                        lo, hi,
+                                                                    ]);
+                                                                    let next = if v < lim {
+                                                                        let t = (p + 9) as i64
+                                                                            + off as i64;
+                                                                        (t >= 0
+                                                                            && (t as usize)
+                                                                                < code.len())
+                                                                        .then_some(t as usize)
+                                                                    } else {
+                                                                        Some(p + 9)
+                                                                    };
+                                                                    if let Some(next_ip) = next {
+                                                                        if pops > 0 {
+                                                                            self.frames[nf]
+                                                                                .slots
+                                                                                .truncate(
+                                                                                    slen - pops,
+                                                                                );
+                                                                        }
+                                                                        if let Some(Some(cap)) =
+                                                                            self.frames[nf]
+                                                                                .captured
+                                                                                .get(dst)
+                                                                        {
+                                                                            *crate::value::lock_ref(
+                                                                                cap,
+                                                                            ) = Value::Int(v);
+                                                                        }
+                                                                        self.frames[nf].slots
+                                                                            [dst] = Value::Int(v);
+                                                                        self.frames[nf].ip =
+                                                                            next_ip;
+                                                                        continue;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                if let Some(Some(cap)) =
+                                                    self.frames[nf].captured.get(dst)
+                                                {
+                                                    *crate::value::lock_ref(cap) = Value::Int(v);
+                                                }
                                                 self.frames[nf].slots[dst] = Value::Int(v);
                                                 self.frames[nf].ip = folded.unwrap_or(ip + 9);
                                                 continue;
@@ -1785,6 +2398,26 @@ impl Vm {
                                 ) {
                                     if op2 == OpCode::Mul as u8 {
                                         if let Some(v) = a.checked_mul(b) {
+                                            if code.get(ip + 6) == Some(&(OpCode::Constant as u8))
+                                                && code.get(ip + 9) == Some(&(OpCode::Mod as u8))
+                                            {
+                                                let c2 = u16::from_le_bytes([
+                                                    code[ip + 7],
+                                                    code[ip + 8],
+                                                ])
+                                                    as usize;
+                                                if let Some(&Value::Int(m)) =
+                                                    self.frames[nf].func.chunk.constants.get(c2)
+                                                {
+                                                    if m != 0 {
+                                                        self.frames[nf].ip = ip + 10;
+                                                        self.frames[nf]
+                                                            .slots
+                                                            .push(Value::Int(v.wrapping_rem(m)));
+                                                        continue;
+                                                    }
+                                                }
+                                            }
                                             self.frames[nf].ip = ip + 6;
                                             self.frames[nf].slots.push(Value::Int(v));
                                             continue;
@@ -1811,7 +2444,12 @@ impl Vm {
                                             self.frames[nf].slots.push(Value::Int(v));
                                             continue;
                                         }
-                                    } else if op2 == OpCode::Less as u8
+                                    } else if (op2 == OpCode::Less as u8
+                                        || op2 == OpCode::LessEq as u8
+                                        || op2 == OpCode::Greater as u8
+                                        || op2 == OpCode::GreaterEq as u8
+                                        || op2 == OpCode::Equal as u8
+                                        || op2 == OpCode::NotEqual as u8)
                                         && matches!(
                                             code.get(ip + 6),
                                             Some(&opc)
@@ -1825,7 +2463,20 @@ impl Vm {
                                             let inverted = code.get(ip + 6)
                                                 == Some(&(OpCode::JumpIfTrue as u8));
                                             let off = i16::from_le_bytes([lo, hi]);
-                                            let take_branch = (a < b) == inverted;
+                                            let cond = if op2 == OpCode::Less as u8 {
+                                                a < b
+                                            } else if op2 == OpCode::LessEq as u8 {
+                                                a <= b
+                                            } else if op2 == OpCode::Greater as u8 {
+                                                a > b
+                                            } else if op2 == OpCode::GreaterEq as u8 {
+                                                a >= b
+                                            } else if op2 == OpCode::Equal as u8 {
+                                                a == b
+                                            } else {
+                                                a != b
+                                            };
+                                            let take_branch = cond == inverted;
                                             let next = if !take_branch {
                                                 Some(ip + 9)
                                             } else {
@@ -1837,6 +2488,53 @@ impl Vm {
                                                 self.frames[nf].ip = next;
                                                 continue;
                                             }
+                                        }
+                                    }
+                                }
+                            } else if next_op == OpCode::Invoke as u8
+                                && self.pending_str.is_none()
+                                && ip + 12 < code.len()
+                                && code[ip + 5] == 0
+                                && code[ip + 6] == OpCode::Constant as u8
+                                && code[ip + 9] == OpCode::Greater as u8
+                                && matches!(
+                                    code[ip + 10],
+                                    b if b == OpCode::JumpIfFalse as u8
+                                        || b == OpCode::JumpIfTrue as u8
+                                )
+                            {
+                                // VM-1: Fused `GetLocal(xs) + Invoke("len", 0) + Constant(k) + Greater + JumpIfFalse/True`.
+                                let m_idx =
+                                    u16::from_le_bytes([code[ip + 3], code[ip + 4]]) as usize;
+                                let c_idx =
+                                    u16::from_le_bytes([code[ip + 7], code[ip + 8]]) as usize;
+                                let is_len = matches!(
+                                    self.frames[nf].func.chunk.constants.get(m_idx),
+                                    Some(Value::Str(s)) if s.as_ref() == "len"
+                                );
+                                if is_len {
+                                    if let (
+                                        Some(Value::List(d) | Value::VecDyn(d)),
+                                        Some(&Value::Int(k)),
+                                    ) = (
+                                        self.frames[nf].slots.get(slot),
+                                        self.frames[nf].func.chunk.constants.get(c_idx),
+                                    ) {
+                                        let len = crate::value::lock_ref(d).items.len() as i64;
+                                        let inverted = code[ip + 10] == OpCode::JumpIfTrue as u8;
+                                        let off =
+                                            i16::from_le_bytes([code[ip + 11], code[ip + 12]]);
+                                        let take_branch = (len > k) == inverted;
+                                        let next = if !take_branch {
+                                            Some(ip + 13)
+                                        } else {
+                                            let t = (ip + 13) as i64 + off as i64;
+                                            (t >= 0 && (t as usize) < code.len())
+                                                .then_some(t as usize)
+                                        };
+                                        if let Some(next_ip) = next {
+                                            self.frames[nf].ip = next_ip;
+                                            continue;
                                         }
                                     }
                                 }
@@ -1854,7 +2552,7 @@ impl Vm {
                     let v = {
                         let f = &self.frames[nf];
                         if let Some(Some(c)) = f.captured.get(slot) {
-                            c.lock().unwrap().clone()
+                            crate::value::lock_ref(c).clone()
                         } else {
                             f.slots.get(slot).cloned().unwrap_or(Value::Null)
                         }
@@ -1878,7 +2576,7 @@ impl Vm {
                     {
                         let f = &mut self.frames[nf];
                         if let Some(Some(c)) = f.captured.get(slot) {
-                            *c.lock().unwrap() = v.clone();
+                            *crate::value::lock_ref(c) = v.clone();
                         }
                         if slot < f.slots.len() {
                             f.slots[slot] = v;
@@ -1890,27 +2588,121 @@ impl Vm {
                 }
                 OpCode::GetGlobal => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
-                    self.frames[nf].ip = ip + 3;
-                    let v = match self.frames[nf].func.chunk.constants.get(idx) {
-                        Some(Value::Str(name)) => {
-                            let hit = self.frames[nf]
-                                .globals
-                                .lock()
-                                .unwrap()
-                                .get(name.as_ref())
-                                .cloned();
-                            match hit {
-                                Some(v) => v,
-                                None => crate::stdlib::resolve_builtin_native(name.as_ref())
-                                    .map(Value::Native)
-                                    .unwrap_or(Value::Null),
+                    let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
+                    let globals_ptr = Arc::as_ptr(&self.frames[nf].globals) as usize;
+                    let cur_gen = VM_GLOBAL_GEN.load(std::sync::atomic::Ordering::Relaxed);
+                    let cache_slot = ((chunk_ptr >> 4) ^ idx) & (GLOBAL_CACHE_SLOTS - 1);
+                    let cached = match &self.global_cache[cache_slot] {
+                        Some(c)
+                            if c.globals_ptr == globals_ptr
+                                && c.chunk_ptr == chunk_ptr
+                                && c.const_idx == idx as u16
+                                && c.gen == cur_gen =>
+                        {
+                            Some(c.val.clone())
+                        }
+                        _ => None,
+                    };
+                    let v = match cached {
+                        Some(v) => v,
+                        None => match self.frames[nf].func.chunk.constants.get(idx) {
+                            Some(Value::Str(name)) => {
+                                let hit = crate::value::lock_ref(&self.frames[nf].globals)
+                                    .get(name.as_ref())
+                                    .cloned();
+                                let resolved = match hit {
+                                    Some(v) => v,
+                                    None => crate::stdlib::resolve_builtin_native(name.as_ref())
+                                        .map(Value::Native)
+                                        .unwrap_or(Value::Null),
+                                };
+                                self.global_cache[cache_slot] = Some(GlobalCacheEntry {
+                                    globals_ptr,
+                                    chunk_ptr,
+                                    const_idx: idx as u16,
+                                    gen: cur_gen,
+                                    val: resolved.clone(),
+                                });
+                                resolved
+                            }
+                            _ => {
+                                self.frames[nf].ip = ip + 3;
+                                self.fail("global name is not a string");
+                                continue;
+                            }
+                        },
+                    };
+                    // VM-4: Fused `GetGlobal("string") + GetLocal(a) + Call(1)`
+                    // (+ optional `Constant("..."); Equal/NotEqual; JumpIfFalse/True`).
+                    if self.opt_enabled
+                        && self.obs == 0
+                        && self.pending_str.is_none()
+                        && self.frames[nf].captured.is_empty()
+                    {
+                        if let Value::Native(n) = &v {
+                            if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl()) {
+                                let code = &self.frames[nf].func.chunk.code;
+                                if ip + 6 < code.len()
+                                    && code[ip + 3] == OpCode::GetLocal as u8
+                                    && code[ip + 5] == OpCode::Call as u8
+                                    && code[ip + 6] == 1
+                                {
+                                    let arg_slot = code[ip + 4] as usize;
+                                    if let Some(&Value::Int(arg_i)) =
+                                        self.frames[nf].slots.get(arg_slot)
+                                    {
+                                        let s = crate::stdlib::int_to_string_value(arg_i);
+                                        if ip + 13 < code.len()
+                                            && code[ip + 7] == OpCode::Constant as u8
+                                            && (code[ip + 10] == OpCode::Equal as u8
+                                                || code[ip + 10] == OpCode::NotEqual as u8)
+                                            && matches!(
+                                                code[ip + 11],
+                                                b if b == OpCode::JumpIfFalse as u8
+                                                    || b == OpCode::JumpIfTrue as u8
+                                            )
+                                        {
+                                            let c_idx =
+                                                u16::from_le_bytes([code[ip + 8], code[ip + 9]])
+                                                    as usize;
+                                            if let Some(Value::Str(rhs_s)) =
+                                                self.frames[nf].func.chunk.constants.get(c_idx)
+                                            {
+                                                let eq = s.as_ref() == rhs_s.as_ref();
+                                                let cond = if code[ip + 10] == OpCode::Equal as u8 {
+                                                    eq
+                                                } else {
+                                                    !eq
+                                                };
+                                                let inverted =
+                                                    code[ip + 11] == OpCode::JumpIfTrue as u8;
+                                                let off = i16::from_le_bytes([
+                                                    code[ip + 12],
+                                                    code[ip + 13],
+                                                ]);
+                                                let take_branch = cond == inverted;
+                                                let next = if !take_branch {
+                                                    Some(ip + 14)
+                                                } else {
+                                                    let t = (ip + 14) as i64 + off as i64;
+                                                    (t >= 0 && (t as usize) < code.len())
+                                                        .then_some(t as usize)
+                                                };
+                                                if let Some(next_ip) = next {
+                                                    self.frames[nf].ip = next_ip;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        self.frames[nf].slots.push(Value::Str(s));
+                                        self.frames[nf].ip = ip + 7;
+                                        continue;
+                                    }
+                                }
                             }
                         }
-                        _ => {
-                            self.fail("global name is not a string");
-                            continue;
-                        }
-                    };
+                    }
+                    self.frames[nf].ip = ip + 3;
                     self.frames[nf].slots.push(v);
                 }
                 OpCode::SetGlobal => {
@@ -1933,7 +2725,8 @@ impl Vm {
                         self.fail(format!("cannot assign to const '{}'", name));
                         continue;
                     }
-                    let mut g = self.frames[nf].globals.lock().unwrap();
+                    bump_global_gen();
+                    let mut g = crate::value::lock_ref(&self.frames[nf].globals);
                     match g.get_mut(name.as_ref()) {
                         Some(slot) => *slot = v,
                         None => {
@@ -1952,11 +2745,8 @@ impl Vm {
                         }
                     };
                     let v = self.pop_top();
-                    self.frames[nf]
-                        .globals
-                        .lock()
-                        .unwrap()
-                        .insert(name.to_string(), v);
+                    bump_global_gen();
+                    crate::value::lock_ref(&self.frames[nf].globals).insert(name.to_string(), v);
                 }
                 OpCode::DefineConst => {
                     let idx = self.code_u16(nf, ip + 1) as usize;
@@ -1973,11 +2763,8 @@ impl Vm {
                     // rebind is rejected and an importing module sees the
                     // export as a `public const`.
                     self.consts.lock().unwrap().insert(name.to_string());
-                    self.frames[nf]
-                        .globals
-                        .lock()
-                        .unwrap()
-                        .insert(name.to_string(), v);
+                    bump_global_gen();
+                    crate::value::lock_ref(&self.frames[nf].globals).insert(name.to_string(), v);
                 }
                 OpCode::SuperCtor | OpCode::SuperMethod => {
                     let is_ctor = matches!(op, OpCode::SuperCtor);
@@ -2111,20 +2898,21 @@ impl Vm {
                     let v = {
                         let f = &self.frames[nf];
                         match f.func.upvalues.get(slot).cloned() {
-                            Some(c) => c.lock().unwrap().clone(),
+                            Some(c) => crate::value::lock_ref(&c).clone(),
                             None => Value::Null,
                         }
                     };
                     self.frames[nf].slots.push(v);
                 }
                 OpCode::SetUpvalue => {
+                    UPVALUE_MUTATED.store(true, std::sync::atomic::Ordering::Relaxed);
                     let slot = self.code_u8(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 2;
                     // Peek (do not pop), matching `SetLocal`.
                     let v = self.frames[nf].slots.last().cloned().unwrap_or(Value::Null);
                     let f = &mut self.frames[nf];
                     if let Some(c) = f.func.upvalues.get(slot).cloned() {
-                        *c.lock().unwrap() = v;
+                        *crate::value::lock_ref(&c) = v;
                     }
                 }
                 OpCode::Closure => {
@@ -2160,18 +2948,49 @@ impl Vm {
                 }
                 OpCode::Add => {
                     let r = self.pop_top();
+                    if let (Some(&Value::Int(a)), Value::Int(b)) =
+                        (self.frames[nf].slots.last(), &r)
+                    {
+                        if let Some(sum) = a.checked_add(*b) {
+                            if self.debug.is_none()
+                                && (self.frames[nf].captured.is_empty()
+                                    || !UPVALUE_MUTATED.load(std::sync::atomic::Ordering::Relaxed))
+                            {
+                                let code = &self.frames[nf].func.chunk.code;
+                                if code.get(ip + 1) == Some(&(OpCode::SetLocal as u8))
+                                    && code.get(ip + 3) == Some(&(OpCode::Pop as u8))
+                                {
+                                    let dst = code[ip + 2] as usize;
+                                    let slen = self.frames[nf].slots.len();
+                                    if dst < slen - 1 {
+                                        if self
+                                            .pending_str
+                                            .as_ref()
+                                            .is_some_and(|&(pf, ps, _)| pf == nf && ps == dst)
+                                        {
+                                            self.pending_str = None;
+                                        }
+                                        if let Some(Some(cap)) = self.frames[nf].captured.get(dst) {
+                                            *crate::value::lock_ref(cap) = Value::Int(sum);
+                                        }
+                                        self.frames[nf].slots.pop();
+                                        self.frames[nf].slots[dst] = Value::Int(sum);
+                                        self.frames[nf].ip = ip + 4;
+                                        continue;
+                                    }
+                                }
+                            }
+                            *self.frames[nf].slots.last_mut().unwrap() = Value::Int(sum);
+                            self.frames[nf].ip = ip + 1;
+                            continue;
+                        }
+                    }
                     let l = self.pop_top();
                     let res = match (&l, &r) {
                         (Value::Int(a), Value::Int(b)) => {
                             crate::value::checked_int("+", *a, *b).map(Value::Int)
                         }
                         (Value::Str(a), Value::Str(b)) => {
-                            // N1 concat fast path: concrete `Str` operands can
-                            // never carry an `__add__` / `__radd__` overload
-                            // (`try_operator` fires only for Map / VInstance
-                            // receivers), so the generic dispatch is pure
-                            // overhead here. Identical spelling to
-                            // `vm_eval_binary`'s Str arm.
                             let mut s = String::with_capacity(a.len() + b.len());
                             s.push_str(a);
                             s.push_str(b);
@@ -2333,6 +3152,12 @@ impl Vm {
                 OpCode::Equal => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) = (self.frames[nf].slots.last(), &r)
+                    {
+                        let res = *a == *b;
+                        *self.frames[nf].slots.last_mut().unwrap() = Value::Bool(res);
+                        continue;
+                    }
                     let l = self.pop_top();
                     self.frames[nf]
                         .slots
@@ -2341,6 +3166,12 @@ impl Vm {
                 OpCode::NotEqual => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) = (self.frames[nf].slots.last(), &r)
+                    {
+                        let res = *a != *b;
+                        *self.frames[nf].slots.last_mut().unwrap() = Value::Bool(res);
+                        continue;
+                    }
                     let l = self.pop_top();
                     self.frames[nf]
                         .slots
@@ -2364,6 +3195,12 @@ impl Vm {
                 OpCode::LessEq => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) = (self.frames[nf].slots.last(), &r)
+                    {
+                        let res = *a <= *b;
+                        *self.frames[nf].slots.last_mut().unwrap() = Value::Bool(res);
+                        continue;
+                    }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Le, l, r) {
                         Ok(v) => self.frames[nf].slots.push(v),
@@ -2373,6 +3210,12 @@ impl Vm {
                 OpCode::Greater => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) = (self.frames[nf].slots.last(), &r)
+                    {
+                        let res = *a > *b;
+                        *self.frames[nf].slots.last_mut().unwrap() = Value::Bool(res);
+                        continue;
+                    }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Gt, l, r) {
                         Ok(v) => self.frames[nf].slots.push(v),
@@ -2382,6 +3225,12 @@ impl Vm {
                 OpCode::GreaterEq => {
                     self.frames[nf].ip = ip + 1;
                     let r = self.pop_top();
+                    if let (Some(Value::Int(a)), Value::Int(b)) = (self.frames[nf].slots.last(), &r)
+                    {
+                        let res = *a >= *b;
+                        *self.frames[nf].slots.last_mut().unwrap() = Value::Bool(res);
+                        continue;
+                    }
                     let l = self.pop_top();
                     match vm_eval_binary(BinOp::Ge, l, r) {
                         Ok(v) => self.frames[nf].slots.push(v),
@@ -2439,44 +3288,70 @@ impl Vm {
                     self.frames[nf].ip = ip + 2;
                     let slen = self.frames[nf].slots.len();
                     if argc == 1 && slen >= 2 {
-                        if let Value::Native(n) = &self.frames[nf].slots[slen - 2] {
-                            // Phase 2 security fix: gate the inline on the
-                            // INSTALLED function pointer, never on `n.name`.
-                            // `native_defs()` is the single policy funnel and
-                            // may have replaced this native with a
-                            // `security.disable_natives` / pin-failure stub,
-                            // or a host plugin may have registered a different
-                            // function under the same name. A name-only check
-                            // made tree-walk deny the call while the VM ran
-                            // the builtin anyway (differential + policy
-                            // bypass). Both accessors are plain `fn` items,
-                            // so this is a pointer comparison with no lookup,
-                            // no cache and no policy state.
-                            if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl()) {
-                                let arg = self.frames[nf].slots.pop().unwrap();
-                                self.frames[nf].slots.pop();
-                                let s: Arc<str> = match arg {
-                                    // Same authority as the `string` builtin:
-                                    // `src/stdlib/mod.rs::int_to_string_value`
-                                    // serves the cached 0..=1023 spellings so
-                                    // this inlined path does not bypass Phase
-                                    // 1's allocation reduction.
-                                    Value::Int(i) => crate::stdlib::int_to_string_value(i),
-                                    Value::Str(s) => s,
-                                    other => crate::value::display_value(&other).into(),
-                                };
-                                self.frames[nf].slots.push(Value::Str(s));
-                                continue;
-                            } else if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_len_impl())
-                            {
-                                let arg = self.frames[nf].slots.pop().unwrap();
-                                self.frames[nf].slots.pop();
-                                match collections::len_of(&arg) {
-                                    Ok(len) => self.frames[nf].slots.push(Value::Int(len as i64)),
-                                    Err(msg) => self.fail(msg),
+                        match &self.frames[nf].slots[slen - 2] {
+                            Value::Native(n) => {
+                                // Phase 2 security fix: gate the inline on the
+                                // INSTALLED function pointer, never on `n.name`.
+                                if std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
+                                {
+                                    let arg = self.frames[nf].slots.pop().unwrap();
+                                    self.frames[nf].slots.pop();
+                                    let s: Arc<str> = match arg {
+                                        Value::Int(i) => crate::stdlib::int_to_string_value(i),
+                                        Value::Str(s) => s,
+                                        other => crate::value::display_value(&other).into(),
+                                    };
+                                    self.frames[nf].slots.push(Value::Str(s));
+                                    continue;
+                                } else if std::ptr::fn_addr_eq(
+                                    n.func,
+                                    crate::stdlib::inline_len_impl(),
+                                ) {
+                                    let arg = self.frames[nf].slots.pop().unwrap();
+                                    self.frames[nf].slots.pop();
+                                    match collections::len_of(&arg) {
+                                        Ok(len) => {
+                                            self.frames[nf].slots.push(Value::Int(len as i64))
+                                        }
+                                        Err(msg) => self.fail(msg),
+                                    }
+                                    continue;
                                 }
-                                continue;
                             }
+                            Value::VFunc(fd)
+                                if self.opt_enabled
+                                    && self.obs == 0
+                                    && self.pending_str.is_none()
+                                    && fd.arity == 1
+                                    && fd.min_arity == 1
+                                    && fd.own_upvalues == 0
+                                    && fd.chunk.code.len() == 6
+                                    && fd.chunk.code[0] == OpCode::GetLocal as u8
+                                    && fd.chunk.code[1] == 0
+                                    && fd.chunk.code[2] == OpCode::GetUpvalue as u8
+                                    && fd.chunk.code[4] == OpCode::Add as u8
+                                    && fd.chunk.code[5] == OpCode::Return as u8 =>
+                            {
+                                let u_idx = fd.chunk.code[3] as usize;
+                                let sum_opt = match (
+                                    &self.frames[nf].slots[slen - 1],
+                                    fd.upvalues.get(u_idx),
+                                ) {
+                                    (Value::Int(a), Some(cell)) => {
+                                        match &*crate::value::lock_ref(cell) {
+                                            Value::Int(b) => a.checked_add(*b),
+                                            _ => None,
+                                        }
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(sum) = sum_opt {
+                                    self.frames[nf].slots.pop();
+                                    self.frames[nf].slots[slen - 2] = Value::Int(sum);
+                                    continue;
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     let args = self.pop_n(argc);
@@ -2528,6 +3403,115 @@ impl Vm {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     let argc = self.code_u8(nf, ip + 3) as usize;
                     self.frames[nf].ip = ip + 4;
+                    let slen = self.frames[nf].slots.len();
+                    if slen > argc {
+                        let recv_idx = slen - 1 - argc;
+                        // VM-3 fast path: check `VInstance` / `VClass` in
+                        // `invoke_cache` before cloning the method name constant.
+                        if matches!(
+                            self.frames[nf].slots[recv_idx],
+                            Value::VInstance(_) | Value::VClass(_)
+                        ) {
+                            let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
+                            let class_id = match &self.frames[nf].slots[recv_idx] {
+                                Value::VInstance(inst) => {
+                                    Arc::as_ptr(&crate::value::lock_ref(inst).class) as usize
+                                }
+                                Value::VClass(c) => Arc::as_ptr(c) as usize,
+                                _ => unreachable!(),
+                            };
+                            let slot_idx = invoke_cache_index(chunk_ptr, ip);
+                            let hit = match &self.invoke_cache[slot_idx] {
+                                Some(c)
+                                    if c.chunk_ptr == chunk_ptr
+                                        && c.ip == ip
+                                        && c.class == class_id =>
+                                {
+                                    // VM-3: 0-arg leaf increment method fast path
+                                    // (`self.n = self.n + delta; return self.n;`)
+                                    if argc == 0 && self.opt_enabled && self.obs == 0 {
+                                        if let Some((fslot, delta)) = c.leaf_bump {
+                                            if let Value::VInstance(inst) =
+                                                &self.frames[nf].slots[recv_idx]
+                                            {
+                                                let mut ib = crate::value::lock_ref(inst);
+                                                if let Some(&Value::Int(cur)) = ib.slots.get(fslot)
+                                                {
+                                                    if let Some(next_val) = cur.checked_add(delta) {
+                                                        ib.slots[fslot] = Value::Int(next_val);
+                                                        drop(ib);
+                                                        let code = &self.frames[nf].func.chunk.code;
+                                                        if self.frames[nf].captured.is_empty()
+                                                            && code.get(ip + 4)
+                                                                == Some(&(OpCode::SetLocal as u8))
+                                                            && code.get(ip + 6)
+                                                                == Some(&(OpCode::Pop as u8))
+                                                        {
+                                                            let dst = code[ip + 5] as usize;
+                                                            if dst < recv_idx {
+                                                                if self
+                                                                    .pending_str
+                                                                    .as_ref()
+                                                                    .is_some_and(|&(pf, ps, _)| {
+                                                                        pf == nf && ps == dst
+                                                                    })
+                                                                {
+                                                                    self.pending_str = None;
+                                                                }
+                                                                self.frames[nf].slots.pop();
+                                                                self.frames[nf].slots[dst] =
+                                                                    Value::Int(next_val);
+                                                                self.frames[nf].ip = ip + 7;
+                                                                continue;
+                                                            }
+                                                        }
+                                                        self.frames[nf].slots[recv_idx] =
+                                                            Value::Int(next_val);
+                                                        continue;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some((
+                                        c.func.clone(),
+                                        c.class_arc.clone(),
+                                        c.method_name.clone(),
+                                    ))
+                                }
+                                _ => None,
+                            };
+                            if let Some((fd, class, method_name)) = hit {
+                                if argc + 1 < fd.min_arity || argc + 1 > fd.arity {
+                                    self.frames[nf].slots.truncate(recv_idx);
+                                    let want = if fd.min_arity == fd.arity {
+                                        format!("{} argument(s)", fd.arity - 1)
+                                    } else {
+                                        format!(
+                                            "{} to {} argument(s)",
+                                            fd.min_arity - 1,
+                                            fd.arity - 1
+                                        )
+                                    };
+                                    self.fail(format!(
+                                        "method {} expects {}, got {}",
+                                        method_name, want, argc
+                                    ));
+                                    continue;
+                                }
+                                let mut call_args = self.alloc_slots(argc + 1);
+                                call_args.extend(self.frames[nf].slots.drain(recv_idx..));
+                                let label = FrameLabel::Method {
+                                    class,
+                                    method: method_name,
+                                };
+                                if let Err(e) = self.call_vfunc_frame(fd, call_args, label) {
+                                    self.error = Some(e);
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     let name = match self.const_at(nf, idx) {
                         Value::Str(s) => s,
                         _ => {
@@ -2535,7 +3519,6 @@ impl Vm {
                             continue;
                         }
                     };
-                    let slen = self.frames[nf].slots.len();
                     if slen > argc {
                         let recv_idx = slen - 1 - argc;
                         match &self.frames[nf].slots[recv_idx] {
@@ -2547,35 +3530,25 @@ impl Vm {
                                         Value::List(d) | Value::VecDyn(d) => d,
                                         _ => unreachable!(),
                                     };
-                                    d.lock().unwrap().items.push(val);
+                                    crate::value::lock_ref(&d).items.push(val);
                                     self.frames[nf].slots.push(Value::Null);
                                     continue;
                                 } else if mname == "pop" && argc == 0 {
-                                    let popped = d.lock().unwrap().items.pop();
+                                    let popped = crate::value::lock_ref(d).items.pop();
                                     if let Some(v) = popped {
                                         self.frames[nf].slots[recv_idx] = v;
                                         continue;
                                     }
                                 } else if mname == "len" && argc == 0 {
-                                    let n = d.lock().unwrap().items.len() as i64;
+                                    let n = crate::value::lock_ref(d).items.len() as i64;
                                     self.frames[nf].slots[recv_idx] = Value::Int(n);
                                     continue;
                                 }
                             }
                             Value::MutexVal(m) => {
-                                // Detach from the frame borrow: the lock paths
-                                // below mutate the frame.
                                 let m = m.clone();
-                                // `mu.lock()` must be recorded on the frame so
-                                // the lock is released when the frame returns —
-                                // and when a panic unwinds through the VM. The
-                                // tree engine has the same discipline in its
-                                // method dispatch.
                                 let mname = name.as_ref();
                                 if mname == "lock" && argc == 0 {
-                                    // A self-deadlock (this context already
-                                    // holds the mutex) is a catchable runtime
-                                    // error on the VM too, not a hang.
                                     match m.lock() {
                                         Ok(v) => {
                                             self.frames[nf].guards.push(
@@ -2605,14 +3578,10 @@ impl Vm {
                             }
                             Value::Map(m) => {
                                 let mname = name.as_ref();
-                                // A **module namespace** is a read-only view of
-                                // a module's exports: an exported name wins
-                                // over the map's own method (`mu.get()` is the
-                                // module's `get`, not `map.get`), and the
-                                // namespace cannot be mutated. Both rules live
-                                // in the shared dispatcher, so the VM and the
-                                // tree engine cannot diverge.
-                                if m.lock().unwrap().namespace {
+                                // VM-3: Single-lock map method dispatch using
+                                // `crate::value::lock_ref` and `find_str`.
+                                let is_ns = crate::value::lock_ref(m).namespace;
+                                if is_ns {
                                     let args = self.pop_n(argc);
                                     let obj = self.pop_top();
                                     match self.host_callback_method(&obj, &name, args) {
@@ -2626,7 +3595,16 @@ impl Vm {
                                     let key = self.frames[nf].slots.pop().unwrap();
                                     if let Ok(mk) = crate::value::as_map_key(&key) {
                                         if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
-                                            m.lock().unwrap().set_key(mk, val);
+                                            crate::value::lock_ref(m).set_key(mk, val);
+                                        }
+                                        if self.opt_enabled
+                                            && self.obs == 0
+                                            && self.frames[nf].func.chunk.code.get(ip + 4)
+                                                == Some(&(OpCode::Pop as u8))
+                                        {
+                                            self.frames[nf].slots.pop();
+                                            self.frames[nf].ip = ip + 5;
+                                            continue;
                                         }
                                         self.frames[nf].slots[recv_idx] = Value::Null;
                                         continue;
@@ -2636,52 +3614,63 @@ impl Vm {
                                     }
                                 } else if mname == "get" && argc == 1 {
                                     let key = self.frames[nf].slots.pop().unwrap();
-                                    if let Ok(mk) = crate::value::as_map_key(&key) {
-                                        let found = if let Value::Map(m) =
-                                            &self.frames[nf].slots[recv_idx]
-                                        {
-                                            let guard = m.lock().unwrap();
-                                            guard.find(&mk).map(|i| guard.entries[i].1.clone())
-                                        } else {
-                                            None
-                                        };
-                                        if let Some(v) = found {
-                                            self.frames[nf].slots[recv_idx] = v;
-                                            continue;
-                                        } else {
-                                            self.frames[nf].slots.push(key);
+                                    let found = match (&self.frames[nf].slots[recv_idx], &key) {
+                                        (Value::Map(m), Value::Str(s)) => {
+                                            let guard = crate::value::lock_ref(m);
+                                            guard
+                                                .find_str(s.as_ref())
+                                                .map(|i| guard.entries[i].1.clone())
                                         }
+                                        (Value::Map(m), other_k) => {
+                                            if let Ok(mk) = crate::value::as_map_key(other_k) {
+                                                let guard = crate::value::lock_ref(m);
+                                                guard.find(&mk).map(|i| guard.entries[i].1.clone())
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        _ => None,
+                                    };
+                                    if let Some(v) = found {
+                                        self.frames[nf].slots[recv_idx] = v;
+                                        continue;
                                     } else {
                                         self.frames[nf].slots.push(key);
                                     }
                                 } else if mname == "len" && argc == 0 {
-                                    let n = m.lock().unwrap().entries.len() as i64;
+                                    let n = crate::value::lock_ref(m).entries.len() as i64;
                                     self.frames[nf].slots[recv_idx] = Value::Int(n);
                                     continue;
                                 } else if mname == "has" && argc == 1 {
                                     let key = self.frames[nf].slots.pop().unwrap();
-                                    if let Ok(mk) = crate::value::as_map_key(&key) {
-                                        let b = if let Value::Map(m) =
-                                            &self.frames[nf].slots[recv_idx]
-                                        {
-                                            m.lock().unwrap().find(&mk).is_some()
-                                        } else {
-                                            false
-                                        };
+                                    let has_opt = match (&self.frames[nf].slots[recv_idx], &key) {
+                                        (Value::Map(m), Value::Str(s)) => Some(
+                                            crate::value::lock_ref(m)
+                                                .find_str(s.as_ref())
+                                                .is_some(),
+                                        ),
+                                        (Value::Map(m), other_k) => {
+                                            crate::value::as_map_key(other_k).ok().map(|mk| {
+                                                crate::value::lock_ref(m).find(&mk).is_some()
+                                            })
+                                        }
+                                        _ => None,
+                                    };
+                                    if let Some(b) = has_opt {
                                         self.frames[nf].slots[recv_idx] = Value::Bool(b);
                                         continue;
                                     } else {
                                         self.frames[nf].slots.push(key);
                                     }
                                 } else if !collections::seq::is_builtin_map_method(mname) {
-                                    let key = crate::value::MapKey::Str(name.clone());
-                                    let found =
-                                        if let Value::Map(m) = &self.frames[nf].slots[recv_idx] {
-                                            let guard = m.lock().unwrap();
-                                            guard.find(&key).map(|i| guard.entries[i].1.clone())
-                                        } else {
-                                            None
-                                        };
+                                    let found = if let Value::Map(m) =
+                                        &self.frames[nf].slots[recv_idx]
+                                    {
+                                        let guard = crate::value::lock_ref(m);
+                                        guard.find_str(mname).map(|i| guard.entries[i].1.clone())
+                                    } else {
+                                        None
+                                    };
                                     match found {
                                         Some(callee) => {
                                             let mut call_args = self.alloc_slots(argc);
@@ -2763,49 +3752,31 @@ impl Vm {
                             }
                             Value::VInstance(_) | Value::VClass(_) => {
                                 let class = match &self.frames[nf].slots[recv_idx] {
-                                    Value::VInstance(inst) => inst.lock().unwrap().class.clone(),
+                                    Value::VInstance(inst) => {
+                                        crate::value::lock_ref(inst).class.clone()
+                                    }
                                     Value::VClass(c) => c.clone(),
                                     _ => unreachable!(),
                                 };
                                 let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
                                 let class_id = Arc::as_ptr(&class) as usize;
                                 let slot_idx = invoke_cache_index(chunk_ptr, ip);
-                                // A hit needs the site AND the class to match:
-                                // the same instruction offset in a different
-                                // chunk hashes to the same slot often enough
-                                // that the chunk check is not optional, and
-                                // the class check is what makes one site safe
-                                // when it sees several classes.
-                                let hit = match &self.invoke_cache[slot_idx] {
-                                    Some(c)
-                                        if c.chunk_ptr == chunk_ptr
-                                            && c.ip == ip
-                                            && c.class == class_id =>
-                                    {
-                                        Some(c.func.clone())
+                                let resolved = match find_method_vclass(&class, &name) {
+                                    Some(fd) => {
+                                        let leaf_bump = detect_leaf_bump_method(&class, &fd);
+                                        self.invoke_cache[slot_idx] = Some(InvokeCache {
+                                            _chunk: self.frames[nf].func.chunk.clone(),
+                                            chunk_ptr,
+                                            ip,
+                                            class: class_id,
+                                            class_arc: class.clone(),
+                                            method_name: name.clone(),
+                                            func: fd.clone(),
+                                            leaf_bump,
+                                        });
+                                        Some(fd)
                                     }
-                                    _ => None,
-                                };
-                                let resolved = match hit {
-                                    Some(fd) => Some(fd),
-                                    None => match find_method_vclass(&class, &name) {
-                                        Some(fd) => {
-                                            // Overwrite the slot: a collision
-                                            // costs this one site's entry, not
-                                            // the whole cache. The dropped
-                                            // `_chunk` pin releases the evicted
-                                            // site's chunk normally.
-                                            self.invoke_cache[slot_idx] = Some(InvokeCache {
-                                                _chunk: self.frames[nf].func.chunk.clone(),
-                                                chunk_ptr,
-                                                ip,
-                                                class: class_id,
-                                                func: fd.clone(),
-                                            });
-                                            Some(fd)
-                                        }
-                                        None => None,
-                                    },
+                                    None => None,
                                 };
                                 match resolved {
                                     Some(fd) => {
@@ -2828,8 +3799,6 @@ impl Vm {
                                         }
                                         let mut call_args = self.alloc_slots(argc + 1);
                                         call_args.extend(self.frames[nf].slots.drain(recv_idx..));
-                                        // Stack traces name the frame
-                                        // `Class::method`, like the tree engine.
                                         let label = FrameLabel::Method {
                                             class: class.clone(),
                                             method: name.clone(),
@@ -2966,20 +3935,42 @@ impl Vm {
                     let idx = self.code_u16(nf, ip + 1) as usize;
                     self.frames[nf].ip = ip + 3;
                     let obj = self.pop_top();
-                    let name = match self.frames[nf].func.chunk.constants.get(idx) {
-                        Some(Value::Str(s)) => s.clone(),
-                        _ => {
-                            self.fail("field name is not a string");
-                            continue;
-                        }
-                    };
                     match obj {
                         Value::VInstance(inst) => {
-                            let ib = inst.lock().unwrap();
+                            let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
+                            let cache_idx = invoke_cache_index(chunk_ptr, ip);
+                            let ib = crate::value::lock_ref(&inst);
+                            let class_ptr = Arc::as_ptr(&ib.class) as usize;
+                            if let Some(c) = &self.instance_field_cache[cache_idx] {
+                                if c.chunk_ptr == chunk_ptr
+                                    && c.ip == ip
+                                    && c.class_ptr == class_ptr
+                                {
+                                    let val = ib.slots[c.slot_idx].clone();
+                                    drop(ib);
+                                    self.frames[nf].slots.push(val);
+                                    continue;
+                                }
+                            }
+                            let name = match self.frames[nf].func.chunk.constants.get(idx) {
+                                Some(Value::Str(s)) => s.clone(),
+                                _ => {
+                                    drop(ib);
+                                    self.fail("field name is not a string");
+                                    continue;
+                                }
+                            };
                             match ib.class.slot_index.get(name.as_ref()) {
                                 Some(&i) => {
                                     let val = ib.slots[i].clone();
                                     drop(ib);
+                                    self.instance_field_cache[cache_idx] =
+                                        Some(InstanceFieldCache {
+                                            chunk_ptr,
+                                            ip,
+                                            class_ptr,
+                                            slot_idx: i,
+                                        });
                                     self.frames[nf].slots.push(val);
                                 }
                                 None => {
@@ -2993,16 +3984,28 @@ impl Vm {
                             }
                         }
                         Value::Map(m) => {
-                            // Phase 5 per-VM monomorphic inline cache. The
-                            // helper re-validates identity / name /
-                            // generation / key under the lock and reads the
-                            // value fresh, so behavior is byte-identical.
+                            let name = match self.frames[nf].func.chunk.constants.get(idx) {
+                                Some(Value::Str(s)) => s.clone(),
+                                _ => {
+                                    self.fail("field name is not a string");
+                                    continue;
+                                }
+                            };
                             match self.cached_map_field_get(nf, ip, &m, &name) {
                                 Some(val) => self.frames[nf].slots.push(val),
                                 None => self.fail(format!("missing key '{}'", name)),
                             }
                         }
-                        other => self.fail(crate::value::no_field_error(&other, name.as_ref())),
+                        other => {
+                            let name = match self.frames[nf].func.chunk.constants.get(idx) {
+                                Some(Value::Str(s)) => s.clone(),
+                                _ => {
+                                    self.fail("field name is not a string");
+                                    continue;
+                                }
+                            };
+                            self.fail(crate::value::no_field_error(&other, name.as_ref()))
+                        }
                     }
                 }
                 // `obj?.field` (F-4): like `FieldGet`, except a null receiver
@@ -3021,24 +4024,38 @@ impl Vm {
                     };
                     match obj {
                         Value::Null => self.frames[nf].slots.push(Value::Null),
-                        Value::Map(m) => {
-                            // `obj?.field` on a map: a missing key pushes
-                            // `null` instead of failing (F-4). The same
-                            // generation-validated inline cache as FieldGet.
-                            match self.cached_map_field_get(nf, ip, &m, &name) {
-                                Some(val) => self.frames[nf].slots.push(val),
-                                None => self.frames[nf].slots.push(Value::Null),
-                            }
-                        }
-                        // Instances and non-fieldable types keep the plain
-                        // `.` semantics: a missing field is a real error.
+                        Value::Map(m) => match self.cached_map_field_get(nf, ip, &m, &name) {
+                            Some(val) => self.frames[nf].slots.push(val),
+                            None => self.frames[nf].slots.push(Value::Null),
+                        },
                         other => match other {
                             Value::VInstance(inst) => {
-                                let ib = inst.lock().unwrap();
+                                let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
+                                let cache_idx = invoke_cache_index(chunk_ptr, ip);
+                                let ib = crate::value::lock_ref(&inst);
+                                let class_ptr = Arc::as_ptr(&ib.class) as usize;
+                                if let Some(c) = &self.instance_field_cache[cache_idx] {
+                                    if c.chunk_ptr == chunk_ptr
+                                        && c.ip == ip
+                                        && c.class_ptr == class_ptr
+                                    {
+                                        let val = ib.slots[c.slot_idx].clone();
+                                        drop(ib);
+                                        self.frames[nf].slots.push(val);
+                                        continue;
+                                    }
+                                }
                                 match ib.class.slot_index.get(name.as_ref()) {
                                     Some(&i) => {
                                         let val = ib.slots[i].clone();
                                         drop(ib);
+                                        self.instance_field_cache[cache_idx] =
+                                            Some(InstanceFieldCache {
+                                                chunk_ptr,
+                                                ip,
+                                                class_ptr,
+                                                slot_idx: i,
+                                            });
                                         self.frames[nf].slots.push(val);
                                     }
                                     None => {
@@ -3060,23 +4077,42 @@ impl Vm {
                     self.frames[nf].ip = ip + 3;
                     let v = self.pop_top();
                     let obj = self.pop_top();
-                    // Read the field name up front: the diagnostic for a
-                    // non-instance target needs it too.
-                    let field_name = match self.frames[nf].func.chunk.constants.get(idx) {
-                        Some(Value::Str(s)) => s.clone(),
-                        _ => {
-                            self.fail("field name is not a string");
-                            continue;
-                        }
-                    };
                     match obj {
                         Value::VInstance(inst) => {
-                            let name = field_name;
-                            let mut ib = inst.lock().unwrap();
+                            let chunk_ptr = Arc::as_ptr(&self.frames[nf].func.chunk) as usize;
+                            let cache_idx = invoke_cache_index(chunk_ptr, ip);
+                            let mut ib = crate::value::lock_ref(&inst);
+                            let class_ptr = Arc::as_ptr(&ib.class) as usize;
+                            if let Some(c) = &self.instance_field_cache[cache_idx] {
+                                if c.chunk_ptr == chunk_ptr
+                                    && c.ip == ip
+                                    && c.class_ptr == class_ptr
+                                {
+                                    ib.slots[c.slot_idx] = v.clone();
+                                    drop(ib);
+                                    self.frames[nf].slots.push(v);
+                                    continue;
+                                }
+                            }
+                            let name = match self.frames[nf].func.chunk.constants.get(idx) {
+                                Some(Value::Str(s)) => s.clone(),
+                                _ => {
+                                    drop(ib);
+                                    self.fail("field name is not a string");
+                                    continue;
+                                }
+                            };
                             match ib.class.slot_index.get(name.as_ref()) {
                                 Some(&i) => {
                                     ib.slots[i] = v.clone();
                                     drop(ib);
+                                    self.instance_field_cache[cache_idx] =
+                                        Some(InstanceFieldCache {
+                                            chunk_ptr,
+                                            ip,
+                                            class_ptr,
+                                            slot_idx: i,
+                                        });
                                     self.frames[nf].slots.push(v);
                                 }
                                 None => {
@@ -3090,6 +4126,13 @@ impl Vm {
                             }
                         }
                         other => {
+                            let field_name = match self.frames[nf].func.chunk.constants.get(idx) {
+                                Some(Value::Str(s)) => s.clone(),
+                                _ => {
+                                    self.fail("field name is not a string");
+                                    continue;
+                                }
+                            };
                             self.fail(crate::value::no_field_error(&other, field_name.as_ref()))
                         }
                     }
@@ -3434,6 +4477,7 @@ impl Vm {
                                 }
                             }
                             let frame_globals = self.frames[nf].globals.clone();
+                            bump_global_gen();
                             let mut g = frame_globals.lock().unwrap();
                             for (n, v, _is_const) in exports {
                                 g.insert(n, v);
@@ -3476,6 +4520,7 @@ impl Vm {
                     };
                     match self.import_module(&path) {
                         Ok(exports) => {
+                            bump_global_gen();
                             if let Some(selections) =
                                 crate::modules::parse_import_selections(&alias)
                             {
@@ -3633,82 +4678,96 @@ impl Vm {
     ///     `string` builtin and the inlined `Call string` fast path.
     #[inline]
     fn try_fused_prefix_string(
-        &self,
+        &mut self,
         nf: usize,
         ip: usize,
         prefix_idx: usize,
-    ) -> Option<(Arc<str>, usize)> {
-        let frame = &self.frames[nf];
-        let chunk = &frame.func.chunk;
-        let code = &chunk.code;
-        let prefix = match chunk.constants.get(prefix_idx) {
-            Some(Value::Str(s)) => s.clone(),
-            _ => return None,
-        };
-        if code.get(ip + 3) != Some(&(OpCode::GetGlobal as u8))
-            || code.get(ip + 6) != Some(&(OpCode::GetLocal as u8))
-        {
-            return None;
-        }
-        let gidx = u16::from_le_bytes([*code.get(ip + 4)?, *code.get(ip + 5)?]) as usize;
-        let slot = *code.get(ip + 7)? as usize;
-
-        let (value, next) = if code.get(ip + 8) == Some(&(OpCode::Constant as u8))
-            && code.get(ip + 11) == Some(&(OpCode::Mod as u8))
-            && code.get(ip + 12) == Some(&(OpCode::Call as u8))
-            && code.get(ip + 13) == Some(&1)
-            && code.get(ip + 14) == Some(&(OpCode::Add as u8))
-        {
-            let kidx = u16::from_le_bytes([*code.get(ip + 9)?, *code.get(ip + 10)?]) as usize;
-            let a = match frame.slots.get(slot) {
-                Some(Value::Int(a)) => *a,
+    ) -> Option<usize> {
+        let (prefix, gidx, value, next) = {
+            let frame = &self.frames[nf];
+            let chunk = &frame.func.chunk;
+            let code = &chunk.code;
+            let prefix = match chunk.constants.get(prefix_idx) {
+                Some(Value::Str(s)) => s.clone(),
                 _ => return None,
             };
-            let b = match chunk.constants.get(kidx) {
-                Some(Value::Int(b)) => *b,
-                _ => return None,
-            };
-            (a.checked_rem(b)?, ip + 15)
-        } else if code.get(ip + 8) == Some(&(OpCode::Call as u8))
-            && code.get(ip + 9) == Some(&1)
-            && code.get(ip + 10) == Some(&(OpCode::Add as u8))
-        {
-            let a = match frame.slots.get(slot) {
-                Some(Value::Int(a)) => *a,
-                _ => return None,
-            };
-            (a, ip + 11)
-        } else {
-            return None;
-        };
-
-        // Mirror the generic `Call` inlined fast path: the global must hold
-        // the CANONICAL `string` implementation, compared by installed
-        // function pointer (Phase 2 security fix). A name-only check let a
-        // `security.disable_natives` / pin-failure stub be bypassed by the
-        // fused prefix pattern even after the `Call` inline was fixed.
-        // Resolve from the live globals map on EVERY hit so rebinding /
-        // shadowing is never cached across iterations.
-        let name = match chunk.constants.get(gidx) {
-            Some(Value::Str(s)) => s,
-            _ => return None,
-        };
-        let is_string_native = {
-            let globals = crate::value::lock_ref(&frame.globals);
-            match globals.get(name.as_ref()) {
-                Some(Value::Native(n)) => {
-                    std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
-                }
-                Some(_) => false,
-                None => crate::stdlib::resolve_builtin_native(name.as_ref()).is_some_and(|n| {
-                    std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
-                }),
+            if code.get(ip + 3) != Some(&(OpCode::GetGlobal as u8))
+                || code.get(ip + 6) != Some(&(OpCode::GetLocal as u8))
+            {
+                return None;
             }
+            let gidx = u16::from_le_bytes([*code.get(ip + 4)?, *code.get(ip + 5)?]) as usize;
+            let slot = *code.get(ip + 7)? as usize;
+
+            let (value, next) = if code.get(ip + 8) == Some(&(OpCode::Constant as u8))
+                && code.get(ip + 11) == Some(&(OpCode::Mod as u8))
+                && code.get(ip + 12) == Some(&(OpCode::Call as u8))
+                && code.get(ip + 13) == Some(&1)
+                && code.get(ip + 14) == Some(&(OpCode::Add as u8))
+            {
+                let kidx = u16::from_le_bytes([*code.get(ip + 9)?, *code.get(ip + 10)?]) as usize;
+                let a = match frame.slots.get(slot) {
+                    Some(Value::Int(a)) => *a,
+                    _ => return None,
+                };
+                let b = match chunk.constants.get(kidx) {
+                    Some(Value::Int(b)) => *b,
+                    _ => return None,
+                };
+                (a.checked_rem(b)?, ip + 15)
+            } else if code.get(ip + 8) == Some(&(OpCode::Call as u8))
+                && code.get(ip + 9) == Some(&1)
+                && code.get(ip + 10) == Some(&(OpCode::Add as u8))
+            {
+                let a = match frame.slots.get(slot) {
+                    Some(Value::Int(a)) => *a,
+                    _ => return None,
+                };
+                (a, ip + 11)
+            } else {
+                return None;
+            };
+            (prefix, gidx, value, next)
+        };
+
+        // VM-4: Generation-guarded check that `gidx` resolves to the canonical
+        // `string` native. Re-verified whenever `VM_GLOBAL_GEN` bumps.
+        let globals_ptr = Arc::as_ptr(&self.frames[nf].globals) as usize;
+        let cur_gen = VM_GLOBAL_GEN.load(std::sync::atomic::Ordering::Relaxed);
+        let is_string_native = if self.prefix_global_cache.0 == globals_ptr
+            && self.prefix_global_cache.1 == gidx as u16
+            && self.prefix_global_cache.2 == cur_gen
+        {
+            self.prefix_global_cache.3
+        } else {
+            let frame = &self.frames[nf];
+            let name = match frame.func.chunk.constants.get(gidx) {
+                Some(Value::Str(s)) => s,
+                _ => return None,
+            };
+            let ok = {
+                let globals = crate::value::lock_ref(&frame.globals);
+                match globals.get(name.as_ref()) {
+                    Some(Value::Native(n)) => {
+                        std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
+                    }
+                    Some(_) => false,
+                    None => crate::stdlib::resolve_builtin_native(name.as_ref()).is_some_and(|n| {
+                        std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
+                    }),
+                }
+            };
+            self.prefix_global_cache = (globals_ptr, gidx as u16, cur_gen, ok);
+            ok
         };
         if !is_string_native {
             return None;
         }
 
+        // VM-3 + VM-4: If the constructed key is immediately consumed by
+        // `Invoke("get", 1)` on a `Value::Map` already on top of `slots`
+        // (e.g. `m.get("k" + string(i))`), look up the stack `&str` directly
+        // via `MapData::find_str` without allocating an `Arc<str>` on the heap!
         if prefix.len() + 24 <= 64 {
             let mut dec = [0u8; 24];
             let mut dpos = dec.len();
@@ -3733,7 +4792,109 @@ impl Vm {
             buf[..plen].copy_from_slice(prefix.as_bytes());
             buf[plen..total].copy_from_slice(dslice);
             if let Ok(s) = std::str::from_utf8(&buf[..total]) {
-                return Some((Arc::<str>::from(s), next));
+                let frame = &mut self.frames[nf];
+                let code = &frame.func.chunk.code;
+                if next + 3 < code.len()
+                    && code[next] == OpCode::Invoke as u8
+                    && code[next + 3] == 1
+                {
+                    let m_idx = u16::from_le_bytes([code[next + 1], code[next + 2]]) as usize;
+                    let is_get = matches!(
+                        frame.func.chunk.constants.get(m_idx),
+                        Some(Value::Str(ms)) if ms.as_ref() == "get"
+                    );
+                    if is_get {
+                        let found_opt = match frame.slots.last() {
+                            Some(Value::Map(m)) => {
+                                let guard = crate::value::lock_ref(m);
+                                if !guard.namespace {
+                                    guard.find_str(s).map(|i| guard.entries[i].1.clone())
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(val) = found_opt {
+                            if let Value::Int(v_int) = val {
+                                if next + 7 < code.len()
+                                    && code[next + 4] == OpCode::Add as u8
+                                    && code[next + 5] == OpCode::SetLocal as u8
+                                    && code[next + 7] == OpCode::Pop as u8
+                                {
+                                    let dst = code[next + 6] as usize;
+                                    let slen = frame.slots.len();
+                                    if slen >= 2 && dst < slen - 2 {
+                                        if let Value::Int(acc_int) = frame.slots[slen - 2] {
+                                            if let Some(sum) = acc_int.checked_add(v_int) {
+                                                frame.slots.truncate(slen - 2);
+                                                frame.slots[dst] = Value::Int(sum);
+                                                return Some(next + 8);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            *frame.slots.last_mut().unwrap() = val;
+                            return Some(next + 4);
+                        }
+                    }
+                } else if next + 6 < code.len()
+                    && code[next] == OpCode::GetLocal as u8
+                    && code[next + 2] == OpCode::Invoke as u8
+                    && code[next + 5] == 2
+                    && code[next + 6] == OpCode::Pop as u8
+                {
+                    let val_slot = code[next + 1] as usize;
+                    let m_idx = u16::from_le_bytes([code[next + 3], code[next + 4]]) as usize;
+                    let is_set = matches!(
+                        frame.func.chunk.constants.get(m_idx),
+                        Some(Value::Str(ms)) if ms.as_ref() == "set"
+                    );
+                    if is_set && val_slot < frame.slots.len() - 1 {
+                        let val = frame.slots[val_slot].clone();
+                        let did_set = match frame.slots.last() {
+                            Some(Value::Map(m)) => {
+                                let mut guard = crate::value::lock_ref(m);
+                                if !guard.namespace {
+                                    guard.set_key(
+                                        crate::value::MapKey::Str(Arc::<str>::from(s)),
+                                        val,
+                                    );
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            _ => false,
+                        };
+                        if did_set {
+                            frame.slots.pop();
+                            return Some(next + 7);
+                        }
+                    }
+                }
+                let p_ptr = prefix.as_ptr() as usize;
+                let arc_s = if (0..64).contains(&value) {
+                    let cslot = value as usize;
+                    if let Some((cp, cv, ref cs)) = self.prefix_str_cache[cslot] {
+                        if cp == p_ptr && cv == value {
+                            cs.clone()
+                        } else {
+                            let a = Arc::<str>::from(s);
+                            self.prefix_str_cache[cslot] = Some((p_ptr, value, a.clone()));
+                            a
+                        }
+                    } else {
+                        let a = Arc::<str>::from(s);
+                        self.prefix_str_cache[cslot] = Some((p_ptr, value, a.clone()));
+                        a
+                    }
+                } else {
+                    Arc::<str>::from(s)
+                };
+                self.frames[nf].slots.push(Value::Str(arc_s));
+                return Some(next);
             }
         }
 
@@ -3741,7 +4902,10 @@ impl Vm {
         let mut out = String::with_capacity(prefix.len() + suffix.len());
         out.push_str(&prefix);
         out.push_str(&suffix);
-        Some((Arc::<str>::from(out), next))
+        self.frames[nf]
+            .slots
+            .push(Value::Str(Arc::<str>::from(out)));
+        Some(next)
     }
 
     #[inline]
@@ -3894,6 +5058,49 @@ impl Vm {
     /// closures correct across arbitrary nesting and after the defining frame
     /// has returned (the `Arc` keeps the cell alive).
     fn make_closure(&mut self, fproto: std::sync::Arc<VmFuncProto>, nf: usize) -> Arc<VmFunc> {
+        let defining_globals = self
+            .frames
+            .last()
+            .map(|f| f.globals.clone())
+            .unwrap_or_else(|| self.globals.clone());
+        if fproto.upvalues.len() == 1 {
+            let eslot = fproto.upvalues[0];
+            let is_enclosing = (eslot & 0x80) != 0;
+            let slot = (eslot & 0x7f) as usize;
+            let cell_opt = if !is_enclosing {
+                self.frames[nf].own_cells.get(slot).cloned()
+            } else {
+                self.frames[nf].func.upvalues.get(slot).cloned()
+            };
+            if let Some(cell0) = cell_opt {
+                let fp_ptr = Arc::as_ptr(&fproto) as usize;
+                let gp_ptr = Arc::as_ptr(&defining_globals) as usize;
+                let cp_ptr = Arc::as_ptr(&cell0) as usize;
+                if let Some((cfp, cgp, ccp, ref cached_fn)) = self.closure_cache {
+                    if cfp == fp_ptr
+                        && cgp == gp_ptr
+                        && ccp == cp_ptr
+                        && Arc::strong_count(cached_fn) == 1
+                    {
+                        return cached_fn.clone();
+                    }
+                }
+                let built = gc::track_immutable(Arc::new(VmFunc {
+                    globals: Some(defining_globals),
+                    name: fproto.name.clone(),
+                    arity: fproto.arity,
+                    min_arity: fproto.min_arity,
+                    defaults: fproto.defaults.clone(),
+                    is_async: fproto.is_async,
+                    chunk: fproto.chunk.clone(),
+                    upvalues: vec![cell0],
+                    own_upvalues: fproto.own_upvalues,
+                    debug_locals: fproto.debug_locals.clone(),
+                }));
+                self.closure_cache = Some((fp_ptr, gp_ptr, cp_ptr, built.clone()));
+                return built;
+            }
+        }
         let mut upvalues: Vec<UpvalueCell> = Vec::with_capacity(fproto.upvalues.len());
         // Bit 7 == 0 (`0x00..=0x7f`) addresses the parent frame's per-activation
         // cell for its own captured local (`own_cells[slot]`); bit 7 == 1
@@ -3931,21 +5138,7 @@ impl Vm {
             };
             upvalues.push(cell);
         }
-        // Capture the globals of the frame doing the defining, not the VM's
-        // field: a module's function creating a closure must give that
-        // closure the module's scope (the VM field holds the *entry*
-        // program's map once a module function runs under another VM).
-        let defining_globals = self
-            .frames
-            .last()
-            .map(|f| f.globals.clone())
-            .unwrap_or_else(|| self.globals.clone());
-        // A-13 (VM side): every closure is a registered cell. A nested named
-        // function captures its own name through an upvalue cell, forming
-        // `VmFunc -> cell -> VFunc(same VmFunc)`; with the closure and the
-        // cell both in the registry, the collector sees the closed cycle and
-        // reclaims it. Unregistered, each such call leaked one closure island
-        // (measured: +1 live cell per `make()` call, growing with n).
+        // A-13 (VM side): every closure is a registered cell.
         gc::track_immutable(Arc::new(VmFunc {
             globals: Some(defining_globals),
             name: fproto.name.clone(),

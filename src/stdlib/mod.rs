@@ -423,9 +423,10 @@ thread_local! {
 }
 
 /// Begin capturing stdout/stderr into an in-memory buffer (used by WASM and embedded callers).
+/// Pre-allocates 4 KiB to avoid repeated doubling reallocations on print-heavy scripts (Track 6 WASM-4).
 pub fn start_capture() {
     CAPTURE_OUTPUT.with(|c| {
-        *c.borrow_mut() = Some(String::new());
+        *c.borrow_mut() = Some(String::with_capacity(4096));
     });
 }
 
@@ -434,16 +435,41 @@ pub fn take_capture() -> String {
     CAPTURE_OUTPUT.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
-fn emit_output(s: &str) {
+/// Format `args` space-separated directly into `buf` without intermediate
+/// `Vec<String>` allocations (Track 6 WASM-4).
+fn write_display_args(buf: &mut String, args: &[Value], newline: bool) {
+    use std::fmt::Write;
+    for (i, v) in args.iter().enumerate() {
+        if i > 0 {
+            buf.push(' ');
+        }
+        match v {
+            Value::Str(s) => buf.push_str(s),
+            Value::Int(n) => {
+                let _ = write!(buf, "{}", n);
+            }
+            Value::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
+            Value::Null => buf.push_str("null"),
+            other => buf.push_str(&crate::value::display_value(other)),
+        }
+    }
+    if newline {
+        buf.push('\n');
+    }
+}
+
+fn emit_args(args: &[Value], newline: bool) {
     let captured = CAPTURE_OUTPUT.with(|c| {
         if let Some(buf) = c.borrow_mut().as_mut() {
-            buf.push_str(s);
+            write_display_args(buf, args, newline);
             true
         } else {
             false
         }
     });
     if !captured {
+        let mut s = String::new();
+        write_display_args(&mut s, args, newline);
         print!("{}", s);
     }
 }
@@ -466,14 +492,12 @@ fn emit_err(s: &str) {
 }
 
 fn n_print(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    emit_output(&join_display(&args));
+    emit_args(&args, false);
     Ok(Value::Null)
 }
 
 fn n_println(_ctx: &NativeCtx, args: Vec<Value>) -> Result<Value, String> {
-    let mut s = join_display(&args);
-    s.push('\n');
-    emit_output(&s);
+    emit_args(&args, true);
     Ok(Value::Null)
 }
 

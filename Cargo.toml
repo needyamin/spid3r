@@ -92,6 +92,14 @@ codegen-units = 1
 # loud rather than a silent wrap. Matches debug semantics exactly.
 overflow-checks = true
 
+# Track 6 WASM-3: Fat LTO + single codegen unit for canonical browser WASM
+# builds (`cargo build --target wasm32-unknown-unknown --profile wasm-release --lib --no-default-features`).
+[profile.wasm-release]
+inherits = "release"
+opt-level = 3
+lto = true
+codegen-units = 1
+
 [profile.dev]
 # Incremental compilation corrupts its cache on OneDrive-synced trees
 # (the documented "error deleting lock file (os error 5)" quirk can escalate

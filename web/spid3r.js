@@ -146,6 +146,14 @@
       }
 
       if (typeof Response !== 'undefined' && source instanceof Response) {
+        if (typeof WebAssembly.instantiateStreaming === 'function') {
+          try {
+            const { instance } = await WebAssembly.instantiateStreaming(source.clone(), {});
+            return new Spid3rRuntime(instance);
+          } catch (_) {
+            // Fallback to arrayBuffer if streaming instantiation fails (e.g. non-wasm MIME type)
+          }
+        }
         const bytes = await source.arrayBuffer();
         return this.init(bytes);
       }

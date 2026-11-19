@@ -921,7 +921,7 @@ fn eval_line(
                     match interp.exec_stmt(stmt, env) {
                         Flow::Value(v) => last = Some(v),
                         Flow::Return(v) => last = Some(v),
-                        Flow::Error(d) => return Err(d),
+                        Flow::Error(d) => return Err(*d),
                         _ => {}
                     }
                 }
