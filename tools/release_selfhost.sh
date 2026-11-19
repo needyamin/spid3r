@@ -299,7 +299,7 @@ cmd_build() {
     elif [ -n "$stage0" ] && [ -x "$stage0" ]; then
       stage1="$out_dir/_work/s1/spid3r-self${exe_suf}"
       echo "[release_selfhost] bootstrapping Stage 1 via Stage 0 ($stage0)"
-      "$stage0" build --release "$ROOT/selfhost/main.matrix" -o "$stage1"
+      SPID3R_RUNTIME_LIB="$staticlib" "$stage0" build --release "$ROOT/selfhost/main.matrix" -o "$stage1"
     else
       echo "error[usage]: neither --stage1 nor --stage0 found to run release build" >&2
       exit 2

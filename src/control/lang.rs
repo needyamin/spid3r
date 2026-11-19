@@ -353,7 +353,7 @@ pub fn op_lang_info() -> Result<String, String> {
         .map(|o| {
             let raw = String::from_utf8_lossy(&o.stdout);
             if let Some(v_line) = raw.lines().find(|l| l.trim_start().starts_with("Version")) {
-                let v = v_line.trim().split_whitespace().nth(1).unwrap_or("");
+                let v = v_line.split_whitespace().nth(1).unwrap_or("");
                 if !v.is_empty() {
                     return format!("spid3r {} (language {})", v, crate::LANGUAGE_VERSION);
                 }

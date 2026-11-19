@@ -56,6 +56,9 @@ jobs:
           chmod +x llvm.sh
           sudo ./llvm.sh 23
           sudo apt-get install -y llvm-23-dev libllvm23
+          echo "LLVM_SYS_231_PREFIX=/usr/lib/llvm-23" >> "$GITHUB_ENV"
+          echo "SPID3R_LLVM_LIB_DIR=/usr/lib/llvm-23/lib" >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-23/bin" >> "$GITHUB_PATH"
 
       - name: Install LLVM (macOS)
         if: runner.os == 'macOS'
