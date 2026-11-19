@@ -64,7 +64,6 @@ jobs:
         if: runner.os == 'macOS'
         timeout-minutes: 25
         run: |
-          brew update
           brew install llvm || brew upgrade llvm
           PREFIX="$(brew --prefix llvm)"
           "$PREFIX/bin/llvm-config" --version
@@ -74,11 +73,7 @@ jobs:
           echo "DYLD_LIBRARY_PATH=$PREFIX/lib" >> "$GITHUB_ENV"
           echo "SDKROOT=$SDK" >> "$GITHUB_ENV"
           echo "CC=/usr/bin/clang" >> "$GITHUB_ENV"
-          # Expose llvm-config without shadowing Apple's /usr/bin/clang
-          mkdir -p "$HOME/.local/bin"
-          ln -sf "$PREFIX/bin/llvm-config" "$HOME/.local/bin/llvm-config-23"
-          ln -sf "$PREFIX/bin/llvm-config" "$HOME/.local/bin/llvm-config"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$PREFIX/bin" >> "$GITHUB_PATH"
 
       # Pinned to the same toolchain as rust-toolchain.toml and ci.yml (1.99.1).
       - name: Install Rust toolchain (pinned)
@@ -93,13 +88,20 @@ jobs:
 
       - name: Build & verify self-hosted release tarball (Stage 1 -> Stage 2 -> Stage 3)
         timeout-minutes: 25
+        shell: bash
         run: |
-          bash tools/release_selfhost.sh build \
+          set -o pipefail
+          if ! bash tools/release_selfhost.sh build \
             --target "${{ matrix.target }}" \
             --stage0 "target/${{ matrix.target }}/release/spid3r" \
             --staticlib "target/${{ matrix.target }}/release/libspid3r_lang.a" \
             --out-dir release-out \
-            --skip-installer
+            --skip-installer 2>&1 | tee release_selfhost.log; then
+            tail -n 20 release_selfhost.log | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 2
+          fi
           cp release-out/spid3r-*.tar.gz release-out/spid3r-*.tar.gz.sha256 .
 
       - name: Upload build artifact
@@ -145,6 +147,9 @@ jobs:
           Start-Process msiexec -ArgumentList '/i', 'LLVM-23.1.0-win64.msi', '/qn', '/norestart' -Wait
           Test-Path "C:\Program Files\LLVM\bin\LLVM-C.dll"
           Test-Path "C:\Program Files\LLVM\lib\LLVM-C.lib"
+          "LLVM_SYS_231_PREFIX=C:\Program Files\LLVM" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SPID3R_LLVM_LIB_DIR=C:\Program Files\LLVM\lib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Build Stage-0 runtime & GUI control host
         timeout-minutes: 55
@@ -154,17 +159,23 @@ jobs:
         shell: bash
         timeout-minutes: 25
         run: |
+          set -o pipefail
           LIB="target/release/spid3r_lang.lib"
           [ -f "$LIB" ] || LIB="$(find target -name spid3r_lang.lib | head -n 1)"
           test -s "$LIB"
-          bash tools/release_selfhost.sh build \
+          if ! bash tools/release_selfhost.sh build \
             --target x86_64-pc-windows-msvc \
             --stage0 target/release/spid3r.exe \
             --control target/release/spid3r-control.exe \
             --staticlib "$LIB" \
             --llvm-version 23.1.0 \
             --smoke-install \
-            --out-dir release-out
+            --out-dir release-out 2>&1 | tee release_selfhost_win.log; then
+            tail -n 20 release_selfhost_win.log | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 2
+          fi
           cp release-out/Spid3r-Setup-*.exe release-out/Spid3r-Setup-*.exe.sha256 .
           cp release-out/spid3r-runtime-*.tar.gz release-out/spid3r-runtime-*.tar.gz.sha256 .
 
