@@ -30,7 +30,14 @@ sha256_file() {
 }
 
 json_escape() {
-  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e ':a;N;$!ba;s/\n/\\n/g'
+  # Portable across GNU sed, macOS BSD sed, and Git Bash awk.
+  printf '%s' "$1" | awk '{
+    gsub(/\\/, "\\\\");
+    gsub(/"/, "\\\"");
+    gsub(/\r/, "");
+    if (NR > 1) printf "\\n";
+    printf "%s", $0;
+  }'
 }
 
 read_crate_version() {

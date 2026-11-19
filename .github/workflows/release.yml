@@ -69,7 +69,9 @@ jobs:
           "$PREFIX/bin/llvm-config" --version
           echo "LLVM_SYS_231_PREFIX=$PREFIX" >> "$GITHUB_ENV"
           echo "SPID3R_LLVM_LIB_DIR=$PREFIX/lib" >> "$GITHUB_ENV"
-          echo "$PREFIX/bin" >> "$GITHUB_PATH"
+          # Append (do not prepend via GITHUB_PATH) so Apple's /usr/bin/clang
+          # and /usr/bin/ar are never shadowed by Homebrew's LLVM binaries.
+          echo "PATH=$PATH:$PREFIX/bin" >> "$GITHUB_ENV"
 
       # Pinned to the same toolchain as rust-toolchain.toml and ci.yml (1.99.1).
       - name: Install Rust toolchain (pinned)
