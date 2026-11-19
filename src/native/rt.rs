@@ -40,7 +40,9 @@ use std::sync::{Mutex, OnceLock};
 use crate::ast::{BinOp, UnOp};
 use crate::sched::Scheduler;
 use crate::value::collections;
-use crate::value::{new_ref, CompiledFn, CompiledInstanceData, NativeCtx, NativeFn, Value};
+use crate::value::{
+    new_ref, CompiledFn, CompiledInstanceData, NativeCtx, NativeFn, Value, ValueV2,
+};
 use crate::vm::{vm_eval_binary, vm_eval_unary};
 
 // ----------------------------------------------------------------------------
@@ -60,33 +62,78 @@ fn abort(msg: &str) -> ! {
     std::process::exit(70);
 }
 
-/// Dereference a value handle. Panics cleanly (via `abort`) on null.
-fn deref<'a>(p: *const Value) -> &'a Value {
-    unsafe {
-        if p.is_null() {
-            abort("native runtime: null value pointer");
-        }
-        &*p
+/// Read a 16-byte `ValueV2` from a caller stack or pinned slot. Aborts cleanly on null.
+#[inline(always)]
+fn read_v2(p: *const ValueV2) -> ValueV2 {
+    if p.is_null() {
+        abort("native runtime: null value pointer");
+    }
+    // SAFETY: `p` points to a valid 16-byte `ValueV2` slot (caller stack or pinned global).
+    unsafe { *p }
+}
+
+/// Write a 16-byte `ValueV2` into the caller-allocated `out` slot.
+#[inline(always)]
+fn write_out(out: *mut ValueV2, v: ValueV2) {
+    if !out.is_null() {
+        // SAFETY: `out` is a caller-allocated 16-byte `ValueV2` stack slot.
+        unsafe { out.write(v) };
     }
 }
 
-fn to_owned(p: *const Value) -> Value {
-    deref(p).clone()
+/// Convert a `ValueV2` into an owned Rust `Value` (cloning heap objects).
+#[inline]
+fn v2_to_value(v: ValueV2) -> Value {
+    match v.tag {
+        ValueV2::TAG_NULL => Value::Null,
+        ValueV2::TAG_BOOL => Value::Bool(v.payload != 0),
+        ValueV2::TAG_INT => Value::Int(v.payload as i64),
+        ValueV2::TAG_FLOAT => Value::Float(f64::from_bits(v.payload)),
+        ValueV2::TAG_HEAP => {
+            let ptr = v.as_heap_ptr();
+            if ptr.is_null() {
+                abort("native runtime: null heap value pointer");
+            }
+            // SAFETY: `ptr` is a live `AOT_HEAP` or pinned `Box<Value>`.
+            unsafe { (*ptr).clone() }
+        }
+        ValueV2::TAG_ROPE => with_rope_str(v, |s| Value::Str(std::sync::Arc::from(s)))
+            .unwrap_or_else(|| abort("native runtime: stale rope reference")),
+        _ if v.is_sso() => v
+            .with_sso_str(|s| Value::Str(std::sync::Arc::from(s)))
+            .unwrap_or_else(|| abort("native runtime: invalid SSO UTF-8")),
+        other => abort(&format!("native runtime: invalid ValueV2 tag {}", other)),
+    }
 }
 
-/// Bump-allocate a `Value` slot in a leaked thread-local slab (the slot lives
-/// for the process lifetime, matching `Box::into_raw`).
-///
-/// Safety invariants:
-/// - Backing slabs come from `Box::leak(Box<[MaybeUninit<Value>]>)`, so every
-///   returned `*mut Value` is aligned, valid for `'static`, and safe to pass
-///   between threads or store in globals until process exit.
-/// - `SLAB` is thread-local, so only the owning thread advances `cur` (`cur < end`).
-/// - Unallocated trailing slots stay `MaybeUninit<Value>` forever (never read or
-///   dropped as `Value`).
+/// Convert a `*const ValueV2` into an owned Rust `Value`.
+#[inline]
+fn to_owned_v2(p: *const ValueV2) -> Value {
+    v2_to_value(read_v2(p))
+}
+
+/// Borrow the underlying `&Value` when `v` is a `TAG_HEAP` value.
+#[inline]
+fn deref_heap<'a>(v: ValueV2) -> Option<&'a Value> {
+    if v.tag == ValueV2::TAG_HEAP {
+        let ptr = v.as_heap_ptr();
+        if ptr.is_null() {
+            abort("native runtime: null heap value pointer");
+        }
+        // SAFETY: `ptr` is a live `AOT_HEAP` or pinned `Box<Value>`.
+        Some(unsafe { &*ptr })
+    } else {
+        None
+    }
+}
+
+/// Heap collection threshold (number of live thread-local `TAG_HEAP` boxes
+/// before `spid3r_gc_safepoint` sweeps unreachable objects).
 pub const ARENA_SLAB_LEN: usize = 4096;
 
-/// Per-call and process-wide slab allocation accounting (R4.0).
+/// Per-call and process-wide allocation accounting (R4.0 / DP-1 Value v2).
+/// Under `ValueV2`, `slabs_allocated` is always 0 (no leaked slabs) and
+/// `*_call_allocs` counts `TAG_HEAP` `Box<Value>` allocations (0 for pure scalars).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SlabAllocStats {
     pub slabs_allocated: u64,
@@ -102,12 +149,53 @@ static MAX_CALL_SLAB_ALLOCS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 static COMPLETED_CALL_SLAB_ALLOCS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+struct AotHeapState {
+    live: Vec<*mut Value>,
+    free: Vec<*mut Value>,
+}
+
+impl AotHeapState {
+    const fn new() -> Self {
+        Self {
+            live: Vec::new(),
+            free: Vec::new(),
+        }
+    }
+}
+
+struct AotStrRope {
+    epoch: u32,
+    buf: String,
+    history: crate::value::collections::FxHashMap<u32, std::sync::Arc<str>>,
+}
+
+impl AotStrRope {
+    fn new() -> Self {
+        Self {
+            epoch: 0,
+            buf: String::new(),
+            history: crate::value::collections::FxHashMap::default(),
+        }
+    }
+}
+
 thread_local! {
     static CALL_SLAB_ALLOCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static CALL_ALLOC_STACK: std::cell::RefCell<Vec<u64>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// All reclaimable heap `Box<Value>` pointers allocated on this thread plus
+    /// recycled dead boxes (`free`) reused in LIFO order by `alloc_heap_v2`.
+    static AOT_HEAP: RefCell<AotHeapState> = const { RefCell::new(AotHeapState::new()) };
+    /// Thread-local append rope for `ValueV2::TAG_ROPE` (Track 3 RT-4): enables
+    /// O(1) amortized `s = s + chunk` loops without reallocating an `Arc<str>` per step.
+    static AOT_ROPE: RefCell<AotStrRope> = RefCell::new(AotStrRope::new());
+    /// Active compiled function frame root arrays: `(base_ptr, num_slots)`.
+    static ROOT_FRAMES: RefCell<Vec<(*const ValueV2, usize)>> = const { RefCell::new(Vec::new()) };
+    /// Pinned static string literal cache keyed by `(ptr_addr, byte_len)`.
+    static STATIC_STR_CACHE: RefCell<crate::value::collections::FxHashMap<(usize, usize), *mut Value>> =
+        RefCell::new(crate::value::collections::FxHashMap::default());
 }
 
-/// Snapshot of slab allocation accounting counters (current thread + process-wide).
+/// Snapshot of allocation accounting counters (current thread + process-wide).
 pub fn slab_alloc_stats() -> SlabAllocStats {
     SlabAllocStats {
         slabs_allocated: SLAB_COUNT.load(std::sync::atomic::Ordering::Relaxed),
@@ -119,106 +207,212 @@ pub fn slab_alloc_stats() -> SlabAllocStats {
     }
 }
 
-struct SlabCursor {
-    cur: std::cell::Cell<*mut std::mem::MaybeUninit<Value>>,
-    end: std::cell::Cell<*mut std::mem::MaybeUninit<Value>>,
-}
-
-impl SlabCursor {
-    const fn empty() -> Self {
-        Self {
-            cur: std::cell::Cell::new(std::ptr::null_mut()),
-            end: std::cell::Cell::new(std::ptr::null_mut()),
-        }
+#[inline]
+fn with_rope_str<R>(v: ValueV2, f: impl FnOnce(&str) -> R) -> Option<R> {
+    if !v.is_rope() {
+        return None;
     }
-
-    #[cold]
-    fn alloc_slow(&self, v: Value) -> *mut Value {
-        SLAB_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut vec: Vec<std::mem::MaybeUninit<Value>> = Vec::with_capacity(ARENA_SLAB_LEN);
-        // SAFETY: `MaybeUninit<Value>` does not require initialization; setting len
-        // to capacity exposes valid uninitialized storage for bumping.
-        unsafe { vec.set_len(ARENA_SLAB_LEN) };
-        let slab: &'static mut [std::mem::MaybeUninit<Value>] = Box::leak(vec.into_boxed_slice());
-        let ptr = slab.as_mut_ptr();
-        // SAFETY: `ARENA_SLAB_LEN >= 1`, so `ptr` is valid for write and
-        // `ptr.add(ARENA_SLAB_LEN)` is the exact one-past-end bound of `slab`.
-        unsafe {
-            ptr.write(std::mem::MaybeUninit::new(v));
-            self.cur.set(ptr.add(1));
-            self.end.set(ptr.add(ARENA_SLAB_LEN));
-        }
-        ptr as *mut Value
-    }
-
-    #[inline(always)]
-    fn alloc(&self, v: Value) -> *mut Value {
-        CALL_SLAB_ALLOCS.with(|c| c.set(c.get() + 1));
-        let cur = self.cur.get();
-        let end = self.end.get();
-        if cur < end {
-            // SAFETY: `cur < end` guarantees `cur` lies within the currently
-            // active leaked `MaybeUninit<Value>` slab, aligned and uninitialized.
-            unsafe {
-                cur.write(std::mem::MaybeUninit::new(v));
-                self.cur.set(cur.add(1));
-            }
-            cur as *mut Value
+    let ep = v.rope_epoch();
+    let len = v.rope_len();
+    AOT_ROPE.with(|cell| {
+        let rope = cell.borrow();
+        if rope.epoch == ep {
+            rope.buf.get(..len).map(f)
         } else {
-            self.alloc_slow(v)
+            rope.history.get(&ep).and_then(|s| s.get(..len)).map(f)
+        }
+    })
+}
+
+#[inline]
+fn with_str_v2<R>(v: ValueV2, f: impl FnOnce(&str) -> R) -> Option<R> {
+    if v.is_sso() {
+        #[cfg(target_endian = "little")]
+        {
+            let len = v.sso_len();
+            // SAFETY: `v` is a `#[repr(C)]` `ValueV2 { u64, u64 }` (16 bytes). On
+            // little-endian targets, bytes `1..1 + len` (`len <= 15`) hold valid
+            // UTF-8 written exclusively by `ValueV2` SSO constructors.
+            let s = unsafe {
+                let slice =
+                    std::slice::from_raw_parts((&v as *const ValueV2 as *const u8).add(1), len);
+                std::str::from_utf8_unchecked(slice)
+            };
+            return Some(f(s));
+        }
+        #[cfg(not(target_endian = "little"))]
+        {
+            return v.with_sso_str(f);
         }
     }
-}
-
-thread_local! {
-    static VALUE_SLAB: SlabCursor = const { SlabCursor::empty() };
-}
-
-/// Box a value and hand out the raw pointer (the slot lives for the process).
-#[inline]
-fn leak(v: Value) -> *mut Value {
-    VALUE_SLAB.with(|s| s.alloc(v))
-}
-
-const SMALL_INT_MIN: i64 = -1;
-const SMALL_INT_MAX: i64 = 1023;
-
-/// Cached `'static` pointers for small integers `-1..=1023`, `Bool`, and `Null`.
-/// Never mutated via `*mut Value` (only `Value::CClass` is mutated during init).
-#[inline]
-fn small_int_ptr(v: i64) -> Option<*mut Value> {
-    if (SMALL_INT_MIN..=SMALL_INT_MAX).contains(&v) {
-        static TABLE: OnceLock<usize> = OnceLock::new();
-        let base = *TABLE.get_or_init(|| {
-            let boxed: Box<[Value]> = (SMALL_INT_MIN..=SMALL_INT_MAX)
-                .map(Value::Int)
-                .collect::<Vec<_>>()
-                .into_boxed_slice();
-            Box::into_raw(boxed) as *mut Value as usize
-        });
-        // SAFETY: `v - SMALL_INT_MIN` is within `0..=1024`, in-bounds of the leaked slice.
-        let p = unsafe { (base as *mut Value).offset((v - SMALL_INT_MIN) as isize) };
-        Some(p)
-    } else {
-        None
+    if v.is_rope() {
+        return with_rope_str(v, f);
     }
-}
-
-#[inline]
-fn leak_int(v: i64) -> *mut Value {
-    match small_int_ptr(v) {
-        Some(p) => p,
-        None => leak(Value::Int(v)),
+    if let Some(Value::Str(s)) = deref_heap(v) {
+        return Some(f(s.as_ref()));
     }
+    None
 }
 
+/// Allocate a reclaimable `TAG_HEAP` `Box<Value>` tracked by `AOT_HEAP`,
+/// reusing recycled boxes from the free pool before hitting the global allocator.
 #[inline]
-fn leak_fast(v: Value) -> *mut Value {
+fn alloc_heap_v2(v: Value) -> ValueV2 {
+    CALL_SLAB_ALLOCS.with(|c| c.set(c.get() + 1));
+    let ptr = AOT_HEAP.with(|h| {
+        let mut st = h.borrow_mut();
+        let ptr = if let Some(recycled) = st.free.pop() {
+            // SAFETY: `recycled` was boxed on this thread via `Box::into_raw`,
+            // cleared to `Value::Null` at sweep, and removed from `st.live`.
+            unsafe { std::ptr::write(recycled, v) };
+            recycled
+        } else {
+            Box::into_raw(Box::new(v))
+        };
+        st.live.push(ptr);
+        ptr
+    });
+    ValueV2::from_heap_ptr(ptr)
+}
+
+/// Convert a `&Value` reference into `ValueV2`: scalars and `<= 15`-byte
+/// strings stay inline without allocation or `Arc::clone`.
+#[inline]
+fn value_ref_to_v2(v: &Value) -> ValueV2 {
     match v {
-        Value::Int(n) => leak_int(n),
-        Value::Bool(b) => spid3r_value_bool(b as u8),
-        Value::Null => spid3r_value_null(),
-        other => leak(other),
+        Value::Null => ValueV2::NULL,
+        Value::Bool(b) => ValueV2::from_bool(*b),
+        Value::Int(n) => ValueV2::from_int(*n),
+        Value::Float(f) => ValueV2::from_float(*f),
+        Value::Str(s) if s.len() <= 15 => ValueV2::from_sso_str(s.as_ref()),
+        other => alloc_heap_v2(other.clone()),
+    }
+}
+
+/// Convert a Rust `Value` to `ValueV2`: scalars and short strings are inline
+/// (zero allocation), larger objects allocate a reclaimable `AOT_HEAP` box.
+#[inline]
+fn from_value_v2(v: Value) -> ValueV2 {
+    match v {
+        Value::Null => ValueV2::NULL,
+        Value::Bool(b) => ValueV2::from_bool(b),
+        Value::Int(n) => ValueV2::from_int(n),
+        Value::Float(f) => ValueV2::from_float(f),
+        Value::Str(s) if s.len() <= 15 => ValueV2::from_sso_str(s.as_ref()),
+        other => alloc_heap_v2(other),
+    }
+}
+
+/// Convert a Rust `Value` to a pinned `ValueV2` (never swept by `AOT_HEAP`),
+/// used for global cache slots.
+#[inline]
+fn alloc_pinned_v2(v: Value) -> ValueV2 {
+    match v {
+        Value::Null => ValueV2::NULL,
+        Value::Bool(b) => ValueV2::from_bool(b),
+        Value::Int(n) => ValueV2::from_int(n),
+        Value::Float(f) => ValueV2::from_float(f),
+        other => ValueV2::from_heap_ptr(Box::into_raw(Box::new(other))),
+    }
+}
+
+/// Register a compiled function's stack-allocated `[len x ValueV2]` frame
+/// slots as precise GC roots for the duration of the call (DP-1 / RT-2).
+#[no_mangle]
+pub extern "C" fn spid3r_frame_enter(slots: *const ValueV2, len: usize) {
+    if !slots.is_null() && len > 0 {
+        ROOT_FRAMES.with(|rf| rf.borrow_mut().push((slots, len)));
+    }
+}
+
+/// Unregister the current compiled function's frame roots on return/unwind.
+#[no_mangle]
+pub extern "C" fn spid3r_frame_exit() {
+    ROOT_FRAMES.with(|rf| {
+        rf.borrow_mut().pop();
+    });
+}
+
+/// Loop-backedge / statement GC safepoint (DP-1 / RT-2). Sweeps unreachable
+/// `AOT_HEAP` `Box<Value>` allocations and stale `AOT_ROPE` history epochs
+/// when the thread-local heap reaches `ARENA_SLAB_LEN` (4096) objects.
+#[no_mangle]
+pub extern "C" fn spid3r_gc_safepoint() {
+    let heap_due = AOT_HEAP.with(|h| h.borrow().live.len() >= ARENA_SLAB_LEN);
+    let has_rope_history = AOT_ROPE.with(|r| !r.borrow().history.is_empty());
+    let rope_due = has_rope_history && AOT_ROPE.with(|r| r.borrow().history.len() >= 1024);
+    if !heap_due && !rope_due {
+        return;
+    }
+    let mut live_small = [0usize; 64];
+    let mut live_small_len = 0usize;
+    let mut live_large: Option<crate::value::collections::FxHashSet<usize>> = None;
+    let mut live_epochs = crate::value::collections::FxHashSet::default();
+    ROOT_FRAMES.with(|rf| {
+        for &(base, len) in rf.borrow().iter() {
+            // SAFETY: each active frame registered its stack-allocated
+            // `[len x ValueV2]` array on entry and pops it before returning.
+            let slice = unsafe { std::slice::from_raw_parts(base, len) };
+            for v in slice {
+                if v.is_heap() {
+                    let addr = v.as_heap_ptr() as usize;
+                    if let Some(set) = &mut live_large {
+                        set.insert(addr);
+                    } else if !live_small[..live_small_len].contains(&addr) {
+                        if live_small_len < live_small.len() {
+                            live_small[live_small_len] = addr;
+                            live_small_len += 1;
+                        } else {
+                            let mut set = crate::value::collections::FxHashSet::default();
+                            for &p in &live_small {
+                                set.insert(p);
+                            }
+                            set.insert(addr);
+                            live_large = Some(set);
+                        }
+                    }
+                } else if has_rope_history && v.is_rope() {
+                    live_epochs.insert(v.rope_epoch());
+                }
+            }
+        }
+    });
+    let live_slice = &live_small[..live_small_len];
+    AOT_HEAP.with(|h| {
+        let mut st = h.borrow_mut();
+        let mut i = 0;
+        while i < st.live.len() {
+            let ptr = st.live[i];
+            let is_live = match &live_large {
+                Some(set) => set.contains(&(ptr as usize)),
+                None => live_slice.contains(&(ptr as usize)),
+            };
+            if is_live {
+                i += 1;
+            } else {
+                st.live.swap_remove(i);
+                if st.free.len() < ARENA_SLAB_LEN {
+                    // SAFETY: `ptr` was allocated via `Box::into_raw(Box::new(v))`
+                    // on this thread and is not referenced by any active frame root.
+                    unsafe {
+                        *ptr = Value::Null;
+                    }
+                    st.free.push(ptr);
+                } else {
+                    // SAFETY: same as above; pool is full so free the box.
+                    unsafe {
+                        drop(Box::from_raw(ptr));
+                    }
+                }
+            }
+        }
+    });
+    if has_rope_history {
+        AOT_ROPE.with(|r| {
+            r.borrow_mut()
+                .history
+                .retain(|ep, _| live_epochs.contains(ep));
+        });
     }
 }
 
@@ -240,7 +434,9 @@ fn leak_fast(v: Value) -> *mut Value {
 
 thread_local! {
     /// The value of the most recent, not-yet-taken Spid3r `throw`.
-    static THROWN: RefCell<Option<*mut Value>> = const { RefCell::new(None) };
+    static THROWN: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// Lock-free 1-byte shadow flag mirroring `THROWN.is_some()` for O(1) `spid3r_threw()`.
+    static THROWN_FLAG: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
     /// True when the pending throw came from [`rt_throw`] — a runtime *error*
     /// ("division by zero", an out-of-bounds index, …) rather than a user
     /// `throw`. The tree/VM top-level handlers render these differently
@@ -255,9 +451,15 @@ thread_local! {
 /// surrounding generated code's post-operation `spid3r_threw` guard then routes
 /// control to the enclosing handler.
 #[no_mangle]
-pub extern "C" fn spid3r_throw(v: *mut Value) {
+pub extern "C" fn spid3r_throw(v: *const ValueV2) {
     RUNTIME_ERROR.with(|f| f.set(false));
-    THROWN.with(|t| *t.borrow_mut() = Some(v));
+    let val = if v.is_null() {
+        Value::Null
+    } else {
+        to_owned_v2(v)
+    };
+    THROWN.with(|t| *t.borrow_mut() = Some(val));
+    THROWN_FLAG.with(|f| f.set(1));
 }
 
 /// Cancellation check for generated code: returns 1 and raises "task
@@ -266,12 +468,9 @@ pub extern "C" fn spid3r_throw(v: *mut Value) {
 /// instead of running to completion.
 #[no_mangle]
 pub extern "C" fn spid3r_cancel_check() -> u8 {
+    spid3r_gc_safepoint();
     if crate::sched::current_task_cancelled() {
-        let v = leak(Value::Str("task cancelled".into()));
-        // A cancellation is a runtime error, not a user throw: raise it
-        // through the flag-setting path so an uncaught cancellation prints
-        // `error[runtime]: task cancelled` (I-2).
-        rt_throw_ptr(v);
+        rt_throw_v2("task cancelled");
         1
     } else {
         0
@@ -282,46 +481,38 @@ pub extern "C" fn spid3r_cancel_check() -> u8 {
 /// operation that may throw and branches to its handler when it returns non-zero.
 #[no_mangle]
 pub extern "C" fn spid3r_threw() -> u8 {
-    THROWN.with(|t| t.borrow().is_some()) as u8
+    THROWN_FLAG.with(|f| f.get())
 }
 
-/// Take the pending thrown value (clearing it). Returns null when nothing is
-/// pending. A `try` handler calls this to obtain the exception it caught.
+/// Take the pending thrown value (clearing it) and write it into `out`.
 #[no_mangle]
-pub extern "C" fn spid3r_take_thrown() -> *mut Value {
+pub extern "C" fn spid3r_take_thrown(out: *mut ValueV2) {
     RUNTIME_ERROR.with(|f| f.set(false));
-    THROWN
+    THROWN_FLAG.with(|f| f.set(0));
+    let v = THROWN
         .with(|t| t.borrow_mut().take())
-        .unwrap_or(std::ptr::null_mut())
+        .map(from_value_v2)
+        .unwrap_or(ValueV2::NULL);
+    write_out(out, v);
 }
 
-/// Read the pending thrown value without clearing it (for the uncaught path).
-fn peek_thrown() -> Option<*mut Value> {
-    THROWN.with(|t| *t.borrow())
+/// Take the pending thrown Rust `Value` directly (internal Rust helper).
+fn take_thrown_value() -> Option<Value> {
+    RUNTIME_ERROR.with(|f| f.set(false));
+    THROWN_FLAG.with(|f| f.set(0));
+    THROWN.with(|t| t.borrow_mut().take())
 }
 
 /// Report an uncaught throw: print the pending exception and exit with the
 /// "user-program error" status (1), matching the tree/VM top-level message.
-///
-/// Message shape parity with the tree/VM engines:
-/// - a runtime *error* (`rt_throw`: "division by zero", an out-of-bounds
-///   index, …) prints `error[runtime]: <message>`;
-/// - a user `throw` prints `error[runtime]: uncaught throw (thrown: <value>)`.
-///
-/// What an AOT binary still cannot reproduce is the `--> <file>:<line>:<col>`
-/// span line (and the per-frame call trace) the interpreter prints beneath it:
-/// the throw sites are runtime trampolines that do not carry span data, and
-/// threading a span through every generated call site is a codegen redesign,
-/// deliberately out of scope here (documented native diagnostic gap — the
-/// exit code and the first stderr line match the other engines).
 #[no_mangle]
 pub extern "C" fn spid3r_uncaught() -> ! {
     let _ = std::io::stdout().flush();
     let is_runtime_error = RUNTIME_ERROR.with(|f| f.get());
-    let shown = match peek_thrown() {
-        Some(p) if !p.is_null() => crate::value::display_value(deref(p)),
-        _ => "unknown".to_string(),
-    };
+    let shown = THROWN.with(|t| match t.borrow().as_ref() {
+        Some(v) => crate::value::display_value(v),
+        None => "unknown".to_string(),
+    });
     if is_runtime_error {
         eprintln!("error[runtime]: {}", shown);
     } else {
@@ -330,35 +521,21 @@ pub extern "C" fn spid3r_uncaught() -> ! {
     std::process::exit(1);
 }
 
-/// Record a runtime error message as a thrown value and return the placeholder
-/// handle an operation returns on failure. Callers run `spid3r_threw` guards and
-/// discard the placeholder. Turns operation errors such as "division by zero"
-/// into catchable exceptions (matching the tree/VM, which throw string values).
-fn rt_throw(msg: &str) -> *mut Value {
+/// Record a runtime error message as a thrown value and return `ValueV2::NULL`.
+fn rt_throw_v2(msg: &str) -> ValueV2 {
     RUNTIME_ERROR.with(|f| f.set(true));
-    THROWN.with(|t| *t.borrow_mut() = Some(leak(Value::Str(msg.into()))));
-    leak(Value::Null)
-}
-
-/// The `*mut Value` twin of [`rt_throw`], for sites that build the message
-/// value themselves (the `i64_*` operation trampolines, the FFI bridges).
-/// Sets the runtime-error flag so an *uncaught* error reports the bare
-/// message — `error[runtime]: division by zero`, like the tree/VM — instead
-/// of the user-throw shape `uncaught throw (thrown: division by zero)`.
-/// (I-2: the trampolines used to raise through [`spid3r_throw`], the
-/// user-throw entry point, which cleared the flag.)
-fn rt_throw_ptr(v: *mut Value) -> *mut Value {
-    RUNTIME_ERROR.with(|f| f.set(true));
-    THROWN.with(|t| *t.borrow_mut() = Some(v));
-    leak(Value::Null)
+    THROWN.with(|t| *t.borrow_mut() = Some(Value::Str(msg.into())));
+    THROWN_FLAG.with(|f| f.set(1));
+    ValueV2::NULL
 }
 
 /// Raise a thrown user value (not just its display string) as the pending
 /// exception, so an enclosing `try` rebinds the original value (audit A-9).
-fn rt_throw_value(v: Value) -> *mut Value {
+fn rt_throw_value_v2(v: Value) -> ValueV2 {
     RUNTIME_ERROR.with(|f| f.set(false));
-    THROWN.with(|t| *t.borrow_mut() = Some(leak(v)));
-    leak(Value::Null)
+    THROWN.with(|t| *t.borrow_mut() = Some(v));
+    THROWN_FLAG.with(|f| f.set(1));
+    ValueV2::NULL
 }
 
 /// Run `f` at an `extern "C"` boundary (audit A-12).
@@ -387,14 +564,15 @@ fn ffi_guard<T>(what: &str, on_panic: impl FnOnce(String) -> T, f: impl FnOnce()
     }
 }
 
-/// `ffi_guard` for a call that returns a value handle: a panic becomes a
-/// pending throw, so the script fails cleanly instead of aborting.
-fn ffi_value(what: &str, f: impl FnOnce() -> *mut Value) -> *mut Value {
-    ffi_guard(
+/// `ffi_guard` for a call that writes a `ValueV2` into `out`: a panic becomes
+/// a pending throw, so the script fails cleanly instead of aborting.
+fn ffi_v2(out: *mut ValueV2, what: &str, f: impl FnOnce() -> ValueV2) {
+    let v = ffi_guard(
         what,
-        |detail| rt_throw(&format!("internal error in the native runtime: {}", detail)),
+        |detail| rt_throw_v2(&format!("internal error in the native runtime: {}", detail)),
         f,
-    )
+    );
+    write_out(out, v);
 }
 
 /// Borrow a C string from generated code without allocating when valid UTF-8.
@@ -446,18 +624,26 @@ pub fn rt_init() {
     // the generic "null values have no methods".
     g.insert("none".to_string(), Value::Option(None));
     crate::stdlib::eventloop::set_aot_invoker(std::sync::Arc::new(|cb, args| {
-        let f_ptr = leak(cb);
-        let mut arg_ptrs: Vec<*mut Value> = args.into_iter().map(leak).collect();
-        let res = spid3r_call_inner_dispatch(f_ptr, arg_ptrs.len(), arg_ptrs.as_mut_ptr());
+        let mut frame_vals: Vec<ValueV2> = Vec::with_capacity(args.len() + 2);
+        frame_vals.push(from_value_v2(cb));
+        for a in args {
+            frame_vals.push(from_value_v2(a));
+        }
+        frame_vals.push(ValueV2::NULL); // out slot
+        let f_ptr = &frame_vals[0] as *const ValueV2;
+        let arg_ptrs: Vec<*const ValueV2> = (1..frame_vals.len() - 1)
+            .map(|i| &frame_vals[i] as *const ValueV2)
+            .collect();
+        spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+        let res = spid3r_call_inner_dispatch(f_ptr, arg_ptrs.len(), arg_ptrs.as_ptr());
+        spid3r_frame_exit();
         if spid3r_threw() != 0 {
-            let thrown = spid3r_take_thrown();
-            if thrown.is_null() {
-                Err("event loop callback threw".to_string())
-            } else {
-                Err(crate::value::display_value(&to_owned(deref(thrown))))
+            match take_thrown_value() {
+                None => Err("event loop callback threw".to_string()),
+                Some(v) => Err(crate::value::display_value(&v)),
             }
         } else {
-            Ok(to_owned(res))
+            Ok(v2_to_value(res))
         }
     }));
 }
@@ -467,32 +653,23 @@ pub fn rt_init() {
 // ----------------------------------------------------------------------------
 
 #[no_mangle]
-pub extern "C" fn spid3r_value_int(v: i64) -> *mut Value {
-    leak_int(v)
+pub extern "C" fn spid3r_value_int(out: *mut ValueV2, v: i64) {
+    write_out(out, ValueV2::from_int(v));
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_value_float(v: f64) -> *mut Value {
-    leak(Value::Float(v))
-}
-
-static TRUE_VAL: OnceLock<usize> = OnceLock::new();
-static FALSE_VAL: OnceLock<usize> = OnceLock::new();
-static NULL_VAL: OnceLock<usize> = OnceLock::new();
-
-#[no_mangle]
-pub extern "C" fn spid3r_value_bool(v: u8) -> *mut Value {
-    if v != 0 {
-        *TRUE_VAL.get_or_init(|| Box::into_raw(Box::new(Value::Bool(true))) as usize) as *mut Value
-    } else {
-        *FALSE_VAL.get_or_init(|| Box::into_raw(Box::new(Value::Bool(false))) as usize)
-            as *mut Value
-    }
+pub extern "C" fn spid3r_value_float(out: *mut ValueV2, v: f64) {
+    write_out(out, ValueV2::from_float(v));
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_value_null() -> *mut Value {
-    *NULL_VAL.get_or_init(|| Box::into_raw(Box::new(Value::Null)) as usize) as *mut Value
+pub extern "C" fn spid3r_value_bool(out: *mut ValueV2, v: u8) {
+    write_out(out, ValueV2::from_bool(v != 0));
+}
+
+#[no_mangle]
+pub extern "C" fn spid3r_value_null(out: *mut ValueV2) {
+    write_out(out, ValueV2::NULL);
 }
 
 #[no_mangle]
@@ -500,10 +677,7 @@ pub extern "C" fn spid3r_i64_add(a: i64, b: i64) -> i64 {
     match a.checked_add(b) {
         Some(v) => v,
         None => {
-            let msg = leak(Value::Str(
-                format!("integer overflow: {} + {}", a, b).into(),
-            ));
-            rt_throw_ptr(msg);
+            rt_throw_v2(&format!("integer overflow: {} + {}", a, b));
             0
         }
     }
@@ -514,10 +688,7 @@ pub extern "C" fn spid3r_i64_sub(a: i64, b: i64) -> i64 {
     match a.checked_sub(b) {
         Some(v) => v,
         None => {
-            let msg = leak(Value::Str(
-                format!("integer overflow: {} - {}", a, b).into(),
-            ));
-            rt_throw_ptr(msg);
+            rt_throw_v2(&format!("integer overflow: {} - {}", a, b));
             0
         }
     }
@@ -528,10 +699,7 @@ pub extern "C" fn spid3r_i64_mul(a: i64, b: i64) -> i64 {
     match a.checked_mul(b) {
         Some(v) => v,
         None => {
-            let msg = leak(Value::Str(
-                format!("integer overflow: {} * {}", a, b).into(),
-            ));
-            rt_throw_ptr(msg);
+            rt_throw_v2(&format!("integer overflow: {} * {}", a, b));
             0
         }
     }
@@ -540,17 +708,13 @@ pub extern "C" fn spid3r_i64_mul(a: i64, b: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn spid3r_i64_div(a: i64, b: i64) -> i64 {
     if b == 0 {
-        let msg = leak(Value::Str("division by zero".into()));
-        rt_throw_ptr(msg);
+        rt_throw_v2("division by zero");
         return 0;
     }
     match a.checked_div(b) {
         Some(v) => v,
         None => {
-            let msg = leak(Value::Str(
-                format!("integer overflow: {} / {}", a, b).into(),
-            ));
-            rt_throw_ptr(msg);
+            rt_throw_v2(&format!("integer overflow: {} / {}", a, b));
             0
         }
     }
@@ -559,8 +723,7 @@ pub extern "C" fn spid3r_i64_div(a: i64, b: i64) -> i64 {
 #[no_mangle]
 pub extern "C" fn spid3r_i64_mod(a: i64, b: i64) -> i64 {
     if b == 0 {
-        let msg = leak(Value::Str("modulo by zero".into()));
-        rt_throw_ptr(msg);
+        rt_throw_v2("modulo by zero");
         return 0;
     }
     a.wrapping_rem(b)
@@ -571,162 +734,149 @@ pub extern "C" fn spid3r_i64_neg(a: i64) -> i64 {
     match a.checked_neg() {
         Some(v) => v,
         None => {
-            let msg = leak(Value::Str(format!("integer overflow: -{}", a).into()));
-            rt_throw_ptr(msg);
+            rt_throw_v2(&format!("integer overflow: -{}", a));
             0
         }
     }
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_to_i64(v: *const Value) -> i64 {
-    match deref(v) {
-        Value::Int(n) => *n,
-        _ => {
-            let msg = leak(Value::Str("expected integer".into()));
-            rt_throw_ptr(msg);
-            0
-        }
+pub extern "C" fn spid3r_to_i64(v: *const ValueV2) -> i64 {
+    let val = read_v2(v);
+    if val.tag == ValueV2::TAG_INT {
+        val.payload as i64
+    } else {
+        rt_throw_v2("expected integer");
+        0
     }
 }
-
-// ---------------------------------------------------------------------------
-// AOT inline fast paths (Phase 3)
-//
-// `spid3r_binop` already keeps its (Int, Int) arm in Rust, but every call
-// still crosses the generated-code ABI, and its result is a fresh heap box.
-// For loop-heavy scripts that dominates: Phase 1 diagnosed prime's native
-// inner loop as a chain of opaque extern calls plus an allocation per
-// binop. These two helpers let the AOT compiler emit inline arithmetic on
-// unboxed i64 operands, checking boxness itself and falling back to the
-// generic trampoline when a value turns out not to be an `Int` — so mixed
-// dynamic typing (float promotion, operator overloads) and the exact error
-// messages stay on the generic path, byte-for-byte.
-//
-// Both are PURE: `deref` only reads the box, never mutates, locks or throws.
-// The generated IR may therefore hoist the check out of a loop for any
-// operand whose slot is loop-invariant (e.g. a parameter that the function
-// never reassigns).
-// ---------------------------------------------------------------------------
 
 /// 1 when the value is an `Int`, 0 otherwise. Never throws.
 #[no_mangle]
-pub extern "C" fn spid3r_is_int(v: *const Value) -> i8 {
-    matches!(deref(v), Value::Int(_)) as i8
+pub extern "C" fn spid3r_is_int(v: *const ValueV2) -> i8 {
+    (read_v2(v).tag == ValueV2::TAG_INT) as i8
 }
 
 /// Raw i64 payload of an `Int` value. Call only after `spid3r_is_int`
 /// returned 1; any other value yields 0 rather than reading garbage.
 #[no_mangle]
-pub extern "C" fn spid3r_int_of(v: *const Value) -> i64 {
-    match deref(v) {
-        Value::Int(n) => *n,
-        _ => 0,
+pub extern "C" fn spid3r_int_of(v: *const ValueV2) -> i64 {
+    let val = read_v2(v);
+    if val.tag == ValueV2::TAG_INT {
+        val.payload as i64
+    } else {
+        0
     }
 }
 
-// ---------------------------------------------------------------- FFI bridge
-//
-// `extern fn` marshals only these four shapes across the C boundary. Each pair
-// is explicit: the AOT side calls the `to_*` form to get a C value and the
-// `value_*` form to box a result back into a Spidr value.
-
 #[no_mangle]
-pub extern "C" fn spid3r_to_f64(v: *const Value) -> f64 {
-    match deref(v) {
-        Value::Float(f) => *f,
-        // A C function taking `double` accepts an int argument without
-        // complaint, and a script should not have to write `1.0` to pass `1`.
-        Value::Int(n) => *n as f64,
+pub extern "C" fn spid3r_to_f64(v: *const ValueV2) -> f64 {
+    let val = read_v2(v);
+    match val.tag {
+        ValueV2::TAG_FLOAT => f64::from_bits(val.payload),
+        ValueV2::TAG_INT => (val.payload as i64) as f64,
         _ => {
-            let msg = leak(Value::Str("expected number".into()));
-            rt_throw_ptr(msg);
+            rt_throw_v2("expected number");
             0.0
         }
     }
 }
 
-/// Copy a Spidr string into a NUL-terminated C string.
-///
-/// The buffer is **owned by the caller** and released with the existing
-/// `spid3r_cstr_free` (the same one `spid3r_display` uses) right after the call
-/// returns. Copying rather than borrowing is deliberate: `Arc<str>` is not
-/// NUL-terminated, and a C function may only keep the pointer for the duration
-/// of the call.
 #[no_mangle]
-pub extern "C" fn spid3r_cstr(v: *const Value) -> *mut c_char {
-    let text: &str = match deref(v) {
-        Value::Str(s) => s,
-        Value::Null => "",
-        _ => {
-            let msg = leak(Value::Str("expected string".into()));
-            rt_throw_ptr(msg);
-            return std::ptr::null_mut();
-        }
-    };
-    match std::ffi::CString::new(text) {
-        Ok(c) => c.into_raw(),
-        // An interior NUL cannot be represented in C; report it rather than
-        // silently truncating the string at the boundary.
-        Err(_) => {
-            let msg = leak(Value::Str("string contains a NUL byte".into()));
-            rt_throw_ptr(msg);
-            std::ptr::null_mut()
-        }
+pub extern "C" fn spid3r_cstr(v: *const ValueV2) -> *mut c_char {
+    let val = read_v2(v);
+    if val.tag == ValueV2::TAG_NULL {
+        return match std::ffi::CString::new("") {
+            Ok(c) => c.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        };
     }
+    if let Some(res) = with_str_v2(val, |text| std::ffi::CString::new(text)) {
+        return match res {
+            Ok(c) => c.into_raw(),
+            Err(_) => {
+                rt_throw_v2("string contains a NUL byte");
+                std::ptr::null_mut()
+            }
+        };
+    }
+    rt_throw_v2("expected string");
+    std::ptr::null_mut()
 }
 
-/// Read a C string returned by an `extern fn` into a Spidr value.
-///
-/// The buffer is **not** freed: a C function may return a string literal or a
-/// static buffer, and freeing it would be a double-free waiting to happen. A
-/// null pointer becomes `null`.
 #[no_mangle]
-pub extern "C" fn spid3r_value_from_cstr(p: *const c_char) -> *mut Value {
+pub extern "C" fn spid3r_value_from_cstr(out: *mut ValueV2, p: *const c_char) {
     if p.is_null() {
-        return spid3r_value_null();
+        write_out(out, ValueV2::NULL);
+        return;
     }
+    // SAFETY: caller passes a NUL-terminated C string from `extern fn`.
     let text = unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy();
-    leak(Value::Str(text.into_owned().into()))
+    let v = if text.len() <= 15 {
+        ValueV2::from_sso_str(text.as_ref())
+    } else {
+        alloc_heap_v2(Value::Str(text.into_owned().into()))
+    };
+    write_out(out, v);
 }
 
 /// Build a string from raw bytes (LLVM globals hold the literal bytes).
+/// Short literals (`<= 15` bytes) pack inline into `ValueV2` SSO with zero
+/// heap or cache lookup; longer literals stay pinned in `STATIC_STR_CACHE`.
 #[no_mangle]
-pub extern "C" fn spid3r_value_str(ptr: *const u8, len: usize) -> *mut Value {
+pub extern "C" fn spid3r_value_str(out: *mut ValueV2, ptr: *const u8, len: usize) {
     if ptr.is_null() {
-        return leak(Value::Null);
+        write_out(out, ValueV2::NULL);
+        return;
     }
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let s = String::from_utf8_lossy(bytes).into_owned();
-    leak(Value::Str(s.into()))
-}
-
-// FFI pointer boundary (SH-7): the two shapes that let `extern fn` move raw
-// pointers. A `ptr` value in Spid3r space is an opaque handle — a boxed i64
-// holding the address — so the value model gains no new variant and no new
-// ownership rule: the C side keeps whatever ownership it had, and the only
-// defined operation on a handle is passing it back to a `ptr` parameter.
-
-/// Wrap a raw C pointer as an opaque handle. The pointer is never dereferenced
-/// here and nothing is freed; `extern fn` return values declared `ptr` arrive
-/// here straight from the C callee.
-#[no_mangle]
-pub extern "C" fn spid3r_value_from_ptr(p: *mut c_void) -> *mut Value {
-    leak(Value::Int(p as usize as i64))
-}
-
-/// Extract the raw pointer from a handle boxed by [`spid3r_value_from_ptr`].
-/// Anything that is not an `Int` handle throws `expected pointer`, exactly
-/// like the other boundary conversions (`expected integer`, `expected string`).
-#[no_mangle]
-pub extern "C" fn spid3r_to_ptr(v: *const Value) -> *mut c_void {
-    match deref(v) {
-        Value::Int(n) => *n as usize as *mut c_void,
-        _ => {
-            let msg = leak(Value::Str("expected pointer".into()));
-            rt_throw_ptr(msg);
-            std::ptr::null_mut()
+    if len <= 15 {
+        // SAFETY: `ptr` points to a compiler-emitted static byte slice of `len` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        if let Ok(valid) = std::str::from_utf8(bytes) {
+            write_out(out, ValueV2::from_sso_str(valid));
+            return;
         }
+        let lossy = String::from_utf8_lossy(bytes);
+        if lossy.len() <= 15 {
+            write_out(out, ValueV2::from_sso_str(lossy.as_ref()));
+            return;
+        }
+        let p = Box::into_raw(Box::new(Value::Str(lossy.into_owned().into())));
+        write_out(out, ValueV2::from_heap_ptr(p));
+        return;
+    }
+    let key = (ptr as usize, len);
+    let cached = STATIC_STR_CACHE.with(|c| c.borrow().get(&key).copied());
+    if let Some(p) = cached {
+        write_out(out, ValueV2::from_heap_ptr(p));
+        return;
+    }
+    // SAFETY: `ptr` points to a compiler-emitted static byte slice of `len` bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let s: std::sync::Arc<str> = match std::str::from_utf8(bytes) {
+        Ok(valid) => std::sync::Arc::from(valid),
+        Err(_) => String::from_utf8_lossy(bytes).into_owned().into(),
+    };
+    let p = Box::into_raw(Box::new(Value::Str(s)));
+    STATIC_STR_CACHE.with(|c| {
+        c.borrow_mut().insert(key, p);
+    });
+    write_out(out, ValueV2::from_heap_ptr(p));
+}
+
+#[no_mangle]
+pub extern "C" fn spid3r_value_from_ptr(out: *mut ValueV2, p: *mut c_void) {
+    write_out(out, ValueV2::from_int(p as usize as i64));
+}
+
+#[no_mangle]
+pub extern "C" fn spid3r_to_ptr(v: *const ValueV2) -> *mut c_void {
+    let val = read_v2(v);
+    if val.tag == ValueV2::TAG_INT {
+        val.payload as usize as *mut c_void
+    } else {
+        rt_throw_v2("expected pointer");
+        std::ptr::null_mut()
     }
 }
 
@@ -779,19 +929,21 @@ fn overload_dunders(op: BinOp) -> Option<(&'static str, &'static str)> {
 /// construction all go through the shared `spid3r_call_inner`, so the
 /// semantics — including the arity diagnostic — match a direct call.
 fn native_call_value(f: Value, args: Vec<Value>) -> Result<Value, String> {
-    let argc = args.len();
-    let mut argv: Vec<*mut Value> = args.iter().map(|a| leak(a.clone())).collect();
-    let r = spid3r_call_inner(leak(f), argc, argv.as_mut_ptr());
-    // A `throw` inside the callee leaves the pending-throw flag set; the
-    // generated `spid3r_threw` guard after the operator handles it, exactly
-    // as it does for a direct call.
-    Ok(to_owned(r))
+    let mut frame_vals: Vec<ValueV2> = Vec::with_capacity(args.len() + 1);
+    frame_vals.push(from_value_v2(f));
+    for a in args {
+        frame_vals.push(from_value_v2(a));
+    }
+    let f_ptr = &frame_vals[0] as *const ValueV2;
+    let argv: Vec<*const ValueV2> = (1..frame_vals.len())
+        .map(|i| &frame_vals[i] as *const ValueV2)
+        .collect();
+    spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+    let r = spid3r_call_inner(f_ptr, argv.len(), argv.as_ptr());
+    spid3r_frame_exit();
+    Ok(v2_to_value(r))
 }
 
-/// Call a compiled function with `args` (the receiver first for methods).
-/// Arity is range-checked BEFORE entering generated code: the prologue loads
-/// `argv[i]` for every declared parameter, so a short call reads past the
-/// array (audit S-3). The wording matches the VM's `call_value_sync`.
 fn call_cfn_method(cfn: &CompiledFn, method: &str, args: &[Value]) -> Result<Value, String> {
     let argc = args.len();
     if argc < cfn.min_arity || argc > cfn.arity {
@@ -800,13 +952,19 @@ fn call_cfn_method(cfn: &CompiledFn, method: &str, args: &[Value]) -> Result<Val
             method, cfn.arity, argc
         ));
     }
-    let argv: Vec<*mut Value> = args.iter().map(|a| leak(a.clone())).collect();
+    let mut frame_vals: Vec<ValueV2> = args.iter().map(|a| from_value_v2(a.clone())).collect();
+    let argv: Vec<*const ValueV2> = frame_vals.iter().map(|v| v as *const ValueV2).collect();
+    let mut out = ValueV2::NULL;
     if !enter_call() {
         return Err("stack overflow: call depth limit reached".to_string());
     }
-    let r = unsafe { (cfn.code)(cfn.env, argc, argv.as_ptr()) };
+    spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+    // SAFETY: `cfn.code` is a compiled Spid3r function pointer with matching ABI.
+    unsafe { (cfn.code)(&mut out, cfn.env, argc, argv.as_ptr()) };
+    spid3r_frame_exit();
     leave_call();
-    Ok(to_owned(r))
+    let _ = &mut frame_vals;
+    Ok(v2_to_value(out))
 }
 
 /// Operator overloading in compiled code — the native half of the VM's
@@ -860,165 +1018,421 @@ fn native_try_unary_operator(v: &Value, method: &str) -> Option<Result<Value, St
     }
 }
 
+#[inline]
+fn is_str_v2(v: ValueV2) -> bool {
+    v.is_sso() || v.is_rope() || matches!(deref_heap(v), Some(Value::Str(_)))
+}
+
+fn concat_str_v2(lv: ValueV2, rv: ValueV2) -> Option<ValueV2> {
+    if lv.is_sso() && rv.is_sso() {
+        let llen = lv.sso_len();
+        let rlen = rv.sso_len();
+        let total = llen + rlen;
+        if total <= 7 {
+            let l_bytes = lv.tag >> 8;
+            let r_bytes = rv.tag >> 8;
+            let new_tag =
+                (ValueV2::TAG_SSO_BASE + total as u64) | ((l_bytes | (r_bytes << (llen * 8))) << 8);
+            return Some(ValueV2 {
+                tag: new_tag,
+                payload: 0,
+            });
+        }
+        if total <= 15 {
+            let mut lbuf = [0u8; 16];
+            let mut rbuf = [0u8; 16];
+            lv.write_sso_bytes(&mut lbuf);
+            rv.write_sso_bytes(&mut rbuf);
+            let mut combined = [0u8; 15];
+            combined[..llen].copy_from_slice(&lbuf[1..1 + llen]);
+            combined[llen..total].copy_from_slice(&rbuf[1..1 + rlen]);
+            return Some(ValueV2::from_sso_bytes(&combined[..total]));
+        }
+    }
+    if !(is_str_v2(lv) && is_str_v2(rv)) {
+        return None;
+    }
+
+    let mut l_sso_buf = [0u8; 16];
+    let mut r_sso_buf = [0u8; 16];
+    let l_sso_slice: Option<&str> = if lv.is_sso() {
+        let llen = lv.write_sso_bytes(&mut l_sso_buf);
+        std::str::from_utf8(&l_sso_buf[1..1 + llen]).ok()
+    } else {
+        None
+    };
+    let r_sso_slice: Option<&str> = if rv.is_sso() {
+        let rlen = rv.write_sso_bytes(&mut r_sso_buf);
+        std::str::from_utf8(&r_sso_buf[1..1 + rlen]).ok()
+    } else {
+        None
+    };
+    let l_heap: Option<&str> = match deref_heap(lv) {
+        Some(Value::Str(s)) => Some(s.as_ref()),
+        _ => None,
+    };
+    let r_heap: Option<&str> = match deref_heap(rv) {
+        Some(Value::Str(s)) => Some(s.as_ref()),
+        _ => None,
+    };
+
+    AOT_ROPE.with(|cell| {
+        let mut rope = cell.borrow_mut();
+        let l_len = if let Some(s) = l_sso_slice {
+            s.len()
+        } else if let Some(s) = l_heap {
+            s.len()
+        } else {
+            lv.rope_len()
+        };
+        let r_len = if let Some(s) = r_sso_slice {
+            s.len()
+        } else if let Some(s) = r_heap {
+            s.len()
+        } else {
+            rv.rope_len()
+        };
+        let total = l_len + r_len;
+
+        if total <= 15 {
+            let mut combined = [0u8; 15];
+            let l_src: &str = if let Some(s) = l_sso_slice.or(l_heap) {
+                s
+            } else {
+                let ep = lv.rope_epoch();
+                if rope.epoch == ep {
+                    rope.buf.get(..lv.rope_len())?
+                } else {
+                    rope.history.get(&ep).and_then(|s| s.get(..lv.rope_len()))?
+                }
+            };
+            combined[..l_len].copy_from_slice(l_src.as_bytes());
+            let r_src: &str = if let Some(s) = r_sso_slice.or(r_heap) {
+                s
+            } else {
+                let ep = rv.rope_epoch();
+                if rope.epoch == ep {
+                    rope.buf.get(..rv.rope_len())?
+                } else {
+                    rope.history.get(&ep).and_then(|s| s.get(..rv.rope_len()))?
+                }
+            };
+            combined[l_len..total].copy_from_slice(r_src.as_bytes());
+            return Some(ValueV2::from_sso_bytes(&combined[..total]));
+        }
+
+        // O(1) amortized tail append on active rope buffer.
+        if lv.is_rope()
+            && lv.rope_epoch() == rope.epoch
+            && lv.rope_len() == rope.buf.len()
+            && total <= u32::MAX as usize
+        {
+            if let Some(rs) = r_sso_slice.or(r_heap) {
+                rope.buf.push_str(rs);
+            } else {
+                let rep = rv.rope_epoch();
+                let rlen = rv.rope_len();
+                if rep == rope.epoch {
+                    let copied = rope.buf.as_bytes().get(..rlen)?.to_vec();
+                    let rs = std::str::from_utf8(&copied).ok()?;
+                    rope.buf.push_str(rs);
+                } else {
+                    let h = rope.history.get(&rep)?.clone();
+                    rope.buf.push_str(h.get(..rlen)?);
+                }
+            }
+            return Some(ValueV2::from_rope(rope.epoch, rope.buf.len() as u32));
+        }
+
+        if total > u32::MAX as usize {
+            let mut s = String::with_capacity(total);
+            let l_src: &str = if let Some(ls) = l_sso_slice.or(l_heap) {
+                ls
+            } else {
+                let ep = lv.rope_epoch();
+                if rope.epoch == ep {
+                    rope.buf.get(..lv.rope_len())?
+                } else {
+                    rope.history.get(&ep).and_then(|h| h.get(..lv.rope_len()))?
+                }
+            };
+            s.push_str(l_src);
+            let r_src: &str = if let Some(rs) = r_sso_slice.or(r_heap) {
+                rs
+            } else {
+                let ep = rv.rope_epoch();
+                if rope.epoch == ep {
+                    rope.buf.get(..rv.rope_len())?
+                } else {
+                    rope.history.get(&ep).and_then(|h| h.get(..rv.rope_len()))?
+                }
+            };
+            s.push_str(r_src);
+            return Some(alloc_heap_v2(Value::Str(s.into())));
+        }
+
+        // Archive previous non-empty active rope buffer so live slices stay valid.
+        if !rope.buf.is_empty() {
+            let old_ep = rope.epoch;
+            let old_buf = std::mem::take(&mut rope.buf);
+            rope.history
+                .insert(old_ep, std::sync::Arc::<str>::from(old_buf));
+        }
+        loop {
+            rope.epoch = rope.epoch.wrapping_add(1);
+            if rope.epoch != 0 && !rope.history.contains_key(&rope.epoch) {
+                break;
+            }
+        }
+        let mut next_buf = String::with_capacity((total * 2).max(64));
+        let l_src: &str = if let Some(ls) = l_sso_slice.or(l_heap) {
+            ls
+        } else {
+            rope.history
+                .get(&lv.rope_epoch())
+                .and_then(|h| h.get(..lv.rope_len()))?
+        };
+        next_buf.push_str(l_src);
+        let r_src: &str = if let Some(rs) = r_sso_slice.or(r_heap) {
+            rs
+        } else {
+            rope.history
+                .get(&rv.rope_epoch())
+                .and_then(|h| h.get(..rv.rope_len()))?
+        };
+        next_buf.push_str(r_src);
+        rope.buf = next_buf;
+        Some(ValueV2::from_rope(rope.epoch, rope.buf.len() as u32))
+    })
+}
+
 #[no_mangle]
-pub extern "C" fn spid3r_binop(l: *const Value, r: *const Value, op: i64) -> *mut Value {
+pub extern "C" fn spid3r_binop(out: *mut ValueV2, l: *const ValueV2, r: *const ValueV2, op: i64) {
     let op = match binop_from_u8(op as u8) {
         Some(o) => o,
         None => abort("native runtime: unknown binop"),
     };
-    let l_ref = deref(l);
-    let r_ref = deref(r);
-    if let (Value::Int(a), Value::Int(b)) = (l_ref, r_ref) {
-        let a = *a;
-        let b = *b;
-        return match op {
+    let lv = read_v2(l);
+    let rv = read_v2(r);
+    if lv.tag == ValueV2::TAG_INT && rv.tag == ValueV2::TAG_INT {
+        let a = lv.payload as i64;
+        let b = rv.payload as i64;
+        let res = match op {
             BinOp::Add => match a.checked_add(b) {
-                Some(v) => leak_int(v),
-                None => rt_throw(&format!("integer overflow: {} + {}", a, b)),
+                Some(v) => ValueV2::from_int(v),
+                None => rt_throw_v2(&format!("integer overflow: {} + {}", a, b)),
             },
             BinOp::Sub => match a.checked_sub(b) {
-                Some(v) => leak_int(v),
-                None => rt_throw(&format!("integer overflow: {} - {}", a, b)),
+                Some(v) => ValueV2::from_int(v),
+                None => rt_throw_v2(&format!("integer overflow: {} - {}", a, b)),
             },
             BinOp::Mul => match a.checked_mul(b) {
-                Some(v) => leak_int(v),
-                None => rt_throw(&format!("integer overflow: {} * {}", a, b)),
+                Some(v) => ValueV2::from_int(v),
+                None => rt_throw_v2(&format!("integer overflow: {} * {}", a, b)),
             },
             BinOp::Div => {
                 if b == 0 {
-                    rt_throw("division by zero")
+                    rt_throw_v2("division by zero")
                 } else {
                     match a.checked_div(b) {
-                        Some(v) => leak_int(v),
-                        None => rt_throw(&format!("integer overflow: {} / {}", a, b)),
+                        Some(v) => ValueV2::from_int(v),
+                        None => rt_throw_v2(&format!("integer overflow: {} / {}", a, b)),
                     }
                 }
             }
             BinOp::Mod => {
                 if b == 0 {
-                    rt_throw("modulo by zero")
+                    rt_throw_v2("modulo by zero")
                 } else {
-                    leak_int(a.wrapping_rem(b))
+                    ValueV2::from_int(a.wrapping_rem(b))
                 }
             }
-            BinOp::Eq => spid3r_value_bool((a == b) as u8),
-            BinOp::Ne => spid3r_value_bool((a != b) as u8),
-            BinOp::Lt => spid3r_value_bool((a < b) as u8),
-            BinOp::Le => spid3r_value_bool((a <= b) as u8),
-            BinOp::Gt => spid3r_value_bool((a > b) as u8),
-            BinOp::Ge => spid3r_value_bool((a >= b) as u8),
+            BinOp::Eq => ValueV2::from_bool(a == b),
+            BinOp::Ne => ValueV2::from_bool(a != b),
+            BinOp::Lt => ValueV2::from_bool(a < b),
+            BinOp::Le => ValueV2::from_bool(a <= b),
+            BinOp::Gt => ValueV2::from_bool(a > b),
+            BinOp::Ge => ValueV2::from_bool(a >= b),
         };
+        write_out(out, res);
+        return;
     }
-    if let (Value::Float(a), Value::Float(b)) = (l_ref, r_ref) {
-        let a = *a;
-        let b = *b;
-        return match op {
-            BinOp::Add => leak(Value::Float(a + b)),
-            BinOp::Sub => leak(Value::Float(a - b)),
-            BinOp::Mul => leak(Value::Float(a * b)),
+    if lv.tag == ValueV2::TAG_FLOAT && rv.tag == ValueV2::TAG_FLOAT {
+        let a = f64::from_bits(lv.payload);
+        let b = f64::from_bits(rv.payload);
+        let res = match op {
+            BinOp::Add => ValueV2::from_float(a + b),
+            BinOp::Sub => ValueV2::from_float(a - b),
+            BinOp::Mul => ValueV2::from_float(a * b),
             BinOp::Div => {
                 if b == 0.0 {
-                    rt_throw("division by zero")
+                    rt_throw_v2("division by zero")
                 } else {
-                    leak(Value::Float(a / b))
+                    ValueV2::from_float(a / b)
                 }
             }
             BinOp::Mod => {
                 if b == 0.0 {
-                    rt_throw("modulo by zero")
+                    rt_throw_v2("modulo by zero")
                 } else {
-                    leak(Value::Float(a % b))
+                    ValueV2::from_float(a % b)
                 }
             }
-            BinOp::Eq => spid3r_value_bool((a == b) as u8),
-            BinOp::Ne => spid3r_value_bool((a != b) as u8),
-            BinOp::Lt => spid3r_value_bool((a < b) as u8),
-            BinOp::Le => spid3r_value_bool((a <= b) as u8),
-            BinOp::Gt => spid3r_value_bool((a > b) as u8),
-            BinOp::Ge => spid3r_value_bool((a >= b) as u8),
+            BinOp::Eq => ValueV2::from_bool(a == b),
+            BinOp::Ne => ValueV2::from_bool(a != b),
+            BinOp::Lt => ValueV2::from_bool(a < b),
+            BinOp::Le => ValueV2::from_bool(a <= b),
+            BinOp::Gt => ValueV2::from_bool(a > b),
+            BinOp::Ge => ValueV2::from_bool(a >= b),
         };
+        write_out(out, res);
+        return;
     }
-    if let (Value::Str(a), Value::Str(b)) = (l_ref, r_ref) {
-        if op == BinOp::Add {
-            // N2.2 + Track 3 RT-4: Str+Str concat with a 128-byte stack buffer
-            // fast path so short concats (e.g. `"k" + string(i)`) do a single
-            // `Arc<str>` allocation instead of `String` + `Arc<str>`.
-            let total = a.len() + b.len();
-            if total <= 128 {
-                let mut buf = [0u8; 128];
-                buf[..a.len()].copy_from_slice(a.as_bytes());
-                buf[a.len()..total].copy_from_slice(b.as_bytes());
-                // `a` and `b` are valid UTF-8, so their concatenation is valid UTF-8.
-                if let Ok(s) = std::str::from_utf8(&buf[..total]) {
-                    return leak(Value::Str(std::sync::Arc::from(s)));
-                }
-            }
-            let mut s = String::with_capacity(total);
-            s.push_str(a);
-            s.push_str(b);
-            return leak(Value::Str(s.into()));
+    if op == BinOp::Add {
+        if let Some(res) = concat_str_v2(lv, rv) {
+            write_out(out, res);
+            return;
         }
+    } else if (op == BinOp::Eq || op == BinOp::Ne) && lv.is_sso() && rv.is_sso() {
+        let eq = lv.tag == rv.tag && lv.payload == rv.payload;
+        write_out(
+            out,
+            ValueV2::from_bool(if op == BinOp::Eq { eq } else { !eq }),
+        );
+        return;
     }
-    let l = to_owned(l);
-    let r = to_owned(r);
-    // Operator overloading first: a value carrying `__add__`/`__sub__`/
-    // `__mul__`/`__div__` (or a reflected form on the right operand) handles
-    // the operator. Without this, the stdlib numeric types (complex,
-    // rational, decimal, bigint) and user classes with dunders raised a type
-    // error under AOT while the same program ran on tree/VM (audit S-21).
+    let l = v2_to_value(lv);
+    let r = v2_to_value(rv);
     if let Some((fwd, rev)) = overload_dunders(op) {
         let over = native_try_operator(&l, &r, fwd).or_else(|| native_try_operator(&r, &l, rev));
         if let Some(res) = over {
-            return match res {
-                Ok(v) => leak(v),
-                Err(msg) => rt_throw(&msg),
+            let v = match res {
+                Ok(v) => from_value_v2(v),
+                Err(msg) => rt_throw_v2(&msg),
             };
+            write_out(out, v);
+            return;
         }
     }
-    match vm_eval_binary(op, l, r) {
-        Ok(v) => leak(v),
-        Err(msg) => rt_throw(&msg),
-    }
+    let v = match vm_eval_binary(op, l, r) {
+        Ok(v) => from_value_v2(v),
+        Err(msg) => rt_throw_v2(&msg),
+    };
+    write_out(out, v);
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_unop(v: *const Value, op: i64) -> *mut Value {
+pub extern "C" fn spid3r_unop(out: *mut ValueV2, v: *const ValueV2, op: i64) {
     let op = match unop_from_u8(op as u8) {
         Some(o) => o,
         None => abort("native runtime: unknown unop"),
     };
-    let v = to_owned(v);
-    // Unary overloading (`__neg__`), the same dispatch as the VM's
-    // `try_unary_operator`.
+    let vv = read_v2(v);
+    if op == UnOp::Not {
+        write_out(out, ValueV2::from_bool(!v2_truthy(vv)));
+        return;
+    }
     if op == UnOp::Neg {
-        if let Some(res) = native_try_unary_operator(&v, "__neg__") {
-            return match res {
-                Ok(v) => leak(v),
-                Err(msg) => rt_throw(&msg),
+        if vv.tag == ValueV2::TAG_INT {
+            let a = vv.payload as i64;
+            let res = match a.checked_neg() {
+                Some(n) => ValueV2::from_int(n),
+                None => rt_throw_v2(&format!("integer overflow: -{}", a)),
             };
+            write_out(out, res);
+            return;
+        }
+        if vv.tag == ValueV2::TAG_FLOAT {
+            write_out(out, ValueV2::from_float(-f64::from_bits(vv.payload)));
+            return;
         }
     }
-    match vm_eval_unary(op, v) {
-        Ok(v) => leak(v),
-        Err(msg) => rt_throw(&msg),
+    let val = v2_to_value(vv);
+    if op == UnOp::Neg {
+        if let Some(res) = native_try_unary_operator(&val, "__neg__") {
+            let r = match res {
+                Ok(v) => from_value_v2(v),
+                Err(msg) => rt_throw_v2(&msg),
+            };
+            write_out(out, r);
+            return;
+        }
+    }
+    let r = match vm_eval_unary(op, val) {
+        Ok(v) => from_value_v2(v),
+        Err(msg) => rt_throw_v2(&msg),
+    };
+    write_out(out, r);
+}
+
+#[inline]
+fn v2_truthy(v: ValueV2) -> bool {
+    match v.tag {
+        ValueV2::TAG_NULL => false,
+        ValueV2::TAG_BOOL => v.payload != 0,
+        ValueV2::TAG_INT => v.payload != 0,
+        ValueV2::TAG_FLOAT => f64::from_bits(v.payload) != 0.0,
+        ValueV2::TAG_ROPE => v.rope_len() != 0,
+        _ if v.is_sso() => v.sso_len() != 0,
+        ValueV2::TAG_HEAP => match deref_heap(v) {
+            Some(val) => crate::value::truthy(val),
+            None => false,
+        },
+        _ => false,
     }
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_truthy(v: *const Value) -> u8 {
-    crate::value::truthy(deref(v)) as u8
+pub extern "C" fn spid3r_truthy(v: *const ValueV2) -> u8 {
+    v2_truthy(read_v2(v)) as u8
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_eq(l: *const Value, r: *const Value) -> u8 {
-    crate::value::values_equal(deref(l), deref(r)) as u8
+pub extern "C" fn spid3r_eq(l: *const ValueV2, r: *const ValueV2) -> u8 {
+    let lv = read_v2(l);
+    let rv = read_v2(r);
+    if lv.tag == ValueV2::TAG_INT && rv.tag == ValueV2::TAG_INT {
+        return (lv.payload == rv.payload) as u8;
+    }
+    if lv.tag == ValueV2::TAG_NULL && rv.tag == ValueV2::TAG_NULL {
+        return 1;
+    }
+    if lv.tag == ValueV2::TAG_BOOL && rv.tag == ValueV2::TAG_BOOL {
+        return ((lv.payload != 0) == (rv.payload != 0)) as u8;
+    }
+    if lv.is_sso() && rv.is_sso() {
+        return (lv.tag == rv.tag && lv.payload == rv.payload) as u8;
+    }
+    if let Some(res) = with_str_v2(lv, |ls| with_str_v2(rv, |rs| ls == rs)) {
+        return res.unwrap_or(false) as u8;
+    }
+    crate::value::values_equal(&v2_to_value(lv), &v2_to_value(rv)) as u8
 }
 
 /// Display a value the way `print` does. Returns a malloc'd C string that the
 /// caller frees with `spid3r_cstr_free`.
 #[no_mangle]
-pub extern "C" fn spid3r_display(v: *const Value) -> *mut c_char {
-    let s = crate::value::display_value(deref(v));
+pub extern "C" fn spid3r_display(v: *const ValueV2) -> *mut c_char {
+    let vv = read_v2(v);
+    let s = match vv.tag {
+        ValueV2::TAG_NULL => "null".to_string(),
+        ValueV2::TAG_BOOL => if vv.payload != 0 { "true" } else { "false" }.to_string(),
+        ValueV2::TAG_INT => (vv.payload as i64).to_string(),
+        ValueV2::TAG_FLOAT => {
+            crate::value::display_value(&Value::Float(f64::from_bits(vv.payload)))
+        }
+        ValueV2::TAG_ROPE => {
+            with_rope_str(vv, |text| text.to_string()).unwrap_or_else(|| "null".to_string())
+        }
+        _ if vv.is_sso() => vv
+            .with_sso_str(|text| text.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        ValueV2::TAG_HEAP => match deref_heap(vv) {
+            Some(val) => crate::value::display_value(val),
+            None => "null".to_string(),
+        },
+        _ => "null".to_string(),
+    };
     match CString::new(s) {
         Ok(c) => c.into_raw(),
         Err(_) => std::ptr::null_mut(),
@@ -1056,43 +1470,69 @@ fn fetch_global_value(name: *const c_char) -> Value {
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_global_get(name: *const c_char) -> *mut Value {
-    leak_fast(fetch_global_value(name))
+pub extern "C" fn spid3r_global_get(out: *mut ValueV2, name: *const c_char) {
+    write_out(out, from_value_v2(fetch_global_value(name)));
 }
 
 /// Generation-guarded cached global lookup (`{ i64 gen, ptr val }` slot).
-/// Fast path hits with zero mutexes and zero HashMap lookups; any write via
-/// `spid3r_global_set`/`spid3r_global_def` bumps `GLOBAL_GEN` and invalidates.
+/// Fast path hits with zero mutexes, zero HashMap lookups, and zero heap
+/// allocations (returning a pinned `ValueV2` directly).
 #[no_mangle]
 pub extern "C" fn spid3r_global_cached(
+    out: *mut ValueV2,
     name: *const c_char,
     slot: *mut GlobalCacheSlot,
-) -> *mut Value {
+) {
     use std::sync::atomic::Ordering;
     let cur_gen = GLOBAL_GEN.load(Ordering::Acquire);
+    // SAFETY: `slot` is a compiler-emitted static `GlobalCacheSlot`.
     let s = unsafe { &*slot };
     if s.gen.load(Ordering::Acquire) == cur_gen {
         let ptr = s.val.load(Ordering::Acquire);
         if !ptr.is_null() {
-            return leak_fast(deref(ptr).clone());
+            // SAFETY: `ptr` was allocated via `Box::into_raw` and stays pinned.
+            let v2 = match unsafe { &*ptr } {
+                Value::Null => ValueV2::NULL,
+                Value::Bool(b) => ValueV2::from_bool(*b),
+                Value::Int(n) => ValueV2::from_int(*n),
+                Value::Float(f) => ValueV2::from_float(*f),
+                _ => ValueV2::from_heap_ptr(ptr),
+            };
+            write_out(out, v2);
+            return;
         }
     }
     static CACHE_MISS_LOCK: Mutex<()> = Mutex::new(());
     let _guard = CACHE_MISS_LOCK.lock().unwrap();
     let gen_before = GLOBAL_GEN.load(Ordering::Acquire);
     let val = fetch_global_value(name);
-    let boxed = Box::into_raw(Box::new(val.clone()));
+    let v2 = match &val {
+        Value::Null => ValueV2::NULL,
+        Value::Bool(b) => ValueV2::from_bool(*b),
+        Value::Int(n) => ValueV2::from_int(*n),
+        Value::Float(f) => ValueV2::from_float(*f),
+        _ => {
+            let boxed = Box::into_raw(Box::new(val.clone()));
+            if GLOBAL_GEN.load(Ordering::Acquire) == gen_before {
+                s.val.store(boxed, Ordering::Release);
+                s.gen.store(gen_before, Ordering::Release);
+            }
+            write_out(out, ValueV2::from_heap_ptr(boxed));
+            return;
+        }
+    };
+    let boxed = Box::into_raw(Box::new(val));
     if GLOBAL_GEN.load(Ordering::Acquire) == gen_before {
         s.val.store(boxed, Ordering::Release);
         s.gen.store(gen_before, Ordering::Release);
     }
-    leak_fast(val)
+    write_out(out, v2);
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_global_set(name: *const c_char, v: *mut Value) {
+pub extern "C" fn spid3r_global_set(name: *const c_char, v: *const ValueV2) {
     let key = cstr_ref(name);
-    let val = to_owned(v);
+    let val = to_owned_v2(v);
     {
         let mut g = globals().lock().unwrap();
         if let Some(slot) = g.get_mut(key.as_ref()) {
@@ -1106,9 +1546,9 @@ pub extern "C" fn spid3r_global_set(name: *const c_char, v: *mut Value) {
 
 /// Define a global if it does not exist yet (used for top-level `let`).
 #[no_mangle]
-pub extern "C" fn spid3r_global_def(name: *const c_char, v: *mut Value) {
+pub extern "C" fn spid3r_global_def(name: *const c_char, v: *const ValueV2) {
     let key = cstr_ref(name);
-    let val = to_owned(v);
+    let val = to_owned_v2(v);
     let mut changed = false;
     {
         let mut g = globals().lock().unwrap();
@@ -1139,11 +1579,11 @@ pub extern "C" fn spid3r_global_exists(name: *const c_char) -> u8 {
 // extern "C" trampolines — calls
 // ----------------------------------------------------------------------------
 
-unsafe fn args_vec(argc: usize, argv: *const *mut Value) -> Vec<Value> {
+unsafe fn args_vec(argc: usize, argv: *const *const ValueV2) -> Vec<Value> {
     let mut v = Vec::with_capacity(argc);
     for i in 0..argc {
         let p = *argv.add(i);
-        v.push(to_owned(p));
+        v.push(to_owned_v2(p));
     }
     v
 }
@@ -1151,42 +1591,80 @@ unsafe fn args_vec(argc: usize, argv: *const *mut Value) -> Vec<Value> {
 /// Call any callable value: compiled function, native stdlib function, or
 /// compiled class (construct an instance and run its constructor).
 #[no_mangle]
-pub extern "C" fn spid3r_call(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mut Value {
-    ffi_value("call", || spid3r_call_inner(f, argc, argv))
+pub extern "C" fn spid3r_call(
+    out: *mut ValueV2,
+    f: *const ValueV2,
+    argc: usize,
+    argv: *const *const ValueV2,
+) {
+    if argc == 1 && !argv.is_null() {
+        if let Some(Value::Native(n)) = deref_heap(read_v2(f)) {
+            // SAFETY: `argc == 1 && !argv.is_null()` guarantees `*argv` is readable.
+            let arg0_ptr = unsafe { *argv };
+            if !arg0_ptr.is_null() {
+                if n.name == "string" {
+                    let arg0 = read_v2(arg0_ptr);
+                    if arg0.tag == ValueV2::TAG_INT {
+                        let n_i64 = arg0.payload as i64;
+                        let v = ValueV2::from_int_decimal(n_i64).unwrap_or_else(|| {
+                            alloc_heap_v2(Value::Str(crate::stdlib::int_to_string_value(n_i64)))
+                        });
+                        write_out(out, cancel_guard(v));
+                        return;
+                    }
+                } else if n.name == "json_write" {
+                    let val = to_owned_v2(arg0_ptr);
+                    let res = match crate::stdlib::json_write_arc(&val) {
+                        Ok(arc) => from_value_v2(Value::Str(arc)),
+                        Err(msg) => rt_throw_v2(&msg),
+                    };
+                    write_out(out, cancel_guard(res));
+                    return;
+                } else if n.name == "json_parse" {
+                    let arg0 = read_v2(arg0_ptr);
+                    if let Some(parsed) = with_str_v2(arg0, crate::stdlib::json_parse_text) {
+                        let res = match parsed {
+                            Ok(v) => from_value_v2(v),
+                            Err(msg) => rt_throw_v2(&msg),
+                        };
+                        write_out(out, cancel_guard(res));
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    ffi_v2(out, "call", || spid3r_call_inner(f, argc, argv));
 }
 
-/// Cancellation point after a call returns (audit S-23). A loop body that
-/// blocks — the canonical `while true { sleep_ms(1) }` worker, or a socket
-/// read with a timeout — burns wall-clock time the loop's iteration-count
-/// poll cannot see: at `CANCEL_POLL_INTERVAL` (2048) iterations, cancelling a
-/// task that sleeps 1ms per iteration took ~2s (measured 3.5s under load),
-/// and a `sleep_ms(100)` loop would take minutes. Re-checking once the call
-/// returns bounds the latency to a single call, matching the tree engine's
-/// per-statement check. An error raised by the callee wins: cancellation is
-/// sticky, so the next call re-raises it. A no-op outside spawned tasks.
-fn cancel_guard(r: *mut Value) -> *mut Value {
-    if THROWN.with(|t| t.borrow().is_none()) && crate::sched::current_task_cancelled() {
-        return rt_throw("task cancelled");
+fn cancel_guard(r: ValueV2) -> ValueV2 {
+    if THROWN_FLAG.with(|f| f.get()) == 0 && crate::sched::current_task_cancelled() {
+        return rt_throw_v2("task cancelled");
     }
     r
 }
 
-fn spid3r_call_inner(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mut Value {
+fn spid3r_call_inner(f: *const ValueV2, argc: usize, argv: *const *const ValueV2) -> ValueV2 {
     cancel_guard(spid3r_call_inner_dispatch(f, argc, argv))
 }
 
-fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Value) -> *mut Value {
-    match deref(f) {
+fn spid3r_call_inner_dispatch(
+    f: *const ValueV2,
+    argc: usize,
+    argv: *const *const ValueV2,
+) -> ValueV2 {
+    let fv = read_v2(f);
+    let Some(f_val) = deref_heap(fv) else {
+        let owned = v2_to_value(fv);
+        return rt_throw_v2(&format!(
+            "{} is not callable",
+            crate::value::type_name(&owned)
+        ));
+    };
+    match f_val {
         Value::Cfn(c) => {
-            // Arity-check BEFORE entering generated code. The prologue loads
-            // `argv[offset + i]` for every declared parameter, so a short
-            // call reads past the argv array and the garbage is later
-            // dereferenced as a `*mut Value` (observed: SIGSEGV). The
-            // semantic checker only validates statically-known callees, so
-            // dynamic calls (`fs[0](1)`) reach here unchecked. `min_arity`
-            // covers trailing constant defaults, which the prologue fills.
             if argc < c.min_arity || argc > c.arity {
-                return rt_throw(&format!(
+                return rt_throw_v2(&format!(
                     "{} expects {} argument(s), got {}",
                     c.name.as_deref().unwrap_or("<fn>"),
                     c.arity,
@@ -1194,17 +1672,22 @@ fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Valu
                 ));
             }
             if !enter_call() {
-                return rt_throw("stack overflow: call depth limit reached");
+                return rt_throw_v2("stack overflow: call depth limit reached");
             }
-            let r = unsafe { (c.code)(c.env, argc, argv) };
+            let mut out = ValueV2::NULL;
+            // SAFETY: `c.code` is a compiled Spid3r function pointer with matching ABI.
+            unsafe { (c.code)(&mut out, c.env, argc, argv) };
             leave_call();
-            r
+            out
         }
         Value::Native(n) => {
             if n.name == "string" && argc == 1 {
                 // SAFETY: `argc == 1` guarantees `argv` has at least 1 valid pointer.
-                if let Value::Int(i) = deref(unsafe { *argv }) {
-                    return leak(Value::Str(crate::stdlib::int_to_string_value(*i)));
+                let arg0 = read_v2(unsafe { *argv });
+                if arg0.tag == ValueV2::TAG_INT {
+                    return alloc_heap_v2(Value::Str(crate::stdlib::int_to_string_value(
+                        arg0.payload as i64,
+                    )));
                 }
             }
             let func = n.func;
@@ -1213,8 +1696,8 @@ fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Valu
                 sched: Scheduler::shared(),
             };
             match func(&ctx, args) {
-                Ok(v) => leak_fast(v),
-                Err(msg) => rt_throw(&msg),
+                Ok(v) => from_value_v2(v),
+                Err(msg) => rt_throw_v2(&msg),
             }
         }
         Value::NativeClosure(n) => {
@@ -1224,14 +1707,12 @@ fn spid3r_call_inner_dispatch(f: *mut Value, argc: usize, argv: *const *mut Valu
                 sched: Scheduler::shared(),
             };
             match func(&ctx, args) {
-                Ok(v) => leak_fast(v),
-                Err(msg) => rt_throw(&msg),
+                Ok(v) => from_value_v2(v),
+                Err(msg) => rt_throw_v2(&msg),
             }
         }
         Value::CClass(c) => construct_cinstance(c.clone(), unsafe { args_vec(argc, argv) }),
-        // Catchable like the tree/VM call dispatch (F-9): calling a
-        // non-callable value is a script-level runtime error there.
-        other => rt_throw(&format!(
+        other => rt_throw_v2(&format!(
             "{} is not callable",
             crate::value::type_name(other)
         )),
@@ -1303,17 +1784,16 @@ fn leave_call() {
 /// Build a `Value::Cfn` for a compiled function (called from closures).
 #[no_mangle]
 pub extern "C" fn spid3r_make_fn(
+    out: *mut ValueV2,
     name: *const c_char,
     arity: usize,
     min_arity: usize,
     code: *const c_void,
     env: *mut c_void,
-) -> *mut Value {
-    ffi_guard(
-        "make_fn",
-        |_| std::ptr::null_mut(),
-        || make_fn_inner(name, arity, min_arity, code, env),
-    )
+) {
+    ffi_v2(out, "make_fn", || {
+        make_fn_inner(name, arity, min_arity, code, env)
+    });
 }
 
 fn make_fn_inner(
@@ -1322,8 +1802,8 @@ fn make_fn_inner(
     min_arity: usize,
     code: *const c_void,
     env: *mut c_void,
-) -> *mut Value {
-    let code: unsafe extern "C" fn(*mut c_void, usize, *const *mut Value) -> *mut Value =
+) -> ValueV2 {
+    let code: unsafe extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2) =
         unsafe { std::mem::transmute(code) };
     let name = if name.is_null() {
         None
@@ -1335,7 +1815,7 @@ fn make_fn_inner(
             Some(s)
         }
     };
-    leak(Value::Cfn(std::sync::Arc::new(CompiledFn {
+    alloc_heap_v2(Value::Cfn(std::sync::Arc::new(CompiledFn {
         name,
         arity,
         min_arity,
@@ -1351,64 +1831,65 @@ fn make_fn_inner(
 /// `list(...)`, `map(...)`, `stack(...)` ... via the shared collections layer.
 #[no_mangle]
 pub extern "C" fn spid3r_construct(
+    out: *mut ValueV2,
     name: *const c_char,
     argc: usize,
-    argv: *const *mut Value,
-) -> *mut Value {
+    argv: *const *const ValueV2,
+) {
     let name = cstr(name);
     let args = unsafe { args_vec(argc, argv) };
-    match collections::construct(&name, args) {
-        Ok(v) => leak(v),
-        Err(msg) => rt_throw(&msg),
-    }
+    let v = match collections::construct(&name, args) {
+        Ok(v) => from_value_v2(v),
+        Err(msg) => rt_throw_v2(&msg),
+    };
+    write_out(out, v);
 }
 
 /// `obj.method(args)` — class methods for compiled instances, everything else
 /// delegates to the shared collections layer (strings, lists, maps, ...).
 #[no_mangle]
 pub extern "C" fn spid3r_method(
-    obj: *mut Value,
+    out: *mut ValueV2,
+    obj: *const ValueV2,
     name: *const c_char,
     argc: usize,
-    argv: *const *mut Value,
-) -> *mut Value {
-    ffi_value("method", || {
+    argv: *const *const ValueV2,
+) {
+    ffi_v2(out, "method", || {
         cancel_guard(spid3r_method_inner(obj, name, argc, argv))
-    })
+    });
 }
 
 fn invoke_cfn(
-    obj: *mut Value,
+    obj: *const ValueV2,
     cfn: &CompiledFn,
     name: &str,
     argc: usize,
-    argv: *const *mut Value,
-) -> *mut Value {
-    // Same wording as the VM/tree runtime dispatch (PAR-04): the
-    // message counts the *declared* parameters and the *passed*
-    // arguments, neither of which includes `self`.
+    argv: *const *const ValueV2,
+) -> ValueV2 {
     if argc + 1 < cfn.min_arity || argc + 1 > cfn.arity {
         let want = if cfn.min_arity == cfn.arity {
             format!("{} argument(s)", cfn.arity - 1)
         } else {
             format!("{} to {} argument(s)", cfn.min_arity - 1, cfn.arity - 1)
         };
-        return rt_throw(&format!("method {} expects {}, got {}", name, want, argc));
+        return rt_throw_v2(&format!("method {} expects {}, got {}", name, want, argc));
     }
     let env = cfn.env;
     let code = cfn.code;
-    let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
+    let mut call_args: Vec<*const ValueV2> = Vec::with_capacity(argc + 1);
     call_args.push(obj);
     for i in 0..argc {
         let p = unsafe { *argv.add(i) };
         call_args.push(p);
     }
     if !enter_call() {
-        return rt_throw("stack overflow: call depth limit reached");
+        return rt_throw_v2("stack overflow: call depth limit reached");
     }
-    let r = unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
+    let mut out = ValueV2::NULL;
+    unsafe { (code)(&mut out, env, argc + 1, call_args.as_ptr()) };
     leave_call();
-    r
+    out
 }
 
 /// Slot-based devirtualized method dispatch (`self.m(...)`). Falls back to
@@ -1416,17 +1897,18 @@ fn invoke_cfn(
 /// differs from `expected_class_id` (e.g. a subclass instance).
 #[no_mangle]
 pub extern "C" fn spid3r_method_slot(
-    obj: *mut Value,
+    out: *mut ValueV2,
+    obj: *const ValueV2,
     expected_class_id: u64,
     slot: i64,
     name: *const c_char,
     argc: usize,
-    argv: *const *mut Value,
-) -> *mut Value {
-    ffi_value("method_slot", || {
+    argv: *const *const ValueV2,
+) {
+    ffi_v2(out, "method_slot", || {
         cancel_guard({
             if slot >= 0 && expected_class_id != 0 {
-                if let Value::CInstance(inst) = deref(obj) {
+                if let Some(Value::CInstance(inst)) = deref_heap(read_v2(obj)) {
                     let cfn = {
                         let g = inst.lock().unwrap();
                         if g.class.class_id == expected_class_id {
@@ -1443,94 +1925,109 @@ pub extern "C" fn spid3r_method_slot(
             }
             spid3r_method_inner(obj, name, argc, argv)
         })
-    })
+    });
 }
 
 fn spid3r_method_inner(
-    obj: *mut Value,
+    obj: *const ValueV2,
     name: *const c_char,
     argc: usize,
-    argv: *const *mut Value,
-) -> *mut Value {
-    let object = deref(obj);
+    argv: *const *const ValueV2,
+) -> ValueV2 {
+    let ov = read_v2(obj);
     let name = cstr_ref(name);
-    let maybe_class = match object {
-        Value::CInstance(inst) => Some(inst.lock().unwrap().class.clone()),
-        Value::CClass(c) => Some(c.clone()),
-        _ => None,
-    };
-    if let Some(class) = maybe_class {
-        if let Some((_, cfn)) = find_method_cclass(&class, name.as_ref()) {
-            return invoke_cfn(obj, &cfn, name.as_ref(), argc, argv);
+    if let Some(object) = deref_heap(ov) {
+        let maybe_class = match object {
+            Value::CInstance(inst) => Some(inst.lock().unwrap().class.clone()),
+            Value::CClass(c) => Some(c.clone()),
+            _ => None,
+        };
+        if let Some(class) = maybe_class {
+            if let Some((_, cfn)) = find_method_cclass(&class, name.as_ref()) {
+                return invoke_cfn(obj, &cfn, name.as_ref(), argc, argv);
+            }
+            return rt_throw_v2(&format!("class {} has no method '{}'", class.name, name));
         }
-        // Catchable like the tree/VM dispatch (`fail`/`Flow::Error`), not an
-        // internal abort: a call through an untyped value can reach this with
-        // any method name (found by tests/engine_matrix.rs).
-        return rt_throw(&format!("class {} has no method '{}'", class.name, name));
+        let args = unsafe { args_vec(argc, argv) };
+        return match collections::call_method_host(
+            &mut NativeCallbackHost,
+            object,
+            name.as_ref(),
+            args,
+        ) {
+            Ok(v) => from_value_v2(v),
+            Err(msg) => match crate::sched::take_error_thrown() {
+                Some(v) => rt_throw_value_v2(v),
+                None => rt_throw_v2(&msg),
+            },
+        };
     }
+    if ov.is_sso() || ov.is_rope() {
+        let args = unsafe { args_vec(argc, argv) };
+        if let Some(res) = with_str_v2(ov, |s| collections::string_method(s, name.as_ref(), &args))
+        {
+            return match res {
+                Ok(v) => from_value_v2(v),
+                Err(msg) => match crate::sched::take_error_thrown() {
+                    Some(v) => rt_throw_value_v2(v),
+                    None => rt_throw_v2(&msg),
+                },
+            };
+        }
+    }
+    let owned_obj = v2_to_value(ov);
     let args = unsafe { args_vec(argc, argv) };
-    match collections::call_method_host(&mut NativeCallbackHost, object, name.as_ref(), args) {
-        Ok(v) => leak_fast(v),
+    match collections::call_method_host(&mut NativeCallbackHost, &owned_obj, name.as_ref(), args) {
+        Ok(v) => from_value_v2(v),
         Err(msg) => match crate::sched::take_error_thrown() {
-            // `task.join()` (and callback hosts) report a String error but
-            // stash the user-thrown value; rethrow the value so an enclosing
-            // `try` rebinds it (audit A-9).
-            Some(v) => rt_throw_value(v),
-            None => rt_throw(&msg),
+            Some(v) => rt_throw_value_v2(v),
+            None => rt_throw_v2(&msg),
         },
     }
 }
 
-/// `super(args)` / `super.m(args)` inside a compiled method or constructor
-/// (PAR-03). The receiver is the current compiled instance; the target class
-/// is resolved by name in the globals — the same resolution the tree
-/// interpreter performs — and every error message matches tree/vm verbatim.
-/// `method_name == NULL` calls the parent constructor on the instance being
-/// initialized; otherwise it runs the parent method with the same receiver.
 #[no_mangle]
 pub extern "C" fn spid3r_super_call(
-    recv: *mut Value,
+    out: *mut ValueV2,
+    recv: *const ValueV2,
     parent_name: *const c_char,
     method_name: *const c_char,
     argc: usize,
-    argv: *const *mut Value,
-) -> *mut Value {
-    ffi_value("super", || {
+    argv: *const *const ValueV2,
+) {
+    ffi_v2(out, "super", || {
         spid3r_super_call_inner(recv, parent_name, method_name, argc, argv)
-    })
+    });
 }
 
 fn spid3r_super_call_inner(
-    recv: *mut Value,
+    recv: *const ValueV2,
     parent_name: *const c_char,
     method_name: *const c_char,
     argc: usize,
-    argv: *const *mut Value,
-) -> *mut Value {
-    let object = to_owned(recv);
+    argv: *const *const ValueV2,
+) -> ValueV2 {
+    let object = to_owned_v2(recv);
     match object {
         Value::CInstance(_) => {}
         _ => {
-            return rt_throw("super is only available inside a class method");
+            return rt_throw_v2("super is only available inside a class method");
         }
     }
     let parent = cstr(parent_name);
     if parent.is_empty() {
-        return rt_throw("super is not available: this class has no parent class");
+        return rt_throw_v2("super is not available: this class has no parent class");
     }
     let class = {
         let g = globals().lock().unwrap();
         match g.get(&parent) {
             Some(Value::CClass(c)) => c.clone(),
-            Some(_) => return rt_throw(&format!("'{}' is not a class", parent)),
-            None => return rt_throw(&format!("unknown class '{}'", parent)),
+            Some(_) => return rt_throw_v2(&format!("'{}' is not a class", parent)),
+            None => return rt_throw_v2(&format!("unknown class '{}'", parent)),
         }
     };
     let args = unsafe { args_vec(argc, argv) };
     if method_name.is_null() {
-        // Parent constructor on the SAME instance (it already exists — it is
-        // being initialized), walking the ancestor chain if the immediate
-        // parent inherited its constructor.
         let mut cur = Some(class.clone());
         let mut found = None;
         while let Some(c) = cur {
@@ -1543,7 +2040,7 @@ fn spid3r_super_call_inner(
         let (ctor_class_name, ctor) = match found {
             Some(pair) => pair,
             None => {
-                return rt_throw(&format!("class '{}' has no constructor", class.name));
+                return rt_throw_v2(&format!("class '{}' has no constructor", class.name));
             }
         };
         if argc + 1 < ctor.min_arity || argc + 1 > ctor.arity {
@@ -1556,32 +2053,35 @@ fn spid3r_super_call_inner(
                     ctor.arity.saturating_sub(1)
                 )
             };
-            return rt_throw(&format!(
+            return rt_throw_v2(&format!(
                 "constructor {}::new expects {}, got {}",
                 ctor_class_name, want, argc
             ));
         }
-        let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
-        call_args.push(leak(object.clone()));
+        let mut frame_vals: Vec<ValueV2> = Vec::with_capacity(argc + 1);
+        frame_vals.push(from_value_v2(object.clone()));
         for a in &args {
-            call_args.push(leak(a.clone()));
+            frame_vals.push(from_value_v2(a.clone()));
         }
+        let call_args: Vec<*const ValueV2> =
+            frame_vals.iter().map(|v| v as *const ValueV2).collect();
         let env = ctor.env;
         let code = ctor.code;
         if !enter_call() {
-            return rt_throw("stack overflow: call depth limit reached");
+            return rt_throw_v2("stack overflow: call depth limit reached");
         }
-        unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
+        let mut out = ValueV2::NULL;
+        spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+        unsafe { (code)(&mut out, env, argc + 1, call_args.as_ptr()) };
+        spid3r_frame_exit();
         leave_call();
-        return leak(Value::Null);
+        return ValueV2::NULL;
     }
-    // Parent method on the same receiver (the tree engine's `call_class_method`
-    // against the parent class; `find_method_cclass` walks the same chain).
     let m = cstr(method_name);
     let (_, f) = match find_method_cclass(&class, &m) {
         Some(x) => x,
         None => {
-            return rt_throw(&format!("class {} has no method '{}'", class.name, m));
+            return rt_throw_v2(&format!("class {} has no method '{}'", class.name, m));
         }
     };
     if argc + 1 < f.min_arity || argc + 1 > f.arity {
@@ -1594,27 +2094,27 @@ fn spid3r_super_call_inner(
                 f.arity.saturating_sub(1)
             )
         };
-        return rt_throw(&format!("method {} expects {}, got {}", m, want, argc));
+        return rt_throw_v2(&format!("method {} expects {}, got {}", m, want, argc));
     }
-    let mut call_args: Vec<*mut Value> = Vec::with_capacity(argc + 1);
-    call_args.push(leak(object.clone()));
+    let mut frame_vals: Vec<ValueV2> = Vec::with_capacity(argc + 1);
+    frame_vals.push(from_value_v2(object.clone()));
     for a in &args {
-        call_args.push(leak(a.clone()));
+        frame_vals.push(from_value_v2(a.clone()));
     }
+    let call_args: Vec<*const ValueV2> = frame_vals.iter().map(|v| v as *const ValueV2).collect();
     let env = f.env;
     let code = f.code;
     if !enter_call() {
-        return rt_throw("stack overflow: call depth limit reached");
+        return rt_throw_v2("stack overflow: call depth limit reached");
     }
-    let r = unsafe { (code)(env, argc + 1, call_args.as_ptr()) };
+    let mut out = ValueV2::NULL;
+    spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+    unsafe { (code)(&mut out, env, argc + 1, call_args.as_ptr()) };
+    spid3r_frame_exit();
     leave_call();
-    r
+    out
 }
 
-/// Lets builtin collections call Spid3r functions back (higher-order methods
-/// such as `list.map(f)`) inside natively compiled programs. Compiled closures
-/// are plain `extern "C"` functions, so the host calls the machine code
-/// directly — the same pattern as `spid3r_method`'s instance dispatch.
 struct NativeCallbackHost;
 
 impl collections::CallbackHost for NativeCallbackHost {
@@ -1634,30 +2134,28 @@ impl collections::CallbackHost for NativeCallbackHost {
                         args.len()
                     ));
                 }
-                let mut argv: Vec<*mut Value> = Vec::with_capacity(args.len());
-                for a in &args {
-                    argv.push(leak(a.clone()));
-                }
+                let frame_vals: Vec<ValueV2> =
+                    args.iter().map(|a| from_value_v2(a.clone())).collect();
+                let argv: Vec<*const ValueV2> =
+                    frame_vals.iter().map(|v| v as *const ValueV2).collect();
                 let code = cfn.code;
                 let env = cfn.env;
                 if !enter_call() {
                     return Err("stack overflow: call depth limit reached".to_string());
                 }
-                let r = unsafe { (code)(env, args.len(), argv.as_ptr()) };
+                let mut out = ValueV2::NULL;
+                spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
+                unsafe { (code)(&mut out, env, args.len(), argv.as_ptr()) };
+                spid3r_frame_exit();
                 leave_call();
                 if spid3r_threw() != 0 {
-                    let thrown = peek_thrown().unwrap_or(std::ptr::null_mut());
-                    let msg = if !thrown.is_null() {
-                        crate::value::display_value(deref(thrown))
-                    } else {
-                        "throw in callback".to_string()
-                    };
+                    let msg = THROWN.with(|t| match t.borrow().as_ref() {
+                        Some(v) => crate::value::display_value(v),
+                        None => "throw in callback".to_string(),
+                    });
                     return Err(msg);
                 }
-                if r.is_null() {
-                    return Ok(Value::Null);
-                }
-                Ok(to_owned(r))
+                Ok(v2_to_value(out))
             }
             Value::Native(n) => {
                 let ctx = crate::value::NativeCtx {
@@ -1674,18 +2172,13 @@ impl collections::CallbackHost for NativeCallbackHost {
             Value::CClass(c) => {
                 let r = construct_cinstance(c.clone(), args);
                 if spid3r_threw() != 0 {
-                    let thrown = peek_thrown().unwrap_or(std::ptr::null_mut());
-                    let msg = if !thrown.is_null() {
-                        crate::value::display_value(deref(thrown))
-                    } else {
-                        "throw in constructor".to_string()
-                    };
+                    let msg = THROWN.with(|t| match t.borrow().as_ref() {
+                        Some(v) => crate::value::display_value(v),
+                        None => "throw in constructor".to_string(),
+                    });
                     return Err(msg);
                 }
-                if r.is_null() {
-                    return Ok(Value::Null);
-                }
-                Ok(to_owned(r))
+                Ok(v2_to_value(r))
             }
             other => Err(format!(
                 "{} is not callable in the native backend (interpreted closures \
@@ -1711,118 +2204,173 @@ fn find_method_cclass(
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_index_get(obj: *const Value, idx: *const Value) -> *mut Value {
-    let object = deref(obj);
-    let idx = deref(idx);
-    // N2.2: inline the hot Map / List arms of `collections::index_get` with
-    // the exact lock -> resolve -> clone sequence and the exact error text,
-    // skipping only the generic dispatcher hop. Every other receiver / key
-    // shape keeps the generic path (identical behaviour by construction).
-    let res = match (object, idx) {
-        (Value::Map(m), Value::Str(k)) => {
-            let guard = crate::value::lock_ref(m);
-            match guard.find_str(k.as_ref()) {
-                Some(i) => Ok(guard.entries[i].1.clone()),
-                None => Err(format!("missing key {}", k)),
+pub extern "C" fn spid3r_index_get(out: *mut ValueV2, obj: *const ValueV2, idx: *const ValueV2) {
+    let ov = read_v2(obj);
+    let iv = read_v2(idx);
+    if let Some(object) = deref_heap(ov) {
+        let res = match object {
+            Value::Map(m) if iv.tag == ValueV2::TAG_INT => {
+                let n = iv.payload as i64;
+                let guard = crate::value::lock_ref(m);
+                let v = match guard.find(&crate::value::MapKey::Int(n)) {
+                    Some(i) => value_ref_to_v2(&guard.entries[i].1),
+                    None => rt_throw_v2(&format!("missing key {}", n)),
+                };
+                write_out(out, v);
+                return;
             }
-        }
-        (Value::Map(m), Value::Int(n)) => {
-            let guard = crate::value::lock_ref(m);
-            match guard.find(&crate::value::MapKey::Int(*n)) {
-                Some(i) => Ok(guard.entries[i].1.clone()),
-                None => Err(format!("missing key {}", n)),
+            Value::Map(m) => {
+                if let Some(found) = with_str_v2(iv, |k| {
+                    let guard = crate::value::lock_ref(m);
+                    match guard.find_str(k) {
+                        Some(i) => Ok(value_ref_to_v2(&guard.entries[i].1)),
+                        None => Err(format!("missing key {}", k)),
+                    }
+                }) {
+                    let v = match found {
+                        Ok(v) => v,
+                        Err(msg) => rt_throw_v2(&msg),
+                    };
+                    write_out(out, v);
+                    return;
+                }
+                collections::index_get(object, &v2_to_value(iv))
             }
-        }
-        (Value::List(d) | Value::VecDyn(d), _) => {
-            let guard = crate::value::lock_ref(d);
-            crate::value::collections::seq::resolve_index(idx, guard.items.len(), "index")
-                .map(|i| guard.items[i].clone())
-        }
-        (Value::Bytes(b), Value::Int(i)) => {
-            let guard = crate::value::lock_ref(b);
-            let len = guard.len();
-            let resolved = if *i < 0 { len as i64 + *i } else { *i };
-            if resolved >= 0 && (resolved as usize) < len {
-                return leak_int(guard[resolved as usize] as i64);
+            Value::List(d) | Value::VecDyn(d) if iv.tag == ValueV2::TAG_INT => {
+                let guard = crate::value::lock_ref(d);
+                let len = guard.items.len();
+                let i = iv.payload as i64;
+                let resolved = if i < 0 { len as i64 + i } else { i };
+                let v = if resolved >= 0 && (resolved as usize) < len {
+                    value_ref_to_v2(&guard.items[resolved as usize])
+                } else {
+                    rt_throw_v2(&format!("index {} out of bounds for length {}", i, len))
+                };
+                write_out(out, v);
+                return;
             }
-            drop(guard);
-            collections::index_get(object, idx)
-        }
-        _ => collections::index_get(object, idx),
-    };
-    match res {
-        Ok(v) => leak_fast(v),
-        Err(msg) => rt_throw(&msg),
+            Value::Bytes(b) if iv.tag == ValueV2::TAG_INT => {
+                let guard = crate::value::lock_ref(b);
+                let len = guard.len();
+                let i = iv.payload as i64;
+                let resolved = if i < 0 { len as i64 + i } else { i };
+                if resolved >= 0 && (resolved as usize) < len {
+                    write_out(out, ValueV2::from_int(guard[resolved as usize] as i64));
+                    return;
+                }
+                drop(guard);
+                collections::index_get(object, &v2_to_value(iv))
+            }
+            _ => collections::index_get(object, &v2_to_value(iv)),
+        };
+        let v = match res {
+            Ok(v) => from_value_v2(v),
+            Err(msg) => rt_throw_v2(&msg),
+        };
+        write_out(out, v);
+        return;
     }
+    let v = match collections::index_get(&v2_to_value(ov), &v2_to_value(iv)) {
+        Ok(v) => from_value_v2(v),
+        Err(msg) => rt_throw_v2(&msg),
+    };
+    write_out(out, v);
 }
 
-/// Direct trampoline for `obj.len()` (Track 3 RT-5). Handles `List`/`VecDyn`,
-/// `Str`, non-namespace `Map`, and `Bytes` inline without C-string conversion
-/// or `argv` marshalling; falls back to `spid3r_method_inner` for all other
-/// receivers (including user classes and module namespaces).
 #[no_mangle]
-pub extern "C" fn spid3r_list_len(obj: *mut Value) -> *mut Value {
-    ffi_value("list_len", || match deref(obj) {
-        Value::List(d) | Value::VecDyn(d) => leak_int(crate::value::lock_ref(d).items.len() as i64),
-        Value::Str(s) => {
-            let n = if s.is_ascii() {
+pub extern "C" fn spid3r_list_len(out: *mut ValueV2, obj: *const ValueV2) {
+    let ov = read_v2(obj);
+    if ov.is_sso() {
+        let n = ov
+            .with_sso_str(|s| {
+                if s.is_ascii() {
+                    s.len()
+                } else {
+                    s.chars().count()
+                }
+            })
+            .unwrap_or(0);
+        write_out(out, ValueV2::from_int(n as i64));
+        return;
+    }
+    if ov.is_rope() {
+        if let Some(n) = with_rope_str(ov, |s| {
+            if s.is_ascii() {
                 s.len()
             } else {
                 s.chars().count()
-            };
-            leak_int(n as i64)
-        }
-        Value::Map(m) => {
-            let guard = crate::value::lock_ref(m);
-            if !guard.namespace {
-                return leak_int(guard.entries.len() as i64);
             }
-            drop(guard);
-            cancel_guard(spid3r_method_inner(
-                obj,
-                c"len".as_ptr(),
-                0,
-                std::ptr::null(),
-            ))
+        }) {
+            write_out(out, ValueV2::from_int(n as i64));
+            return;
         }
-        Value::Bytes(b) => leak_int(crate::value::lock_ref(b).len() as i64),
-        _ => cancel_guard(spid3r_method_inner(
+    }
+    if let Some(object) = deref_heap(ov) {
+        match object {
+            Value::List(d) | Value::VecDyn(d) => {
+                write_out(
+                    out,
+                    ValueV2::from_int(crate::value::lock_ref(d).items.len() as i64),
+                );
+                return;
+            }
+            Value::Str(s) => {
+                let n = if s.is_ascii() {
+                    s.len()
+                } else {
+                    s.chars().count()
+                };
+                write_out(out, ValueV2::from_int(n as i64));
+                return;
+            }
+            Value::Map(m) => {
+                let guard = crate::value::lock_ref(m);
+                if !guard.namespace {
+                    write_out(out, ValueV2::from_int(guard.entries.len() as i64));
+                    return;
+                }
+            }
+            Value::Bytes(b) => {
+                write_out(
+                    out,
+                    ValueV2::from_int(crate::value::lock_ref(b).len() as i64),
+                );
+                return;
+            }
+            _ => {}
+        }
+    }
+    ffi_v2(out, "list_len", || {
+        cancel_guard(spid3r_method_inner(
             obj,
             c"len".as_ptr(),
             0,
             std::ptr::null(),
-        )),
-    })
+        ))
+    });
 }
 
-/// Direct trampoline for `obj.push(val)` (Track 3 RT-5). Handles `List`/`VecDyn`
-/// inline without C-string conversion or `argv` marshalling; falls back to
-/// `spid3r_method_inner` for all other receivers (`Deque`, `Stack`, classes).
 #[no_mangle]
-pub extern "C" fn spid3r_list_push(obj: *mut Value, val: *mut Value) -> *mut Value {
-    ffi_value("list_push", || match deref(obj) {
-        Value::List(d) | Value::VecDyn(d) => {
-            crate::value::lock_ref(d).items.push(to_owned(val));
-            leak_fast(Value::Null)
-        }
-        _ => {
-            let argv = [val];
-            cancel_guard(spid3r_method_inner(obj, c"push".as_ptr(), 1, argv.as_ptr()))
-        }
-    })
+pub extern "C" fn spid3r_list_push(out: *mut ValueV2, obj: *const ValueV2, val: *const ValueV2) {
+    if let Some(Value::List(d) | Value::VecDyn(d)) = deref_heap(read_v2(obj)) {
+        crate::value::lock_ref(d).items.push(to_owned_v2(val));
+        write_out(out, ValueV2::NULL);
+        return;
+    }
+    ffi_v2(out, "list_push", || {
+        let argv = [val];
+        cancel_guard(spid3r_method_inner(obj, c"push".as_ptr(), 1, argv.as_ptr()))
+    });
 }
 
-/// Direct trampoline for `obj["literal_key"]` (Track 3 RT-5). Probes `MapData`
-/// with `find_str` directly using the compiler-emitted UTF-8 slice, skipping
-/// `Value::Str` / `Arc<str>` / `MapKey` allocation; falls back to
-/// `collections::index_get` for non-Map receivers.
 #[no_mangle]
 pub extern "C" fn spid3r_map_get_str(
-    obj: *const Value,
+    out: *mut ValueV2,
+    obj: *const ValueV2,
     key_ptr: *const u8,
     key_len: usize,
-) -> *mut Value {
-    let object = deref(obj);
+) {
+    let ov = read_v2(obj);
     // SAFETY: `key_ptr` points to a compiler-emitted static valid UTF-8 string
     // literal of `key_len` bytes (non-null when `key_len > 0`).
     let key = if key_len == 0 {
@@ -1830,147 +2378,156 @@ pub extern "C" fn spid3r_map_get_str(
     } else {
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(key_ptr, key_len)) }
     };
-    if let Value::Map(m) = object {
+    if let Some(Value::Map(m)) = deref_heap(ov) {
         let guard = crate::value::lock_ref(m);
-        return match guard.find_str(key) {
-            Some(i) => leak_fast(guard.entries[i].1.clone()),
-            None => rt_throw(&format!("missing key {}", key)),
+        let v = match guard.find_str(key) {
+            Some(i) => value_ref_to_v2(&guard.entries[i].1),
+            None => rt_throw_v2(&format!("missing key {}", key)),
         };
+        write_out(out, v);
+        return;
     }
     let idx_val = Value::Str(std::sync::Arc::from(key));
-    match collections::index_get(object, &idx_val) {
-        Ok(v) => leak_fast(v),
-        Err(msg) => rt_throw(&msg),
+    let v = match collections::index_get(&v2_to_value(ov), &idx_val) {
+        Ok(v) => from_value_v2(v),
+        Err(msg) => rt_throw_v2(&msg),
+    };
+    write_out(out, v);
+}
+
+#[no_mangle]
+pub extern "C" fn spid3r_index_set(obj: *const ValueV2, idx: *const ValueV2, v: *const ValueV2) {
+    let ov = read_v2(obj);
+    let iv = read_v2(idx);
+    let val = to_owned_v2(v);
+    let res = if let Some(object) = deref_heap(ov) {
+        collections::index_set(object, &v2_to_value(iv), val)
+    } else {
+        collections::index_set(&v2_to_value(ov), &v2_to_value(iv), val)
+    };
+    if let Err(msg) = res {
+        rt_throw_v2(&msg);
     }
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_index_set(obj: *const Value, idx: *const Value, v: *mut Value) {
-    let object = deref(obj);
-    let idx = deref(idx);
-    let val = to_owned(v);
-    if let Err(msg) = collections::index_set(object, idx, val) {
-        rt_throw(&msg);
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn spid3r_field_get(obj: *const Value, name: *const c_char) -> *mut Value {
-    let object = deref(obj);
+pub extern "C" fn spid3r_field_get(out: *mut ValueV2, obj: *const ValueV2, name: *const c_char) {
+    let ov = read_v2(obj);
     let name = cstr_ref(name);
-    // Every failure here is a script-level runtime error on the tree/VM
-    // engines (interpreter `field_get` raises a catchable `Flow::Error`),
-    // so each arm throws through the catchable channel instead of `abort`
-    // (F-9: `m?.missing` / `m.missing` on a map without the key used to
-    // kill the process with exit 70 even inside `try`/`catch`).
-    match object {
-        Value::CInstance(inst) => {
-            let inst = inst.lock().unwrap();
-            match inst.fields.get(name.as_ref()) {
-                Some(v) => leak_fast(v.clone()),
-                None => rt_throw(&format!(
-                    "instance of {} has no field '{}'",
-                    inst.class.name, name
-                )),
+    let v = if let Some(object) = deref_heap(ov) {
+        match object {
+            Value::CInstance(inst) => {
+                let inst = inst.lock().unwrap();
+                match inst.fields.get(name.as_ref()) {
+                    Some(v) => value_ref_to_v2(v),
+                    None => rt_throw_v2(&format!(
+                        "instance of {} has no field '{}'",
+                        inst.class.name, name
+                    )),
+                }
             }
-        }
-        Value::VInstance(inst) => {
-            let inst = inst.lock().unwrap();
-            // Fields live in class-laid-out slots; the class's index map does
-            // the name resolution the old per-instance map did.
-            match inst
-                .class
-                .slot_index
-                .get(name.as_ref())
-                .copied()
-                .and_then(|i| inst.slots.get(i))
-            {
-                Some(v) => leak_fast(v.clone()),
-                None => rt_throw(&format!(
-                    "instance of {} has no field '{}'",
-                    inst.class.name, name
-                )),
+            Value::VInstance(inst) => {
+                let inst = inst.lock().unwrap();
+                match inst
+                    .class
+                    .slot_index
+                    .get(name.as_ref())
+                    .copied()
+                    .and_then(|i| inst.slots.get(i))
+                {
+                    Some(v) => value_ref_to_v2(v),
+                    None => rt_throw_v2(&format!(
+                        "instance of {} has no field '{}'",
+                        inst.class.name, name
+                    )),
+                }
             }
-        }
-        // `map.field` is key lookup, the same as the interpreter and the VM.
-        // Without this arm a program using it ran on tree and VM but aborted
-        // here with "cannot read field 'k' of map" (found by
-        // tests/engine_matrix.rs).
-        Value::Map(m) => {
-            let key = crate::value::MapKey::Str(name.as_ref().into());
-            let guard = m.lock().unwrap();
-            match guard.find(&key) {
-                Some(i) => leak_fast(guard.entries[i].1.clone()),
-                None => rt_throw(&format!("missing key '{}'", name)),
+            Value::Map(m) => {
+                let guard = crate::value::lock_ref(m);
+                match guard.find_str(name.as_ref()) {
+                    Some(i) => value_ref_to_v2(&guard.entries[i].1),
+                    None => rt_throw_v2(&format!("missing key '{}'", name)),
+                }
             }
+            other => rt_throw_v2(&crate::value::no_field_error(other, name.as_ref())),
         }
-        other => rt_throw(&crate::value::no_field_error(other, name.as_ref())),
-    }
+    } else {
+        let owned = v2_to_value(ov);
+        rt_throw_v2(&crate::value::no_field_error(&owned, name.as_ref()))
+    };
+    write_out(out, v);
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_field_set(obj: *const Value, name: *const c_char, v: *mut Value) {
-    let object = deref(obj);
+pub extern "C" fn spid3r_field_set(obj: *const ValueV2, name: *const c_char, v: *const ValueV2) {
+    let ov = read_v2(obj);
     let name = cstr_ref(name);
-    let val = to_owned(v);
-    // Catchable like the interpreter's `field_set` (`Flow::Error`), not an
-    // abort (F-9).
-    match object {
-        Value::CInstance(inst) => {
-            let mut inst = inst.lock().unwrap();
-            if let Some(slot) = inst.fields.get_mut(name.as_ref()) {
-                *slot = val;
-            } else {
-                rt_throw(&format!(
-                    "instance of {} has no field '{}'",
-                    inst.class.name, name
-                ));
-            }
+    let val = to_owned_v2(v);
+    if let Some(Value::CInstance(inst)) = deref_heap(ov) {
+        let mut inst = inst.lock().unwrap();
+        if let Some(slot) = inst.fields.get_mut(name.as_ref()) {
+            *slot = val;
+        } else {
+            rt_throw_v2(&format!(
+                "instance of {} has no field '{}'",
+                inst.class.name, name
+            ));
         }
-        other => {
-            rt_throw(&crate::value::no_field_error(other, name.as_ref()));
-        }
+        return;
     }
-}
-
-/// `obj?.field` — the null-safe dot's read (F-4): like [`spid3r_field_get`],
-/// except a null receiver and a missing map key return null instead of
-/// throwing. Instance/other failures delegate to `spid3r_field_get`, so a
-/// missing instance field stays a real (catchable) error, exactly like the
-/// tree interpreter and the VM's `FieldGetSoft`.
-#[no_mangle]
-pub extern "C" fn spid3r_field_get_soft(obj: *const Value, name: *const c_char) -> *mut Value {
-    let object = deref(obj);
-    match object {
-        Value::Null => leak(Value::Null),
-        Value::Map(m) => {
-            let name = cstr(name);
-            let key = crate::value::MapKey::Str(name.into());
-            let guard = m.lock().unwrap();
-            match guard.find(&key) {
-                Some(i) => leak(guard.entries[i].1.clone()),
-                None => leak(Value::Null),
-            }
-        }
-        _ => spid3r_field_get(obj, name),
-    }
+    let owned = v2_to_value(ov);
+    rt_throw_v2(&crate::value::no_field_error(&owned, name.as_ref()));
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_len(v: *const Value) -> i64 {
-    let v = deref(v);
-    match collections::len_of(v) {
+pub extern "C" fn spid3r_field_get_soft(
+    out: *mut ValueV2,
+    obj: *const ValueV2,
+    name: *const c_char,
+) {
+    let ov = read_v2(obj);
+    if ov.tag == ValueV2::TAG_NULL {
+        write_out(out, ValueV2::NULL);
+        return;
+    }
+    if let Some(Value::Map(m)) = deref_heap(ov) {
+        let name_s = cstr_ref(name);
+        let guard = crate::value::lock_ref(m);
+        let v = match guard.find_str(name_s.as_ref()) {
+            Some(i) => value_ref_to_v2(&guard.entries[i].1),
+            None => ValueV2::NULL,
+        };
+        write_out(out, v);
+        return;
+    }
+    spid3r_field_get(out, obj, name);
+}
+
+#[no_mangle]
+pub extern "C" fn spid3r_len(v: *const ValueV2) -> i64 {
+    let vv = read_v2(v);
+    if let Some(n) = with_str_v2(vv, |s| {
+        if s.is_ascii() {
+            s.len()
+        } else {
+            s.chars().count()
+        }
+    }) {
+        return n as i64;
+    }
+    let res = if let Some(val) = deref_heap(vv) {
+        collections::len_of(val)
+    } else {
+        collections::len_of(&v2_to_value(vv))
+    };
+    match res {
         Ok(n) => n as i64,
         Err(msg) => {
-            rt_throw(&msg);
+            rt_throw_v2(&msg);
             0
         }
     }
 }
-
-// ----------------------------------------------------------------------------
-// extern "C" trampolines — for-in iteration (snapshot semantics, like the VM)
-// ----------------------------------------------------------------------------
 
 struct ForInState {
     items: Vec<Value>,
@@ -1978,29 +2535,36 @@ struct ForInState {
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_forin_start(obj: *const Value) -> *mut c_void {
-    let object = deref(obj);
-    match collections::iter_values(object) {
+pub extern "C" fn spid3r_forin_start(obj: *const ValueV2) -> *mut c_void {
+    let ov = read_v2(obj);
+    let res = if let Some(val) = deref_heap(ov) {
+        collections::iter_values(val)
+    } else {
+        collections::iter_values(&v2_to_value(ov))
+    };
+    match res {
         Ok(items) => Box::into_raw(Box::new(ForInState { items, next: 0 })) as *mut c_void,
         Err(msg) => {
-            rt_throw(&msg);
+            rt_throw_v2(&msg);
             std::ptr::null_mut()
         }
     }
 }
 
+/// Write the next element into `out` and return `1`, or return `0` when exhausted.
 #[no_mangle]
-pub extern "C" fn spid3r_forin_next(iter: *mut c_void) -> *mut Value {
+pub extern "C" fn spid3r_forin_next(out: *mut ValueV2, iter: *mut c_void) -> u8 {
     if iter.is_null() {
-        return std::ptr::null_mut();
+        return 0;
     }
     let st = unsafe { &mut *(iter as *mut ForInState) };
     if st.next >= st.items.len() {
-        return std::ptr::null_mut();
+        return 0;
     }
     let v = st.items[st.next].clone();
     st.next += 1;
-    leak(v)
+    write_out(out, from_value_v2(v));
+    1
 }
 
 #[no_mangle]
@@ -2010,50 +2574,45 @@ pub extern "C" fn spid3r_forin_end(iter: *mut c_void) {
     }
 }
 
-// ----------------------------------------------------------------------------
-// extern "C" trampolines — closures / upvalue cells
-// ----------------------------------------------------------------------------
-
-/// A heap slot holding a `*mut Value`; captured variables live in one of these
-/// so closures share the exact same box the defining frame reads/writes.
-///
-/// The field is atomic (audit A-12): `spawn` puts a closure — and therefore its
-/// captured cells — on a worker thread, so two tasks can read and write the same
-/// cell concurrently. A plain `*mut Value` made that a data race (UB, torn
-/// pointer reads); load/store are `SeqCst` so a reader never observes a
-/// half-written pointer. Generated code never touches the field directly (it
-/// calls `spid3r_cell_get`/`spid3r_cell_set`), so the layout stays opaque.
-#[repr(C)]
+/// A heap slot holding a `Mutex<Value>`; captured variables live in one of
+/// these so closures share the exact same cell safely across threads without
+/// holding raw `AOT_HEAP` pointers (DP-1 / RT-2).
 pub struct UpvalueSlot {
-    pub value: std::sync::atomic::AtomicPtr<Value>,
+    pub value: Mutex<Value>,
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_cell_new(initial: *mut Value) -> *mut UpvalueSlot {
+pub extern "C" fn spid3r_cell_new(initial: *const ValueV2) -> *mut UpvalueSlot {
     let v = if initial.is_null() {
-        leak(Value::Null)
+        Value::Null
     } else {
-        initial
+        to_owned_v2(initial)
     };
     Box::into_raw(Box::new(UpvalueSlot {
-        value: std::sync::atomic::AtomicPtr::new(v),
+        value: Mutex::new(v),
     }))
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_cell_get(cell: *mut UpvalueSlot) -> *mut Value {
+pub extern "C" fn spid3r_cell_get(out: *mut ValueV2, cell: *mut UpvalueSlot) {
     if cell.is_null() {
         abort("native runtime: null upvalue cell");
     }
-    unsafe { (*cell).value.load(std::sync::atomic::Ordering::SeqCst) }
+    // SAFETY: `cell` was created by `spid3r_cell_new` and lives for process lifetime.
+    let v = unsafe { (*cell).value.lock().unwrap().clone() };
+    write_out(out, from_value_v2(v));
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_cell_set(cell: *mut UpvalueSlot, v: *mut Value) {
+pub extern "C" fn spid3r_cell_set(cell: *mut UpvalueSlot, v: *const ValueV2) {
     if cell.is_null() {
         abort("native runtime: null upvalue cell");
     }
-    unsafe { (*cell).value.store(v, std::sync::atomic::Ordering::SeqCst) };
+    let val = to_owned_v2(v);
+    // SAFETY: `cell` was created by `spid3r_cell_new` and lives for process lifetime.
+    unsafe {
+        *(*cell).value.lock().unwrap() = val;
+    }
 }
 
 /// Allocate the captured-variable array of a closure environment.
@@ -2113,9 +2672,10 @@ pub extern "C" fn spid3r_env_set_slot(env: *mut c_void, index: usize, cell: *mut
 
 #[no_mangle]
 pub extern "C" fn spid3r_class_register(
+    out: *mut ValueV2,
     name: *const c_char,
     parent_name: *const c_char,
-) -> *mut Value {
+) {
     let name = cstr(name);
     let parent = if parent_name.is_null() {
         None
@@ -2137,7 +2697,8 @@ pub extern "C" fn spid3r_class_register(
         vtable: Vec::new(),
         vtable_slots: HashMap::new(),
     });
-    leak(Value::CClass(class))
+    // Classes live for process lifetime; allocate pinned so they are never swept.
+    write_out(out, alloc_pinned_v2(Value::CClass(class)));
 }
 
 static NEXT_CLASS_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -2149,18 +2710,13 @@ fn class_tables() -> &'static Mutex<HashMap<u64, std::sync::Arc<crate::value::Co
     TABLES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Finalize a class after all fields/methods/ctor have been attached: mints a
-/// stable `class_id` and MRO-flattens its method `vtable`, then publishes it in
-/// `CLASS_TABLES`. Returns the minted `class_id`.
 #[no_mangle]
-pub extern "C" fn spid3r_class_publish(class: *const Value) -> u64 {
+pub extern "C" fn spid3r_class_publish(class: *const ValueV2) -> u64 {
     let id = NEXT_CLASS_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     {
         let c = class_mut(class);
         let mut vtable: Vec<std::sync::Arc<CompiledFn>> = Vec::new();
         let mut slots: HashMap<String, usize> = HashMap::new();
-        // Collect ancestor chain from root down to `c` so child overrides reuse
-        // the parent's slot index.
         let mut chain: Vec<&crate::value::CompiledClass> = Vec::new();
         let mut cur = c.parent.as_deref();
         while let Some(p) = cur {
@@ -2197,13 +2753,12 @@ pub extern "C" fn spid3r_class_publish(class: *const Value) -> u64 {
         c.vtable = vtable;
         c.vtable_slots = slots;
     }
-    if let Value::CClass(arc) = deref(class) {
+    if let Some(Value::CClass(arc)) = deref_heap(read_v2(class)) {
         class_tables().lock().unwrap().insert(id, arc.clone());
     }
     id
 }
 
-/// Resolve a method name to its slot index for `class_id`, or `-1` if absent.
 #[no_mangle]
 pub extern "C" fn spid3r_class_slot_of(class_id: u64, name: *const c_char) -> i64 {
     if class_id == 0 {
@@ -2217,14 +2772,13 @@ pub extern "C" fn spid3r_class_slot_of(class_id: u64, name: *const c_char) -> i6
         .unwrap_or(-1)
 }
 
-/// Mutable access to a class during registration. The class Value was just
-/// created by generated code and is not yet visible anywhere else, so its
-/// `Arc` is uniquely owned and we can borrow the payload mutably.
-fn class_mut<'a>(class: *const Value) -> &'a mut crate::value::CompiledClass {
-    // The class box was just created by generated code and is not yet shared,
-    // so a mutable borrow through the raw pointer is sound here.
-    let class: &mut Value = unsafe { &mut *(class as *mut Value) };
-    if let Value::CClass(c) = class {
+fn class_mut<'a>(class: *const ValueV2) -> &'a mut crate::value::CompiledClass {
+    let cv = read_v2(class);
+    if !cv.is_heap() {
+        abort("native runtime: class registration with a non-class value");
+    }
+    let class_val: &mut Value = unsafe { &mut *cv.as_heap_ptr() };
+    if let Value::CClass(c) = class_val {
         match std::sync::Arc::get_mut(c) {
             Some(c) => c,
             None => abort("native runtime: class registration raced another reference"),
@@ -2235,7 +2789,7 @@ fn class_mut<'a>(class: *const Value) -> &'a mut crate::value::CompiledClass {
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_class_add_field(class: *const Value, name: *const c_char, vis: u8) {
+pub extern "C" fn spid3r_class_add_field(class: *const ValueV2, name: *const c_char, vis: u8) {
     let name = cstr(name);
     let vis = if vis == 0 {
         crate::ast::Vis::Private
@@ -2247,14 +2801,14 @@ pub extern "C" fn spid3r_class_add_field(class: *const Value, name: *const c_cha
 
 #[no_mangle]
 pub extern "C" fn spid3r_class_add_method(
-    class: *const Value,
+    class: *const ValueV2,
     name: *const c_char,
     arity: usize,
     min_arity: usize,
     code: *const c_void,
 ) {
     let name = cstr(name);
-    let code: unsafe extern "C" fn(*mut c_void, usize, *const *mut Value) -> *mut Value =
+    let code: unsafe extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2) =
         unsafe { std::mem::transmute(code) };
     let f = std::sync::Arc::new(CompiledFn {
         name: Some(name.clone()),
@@ -2270,12 +2824,12 @@ pub extern "C" fn spid3r_class_add_method(
 
 #[no_mangle]
 pub extern "C" fn spid3r_class_set_ctor(
-    class: *const Value,
+    class: *const ValueV2,
     arity: usize,
     min_arity: usize,
     code: *const c_void,
 ) {
-    let code: unsafe extern "C" fn(*mut c_void, usize, *const *mut Value) -> *mut Value =
+    let code: unsafe extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2) =
         unsafe { std::mem::transmute(code) };
     let c = class_mut(class);
     let f = std::sync::Arc::new(CompiledFn {
@@ -2288,12 +2842,10 @@ pub extern "C" fn spid3r_class_set_ctor(
     c.ctor = Some(f);
 }
 
-/// Construct an instance of a compiled class: initialize fields along the
-/// inheritance chain (root first), then run the nearest constructor (if any).
 pub fn construct_cinstance(
     class: std::sync::Arc<crate::value::CompiledClass>,
     args: Vec<Value>,
-) -> *mut Value {
+) -> ValueV2 {
     let mut fields: HashMap<String, Value> = HashMap::new();
     let mut chain: Vec<std::sync::Arc<crate::value::CompiledClass>> = Vec::new();
     let mut cur = Some(class.clone());
@@ -2311,7 +2863,7 @@ pub fn construct_cinstance(
         fields,
     });
     let obj = Value::CInstance(instance);
-    let obj_ptr = leak(obj.clone());
+    let obj_v2 = alloc_heap_v2(obj);
     let ctor = {
         let mut cur = Some(class.clone());
         let mut found = None;
@@ -2331,34 +2883,33 @@ pub fn construct_cinstance(
             } else {
                 format!("{} to {} argument(s)", ctor.min_arity - 1, ctor.arity - 1)
             };
-            // Catchable like the tree/VM constructor dispatch (F-9): the same
-            // message the interpreter raises, routed through the throw channel.
-            return rt_throw(&format!(
+            return rt_throw_v2(&format!(
                 "new {} expects {}, got {}",
                 class.name,
                 want,
                 args.len()
             ));
         }
-        let mut call_args: Vec<*mut Value> = Vec::with_capacity(args.len() + 1);
-        call_args.push(obj_ptr);
+        let mut frame_vals: Vec<ValueV2> = Vec::with_capacity(args.len() + 1);
+        frame_vals.push(obj_v2);
         for a in &args {
-            call_args.push(leak(a.clone()));
+            frame_vals.push(from_value_v2(a.clone()));
         }
+        let call_args: Vec<*const ValueV2> =
+            frame_vals.iter().map(|v| v as *const ValueV2).collect();
         if !enter_call() {
-            return rt_throw("stack overflow: call depth limit reached");
+            return rt_throw_v2("stack overflow: call depth limit reached");
         }
+        let mut out = ValueV2::NULL;
+        spid3r_frame_enter(frame_vals.as_ptr(), frame_vals.len());
         unsafe {
-            (ctor.code)(ctor.env, args.len() + 1, call_args.as_ptr());
+            (ctor.code)(&mut out, ctor.env, args.len() + 1, call_args.as_ptr());
         }
+        spid3r_frame_exit();
         leave_call();
     }
-    obj_ptr
+    obj_v2
 }
-
-// ----------------------------------------------------------------------------
-// extern "C" trampolines — printing (replicating the stdlib natives exactly)
-// ----------------------------------------------------------------------------
 
 fn join_display(args: &[Value]) -> String {
     args.iter()
@@ -2368,49 +2919,32 @@ fn join_display(args: &[Value]) -> String {
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_print(argc: usize, argv: *const *mut Value) {
+pub extern "C" fn spid3r_print(argc: usize, argv: *const *const ValueV2) {
     let args = unsafe { args_vec(argc, argv) };
     print!("{}", join_display(&args));
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_println(argc: usize, argv: *const *mut Value) {
+pub extern "C" fn spid3r_println(argc: usize, argv: *const *const ValueV2) {
     let args = unsafe { args_vec(argc, argv) };
     println!("{}", join_display(&args));
 }
 
 #[no_mangle]
-pub extern "C" fn spid3r_eprintln(argc: usize, argv: *const *mut Value) {
+pub extern "C" fn spid3r_eprintln(argc: usize, argv: *const *const ValueV2) {
     let args = unsafe { args_vec(argc, argv) };
     eprintln!("{}", join_display(&args));
 }
 
-// ----------------------------------------------------------------------------
-// process startup
-// ----------------------------------------------------------------------------
-
-/// Start a natively compiled Spid3r program: install the stdlib, run the
-/// generated entry (class registration + top-level statements), then call
-/// `main` and use its return value as the process exit code (matching
-/// `run --engine vm`).
-///
-/// `entry` is the generated entry function, passed in by the emitted `main`
-/// so the staticlib never references program-specific symbols.
 #[no_mangle]
-pub extern "C" fn spid3r_rt_start(entry: extern "C" fn() -> *mut Value) -> i32 {
+pub extern "C" fn spid3r_rt_start(entry: extern "C" fn(*mut ValueV2)) -> i32 {
     rt_init();
-    // Built executables get `args()` from the process argv, the same shape
-    // `spid3r run app.matrix one two` delivers to the script: everything after
-    // the program itself. (The script engines install this in the CLI before
-    // any engine runs; a built binary's argv IS the script's argv.)
     crate::stdlib::set_script_args(std::env::args().skip(1).collect());
     ffi_guard("rt_start", |_| 70, || run_program(entry))
 }
 
-/// Minimal freestanding entry (R9.4): skips scheduler, net, tz, and full stdlib,
-/// installing only core console/value primitives (`print`, `println`, `string`, `len`, `type_of`).
 #[no_mangle]
-pub extern "C" fn spid3r_rt_start_freestanding(entry: extern "C" fn() -> *mut Value) -> i32 {
+pub extern "C" fn spid3r_rt_start_freestanding(entry: extern "C" fn(*mut ValueV2)) -> i32 {
     {
         let mut g = globals().lock().unwrap();
         for (name, func) in crate::stdlib::builtin_defs() {
@@ -2428,29 +2962,26 @@ pub extern "C" fn spid3r_rt_start_freestanding(entry: extern "C" fn() -> *mut Va
     ffi_guard("rt_start_freestanding", |_| 70, || run_program(entry))
 }
 
-/// Run the compiled entry (class registration + top-level statements) and then
-/// `main`, returning the process exit code. Top-level statements that throw
-/// outside a `try` route to the entry's uncaught block (which exits); an
-/// uncaught throw from `main` leaves the pending flag set, which is reported
-/// here like the tree/VM top level before returning a non-zero exit code.
-fn run_program(entry: extern "C" fn() -> *mut Value) -> i32 {
-    // Count this thread as executing Spid3r code (see `sched::gc_quiescent`).
+fn run_program(entry: extern "C" fn(*mut ValueV2)) -> i32 {
     let _active = crate::sched::enter_active();
-    entry();
+    let mut entry_out = ValueV2::NULL;
+    entry(&mut entry_out);
     let main = {
         let g = globals().lock().unwrap();
         g.get("main").cloned()
     };
     let code = match main {
         Some(Value::Cfn(f)) => {
-            let argv: [*mut Value; 0] = [];
-            let ret = unsafe { (f.code)(f.env, 0, argv.as_ptr()) };
+            let argv: [*const ValueV2; 0] = [];
+            let mut ret = ValueV2::NULL;
+            unsafe { (f.code)(&mut ret, f.env, 0, argv.as_ptr()) };
             if spid3r_threw() != 0 {
                 spid3r_uncaught();
             }
-            match to_owned(ret) {
-                Value::Int(i) => i as i32,
-                _ => 0,
+            if ret.tag == ValueV2::TAG_INT {
+                (ret.payload as i64) as i32
+            } else {
+                0
             }
         }
         Some(other) => {
@@ -2467,49 +2998,23 @@ fn run_program(entry: extern "C" fn() -> *mut Value) -> i32 {
             1
         }
     };
-    // Join-on-exit (audit A-3): match the tree/VM engines — wait for tasks
-    // `main` left running so their output is not lost when the process exits.
-    // (`join_tasks_at_exit` prints its own warning when the deadline expires.)
     let _ = crate::sched::join_tasks_at_exit();
-    // Deterministic teardown, like the CLI: stop the pool and join the workers
-    // instead of letting process exit kill them mid-write.
     crate::sched::shutdown();
-    // This is a C-style `main`: Rust's stdout flush-on-exit never runs, so
-    // flush explicitly before handing the exit code back.
     let _ = std::io::stdout().flush();
     code
 }
 
-// ----------------------------------------------------------------------------
-// concurrency — spawn / await  (native AOT)
-//
-// The tree/VM engines run tasks on the shared, process-wide worker pool in
-// [`crate::sched::Scheduler`]; the native backend reuses that exact pool. A
-// `spawn` queues a job that invokes the compiled closure on a worker thread;
-// `await` joins a task (or receives from a channel). Values are `Arc<Mutex>`
-// and the globals table is a shared mutex, so crossing the thread boundary is
-// the same thread-safety the other engines rely on.
-// ----------------------------------------------------------------------------
-
-/// A compiled closure ready to run on a worker thread. Its `env` is a raw
-/// pointer to a process-lifetime upvalue-cell array (allocated by
-/// `spid3r_env_alloc`); the cells hold thread-safe `Arc<Mutex>` values, so
-/// sharing the pointer across threads is sound — we only assert `Send`.
 #[derive(Clone, Copy)]
 struct SendCfn {
-    code: unsafe extern "C" fn(*mut c_void, usize, *const *mut Value) -> *mut Value,
+    code: unsafe extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2),
     env: *mut c_void,
 }
 unsafe impl Send for SendCfn {}
 
-/// `spawn f` — run a compiled callable on the shared worker pool and return a
-/// `Value::Task` handle (mirroring the tree/VM `spawn`). An uncaught `throw`
-/// inside the task becomes the task's failure; `await` later surfaces it as
-/// "task failed: <message>". A non-callable argument throws.
 #[no_mangle]
-pub extern "C" fn spid3r_spawn(f: *mut Value) -> *mut Value {
+pub extern "C" fn spid3r_spawn(out: *mut ValueV2, f: *const ValueV2) {
     crate::value::mark_multithreaded();
-    match to_owned(f) {
+    let v = match to_owned_v2(f) {
         Value::Cfn(c) => {
             let cfn = SendCfn {
                 code: c.code,
@@ -2517,74 +3022,63 @@ pub extern "C" fn spid3r_spawn(f: *mut Value) -> *mut Value {
             };
             let sched = Scheduler::shared();
             let handle = sched.spawn_job(Box::new(move || {
-                // Bind the whole `SendCfn` into a local so edition-2021 disjoint
-                // capture takes the entire (Send) struct, not the raw `env` ptr.
                 let cfn = cfn;
-                let argv: [*mut Value; 0] = [];
-                let r = unsafe { (cfn.code)(cfn.env, 0usize, argv.as_ptr()) };
+                let argv: [*const ValueV2; 0] = [];
+                let mut r = ValueV2::NULL;
+                unsafe { (cfn.code)(&mut r, cfn.env, 0usize, argv.as_ptr()) };
                 if spid3r_threw() != 0 {
-                    let thrown = spid3r_take_thrown();
-                    if thrown.is_null() {
-                        crate::sched::TaskOutcome {
+                    match take_thrown_value() {
+                        None => crate::sched::TaskOutcome {
                             result: Err("task threw".to_string()),
                             thrown: None,
-                        }
-                    } else {
-                        // Carry the thrown user value across the task
-                        // boundary so `await` rethrows it structurally
-                        // (audit A-9).
-                        let v = to_owned(deref(thrown));
-                        crate::sched::TaskOutcome {
+                        },
+                        Some(v) => crate::sched::TaskOutcome {
                             thrown: Some(v.clone()),
                             result: Err(crate::value::display_value(&v)),
-                        }
+                        },
                     }
                 } else {
                     crate::sched::TaskOutcome {
-                        result: Ok(to_owned(r)),
+                        result: Ok(v2_to_value(r)),
                         thrown: None,
                     }
                 }
             }));
-            leak(Value::Task(handle))
+            alloc_heap_v2(Value::Task(handle))
         }
-        other => rt_throw(&format!(
+        other => rt_throw_v2(&format!(
             "spawn expects a function, found {}",
             crate::value::type_name(&other)
         )),
-    }
+    };
+    write_out(out, v);
 }
 
-/// `await v` — join a task (blocking) or receive from a channel; anything else
-/// is a catchable error. Matches the tree/VM `await` exactly.
 #[no_mangle]
-pub extern "C" fn spid3r_await(v: *mut Value) -> *mut Value {
-    match to_owned(v) {
+pub extern "C" fn spid3r_await(out: *mut ValueV2, v: *const ValueV2) {
+    let res = match to_owned_v2(v) {
         Value::Task(t) => match t.join() {
-            Ok(val) => leak(val),
+            Ok(val) => from_value_v2(val),
             Err(msg) => match t.thrown_value() {
-                // Rethrow the task's thrown user value structurally so `try`
-                // rebinds the original value, not a string (audit A-9).
-                Some(v) => rt_throw_value(v),
-                None => rt_throw(&format!("task failed: {}", msg)),
+                Some(v) => rt_throw_value_v2(v),
+                None => rt_throw_v2(&format!("task failed: {}", msg)),
             },
         },
-        Value::Channel(c) => leak(c.recv()),
-        other => rt_throw(&format!(
+        Value::Channel(c) => from_value_v2(c.recv()),
+        other => rt_throw_v2(&format!(
             "await expects a task or a channel, found {}",
             crate::value::type_name(&other)
         )),
-    }
+    };
+    write_out(out, res);
 }
 
-/// Runtime failure from generated code (type errors, missing fields, ...).
 #[no_mangle]
 pub extern "C" fn spid3r_abort(msg: *const c_char) -> ! {
     let msg = cstr(msg);
     abort(&msg)
 }
 
-/// Version string embedded in native binaries (`spid3r_version()`).
 #[no_mangle]
 pub extern "C" fn spid3r_runtime_version() -> *mut c_char {
     match CString::new(crate::VERSION) {
@@ -2593,33 +3087,34 @@ pub extern "C" fn spid3r_runtime_version() -> *mut c_char {
     }
 }
 
-/// Box a returned C struct by populating fields on a new instance of `class_name`
-/// without running `new()`.
 #[no_mangle]
 pub extern "C" fn spid3r_struct_box(
+    out: *mut ValueV2,
     class_name: *const c_char,
     count: usize,
     field_names: *const *const c_char,
-    field_vals: *const *mut Value,
-) -> *mut Value {
+    field_vals: *const *const ValueV2,
+) {
     let cname = cstr(class_name);
     let cls_val = {
         let g = globals().lock().unwrap();
         g.get(&cname).cloned()
     };
     let Some(cls_val) = cls_val else {
-        return rt_throw(&format!("unknown struct/class '{}'", cname));
+        write_out(
+            out,
+            rt_throw_v2(&format!("unknown struct/class '{}'", cname)),
+        );
+        return;
     };
     let mut pairs = Vec::with_capacity(count);
     for i in 0..count {
-        // SAFETY: `field_names` and `field_vals` point to `count`-element arrays
-        // stack-allocated by the AOT caller for the duration of this call.
         let (fname_ptr, val_ptr) = unsafe { (*field_names.add(i), *field_vals.add(i)) };
         let fname = cstr(fname_ptr);
-        let val = deref(val_ptr).clone();
+        let val = to_owned_v2(val_ptr);
         pairs.push((fname, val));
     }
-    match cls_val {
+    let res = match cls_val {
         Value::VClass(cls) => {
             let mut slots = vec![Value::Null; cls.slot_names.len()];
             for (fname, val) in pairs {
@@ -2629,7 +3124,7 @@ pub extern "C" fn spid3r_struct_box(
                     }
                 }
             }
-            leak_fast(Value::VInstance(new_ref(crate::value::VmInstanceData {
+            alloc_heap_v2(Value::VInstance(new_ref(crate::value::VmInstanceData {
                 class: cls,
                 slots,
             })))
@@ -2639,42 +3134,43 @@ pub extern "C" fn spid3r_struct_box(
             for (fname, val) in pairs {
                 fields.insert(fname, val);
             }
-            leak_fast(Value::CInstance(new_ref(CompiledInstanceData {
+            alloc_heap_v2(Value::CInstance(new_ref(CompiledInstanceData {
                 class: cls,
                 fields,
             })))
         }
-        other => rt_throw(&format!(
+        other => rt_throw_v2(&format!(
             "'{}' is not a class/struct, found {}",
             cname,
             crate::value::type_name(&other)
         )),
-    }
+    };
+    write_out(out, res);
 }
 
-/// Runtime dynamic library load (`dl_open`, gated by `--allow-dlopen` at build time).
 #[cfg_attr(not(any(windows, unix)), allow(unused_variables))]
 #[no_mangle]
-pub extern "C" fn spid3r_dl_open(path: *mut Value) -> *mut Value {
-    ffi_value("dl_open", || {
-        let s = match deref(path) {
-            Value::Str(s) => s.to_string(),
-            other => {
-                return rt_throw(&format!(
+pub extern "C" fn spid3r_dl_open(out: *mut ValueV2, path: *const ValueV2) {
+    ffi_v2(out, "dl_open", || {
+        let pv = read_v2(path);
+        let s = match with_str_v2(pv, |s| s.to_string()) {
+            Some(s) => s,
+            None => {
+                let owned = v2_to_value(pv);
+                return rt_throw_v2(&format!(
                     "dl_open expects a string path, found {}",
-                    crate::value::type_name(other)
-                ))
+                    crate::value::type_name(&owned)
+                ));
             }
         };
         let Ok(cs) = CString::new(s.as_str()) else {
-            return rt_throw("dl_open: path contains interior NUL byte");
+            return rt_throw_v2("dl_open: path contains interior NUL byte");
         };
         #[cfg(windows)]
         let handle = {
             extern "system" {
                 fn LoadLibraryA(lp_lib_file_name: *const c_char) -> *mut c_void;
             }
-            // SAFETY: `cs.as_ptr()` is a valid NUL-terminated C string for the duration of the call.
             unsafe { LoadLibraryA(cs.as_ptr()) }
         };
         #[cfg(unix)]
@@ -2683,46 +3179,51 @@ pub extern "C" fn spid3r_dl_open(path: *mut Value) -> *mut Value {
                 fn dlopen(filename: *const c_char, flag: i32) -> *mut c_void;
             }
             const RTLD_LAZY: i32 = 1;
-            // SAFETY: `cs.as_ptr()` is a valid NUL-terminated C string; `RTLD_LAZY` is standard POSIX.
             unsafe { dlopen(cs.as_ptr(), RTLD_LAZY) }
         };
         #[cfg(not(any(windows, unix)))]
         let handle: *mut c_void = std::ptr::null_mut();
 
         if handle.is_null() {
-            return rt_throw(&format!("dl_open: failed to load '{}'", s));
+            return rt_throw_v2(&format!("dl_open: failed to load '{}'", s));
         }
-        leak_fast(Value::Int(handle as usize as i64))
-    })
+        ValueV2::from_int(handle as usize as i64)
+    });
 }
 
-/// Resolve a symbol from a `dl_open` handle (`dl_sym`, gated by `--allow-dlopen`).
 #[cfg_attr(not(any(windows, unix)), allow(unused_variables))]
 #[no_mangle]
-pub extern "C" fn spid3r_dl_sym(handle_val: *mut Value, sym: *mut Value) -> *mut Value {
-    ffi_value("dl_sym", || {
-        let h = match deref(handle_val) {
-            Value::Int(i) if *i != 0 => *i as usize as *mut c_void,
-            _ => return rt_throw("dl_sym: expected a valid library handle"),
+pub extern "C" fn spid3r_dl_sym(
+    out: *mut ValueV2,
+    handle_val: *const ValueV2,
+    sym: *const ValueV2,
+) {
+    ffi_v2(out, "dl_sym", || {
+        let hv = read_v2(handle_val);
+        let h = if hv.tag == ValueV2::TAG_INT && hv.payload != 0 {
+            hv.payload as usize as *mut c_void
+        } else {
+            return rt_throw_v2("dl_sym: expected a valid library handle");
         };
-        let s = match deref(sym) {
-            Value::Str(s) => s.to_string(),
-            other => {
-                return rt_throw(&format!(
+        let sv = read_v2(sym);
+        let s = match with_str_v2(sv, |s| s.to_string()) {
+            Some(s) => s,
+            None => {
+                let owned = v2_to_value(sv);
+                return rt_throw_v2(&format!(
                     "dl_sym expects a string symbol name, found {}",
-                    crate::value::type_name(other)
-                ))
+                    crate::value::type_name(&owned)
+                ));
             }
         };
         let Ok(cs) = CString::new(s.as_str()) else {
-            return rt_throw("dl_sym: symbol name contains interior NUL byte");
+            return rt_throw_v2("dl_sym: symbol name contains interior NUL byte");
         };
         #[cfg(windows)]
         let addr = {
             extern "system" {
                 fn GetProcAddress(h_module: *mut c_void, lp_proc_name: *const u8) -> *mut c_void;
             }
-            // SAFETY: `h` is a non-null module handle and `cs.as_ptr()` is NUL-terminated.
             unsafe { GetProcAddress(h, cs.as_ptr() as *const u8) }
         };
         #[cfg(unix)]
@@ -2730,34 +3231,33 @@ pub extern "C" fn spid3r_dl_sym(handle_val: *mut Value, sym: *mut Value) -> *mut
             extern "C" {
                 fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
             }
-            // SAFETY: `h` is a non-null dlopen handle and `cs.as_ptr()` is NUL-terminated.
             unsafe { dlsym(h, cs.as_ptr()) }
         };
         #[cfg(not(any(windows, unix)))]
         let addr: *mut c_void = std::ptr::null_mut();
 
         if addr.is_null() {
-            return rt_throw(&format!("dl_sym: symbol '{}' not found", s));
+            return rt_throw_v2(&format!("dl_sym: symbol '{}' not found", s));
         }
-        leak_fast(Value::Int(addr as usize as i64))
-    })
+        ValueV2::from_int(addr as usize as i64)
+    });
 }
 
-/// Close a `dl_open` handle (`dl_close`, gated by `--allow-dlopen`).
 #[cfg_attr(not(any(windows, unix)), allow(unused_variables))]
 #[no_mangle]
-pub extern "C" fn spid3r_dl_close(handle_val: *mut Value) -> *mut Value {
-    ffi_value("dl_close", || {
-        let h = match deref(handle_val) {
-            Value::Int(i) if *i != 0 => *i as usize as *mut c_void,
-            _ => return rt_throw("dl_close: expected a valid library handle"),
+pub extern "C" fn spid3r_dl_close(out: *mut ValueV2, handle_val: *const ValueV2) {
+    ffi_v2(out, "dl_close", || {
+        let hv = read_v2(handle_val);
+        let h = if hv.tag == ValueV2::TAG_INT && hv.payload != 0 {
+            hv.payload as usize as *mut c_void
+        } else {
+            return rt_throw_v2("dl_close: expected a valid library handle");
         };
         #[cfg(windows)]
         let ok = {
             extern "system" {
                 fn FreeLibrary(h_lib_module: *mut c_void) -> i32;
             }
-            // SAFETY: `h` was checked non-null and came from `dl_open`.
             unsafe { FreeLibrary(h) != 0 }
         };
         #[cfg(unix)]
@@ -2765,14 +3265,13 @@ pub extern "C" fn spid3r_dl_close(handle_val: *mut Value) -> *mut Value {
             extern "C" {
                 fn dlclose(handle: *mut c_void) -> i32;
             }
-            // SAFETY: `h` was checked non-null and came from `dl_open`.
             unsafe { dlclose(h) == 0 }
         };
         #[cfg(not(any(windows, unix)))]
         let ok = false;
 
-        leak_fast(Value::Bool(ok))
-    })
+        ValueV2::from_bool(ok)
+    });
 }
 
 // ----------------------------------------------------------------------------
@@ -2838,7 +3337,7 @@ pub extern "C" fn spid3r_ulist_i64_get(p: *mut c_void, idx: i64) -> i64 {
     match resolve_ulist_index(u.vec.len(), idx) {
         Ok(i) => u.vec[i],
         Err(msg) => {
-            rt_throw(&msg);
+            rt_throw_v2(&msg);
             0
         }
     }
@@ -2852,7 +3351,7 @@ pub extern "C" fn spid3r_ulist_i64_set(p: *mut c_void, idx: i64, val: i64) {
     match resolve_ulist_index(u.vec.len(), idx) {
         Ok(i) => u.vec[i] = val,
         Err(msg) => {
-            rt_throw(&msg);
+            rt_throw_v2(&msg);
         }
     }
 }
@@ -2875,7 +3374,7 @@ pub extern "C" fn spid3r_ulist_i64_pop(p: *mut c_void) -> i64 {
     match out {
         Some(x) => x,
         None => {
-            rt_throw("pop from empty list");
+            rt_throw_v2("pop from empty list");
             0
         }
     }
@@ -2904,7 +3403,7 @@ pub extern "C" fn spid3r_ulist_f64_get(p: *mut c_void, idx: i64) -> f64 {
     match resolve_ulist_index(u.vec.len(), idx) {
         Ok(i) => u.vec[i],
         Err(msg) => {
-            rt_throw(&msg);
+            rt_throw_v2(&msg);
             0.0
         }
     }
@@ -2918,7 +3417,7 @@ pub extern "C" fn spid3r_ulist_f64_set(p: *mut c_void, idx: i64, val: f64) {
     match resolve_ulist_index(u.vec.len(), idx) {
         Ok(i) => u.vec[i] = val,
         Err(msg) => {
-            rt_throw(&msg);
+            rt_throw_v2(&msg);
         }
     }
 }
@@ -2941,7 +3440,7 @@ pub extern "C" fn spid3r_ulist_f64_pop(p: *mut c_void) -> f64 {
     match out {
         Some(x) => x,
         None => {
-            rt_throw("pop from empty list");
+            rt_throw_v2("pop from empty list");
             0.0
         }
     }
@@ -2951,17 +3450,23 @@ pub extern "C" fn spid3r_ulist_f64_pop(p: *mut c_void) -> f64 {
 mod tests {
     use super::*;
 
-    fn owned(p: *const Value) -> Value {
-        to_owned(p)
+    fn owned(v: ValueV2) -> Value {
+        v2_to_value(v)
     }
 
     #[test]
     fn value_makers_roundtrip() {
-        assert!(matches!(owned(spid3r_value_int(42)), Value::Int(42)));
-        assert!(matches!(owned(spid3r_value_bool(1)), Value::Bool(true)));
-        assert!(matches!(owned(spid3r_value_bool(0)), Value::Bool(false)));
-        assert!(matches!(owned(spid3r_value_null()), Value::Null));
-        if let Value::Float(f) = owned(spid3r_value_float(2.5)) {
+        let mut out = ValueV2::NULL;
+        spid3r_value_int(&mut out, 42);
+        assert!(matches!(owned(out), Value::Int(42)));
+        spid3r_value_bool(&mut out, 1);
+        assert!(matches!(owned(out), Value::Bool(true)));
+        spid3r_value_bool(&mut out, 0);
+        assert!(matches!(owned(out), Value::Bool(false)));
+        spid3r_value_null(&mut out);
+        assert!(matches!(owned(out), Value::Null));
+        spid3r_value_float(&mut out, 2.5);
+        if let Value::Float(f) = owned(out) {
             assert!((f - 2.5).abs() < f64::EPSILON);
         } else {
             panic!("expected a float");
@@ -2971,7 +3476,8 @@ mod tests {
     #[test]
     fn str_is_nul_terminated_safe() {
         let s = CString::new("héllo").unwrap();
-        let v = spid3r_value_str(s.as_ptr() as *const u8, "héllo".len());
+        let mut v = ValueV2::NULL;
+        spid3r_value_str(&mut v, s.as_ptr() as *const u8, "héllo".len());
         match owned(v) {
             Value::Str(t) => assert_eq!(&*t, "héllo"),
             other => panic!("expected a string, got {:?}", other),
@@ -2980,11 +3486,12 @@ mod tests {
 
     #[test]
     fn binop_uses_vm_semantics() {
-        let a = spid3r_value_int(7);
-        let b = spid3r_value_int(3);
-        let sum = spid3r_binop(a, b, 0); // Add
-        let quo = spid3r_binop(a, b, 3); // Div
-        let lt = spid3r_binop(a, b, 7); // Lt
+        let a = ValueV2::from_int(7);
+        let b = ValueV2::from_int(3);
+        let (mut sum, mut quo, mut lt) = (ValueV2::NULL, ValueV2::NULL, ValueV2::NULL);
+        spid3r_binop(&mut sum, &a, &b, 0); // Add
+        spid3r_binop(&mut quo, &a, &b, 3); // Div
+        spid3r_binop(&mut lt, &a, &b, 7); // Lt
         assert!(matches!(owned(sum), Value::Int(10)));
         assert!(matches!(owned(quo), Value::Int(2))); // int division like the VM
         assert!(matches!(owned(lt), Value::Bool(false))); // 7 < 3 is false
@@ -2992,9 +3499,10 @@ mod tests {
 
     #[test]
     fn binop_string_concat() {
-        let a = spid3r_value_str(c"ab".as_ptr() as *const u8, 2);
-        let b = spid3r_value_str(c"cd".as_ptr() as *const u8, 2);
-        let r = spid3r_binop(a, b, 0);
+        let (mut a, mut b, mut r) = (ValueV2::NULL, ValueV2::NULL, ValueV2::NULL);
+        spid3r_value_str(&mut a, c"ab".as_ptr() as *const u8, 2);
+        spid3r_value_str(&mut b, c"cd".as_ptr() as *const u8, 2);
+        spid3r_binop(&mut r, &a, &b, 0);
         match owned(r) {
             Value::Str(s) => assert_eq!(&*s, "abcd"),
             other => panic!("expected a string, got {:?}", other),
@@ -3003,19 +3511,24 @@ mod tests {
 
     #[test]
     fn truthy_matches_vm_rules() {
-        assert_eq!(spid3r_truthy(spid3r_value_int(0)), 0);
-        assert_eq!(spid3r_truthy(spid3r_value_int(1)), 1);
-        assert_eq!(spid3r_truthy(spid3r_value_null()), 0);
-        assert_eq!(spid3r_truthy(spid3r_value_bool(1)), 1);
+        let z = ValueV2::from_int(0);
+        let one = ValueV2::from_int(1);
+        let n = ValueV2::NULL;
+        let t = ValueV2::from_bool(true);
+        assert_eq!(spid3r_truthy(&z), 0);
+        assert_eq!(spid3r_truthy(&one), 1);
+        assert_eq!(spid3r_truthy(&n), 0);
+        assert_eq!(spid3r_truthy(&t), 1);
     }
 
     #[test]
     fn globals_set_get_def_exists() {
-        rt_init(); // idempotent
+        rt_init();
         let name = CString::new("__rt_test_g").unwrap();
-        let v = spid3r_value_int(9);
-        spid3r_global_set(name.as_ptr(), v);
-        let got = spid3r_global_get(name.as_ptr());
+        let v = ValueV2::from_int(9);
+        spid3r_global_set(name.as_ptr(), &v);
+        let mut got = ValueV2::NULL;
+        spid3r_global_get(&mut got, name.as_ptr());
         assert!(matches!(owned(got), Value::Int(9)));
         assert_ne!(spid3r_global_exists(name.as_ptr()), 0);
         let other = CString::new("__rt_test_absent").unwrap();
@@ -3024,17 +3537,22 @@ mod tests {
 
     #[test]
     fn forin_iterates_a_list() {
-        let items = [
-            spid3r_value_int(1),
-            spid3r_value_int(2),
-            spid3r_value_int(3),
-        ];
-        let list = spid3r_construct(CString::new("list").unwrap().as_ptr(), 3, items.as_ptr());
-        let it = spid3r_forin_start(list);
+        let v1 = ValueV2::from_int(1);
+        let v2 = ValueV2::from_int(2);
+        let v3 = ValueV2::from_int(3);
+        let items: [*const ValueV2; 3] = [&v1, &v2, &v3];
+        let mut list = ValueV2::NULL;
+        spid3r_construct(
+            &mut list,
+            CString::new("list").unwrap().as_ptr(),
+            3,
+            items.as_ptr(),
+        );
+        let it = spid3r_forin_start(&list);
         let mut seen = Vec::new();
         loop {
-            let next = spid3r_forin_next(it);
-            if next.is_null() {
+            let mut next = ValueV2::NULL;
+            if spid3r_forin_next(&mut next, it) == 0 {
                 break;
             }
             match owned(next) {
@@ -3048,17 +3566,30 @@ mod tests {
 
     #[test]
     fn cells_share_mutation() {
-        let cell = spid3r_cell_new(spid3r_value_int(1));
-        spid3r_cell_set(cell, spid3r_value_int(2));
-        assert!(matches!(owned(spid3r_cell_get(cell)), Value::Int(2)));
+        let v1 = ValueV2::from_int(1);
+        let v2 = ValueV2::from_int(2);
+        let cell = spid3r_cell_new(&v1);
+        spid3r_cell_set(cell, &v2);
+        let mut out = ValueV2::NULL;
+        spid3r_cell_get(&mut out, cell);
+        assert!(matches!(owned(out), Value::Int(2)));
     }
 
     #[test]
     fn method_dispatch_on_list_len() {
         let name = CString::new("len").unwrap();
-        let items = [spid3r_value_int(1), spid3r_value_int(2)];
-        let list = spid3r_construct(CString::new("list").unwrap().as_ptr(), 2, items.as_ptr());
-        let r = spid3r_method(list, name.as_ptr(), 0, std::ptr::null());
+        let v1 = ValueV2::from_int(1);
+        let v2 = ValueV2::from_int(2);
+        let items: [*const ValueV2; 2] = [&v1, &v2];
+        let mut list = ValueV2::NULL;
+        spid3r_construct(
+            &mut list,
+            CString::new("list").unwrap().as_ptr(),
+            2,
+            items.as_ptr(),
+        );
+        let mut r = ValueV2::NULL;
+        spid3r_method(&mut r, &list, name.as_ptr(), 0, std::ptr::null());
         assert!(matches!(owned(r), Value::Int(2)));
     }
 
@@ -3066,16 +3597,17 @@ mod tests {
     fn class_registration_and_construction() {
         unsafe {
             rt_init();
-            // register a tiny class whose ctor stores argv[1] into field "x"
-            let cls = spid3r_class_register(
+            let mut cls = ValueV2::NULL;
+            spid3r_class_register(
+                &mut cls,
                 CString::new("__RtPoint").unwrap().as_ptr(),
                 std::ptr::null(),
             );
-            spid3r_class_add_field(cls, CString::new("x").unwrap().as_ptr(), 1);
-            set_probe_ctor(cls);
-            spid3r_global_set(CString::new("__RtPoint").unwrap().as_ptr(), cls);
+            spid3r_class_add_field(&cls, CString::new("x").unwrap().as_ptr(), 1);
+            set_probe_ctor(&cls);
+            spid3r_global_set(CString::new("__RtPoint").unwrap().as_ptr(), &cls);
 
-            let arg = spid3r_value_int(77);
+            let arg = ValueV2::from_int(77);
             let inst = construct_cinstance(
                 match &owned(cls) {
                     Value::CClass(c) => c.clone(),
@@ -3083,25 +3615,48 @@ mod tests {
                 },
                 vec![owned(arg)],
             );
-            let x = spid3r_field_get(inst, CString::new("x").unwrap().as_ptr());
+            let mut x = ValueV2::NULL;
+            spid3r_field_get(&mut x, &inst, CString::new("x").unwrap().as_ptr());
             assert!(matches!(owned(x), Value::Int(77)));
         }
     }
 
-    /// Attach a plain Rust constructor with the compiled ABI to `cls`:
-    /// self at argv[0], store argv[1] into field "x" of the receiver.
-    unsafe fn set_probe_ctor(cls: *mut Value) {
-        extern "C" fn ctor(_env: *mut c_void, argc: u64, argv: *const *mut Value) -> *mut Value {
+    #[test]
+    fn gc_safepoint_sweeps_unreachable_and_preserves_roots() {
+        let mut frame = [ValueV2::NULL; 2];
+        spid3r_frame_enter(frame.as_ptr(), frame.len());
+        // Root one string in frame[0], then allocate 5000 unrooted strings.
+        frame[0] = alloc_heap_v2(Value::Str("kept".into()));
+        for i in 0..5000 {
+            let _ = alloc_heap_v2(Value::Str(format!("tmp-{}", i).into()));
+        }
+        spid3r_gc_safepoint();
+        let remaining = AOT_HEAP.with(|h| h.borrow().live.len());
+        assert_eq!(remaining, 1, "only the rooted heap object should survive");
+        match owned(frame[0]) {
+            Value::Str(s) => assert_eq!(&*s, "kept"),
+            other => panic!("expected kept string, got {:?}", other),
+        }
+        spid3r_frame_exit();
+    }
+
+    unsafe fn set_probe_ctor(cls: *const ValueV2) {
+        extern "C" fn ctor(
+            out: *mut ValueV2,
+            _env: *mut c_void,
+            argc: usize,
+            argv: *const *const ValueV2,
+        ) {
             assert_eq!(argc, 2);
             unsafe {
                 let recv = *argv;
                 let arg = *argv.add(1);
                 let field = CString::new("x").unwrap();
                 spid3r_field_set(recv, field.as_ptr(), arg);
-                spid3r_value_null()
+                spid3r_value_null(out);
             }
         }
-        let code: extern "C" fn(*mut c_void, u64, *const *mut Value) -> *mut Value = ctor;
+        let code: extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2) = ctor;
         spid3r_class_set_ctor(cls, 2, 2, code as *const c_void);
     }
 }

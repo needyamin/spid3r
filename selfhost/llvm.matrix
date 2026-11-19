@@ -147,6 +147,9 @@ public extern fn LLVMGetFirstInstruction(bb: ptr) -> ptr;
 public extern fn LLVMGetLastInstruction(bb: ptr) -> ptr;
 public extern fn LLVMPositionBuilderBefore(b: ptr, instr: ptr);
 public extern fn LLVMGetBasicBlockTerminator(bb: ptr) -> ptr;
+public extern fn LLVMReplaceAllUsesWith(old_val: ptr, new_val: ptr);
+public extern fn LLVMInstructionEraseFromParent(instr: ptr);
+public extern fn LLVMBuildMemSet(b: ptr, p: ptr, val: ptr, len: ptr, align: int) -> ptr;
 
 // Phi incoming pairs and switch cases (the short-circuit / OptField phis and
 // the finally dispatch).

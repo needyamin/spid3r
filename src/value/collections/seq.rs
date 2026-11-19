@@ -9,6 +9,14 @@ use super::{deep_clone, key_to_value, new_ref, values_equal, Value};
 
 // ---------------------------------------------------------------- list, vec
 
+#[inline]
+fn is_non_recursive_scalar(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Null | Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_)
+    )
+}
+
 #[derive(Debug, Default)]
 pub struct VecData {
     pub items: Vec<Value>,
@@ -16,6 +24,9 @@ pub struct VecData {
 
 impl Drop for VecData {
     fn drop(&mut self) {
+        if self.items.iter().all(is_non_recursive_scalar) {
+            return;
+        }
         // F4/A-17: drain nested containers iteratively; the shared helper knows
         // every container type, so mixed chains (list -> stack -> map -> ...)
         // are covered too.
@@ -702,6 +713,9 @@ pub struct MapData {
 
 impl Drop for MapData {
     fn drop(&mut self) {
+        if self.entries.iter().all(|(_, v)| is_non_recursive_scalar(v)) {
+            return;
+        }
         // F4/A-17: iterative teardown through the shared helper. Only values are
         // walked; keys (`MapKey`) are hashable scalars and drop inline.
         let entries = std::mem::take(&mut self.entries);
@@ -729,6 +743,24 @@ impl MapData {
             m.rebuild_slots();
         }
         m
+    }
+
+    /// Build a small map (`entries.len() <= SMALL_MAP_MAX`) using pre-computed
+    /// 1-byte hash tags (Track 3 RT-3 / RT-4).
+    #[inline]
+    pub fn from_entries_with_tags(
+        entries: Vec<(super::MapKey, Value)>,
+        small_tags: [u8; SMALL_MAP_MAX],
+    ) -> MapData {
+        debug_assert!(entries.len() <= SMALL_MAP_MAX);
+        MapData {
+            entries,
+            small_tags,
+            slots: Vec::new(),
+            namespace: false,
+            frozen: super::FxHashSet::default(),
+            generation: 0,
+        }
     }
 
     /// Rebuild the open-addressed `slots` table from `self.entries`.

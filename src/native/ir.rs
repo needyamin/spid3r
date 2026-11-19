@@ -935,6 +935,11 @@ pub struct Ir<'ctx> {
     raw_fns: HashMap<String, FnProto>,
     /// AOT-5: already-emitted `spid3r_fn_raw__*` specializations.
     raw_compiled: HashMap<String, MonoFnSig<'ctx>>,
+    /// DP-1 / RT-2: placeholder alloca for the current function's `[M x { i64, i64 }]`
+    /// `ValueV2` frame slots array (`None` in pure unboxed raw functions).
+    frame_base_placeholder: Option<PointerValue<'ctx>>,
+    /// DP-1 / RT-2: number of `ValueV2` slots allocated in the current function frame.
+    frame_slot_count: u32,
 }
 
 type MonoFnSig<'ctx> = (FunctionValue<'ctx>, Option<String>, Vec<Option<String>>);
@@ -976,12 +981,13 @@ struct ExternSig {
     win64_sret: Option<String>,
 }
 
-/// Signature of compiled Spid3r functions.
+/// Signature of compiled Spid3r functions (DP-1 Option A: 16-byte ValueV2 out-param).
 type FnTy<'ctx> = unsafe extern "C" fn(
+    *mut crate::value::ValueV2,
     *mut core::ffi::c_void,
-    u64,
-    *const *mut crate::value::Value,
-) -> *mut crate::value::Value;
+    usize,
+    *const *const crate::value::ValueV2,
+);
 
 impl<'ctx> Ir<'ctx> {
     pub fn new(ctx: &'ctx Context, module_name: &str) -> Self {
@@ -1021,6 +1027,8 @@ impl<'ctx> Ir<'ctx> {
             mono_ret_threw_slot: None,
             raw_fns: HashMap::new(),
             raw_compiled: HashMap::new(),
+            frame_base_placeholder: None,
+            frame_slot_count: 0,
             is_entry: false,
             strings: HashMap::new(),
             tramps: HashMap::new(),
@@ -1056,6 +1064,134 @@ impl<'ctx> Ir<'ctx> {
 
     fn i64_ty(&self) -> inkwell::types::IntType<'ctx> {
         self.ctx.i64_type()
+    }
+
+    /// LLVM type of `ValueV2`: `{ i64, i64 }` (16-byte register pair, DP-1 Option A).
+    fn val_v2_ty(&self) -> inkwell::types::StructType<'ctx> {
+        self.ctx
+            .struct_type(&[self.i64_ty().into(), self.i64_ty().into()], false)
+    }
+
+    /// Begin a `ValueV2` GC-rooted frame in the current function's entry block.
+    fn begin_v2_frame(&mut self) {
+        let placeholder = self
+            .builder
+            .build_alloca(self.val_v2_ty(), "v2frame.ph")
+            .unwrap();
+        self.frame_base_placeholder = Some(placeholder);
+        self.frame_slot_count = 0;
+    }
+
+    /// Finalize the `ValueV2` frame: replace the placeholder alloca with the
+    /// exact `[M x { i64, i64 }]` array, zero-init it (`TAG_NULL = 0`), and
+    /// register it with `spid3r_frame_enter`.
+    fn finish_v2_frame(&mut self, func: FunctionValue<'ctx>) {
+        let Some(placeholder) = self.frame_base_placeholder.take() else {
+            return;
+        };
+        let count = self.frame_slot_count.max(1);
+        self.frame_slot_count = 0;
+        let entry = func
+            .get_first_basic_block()
+            .expect("function must have entry block");
+        let cur = self.builder.get_insert_block();
+        let arr_ty = self.val_v2_ty().array_type(count);
+        let ph_inst = placeholder.as_instruction().unwrap();
+
+        // Place the real array alloca at the very top of the entry block.
+        match entry.get_first_instruction() {
+            Some(first) => self.builder.position_before(&first),
+            None => self.builder.position_at_end(entry),
+        }
+        let real_arr = self.builder.build_alloca(arr_ty, "v2frame").unwrap();
+
+        // Zero-init and register frame roots right before `placeholder` (before
+        // any GEP into `placeholder` executes).
+        self.builder.position_before(&ph_inst);
+        self.builder
+            .build_memset(real_arr, 8, self.i8c(0), self.i64c((count as i64) * 16))
+            .unwrap();
+        let f_enter = self.tramp(
+            "spid3r_frame_enter",
+            &[self.ptr_ty().into(), self.i64_ty().into()],
+            None,
+        );
+        self.builder
+            .build_call(
+                f_enter,
+                &[real_arr.into(), self.i64c(count as i64).into()],
+                "",
+            )
+            .unwrap();
+
+        // Replace every GEP use of `placeholder` with `real_arr` and erase it.
+        ph_inst.replace_all_uses_with(&real_arr.as_instruction().unwrap());
+        ph_inst.erase_from_basic_block();
+
+        if let Some(bb) = cur {
+            self.builder.position_at_end(bb);
+        }
+    }
+
+    /// Allocate one 16-byte `ValueV2` slot in the current function's rooted
+    /// frame array (or a standalone entry alloca in unboxed raw functions).
+    fn alloc_v2_slot(&mut self) -> PointerValue<'ctx> {
+        if let Some(base) = self.frame_base_placeholder {
+            let idx = self.frame_slot_count;
+            self.frame_slot_count += 1;
+            let v2_ty = self.val_v2_ty();
+            // SAFETY: `finish_v2_frame` sizes `base` to `[frame_slot_count x { i64, i64 }]`.
+            unsafe {
+                self.builder
+                    .build_in_bounds_gep(v2_ty, base, &[self.i64c(idx as i64)], "v2slot")
+                    .unwrap()
+            }
+        } else {
+            self.alloca_entry_ty(self.val_v2_ty(), "v2tmp")
+        }
+    }
+
+    /// Store an inline scalar `ValueV2 { tag, payload }` into `slot` (zero heap alloc).
+    fn store_v2_inline(
+        &mut self,
+        slot: PointerValue<'ctx>,
+        tag: u64,
+        payload: inkwell::values::IntValue<'ctx>,
+    ) {
+        let v2_ty = self.val_v2_ty();
+        let tag_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, slot, &[self.i64c(0), self.i32c(0)], "v2.t")
+                .unwrap()
+        };
+        self.builder
+            .build_store(tag_ptr, self.i64c(tag as i64))
+            .unwrap();
+        let pay_ptr = unsafe {
+            self.builder
+                .build_in_bounds_gep(v2_ty, slot, &[self.i64c(0), self.i32c(1)], "v2.p")
+                .unwrap()
+        };
+        self.builder.build_store(pay_ptr, payload).unwrap();
+    }
+
+    /// Copy a 16-byte `ValueV2` by value from `src` to `dst`.
+    fn copy_v2(&mut self, dst: PointerValue<'ctx>, src: PointerValue<'ctx>) {
+        let v = self
+            .builder
+            .build_load(self.val_v2_ty(), src, "v2.cp")
+            .unwrap();
+        self.builder.build_store(dst, v).unwrap();
+    }
+
+    /// Allocate a new `UpvalueSlot` initialized from a `ValueV2` pointer.
+    fn cell_new(&mut self, v: PointerValue<'ctx>) -> PointerValue<'ctx> {
+        let f = self.tramp(
+            "spid3r_cell_new",
+            &[self.ptr_ty().into()],
+            Some(self.ptr_ty().into()),
+        );
+        call_ptr(self.emit_call(f, &[v.into()], "cell"))
     }
 
     fn i1(&self, b: bool) -> inkwell::values::IntValue<'ctx> {
@@ -1237,26 +1373,40 @@ impl<'ctx> Ir<'ctx> {
     }
 
     fn call0p(&mut self, name: &str) -> PointerValue<'ctx> {
-        let f = self.tramp(name, &[], Some(self.ptr_ty().into()));
-        let r = self.emit_call(f, &[], "call");
-        call_ptr(r)
+        let out = self.alloc_v2_slot();
+        let f = self.tramp(name, &[self.ptr_ty().into()], None);
+        self.builder.build_call(f, &[out.into()], "").unwrap();
+        out
     }
 
     fn call1p(&mut self, name: &str, a: PointerValue<'ctx>) -> PointerValue<'ctx> {
-        let f = self.tramp(name, &[self.ptr_ty().into()], Some(self.ptr_ty().into()));
-        let r = self.emit_call(f, &[a.into()], "call");
-        call_ptr(r)
+        if name == "spid3r_cell_new" {
+            return self.cell_new(a);
+        }
+        let out = self.alloc_v2_slot();
+        let f = self.tramp(name, &[self.ptr_ty().into(), self.ptr_ty().into()], None);
+        self.builder
+            .build_call(f, &[out.into(), a.into()], "")
+            .unwrap();
+        out
     }
 
     fn call1p_i64(&mut self, name: &str, a: PointerValue<'ctx>, n: i64) -> PointerValue<'ctx> {
+        let out = self.alloc_v2_slot();
         let f = self.tramp(
             name,
-            &[self.ptr_ty().into(), self.i64_ty().into()],
-            Some(self.ptr_ty().into()),
+            &[
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+                self.i64_ty().into(),
+            ],
+            None,
         );
         let n = self.i64c(n);
-        let r = self.emit_call(f, &[a.into(), n.into()], "call");
-        call_ptr(r)
+        self.builder
+            .build_call(f, &[out.into(), a.into(), n.into()], "")
+            .unwrap();
+        out
     }
 
     fn call2p(
@@ -1265,13 +1415,20 @@ impl<'ctx> Ir<'ctx> {
         a: PointerValue<'ctx>,
         b: PointerValue<'ctx>,
     ) -> PointerValue<'ctx> {
+        let out = self.alloc_v2_slot();
         let f = self.tramp(
             name,
-            &[self.ptr_ty().into(), self.ptr_ty().into()],
-            Some(self.ptr_ty().into()),
+            &[
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+            ],
+            None,
         );
-        let r = self.emit_call(f, &[a.into(), b.into()], "call");
-        call_ptr(r)
+        self.builder
+            .build_call(f, &[out.into(), a.into(), b.into()], "")
+            .unwrap();
+        out
     }
 
     fn call3p(
@@ -1281,17 +1438,21 @@ impl<'ctx> Ir<'ctx> {
         b: PointerValue<'ctx>,
         c: PointerValue<'ctx>,
     ) -> PointerValue<'ctx> {
+        let out = self.alloc_v2_slot();
         let f = self.tramp(
             name,
             &[
                 self.ptr_ty().into(),
                 self.ptr_ty().into(),
                 self.ptr_ty().into(),
+                self.ptr_ty().into(),
             ],
-            Some(self.ptr_ty().into()),
+            None,
         );
-        let r = self.emit_call(f, &[a.into(), b.into(), c.into()], "call");
-        call_ptr(r)
+        self.builder
+            .build_call(f, &[out.into(), a.into(), b.into(), c.into()], "")
+            .unwrap();
+        out
     }
 
     fn call_binop(
@@ -1300,18 +1461,22 @@ impl<'ctx> Ir<'ctx> {
         b: PointerValue<'ctx>,
         op: u8,
     ) -> PointerValue<'ctx> {
+        let out = self.alloc_v2_slot();
         let f = self.tramp(
             "spid3r_binop",
             &[
                 self.ptr_ty().into(),
                 self.ptr_ty().into(),
+                self.ptr_ty().into(),
                 self.i64_ty().into(),
             ],
-            Some(self.ptr_ty().into()),
+            None,
         );
         let op = self.i64c(op as i64);
-        let r = self.emit_call(f, &[a.into(), b.into(), op.into()], "bin");
-        call_ptr(r)
+        self.builder
+            .build_call(f, &[out.into(), a.into(), b.into(), op.into()], "")
+            .unwrap();
+        out
     }
 
     fn call_void1p(&mut self, name: &str, a: PointerValue<'ctx>) {
@@ -1360,13 +1525,9 @@ impl<'ctx> Ir<'ctx> {
     // -------------------------------------------------------- value makers
 
     fn v_int_from_i64(&mut self, v: inkwell::values::IntValue<'ctx>) -> PointerValue<'ctx> {
-        let f = self.tramp(
-            "spid3r_value_int",
-            &[self.i64_ty().into()],
-            Some(self.ptr_ty().into()),
-        );
-        let r = self.emit_call(f, &[v.into()], "i");
-        call_ptr(r)
+        let out = self.alloc_v2_slot();
+        self.store_v2_inline(out, crate::value::ValueV2::TAG_INT, v);
+        out
     }
 
     fn v_int(&mut self, v: i64) -> PointerValue<'ctx> {
@@ -1375,13 +1536,14 @@ impl<'ctx> Ir<'ctx> {
     }
 
     fn v_float_from_f64(&mut self, v: inkwell::values::FloatValue<'ctx>) -> PointerValue<'ctx> {
-        let f = self.tramp(
-            "spid3r_value_float",
-            &[self.ctx.f64_type().into()],
-            Some(self.ptr_ty().into()),
-        );
-        let r = self.emit_call(f, &[v.into()], "f");
-        call_ptr(r)
+        let out = self.alloc_v2_slot();
+        let bits = self
+            .builder
+            .build_bit_cast(v, self.i64_ty(), "fbits")
+            .unwrap()
+            .into_int_value();
+        self.store_v2_inline(out, crate::value::ValueV2::TAG_FLOAT, bits);
+        out
     }
 
     fn v_float(&mut self, v: f64) -> PointerValue<'ctx> {
@@ -1390,14 +1552,13 @@ impl<'ctx> Ir<'ctx> {
     }
 
     fn v_bool_from_i1(&mut self, c: inkwell::values::IntValue<'ctx>) -> PointerValue<'ctx> {
-        let c_i8 = self.builder.build_int_cast(c, self.i8_ty(), "b8").unwrap();
-        let f = self.tramp(
-            "spid3r_value_bool",
-            &[self.i8_ty().into()],
-            Some(self.ptr_ty().into()),
-        );
-        let r = self.emit_call(f, &[c_i8.into()], "b");
-        call_ptr(r)
+        let out = self.alloc_v2_slot();
+        let c_i64 = self
+            .builder
+            .build_int_z_extend(c, self.i64_ty(), "b64")
+            .unwrap();
+        self.store_v2_inline(out, crate::value::ValueV2::TAG_BOOL, c_i64);
+        out
     }
 
     fn v_bool(&mut self, v: bool) -> PointerValue<'ctx> {
@@ -1406,19 +1567,34 @@ impl<'ctx> Ir<'ctx> {
     }
 
     fn v_null(&mut self) -> PointerValue<'ctx> {
-        self.call0p("spid3r_value_null")
+        let out = self.alloc_v2_slot();
+        self.store_v2_inline(out, crate::value::ValueV2::TAG_NULL, self.i64c(0));
+        out
     }
 
     fn v_str(&mut self, s: &str) -> PointerValue<'ctx> {
+        let out = self.alloc_v2_slot();
+        let b = s.as_bytes();
+        if b.len() <= 6 || (b.len() == 7 && b[6] < 128) {
+            let v2 = crate::value::ValueV2::from_sso_bytes(b);
+            self.store_v2_inline(out, v2.tag, self.i64c(0));
+            return out;
+        }
         let (gptr, len) = self.str_global(s);
         let f = self.tramp(
             "spid3r_value_str",
-            &[self.ptr_ty().into(), self.i64_ty().into()],
-            Some(self.ptr_ty().into()),
+            &[
+                self.ptr_ty().into(),
+                self.ptr_ty().into(),
+                self.i64_ty().into(),
+            ],
+            None,
         );
         let len = self.i64c(len as i64);
-        let r = self.emit_call(f, &[gptr.into(), len.into()], "s");
-        call_ptr(r)
+        self.builder
+            .build_call(f, &[out.into(), gptr.into(), len.into()], "")
+            .unwrap();
+        out
     }
 
     /// Add (or reuse) a string constant in the module; returns a pointer to its
@@ -1635,13 +1811,7 @@ impl<'ctx> Ir<'ctx> {
     fn read_upvalue(&mut self, index: usize) -> PointerValue<'ctx> {
         let env = self.cur_env();
         let slot = self.call_env_slot(env, index);
-        let f = self.tramp(
-            "spid3r_cell_get",
-            &[self.ptr_ty().into()],
-            Some(self.ptr_ty().into()),
-        );
-        let r = self.emit_call(f, &[slot.into()], "uv");
-        call_ptr(r)
+        self.call1p("spid3r_cell_get", slot)
     }
 
     fn call_env_slot(&mut self, env: PointerValue<'ctx>, index: usize) -> PointerValue<'ctx> {
@@ -4271,11 +4441,8 @@ impl<'ctx> Ir<'ctx> {
             // payload read, i.e. the non-deterministic loop-bound corruption
             // fixed in this session. Every other boxed-local read site loads
             // the pointer first; so does this one.
-            let box_name = self.tmp_name("box");
-            let box_ptr = self
-                .builder
-                .build_load(self.ptr_ty(), *slot, &box_name)
-                .unwrap();
+            // Under DP-1 ValueV2, `slot` IS the `*const ValueV2` 16-byte slot.
+            let box_ptr = *slot;
             let f = self.tramp(
                 "spid3r_is_int",
                 &[self.ptr_ty().into()],
@@ -5204,17 +5371,17 @@ impl<'ctx> Ir<'ctx> {
                     .build_load(self.ptr_ty(), iter_slot, "forin.it")
                     .unwrap()
                     .into_pointer_value();
+                let next = self.alloc_v2_slot();
                 let f = self.tramp(
                     "spid3r_forin_next",
-                    &[self.ptr_ty().into()],
-                    Some(self.ptr_ty().into()),
+                    &[self.ptr_ty().into(), self.ptr_ty().into()],
+                    Some(self.i8_ty().into()),
                 );
-                let next = self
+                let has_next = call_int(self.emit_call(f, &[next.into(), it.into()], "forin.has"));
+                let is_end = self
                     .builder
-                    .build_call(f, &[it.into()], "forin.next")
+                    .build_int_compare(IntPredicate::EQ, has_next, self.i8c(0), "forin.done")
                     .unwrap();
-                let next = call_ptr(next);
-                let is_end = self.builder.build_is_null(next, "forin.done").unwrap();
                 self.builder
                     .build_conditional_branch(is_end, end_bb, body_bb)
                     .unwrap();
@@ -5552,8 +5719,8 @@ impl<'ctx> Ir<'ctx> {
             let db = self.new_block("try.dispatch");
             let pe = self.alloca_entry_ty(self.i32_ty(), "pend_exit");
             self.builder.build_store(pe, self.i32c(0)).unwrap();
-            let pr = self.alloca_entry("pend_ret");
-            let pt = self.alloca_entry("pend_thrown");
+            let pr = self.alloc_v2_slot();
+            let pt = self.alloc_v2_slot();
             (Some(fe), Some(db), Some(pe), Some(pr), Some(pt))
         } else {
             (None, None, None, None, None)
@@ -5605,8 +5772,8 @@ impl<'ctx> Ir<'ctx> {
                 });
                 self.exc.push(catch_fh);
                 self.push_scope();
-                let slot = self.alloca_entry("catchvar");
-                self.builder.build_store(slot, thrown).unwrap();
+                let slot = self.alloc_v2_slot();
+                self.copy_v2(slot, thrown);
                 self.declare(&cc.name, VarLoc::Local(slot));
                 self.compile_block(&cc.body.stmts)?;
                 self.pop_scope();
@@ -5616,15 +5783,15 @@ impl<'ctx> Ir<'ctx> {
                                                     // the catch itself threw: re-throw after finally
                 self.builder.position_at_end(catch_fh);
                 let nt = self.take_thrown();
-                self.builder.build_store(pend_thrown.unwrap(), nt).unwrap();
+                self.copy_v2(pend_thrown.unwrap(), nt);
                 self.builder
                     .build_store(pend_exit.unwrap(), self.i32c(4))
                     .unwrap();
                 self.br_to(finally_entry.unwrap());
             } else {
                 self.push_scope();
-                let slot = self.alloca_entry("catchvar");
-                self.builder.build_store(slot, thrown).unwrap();
+                let slot = self.alloc_v2_slot();
+                self.copy_v2(slot, thrown);
                 self.declare(&cc.name, VarLoc::Local(slot));
                 self.compile_block(&cc.body.stmts)?;
                 self.pop_scope();
@@ -5633,9 +5800,7 @@ impl<'ctx> Ir<'ctx> {
         } else if has_finally {
             // no catch: run `finally`, then re-throw the pending value.
             let thrown = self.take_thrown();
-            self.builder
-                .build_store(pend_thrown.unwrap(), thrown)
-                .unwrap();
+            self.copy_v2(pend_thrown.unwrap(), thrown);
             self.builder
                 .build_store(pend_exit.unwrap(), self.i32c(4))
                 .unwrap();
@@ -5678,11 +5843,7 @@ impl<'ctx> Ir<'ctx> {
             // first running any enclosing `finally` blocks (this try's frame
             // is already popped, so `finally_stack` holds only outer ones).
             self.builder.position_at_end(bb_ret);
-            let v = self
-                .builder
-                .build_load(self.ptr_ty(), pend_ret.unwrap(), "rv")
-                .unwrap()
-                .into_pointer_value();
+            let v = pend_ret.unwrap();
             if self.finally_stack.is_empty() {
                 self.store_return(v);
             } else {
@@ -5710,11 +5871,7 @@ impl<'ctx> Ir<'ctx> {
 
             // re-throw the pending value to the enclosing handler
             self.builder.position_at_end(bb_re);
-            let v = self
-                .builder
-                .build_load(self.ptr_ty(), pend_thrown.unwrap(), "rv")
-                .unwrap()
-                .into_pointer_value();
+            let v = pend_thrown.unwrap();
             self.throw_value(v); // (re)set the throw flag
             self.br_to(outer_handler); // route to the enclosing handler
         }
@@ -5761,7 +5918,7 @@ impl<'ctx> Ir<'ctx> {
             } else {
                 ctx.pending_thrown
             };
-            self.builder.build_store(slot, v).unwrap();
+            self.copy_v2(slot, v);
         }
         self.builder
             .build_store(ctx.pending_exit, self.i32c(exit))
@@ -5832,8 +5989,8 @@ impl<'ctx> Ir<'ctx> {
 
     /// A temporary stack slot holding `v` (for loop variables etc.).
     fn temp_slot(&mut self, v: PointerValue<'ctx>) -> PointerValue<'ctx> {
-        let slot = self.alloca_entry("tmp");
-        self.builder.build_store(slot, v).unwrap();
+        let slot = self.alloc_v2_slot();
+        self.copy_v2(slot, v);
         slot
     }
 
@@ -5871,7 +6028,7 @@ impl<'ctx> Ir<'ctx> {
             self.builder.build_store(rs, bi8).unwrap();
         } else {
             let slot = *self.ret_slots.last().expect("return outside of a function");
-            self.builder.build_store(slot, v).unwrap();
+            self.copy_v2(slot, v);
         }
         let bb = self.ret_bb.expect("return outside of a function");
         self.br_to(bb);
@@ -5994,8 +6151,8 @@ impl<'ctx> Ir<'ctx> {
             self.builder.build_store(slot, cell).unwrap();
             self.declare(name, VarLoc::Cell(slot));
         } else {
-            let slot = self.alloca_entry("l");
-            self.builder.build_store(slot, v).unwrap();
+            let slot = self.alloc_v2_slot();
+            self.copy_v2(slot, v);
             self.declare(name, VarLoc::Local(slot));
         }
         Ok(())
@@ -6003,11 +6160,26 @@ impl<'ctx> Ir<'ctx> {
 }
 
 impl<'ctx> Ir<'ctx> {
+    #[inline]
+    fn expr_can_throw(e: &Expr) -> bool {
+        !matches!(
+            e,
+            Expr::Int(..)
+                | Expr::Float(..)
+                | Expr::Bool(..)
+                | Expr::Null(..)
+                | Expr::Str(..)
+                | Expr::Ident(..)
+        )
+    }
+
     fn compile_expr(&mut self, e: &Expr) -> IrResult<PointerValue<'ctx>> {
         let v = self.compile_expr_inner(e)?;
         // Any operation that threw set the pending-throw flag; route to the
         // current handler instead of using this (placeholder) value further.
-        self.throw_guard();
+        if Self::expr_can_throw(e) {
+            self.throw_guard();
+        }
         Ok(v)
     }
 
@@ -6050,28 +6222,35 @@ impl<'ctx> Ir<'ctx> {
                     Some(m) => self.str_global(m).0,
                     None => self.null_ptr(),
                 };
+                let out = self.alloc_v2_slot();
                 let f = self.tramp(
                     "spid3r_super_call",
                     &[
                         self.ptr_ty().into(),
                         self.ptr_ty().into(),
                         self.ptr_ty().into(),
+                        self.ptr_ty().into(),
                         self.i64_ty().into(),
                         self.ptr_ty().into(),
                     ],
-                    Some(self.ptr_ty().into()),
+                    None,
                 );
                 let n = self.i64c(args.len() as i64);
-                let sname = self.tmp_name("sup");
-                let r = self
-                    .builder
+                self.builder
                     .build_call(
                         f,
-                        &[recv.into(), pp.into(), mp.into(), n.into(), arr.into()],
-                        &sname,
+                        &[
+                            out.into(),
+                            recv.into(),
+                            pp.into(),
+                            mp.into(),
+                            n.into(),
+                            arr.into(),
+                        ],
+                        "",
                     )
                     .unwrap();
-                Ok(call_ptr(r))
+                Ok(out)
             }
             // Surface-only nodes are rewritten by `crate::lower` before codegen.
             // (`?.` is a first-class op since F-4 — see the OptField arm above.)
@@ -6096,22 +6275,22 @@ impl<'ctx> Ir<'ctx> {
                 }
                 let arr = self.argv_array(&argv);
                 let (np, _) = self.str_global("list");
+                let out = self.alloc_v2_slot();
                 let f = self.tramp(
                     "spid3r_construct",
                     &[
                         self.ptr_ty().into(),
+                        self.ptr_ty().into(),
                         self.i64_ty().into(),
                         self.ptr_ty().into(),
                     ],
-                    Some(self.ptr_ty().into()),
+                    None,
                 );
                 let n = self.i64c(items.len() as i64);
-                let cname = self.tmp_name("ctor");
-                let r = self
-                    .builder
-                    .build_call(f, &[np.into(), n.into(), arr.into()], &cname)
+                self.builder
+                    .build_call(f, &[out.into(), np.into(), n.into(), arr.into()], "")
                     .unwrap();
-                Ok(call_ptr(r))
+                Ok(out)
             }
             Expr::Fn(p) => self.compile_closure(p),
             Expr::Unary { op, expr, .. } => {
@@ -6217,13 +6396,16 @@ impl<'ctx> Ir<'ctx> {
                 let pname = self.tmp_name("logic");
                 let phi = self.builder.build_phi(self.i8_ty(), &pname).unwrap();
                 phi.add_incoming(&[(&lhs_i8, lhs_from), (&rhs_i8, rhs_from)]);
-                let f_bool = self.tramp(
-                    "spid3r_value_bool",
-                    &[self.i8_ty().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                let res = self.emit_call(f_bool, &[phi.as_basic_value().into()], "b");
-                Ok(call_ptr(res))
+                let phi_i1 = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        phi.as_basic_value().into_int_value(),
+                        self.i8c(0),
+                        "lb1",
+                    )
+                    .unwrap();
+                Ok(self.v_bool_from_i1(phi_i1))
             }
             Expr::Assign {
                 target, op, value, ..
@@ -6338,14 +6520,7 @@ impl<'ctx> Ir<'ctx> {
                                 inkwell::values::ValueKind::Basic(v) => v.into_float_value(),
                                 _ => unreachable!(),
                             };
-                            let bf = self.tramp(
-                                "spid3r_value_float",
-                                &[f64_t.into()],
-                                Some(self.ptr_ty().into()),
-                            );
-                            return Ok(call_ptr(
-                                self.builder.build_call(bf, &[fv.into()], "bf").unwrap(),
-                            ));
+                            return Ok(self.v_float_from_f64(fv));
                         }
                         _ => {}
                     }
@@ -6416,9 +6591,11 @@ impl<'ctx> Ir<'ctx> {
                         self.builder.position_at_end(call_bb);
                         let phi = self.builder.build_phi(self.i64_ty(), "slot.val").unwrap();
                         phi.add_incoming(&[(&cur_slot, cur_bb), (&resolved, resolve_bb)]);
+                        let out = self.alloc_v2_slot();
                         let f_mslot = self.tramp(
                             "spid3r_method_slot",
                             &[
+                                self.ptr_ty().into(),
                                 self.ptr_ty().into(),
                                 self.i64_ty().into(),
                                 self.i64_ty().into(),
@@ -6426,14 +6603,13 @@ impl<'ctx> Ir<'ctx> {
                                 self.i64_ty().into(),
                                 self.ptr_ty().into(),
                             ],
-                            Some(self.ptr_ty().into()),
+                            None,
                         );
-                        let mname = self.tmp_name("ms");
-                        let r = self
-                            .builder
+                        self.builder
                             .build_call(
                                 f_mslot,
                                 &[
+                                    out.into(),
                                     obj.into(),
                                     cid.into(),
                                     phi.as_basic_value().into(),
@@ -6441,28 +6617,32 @@ impl<'ctx> Ir<'ctx> {
                                     n.into(),
                                     arr.into(),
                                 ],
-                                &mname,
+                                "",
                             )
                             .unwrap();
-                        return Ok(call_ptr(r));
+                        return Ok(out);
                     }
                 }
+                let out = self.alloc_v2_slot();
                 let f = self.tramp(
                     "spid3r_method",
                     &[
                         self.ptr_ty().into(),
                         self.ptr_ty().into(),
+                        self.ptr_ty().into(),
                         self.i64_ty().into(),
                         self.ptr_ty().into(),
                     ],
-                    Some(self.ptr_ty().into()),
+                    None,
                 );
-                let mname = self.tmp_name("m");
-                let r = self
-                    .builder
-                    .build_call(f, &[obj.into(), np.into(), n.into(), arr.into()], &mname)
+                self.builder
+                    .build_call(
+                        f,
+                        &[out.into(), obj.into(), np.into(), n.into(), arr.into()],
+                        "",
+                    )
                     .unwrap();
-                Ok(call_ptr(r))
+                Ok(out)
             }
             Expr::Index { object, index, .. } => {
                 if let Expr::Ident(name, _) = &**object {
@@ -6504,21 +6684,31 @@ impl<'ctx> Ir<'ctx> {
                 // Track 3 RT-5: direct string-literal map lookup trampoline
                 // skipping `spid3r_value_str` / `Arc<str>` allocation.
                 if let Expr::Str(lit, _) = &**index {
+                    let out = self.alloc_v2_slot();
                     let (kp, klen) = self.str_global(lit);
                     let f = self.tramp(
                         "spid3r_map_get_str",
                         &[
                             self.ptr_ty().into(),
                             self.ptr_ty().into(),
+                            self.ptr_ty().into(),
                             self.i64_ty().into(),
                         ],
-                        Some(self.ptr_ty().into()),
+                        None,
                     );
-                    return Ok(call_ptr(self.emit_call(
-                        f,
-                        &[obj.into(), kp.into(), self.i64c(klen as i64).into()],
-                        "mget",
-                    )));
+                    self.builder
+                        .build_call(
+                            f,
+                            &[
+                                out.into(),
+                                obj.into(),
+                                kp.into(),
+                                self.i64c(klen as i64).into(),
+                            ],
+                            "",
+                        )
+                        .unwrap();
+                    return Ok(out);
                 }
                 let idx = self.compile_expr(index)?;
                 Ok(self.call2p("spid3r_index_get", obj, idx))
@@ -6613,12 +6803,9 @@ impl<'ctx> Ir<'ctx> {
     fn compile_ident(&mut self, name: &str) -> IrResult<PointerValue<'ctx>> {
         match self.lookup(name) {
             Some(VarLoc::Local(slot)) => {
-                let lname = self.tmp_name("v");
-                let v = self
-                    .builder
-                    .build_load(self.ptr_ty(), slot, &lname)
-                    .unwrap();
-                Ok(v.into_pointer_value())
+                let tmp = self.alloc_v2_slot();
+                self.copy_v2(tmp, slot);
+                Ok(tmp)
             }
             Some(VarLoc::LocalInt(slot)) => {
                 let lname = self.tmp_name("iv");
@@ -6692,22 +6879,22 @@ impl<'ctx> Ir<'ctx> {
         argc: usize,
         argv: PointerValue<'ctx>,
     ) -> IrResult<PointerValue<'ctx>> {
+        let out = self.alloc_v2_slot();
         let f = self.tramp(
             "spid3r_call",
             &[
                 self.ptr_ty().into(),
+                self.ptr_ty().into(),
                 self.i64_ty().into(),
                 self.ptr_ty().into(),
             ],
-            Some(self.ptr_ty().into()),
+            None,
         );
         let n = self.i64c(argc as i64);
-        let cname = self.tmp_name("call");
-        let r = self
-            .builder
-            .build_call(f, &[callee.into(), n.into(), argv.into()], &cname)
+        self.builder
+            .build_call(f, &[out.into(), callee.into(), n.into(), argv.into()], "")
             .unwrap();
-        Ok(call_ptr(r))
+        Ok(out)
     }
 
     // ------------------------------------------------------------- FFI
@@ -6946,45 +7133,43 @@ impl<'ctx> Ir<'ctx> {
         who: &str,
     ) -> IrResult<PointerValue<'ctx>> {
         match ty_name {
-            "int" | "usize" => {
-                let f = self.tramp(
-                    "spid3r_value_int",
-                    &[self.i64_ty().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxi")))
-            }
+            "int" | "usize" => Ok(self.v_int_from_i64(val.into_int_value())),
             "bool" => {
-                let f = self.tramp(
-                    "spid3r_value_bool",
-                    &[self.i8_ty().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxb")))
+                let c = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::NE,
+                        val.into_int_value(),
+                        self.i8c(0),
+                        "ffi.b1",
+                    )
+                    .unwrap();
+                Ok(self.v_bool_from_i1(c))
             }
-            "float" => {
-                let f = self.tramp(
-                    "spid3r_value_float",
-                    &[self.ctx.f64_type().into()],
-                    Some(self.ptr_ty().into()),
-                );
-                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxf")))
-            }
+            "float" => Ok(self.v_float_from_f64(val.into_float_value())),
             "ptr" => {
+                let out = self.alloc_v2_slot();
                 let f = self.tramp(
                     "spid3r_value_from_ptr",
-                    &[self.ptr_ty().into()],
-                    Some(self.ptr_ty().into()),
+                    &[self.ptr_ty().into(), self.ptr_ty().into()],
+                    None,
                 );
-                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxp")))
+                self.builder
+                    .build_call(f, &[out.into(), val.into()], "")
+                    .unwrap();
+                Ok(out)
             }
             "string" => {
+                let out = self.alloc_v2_slot();
                 let f = self.tramp(
                     "spid3r_value_from_cstr",
-                    &[self.ptr_ty().into()],
-                    Some(self.ptr_ty().into()),
+                    &[self.ptr_ty().into(), self.ptr_ty().into()],
+                    None,
                 );
-                Ok(call_ptr(self.emit_call(f, &[val.into()], "ffi.boxs")))
+                self.builder
+                    .build_call(f, &[out.into(), val.into()], "")
+                    .unwrap();
+                Ok(out)
             }
             other => Err(format!(
                 "extern fn '{who}': unsupported C return type '{other}'"
@@ -7010,16 +7195,11 @@ impl<'ctx> Ir<'ctx> {
         win64: bool,
         free_after: &mut Vec<PointerValue<'ctx>>,
     ) -> IrResult<inkwell::values::BasicMetadataValueEnum<'ctx>> {
-        let field_get = self.tramp(
-            "spid3r_field_get",
-            &[self.ptr_ty().into(), self.ptr_ty().into()],
-            Some(self.ptr_ty().into()),
-        );
         let st_ty = self.pod_llvm_struct(pod);
         let mut field_vals = Vec::with_capacity(pod.fields.len());
         for (fname, fty) in &pod.fields {
             let (np, _) = self.str_global(fname);
-            let fv = call_ptr(self.emit_call(field_get, &[v.into(), np.into()], "pod.f"));
+            let fv = self.call2p("spid3r_field_get", v, np);
             let cval = self.marshal_c_scalar(fv, Self::pod_field_ty_name(*fty), who, free_after)?;
             let bv: inkwell::values::BasicValueEnum<'ctx> = match cval {
                 inkwell::values::BasicMetadataValueEnum::IntValue(x) => x.into(),
@@ -7086,22 +7266,33 @@ impl<'ctx> Ir<'ctx> {
         let names_arr = self.argv_array(&name_ptrs);
         let vals_arr = self.argv_array(&boxed_vals);
         let (cn_ptr, _) = self.str_global(&pod.name);
+        let out = self.alloc_v2_slot();
         let f = self.tramp(
             "spid3r_struct_box",
             &[
+                self.ptr_ty().into(),
                 self.ptr_ty().into(),
                 self.i64_ty().into(),
                 self.ptr_ty().into(),
                 self.ptr_ty().into(),
             ],
-            Some(self.ptr_ty().into()),
+            None,
         );
         let cnt = self.i64c(pod.fields.len() as i64);
-        Ok(call_ptr(self.emit_call(
-            f,
-            &[cn_ptr.into(), cnt.into(), names_arr.into(), vals_arr.into()],
-            "pod.box",
-        )))
+        self.builder
+            .build_call(
+                f,
+                &[
+                    out.into(),
+                    cn_ptr.into(),
+                    cnt.into(),
+                    names_arr.into(),
+                    vals_arr.into(),
+                ],
+                "",
+            )
+            .unwrap();
+        Ok(out)
     }
 
     fn infer_vararg_c_type(&self, arg: &Expr) -> &'static str {
@@ -7215,10 +7406,7 @@ impl<'ctx> Ir<'ctx> {
         }
 
         match sig.ret.as_deref() {
-            None => {
-                let f = self.tramp("spid3r_value_null", &[], Some(self.ptr_ty().into()));
-                Ok(call_ptr(self.emit_call(f, &[], "ffi.unit")))
-            }
+            None => Ok(self.v_null()),
             Some(ret_name) => {
                 if let Some(pod) = self.pod_structs.get(ret_name).cloned() {
                     if win64 && pod.fields.len() == 1 {
@@ -7330,14 +7518,13 @@ impl<'ctx> Ir<'ctx> {
         let cb_id = self.cb_counter;
         self.cb_counter += 1;
 
-        let slot_gv =
-            self.module
-                .add_global(self.ptr_ty(), None, &format!("__spid3r_cb_slot_{cb_id}"));
-        slot_gv.set_initializer(&self.ptr_ty().const_null());
+        let v2_ty = self.val_v2_ty();
+        let slot_gv = self
+            .module
+            .add_global(v2_ty, None, &format!("__spid3r_cb_slot_{cb_id}"));
+        slot_gv.set_initializer(&v2_ty.const_zero());
         slot_gv.set_linkage(Linkage::Internal);
-        self.builder
-            .build_store(slot_gv.as_pointer_value(), closure_v)
-            .unwrap();
+        self.copy_v2(slot_gv.as_pointer_value(), closure_v);
 
         let mut llvm_params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
             Vec::with_capacity(param_tys.len());
@@ -7363,12 +7550,10 @@ impl<'ctx> Ir<'ctx> {
         let saved_exc = std::mem::take(&mut self.exc);
         let saved_ret_bb = self.ret_bb.take();
         let saved_ret_slots = std::mem::take(&mut self.ret_slots);
+        let saved_frame_ph = self.frame_base_placeholder.take();
+        let saved_frame_cnt = std::mem::replace(&mut self.frame_slot_count, 0);
 
-        let clos = self
-            .builder
-            .build_load(self.ptr_ty(), slot_gv.as_pointer_value(), "cb.fn")
-            .unwrap()
-            .into_pointer_value();
+        let clos = slot_gv.as_pointer_value();
 
         let mut boxed_args = Vec::with_capacity(param_tys.len());
         for (idx, pt) in param_tys.iter().enumerate() {
@@ -7376,25 +7561,25 @@ impl<'ctx> Ir<'ctx> {
             boxed_args.push(self.box_c_scalar(pval, pt, "ffi_callback")?);
         }
         let arr = self.argv_array(&boxed_args);
+        let res_ptr = self.alloc_v2_slot();
         let call_tramp = self.tramp(
             "spid3r_call",
             &[
                 self.ptr_ty().into(),
+                self.ptr_ty().into(),
                 self.i64_ty().into(),
                 self.ptr_ty().into(),
             ],
-            Some(self.ptr_ty().into()),
+            None,
         );
         let argc = self.i64c(param_tys.len() as i64);
-        let res_val = self
-            .builder
+        self.builder
             .build_call(
                 call_tramp,
-                &[clos.into(), argc.into(), arr.into()],
-                "cb.res",
+                &[res_ptr.into(), clos.into(), argc.into(), arr.into()],
+                "",
             )
             .unwrap();
-        let res_ptr = call_ptr(res_val);
 
         let threw_f = self.tramp("spid3r_threw", &[], Some(self.i8_ty().into()));
         let threw = call_int(self.builder.build_call(threw_f, &[], "cb.threw").unwrap());
@@ -7452,6 +7637,8 @@ impl<'ctx> Ir<'ctx> {
             self.builder.build_return(None).unwrap();
         }
 
+        self.frame_slot_count = saved_frame_cnt;
+        self.frame_base_placeholder = saved_frame_ph;
         self.exc = saved_exc;
         self.ret_bb = saved_ret_bb;
         self.ret_slots = saved_ret_slots;
@@ -7459,17 +7646,17 @@ impl<'ctx> Ir<'ctx> {
             self.builder.position_at_end(bb);
         }
 
+        let out = self.alloc_v2_slot();
         let box_ptr = self.tramp(
             "spid3r_value_from_ptr",
-            &[self.ptr_ty().into()],
-            Some(self.ptr_ty().into()),
+            &[self.ptr_ty().into(), self.ptr_ty().into()],
+            None,
         );
         let fn_ptr = thunk_fn.as_global_value().as_pointer_value();
-        Ok(call_ptr(self.emit_call(
-            box_ptr,
-            &[fn_ptr.into()],
-            "cb.ptr",
-        )))
+        self.builder
+            .build_call(box_ptr, &[out.into(), fn_ptr.into()], "")
+            .unwrap();
+        Ok(out)
     }
 
     fn compile_dl_call(&mut self, args: &[Expr]) -> IrResult<PointerValue<'ctx>> {
@@ -7541,10 +7728,7 @@ impl<'ctx> Ir<'ctx> {
         self.throw_guard();
 
         match ret_ty.as_deref() {
-            None => {
-                let f = self.tramp("spid3r_value_null", &[], Some(self.ptr_ty().into()));
-                Ok(call_ptr(self.emit_call(f, &[], "dl.unit")))
-            }
+            None => Ok(self.v_null()),
             Some(rt) => {
                 let bv = call.try_as_basic_value().unwrap_basic();
                 self.box_c_scalar(bv, rt, "dl_call")
@@ -7649,7 +7833,7 @@ impl<'ctx> Ir<'ctx> {
                 Some("int") => self.i64_ty().fn_type(&llvm_params, false),
                 Some("float") => f64_t.fn_type(&llvm_params, false),
                 Some("bool") => self.ctx.bool_type().fn_type(&llvm_params, false),
-                _ => self.ptr_ty().fn_type(&llvm_params, false),
+                _ => self.val_v2_ty().fn_type(&llvm_params, false),
             };
             let fv = self.module.add_function(&mangled, fty, None);
             self.mono_fns
@@ -7661,20 +7845,21 @@ impl<'ctx> Ir<'ctx> {
             let propagate_bb = self.ctx.append_basic_block(fv, "propagate");
             self.builder.position_at_end(entry_bb);
 
+            let saved_frame_ph = self.frame_base_placeholder.take();
+            let saved_frame_cnt = std::mem::replace(&mut self.frame_slot_count, 0);
+
             let ret_int_slot = if ret_sc.as_deref() == Some("int") {
                 Some(self.builder.build_alloca(self.i64_ty(), "mret.i").unwrap())
             } else {
                 None
             };
-            let ret_val_slot = self.builder.build_alloca(self.ptr_ty(), "mret").unwrap();
+            let ret_val_slot = self.builder.build_alloca(self.val_v2_ty(), "mret").unwrap();
             {
                 self.builder.position_at_end(propagate_bb);
                 if let Some(rs) = ret_int_slot {
                     self.builder.build_store(rs, self.i64c(0)).unwrap();
                 }
-                self.builder
-                    .build_store(ret_val_slot, self.ptr_ty().const_null())
-                    .unwrap();
+                self.store_v2_inline(ret_val_slot, crate::value::ValueV2::TAG_NULL, self.i64c(0));
                 self.builder.build_unconditional_branch(ret_bb).unwrap();
                 self.builder.position_at_end(entry_bb);
             }
@@ -7731,14 +7916,7 @@ impl<'ctx> Ir<'ctx> {
                 } else {
                     let pv = match param_scs[i].as_deref() {
                         Some("int") => self.v_int_from_i64(raw.into_int_value()),
-                        Some("float") => {
-                            let bf = self.tramp(
-                                "spid3r_value_float",
-                                &[f64_t.into()],
-                                Some(self.ptr_ty().into()),
-                            );
-                            call_ptr(self.builder.build_call(bf, &[raw.into()], "bf").unwrap())
-                        }
+                        Some("float") => self.v_float_from_f64(raw.into_float_value()),
                         Some("bool") => self.v_bool_from_i1(raw.into_int_value()),
                         _ => raw.into_pointer_value(),
                     };
@@ -7748,8 +7926,8 @@ impl<'ctx> Ir<'ctx> {
                         self.builder.build_store(slot, cell).unwrap();
                         self.declare(&p.name, VarLoc::Cell(slot));
                     } else {
-                        let slot = self.builder.build_alloca(self.ptr_ty(), "mp").unwrap();
-                        self.builder.build_store(slot, pv).unwrap();
+                        let slot = self.alloc_v2_slot();
+                        self.copy_v2(slot, pv);
                         self.declare(&p.name, VarLoc::Local(slot));
                     }
                 }
@@ -7761,7 +7939,7 @@ impl<'ctx> Ir<'ctx> {
                 self.builder.build_store(rs, self.i64c(0)).unwrap();
             }
             let null = self.v_null();
-            self.builder.build_store(ret_val_slot, null).unwrap();
+            self.copy_v2(ret_val_slot, null);
             self.builder.build_unconditional_branch(ret_bb).unwrap();
             self.builder.position_at_end(ret_bb);
             match ret_sc.as_deref() {
@@ -7774,16 +7952,11 @@ impl<'ctx> Ir<'ctx> {
                     self.builder.build_return(Some(&iv)).unwrap();
                 }
                 Some("float") => {
-                    let rv = self
-                        .builder
-                        .build_load(self.ptr_ty(), ret_val_slot, "mret.v")
-                        .unwrap()
-                        .into_pointer_value();
                     let tof =
                         self.tramp("spid3r_to_f64", &[self.ptr_ty().into()], Some(f64_t.into()));
                     let call_r = self
                         .builder
-                        .build_call(tof, &[rv.into()], "mret.f")
+                        .build_call(tof, &[ret_val_slot.into()], "mret.f")
                         .unwrap();
                     let fval = match call_r.try_as_basic_value() {
                         inkwell::values::ValueKind::Basic(v) => v,
@@ -7792,28 +7965,32 @@ impl<'ctx> Ir<'ctx> {
                     self.builder.build_return(Some(&fval)).unwrap();
                 }
                 Some("bool") => {
-                    let rv = self
-                        .builder
-                        .build_load(self.ptr_ty(), ret_val_slot, "mret.v")
-                        .unwrap()
-                        .into_pointer_value();
                     let tf = self.tramp(
                         "spid3r_truthy",
                         &[self.ptr_ty().into()],
-                        Some(self.ctx.bool_type().into()),
+                        Some(self.i8_ty().into()),
                     );
-                    let b = call_int(self.builder.build_call(tf, &[rv.into()], "b").unwrap());
+                    let b8 = call_int(
+                        self.builder
+                            .build_call(tf, &[ret_val_slot.into()], "b")
+                            .unwrap(),
+                    );
+                    let b = self
+                        .builder
+                        .build_int_compare(IntPredicate::NE, b8, self.i8c(0), "b1")
+                        .unwrap();
                     self.builder.build_return(Some(&b)).unwrap();
                 }
                 _ => {
                     let rv = self
                         .builder
-                        .build_load(self.ptr_ty(), ret_val_slot, "mret.v")
-                        .unwrap()
-                        .into_pointer_value();
+                        .build_load(self.val_v2_ty(), ret_val_slot, "mret.v")
+                        .unwrap();
                     self.builder.build_return(Some(&rv)).unwrap();
                 }
             }
+            self.frame_slot_count = saved_frame_cnt;
+            self.frame_base_placeholder = saved_frame_ph;
 
             self.mono_ret_threw_slot = saved.16;
             self.mono_ret_bool_slot = saved.15;
@@ -7888,6 +8065,11 @@ impl<'ctx> Ir<'ctx> {
         let call = self.emit_call(fv, &call_args, "mono");
         let _ = ret_sc;
         Ok(match call.try_as_basic_value() {
+            inkwell::values::ValueKind::Basic(inkwell::values::BasicValueEnum::StructValue(sv)) => {
+                let out = self.alloc_v2_slot();
+                self.builder.build_store(out, sv).unwrap();
+                Some(out.into())
+            }
             inkwell::values::ValueKind::Basic(v) => Some(v),
             _ => None,
         })
@@ -7932,7 +8114,7 @@ impl<'ctx> Ir<'ctx> {
                 Some("int") => self.i64_ty().into(),
                 Some("float") => f64_t.into(),
                 Some("bool") => self.i8_ty().into(),
-                _ => self.ptr_ty().into(),
+                _ => self.val_v2_ty().into(),
             };
             let ret_struct_ty = self
                 .ctx
@@ -7978,7 +8160,12 @@ impl<'ctx> Ir<'ctx> {
             } else {
                 None
             };
-            let ret_val_slot = self.builder.build_alloca(self.ptr_ty(), "rret.v").unwrap();
+            let saved_frame_ph = self.frame_base_placeholder.take();
+            let saved_frame_cnt = std::mem::replace(&mut self.frame_slot_count, 0);
+            let ret_val_slot = self
+                .builder
+                .build_alloca(self.val_v2_ty(), "rret.v")
+                .unwrap();
             let ret_threw_slot = self.builder.build_alloca(self.i8_ty(), "rret.ex").unwrap();
             self.builder
                 .build_store(ret_threw_slot, self.i8c(0))
@@ -7997,9 +8184,7 @@ impl<'ctx> Ir<'ctx> {
                 if let Some(rs) = ret_bool_slot {
                     self.builder.build_store(rs, self.i8c(0)).unwrap();
                 }
-                self.builder
-                    .build_store(ret_val_slot, self.ptr_ty().const_null())
-                    .unwrap();
+                self.store_v2_inline(ret_val_slot, crate::value::ValueV2::TAG_NULL, self.i64c(0));
                 self.builder
                     .build_store(ret_threw_slot, self.i8c(1))
                     .unwrap();
@@ -8080,8 +8265,8 @@ impl<'ctx> Ir<'ctx> {
                         self.builder.build_store(slot, cell).unwrap();
                         self.declare(&p.name, VarLoc::Cell(slot));
                     } else {
-                        let slot = self.builder.build_alloca(self.ptr_ty(), "rp").unwrap();
-                        self.builder.build_store(slot, pv).unwrap();
+                        let slot = self.alloc_v2_slot();
+                        self.copy_v2(slot, pv);
                         self.declare(&p.name, VarLoc::Local(slot));
                     }
                 }
@@ -8104,7 +8289,7 @@ impl<'ctx> Ir<'ctx> {
                 self.builder.build_store(rs, self.i8c(0)).unwrap();
             }
             let null = self.v_null();
-            self.builder.build_store(ret_val_slot, null).unwrap();
+            self.copy_v2(ret_val_slot, null);
             self.builder.build_unconditional_branch(ret_bb).unwrap();
 
             self.builder.position_at_end(ret_bb);
@@ -8123,7 +8308,7 @@ impl<'ctx> Ir<'ctx> {
                     .unwrap(),
                 _ => self
                     .builder
-                    .build_load(self.ptr_ty(), ret_val_slot, "rret.pv")
+                    .build_load(self.val_v2_ty(), ret_val_slot, "rret.pv")
                     .unwrap(),
             };
             let threw_i8 = self
@@ -8147,6 +8332,9 @@ impl<'ctx> Ir<'ctx> {
                 .unwrap()
                 .into_struct_value();
             self.builder.build_return(Some(&agg2)).unwrap();
+
+            self.frame_slot_count = saved_frame_cnt;
+            self.frame_base_placeholder = saved_frame_ph;
 
             self.mono_ret_threw_slot = saved.16;
             self.mono_ret_bool_slot = saved.15;
@@ -8208,7 +8396,11 @@ impl<'ctx> Ir<'ctx> {
             .unwrap()
             .into_int_value();
         self.throw_guard_i1(threw_i1);
-        let _ = ret_sc;
+        if ret_sc.is_none() {
+            let out = self.alloc_v2_slot();
+            self.builder.build_store(out, out_v).unwrap();
+            return Ok(Some(out.into()));
+        }
         Ok(Some(out_v))
     }
 
@@ -8278,12 +8470,7 @@ impl<'ctx> Ir<'ctx> {
                         return Err(format!("dl_open expects 1 argument, got {}", args.len()));
                     }
                     let v = self.compile_expr(&args[0])?;
-                    let f = self.tramp(
-                        "spid3r_dl_open",
-                        &[self.ptr_ty().into()],
-                        Some(self.ptr_ty().into()),
-                    );
-                    return Ok(call_ptr(self.emit_call(f, &[v.into()], "dl.open")));
+                    return Ok(self.call1p("spid3r_dl_open", v));
                 }
                 "dl_sym" => {
                     if !self.allow_dlopen {
@@ -8297,12 +8484,7 @@ impl<'ctx> Ir<'ctx> {
                     }
                     let h = self.compile_expr(&args[0])?;
                     let s = self.compile_expr(&args[1])?;
-                    let f = self.tramp(
-                        "spid3r_dl_sym",
-                        &[self.ptr_ty().into(), self.ptr_ty().into()],
-                        Some(self.ptr_ty().into()),
-                    );
-                    return Ok(call_ptr(self.emit_call(f, &[h.into(), s.into()], "dl.sym")));
+                    return Ok(self.call2p("spid3r_dl_sym", h, s));
                 }
                 "dl_close" => {
                     if !self.allow_dlopen {
@@ -8315,12 +8497,7 @@ impl<'ctx> Ir<'ctx> {
                         return Err(format!("dl_close expects 1 argument, got {}", args.len()));
                     }
                     let h = self.compile_expr(&args[0])?;
-                    let f = self.tramp(
-                        "spid3r_dl_close",
-                        &[self.ptr_ty().into()],
-                        Some(self.ptr_ty().into()),
-                    );
-                    return Ok(call_ptr(self.emit_call(f, &[h.into()], "dl.close")));
+                    return Ok(self.call1p("spid3r_dl_close", h));
                 }
                 _ => {}
             }
@@ -8334,22 +8511,22 @@ impl<'ctx> Ir<'ctx> {
                     argv.push(self.compile_expr(a)?);
                 }
                 let arr = self.argv_array(&argv);
+                let out = self.alloc_v2_slot();
                 let f = self.tramp(
                     "spid3r_construct",
                     &[
                         self.ptr_ty().into(),
+                        self.ptr_ty().into(),
                         self.i64_ty().into(),
                         self.ptr_ty().into(),
                     ],
-                    Some(self.ptr_ty().into()),
+                    None,
                 );
                 let n = self.i64c(args.len() as i64);
-                let cname = self.tmp_name("ctor");
-                let r = self
-                    .builder
-                    .build_call(f, &[np.into(), n.into(), arr.into()], &cname)
+                self.builder
+                    .build_call(f, &[out.into(), np.into(), n.into(), arr.into()], "")
                     .unwrap();
-                return Ok(call_ptr(r));
+                return Ok(out);
             }
         }
         let callee_v = self.compile_expr(callee)?;
@@ -8503,7 +8680,7 @@ impl<'ctx> Ir<'ctx> {
         match target {
             Expr::Ident(name, _) => match self.lookup(name) {
                 Some(VarLoc::Local(slot)) => {
-                    self.builder.build_store(slot, v).unwrap();
+                    self.copy_v2(slot, v);
                     Ok(v)
                 }
                 Some(VarLoc::LocalInt(slot)) => {
@@ -8627,37 +8804,47 @@ impl<'ctx> Ir<'ctx> {
         self_offset: usize,
     ) -> IrResult<FunctionValue<'ctx>> {
         let ptr_ty = self.ptr_ty();
-        let fty = ptr_ty.fn_type(&[ptr_ty.into(), self.i64_ty().into(), ptr_ty.into()], false);
+        let fty = self.ctx.void_type().fn_type(
+            &[
+                ptr_ty.into(),
+                ptr_ty.into(),
+                self.i64_ty().into(),
+                ptr_ty.into(),
+            ],
+            false,
+        );
         self.fn_counter += 1;
         let llvm_name = format!("spid3r_fn.{}.{}", self.fn_counter, name_hint);
         let f = self.module.add_function(&llvm_name, fty, None);
         self.add_fn_enum_attr(f, "nounwind", 0);
         self.add_fn_enum_attr(f, "willreturn", 0);
-        // Remember where emission was happening (this function is emitted as
-        // a side effect; the caller keeps building in its own block).
         let saved_bb = self.builder.get_insert_block();
         let entry_bb = self.ctx.append_basic_block(f, "entry");
         self.builder.position_at_end(entry_bb);
 
-        // environment + return slot + capture declarations
-        let env = f.get_nth_param(0).unwrap().into_pointer_value();
-        let argv = f.get_nth_param(2).unwrap().into_pointer_value();
-        let ret_slot = self.builder.build_alloca(ptr_ty, "ret").unwrap();
+        let saved_frame_ph = self.frame_base_placeholder.take();
+        let saved_frame_cnt = std::mem::replace(&mut self.frame_slot_count, 0);
+        self.begin_v2_frame();
+
+        // out + environment + argc + argv
+        let out_ptr = f.get_nth_param(0).unwrap().into_pointer_value();
+        let env = f.get_nth_param(1).unwrap().into_pointer_value();
+        let argc_v = f.get_nth_param(2).unwrap().into_int_value();
+        let argv = f.get_nth_param(3).unwrap().into_pointer_value();
+        let ret_slot = self.alloc_v2_slot();
         let ret_bb = self.ctx.append_basic_block(f, "ret");
         {
             self.builder.position_at_end(ret_bb);
-            let v = self.builder.build_load(ptr_ty, ret_slot, "rv").unwrap();
-            self.builder.build_return(Some(&v)).unwrap();
+            self.copy_v2(out_ptr, ret_slot);
+            let f_exit = self.tramp("spid3r_frame_exit", &[], None);
+            self.builder.build_call(f_exit, &[], "").unwrap();
+            self.builder.build_return(None).unwrap();
             self.builder.position_at_end(entry_bb);
         }
-        // Bottom exception-handler frame: a throw in this function with no
-        // enclosing `try` returns to the caller with the pending flag set, so
-        // it propagates up to the nearest enclosing `try` (an early return).
         let propagate_bb = self.ctx.append_basic_block(f, "propagate");
         {
             self.builder.position_at_end(propagate_bb);
-            let null = ptr_ty.const_null();
-            self.builder.build_store(ret_slot, null).unwrap();
+            self.store_v2_inline(ret_slot, crate::value::ValueV2::TAG_NULL, self.i64c(0));
             self.builder.build_unconditional_branch(ret_bb).unwrap();
             self.builder.position_at_end(entry_bb);
         }
@@ -8704,17 +8891,12 @@ impl<'ctx> Ir<'ctx> {
                 .build_load(ptr_ty, gep, "selfv")
                 .unwrap()
                 .into_pointer_value();
-            let slot = self.builder.build_alloca(ptr_ty, "selfslot").unwrap();
-            self.builder.build_store(slot, recv).unwrap();
+            let slot = self.alloc_v2_slot();
+            self.copy_v2(slot, recv);
             self.declare("self", VarLoc::Local(slot));
         }
         // bind parameters (argv[self_offset..]); captured params get a cell.
-        // A parameter with a constant default is bound conditionally: the
-        // argument exists only when argc exceeds its slot, otherwise the
-        // baked constant is used (defaults are trailing-only, so omitted
-        // arguments are always a suffix).
         let boxed = self.boxed.clone().unwrap_or_default();
-        let argc_v = f.get_nth_param(1).unwrap().into_int_value();
         for (i, p) in proto.params.iter().enumerate() {
             let a = if let Some(d) = &p.default {
                 let has = self
@@ -8774,8 +8956,8 @@ impl<'ctx> Ir<'ctx> {
                 self.builder.build_store(slot, cell).unwrap();
                 self.declare(&p.name, VarLoc::Cell(slot));
             } else {
-                let slot = self.builder.build_alloca(ptr_ty, "p").unwrap();
-                self.builder.build_store(slot, a).unwrap();
+                let slot = self.alloc_v2_slot();
+                self.copy_v2(slot, a);
                 self.declare(&p.name, VarLoc::Local(slot));
             }
         }
@@ -8784,9 +8966,13 @@ impl<'ctx> Ir<'ctx> {
         // implicit return null (in a fresh block if the body ended sealed)
         self.ensure_open();
         let null = self.v_null();
-        self.builder.build_store(ret_slot, null).unwrap();
+        self.copy_v2(ret_slot, null);
         self.builder.build_unconditional_branch(ret_bb).unwrap();
         self.builder.position_at_end(ret_bb);
+
+        self.finish_v2_frame(f);
+        self.frame_slot_count = saved_frame_cnt;
+        self.frame_base_placeholder = saved_frame_ph;
 
         // restore
         self.mono_ret_threw_slot = saved.16;
@@ -8856,23 +9042,7 @@ impl<'ctx> Ir<'ctx> {
                         .build_load(self.ptr_ty(), *slot, "cap")
                         .unwrap()
                         .into_pointer_value(),
-                    VarLoc::Local(_) => {
-                        // A non-boxed local can only end up here if the boxing
-                        // analysis missed it; box it defensively.
-                        let v = self
-                            .builder
-                            .build_load(
-                                self.ptr_ty(),
-                                match src {
-                                    VarLoc::Local(s) => *s,
-                                    _ => unreachable!(),
-                                },
-                                "capv",
-                            )
-                            .unwrap()
-                            .into_pointer_value();
-                        self.call1p("spid3r_cell_new", v)
-                    }
+                    VarLoc::Local(s) => self.call1p("spid3r_cell_new", *s),
                     VarLoc::LocalInt(slot) => {
                         let iv = self
                             .builder
@@ -8955,35 +9125,36 @@ impl<'ctx> Ir<'ctx> {
         code_ptr: PointerValue<'ctx>,
         env: PointerValue<'ctx>,
     ) -> PointerValue<'ctx> {
+        let out = self.alloc_v2_slot();
         let f = self.tramp(
             "spid3r_make_fn",
             &[
+                self.ptr_ty().into(),
                 self.ptr_ty().into(),
                 self.i64_ty().into(),
                 self.i64_ty().into(),
                 self.ptr_ty().into(),
                 self.ptr_ty().into(),
             ],
-            Some(self.ptr_ty().into()),
+            None,
         );
         let n = self.i64c(arity);
         let mn = self.i64c(min_arity);
-        let fname = self.tmp_name("fn");
-        let r = self
-            .builder
+        self.builder
             .build_call(
                 f,
                 &[
+                    out.into(),
                     name_ptr.into(),
                     n.into(),
                     mn.into(),
                     code_ptr.into(),
                     env.into(),
                 ],
-                &fname,
+                "",
             )
             .unwrap();
-        call_ptr(r)
+        out
     }
 
     /// Build the module entry: register classes, run top-level statements.
@@ -8992,12 +9163,16 @@ impl<'ctx> Ir<'ctx> {
         // can resolve the symbol and a bad parameter type fails immediately.
         self.declare_externs(program)?;
         let ptr_ty = self.ptr_ty();
-        let fty = ptr_ty.fn_type(&[], false);
+        let fty = self.ctx.void_type().fn_type(&[ptr_ty.into()], false);
         let entry = self.module.add_function("spid3r_entry", fty, None);
         self.add_fn_enum_attr(entry, "nounwind", 0);
         self.add_fn_enum_attr(entry, "willreturn", 0);
         let bb = self.ctx.append_basic_block(entry, "entry");
         self.builder.position_at_end(bb);
+        let out_ptr = entry.get_nth_param(0).unwrap().into_pointer_value();
+        let saved_frame_ph = self.frame_base_placeholder.take();
+        let saved_frame_cnt = std::mem::replace(&mut self.frame_slot_count, 0);
+        self.begin_v2_frame();
         let saved = (
             self.env_param.take(),
             self.ret_bb.take(),
@@ -9093,8 +9268,14 @@ impl<'ctx> Ir<'ctx> {
         self.pop_scope();
 
         self.ensure_open();
-        let null = self.v_null();
-        self.builder.build_return(Some(&null)).unwrap();
+        self.store_v2_inline(out_ptr, crate::value::ValueV2::TAG_NULL, self.i64c(0));
+        let f_exit = self.tramp("spid3r_frame_exit", &[], None);
+        self.builder.build_call(f_exit, &[], "").unwrap();
+        self.builder.build_return(None).unwrap();
+
+        self.finish_v2_frame(entry);
+        self.frame_slot_count = saved_frame_cnt;
+        self.frame_base_placeholder = saved_frame_ph;
 
         self.mono_ret_threw_slot = saved.21;
         self.mono_ret_bool_slot = saved.20;

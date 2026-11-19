@@ -1076,7 +1076,12 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
     match name {
         "len" => {
             want(name, args, 0)?;
-            Ok(Value::Int(s.chars().count() as i64))
+            let n = if s.is_ascii() {
+                s.len()
+            } else {
+                s.chars().count()
+            };
+            Ok(Value::Int(n as i64))
         }
         "is_empty" => {
             want(name, args, 0)?;
@@ -1089,22 +1094,51 @@ pub fn string_method(s: &str, name: &str, args: &[Value]) -> Result<Value, Strin
                     args.len()
                 ));
             }
-            let chars: Vec<char> = s.chars().collect();
             let a = want_index(&args[0], "string.slice")?;
-            let b = if args.len() == 2 {
-                want_index(&args[1], "string.slice")?
+            if s.is_ascii() {
+                let len = s.len();
+                let b = if args.len() == 2 {
+                    want_index(&args[1], "string.slice")?
+                } else {
+                    len
+                };
+                if a > b || b > len {
+                    return Err(format!(
+                        "slice range {}..{} out of bounds for length {}",
+                        a, b, len
+                    ));
+                }
+                return Ok(Value::Str(Arc::from(&s[a..b])));
+            }
+            let b_opt = if args.len() == 2 {
+                Some(want_index(&args[1], "string.slice")?)
             } else {
-                chars.len()
+                None
             };
-            if a > b || b > chars.len() {
+            let mut byte_a = if a == 0 { Some(0) } else { None };
+            let mut byte_b = if b_opt == Some(0) { Some(0) } else { None };
+            let mut char_len = 0usize;
+            for (ci, (idx, ch)) in s.char_indices().enumerate() {
+                let next_byte = idx + ch.len_utf8();
+                let next_ci = ci + 1;
+                if next_ci == a {
+                    byte_a = Some(next_byte);
+                }
+                if b_opt == Some(next_ci) {
+                    byte_b = Some(next_byte);
+                }
+                char_len = next_ci;
+            }
+            let b = b_opt.unwrap_or(char_len);
+            if a > b || b > char_len {
                 return Err(format!(
                     "slice range {}..{} out of bounds for length {}",
-                    a,
-                    b,
-                    chars.len()
+                    a, b, char_len
                 ));
             }
-            Ok(Value::Str(chars[a..b].iter().collect::<String>().into()))
+            let sa = byte_a.unwrap_or(s.len());
+            let sb = byte_b.unwrap_or(s.len());
+            Ok(Value::Str(Arc::from(&s[sa..sb])))
         }
         "upper" | "lower" => {
             want(name, args, 0)?;

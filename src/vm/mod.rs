@@ -1811,12 +1811,43 @@ impl Vm {
                                             self.frames[nf].slots.push(Value::Int(v));
                                             continue;
                                         }
+                                    } else if op2 == OpCode::Less as u8
+                                        && matches!(
+                                            code.get(ip + 6),
+                                            Some(&opc)
+                                                if opc == OpCode::JumpIfFalse as u8
+                                                    || opc == OpCode::JumpIfTrue as u8
+                                        )
+                                    {
+                                        if let (Some(&lo), Some(&hi)) =
+                                            (code.get(ip + 7), code.get(ip + 8))
+                                        {
+                                            let inverted = code.get(ip + 6)
+                                                == Some(&(OpCode::JumpIfTrue as u8));
+                                            let off = i16::from_le_bytes([lo, hi]);
+                                            let take_branch = (a < b) == inverted;
+                                            let next = if !take_branch {
+                                                Some(ip + 9)
+                                            } else {
+                                                let t = (ip + 9) as i64 + off as i64;
+                                                (t >= 0 && (t as usize) < code.len())
+                                                    .then_some(t as usize)
+                                            };
+                                            if let Some(next) = next {
+                                                self.frames[nf].ip = next;
+                                                continue;
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    if self.pending_str.is_some() {
+                    if self
+                        .pending_str
+                        .as_ref()
+                        .is_some_and(|&(pf, ps, _)| pf == nf && ps == slot)
+                    {
                         self.flush_pending_str();
                     }
                     self.frames[nf].ip = ip + 2;
@@ -2889,17 +2920,27 @@ impl Vm {
                     // generic path.
                     let res = match (&obj, &idx) {
                         (Value::Map(m), Value::Str(k)) => {
-                            let guard = m.lock().unwrap();
-                            match guard.find(&crate::value::MapKey::Str(k.clone())) {
+                            let guard = crate::value::lock_ref(m);
+                            match guard.find_str(k.as_ref()) {
                                 Some(i) => Ok(guard.entries[i].1.clone()),
                                 None => Err(format!("missing key {}", k)),
                             }
                         }
                         (Value::Map(m), Value::Int(n)) => {
-                            let guard = m.lock().unwrap();
+                            let guard = crate::value::lock_ref(m);
                             match guard.find(&crate::value::MapKey::Int(*n)) {
                                 Some(i) => Ok(guard.entries[i].1.clone()),
                                 None => Err(format!("missing key {}", n)),
+                            }
+                        }
+                        (Value::List(d) | Value::VecDyn(d), Value::Int(n)) => {
+                            let guard = crate::value::lock_ref(d);
+                            let len = guard.items.len();
+                            let resolved = if *n < 0 { len as i64 + *n } else { *n };
+                            if resolved >= 0 && (resolved as usize) < len {
+                                Ok(guard.items[resolved as usize].clone())
+                            } else {
+                                Err(format!("index {} out of bounds for length {}", n, len))
                             }
                         }
                         _ => collections::index_get(&obj, &idx),
@@ -3653,7 +3694,7 @@ impl Vm {
             _ => return None,
         };
         let is_string_native = {
-            let globals = frame.globals.lock().ok()?;
+            let globals = crate::value::lock_ref(&frame.globals);
             match globals.get(name.as_ref()) {
                 Some(Value::Native(n)) => {
                     std::ptr::fn_addr_eq(n.func, crate::stdlib::inline_string_impl())
@@ -3666,6 +3707,34 @@ impl Vm {
         };
         if !is_string_native {
             return None;
+        }
+
+        if prefix.len() + 24 <= 64 {
+            let mut dec = [0u8; 24];
+            let mut dpos = dec.len();
+            let neg = value < 0;
+            let mut u = value.unsigned_abs();
+            loop {
+                dpos -= 1;
+                dec[dpos] = b'0' + (u % 10) as u8;
+                u /= 10;
+                if u == 0 {
+                    break;
+                }
+            }
+            if neg {
+                dpos -= 1;
+                dec[dpos] = b'-';
+            }
+            let dslice = &dec[dpos..];
+            let plen = prefix.len();
+            let total = plen + dslice.len();
+            let mut buf = [0u8; 64];
+            buf[..plen].copy_from_slice(prefix.as_bytes());
+            buf[plen..total].copy_from_slice(dslice);
+            if let Ok(s) = std::str::from_utf8(&buf[..total]) {
+                return Some((Arc::<str>::from(s), next));
+            }
         }
 
         let suffix = crate::stdlib::int_to_string_value(value);

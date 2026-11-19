@@ -1174,7 +1174,7 @@ fn main() {
     let mem = info[\"AOT Memory\"];
     println(n);
     println(int(mem[\"Slab capacity\"]) == 4096);
-    println(int(mem[\"Slabs allocated\"]) >= 1);
+    println(int(mem[\"Slabs allocated\"]) == 0);
     println(int(mem[\"Completed call allocs\"]) > 0);
     println(int(mem[\"Max call allocs\"]) > 0);
     return 0;

@@ -112,6 +112,8 @@ public fn new_codegen() {
     st["raw_ret_float"] = null;
     st["raw_ret_bool"] = null;
     st["raw_ret_threw"] = null;
+    st["v2_frame_ph"] = null;
+    st["v2_frame_cnt"] = 0;
     return st;
 }
 
@@ -124,6 +126,7 @@ fn init_types(st) {
     st["f64"] = LLVMDoubleTypeInContext(ctx);
     st["void"] = LLVMVoidTypeInContext(ctx);
     st["ptr"] = LLVMPointerTypeInContext(ctx, 0);
+    st["v2"] = LLVMStructTypeInContext(ctx, carr([st["i64"], st["i64"]]), 2, 0);
 }
 
 fn i64c(st, v) {
@@ -215,19 +218,97 @@ fn emit_call(st, fpair, args, name) {
     return LLVMBuildCall2(st["builder"], fpair[1], fpair[0], carr(args), args.len(), name);
 }
 
+fn cg_begin_v2_frame(st) {
+    let ph = LLVMBuildAlloca(st["builder"], st["v2"], "v2frame.ph");
+    st["v2_frame_ph"] = ph;
+    st["v2_frame_cnt"] = 0;
+    return;
+}
+
+fn cg_finish_v2_frame(st, func) {
+    let ph = st["v2_frame_ph"];
+    if ph == null {
+        return;
+    }
+    let count = st["v2_frame_cnt"];
+    if count < 1 {
+        count = 1;
+    }
+    st["v2_frame_ph"] = null;
+    st["v2_frame_cnt"] = 0;
+    let entry = LLVMGetFirstBasicBlock(func);
+    let cur = cur_block(st);
+    let arr_ty = LLVMArrayType2(st["v2"], count);
+    let first = LLVMGetFirstInstruction(entry);
+    if first != 0 {
+        LLVMPositionBuilderBefore(st["builder"], first);
+    } else {
+        LLVMPositionBuilderAtEnd(st["builder"], entry);
+    }
+    let real_arr = LLVMBuildAlloca(st["builder"], arr_ty, "v2frame");
+    LLVMPositionBuilderBefore(st["builder"], ph);
+    LLVMBuildMemSet(st["builder"], real_arr, i8c(st, 0), i64c(st, count * 16), 8);
+    let f_enter = tramp(st, "spid3r_frame_enter", [st["ptr"], st["i64"]], null);
+    emit_call(st, f_enter, [real_arr, i64c(st, count)], "");
+    LLVMReplaceAllUsesWith(ph, real_arr);
+    LLVMInstructionEraseFromParent(ph);
+    if cur != 0 {
+        LLVMPositionBuilderAtEnd(st["builder"], cur);
+    }
+    return;
+}
+
+fn cg_alloc_v2_slot(st) {
+    let base = st["v2_frame_ph"];
+    if base != null {
+        let idx = st["v2_frame_cnt"];
+        st["v2_frame_cnt"] = idx + 1;
+        return LLVMBuildInBoundsGEP2(st["builder"], st["v2"], base, carr([i64c(st, idx)]), 1, "v2slot");
+    }
+    return alloca_entry_ty(st, st["v2"], "v2tmp");
+}
+
+fn cg_store_v2_inline(st, slot, tag, payload) {
+    let tp = LLVMBuildInBoundsGEP2(st["builder"], st["v2"], slot, carr([i64c(st, 0), i32c(st, 0)]), 2, "v2.t");
+    LLVMBuildStore(st["builder"], i64c(st, tag), tp);
+    let pp = LLVMBuildInBoundsGEP2(st["builder"], st["v2"], slot, carr([i64c(st, 0), i32c(st, 1)]), 2, "v2.p");
+    LLVMBuildStore(st["builder"], payload, pp);
+    return;
+}
+
+fn cg_copy_v2(st, dst, src) {
+    let v = LLVMBuildLoad2(st["builder"], st["v2"], src, "v2.cp");
+    LLVMBuildStore(st["builder"], v, dst);
+    return;
+}
+
 fn call0p(st, name) {
-    let f = tramp(st, name, [], st["ptr"]);
-    return emit_call(st, f, [], name);
+    let out = cg_alloc_v2_slot(st);
+    let f = tramp(st, name, [st["ptr"]], null);
+    emit_call(st, f, [out], "");
+    return out;
 }
 
 fn call1p(st, name, a) {
-    let f = tramp(st, name, [st["ptr"]], st["ptr"]);
-    return emit_call(st, f, [a], name);
+    if name == "spid3r_cell_new" or name == "spid3r_forin_start" {
+        let f = tramp(st, name, [st["ptr"]], st["ptr"]);
+        return emit_call(st, f, [a], name);
+    }
+    let out = cg_alloc_v2_slot(st);
+    let f = tramp(st, name, [st["ptr"], st["ptr"]], null);
+    emit_call(st, f, [out, a], "");
+    return out;
 }
 
 fn call1p_i64(st, name, a, n) {
-    let f = tramp(st, name, [st["ptr"], st["i64"]], st["ptr"]);
-    return emit_call(st, f, [a, i64c(st, n)], name);
+    if name == "spid3r_env_slot" {
+        let f = tramp(st, name, [st["ptr"], st["i64"]], st["ptr"]);
+        return emit_call(st, f, [a, i64c(st, n)], name);
+    }
+    let out = cg_alloc_v2_slot(st);
+    let f = tramp(st, name, [st["ptr"], st["ptr"], st["i64"]], null);
+    emit_call(st, f, [out, a, i64c(st, n)], "");
+    return out;
 }
 
 fn call_i64_1p(st, name, n) {
@@ -236,13 +317,17 @@ fn call_i64_1p(st, name, n) {
 }
 
 fn call2p(st, name, a, b) {
-    let f = tramp(st, name, [st["ptr"], st["ptr"]], st["ptr"]);
-    return emit_call(st, f, [a, b], name);
+    let out = cg_alloc_v2_slot(st);
+    let f = tramp(st, name, [st["ptr"], st["ptr"], st["ptr"]], null);
+    emit_call(st, f, [out, a, b], "");
+    return out;
 }
 
 fn call_binop(st, a, b, opcode) {
-    let f = tramp(st, "spid3r_binop", [st["ptr"], st["ptr"], st["i64"]], st["ptr"]);
-    return emit_call(st, f, [a, b, i64c(st, opcode)], "bin");
+    let out = cg_alloc_v2_slot(st);
+    let f = tramp(st, "spid3r_binop", [st["ptr"], st["ptr"], st["ptr"], st["i64"]], null);
+    emit_call(st, f, [out, a, b, i64c(st, opcode)], "");
+    return out;
 }
 
 fn call_void1p(st, name, a) {
@@ -268,45 +353,50 @@ fn call_void3p(st, name, a, b, c) {
 // ------------------------------------------------------ value constructors
 
 fn v_int(st, v) {
-    let f = tramp(st, "spid3r_value_int", [st["i64"]], st["ptr"]);
-    return emit_call(st, f, [i64c(st, v)], "vi");
+    return v_int_from_i64(st, i64c(st, v));
 }
 
 fn v_float(st, v) {
-    let f = tramp(st, "spid3r_value_float", [st["f64"]], st["ptr"]);
-    return emit_call(st, f, [LLVMConstReal(st["f64"], v)], "vf");
+    return v_float_from_f64(st, LLVMConstReal(st["f64"], v));
 }
 
 fn v_bool(st, b) {
-    let f = tramp(st, "spid3r_value_bool", [st["i8"]], st["ptr"]);
+    let out = cg_alloc_v2_slot(st);
     let bit = 0;
     if b {
         bit = 1;
     }
-    return emit_call(st, f, [i8c(st, bit)], "vb");
+    cg_store_v2_inline(st, out, 1, i64c(st, bit));
+    return out;
 }
 
 fn v_null(st) {
-    return call0p(st, "spid3r_value_null");
+    let out = cg_alloc_v2_slot(st);
+    cg_store_v2_inline(st, out, 0, i64c(st, 0));
+    return out;
 }
 
-// Box a RUNTIME i64 (the int-locals fast path's exit).
+// Box a RUNTIME i64 inline into ValueV2 (zero heap alloc).
 fn v_int_from_i64(st, iv) {
-    let f = tramp(st, "spid3r_value_int", [st["i64"]], st["ptr"]);
-    return emit_call(st, f, [iv], "vi");
+    let out = cg_alloc_v2_slot(st);
+    cg_store_v2_inline(st, out, 2, iv);
+    return out;
 }
 
-// Box a RUNTIME f64 (the float-locals fast path's exit).
+// Box a RUNTIME f64 inline into ValueV2 (zero heap alloc).
 fn v_float_from_f64(st, fv) {
-    let f = tramp(st, "spid3r_value_float", [st["f64"]], st["ptr"]);
-    return emit_call(st, f, [fv], "vf");
+    let out = cg_alloc_v2_slot(st);
+    let bits = LLVMBuildBitCast(st["builder"], fv, st["i64"], "fbits");
+    cg_store_v2_inline(st, out, 3, bits);
+    return out;
 }
 
-// Box an i1 comparison result.
+// Box an i1 comparison result inline into ValueV2 (zero heap alloc).
 fn v_bool_from_i1(st, b) {
-    let b8 = LLVMBuildZExt(st["builder"], b, st["i8"], "b8");
-    let f = tramp(st, "spid3r_value_bool", [st["i8"]], st["ptr"]);
-    return emit_call(st, f, [b8], "vb");
+    let out = cg_alloc_v2_slot(st);
+    let b64 = LLVMBuildZExt(st["builder"], b, st["i64"], "b64");
+    cg_store_v2_inline(st, out, 1, b64);
+    return out;
 }
 
 // An overflow-checking arithmetic intrinsic (llvm.sadd.with.overflow.i64 and
@@ -1020,10 +1110,8 @@ fn emit_hybrid_leaf_checks(st, leaves, fast_bb, slow_bb) {
     while i < leaves.len() {
         let loc = cg_lookup(st, leaves[i]);
         let slot = loc[1];
-        // THE BOX POINTER, not the slot address: slot is an alloca holding a
-        // *mut Value; the helpers expect the VALUE itself (the oracle's
-        // ledger-recorded loop-bound corruption lesson).
-        let box_ptr = LLVMBuildLoad2(st["builder"], st["ptr"], slot, "box");
+        // Under DP-1 ValueV2, slot IS the *const ValueV2 16-byte slot.
+        let box_ptr = slot;
         let f = tramp(st, "spid3r_is_int", [st["ptr"]], st["i8"]);
         let r = emit_call(st, f, [box_ptr], "isint");
         // Pure extraction emitted BEFORE the branch: spid3r_int_of never
@@ -1133,9 +1221,27 @@ fn icmp_pred_for(op) {
 }
 
 fn v_str(st, s) {
+    let out = cg_alloc_v2_slot(st);
+    let b = bytes(s);
+    let blen = b.len();
+    if blen <= 6 or (blen == 7 and b[6] < 128) {
+        let tag_v = 16 + blen;
+        let bi = 0;
+        let shift = 256;
+        while bi < blen {
+            tag_v = tag_v + b[bi] * shift;
+            if bi + 1 < blen {
+                shift = shift * 256;
+            }
+            bi += 1;
+        }
+        cg_store_v2_inline(st, out, tag_v, i64c(st, 0));
+        return out;
+    }
     let g = str_global(st, s);
-    let f = tramp(st, "spid3r_value_str", [st["ptr"], st["i64"]], st["ptr"]);
-    return emit_call(st, f, [g, i64c(st, bytes(s).len())], "vs");
+    let f = tramp(st, "spid3r_value_str", [st["ptr"], st["ptr"], st["i64"]], null);
+    emit_call(st, f, [out, g, i64c(st, blen)], "");
+    return out;
 }
 
 // Add (or reuse) a null-terminated string constant. Returns the global's
@@ -1864,7 +1970,9 @@ fn compile_ident(st, name) {
             return v_float_from_f64(st, fv);
         }
         if loc[0] == "L" {
-            return LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], tmp_name(st, "v"));
+            let tmp = cg_alloc_v2_slot(st);
+            cg_copy_v2(st, tmp, loc[1]);
+            return tmp;
         }
         if loc[0] == "C" {
             let cell = LLVMBuildLoad2(st["builder"], st["ptr"], loc[1], tmp_name(st, "c"));
@@ -1891,8 +1999,10 @@ fn global_value(st, name) {
 }
 
 fn build_call_value(st, callee, argc, argv) {
-    let f = tramp(st, "spid3r_call", [st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
-    return emit_call(st, f, [callee, i64c(st, argc), argv], "call");
+    let out = cg_alloc_v2_slot(st);
+    let f = tramp(st, "spid3r_call", [st["ptr"], st["ptr"], st["i64"], st["ptr"]], null);
+    emit_call(st, f, [out, callee, i64c(st, argc), argv], "");
+    return out;
 }
 
 // Materialize compiled arguments as an [N x ptr] stack array (entry block)
@@ -1914,8 +2024,8 @@ fn argv_array(st, argv) {
 }
 
 fn temp_slot(st, v) {
-    let slot = alloca_entry(st, "tmp");
-    LLVMBuildStore(st["builder"], v, slot);
+    let slot = cg_alloc_v2_slot(st);
+    cg_copy_v2(st, slot, v);
     return slot;
 }
 
@@ -1956,9 +2066,19 @@ fn assign_binop_code(op) {
 
 // cg_compile_expr = compile_expr_inner + throw_guard: any operation that threw
 // routes to the current handler instead of using the placeholder value.
+fn cg_expr_can_throw(e) {
+    let tag = e[0];
+    if tag == "Int" or tag == "Float" or tag == "Bool" or tag == "Null" or tag == "Str" or tag == "Ident" {
+        return false;
+    }
+    return true;
+}
+
 fn cg_compile_expr(st, e) {
     let v = compile_expr_inner(st, e);
-    throw_guard(st);
+    if cg_expr_can_throw(e) {
+        throw_guard(st);
+    }
     return v;
 }
 
@@ -1994,9 +2114,11 @@ fn compile_expr_inner(st, e) {
             vals.push(cg_compile_expr(st, it));
         }
         let arr = argv_array(st, vals);
-        let f = tramp(st, "spid3r_construct", [st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
+        let out = cg_alloc_v2_slot(st);
+        let f = tramp(st, "spid3r_construct", [st["ptr"], st["ptr"], st["i64"], st["ptr"]], null);
         let np = str_global(st, "list");
-        return emit_call(st, f, [np, i64c(st, vals.len()), arr], "ctor");
+        emit_call(st, f, [out, np, i64c(st, vals.len()), arr], "");
+        return out;
     }
     if tag == "Fn" {
         return compile_closure(st, e[1]);
@@ -2076,8 +2198,10 @@ fn compile_expr_inner(st, e) {
         if e[2] != null {
             mp = str_global(st, e[2]);
         }
-        let f = tramp(st, "spid3r_super_call", [st["ptr"], st["ptr"], st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
-        return emit_call(st, f, [recv, pp, mp, i64c(st, vals.len()), arr], "superc");
+        let out = cg_alloc_v2_slot(st);
+        let f = tramp(st, "spid3r_super_call", [st["ptr"], st["ptr"], st["ptr"], st["ptr"], st["i64"], st["ptr"]], null);
+        emit_call(st, f, [out, recv, pp, mp, i64c(st, vals.len()), arr], "");
+        return out;
     }
     if tag == "Super" {
         throw ["internal error: a bare `super` reached the codegen (the checker rejects it first)", 0, 0, 0, "native"];
@@ -2152,8 +2276,10 @@ fn compile_expr_inner(st, e) {
         }
         let np = str_global(st, e[1]);
         let arr = argv_array(st, vals);
-        let f = tramp(st, "spid3r_method", [st["ptr"], st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
-        return emit_call(st, f, [obj, np, i64c(st, vals.len()), arr], "m");
+        let out = cg_alloc_v2_slot(st);
+        let f = tramp(st, "spid3r_method", [st["ptr"], st["ptr"], st["ptr"], st["i64"], st["ptr"]], null);
+        emit_call(st, f, [out, obj, np, i64c(st, vals.len()), arr], "");
+        return out;
     }
     if tag == "Index" {
         if e[1][0] == "Ident" {
@@ -2187,10 +2313,12 @@ fn compile_expr_inner(st, e) {
         }
         let obj = cg_compile_expr(st, e[1]);
         if e[2][0] == "Str" {
+            let out = cg_alloc_v2_slot(st);
             let kp = str_global(st, e[2][1]);
             let klen = bytes(e[2][1]).len();
-            let f = tramp(st, "spid3r_map_get_str", [st["ptr"], st["ptr"], st["i64"]], st["ptr"]);
-            return emit_call(st, f, [obj, kp, i64c(st, klen)], "mget");
+            let f = tramp(st, "spid3r_map_get_str", [st["ptr"], st["ptr"], st["ptr"], st["i64"]], null);
+            emit_call(st, f, [out, obj, kp, i64c(st, klen)], "");
+            return out;
         }
         let idx = cg_compile_expr(st, e[2]);
         return call2p(st, "spid3r_index_get", obj, idx);
@@ -2276,8 +2404,8 @@ fn compile_logical(st, e) {
     LLVMPositionBuilderAtEnd(st["builder"], end_bb);
     let phi = LLVMBuildPhi(st["builder"], st["i8"], "logic");
     add_incoming(st, phi, [lhs_i8, rhs_i8], [lhs_from, rhs_from]);
-    let f_bool = tramp(st, "spid3r_value_bool", [st["i8"]], st["ptr"]);
-    return emit_call(st, f_bool, [phi], "b");
+    let b1 = LLVMBuildICmp(st["builder"], ICMP_NE, phi, i8c(st, 0), "lb1");
+    return v_bool_from_i1(st, b1);
 }
 
 // RHS first, then the target's object/index reads — the interpreter's
@@ -2318,7 +2446,7 @@ fn cg_compile_assign(st, target, op, value) {
         }
         let loc = cg_lookup(st, name);
         if loc != null and loc[0] == "L" {
-            LLVMBuildStore(st["builder"], v, loc[1]);
+            cg_copy_v2(st, loc[1], v);
             return v;
         }
         if loc != null and loc[0] == "C" {
@@ -2420,8 +2548,10 @@ fn compile_call(st, e) {
             }
             let arr = argv_array(st, vals);
             let np = str_global(st, n);
-            let f = tramp(st, "spid3r_construct", [st["ptr"], st["i64"], st["ptr"]], st["ptr"]);
-            return emit_call(st, f, [np, i64c(st, vals.len()), arr], "ctor");
+            let out = cg_alloc_v2_slot(st);
+            let f = tramp(st, "spid3r_construct", [st["ptr"], st["ptr"], st["i64"], st["ptr"]], null);
+            emit_call(st, f, [out, np, i64c(st, vals.len()), arr], "");
+            return out;
         }
         let raw_r = cg_try_compile_raw_call(st, n, args);
         if raw_r != null {
@@ -2545,26 +2675,28 @@ fn compile_extern_call(st, name, args) {
     }
     let ret_h = sig[4];
     if ret_h == st["void"] {
-        return call0p(st, "spid3r_value_null");
+        return v_null(st);
     }
     if ret_h == st["i64"] {
-        let f = tramp(st, "spid3r_value_int", [st["i64"]], st["ptr"]);
-        return emit_call(st, f, [call], "ffi.box");
+        return v_int_from_i64(st, call);
     }
     if ret_h == st["i8"] {
-        let f = tramp(st, "spid3r_value_bool", [st["i8"]], st["ptr"]);
-        return emit_call(st, f, [call], "ffi.boxb");
+        let b1 = LLVMBuildICmp(st["builder"], ICMP_NE, call, i8c(st, 0), "ffi.b1");
+        return v_bool_from_i1(st, b1);
     }
     if ret_h == st["f64"] {
-        let f = tramp(st, "spid3r_value_float", [st["f64"]], st["ptr"]);
-        return emit_call(st, f, [call], "ffi.boxf");
+        return v_float_from_f64(st, call);
     }
     if sig[5] == "ptr" {
-        let f = tramp(st, "spid3r_value_from_ptr", [st["ptr"]], st["ptr"]);
-        return emit_call(st, f, [call], "ffi.boxp");
+        let out = cg_alloc_v2_slot(st);
+        let f = tramp(st, "spid3r_value_from_ptr", [st["ptr"], st["ptr"]], null);
+        emit_call(st, f, [out, call], "");
+        return out;
     }
-    let f = tramp(st, "spid3r_value_from_cstr", [st["ptr"]], st["ptr"]);
-    return emit_call(st, f, [call], "ffi.boxs");
+    let out = cg_alloc_v2_slot(st);
+    let f = tramp(st, "spid3r_value_from_cstr", [st["ptr"], st["ptr"]], null);
+    emit_call(st, f, [out, call], "");
+    return out;
 }
 
 // The constant handle for a checker-validated default expression.
@@ -2867,8 +2999,8 @@ fn bind_declaration(st, name, v) {
         cg_declare(st, name, ["C", slot]);
         return;
     }
-    let slot = alloca_entry(st, "l");
-    LLVMBuildStore(st["builder"], v, slot);
+    let slot = cg_alloc_v2_slot(st);
+    cg_copy_v2(st, slot, v);
     cg_declare(st, name, ["L", slot]);
     return;
 }
@@ -2895,7 +3027,7 @@ fn store_return(st, v) {
         br_to(st, st["ret_bb"]);
         return;
     }
-    LLVMBuildStore(st["builder"], v, st["ret_slot"]);
+    cg_copy_v2(st, st["ret_slot"], v);
     br_to(st, st["ret_bb"]);
     return;
 }
@@ -3137,8 +3269,10 @@ fn compile_forin(st, s) {
     br_to(st, head_bb);
     LLVMPositionBuilderAtEnd(st["builder"], head_bb);
     let it2 = LLVMBuildLoad2(st["builder"], st["ptr"], iter_slot, "forin.it");
-    let next = call1p(st, "spid3r_forin_next", it2);
-    let is_end = LLVMBuildIsNull(st["builder"], next, "forin.done");
+    let next = cg_alloc_v2_slot(st);
+    let f_next = tramp(st, "spid3r_forin_next", [st["ptr"], st["ptr"]], st["i8"]);
+    let has_next = emit_call(st, f_next, [next, it2], "forin.has");
+    let is_end = LLVMBuildICmp(st["builder"], ICMP_EQ, has_next, i8c(st, 0), "forin.done");
     LLVMBuildCondBr(st["builder"], is_end, end_bb, body_bb);
     LLVMPositionBuilderAtEnd(st["builder"], body_bb);
     cg_push_scope(st);
@@ -3237,7 +3371,7 @@ fn route_to_finally(st, exit_code, value) {
         if exit_code != 1 {
             slot = ctx[3];
         }
-        LLVMBuildStore(st["builder"], value, slot);
+        cg_copy_v2(st, slot, value);
     }
     LLVMBuildStore(st["builder"], i32c(st, exit_code), ctx[1]);
     br_to(st, ctx[0]);
@@ -3264,8 +3398,8 @@ fn cg_compile_try(st, body, cx, fin) {
         dispatch_bb = new_block(st, "try.dispatch");
         pend_exit = alloca_entry_ty(st, st["i32"], "pend_exit");
         LLVMBuildStore(st["builder"], i32c(st, 0), pend_exit);
-        pend_ret = alloca_entry(st, "pend_ret");
-        pend_thrown = alloca_entry(st, "pend_thrown");
+        pend_ret = cg_alloc_v2_slot(st);
+        pend_thrown = cg_alloc_v2_slot(st);
     }
 
     let body_bb = new_block(st, "try.body");
@@ -3294,8 +3428,8 @@ fn cg_compile_try(st, body, cx, fin) {
             st["fstack"].push([finally_entry, pend_exit, pend_ret, pend_thrown, st["loops"].len()]);
             st["exc"].push(catch_fh);
             cg_push_scope(st);
-            let slot = alloca_entry(st, "catchvar");
-            LLVMBuildStore(st["builder"], thrown, slot);
+            let slot = cg_alloc_v2_slot(st);
+            cg_copy_v2(st, slot, thrown);
             cg_declare(st, cx[1], ["L", slot]);
             cg_compile_block(st, cx[2][1]);
             cg_pop_scope(st);
@@ -3304,13 +3438,13 @@ fn cg_compile_try(st, body, cx, fin) {
             br_to(st, finally_entry);
             LLVMPositionBuilderAtEnd(st["builder"], catch_fh);
             let nt = take_thrown(st);
-            LLVMBuildStore(st["builder"], nt, pend_thrown);
+            cg_copy_v2(st, pend_thrown, nt);
             LLVMBuildStore(st["builder"], i32c(st, 4), pend_exit);
             br_to(st, finally_entry);
         } else {
             cg_push_scope(st);
-            let slot = alloca_entry(st, "catchvar");
-            LLVMBuildStore(st["builder"], thrown, slot);
+            let slot = cg_alloc_v2_slot(st);
+            cg_copy_v2(st, slot, thrown);
             cg_declare(st, cx[1], ["L", slot]);
             cg_compile_block(st, cx[2][1]);
             cg_pop_scope(st);
@@ -3318,7 +3452,7 @@ fn cg_compile_try(st, body, cx, fin) {
         }
     } else if has_finally {
         let thrown = take_thrown(st);
-        LLVMBuildStore(st["builder"], thrown, pend_thrown);
+        cg_copy_v2(st, pend_thrown, thrown);
         LLVMBuildStore(st["builder"], i32c(st, 4), pend_exit);
         br_to(st, finally_entry);
     } else {
@@ -3343,7 +3477,7 @@ fn cg_compile_try(st, body, cx, fin) {
         LLVMAddCase(sw, i32c(st, 3), bb_cont);
         LLVMAddCase(sw, i32c(st, 4), bb_re);
         LLVMPositionBuilderAtEnd(st["builder"], bb_ret);
-        let rv = LLVMBuildLoad2(st["builder"], st["ptr"], pend_ret, "rv");
+        let rv = pend_ret;
         if st["fstack"].len() == 0 {
             store_return(st, rv);
         } else {
@@ -3362,7 +3496,7 @@ fn cg_compile_try(st, body, cx, fin) {
             cg_emit_loop_exit(st, false);
         }
         LLVMPositionBuilderAtEnd(st["builder"], bb_re);
-        let tv = LLVMBuildLoad2(st["builder"], st["ptr"], pend_thrown, "tv");
+        let tv = pend_thrown;
         throw_value(st, tv);
         br_to(st, outer_handler);
     }
@@ -3376,8 +3510,8 @@ fn cg_compile_try(st, body, cx, fin) {
 // block, the propagate handler, captures as upvalues, constructor self,
 // default-parameter phis, boxed params as cells.
 fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
-    let params = carr([st["ptr"], st["i64"], st["ptr"]]);
-    let fn_ty = LLVMFunctionType(st["ptr"], params, 3, 0);
+    let params = carr([st["ptr"], st["ptr"], st["i64"], st["ptr"]]);
+    let fn_ty = LLVMFunctionType(st["void"], params, 4, 0);
     st["fn_counter"] = st["fn_counter"] + 1;
     let hint = name_hint;
     if hint == null {
@@ -3390,20 +3524,28 @@ fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
     let entry_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "entry");
     LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
 
-    let env = LLVMGetParam(f, 0);
-    let argv = LLVMGetParam(f, 2);
-    let ret_slot = LLVMBuildAlloca(st["builder"], st["ptr"], "ret");
+    let saved_v2_ph = st["v2_frame_ph"];
+    let saved_v2_cnt = st["v2_frame_cnt"];
+    cg_begin_v2_frame(st);
+
+    let out_ptr = LLVMGetParam(f, 0);
+    let env = LLVMGetParam(f, 1);
+    let argc_v = LLVMGetParam(f, 2);
+    let argv = LLVMGetParam(f, 3);
+    let ret_slot = cg_alloc_v2_slot(st);
     let ret_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "ret");
     LLVMPositionBuilderAtEnd(st["builder"], ret_bb);
-    let rv0 = LLVMBuildLoad2(st["builder"], st["ptr"], ret_slot, "rv");
-    LLVMBuildRet(st["builder"], rv0);
+    cg_copy_v2(st, out_ptr, ret_slot);
+    let f_exit = tramp(st, "spid3r_frame_exit", [], null);
+    emit_call(st, f_exit, [], "");
+    LLVMBuildRetVoid(st["builder"]);
     LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
 
     // Bottom handler: a throw with no enclosing try returns null to the
     // caller with the flag set — it propagates to the nearest enclosing try.
     let propagate_bb = LLVMAppendBasicBlockInContext(st["ctx"], f, "propagate");
     LLVMPositionBuilderAtEnd(st["builder"], propagate_bb);
-    LLVMBuildStore(st["builder"], null_ptr(st), ret_slot);
+    cg_store_v2_inline(st, ret_slot, 0, i64c(st, 0));
     LLVMBuildBr(st["builder"], ret_bb);
     LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
 
@@ -3444,14 +3586,13 @@ fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
     if self_offset == 1 {
         let gep = LLVMBuildInBoundsGEP2(st["builder"], st["ptr"], argv, carr([i64c(st, 0)]), 1, "self");
         let recv = LLVMBuildLoad2(st["builder"], st["ptr"], gep, "selfv");
-        let slot = alloca_entry(st, "selfslot");
-        LLVMBuildStore(st["builder"], recv, slot);
+        let slot = cg_alloc_v2_slot(st);
+        cg_copy_v2(st, slot, recv);
         cg_declare(st, "self", ["L", slot]);
     }
     // bind parameters (argv[self_offset..]); captured params get a cell;
     // defaulted parameters bind conditionally on argc (defaults are
     // trailing-only, so omitted arguments are always a suffix).
-    let argc_v = LLVMGetParam(f, 1);
     let ps = proto[5];
     i = 0;
     while i < ps.len() {
@@ -3484,8 +3625,8 @@ fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
             LLVMBuildStore(st["builder"], cell, slot);
             cg_declare(st, p[1], ["C", slot]);
         } else {
-            let slot = alloca_entry(st, "p");
-            LLVMBuildStore(st["builder"], a, slot);
+            let slot = cg_alloc_v2_slot(st);
+            cg_copy_v2(st, slot, a);
             cg_declare(st, p[1], ["L", slot]);
         }
         i += 1;
@@ -3494,8 +3635,12 @@ fn cg_compile_function(st, proto, caps, name_hint, self_offset) {
     cg_pop_scope(st);
     ensure_open(st);
     let nv = v_null(st);
-    LLVMBuildStore(st["builder"], nv, ret_slot);
+    cg_copy_v2(st, ret_slot, nv);
     LLVMBuildBr(st["builder"], ret_bb);
+
+    cg_finish_v2_frame(st, f);
+    st["v2_frame_ph"] = saved_v2_ph;
+    st["v2_frame_cnt"] = saved_v2_cnt;
 
     // restore the enclosing frame and emission position
     st["env"] = saved[0];
@@ -3553,10 +3698,8 @@ fn compile_closure(st, proto) {
             if src[0] == "C" {
                 cell = LLVMBuildLoad2(st["builder"], st["ptr"], src[1], "cap");
             } else if src[0] == "L" {
-                // A non-boxed local here means the boxing analysis missed it;
-                // box defensively.
-                let v = LLVMBuildLoad2(st["builder"], st["ptr"], src[1], "capv");
-                cell = call1p(st, "spid3r_cell_new", v);
+                // Under DP-1 ValueV2, src[1] IS the *const ValueV2 slot.
+                cell = call1p(st, "spid3r_cell_new", src[1]);
             } else {
                 cell = call1p_i64(st, "spid3r_env_slot", st["env"], src[1]);
             }
@@ -3564,8 +3707,10 @@ fn compile_closure(st, proto) {
             j += 1;
         }
     }
-    let f5 = tramp(st, "spid3r_make_fn", [st["ptr"], st["i64"], st["i64"], st["ptr"], st["ptr"]], st["ptr"]);
-    return emit_call(st, f5, [name_ptr, i64c(st, arity), i64c(st, ma), f, env], "mkfn");
+    let out = cg_alloc_v2_slot(st);
+    let f5 = tramp(st, "spid3r_make_fn", [st["ptr"], st["ptr"], st["i64"], st["i64"], st["ptr"], st["ptr"]], null);
+    emit_call(st, f5, [out, name_ptr, i64c(st, arity), i64c(st, ma), f, env], "");
+    return out;
 }
 
 // --------------------------------------------------------------- classes
@@ -3784,12 +3929,16 @@ fn cg_collect_top_consts(stmts) {
 fn build_entry(st, prog) {
     declare_externs(st, prog);
     let ptr_ty = st["ptr"];
-    let fn_ty = LLVMFunctionType(ptr_ty, carr([]), 0, 0);
+    let fn_ty = LLVMFunctionType(st["void"], carr([ptr_ty]), 1, 0);
     let entry = LLVMAddFunction(st["module"], "spid3r_entry", fn_ty);
     cg_add_fn_attr(st, entry, "nounwind");
     cg_add_fn_attr(st, entry, "willreturn");
     let bb = LLVMAppendBasicBlockInContext(st["ctx"], entry, "entry");
     LLVMPositionBuilderAtEnd(st["builder"], bb);
+    let out_ptr = LLVMGetParam(entry, 0);
+    let saved_v2_ph = st["v2_frame_ph"];
+    let saved_v2_cnt = st["v2_frame_cnt"];
+    cg_begin_v2_frame(st);
     let saved_exc = st["exc"];
     let saved_scopes = st["scopes"];
     let saved_loops = st["loops"];
@@ -3842,8 +3991,13 @@ fn build_entry(st, prog) {
     }
     cg_pop_scope(st);
     ensure_open(st);
-    let nv = v_null(st);
-    LLVMBuildRet(st["builder"], nv);
+    cg_store_v2_inline(st, out_ptr, 0, i64c(st, 0));
+    let f_exit = tramp(st, "spid3r_frame_exit", [], null);
+    emit_call(st, f_exit, [], "");
+    LLVMBuildRetVoid(st["builder"]);
+    cg_finish_v2_frame(st, entry);
+    st["v2_frame_ph"] = saved_v2_ph;
+    st["v2_frame_cnt"] = saved_v2_cnt;
     st["exc"] = saved_exc;
     st["scopes"] = saved_scopes;
     st["loops"] = saved_loops;
@@ -4666,7 +4820,7 @@ fn cg_try_compile_raw_call(st, name, args) {
                 llvm_params.push(st["ptr"]);
             }
         }
-        let base_ret_ty = st["ptr"];
+        let base_ret_ty = st["v2"];
         if ret_sc == "int" {
             base_ret_ty = st["i64"];
         } else if ret_sc == "float" {
@@ -4700,7 +4854,7 @@ fn cg_try_compile_raw_call(st, name, args) {
         } else if ret_sc == "bool" {
             ret_bool_slot = LLVMBuildAlloca(st["builder"], st["i8"], "rret.b");
         }
-        let ret_val_slot = LLVMBuildAlloca(st["builder"], st["ptr"], "rret.v");
+        let ret_val_slot = LLVMBuildAlloca(st["builder"], st["v2"], "rret.v");
         let ret_threw_slot = LLVMBuildAlloca(st["builder"], st["i8"], "rret.ex");
         LLVMBuildStore(st["builder"], i8c(st, 0), ret_threw_slot);
 
@@ -4714,10 +4868,15 @@ fn cg_try_compile_raw_call(st, name, args) {
         if ret_bool_slot != null {
             LLVMBuildStore(st["builder"], i8c(st, 0), ret_bool_slot);
         }
-        LLVMBuildStore(st["builder"], null_ptr(st), ret_val_slot);
+        cg_store_v2_inline(st, ret_val_slot, 0, i64c(st, 0));
         LLVMBuildStore(st["builder"], i8c(st, 1), ret_threw_slot);
         LLVMBuildBr(st["builder"], ret_bb);
         LLVMPositionBuilderAtEnd(st["builder"], entry_bb);
+
+        let saved_v2_ph = st["v2_frame_ph"];
+        let saved_v2_cnt = st["v2_frame_cnt"];
+        st["v2_frame_ph"] = null;
+        st["v2_frame_cnt"] = 0;
 
         let boxed = boxing_set(proto);
         let int_params = map();
@@ -4788,8 +4947,8 @@ fn cg_try_compile_raw_call(st, name, args) {
                     LLVMBuildStore(st["builder"], cell, slot);
                     cg_declare(st, pname, ["C", slot]);
                 } else {
-                    let slot = alloca_entry(st, "p");
-                    LLVMBuildStore(st["builder"], bv, slot);
+                    let slot = cg_alloc_v2_slot(st);
+                    cg_copy_v2(st, slot, bv);
                     cg_declare(st, pname, ["L", slot]);
                 }
             }
@@ -4806,7 +4965,7 @@ fn cg_try_compile_raw_call(st, name, args) {
             LLVMBuildStore(st["builder"], i8c(st, 0), ret_bool_slot);
         } else {
             let nv = v_null(st);
-            LLVMBuildStore(st["builder"], nv, ret_val_slot);
+            cg_copy_v2(st, ret_val_slot, nv);
         }
         LLVMBuildBr(st["builder"], ret_bb);
 
@@ -4819,7 +4978,7 @@ fn cg_try_compile_raw_call(st, name, args) {
         } else if ret_bool_slot != null {
             rv_val = LLVMBuildLoad2(st["builder"], st["i8"], ret_bool_slot, "rrb");
         } else {
-            rv_val = LLVMBuildLoad2(st["builder"], st["ptr"], ret_val_slot, "rrv");
+            rv_val = LLVMBuildLoad2(st["builder"], st["v2"], ret_val_slot, "rrv");
         }
         let ex_i8 = LLVMBuildLoad2(st["builder"], st["i8"], ret_threw_slot, "rrex");
         let ex_i1 = LLVMBuildICmp(st["builder"], ICMP_NE, ex_i8, i8c(st, 0), "rrexb");
@@ -4827,6 +4986,9 @@ fn cg_try_compile_raw_call(st, name, args) {
         let agg1 = LLVMBuildInsertValue(st["builder"], agg0, rv_val, 0, "rr0");
         let agg2 = LLVMBuildInsertValue(st["builder"], agg1, ex_i1, 1, "rr1");
         LLVMBuildRet(st["builder"], agg2);
+
+        st["v2_frame_ph"] = saved_v2_ph;
+        st["v2_frame_cnt"] = saved_v2_cnt;
 
         st["env"] = saved[0];
         st["ret_slot"] = saved[1];
@@ -4887,6 +5049,11 @@ fn cg_try_compile_raw_call(st, name, args) {
     let val = LLVMBuildExtractValue(st["builder"], res_agg, 0, "rawv");
     let threw_i1 = LLVMBuildExtractValue(st["builder"], res_agg, 1, "rawex");
     cg_throw_guard_i1(st, threw_i1);
+    if ret_sc == null {
+        let out = cg_alloc_v2_slot(st);
+        LLVMBuildStore(st["builder"], val, out);
+        return [out, ret_sc];
+    }
     return [val, ret_sc];
 }
 

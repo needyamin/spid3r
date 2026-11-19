@@ -31,6 +31,7 @@
 //! per call (see the "VM mirror" note in GC.md).
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -54,6 +55,77 @@ struct Entry {
 }
 
 static REGISTRY: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+
+const LOCAL_REGISTRY_CAP: usize = 2048;
+
+thread_local! {
+    /// Single-thread registration buffer (Track 3 RT-1): avoids locking
+    /// global `REGISTRY` on short-lived containers while `!is_multithreaded()`.
+    static LOCAL_REGISTRY: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Flush any pending single-thread entries from this thread's `LOCAL_REGISTRY`
+/// into the shared `REGISTRY`, discarding entries whose cells already died.
+pub fn flush_local_registry() {
+    let drained = LOCAL_REGISTRY.with(|local| {
+        let mut v = local.borrow_mut();
+        if v.is_empty() {
+            Vec::new()
+        } else {
+            v.retain(|e| e.weak.strong_count() > 0);
+            std::mem::take(&mut *v)
+        }
+    });
+    if drained.is_empty() {
+        return;
+    }
+    let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    reg.extend(drained);
+    prune_registry_locked(&mut reg);
+}
+
+#[inline]
+fn prune_registry_locked(reg: &mut Vec<Entry>) {
+    if reg.len() > PRUNE_AT.load(Ordering::Relaxed) {
+        reg.retain(|e| e.weak.strong_count() > 0);
+        PRUNE_AT.store(reg.len().saturating_mul(2).max(8192), Ordering::Relaxed);
+    }
+}
+
+#[inline]
+fn register_entry(entry: Entry) {
+    if !crate::value::is_multithreaded() {
+        let overflow = LOCAL_REGISTRY.with(|local| {
+            let mut v = local.borrow_mut();
+            if v.capacity() == 0 {
+                v.reserve(LOCAL_REGISTRY_CAP);
+            }
+            v.push(entry);
+            if v.len() >= LOCAL_REGISTRY_CAP {
+                v.retain(|e| e.weak.strong_count() > 0);
+                if v.len() >= LOCAL_REGISTRY_CAP * 3 / 4 {
+                    Some(std::mem::take(&mut *v))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+        if let Some(batch) = overflow {
+            let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+            reg.extend(batch);
+            prune_registry_locked(&mut reg);
+        }
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    reg.push(entry);
+    prune_registry_locked(&mut reg);
+    drop(reg);
+    ALLOCS.fetch_add(1, Ordering::Relaxed);
+}
 
 /// A container cell whose children can be enumerated (for marking) and cleared
 /// (for sweeping). Implemented for all container and instance types.
@@ -391,30 +463,13 @@ fn clear_erased<T: GcTrace + Send + 'static>(arc: &Arc<dyn Any + Send + Sync>) {
 /// sites (so the registry holds a *weak* handle; it never keeps a cell alive).
 pub fn track<T: GcTrace + Send + 'static>(cell: Arc<Mutex<T>>) -> Arc<Mutex<T>> {
     let id = Arc::as_ptr(&cell) as *const () as usize;
-    let erased: Arc<dyn Any + Send + Sync> = cell.clone();
-    let weak = Arc::downgrade(&erased);
-    drop(erased);
-    let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    reg.push(Entry {
+    let weak: Weak<dyn Any + Send + Sync> = Arc::downgrade(&cell) as Weak<Mutex<T>>;
+    register_entry(Entry {
         id,
         weak,
         trace: trace_erased::<T>,
         clear: clear_erased::<T>,
     });
-    // Safety valve: programs that never collect (e.g. the native runtime, which
-    // has no auto-trigger) still keep the registry bounded — prune dead handles
-    // once it grows, so it tracks live cells rather than all-time allocations.
-    // Amortized (F-4): prune only past the `PRUNE_AT` watermark and then double
-    // it. The old prune-on-every-allocation-above-8192 cost O(registry) per
-    // allocation — quadratic on a deep build where the registry stays large and
-    // live, on BOTH engines (they share `new_ref` → `track`).
-    if reg.len() > PRUNE_AT.load(Ordering::Relaxed) {
-        let mut seen = HashSet::new();
-        reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
-        PRUNE_AT.store(reg.len().saturating_mul(2).max(8192), Ordering::Relaxed);
-    }
-    drop(reg);
-    ALLOCS.fetch_add(1, Ordering::Relaxed);
     cell
 }
 
@@ -439,18 +494,13 @@ pub fn track_immutable<T: GcTrace + Send + Sync + 'static>(cell: Arc<T>) -> Arc<
     fn no_clear(_arc: &Arc<dyn Any + Send + Sync>) {}
 
     let id = Arc::as_ptr(&cell) as *const () as usize;
-    let erased: Arc<dyn Any + Send + Sync> = cell.clone();
-    let weak = Arc::downgrade(&erased);
-    drop(erased);
-    let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    reg.push(Entry {
+    let weak: Weak<dyn Any + Send + Sync> = Arc::downgrade(&cell) as Weak<T>;
+    register_entry(Entry {
         id,
         weak,
         trace: trace_immutable::<T>,
         clear: no_clear,
     });
-    drop(reg);
-    ALLOCS.fetch_add(1, Ordering::Relaxed);
     cell
 }
 
@@ -505,6 +555,7 @@ fn for_each_cell_id(v: &Value, f: &mut dyn FnMut(usize)) {
 /// Number of currently-live tracked cells (dead and duplicate entries pruned first).
 /// Used by the `gc_live_cells()` diagnostic and tests.
 pub fn live_cells() -> usize {
+    flush_local_registry();
     let mut reg = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let mut seen = HashSet::new();
     reg.retain(|e| e.weak.strong_count() > 0 && seen.insert(e.id));
@@ -514,6 +565,7 @@ pub fn live_cells() -> usize {
 /// Run one collection pass; returns the number of cells swept. Safe to call at
 /// any single-threaded point.
 pub fn collect() -> usize {
+    flush_local_registry();
     ALLOCS.store(0, Ordering::Relaxed);
     // Snapshot live entries (weak handles only — never upgrade during counting).
     let snapshot: Vec<(usize, Weak<dyn Any + Send + Sync>, TraceFn, ClearFn)> = {
@@ -658,6 +710,7 @@ fn child_bytes(v: &Value) -> usize {
 /// One full pass over the registry: prune dead handles, sum the approximate
 /// size of every live cell, cache the result. O(live cells).
 fn rescan_memory() {
+    flush_local_registry();
     let now = crate::sched::now_ms();
     let mut total = 0usize;
     {

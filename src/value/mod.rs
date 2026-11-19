@@ -28,6 +28,7 @@ static MULTITHREADED_ACTIVE: std::sync::atomic::AtomicBool =
 #[inline]
 pub fn mark_multithreaded() {
     MULTITHREADED_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
+    crate::value::gc::flush_local_registry();
 }
 
 /// Returns `true` once any background task has been spawned.
@@ -398,6 +399,193 @@ impl Drop for InstanceData {
 /// captured-variable slots of a closure (null for a plain function). The raw
 /// pointer is sound because the environment outlives every call: it is
 /// heap-allocated when the closure is created and released with it.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ValueV2 {
+    pub tag: u64,
+    pub payload: u64,
+}
+
+impl ValueV2 {
+    pub const TAG_NULL: u64 = 0;
+    pub const TAG_BOOL: u64 = 1;
+    pub const TAG_INT: u64 = 2;
+    pub const TAG_FLOAT: u64 = 3;
+    pub const TAG_HEAP: u64 = 4;
+    pub const TAG_ROPE: u64 = 5;
+    /// Low byte `16..=31` in `tag` encodes an inline UTF-8 Small String Optimization
+    /// (SSO) slice of `0..=15` bytes packed into bytes `1..16` of `(tag, payload)`.
+    pub const TAG_SSO_BASE: u64 = 16;
+
+    pub const NULL: Self = Self {
+        tag: Self::TAG_NULL,
+        payload: 0,
+    };
+
+    #[inline]
+    pub const fn from_bool(b: bool) -> Self {
+        Self {
+            tag: Self::TAG_BOOL,
+            payload: b as u64,
+        }
+    }
+
+    #[inline]
+    pub const fn from_int(n: i64) -> Self {
+        Self {
+            tag: Self::TAG_INT,
+            payload: n as u64,
+        }
+    }
+
+    #[inline]
+    pub fn from_float(f: f64) -> Self {
+        Self {
+            tag: Self::TAG_FLOAT,
+            payload: f.to_bits(),
+        }
+    }
+
+    #[inline]
+    pub fn from_heap_ptr(p: *mut Value) -> Self {
+        Self {
+            tag: Self::TAG_HEAP,
+            payload: p as usize as u64,
+        }
+    }
+
+    #[inline]
+    pub const fn from_rope(epoch: u32, byte_len: u32) -> Self {
+        Self {
+            tag: Self::TAG_ROPE,
+            payload: ((epoch as u64) << 32) | (byte_len as u64),
+        }
+    }
+
+    #[inline]
+    pub const fn is_rope(self) -> bool {
+        self.tag == Self::TAG_ROPE
+    }
+
+    #[inline]
+    pub const fn rope_epoch(self) -> u32 {
+        (self.payload >> 32) as u32
+    }
+
+    #[inline]
+    pub const fn rope_len(self) -> usize {
+        (self.payload & 0xFFFF_FFFF) as usize
+    }
+
+    #[inline]
+    pub const fn is_sso(self) -> bool {
+        let lo = self.tag & 0xFF;
+        lo >= Self::TAG_SSO_BASE && lo <= Self::TAG_SSO_BASE + 15
+    }
+
+    #[inline]
+    pub const fn sso_len(self) -> usize {
+        ((self.tag & 0xFF) - Self::TAG_SSO_BASE) as usize
+    }
+
+    /// Pack `bytes` (`<= 15` valid UTF-8 bytes) inline into a 16-byte `ValueV2`.
+    #[inline]
+    pub fn from_sso_bytes(bytes: &[u8]) -> Self {
+        debug_assert!(bytes.len() <= 15);
+        let len = bytes.len().min(15);
+        let mut buf = [0u8; 16];
+        buf[0] = (Self::TAG_SSO_BASE as u8) + (len as u8);
+        buf[1..1 + len].copy_from_slice(&bytes[..len]);
+        Self {
+            tag: u64::from_le_bytes([
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+            ]),
+            payload: u64::from_le_bytes([
+                buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
+            ]),
+        }
+    }
+
+    /// Pack a short `&str` (`len <= 15`) inline into a 16-byte `ValueV2`.
+    #[inline]
+    pub fn from_sso_str(s: &str) -> Self {
+        Self::from_sso_bytes(s.as_bytes())
+    }
+
+    /// Copy inline SSO bytes into `buf[1..1+len]` and return `len` without allocation.
+    #[inline]
+    pub fn write_sso_bytes(self, buf: &mut [u8; 16]) -> usize {
+        let len = self.sso_len();
+        buf[..8].copy_from_slice(&self.tag.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.payload.to_le_bytes());
+        len
+    }
+
+    /// Borrow the inline SSO UTF-8 string (`0..=15` bytes) on the stack without allocation.
+    #[inline]
+    pub fn with_sso_str<R>(self, f: impl FnOnce(&str) -> R) -> Option<R> {
+        if !self.is_sso() {
+            return None;
+        }
+        let mut buf = [0u8; 16];
+        let len = self.write_sso_bytes(&mut buf);
+        std::str::from_utf8(&buf[1..1 + len]).ok().map(f)
+    }
+
+    /// Format `n` directly as an inline SSO decimal string (`<= 15` digits,
+    /// covering most integers without heap allocation).
+    #[inline]
+    pub fn from_int_decimal(n: i64) -> Option<Self> {
+        if (0..10).contains(&n) {
+            let d0 = (b'0' + n as u8) as u64;
+            return Some(Self {
+                tag: (Self::TAG_SSO_BASE + 1) | (d0 << 8),
+                payload: 0,
+            });
+        }
+        if (10..100).contains(&n) {
+            let d0 = (b'0' + (n / 10) as u8) as u64;
+            let d1 = (b'0' + (n % 10) as u8) as u64;
+            return Some(Self {
+                tag: (Self::TAG_SSO_BASE + 2) | (d0 << 8) | (d1 << 16),
+                payload: 0,
+            });
+        }
+        let mut buf = [0u8; 24];
+        let mut pos = buf.len();
+        let neg = n < 0;
+        let mut u = n.unsigned_abs();
+        loop {
+            pos -= 1;
+            buf[pos] = b'0' + (u % 10) as u8;
+            u /= 10;
+            if u == 0 {
+                break;
+            }
+        }
+        if neg {
+            pos -= 1;
+            buf[pos] = b'-';
+        }
+        let slice = &buf[pos..];
+        if slice.len() <= 15 {
+            Some(Self::from_sso_bytes(slice))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub const fn is_heap(self) -> bool {
+        self.tag == Self::TAG_HEAP && self.payload != 0
+    }
+
+    #[inline]
+    pub const fn as_heap_ptr(self) -> *mut Value {
+        self.payload as usize as *mut Value
+    }
+}
+
 #[derive(Clone)]
 pub struct CompiledFn {
     pub name: Option<String>,
@@ -406,7 +594,7 @@ pub struct CompiledFn {
     /// generated prologue fills omitted arguments itself, so dispatchers only
     /// range-check).
     pub min_arity: usize,
-    pub code: unsafe extern "C" fn(*mut c_void, usize, *const *mut Value) -> *mut Value,
+    pub code: unsafe extern "C" fn(*mut ValueV2, *mut c_void, usize, *const *const ValueV2),
     pub env: *mut c_void,
 }
 
