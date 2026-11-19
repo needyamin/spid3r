@@ -164,15 +164,22 @@ jobs:
 
       - name: Build Stage-0 runtime & GUI control host
         timeout-minutes: 55
-        run: cargo build --release --locked --no-default-features --features gui,native,plugins-wasm,tls
+        shell: pwsh
+        run: |
+          # Build slim native-only runtime staticlib first (matches P-5 size budget
+          # and Linux/macOS runtime tarballs; AOT targets do not link egui/wasmtime).
+          cargo build --release --locked --lib --no-default-features --features native
+          New-Item -ItemType Directory -Force -Path target/rt-native | Out-Null
+          Copy-Item -Force target/release/spid3r_lang.lib target/rt-native/spid3r_lang.lib
+          # Build full-featured Stage-0 CLI & GUI control host binaries.
+          cargo build --release --locked --bins --no-default-features --features gui,native,plugins-wasm,tls
 
       - name: Build self-hosted release compiler & NSIS installer (spid3r-self)
         shell: bash
         timeout-minutes: 25
         run: |
           set -o pipefail
-          LIB="target/release/spid3r_lang.lib"
-          [ -f "$LIB" ] || LIB="$(find target -name spid3r_lang.lib | head -n 1)"
+          LIB="target/rt-native/spid3r_lang.lib"
           test -s "$LIB"
           if ! bash tools/release_selfhost.sh build \
             --target x86_64-pc-windows-msvc \
@@ -182,7 +189,7 @@ jobs:
             --llvm-version 23.1.0 \
             --smoke-install \
             --out-dir release-out 2>&1 | tee release_selfhost_win.log; then
-            tail -n 20 release_selfhost_win.log | while IFS= read -r line; do
+            tail -n 8 release_selfhost_win.log | while IFS= read -r line; do
               echo "::error::${line}"
             done
             exit 2
@@ -260,10 +267,9 @@ jobs:
         with:
           files: |
             dist/spid3r-*.tar.gz
-            dist/spid3r-runtime-*.tar.gz
             dist/Spid3r-Setup-*.exe
             dist/sha256sums.txt
-          clobber: false
+          overwrite_files: true
           fail_on_unmatched_files: true
           body: |
             Prebuilt spid3r binaries (`spid3r-self` compiled by the self-hosted toolchain + `spid3r` VM/interpreter tools) and the Windows NSIS installer (with bundled LLVM + SHA-256-pinned runtime staticlib).
