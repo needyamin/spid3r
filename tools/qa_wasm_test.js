@@ -20,7 +20,7 @@ async function runQATests() {
     const ver = sp.version();
     console.log("✓ Version Query:", ver);
     assert.strictEqual(ver.version, pkgVersion);
-    assert.strictEqual(ver.language_version, "1.1.0");
+    assert.strictEqual(ver.language_version, "1.1.1");
 
     // 2. Syntax & Semantic Checker tests
     console.log("Running Checker QA...");

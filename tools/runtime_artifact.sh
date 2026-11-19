@@ -176,7 +176,7 @@ cmd_package() {
   "schema": 1,
   "package": "spid3r",
   "version": "$(json_escape "$version")",
-  "language_version": "1.1.0",
+  "language_version": "1.1.1",
   "abi_version": 1,
   "target": "$(json_escape "$target")",
   "profile": "$(json_escape "$profile")",
