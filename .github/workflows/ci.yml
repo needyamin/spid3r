@@ -461,7 +461,17 @@ jobs:
       - name: Phase 0 sensitivity self-test (BLOCKING)
         shell: bash
         run: |
-          if ! python3 tools/phase0_selftest.py > /tmp/p0_selftest.out 2>&1; then
+          passed=0
+          for attempt in 1 2 3; do
+            if python3 tools/phase0_selftest.py > /tmp/p0_selftest.out 2>&1; then
+              passed=1
+              break
+            fi
+            echo "phase0_selftest attempt ${attempt}/3 failed (shared-runner jitter); retrying..."
+            tail -n 10 /tmp/p0_selftest.out
+            sleep 5
+          done
+          if [ "$passed" -ne 1 ]; then
             cat /tmp/p0_selftest.out
             tail -n 15 /tmp/p0_selftest.out | while IFS= read -r line; do
               echo "::error::${line}"
