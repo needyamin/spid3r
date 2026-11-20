@@ -6,7 +6,7 @@ A programming language whose interpreters and compilers agree on stdout, error p
 
 ![Spid3r pipeline: one front end, four backends](docs/diagrams/pipeline.svg)
 
-```spid3r
+```js
 fn main() {
     println("Hello, Spid3r!");
     return 0;
@@ -134,7 +134,7 @@ See [docs/selfhost/](docs/selfhost/README.md) for ADRs, runtime ABI, and retirem
 
 ## The language
 
-```spid3r
+```js
 interface Greetable {
     public fn greet(self) -> string { return "Hi, " + self.name; }
 }
