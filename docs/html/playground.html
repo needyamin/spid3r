@@ -990,7 +990,7 @@
       <img src="../../src/assets/spid3r.png" alt="Spid3r logo" class="brand-logo-img">
       <span style="color: var(--cyan);">Spid3r</span>
       <span>In-Browser Runtime</span>
-      <span class="brand-badge">WASM 1.1.0</span>
+      <span class="brand-badge" id="wasm-brand-badge" data-spid3r-version="wasm">WASM</span>
     </div>
     <div class="nav-actions">
       <a href="doc.html" class="nav-link" style="color: var(--cyan); font-weight: 600;">Documentation</a>
@@ -1182,6 +1182,7 @@
   </div>
 
   <!-- Include Spid3r JS SDK & Embedded WASM Binary Data (canonical web/ distribution) -->
+  <script src="version.js"></script>
   <script src="../../web/spid3r.js"></script>
   <script src="../../web/spid3r_wasm_data.js"></script>
   <script>
@@ -2447,6 +2448,9 @@ println("sha256(abc): " + sha256("abc"));
           }
 
           const ver = runtime.version();
+          if (typeof window.spid3rApplyVersion === 'function') {
+            window.spid3rApplyVersion(ver, { authoritative: true });
+          }
           engineStatus.className = "status-badge ready";
           engineStatusText.innerText = "Spid3r v" + ver.version + " Ready";
           if (corsNotice) corsNotice.classList.remove('visible');

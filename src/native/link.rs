@@ -1018,6 +1018,20 @@ pub fn build_native(
     if std::env::var_os("SPID3R_DUMP_IR").is_some() {
         eprintln!("{}", module.to_string());
     }
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Diagnostic::new(
+                    Phase::Usage,
+                    format!(
+                        "cannot create output directory '{}': {}",
+                        parent.display(),
+                        e
+                    ),
+                )
+            })?;
+        }
+    }
     // 2. object file
     let obj_target = if meta.emit_obj { out_path } else { obj_path };
     crate::native::llvm::emit_object_with_cpu(

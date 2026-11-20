@@ -145,6 +145,31 @@ pub fn search_roots() -> Vec<(PathBuf, ModuleOrigin)> {
     roots
 }
 
+/// Walk up from `importer`'s parent directory looking for the nearest
+/// enclosing `spider.toml` package root.
+fn find_enclosing_package_root(importer: &std::path::Path) -> Option<PathBuf> {
+    let start = importer.parent()?;
+    let abs = if start.is_absolute() {
+        start.to_path_buf()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        if start.as_os_str().is_empty() {
+            cwd
+        } else {
+            cwd.join(start)
+        }
+    } else {
+        start.to_path_buf()
+    };
+    let mut cur = Some(abs.as_path());
+    while let Some(dir) = cur {
+        if dir.join("spider.toml").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
 /// Resolve an import spec to a module.
 ///
 /// `importer` is the *file* containing the `import` (not a directory); its
@@ -182,6 +207,14 @@ pub fn resolve_module(
     }
     roots.extend(search_roots());
     roots.extend(extra_dirs.iter().cloned().map(|d| (d, ModuleOrigin::Disk)));
+    // Enclosing package root (nearest ancestor containing `spider.toml`), so
+    // project-root-relative imports (e.g. `import "framework/Request"` from
+    // `framework/Application.matrix`) resolve without requiring `SPID3R_PATH=.`.
+    if let Some(pkg_root) = find_enclosing_package_root(&base) {
+        if !roots.iter().any(|(existing, _)| existing == &pkg_root) {
+            roots.push((pkg_root, ModuleOrigin::Disk));
+        }
+    }
 
     for (dir, origin) in roots {
         // As written first, then with the `.matrix` suffix: `import "util"`

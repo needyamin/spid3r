@@ -1350,7 +1350,7 @@
         <div>Spid<span class="accent">3</span>r <span
             style="font-size: 13px; font-weight: 500; color: var(--fg-secondary);">Documentation</span></div>
       </a>
-      <span class="badge-pill badge-version">v1.1.0</span>
+      <span class="badge-pill badge-version" data-spid3r-version="v"></span>
       <span class="badge-pill badge-wasm-ready" id="wasmStatusPill" title="WebAssembly Runtime Status">
         <span class="badge-dot"></span>
         <span id="wasmStatusText">WASM Loading...</span>
@@ -1634,9 +1634,8 @@
           <div
             style="background: var(--bg-card-alt); border-bottom: 1px solid var(--border-line); padding: 12px 18px; font-size: 13.5px; font-weight: 700; color: var(--fg-primary); display: flex; align-items: center; justify-content: space-between;">
             <span>Supported Platforms &amp; Installation Methods</span>
-            <span class="badge-pill"
-              style="background: var(--w3-green-light); color: var(--w3-green); border: 1px solid var(--w3-green-border);">v1.1.0
-              Release</span>
+            <span class="badge-pill" data-spid3r-version="release"
+              style="background: var(--w3-green-light); color: var(--w3-green); border: 1px solid var(--w3-green-border);">Release</span>
           </div>
 
           <div style="padding: 18px 22px;">
@@ -1703,7 +1702,7 @@
             <div
               style="background: var(--bg-code); padding: 12px 16px; border-radius: 6px; font-family: var(--font-mono); font-size: 13px; color: var(--w3-green); border: 1px solid var(--border-line);">
               $ spid3r version<br>
-              <span style="color: var(--fg-secondary);">spid3r 1.1.0 (language 1.0)<br>
+              <span style="color: var(--fg-secondary);"><span data-spid3r-version="cli"></span><br>
                 Rust host, no runtime dependencies.</span>
             </div>
           </div>
@@ -1739,7 +1738,7 @@
 
             let language = "Spid3r";
             let year = 2026;
-            println("Welcome to the " + language + " developer guide! (v1.1.0)");
+            println("Welcome to the " + language + " developer guide!");
             return 0;
             }
           </div>
@@ -7004,6 +7003,7 @@ println("SHA-256 of sum: " + sha256(string(sum)));
   </div>
 
   <!-- Include Spid3r JavaScript SDK and Embedded WASM Binary Data -->
+  <script src="version.js"></script>
   <script src="../../web/spid3r.js"></script>
   <script src="../../web/spid3r_wasm_data.js"></script>
 
@@ -7052,6 +7052,9 @@ println("SHA-256 of sum: " + sha256(string(sum)));
           }
 
           const v = runtime.version();
+          if (typeof window.spid3rApplyVersion === 'function') {
+            window.spid3rApplyVersion(v, { authoritative: true });
+          }
           if (statusText) statusText.innerText = "WASM v" + v.version + "";
           if (statusPill) statusPill.title = "Spid3r WebAssembly Engine initialized successfully (Lang v" + v.language_version + ")";
           console.log("⚡ Spid3r WASM runtime ready (v" + v.version + ")");
